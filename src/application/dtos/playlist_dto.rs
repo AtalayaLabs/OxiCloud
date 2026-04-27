@@ -1,8 +1,9 @@
 use crate::domain::entities::playlist::{AudioFileMetadata, Playlist, PlaylistItem};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
 pub struct PlaylistDto {
     pub id: String,
     pub name: String,
@@ -58,7 +59,7 @@ impl PlaylistDto {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
 pub struct PlaylistItemDto {
     pub id: String,
     pub playlist_id: String,
@@ -112,14 +113,14 @@ impl From<PlaylistItem> for PlaylistItemDto {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreatePlaylistDto {
     pub name: String,
     pub description: Option<String>,
     pub is_public: Option<bool>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct UpdatePlaylistDto {
     pub name: Option<String>,
     pub description: Option<String>,
@@ -127,17 +128,17 @@ pub struct UpdatePlaylistDto {
     pub cover_file_id: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct AddTracksDto {
     pub file_ids: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ReorderTracksDto {
     pub item_ids: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct SharePlaylistDto {
     pub user_id: String,
     pub can_write: Option<bool>,

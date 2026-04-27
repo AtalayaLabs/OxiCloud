@@ -5,6 +5,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use utoipa::ToSchema;
 
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
@@ -25,7 +26,7 @@ pub struct BatchHandlerState {
 }
 
 /// DTO for batch file operation requests
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct BatchFileOperationRequest {
     /// IDs of the files to process
     pub file_ids: Vec<String>,
@@ -35,7 +36,7 @@ pub struct BatchFileOperationRequest {
 }
 
 /// DTO for batch folder operation requests
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct BatchFolderOperationRequest {
     /// IDs of the folders to process
     pub folder_ids: Vec<String>,
@@ -48,14 +49,14 @@ pub struct BatchFolderOperationRequest {
 }
 
 /// DTO for batch folder creation requests
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct BatchCreateFoldersRequest {
     /// Details of the folders to create
     pub folders: Vec<CreateFolderDetail>,
 }
 
 /// Detail for folder creation
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateFolderDetail {
     /// Folder name
     pub name: String,
@@ -132,6 +133,17 @@ where
 }
 
 /// Handler for moving multiple files in batch
+#[utoipa::path(
+    post,
+    path = "/api/batch/files/move",
+    responses(
+        (status = 200, description = "All files moved"),
+        (status = 206, description = "Partial success"),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized")
+    ),
+    tag = "batch"
+)]
 pub async fn move_files_batch(
     State(state): State<BatchHandlerState>,
     auth_user: AuthUser,
@@ -188,6 +200,17 @@ pub async fn move_files_batch(
 }
 
 /// Handler for copying multiple files in batch
+#[utoipa::path(
+    post,
+    path = "/api/batch/files/copy",
+    responses(
+        (status = 200, description = "All files copied"),
+        (status = 206, description = "Partial success"),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized")
+    ),
+    tag = "batch"
+)]
 pub async fn copy_files_batch(
     State(state): State<BatchHandlerState>,
     auth_user: AuthUser,
@@ -244,6 +267,17 @@ pub async fn copy_files_batch(
 }
 
 /// Handler for deleting multiple files in batch
+#[utoipa::path(
+    post,
+    path = "/api/batch/files/delete",
+    responses(
+        (status = 200, description = "All files deleted"),
+        (status = 206, description = "Partial success"),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized")
+    ),
+    tag = "batch"
+)]
 pub async fn delete_files_batch(
     State(state): State<BatchHandlerState>,
     auth_user: AuthUser,
@@ -308,6 +342,17 @@ pub async fn delete_files_batch(
 }
 
 /// Handler for deleting multiple folders in batch
+#[utoipa::path(
+    post,
+    path = "/api/batch/folders/delete",
+    responses(
+        (status = 200, description = "All folders deleted"),
+        (status = 206, description = "Partial success"),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized")
+    ),
+    tag = "batch"
+)]
 pub async fn delete_folders_batch(
     State(state): State<BatchHandlerState>,
     auth_user: AuthUser,
@@ -372,6 +417,17 @@ pub async fn delete_folders_batch(
 }
 
 /// Handler for creating multiple folders in batch
+#[utoipa::path(
+    post,
+    path = "/api/batch/folders/create",
+    responses(
+        (status = 201, description = "All folders created"),
+        (status = 206, description = "Partial success"),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized")
+    ),
+    tag = "batch"
+)]
 pub async fn create_folders_batch(
     State(state): State<BatchHandlerState>,
     auth_user: AuthUser,
@@ -435,6 +491,17 @@ pub async fn create_folders_batch(
 }
 
 /// Handler for getting multiple files in batch
+#[utoipa::path(
+    post,
+    path = "/api/batch/files/get",
+    responses(
+        (status = 200, description = "Batch file details"),
+        (status = 206, description = "Partial success"),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized")
+    ),
+    tag = "batch"
+)]
 pub async fn get_files_batch(
     State(state): State<BatchHandlerState>,
     auth_user: AuthUser,
@@ -491,6 +558,17 @@ pub async fn get_files_batch(
 }
 
 /// Handler for getting multiple folders in batch
+#[utoipa::path(
+    post,
+    path = "/api/batch/folders/get",
+    responses(
+        (status = 200, description = "Batch folder details"),
+        (status = 206, description = "Partial success"),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized")
+    ),
+    tag = "batch"
+)]
 pub async fn get_folders_batch(
     State(state): State<BatchHandlerState>,
     auth_user: AuthUser,
@@ -547,7 +625,7 @@ pub async fn get_folders_batch(
 }
 
 /// DTO for batch trash operation requests
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct BatchTrashRequest {
     /// IDs of the files to move to trash
     #[serde(default)]
@@ -558,7 +636,7 @@ pub struct BatchTrashRequest {
 }
 
 /// DTO for batch download requests
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct BatchDownloadRequest {
     /// IDs of the files to include in the ZIP
     #[serde(default)]
@@ -569,6 +647,17 @@ pub struct BatchDownloadRequest {
 }
 
 /// Handler for moving multiple files and folders to trash in batch
+#[utoipa::path(
+    post,
+    path = "/api/batch/trash",
+    responses(
+        (status = 200, description = "All items trashed"),
+        (status = 206, description = "Partial success"),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized")
+    ),
+    tag = "batch"
+)]
 pub async fn trash_batch(
     State(state): State<BatchHandlerState>,
     auth_user: AuthUser,
@@ -681,6 +770,17 @@ pub async fn trash_batch(
 }
 
 /// Handler for moving multiple folders in batch
+#[utoipa::path(
+    post,
+    path = "/api/batch/folders/move",
+    responses(
+        (status = 200, description = "All folders moved"),
+        (status = 206, description = "Partial success"),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized")
+    ),
+    tag = "batch"
+)]
 pub async fn move_folders_batch(
     State(state): State<BatchHandlerState>,
     auth_user: AuthUser,
@@ -736,6 +836,17 @@ pub async fn move_folders_batch(
 ///
 /// The ZIP is written to a temporary file and streamed to the client,
 /// so RAM usage is O(buffer_size) regardless of archive size.
+#[utoipa::path(
+    post,
+    path = "/api/batch/download",
+    responses(
+        (status = 200, description = "ZIP archive stream"),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+        (status = 500, description = "ZIP creation failed")
+    ),
+    tag = "batch"
+)]
 pub async fn download_batch(
     State(state): State<BatchHandlerState>,
     auth_user: AuthUser,

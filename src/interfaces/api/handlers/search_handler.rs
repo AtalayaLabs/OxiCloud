@@ -6,7 +6,9 @@ use axum::{
 use serde_json::json;
 use tracing::{error, info};
 
-use crate::application::dtos::search_dto::SearchCriteriaDto;
+use crate::application::dtos::search_dto::{
+    SearchCriteriaDto, SearchResultsDto, SearchSuggestionsDto,
+};
 use crate::application::ports::inbound::SearchUseCase;
 use crate::common::di::AppState;
 use crate::interfaces::middleware::auth::AuthUser;
@@ -22,8 +24,13 @@ use std::sync::Arc;
 pub struct SearchHandler;
 
 impl SearchHandler {
-    /// GET /search — simple query-parameter-based search.
-    pub async fn search_files_get(
+    // ── Why no #[utoipa::path] here? ─────────────────────────────────────────────
+    // utoipa 5.4.0's proc macro generates helper structs / impls inside its expansion.
+    // Rust allows struct definitions at module scope but forbids them inside impl blocks,
+    // so `#[utoipa::path]` fails on every method in this impl block regardless of HTTP
+    // verb or annotation content. All route handlers are free functions below.
+    // TODO: collapse after utoipa upgrade.
+    pub(super) async fn search_files_get_impl(
         State(state): State<Arc<AppState>>,
         auth_user: AuthUser,
         Query(params): Query<SearchParams>,
@@ -81,8 +88,8 @@ impl SearchHandler {
         }
     }
 
-    /// POST /search/advanced — full criteria in the request body.
-    pub async fn search_files_post(
+    /// Advanced search with full criteria in the request body.
+    pub(super) async fn search_files_post_impl(
         State(state): State<Arc<AppState>>,
         auth_user: AuthUser,
         Json(criteria): Json<SearchCriteriaDto>,
@@ -122,8 +129,8 @@ impl SearchHandler {
         }
     }
 
-    /// GET /search/suggest — lightweight autocomplete suggestions.
-    pub async fn suggest_files(
+    /// Autocomplete suggestions for search.
+    pub(super) async fn suggest_files_impl(
         State(state): State<Arc<AppState>>,
         Query(params): Query<SuggestParams>,
     ) -> impl IntoResponse {
@@ -167,7 +174,9 @@ impl SearchHandler {
     }
 
     /// DELETE /search/cache — clears the search results cache.
-    pub async fn clear_search_cache(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    pub(super) async fn clear_search_cache_impl(
+        State(state): State<Arc<AppState>>,
+    ) -> impl IntoResponse {
         info!("API: Clearing search cache");
 
         let search_service = match &state.applications.search_service {
@@ -258,4 +267,96 @@ pub struct SuggestParams {
 
     /// Maximum number of suggestions (default 10, max 20)
     pub limit: Option<usize>,
+}
+
+// ── Route handlers (free functions) ──────────────────────────────────────────
+//
+// All four route functions live here rather than as methods on SearchHandler
+// because utoipa 5.4.0's #[utoipa::path] macro generates helper structs inside
+// its expansion. Rust allows struct definitions at module scope but forbids them
+// inside impl blocks — so every #[utoipa::path] annotation on a SearchHandler
+// method fails to compile regardless of HTTP verb or annotation content.
+//
+// All logic lives in the SearchHandler::*_impl methods above; these thin wrappers
+// exist solely to carry the OpenAPI annotation at a scope where utoipa can
+// generate its helper types.
+//
+// routes.rs calls these free functions directly.
+// TODO: collapse back into the impl block after a utoipa upgrade resolves the issue.
+
+#[utoipa::path(
+    get,
+    path = "/api/search",
+    params(
+        ("query" = Option<String>, Query, description = "Text to search in names"),
+        ("type" = Option<String>, Query, description = "Comma-separated MIME type filter"),
+        ("folder_id" = Option<String>, Query, description = "Restrict search to this folder"),
+        ("recursive" = Option<bool>, Query, description = "Include sub-folders"),
+        ("limit" = Option<u32>, Query, description = "Max results"),
+        ("offset" = Option<u32>, Query, description = "Pagination offset"),
+    ),
+    responses(
+        (status = 200, description = "Search results", body = SearchResultsDto),
+        (status = 503, description = "Search service unavailable"),
+    ),
+    tag = "search"
+)]
+pub async fn search_files_get(
+    state: State<Arc<AppState>>,
+    auth_user: AuthUser,
+    query: Query<SearchParams>,
+) -> impl IntoResponse {
+    SearchHandler::search_files_get_impl(state, auth_user, query).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/search/advanced",
+    request_body(content = SearchCriteriaDto, content_type = "application/json", description = "Search criteria"),
+    responses(
+        (status = 200, description = "Search results", body = SearchResultsDto),
+        (status = 503, description = "Search service unavailable"),
+    ),
+    tag = "search"
+)]
+pub async fn search_files_post(
+    state: State<Arc<AppState>>,
+    auth_user: AuthUser,
+    json: Json<SearchCriteriaDto>,
+) -> impl IntoResponse {
+    SearchHandler::search_files_post_impl(state, auth_user, json).await
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/search/suggest",
+    params(
+        ("query" = String, Query, description = "Partial name to complete"),
+        ("folder_id" = Option<String>, Query, description = "Restrict to this folder"),
+        ("limit" = Option<u32>, Query, description = "Max suggestions (default 10, max 20)"),
+    ),
+    responses(
+        (status = 200, description = "Suggestions", body = SearchSuggestionsDto),
+        (status = 503, description = "Search service unavailable"),
+    ),
+    tag = "search"
+)]
+pub async fn suggest_files(
+    state: State<Arc<AppState>>,
+    query: Query<SuggestParams>,
+) -> impl IntoResponse {
+    SearchHandler::suggest_files_impl(state, query).await
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/search/cache",
+    responses(
+        (status = 200, description = "Cache cleared"),
+        (status = 503, description = "Search service unavailable"),
+    ),
+    tag = "search"
+)]
+pub async fn clear_search_cache(state: State<Arc<AppState>>) -> impl IntoResponse {
+    SearchHandler::clear_search_cache_impl(state).await
 }

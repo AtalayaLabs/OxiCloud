@@ -10,7 +10,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use tokio_util::io::ReaderStream;
 
-use crate::application::dtos::folder_dto::{CreateFolderDto, MoveFolderDto, RenameFolderDto};
+use crate::application::dtos::folder_dto::{
+    CreateFolderDto, FolderDto, MoveFolderDto, RenameFolderDto,
+};
 use crate::application::dtos::folder_listing_dto::FolderListingDto;
 use crate::application::dtos::pagination::PaginationRequestDto;
 use crate::application::ports::file_ports::FileRetrievalUseCase;
@@ -27,10 +29,15 @@ type AppState = Arc<FolderService>;
 pub struct FolderHandler;
 
 impl FolderHandler {
+    // ── Why no #[utoipa::path] here? ─────────────────────────────────────────────
+    // utoipa 5.4.0's proc macro generates helper structs / impls inside its expansion.
+    // Rust allows struct definitions at module scope but forbids them inside impl blocks,
+    // so `#[utoipa::path]` fails on every method in this impl block regardless of HTTP
+    // verb or annotation content. All route handlers are free functions below.
+    // TODO: collapse after utoipa upgrade.
+
     /// Creates a new folder.
-    /// When parent_id is not provided, the folder is created inside the
-    /// authenticated user's home folder rather than at the storage root.
-    pub async fn create_folder(
+    pub(super) async fn create_folder_impl(
         State(service): State<AppState>,
         auth_user: AuthUser,
         Json(mut dto): Json<CreateFolderDto>,
@@ -92,8 +99,7 @@ impl FolderHandler {
     }
 
     /// Gets a folder by ID.
-    /// Validates that the authenticated user owns the folder.
-    pub async fn get_folder(
+    pub(super) async fn get_folder_impl(
         State(service): State<AppState>,
         auth_user: AuthUser,
         Path(id): Path<String>,
@@ -119,17 +125,15 @@ impl FolderHandler {
     }
 
     /// Lists root folders for the authenticated user.
-    /// Only returns folders owned by this user — no information disclosure.
-    pub async fn list_root_folders(
+    pub(super) async fn list_root_folders_impl(
         State(service): State<AppState>,
         auth_user: AuthUser,
     ) -> axum::response::Response {
         Self::list_folders_scoped(service, None, &auth_user).await
     }
 
-    /// Lists contents of a specific folder by its ID.
-    /// Scoped to the authenticated user's folders.
-    pub async fn list_folder_contents(
+    /// Lists sub-folders inside a specific folder.
+    pub(super) async fn list_folder_contents_impl(
         State(service): State<AppState>,
         auth_user: AuthUser,
         Path(id): Path<String>,
@@ -137,8 +141,8 @@ impl FolderHandler {
         Self::list_folders_scoped(service, Some(&id), &auth_user).await
     }
 
-    /// Lists root folders with pagination support.
-    pub async fn list_root_folders_paginated(
+    /// Lists root folders with pagination.
+    pub(super) async fn list_root_folders_paginated_impl(
         State(service): State<AppState>,
         auth_user: AuthUser,
         _pagination: Query<PaginationRequestDto>,
@@ -146,9 +150,8 @@ impl FolderHandler {
         Self::list_folders_scoped(service, None, &auth_user).await
     }
 
-    /// Lists contents of a specific folder with pagination.
-    /// Scoped to the authenticated user — only returns folders owned by this user.
-    pub async fn list_folder_contents_paginated(
+    /// Lists sub-folders inside a folder with pagination.
+    pub(super) async fn list_folder_contents_paginated_impl(
         State(service): State<AppState>,
         auth_user: AuthUser,
         Path(id): Path<String>,
@@ -199,12 +202,8 @@ impl FolderHandler {
         format!("\"{:x}\"", hasher.finish())
     }
 
-    /// Returns both sub-folders and files for a given folder in a single
-    /// response, eliminating the double-fetch the frontend used to make.
-    ///
-    /// Both queries run concurrently via `tokio::join!`.
-    /// Supports `If-None-Match` / ETag for conditional responses (304).
-    pub async fn list_folder_listing(
+    /// Returns sub-folders and files for a folder in one request (ETag-cached).
+    pub(super) async fn list_folder_listing_impl(
         State(state): State<Arc<GlobalAppState>>,
         auth_user: AuthUser,
         headers: HeaderMap,
@@ -246,8 +245,8 @@ impl FolderHandler {
         }
     }
 
-    /// Renames a folder (ownership enforced by service layer)
-    pub async fn rename_folder(
+    /// Renames a folder (ownership enforced).
+    pub(super) async fn rename_folder_impl(
         State(service): State<AppState>,
         auth_user: AuthUser,
         Path(id): Path<String>,
@@ -259,8 +258,8 @@ impl FolderHandler {
         }
     }
 
-    /// Moves a folder to a new parent (ownership enforced by service layer)
-    pub async fn move_folder(
+    /// Moves a folder to a new parent (ownership enforced).
+    pub(super) async fn move_folder_impl(
         State(service): State<AppState>,
         auth_user: AuthUser,
         Path(id): Path<String>,
@@ -284,8 +283,8 @@ impl FolderHandler {
         }
     }
 
-    /// Deletes a folder with trash functionality (ownership enforced by service layer)
-    pub async fn delete_folder_with_trash(
+    /// Deletes a folder (moves to trash if enabled, otherwise permanent).
+    pub(super) async fn delete_folder_with_trash_impl(
         State(state): State<Arc<GlobalAppState>>,
         auth_user: AuthUser,
         Path(id): Path<String>,
@@ -322,8 +321,8 @@ impl FolderHandler {
         }
     }
 
-    /// Downloads a folder as a ZIP file (ownership enforced)
-    pub async fn download_folder_zip(
+    /// Downloads a folder and all its contents as a ZIP archive.
+    pub(super) async fn download_folder_zip_impl(
         State(state): State<Arc<GlobalAppState>>,
         auth_user: AuthUser,
         Path(id): Path<String>,
@@ -426,4 +425,225 @@ impl FolderHandler {
             }
         }
     }
+}
+
+// ── Route handlers (free functions) ──────────────────────────────────────────
+//
+// All annotated route functions live here rather than as methods on FolderHandler
+// because utoipa 5.4.0's #[utoipa::path] macro generates helper structs inside
+// its expansion. Rust allows struct definitions at module scope but forbids them
+// inside impl blocks — so every #[utoipa::path] annotation on a FolderHandler
+// method fails to compile regardless of HTTP verb or annotation content.
+//
+// All logic lives in the FolderHandler::*_impl methods above; these thin wrappers
+// exist solely to carry the OpenAPI annotation at a scope where utoipa can
+// generate its helper types.
+//
+// routes.rs calls these free functions directly.
+// TODO: collapse back into the impl block after a utoipa upgrade resolves the issue.
+
+#[utoipa::path(
+    post,
+    path = "/api/folders",
+    request_body(content = CreateFolderDto, content_type = "application/json", description = "Folder creation payload"),
+    responses(
+        (status = 201, description = "Folder created", body = FolderDto),
+        (status = 400, description = "Invalid request"),
+    ),
+    tag = "folders"
+)]
+pub async fn create_folder(
+    state: State<AppState>,
+    auth_user: AuthUser,
+    json: Json<CreateFolderDto>,
+) -> impl IntoResponse {
+    FolderHandler::create_folder_impl(state, auth_user, json).await
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/folders/{id}",
+    params(("id" = String, Path, description = "Folder ID")),
+    responses(
+        (status = 200, description = "Folder", body = FolderDto),
+        (status = 404, description = "Folder not found"),
+    ),
+    tag = "folders"
+)]
+pub async fn get_folder(
+    state: State<AppState>,
+    auth_user: AuthUser,
+    path: Path<String>,
+) -> impl IntoResponse {
+    FolderHandler::get_folder_impl(state, auth_user, path).await
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/folders",
+    responses(
+        (status = 200, description = "List of root folders", body = Vec<FolderDto>),
+    ),
+    tag = "folders"
+)]
+pub async fn list_root_folders(
+    state: State<AppState>,
+    auth_user: AuthUser,
+) -> axum::response::Response {
+    FolderHandler::list_root_folders_impl(state, auth_user).await
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/folders/{id}/contents",
+    params(("id" = String, Path, description = "Folder ID")),
+    responses(
+        (status = 200, description = "List of sub-folders", body = Vec<FolderDto>),
+        (status = 404, description = "Folder not found"),
+    ),
+    tag = "folders"
+)]
+pub async fn list_folder_contents(
+    state: State<AppState>,
+    auth_user: AuthUser,
+    path: Path<String>,
+) -> axum::response::Response {
+    FolderHandler::list_folder_contents_impl(state, auth_user, path).await
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/folders/paginated",
+    params(PaginationRequestDto),
+    responses(
+        (status = 200, description = "Paginated list of root folders"),
+    ),
+    tag = "folders"
+)]
+pub async fn list_root_folders_paginated(
+    state: State<AppState>,
+    auth_user: AuthUser,
+    pagination: Query<PaginationRequestDto>,
+) -> axum::response::Response {
+    FolderHandler::list_root_folders_paginated_impl(state, auth_user, pagination).await
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/folders/{id}/contents/paginated",
+    params(
+        ("id" = String, Path, description = "Folder ID"),
+        PaginationRequestDto,
+    ),
+    responses(
+        (status = 200, description = "Paginated list of sub-folders"),
+        (status = 404, description = "Folder not found"),
+    ),
+    tag = "folders"
+)]
+pub async fn list_folder_contents_paginated(
+    state: State<AppState>,
+    auth_user: AuthUser,
+    path: Path<String>,
+    pagination: Query<PaginationRequestDto>,
+) -> axum::response::Response {
+    FolderHandler::list_folder_contents_paginated_impl(state, auth_user, path, pagination).await
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/folders/{id}/listing",
+    params(("id" = String, Path, description = "Folder ID")),
+    responses(
+        (status = 200, description = "Folder listing (sub-folders + files)", body = FolderListingDto),
+        (status = 304, description = "Not modified"),
+        (status = 404, description = "Folder not found"),
+    ),
+    tag = "folders"
+)]
+pub async fn list_folder_listing(
+    state: State<Arc<GlobalAppState>>,
+    auth_user: AuthUser,
+    headers: HeaderMap,
+    path: Path<String>,
+) -> axum::response::Response {
+    FolderHandler::list_folder_listing_impl(state, auth_user, headers, path).await
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/folders/{id}/rename",
+    params(("id" = String, Path, description = "Folder ID")),
+    request_body(content = RenameFolderDto, content_type = "application/json", description = "Rename payload"),
+    responses(
+        (status = 200, description = "Renamed folder", body = FolderDto),
+        (status = 404, description = "Folder not found"),
+    ),
+    tag = "folders"
+)]
+pub async fn rename_folder(
+    state: State<AppState>,
+    auth_user: AuthUser,
+    path: Path<String>,
+    json: Json<RenameFolderDto>,
+) -> impl IntoResponse {
+    FolderHandler::rename_folder_impl(state, auth_user, path, json).await
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/folders/{id}/move",
+    params(("id" = String, Path, description = "Folder ID")),
+    request_body(content = MoveFolderDto, content_type = "application/json", description = "Move payload"),
+    responses(
+        (status = 200, description = "Moved folder", body = FolderDto),
+        (status = 404, description = "Folder or destination not found"),
+    ),
+    tag = "folders"
+)]
+pub async fn move_folder(
+    state: State<AppState>,
+    auth_user: AuthUser,
+    path: Path<String>,
+    json: Json<MoveFolderDto>,
+) -> impl IntoResponse {
+    FolderHandler::move_folder_impl(state, auth_user, path, json).await
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/folders/{id}",
+    params(("id" = String, Path, description = "Folder ID")),
+    responses(
+        (status = 204, description = "Folder deleted"),
+        (status = 404, description = "Folder not found"),
+    ),
+    tag = "folders"
+)]
+pub async fn delete_folder_with_trash(
+    state: State<Arc<GlobalAppState>>,
+    auth_user: AuthUser,
+    path: Path<String>,
+) -> impl IntoResponse {
+    FolderHandler::delete_folder_with_trash_impl(state, auth_user, path).await
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/folders/{id}/download",
+    params(("id" = String, Path, description = "Folder ID")),
+    responses(
+        (status = 200, description = "ZIP archive stream (application/zip)"),
+        (status = 404, description = "Folder not found"),
+        (status = 501, description = "ZIP service not available"),
+    ),
+    tag = "folders"
+)]
+pub async fn download_folder_zip(
+    state: State<Arc<GlobalAppState>>,
+    auth_user: AuthUser,
+    path: Path<String>,
+    query: Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    FolderHandler::download_folder_zip_impl(state, auth_user, path, query).await
 }

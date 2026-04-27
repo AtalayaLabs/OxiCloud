@@ -8,6 +8,7 @@ use crate::common::errors::DomainError;
 use bytes::Bytes;
 use serde::Serialize;
 use std::path::PathBuf;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 /// Default chunk size (5 MB) — optimised for parallel transfers.
@@ -17,7 +18,7 @@ pub const DEFAULT_CHUNK_SIZE: usize = 5 * 1024 * 1024;
 pub const CHUNKED_UPLOAD_THRESHOLD: usize = 10 * 1024 * 1024;
 
 /// Response returned when a new upload session is created.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct CreateUploadResponseDto {
     pub upload_id: String,
     pub chunk_size: usize,
@@ -26,7 +27,7 @@ pub struct CreateUploadResponseDto {
 }
 
 /// Response returned after a single chunk is uploaded.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ChunkUploadResponseDto {
     pub chunk_index: usize,
     pub bytes_received: u64,
@@ -35,7 +36,7 @@ pub struct ChunkUploadResponseDto {
 }
 
 /// Response for querying upload session status.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct UploadStatusResponseDto {
     pub upload_id: String,
     pub filename: String,

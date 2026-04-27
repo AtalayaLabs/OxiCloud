@@ -11,6 +11,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use utoipa::ToSchema;
 
+use crate::application::dtos::file_dto::FileDto;
 use crate::application::ports::file_ports::OptimizedFileContent;
 use crate::application::ports::file_ports::{
     FileManagementUseCase, FileRetrievalUseCase, FileUploadUseCase,
@@ -39,6 +40,13 @@ type GlobalState = Arc<AppState>;
 pub struct FileHandler;
 
 impl FileHandler {
+    // ── Why no #[utoipa::path] here? ─────────────────────────────────────────────
+    // utoipa 5.4.0's proc macro generates helper structs / impls inside its expansion.
+    // Rust allows struct definitions at module scope but forbids them inside impl blocks,
+    // so `#[utoipa::path]` fails on every method in this impl block regardless of HTTP
+    // verb or annotation content. All route handlers are free functions below.
+    // TODO: collapse after utoipa upgrade.
+
     // ═══════════════════════════════════════════════════════════════════════
     //  UPLOAD
     // ═══════════════════════════════════════════════════════════════════════
@@ -312,7 +320,7 @@ impl FileHandler {
     /// The DB path is only taken on a **cache miss for images** where the
     /// thumbnail hasn't been generated yet (first access after upload if
     /// background generation hasn't finished).
-    pub async fn get_thumbnail(
+    pub(super) async fn get_thumbnail_impl(
         State(state): State<GlobalState>,
         auth_user: AuthUser,
         headers: HeaderMap,
@@ -462,7 +470,7 @@ impl FileHandler {
     /// subsequent `GET …/thumbnail/{size}` requests are served instantly.
     ///
     /// **Max body: 512 KB** — thumbnails are small.
-    pub async fn upload_thumbnail(
+    pub(super) async fn upload_thumbnail_impl(
         State(state): State<GlobalState>,
         auth_user: AuthUser,
         Path((id, size)): Path<(String, String)>,
@@ -527,7 +535,7 @@ impl FileHandler {
     /// streaming) is fully handled by `FileRetrievalUseCase::get_file_optimized`.
     /// This handler only deals with HTTP concerns: ETag, Range, Content-Disposition,
     /// and optional compression.
-    pub async fn download_file(
+    pub(super) async fn download_file_impl(
         State(state): State<GlobalState>,
         auth_user: AuthUser,
         Path(id): Path<String>,
@@ -694,10 +702,8 @@ impl FileHandler {
     //  LIST
     // ═══════════════════════════════════════════════════════════════════════
 
-    /// Lists files, extracting `folder_id` from query parameters.
-    ///
-    /// Axum-compatible handler wrapper around [`Self::list_files`].
-    pub async fn list_files_query(
+    /// Lists files in a folder.
+    pub(super) async fn list_files_query_impl(
         State(state): State<GlobalState>,
         auth_user: AuthUser,
         headers: HeaderMap,
@@ -745,7 +751,7 @@ impl FileHandler {
     /// Delegates to [`Self::upload_file_inner`] and, on success, spawns
     /// a background task to generate all thumbnail sizes before serialising
     /// the `FileDto` once.
-    pub async fn upload_file_with_thumbnails(
+    pub(super) async fn upload_file_with_thumbnails_impl(
         State(state): State<GlobalState>,
         auth_user: AuthUser,
         multipart: Multipart,
@@ -811,9 +817,7 @@ impl FileHandler {
     // ═══════════════════════════════════════════════════════════════════════
 
     /// Returns EXIF/media metadata for a file.
-    ///
-    /// Used by the Photos lightbox and for testing EXIF extraction.
-    pub async fn get_file_metadata(
+    pub(super) async fn get_file_metadata_impl(
         State(state): State<GlobalState>,
         auth_user: AuthUser,
         Path(file_id): Path<String>,
@@ -859,7 +863,7 @@ impl FileHandler {
     ///
     /// When auth is available, uses trash-first deletion; otherwise falls back
     /// to permanent delete so the endpoint works with or without auth.
-    pub async fn delete_file(
+    pub(super) async fn delete_file_impl(
         State(state): State<GlobalState>,
         auth_user: AuthUser,
         Path(id): Path<String>,
@@ -889,7 +893,7 @@ impl FileHandler {
     // ═══════════════════════════════════════════════════════════════════════
 
     /// Renames a file (ownership-verified)
-    pub async fn rename_file(
+    pub(super) async fn rename_file_impl(
         State(state): State<GlobalState>,
         auth_user: AuthUser,
         Path(id): Path<String>,
@@ -936,8 +940,8 @@ impl FileHandler {
         }
     }
 
-    /// Moves a file to a different folder (simplified payload, ownership-verified)
-    pub async fn move_file_simple(
+    /// Moves a file to a different folder (ownership-verified)
+    pub(super) async fn move_file_simple_impl(
         State(state): State<GlobalState>,
         auth_user: AuthUser,
         Path(id): Path<String>,
@@ -1065,4 +1069,208 @@ impl FileHandler {
 pub struct MoveFilePayload {
     /// Target folder ID (None means root)
     pub folder_id: Option<String>,
+}
+
+// ── Route handlers (free functions) ──────────────────────────────────────────
+//
+// All annotated route functions live here rather than as methods on FileHandler
+// because utoipa 5.4.0's #[utoipa::path] macro generates helper structs inside
+// its expansion. Rust allows struct definitions at module scope but forbids them
+// inside impl blocks — so every #[utoipa::path] annotation on a FileHandler
+// method fails to compile regardless of HTTP verb or annotation content.
+//
+// All logic lives in the FileHandler::*_impl methods above; these thin wrappers
+// exist solely to carry the OpenAPI annotation at a scope where utoipa can
+// generate its helper types.
+//
+// routes.rs calls these free functions directly.
+// TODO: collapse back into the impl block after a utoipa upgrade resolves the issue.
+
+#[utoipa::path(
+    get,
+    path = "/api/files",
+    params(("folder_id" = Option<String>, Query, description = "Filter by folder ID")),
+    responses(
+        (status = 200, description = "List of files", body = Vec<FileDto>),
+        (status = 304, description = "Not modified"),
+    ),
+    tag = "files"
+)]
+pub async fn list_files_query(
+    state: State<GlobalState>,
+    auth_user: AuthUser,
+    headers: HeaderMap,
+    query: Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    FileHandler::list_files_query_impl(state, auth_user, headers, query).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/files/upload",
+    request_body(content_type = "multipart/form-data", description = "File data + optional folder_id field"),
+    responses(
+        (status = 201, description = "File uploaded", body = FileDto),
+        (status = 400, description = "Invalid request"),
+        (status = 507, description = "Storage quota exceeded"),
+    ),
+    tag = "files"
+)]
+pub async fn upload_file_with_thumbnails(
+    state: State<GlobalState>,
+    auth_user: AuthUser,
+    multipart: Multipart,
+) -> impl IntoResponse {
+    FileHandler::upload_file_with_thumbnails_impl(state, auth_user, multipart).await
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/files/{id}",
+    params(
+        ("id" = String, Path, description = "File ID"),
+        ("metadata" = Option<bool>, Query, description = "Return metadata JSON instead of file content"),
+        ("original" = Option<bool>, Query, description = "Skip WebP transcoding"),
+        ("inline" = Option<bool>, Query, description = "Content-Disposition: inline"),
+    ),
+    responses(
+        (status = 200, description = "File content"),
+        (status = 206, description = "Partial content (Range request)"),
+        (status = 304, description = "Not modified"),
+        (status = 404, description = "File not found"),
+    ),
+    tag = "files"
+)]
+pub async fn download_file(
+    state: State<GlobalState>,
+    auth_user: AuthUser,
+    path: Path<String>,
+    query: Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    FileHandler::download_file_impl(state, auth_user, path, query, headers).await
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/files/{id}/thumbnail/{size}",
+    params(
+        ("id" = String, Path, description = "File ID"),
+        ("size" = String, Path, description = "Thumbnail size: icon | preview | large"),
+    ),
+    responses(
+        (status = 200, description = "Thumbnail image (image/jpeg or image/webp)"),
+        (status = 204, description = "No thumbnail available for this file type"),
+        (status = 304, description = "Not modified"),
+        (status = 404, description = "File not found"),
+    ),
+    tag = "files"
+)]
+pub async fn get_thumbnail(
+    state: State<GlobalState>,
+    auth_user: AuthUser,
+    headers: HeaderMap,
+    path: Path<(String, String)>,
+) -> impl IntoResponse {
+    FileHandler::get_thumbnail_impl(state, auth_user, headers, path).await
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/files/{id}/thumbnail/{size}",
+    params(
+        ("id" = String, Path, description = "File ID"),
+        ("size" = String, Path, description = "Thumbnail size: icon | preview | large"),
+    ),
+    request_body(content_type = "application/octet-stream", description = "Raw image bytes (max 512 KB)"),
+    responses(
+        (status = 201, description = "Thumbnail stored"),
+        (status = 400, description = "Invalid image or size too large"),
+        (status = 404, description = "File not found"),
+    ),
+    tag = "files"
+)]
+pub async fn upload_thumbnail(
+    state: State<GlobalState>,
+    auth_user: AuthUser,
+    path: Path<(String, String)>,
+    body: Bytes,
+) -> impl IntoResponse {
+    FileHandler::upload_thumbnail_impl(state, auth_user, path, body).await
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/files/{id}/metadata",
+    params(("id" = String, Path, description = "File ID")),
+    responses(
+        (status = 200, description = "File metadata (EXIF, dimensions, duration, etc.)"),
+        (status = 404, description = "File not found"),
+    ),
+    tag = "files"
+)]
+pub async fn get_file_metadata(
+    state: State<GlobalState>,
+    auth_user: AuthUser,
+    path: Path<String>,
+) -> impl IntoResponse {
+    FileHandler::get_file_metadata_impl(state, auth_user, path).await
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/files/{id}",
+    params(("id" = String, Path, description = "File ID")),
+    responses(
+        (status = 204, description = "File deleted (moved to trash if enabled)"),
+        (status = 404, description = "File not found"),
+    ),
+    tag = "files"
+)]
+pub async fn delete_file(
+    state: State<GlobalState>,
+    auth_user: AuthUser,
+    path: Path<String>,
+) -> impl IntoResponse {
+    FileHandler::delete_file_impl(state, auth_user, path).await
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/files/{id}/rename",
+    params(("id" = String, Path, description = "File ID")),
+    request_body(content_type = "application/json", description = r#"{"name": "new-name.txt"}"#),
+    responses(
+        (status = 200, description = "Renamed file", body = FileDto),
+        (status = 404, description = "File not found"),
+    ),
+    tag = "files"
+)]
+pub async fn rename_file(
+    state: State<GlobalState>,
+    auth_user: AuthUser,
+    path: Path<String>,
+    json: Json<serde_json::Value>,
+) -> impl IntoResponse {
+    FileHandler::rename_file_impl(state, auth_user, path, json).await
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/files/{id}/move",
+    params(("id" = String, Path, description = "File ID")),
+    request_body(content = MoveFilePayload, content_type = "application/json", description = "MoveFilePayload"),
+    responses(
+        (status = 200, description = "Moved file", body = FileDto),
+        (status = 404, description = "File or destination not found"),
+    ),
+    tag = "files"
+)]
+pub async fn move_file_simple(
+    state: State<GlobalState>,
+    auth_user: AuthUser,
+    path: Path<String>,
+    json: Json<serde_json::Value>,
+) -> impl IntoResponse {
+    FileHandler::move_file_simple_impl(state, auth_user, path, json).await
 }

@@ -5,6 +5,7 @@ use axum::{
     response::IntoResponse,
 };
 use serde::Serialize;
+use utoipa::ToSchema;
 use tokio::io::AsyncWriteExt;
 
 use crate::application::ports::dedup_ports::DedupResultDto;
@@ -16,7 +17,7 @@ use std::sync::Arc;
 type GlobalState = Arc<AppState>;
 
 /// Response for hash check endpoint
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct HashCheckResponse {
     /// Whether a blob with this hash already exists
     pub exists: bool,
@@ -31,7 +32,7 @@ pub struct HashCheckResponse {
 }
 
 /// Response for upload with dedup endpoint
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct DedupUploadResponse {
     /// Whether this was a new file or an existing one
     pub is_new: bool,
@@ -46,7 +47,7 @@ pub struct DedupUploadResponse {
 }
 
 /// Response for dedup stats endpoint
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct StatsResponse {
     /// Total number of unique blobs stored
     pub unique_blobs: u64,
@@ -64,22 +65,19 @@ pub struct StatsResponse {
     pub savings_percentage: f64,
 }
 
-/// Handler for deduplication-related endpoints
+/// Handler for deduplication-related endpoints.
 ///
-/// Provides endpoints for:
-/// - Checking if content already exists (by hash)
-/// - Uploading files with automatic deduplication
-/// - Getting deduplication statistics
+/// All route functions are free functions at module scope — see the section
+/// below the impl block for the reason (utoipa 5.4.0 limitation).
 pub struct DedupHandler;
 
 impl DedupHandler {
-    /// Check if the authenticated user already has a file with the given hash.
-    ///
-    /// User-scoped: only reveals whether **this user** owns a file that
-    /// references the blob — never exposes global existence or ref_count.
-    ///
-    /// GET /api/dedup/check/{hash}
-    pub async fn check_hash(
+    // ── Why no #[utoipa::path] here? ─────────────────────────────────────────────
+    // Same utoipa 5.4.0 limitation as ChunkedUploadHandler: the macro generates
+    // helper structs inside its expansion and Rust forbids structs inside impl blocks.
+    // All route handlers are free functions below; they delegate to these *_impl methods.
+    // TODO: collapse back into the impl block after a utoipa upgrade.
+    pub(super) async fn check_hash_impl(
         State(state): State<GlobalState>,
         auth_user: AuthUser,
         Path(hash): Path<String>,
@@ -134,15 +132,7 @@ impl DedupHandler {
         }
     }
 
-    /// Upload content with automatic deduplication (streaming).
-    ///
-    /// Spools the upload to a temp file while computing the BLAKE3 hash
-    /// incrementally (hash-on-write). Memory usage is constant (~512 KB)
-    /// regardless of file size. Then delegates to `store_from_file` with
-    /// the pre-computed hash so the file is never re-read for hashing.
-    ///
-    /// POST /api/dedup/upload
-    pub async fn upload_with_dedup(
+    pub(super) async fn upload_with_dedup_impl(
         State(state): State<GlobalState>,
         _auth_user: AuthUser,
         mut multipart: Multipart,
@@ -291,16 +281,7 @@ impl DedupHandler {
             .into_response()
     }
 
-    /// Get deduplication statistics
-    ///
-    /// GET /api/dedup/stats
-    ///
-    /// Returns comprehensive statistics about the deduplication system including:
-    /// - Number of unique blobs
-    /// - Total references
-    /// - Bytes saved
-    /// - Deduplication ratio
-    pub async fn get_stats(
+    pub(super) async fn get_stats_impl(
         State(state): State<GlobalState>,
         auth_user: AuthUser,
     ) -> impl IntoResponse {
@@ -342,14 +323,7 @@ impl DedupHandler {
             .into_response()
     }
 
-    /// Retrieve content by hash (user-scoped).
-    ///
-    /// GET /api/dedup/blob/{hash}
-    ///
-    /// Returns the raw content of a blob **only if** the authenticated user
-    /// owns at least one file that references it. Returns 404 otherwise
-    /// (does not reveal whether the blob exists globally).
-    pub async fn get_blob(
+    pub(super) async fn get_blob_impl(
         State(state): State<GlobalState>,
         auth_user: AuthUser,
         Path(hash): Path<String>,
@@ -417,13 +391,7 @@ impl DedupHandler {
         }
     }
 
-    /// Force recalculation of statistics from disk
-    ///
-    /// POST /api/dedup/recalculate
-    ///
-    /// Verifies integrity and returns current statistics.
-    /// Useful for health checks and auditing.
-    pub async fn recalculate_stats(
+    pub(super) async fn recalculate_stats_impl(
         State(state): State<GlobalState>,
         auth_user: AuthUser,
     ) -> impl IntoResponse {
@@ -483,6 +451,115 @@ impl DedupHandler {
             .unwrap()
             .into_response()
     }
+}
+
+// ── Route handlers (free functions) ──────────────────────────────────────────
+//
+// Same utoipa 5.4.0 limitation as ChunkedUploadHandler: #[utoipa::path] cannot
+// be applied to methods on DedupHandler because the macro generates helper structs
+// that Rust forbids inside impl blocks. All logic lives in the DedupHandler::*_impl
+// methods above; these thin wrappers carry the OpenAPI annotation at module scope.
+//
+// routes.rs calls these free functions directly instead of DedupHandler::method.
+// TODO: collapse back into the impl block after a utoipa upgrade resolves the issue.
+
+#[utoipa::path(
+    get,
+    path = "/api/dedup/check/{hash}",
+    params(
+        ("hash" = String, Path, description = "SHA-256 hash (64 hex characters)"),
+    ),
+    responses(
+        (status = 200, description = "Hash check result (user-scoped)", body = HashCheckResponse),
+        (status = 400, description = "Invalid hash format"),
+    ),
+    tag = "dedup",
+    security(("bearerAuth" = []))
+)]
+pub async fn check_hash(
+    state: State<GlobalState>,
+    auth_user: AuthUser,
+    path: Path<String>,
+) -> impl IntoResponse {
+    DedupHandler::check_hash_impl(state, auth_user, path).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/dedup/upload",
+    request_body(content_type = "multipart/form-data", description = "Multipart form with a 'file' field"),
+    responses(
+        (status = 201, description = "New blob stored", body = DedupUploadResponse),
+        (status = 200, description = "Blob already existed (dedup hit)", body = DedupUploadResponse),
+        (status = 400, description = "No file field or empty file"),
+        (status = 500, description = "Upload failed"),
+    ),
+    tag = "dedup",
+    security(("bearerAuth" = []))
+)]
+pub async fn upload_with_dedup(
+    state: State<GlobalState>,
+    auth_user: AuthUser,
+    multipart: Multipart,
+) -> impl IntoResponse {
+    DedupHandler::upload_with_dedup_impl(state, auth_user, multipart).await
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/dedup/stats",
+    responses(
+        (status = 200, description = "Deduplication statistics", body = StatsResponse),
+        (status = 403, description = "Admin role required"),
+    ),
+    tag = "dedup",
+    security(("bearerAuth" = []))
+)]
+pub async fn get_stats(
+    state: State<GlobalState>,
+    auth_user: AuthUser,
+) -> impl IntoResponse {
+    DedupHandler::get_stats_impl(state, auth_user).await
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/dedup/blob/{hash}",
+    params(
+        ("hash" = String, Path, description = "SHA-256 hash of the blob (64 hex characters)"),
+    ),
+    responses(
+        (status = 200, description = "Raw blob content (user-scoped)"),
+        (status = 400, description = "Invalid hash format"),
+        (status = 404, description = "Blob not found or not owned by this user"),
+    ),
+    tag = "dedup",
+    security(("bearerAuth" = []))
+)]
+pub async fn get_blob(
+    state: State<GlobalState>,
+    auth_user: AuthUser,
+    path: Path<String>,
+) -> impl IntoResponse {
+    DedupHandler::get_blob_impl(state, auth_user, path).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/dedup/recalculate",
+    responses(
+        (status = 200, description = "Statistics after integrity verification", body = StatsResponse),
+        (status = 403, description = "Admin role required"),
+        (status = 500, description = "Integrity verification failed"),
+    ),
+    tag = "dedup",
+    security(("bearerAuth" = []))
+)]
+pub async fn recalculate_stats(
+    state: State<GlobalState>,
+    auth_user: AuthUser,
+) -> impl IntoResponse {
+    DedupHandler::recalculate_stats_impl(state, auth_user).await
 }
 
 #[cfg(test)]
