@@ -263,7 +263,8 @@ impl AppServiceFactory {
                 blob_backend,
                 db_pool.clone(),
                 maintenance_pool.clone(),
-            ),
+            )
+            .with_thumbnail_service(thumbnail_service.clone()),
         );
         dedup_service.initialize().await?;
 
@@ -979,6 +980,44 @@ pub struct CoreServices {
     pub dedup_service: Arc<DedupService>,
     pub zip_service: Option<Arc<ZipService>>,
     pub config: AppConfig,
+}
+
+impl CoreServices {
+    /// Invalidate a file's moka thumbnail cache and kick off background regeneration.
+    ///
+    /// Call this after any write that swaps the blob for an existing file.
+    /// Safe to call for new files too (no-op on empty cache).
+    /// Skips everything if the MIME type is not a supported image.
+    pub async fn refresh_thumbnails_after_update(
+        &self,
+        file_id: String,
+        blob_hash: String,
+        content_type: &str,
+    ) {
+        if !ThumbnailService::is_supported_image(content_type) {
+            return;
+        }
+        if let Err(e) = self.thumbnail_service.delete_thumbnails(&file_id).await {
+            tracing::warn!("Failed to invalidate thumbnail cache for {}: {}", file_id, e);
+        }
+        let ts = self.thumbnail_service.clone();
+        let ds = self.dedup_service.clone();
+        let hash = blob_hash.clone();
+        tokio::spawn(async move {
+            match ds.read_blob_bytes(&hash).await {
+                Ok(bytes) => {
+                    ts.generate_all_sizes_background_from_bytes(file_id, hash, bytes);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to read blob for thumbnail regeneration {}: {}",
+                        file_id,
+                        e
+                    );
+                }
+            }
+        });
+    }
 }
 
 /// Container for repository services

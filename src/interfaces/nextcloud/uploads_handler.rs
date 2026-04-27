@@ -163,6 +163,13 @@ async fn handle_assemble(
             )
             .await
             .map_err(|e| AppError::internal_error(format!("Failed to update file: {}", e)))?;
+
+        state.core.refresh_thumbnails_after_update(
+            dto.id.clone(),
+            dto.etag.clone(),
+            &content_type,
+        ).await;
+
         Some(dto.etag)
     } else {
         // For new files we still need to read the temp file since create_file takes &[u8].
