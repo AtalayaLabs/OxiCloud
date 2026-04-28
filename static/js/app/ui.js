@@ -16,6 +16,7 @@ import { wopiEditor } from '../features/files/wopiEditor.js';
 import { favorites } from '../features/library/favorites.js';
 import { recent } from '../features/library/recent.js';
 import { fileSharing } from '../features/sharing/fileSharing.js';
+import { thumbnail } from '../features/thumbnail.js';
 import { sharedView } from '../views/shared/sharedView.js';
 import { loadFiles } from './filesView.js';
 import { updateHistory } from './main.js';
@@ -1287,6 +1288,7 @@ const ui = {
         const formattedDate = formatDateTime(file.modified_at);
         const isFav = favorites?.isFavorite(file.id, 'file');
         const isShared = sharedView.isShared(file.id, 'file');
+        const canThumbnail = thumbnail.canHandle(iconSpecialClass);
 
         const el = document.createElement('div');
         el.className = 'file-item';
@@ -1300,7 +1302,7 @@ const ui = {
             <div class="checkbox-cell"><input type="checkbox" class="item-checkbox"></div>
             <div class="name-cell">
                 <div class="file-icon ${iconSpecialClass}">
-                    ${iconSpecialClass === 'image-icon' ? `<img class="file-thumb" src="/api/files/${file.id}/thumbnail/icon" loading="lazy" alt="">` : ''}
+                    ${canThumbnail ? `<img class="file-thumb" src="/api/files/${file.id}/thumbnail/icon" loading="lazy" alt="">` : ''}
                     <i class="${iconClass}"></i>
                 </div>
                 <span>${escapeHtml(file.name)}</span>
@@ -1317,11 +1319,17 @@ const ui = {
                 <button class="file-actions"><i class="fas fa-ellipsis-v"></i></button>
             </div>
         `;
-        var thumb = el.querySelector('.file-thumb');
-        if (thumb)
-            thumb.addEventListener('error', function () {
-                this.style.display = 'none';
+        var thumb = /** @type {HTMLImageElement} */ (el.querySelector('.file-thumb'));
+        if (thumb) {
+            thumb.addEventListener('error', () => {
+                console.log(`thumbnail not found for "${file.name}", try to generate it...`);
+                thumb.classList.add('hidden');
+                thumbnail.generate(file, (dataUrl) => {
+                    thumb.src = dataUrl;
+                    thumb.classList.remove('hidden');
+                });
             });
+        }
         this._bindStarClick(el);
         return el;
     },

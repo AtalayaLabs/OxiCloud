@@ -425,4 +425,7 @@
     --color-music-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     --color-music-background: var(--color-bg-surface);
     --color-music-public-bg: rgba(74, 144, 217, 0.12);
+
+    --color-video-play: white;
+    --color-video-play-shadow: black;
 }

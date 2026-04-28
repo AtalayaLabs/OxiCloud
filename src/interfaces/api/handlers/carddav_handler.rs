@@ -150,7 +150,6 @@ fn strip_username_prefix(path: &str) -> &str {
     }
 }
 
-
 // ─── Helper: extract user from request ───────────────────────────────
 
 fn extract_user(req: &Request<Body>) -> Result<AuthUser, AppError> {
