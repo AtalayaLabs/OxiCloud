@@ -6,6 +6,10 @@ var errorTitle = document.getElementById('error-title');
 var errorMessage = document.getElementById('error-message');
 var errorAction = document.getElementById('error-action');
 
+if (!errorTitle || !errorMessage || !errorAction) {
+    throw new Error('missing html elements');
+}
+
 switch (errorType) {
     case 'invalid-credentials':
         errorTitle.textContent = 'Login Failed';

@@ -9,23 +9,9 @@ import { app } from './state.js';
 import { ui } from './ui.js';
 import { uiNotifications } from './uiNotifications.js';
 
-let isLoadingFiles = false;
+/** @import {FileInfo, FolderInfo} from '../core/types.js' */
 
-// TODO move to features/files/fileOperations.js ?
-/**
- * @typedef {Object} FolderInfo
- * @property {string} category
- * @property {number} created_at - timestamp
- * @property {string} icon_class
- * @property {string} icon_special_class
- * @property {string} id the uniq id of the folder
- * @property {boolean} is_root
- * @property {number} modified_at
- * @property {string} name
- * @property {string} owner_id
- * @property {string|null} parent_id the folder parent (null if is_root)
- * @property {string} path the full path
- */
+let isLoadingFiles = false;
 
 /**
  * getFolder information
@@ -99,7 +85,7 @@ async function rebuildBreadCrumb() {
             uiNotifications.show('error: folder not found or permission denied', 'the given folder is not available or you do not have sufficient rights');
             app.breadcrumbPath = [];
             id = app.userHomeFolderId;
-            app.currentPath = id;
+            if (id) app.currentPath = id;
         }
     }
 
@@ -114,6 +100,7 @@ async function rebuildBreadCrumb() {
  * @param {Object} options
  * @param {boolean} [options.insertHistory] add browser history (default true)
  * @param {boolean} [options.forceRefresh] force refresh of content
+ *
  */
 async function loadFiles(options = { insertHistory: true }) {
     try {
@@ -185,7 +172,7 @@ async function loadFiles(options = { insertHistory: true }) {
 
         if (forceRefresh) {
             url += `&force_refresh=true`;
-            requestOptions.headers['X-Force-Refresh'] = 'true';
+            if (requestOptions.headers) requestOptions.headers['X-Force-Refresh'] = 'true';
             console.log('Forcing complete refresh ignoring cache');
         }
 
@@ -215,7 +202,10 @@ async function loadFiles(options = { insertHistory: true }) {
             multiSelect.init(); // this will wire buttons & select-all-checkbox
         }
 
+        /** @type {FolderInfo[]} */
         const folderList = Array.isArray(listing.folders) ? listing.folders : [];
+
+        /** @type {FileInfo[]} */
         const fileList = Array.isArray(listing.files) ? listing.files : [];
 
         if (folderList.length === 0 && fileList.length === 0) {

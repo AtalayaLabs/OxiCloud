@@ -450,7 +450,7 @@ function replaceIconsInElement(container) {
     if (!container) container = document.body;
     const icons = container.querySelectorAll('i[class*="fa-"]');
     for (let i = 0; i < icons.length; i++) {
-        const el = icons[i];
+        const el = /** @type {HTMLElement} */ (icons[i]);
         const classes = el.className.split(/\s+/);
 
         // Find the icon name (fa-xxx)

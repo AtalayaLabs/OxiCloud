@@ -31,7 +31,7 @@ import { ui } from './ui.js';
 import { setupUserMenu } from './userMenu.js';
 
 // Upload dropdown listener state (prevents accumulated listeners)
-/** @type { function | null } */
+/** @type {((e: MouseEvent) => void) | null} */
 let uploadDropdownDocumentClickHandler = null;
 
 /** @type { AbortController | null } */
@@ -178,7 +178,7 @@ function setupActionsBarDelegation() {
     actionsBarDelegationBound = true;
 
     elements.actionsBar.addEventListener('click', async (e) => {
-        const btn = e.target.closest('button');
+        const btn = /** @type {HTMLElement} */ (e.target)?.closest('button');
         if (!btn) return;
 
         switch (btn.id) {
@@ -321,7 +321,7 @@ function switchSectionTo(section) {
         // no change ...
         return;
 
-    if ((!section) in SECTIONS_MAPPER) {
+    if (!(section in SECTIONS_MAPPER)) {
         console.warn(`context view ${section} unkonwn fallback to files section`);
         section = 'files';
     }
@@ -420,7 +420,7 @@ function initApp() {
 function cacheElements() {
     elements.uploadBtn = document.getElementById('upload-btn');
     elements.dropzone = document.getElementById('dropzone');
-    elements.fileInput = document.getElementById('file-input');
+    elements.fileInput = /** @type {HTMLInputElement} */ (document.getElementById('file-input'));
     elements.filesList = document.getElementById('files-list');
     elements.newFolderBtn = document.getElementById('new-folder-btn');
     elements.gridViewBtn = document.getElementById('grid-view-btn');
@@ -472,7 +472,7 @@ function setupUploadDropdown() {
         document.removeEventListener('click', uploadDropdownDocumentClickHandler);
     }
     uploadDropdownDocumentClickHandler = (e) => {
-        if (e.target.closest('#upload-dropdown')) return;
+        if (/** @type {HTMLElement} */ (e.target)?.closest('#upload-dropdown')) return;
         document.querySelectorAll('.upload-dropdown-menu').forEach((m) => {
             m.classList.add('hidden');
         });
@@ -511,11 +511,11 @@ function setupEventListeners() {
     });
 
     // Search input — Enter key
-    elements.searchInput.addEventListener('keydown', (e) => {
+    elements.searchInput?.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
             // Cancel any pending debounce
             if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
-            const query = elements.searchInput.value.trim();
+            const query = elements.searchInput?.value.trim();
 
             // In shared section, filter locally
             if (app.currentSection === 'shared' && sharedView) {
@@ -529,16 +529,17 @@ function setupEventListeners() {
                 // If search is empty and we're in search mode, return to normal view
                 app.isSearchMode = false;
                 app.currentPath = '';
-                ui.updateBreadcrumb('');
+                ui.updateBreadcrumb();
                 loadFiles();
             }
         }
     });
 
     // Search input — Live search (debounced, after 3+ chars)
-    elements.searchInput.addEventListener('input', () => {
+    elements.searchInput?.addEventListener('input', () => {
         if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
-        const query = elements.searchInput.value.trim();
+        const query = elements.searchInput?.value.trim();
+        if (!query) return;
 
         if (query.length >= SEARCH_MIN_CHARS) {
             searchDebounceTimer = setTimeout(() => {
@@ -549,16 +550,16 @@ function setupEventListeners() {
             searchDebounceTimer = setTimeout(() => {
                 app.isSearchMode = false;
                 app.currentPath = '';
-                ui.updateBreadcrumb('');
+                ui.updateBreadcrumb();
                 loadFiles();
             }, SEARCH_DEBOUNCE_MS);
         }
     });
 
     // Search button
-    document.getElementById('search-button').addEventListener('click', () => {
+    document.getElementById('search-button')?.addEventListener('click', () => {
         if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
-        const query = elements.searchInput.value.trim();
+        const query = elements.searchInput?.value.trim();
         if (query) {
             performSearch(query);
         }
@@ -572,10 +573,13 @@ function setupEventListeners() {
     }
 
     // File input
-    elements.fileInput.addEventListener('change', (e) => {
-        if (e.target.files.length > 0) {
-            fileOps.uploadFiles(e.target.files);
-            e.target.value = ''; // reset so same file can be re-uploaded
+    elements.fileInput?.addEventListener('change', (e) => {
+        const target = /** @type {HTMLInputElement} */ (e.target);
+        if (!target) return;
+        if (!target.files) return;
+        if (target.files.length > 0) {
+            fileOps.uploadFiles(target.files);
+            target.value = ''; // reset so same file can be re-uploaded
         }
     });
 
@@ -583,18 +587,21 @@ function setupEventListeners() {
     const folderInput = document.getElementById('folder-input');
     if (folderInput) {
         folderInput.addEventListener('change', (e) => {
-            if (e.target.files.length > 0) {
-                fileOps.uploadFolderFiles(e.target.files);
-                e.target.value = '';
+            const target = /** @type {HTMLInputElement} */ (e.target);
+            if (!target) return;
+            if (!target.files) return;
+            if (target.files.length > 0) {
+                fileOps.uploadFolderFiles(target.files);
+                target.value = '';
             }
         });
     }
 
     // Sidebar navigation
-    elements.navItems.forEach((item) => {
+    elements.navItems?.forEach((item) => {
         item.addEventListener('click', () => {
             // Remove active class from all nav items
-            elements.navItems.forEach((navItem) => {
+            elements.navItems?.forEach((navItem) => {
                 navItem.classList.remove('active');
             });
 
@@ -602,7 +609,7 @@ function setupEventListeners() {
             item.classList.add('active');
             let _updateHistory = true;
 
-            const itemI18nKey = item.querySelector('span').getAttribute('data-i18n');
+            const itemI18nKey = item.querySelector('span')?.getAttribute('data-i18n');
 
             switch (itemI18nKey) {
                 case 'nav.shared':
@@ -661,12 +668,13 @@ function setupEventListeners() {
     // Global events to close context menus and deselect cards
     document.addEventListener('click', (e) => {
         const folderMenu = document.getElementById('folder-context-menu');
-        if (folderMenu && !folderMenu.classList.contains('hidden') && !folderMenu.contains(e.target)) {
+        const target = /** @type {HTMLElement} */ (e.target);
+        if (folderMenu && !folderMenu.classList.contains('hidden') && !folderMenu.contains(target)) {
             ui.closeContextMenu();
         }
 
         const fileMenu = document.getElementById('file-context-menu');
-        if (fileMenu && !fileMenu.classList.contains('hidden') && !fileMenu.contains(e.target)) {
+        if (fileMenu && !fileMenu.classList.contains('hidden') && !fileMenu.contains(target)) {
             ui.closeFileContextMenu();
         }
     });
@@ -714,8 +722,8 @@ function updateStorageUsageDisplay(userData) {
     const quotaFormatted = formatQuotaSize(quotaBytes);
 
     // Update the storage display elements
-    const storageFill = document.querySelector('.storage-fill');
-    const storageInfo = document.querySelector('.storage-info');
+    const storageFill = /** @type {HTMLDivElement} */ (document.querySelector('.storage-fill'));
+    const storageInfo = /** @type {HTMLDivElement} */ (document.querySelector('.storage-info'));
 
     if (storageFill) {
         storageFill.style.width = `${usagePercentage}%`;

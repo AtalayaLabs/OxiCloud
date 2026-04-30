@@ -271,7 +271,7 @@ const fileOps = {
 
     /**
      * Upload files to the server with real-time progress indication
-     * @param {FileList} files - Files to upload
+     * @param {FileList | File[]} files - Files to upload
      */
     async uploadFiles(files) {
         const originalFiles = Array.from(files || []);

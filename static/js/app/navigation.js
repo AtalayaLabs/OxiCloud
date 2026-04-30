@@ -27,14 +27,14 @@ function syncViewContainers() {
 
     const isGrid = app.currentView === 'grid';
     if (isGrid) {
-        filesList.classList.remove('files-list-view');
-        filesList.classList.add('files-grid-view');
+        filesList?.classList.remove('files-list-view');
+        filesList?.classList.add('files-grid-view');
 
         gridViewBtn?.classList.add('active');
         listViewBtn?.classList.remove('active');
     } else {
-        filesList.classList.add('files-list-view');
-        filesList.classList.remove('files-grid-view');
+        filesList?.classList.add('files-list-view');
+        filesList?.classList.remove('files-grid-view');
 
         gridViewBtn?.classList.remove('active');
         listViewBtn?.classList.add('active');
@@ -47,7 +47,7 @@ function syncViewContainers() {
  */
 function toggleFileContainer(show) {
     const filesList = document.getElementById('files-list');
-    filesList.classList.toggle('hidden', !show);
+    filesList?.classList.toggle('hidden', !show);
 }
 
 /**
@@ -61,19 +61,19 @@ function initSidebarToggle() {
     if (!sidebarToggle || !sidebar || !sidebarOverlay) return;
 
     function openSidebar() {
-        sidebar.classList.add('open');
-        sidebarOverlay.classList.add('active');
+        sidebar?.classList.add('open');
+        sidebarOverlay?.classList.add('active');
         document.body.style.overflow = 'hidden';
     }
 
     function closeSidebar() {
-        sidebar.classList.remove('open');
-        sidebarOverlay.classList.remove('active');
+        sidebar?.classList.remove('open');
+        sidebarOverlay?.classList.remove('active');
         document.body.style.overflow = '';
     }
 
     function toggleSidebar() {
-        if (sidebar.classList.contains('open')) {
+        if (sidebar?.classList.contains('open')) {
             closeSidebar();
         } else {
             openSidebar();
@@ -118,6 +118,7 @@ function getSectionFromNavItem(navItem) {
 }
 
 // Mapping section name to associated switch functions
+/** @type {Record<String, Function>} */
 export const SECTIONS_MAPPER = {
     files: switchToFilesSection,
     shared: switchToSharedSection,
@@ -144,7 +145,7 @@ function setCurrentSection(section) {
     app.currentSection = section;
 
     // Update nav item active classes by finding matching item from DOM
-    appElements.navItems.forEach((item) => {
+    appElements.navItems?.forEach((item) => {
         const itemSection = getSectionFromNavItem(item);
         item.classList.toggle('active', itemSection === section);
     });
@@ -152,8 +153,10 @@ function setCurrentSection(section) {
     // Update page title
     const titleKey = `nav.${section}`;
     // TODO check why no more used: const defaultTitle = section.charAt(0).toUpperCase() + section.slice(1);
-    appElements.pageTitle.textContent = i18n.t(titleKey);
-    appElements.pageTitle.setAttribute('data-i18n', titleKey);
+    if (appElements.pageTitle) {
+        appElements.pageTitle.textContent = i18n.t(titleKey);
+        appElements.pageTitle.setAttribute('data-i18n', titleKey);
+    }
 
     // Hide sharedView when switching to any other section
     if (section !== 'shared' && sharedView) {

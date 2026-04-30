@@ -3,11 +3,21 @@
  * Centralized global helpers for date/size/text formatting and XSS-safe escaping.
  */
 
+/**
+ *
+ * @param {string} str
+ * @returns {string}
+ */
 function escapeHtml(str) {
     if (typeof str !== 'string') return '';
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }
 
+/**
+ *
+ * @param {number} bytes
+ * @returns {string}
+ */
 function formatFileSize(bytes) {
     if (bytes === 0) return '0 Bytes';
 
@@ -19,11 +29,21 @@ function formatFileSize(bytes) {
 }
 
 /// Formats a byte count for quota display. When bytes is 0, returns "∞" (unlimited).
+/**
+ *
+ * @param {number} bytes
+ * @returns {string}
+ */
 function formatQuotaSize(bytes) {
     if (bytes === 0) return '∞';
     return formatFileSize(bytes);
 }
 
+/**
+ *
+ * @param {Date | number| null} value
+ * @returns {string}
+ */
 function formatDateTime(value) {
     if (!value) return '';
     let dateValue;
@@ -38,6 +58,11 @@ function formatDateTime(value) {
     return `${dateValue.toLocaleDateString()} ${dateValue.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
 }
 
+/**
+ *
+ * @param {Date | number| null} value
+ * @returns {string}
+ */
 function formatDateShort(value) {
     if (!value) return 'N/A';
     const dateValue = typeof value === 'number' ? new Date(value * 1000) : new Date(value);
@@ -49,20 +74,27 @@ function formatDateShort(value) {
     });
 }
 
+const TEXT_TYPES = [
+    'application/json',
+    'application/xml',
+    'application/javascript',
+    'application/x-sh',
+    'application/x-yaml',
+    'application/toml',
+    'application/x-toml',
+    'application/sql'
+];
+// FIXME: move is to another file
+/**
+ *
+ * @param {string} mimeType
+ * @returns {boolean}
+ */
 function isTextViewable(mimeType) {
     if (!mimeType) return false;
     if (mimeType.startsWith('text/')) return true;
-    const textTypes = [
-        'application/json',
-        'application/xml',
-        'application/javascript',
-        'application/x-sh',
-        'application/x-yaml',
-        'application/toml',
-        'application/x-toml',
-        'application/sql'
-    ];
-    return textTypes.includes(mimeType);
+
+    return TEXT_TYPES.includes(mimeType);
 }
 
 export { escapeHtml, formatDateShort, formatDateTime, formatFileSize, formatQuotaSize, isTextViewable };

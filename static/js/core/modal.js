@@ -53,9 +53,9 @@ const Modal = {
         this.closeBtn = document.getElementById('modal-close-btn');
 
         // Event listeners
-        this.cancelBtn.addEventListener('click', () => this.close(false));
-        this.closeBtn.addEventListener('click', () => this.close(false));
-        this.confirmBtn.addEventListener('click', () => this.confirm());
+        this.cancelBtn?.addEventListener('click', () => this.close(false));
+        this.closeBtn?.addEventListener('click', () => this.close(false));
+        this.confirmBtn?.addEventListener('click', () => this.confirm());
 
         // Close on overlay click
         this.overlay.addEventListener('click', (e) => {
@@ -65,7 +65,7 @@ const Modal = {
         });
 
         // Handle Enter and Escape keys
-        this.input.addEventListener('keydown', (e) => {
+        this.input?.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
                 e.preventDefault();
                 this.confirm();

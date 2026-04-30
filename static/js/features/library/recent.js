@@ -109,7 +109,7 @@ const recent = {
                 multiSelect.clear();
                 multiSelect.init(); // this will wire buttons & select-all-checkbox
             }
-            ui.updateBreadcrumb('');
+            ui.updateBreadcrumb();
 
             if (recentItems.length === 0) {
                 ui.showError(`

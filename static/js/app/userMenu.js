@@ -49,7 +49,7 @@ function setupUserMenu() {
     });
 
     document.addEventListener('click', (e) => {
-        if (wrapper.classList.contains('open') && !wrapper.contains(e.target)) {
+        if (wrapper.classList.contains('open') && !wrapper.contains(/** @type {Node|null} */ (e.target))) {
             wrapper.classList.remove('open');
         }
     });
@@ -137,7 +137,7 @@ function setupUserMenu() {
     const aboutOverlay = document.getElementById('about-modal-overlay');
     if (aboutCloseBtn) {
         aboutCloseBtn.addEventListener('click', () => {
-            aboutOverlay.classList.add('hidden');
+            aboutOverlay?.classList.add('hidden');
         });
     }
     if (aboutOverlay) {
@@ -242,7 +242,7 @@ function showUserProfileModal() {
     `;
 
     // Set dynamic bar width and color via JS property (CSP-safe)
-    const barFill = overlay.querySelector('#about-bar-fill');
+    const barFill = /** @type {HTMLDivElement} */ (overlay.querySelector('#about-bar-fill'));
     if (barFill) {
         barFill.style.width = `${percentage}%`;
         barFill.style.background = barColor;
@@ -251,7 +251,7 @@ function showUserProfileModal() {
     document.body.appendChild(overlay);
     requestAnimationFrame(() => overlay.classList.add('show'));
 
-    overlay.querySelector('#profile-modal-close').addEventListener('click', () => {
+    overlay.querySelector('#profile-modal-close')?.addEventListener('click', () => {
         overlay.classList.remove('show');
         setTimeout(() => overlay.remove(), 200);
     });

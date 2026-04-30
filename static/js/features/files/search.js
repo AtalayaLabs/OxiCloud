@@ -146,14 +146,14 @@ const search = {
         if (previousSearchHeader) {
             previousSearchHeader.replaceWith(searchHeader);
         } else {
-            pageStickyHeader.appendChild(searchHeader);
+            pageStickyHeader?.appendChild(searchHeader);
         }
 
         // Sort dropdown — re-searches with new sort order (server-side)
-        const sortSelect = document.getElementById('search-sort-select');
+        const sortSelect = /** @type {HTMLSelectElement} */ (document.getElementById('search-sort-select'));
         if (sortSelect) {
             sortSelect.addEventListener('change', () => {
-                const searchInput = document.querySelector('.search-container input');
+                const searchInput = /** @type {HTMLInputElement} */ (document.querySelector('.search-container input'));
                 if (searchInput?.value.trim()) {
                     const event = new CustomEvent('search-resort', {
                         detail: { sort_by: sortSelect.value }
@@ -167,11 +167,12 @@ const search = {
         const clearSearchBtn = document.getElementById('clear-search-btn');
         if (clearSearchBtn) {
             clearSearchBtn.addEventListener('click', () => {
-                document.querySelector('.search-container input').value = '';
+                const searchInput = /** @type {HTMLInputElement} */ (document.querySelector('.search-container input'));
+                searchInput.value = '';
                 app.currentPath = '';
                 app.isSearchMode = false;
                 document.querySelector('.search-results-header')?.remove();
-                ui.updateBreadcrumb('');
+                ui.updateBreadcrumb();
                 loadFiles();
             });
         }

@@ -6,6 +6,12 @@
 import { notifications } from '../core/notifications.js';
 
 const uiNotifications = {
+    /**
+     *
+     * @param {string} title
+     * @param {string} message
+     * @returns
+     */
     show(title, message) {
         const normalizedTitle = String(title || '').toLowerCase();
         let icon = 'fa-info-circle';
