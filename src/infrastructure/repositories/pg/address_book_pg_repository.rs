@@ -26,7 +26,7 @@ impl AddressBookRepository for AddressBookPgRepository {
         let row = sqlx::query(
             r#"
             INSERT INTO carddav.address_books (id, name, owner_id, description, color, is_public, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            VALUES ($1, $2, $3::uuid, $4, $5, $6, $7, $8)
             RETURNING id, name, owner_id, description, color, is_public, created_at, updated_at
             "#
         )

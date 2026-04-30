@@ -228,8 +228,10 @@ async fn handle_propfind(
         .map_err(|e| AppError::bad_request(format!("Failed to parse PROPFIND: {}", e)))?
     };
 
-    if path.is_empty() {
-        // Root CardDAV path — list user's address books
+    let effective_path = strip_username_prefix(path);
+
+    if effective_path.is_empty() {
+        // Root CardDAV path or user home — list user's address books
         let address_books = addressbook_service
             .list_user_address_books(user.id)
             .await
@@ -237,13 +239,18 @@ async fn handle_propfind(
                 AppError::internal_error(format!("Failed to list address books: {}", e))
             })?;
 
-        let base_href = "/carddav/";
+        let base_href = if path.is_empty() {
+            "/carddav/".to_string()
+        } else {
+            let user_part = path.split('/').next().unwrap_or(path);
+            format!("/carddav/{}/", user_part)
+        };
         let mut response_body = Vec::new();
         CardDavAdapter::generate_addressbooks_propfind_response(
             &mut response_body,
             &address_books,
             &propfind_request,
-            base_href,
+            &base_href,
         )
         .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
 
@@ -253,8 +260,7 @@ async fn handle_propfind(
             .body(Body::from(response_body))
             .unwrap())
     } else {
-        let effective_path = strip_username_prefix(path);
-    let parts: Vec<&str> = effective_path.splitn(2, '/').collect();
+        let parts: Vec<&str> = effective_path.splitn(2, '/').collect();
         let address_book_id = parts[0];
 
         if parts.len() == 1 {
@@ -730,4 +736,58 @@ async fn handle_proppatch(
         .header(header::CONTENT_TYPE, "application/xml; charset=utf-8")
         .body(Body::from(response_body))
         .unwrap())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_username_prefix;
+
+    #[test]
+    fn test_strip_username_prefix_uuid_only() {
+        let uuid = "ae8ae236-709f-4939-b766-37ad589ac7f2";
+        assert_eq!(strip_username_prefix(uuid), uuid);
+    }
+
+    #[test]
+    fn test_strip_username_prefix_uuid_with_contact() {
+        let path = "ae8ae236-709f-4939-b766-37ad589ac7f2/contact.vcf";
+        assert_eq!(strip_username_prefix(path), path);
+    }
+
+    #[test]
+    fn test_strip_username_prefix_username_and_uuid() {
+        let path = "timm/ae8ae236-709f-4939-b766-37ad589ac7f2";
+        assert_eq!(
+            strip_username_prefix(path),
+            "ae8ae236-709f-4939-b766-37ad589ac7f2"
+        );
+    }
+
+    #[test]
+    fn test_strip_username_prefix_username_uuid_and_contact() {
+        let path = "timm/ae8ae236-709f-4939-b766-37ad589ac7f2/contact.vcf";
+        assert_eq!(
+            strip_username_prefix(path),
+            "ae8ae236-709f-4939-b766-37ad589ac7f2/contact.vcf"
+        );
+    }
+
+    #[test]
+    fn test_strip_username_prefix_bare_username() {
+        assert_eq!(strip_username_prefix("timm"), "");
+    }
+
+    #[test]
+    fn test_strip_username_prefix_empty() {
+        assert_eq!(strip_username_prefix(""), "");
+    }
+
+    #[test]
+    fn test_strip_username_prefix_email_style_username() {
+        let path = "user@example.com/ae8ae236-709f-4939-b766-37ad589ac7f2/contact.vcf";
+        assert_eq!(
+            strip_username_prefix(path),
+            "ae8ae236-709f-4939-b766-37ad589ac7f2/contact.vcf"
+        );
+    }
 }
