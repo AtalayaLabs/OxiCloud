@@ -1,4 +1,5 @@
 pub mod cookie_auth;
+pub mod deserializer;
 pub mod handlers;
 pub mod routes;
 

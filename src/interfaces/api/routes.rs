@@ -196,7 +196,9 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         // Trash operations (soft delete)
         .route("/trash", post(batch_handler::trash_batch))
         // Download as ZIP
-        .route("/download", post(batch_handler::download_batch))
+        .route("/download", post(batch_handler::download_batch_post))
+        // work arround for drag & drop (does not support POST requests)
+        .route("/download", get(batch_handler::download_batch_querystring))
         .with_state(batch_handler_state);
 
     // Create search routes if the service is available

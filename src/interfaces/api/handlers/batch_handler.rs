@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Json, State},
+    extract::{Json, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
@@ -11,6 +11,7 @@ use crate::application::dtos::folder_dto::FolderDto;
 use crate::application::services::batch_operations::{
     BatchOperationService, BatchResult, BatchStats,
 };
+use crate::interfaces::api::deserializer;
 use crate::interfaces::api::handlers::ApiResult;
 use crate::interfaces::middleware::auth::AuthUser;
 
@@ -568,6 +569,24 @@ pub struct BatchDownloadRequest {
     pub folder_ids: Vec<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct BatchDownloadQuery {
+    #[serde(default, deserialize_with = "deserializer::deserialize_csv")]
+    pub file_ids: Vec<String>, // will deserialize query string "1,2,3" into Vec<String>
+    #[serde(default, deserialize_with = "deserializer::deserialize_csv")]
+    pub folder_ids: Vec<String>, // will deserialize query string "1,2,3" into Vec<String>
+}
+
+// convert BatchDownloadQuery into BatchDownloadRequest
+impl From<BatchDownloadQuery> for BatchDownloadRequest {
+    fn from(q: BatchDownloadQuery) -> Self {
+        Self {
+            file_ids: q.file_ids,
+            folder_ids: q.folder_ids,
+        }
+    }
+}
+
 /// Handler for moving multiple files and folders to trash in batch
 pub async fn trash_batch(
     State(state): State<BatchHandlerState>,
@@ -732,14 +751,30 @@ pub async fn move_folders_batch(
     Ok((status_code, Json(response)).into_response())
 }
 
+// Hander as a workarround for drag & drop (does not support POST requests)
+pub async fn download_batch_querystring(
+    State(state): State<BatchHandlerState>,
+    auth_user: AuthUser,
+    Query(params): Query<BatchDownloadQuery>,
+) -> Result<Response, (StatusCode, String)> {
+    process_download_batch(state, auth_user, params.into()).await
+}
 /// Handler for downloading multiple files and folders as a single ZIP.
 ///
 /// The ZIP is written to a temporary file and streamed to the client,
 /// so RAM usage is O(buffer_size) regardless of archive size.
-pub async fn download_batch(
+pub async fn download_batch_post(
     State(state): State<BatchHandlerState>,
     auth_user: AuthUser,
     Json(request): Json<BatchDownloadRequest>,
+) -> Result<Response, (StatusCode, String)> {
+    process_download_batch(state, auth_user, request).await
+}
+
+async fn process_download_batch(
+    state: BatchHandlerState,
+    auth_user: AuthUser,
+    request: BatchDownloadRequest,
 ) -> Result<Response, (StatusCode, String)> {
     if request.file_ids.is_empty() && request.folder_ids.is_empty() {
         return Err((

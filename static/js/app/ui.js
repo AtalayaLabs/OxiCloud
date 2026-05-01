@@ -1066,6 +1066,41 @@ const ui = {
                 lastItemDiv = div;
             }
 
+            let downloadUrl;
+            let nameEncoded;
+
+            // tells Browser URL to call to drop selection on operating system (desktop, file manager etc)
+            // will generate a zipfile if multiple
+            if (selectedCardFromList.length === 1) {
+                // only 1 file
+                if (info.type === 'file') {
+                    nameEncoded = info.name.replaceAll(/:/g, '-'); // issue is that DownloadURL is using : as separator;
+                    downloadUrl = `${window.location.origin}/api/files/${info.id}`;
+                } else {
+                    // directory into ZIP
+                    nameEncoded = info.name.replaceAll(/:/g, '-').concat('.zip');
+                    downloadUrl = `${window.location.origin}/api/folders/${info.id}/download?format=zip`;
+                }
+            } else {
+                // must use ZIP container
+                // TODO better naming like ("selection in ${parent.name}") modulo i18n ? ...
+                const now = new Date().toISOString().replace(/T/, ' ').replace(/\.*/, '').replaceAll(/:/g, '-');
+                nameEncoded = `oxicloud ${now}.zip`;
+                const folders = [];
+                const files = [];
+                filesList.querySelectorAll(`div.selected`).forEach((e) => {
+                    const item = itemInfo(e);
+                    if (item.type === 'file') {
+                        files.push(item.id);
+                    } else {
+                        folders.push(item.id);
+                    }
+                });
+                downloadUrl = `${window.location.origin}/api/batch/download?file_ids=${files.join(',')}&folder_ids=${folders.join(',')}`;
+            }
+
+            e.dataTransfer?.setData('DownloadURL', `application/octet-stream:${nameEncoded}:${downloadUrl}`);
+
             // if more than 1 item, display the badge
             if (selectedCardFromList.length > 1) {
                 const badge = document.createElement('span');
