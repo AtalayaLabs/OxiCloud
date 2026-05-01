@@ -100,7 +100,17 @@ async fn admin_guard(state: &AppState, headers: &HeaderMap) -> Result<(Uuid, Str
 }
 
 /// GET /api/admin/settings/oidc — get OIDC settings for the admin panel
-async fn get_oidc_settings(
+#[utoipa::path(
+    get,
+    path = "/api/admin/settings/oidc",
+    responses(
+        (status = 200, description = "OIDC settings"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    tag = "admin"
+)]
+pub async fn get_oidc_settings(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
@@ -120,7 +130,17 @@ async fn get_oidc_settings(
 }
 
 /// PUT /api/admin/settings/oidc — save OIDC settings + hot-reload
-async fn save_oidc_settings(
+#[utoipa::path(
+    put,
+    path = "/api/admin/settings/oidc",
+    responses(
+        (status = 200, description = "OIDC settings saved"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    tag = "admin"
+)]
+pub async fn save_oidc_settings(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(dto): Json<SaveOidcSettingsDto>,
@@ -170,7 +190,17 @@ async fn test_oidc_connection(
 // ─────────────────────────────────────────────────────
 
 /// GET /api/admin/settings/storage — get storage backend settings
-async fn get_storage_settings(
+#[utoipa::path(
+    get,
+    path = "/api/admin/settings/storage",
+    responses(
+        (status = 200, description = "Storage settings"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    tag = "admin"
+)]
+pub async fn get_storage_settings(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
@@ -190,7 +220,17 @@ async fn get_storage_settings(
 }
 
 /// PUT /api/admin/settings/storage — save storage backend settings
-async fn save_storage_settings(
+#[utoipa::path(
+    put,
+    path = "/api/admin/settings/storage",
+    responses(
+        (status = 200, description = "Storage settings saved"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    tag = "admin"
+)]
+pub async fn save_storage_settings(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(dto): Json<SaveStorageSettingsDto>,
@@ -240,7 +280,17 @@ async fn test_storage_connection(
 // ─────────────────────────────────────────────────────
 
 /// GET /api/admin/storage/migration — current migration progress
-async fn get_migration_status(
+#[utoipa::path(
+    get,
+    path = "/api/admin/storage/migration",
+    responses(
+        (status = 200, description = "Current migration status"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    tag = "admin"
+)]
+pub async fn get_migration_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
@@ -250,7 +300,18 @@ async fn get_migration_status(
 }
 
 /// POST /api/admin/storage/migration/start — begin background migration
-async fn start_migration(
+#[utoipa::path(
+    post,
+    path = "/api/admin/storage/migration/start",
+    responses(
+        (status = 200, description = "Migration started"),
+        (status = 400, description = "Migration already running"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    tag = "admin"
+)]
+pub async fn start_migration(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(dto): Json<StartMigrationDto>,
@@ -316,7 +377,18 @@ async fn start_migration(
 }
 
 /// POST /api/admin/storage/migration/pause — pause running migration
-async fn pause_migration(
+#[utoipa::path(
+    post,
+    path = "/api/admin/storage/migration/pause",
+    responses(
+        (status = 200, description = "Migration paused"),
+        (status = 400, description = "No running migration"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    tag = "admin"
+)]
+pub async fn pause_migration(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
@@ -335,7 +407,18 @@ async fn pause_migration(
 }
 
 /// POST /api/admin/storage/migration/resume — resume paused migration
-async fn resume_migration(
+#[utoipa::path(
+    post,
+    path = "/api/admin/storage/migration/resume",
+    responses(
+        (status = 200, description = "Migration resumed"),
+        (status = 400, description = "No paused migration"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    tag = "admin"
+)]
+pub async fn resume_migration(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
@@ -355,7 +438,18 @@ async fn resume_migration(
 }
 
 /// POST /api/admin/storage/migration/complete — finalize migration
-async fn complete_migration(
+#[utoipa::path(
+    post,
+    path = "/api/admin/storage/migration/complete",
+    responses(
+        (status = 200, description = "Migration finalized"),
+        (status = 400, description = "Migration not completed"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    tag = "admin"
+)]
+pub async fn complete_migration(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
@@ -383,7 +477,18 @@ async fn complete_migration(
 }
 
 /// POST /api/admin/storage/migration/verify — run integrity check
-async fn verify_migration(
+#[utoipa::path(
+    post,
+    path = "/api/admin/storage/migration/verify",
+    responses(
+        (status = 200, description = "Verification result"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+        (status = 500, description = "Verification failed")
+    ),
+    tag = "admin"
+)]
+pub async fn verify_migration(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(dto): Json<VerifyMigrationDto>,
@@ -450,7 +555,17 @@ fn migration_state_to_dto(
 }
 
 /// POST /api/admin/settings/storage/generate-key — generate a random AES-256 key.
-async fn generate_encryption_key(
+#[utoipa::path(
+    post,
+    path = "/api/admin/settings/storage/generate-key",
+    responses(
+        (status = 200, description = "Generated AES-256 key"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    tag = "admin"
+)]
+pub async fn generate_encryption_key(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
@@ -496,7 +611,17 @@ fn build_backend_from_config(
 }
 
 /// GET /api/admin/settings/general — system overview (backward compat)
-async fn get_general_settings(
+#[utoipa::path(
+    get,
+    path = "/api/admin/settings/general",
+    responses(
+        (status = 200, description = "General system settings"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    tag = "admin"
+)]
+pub async fn get_general_settings(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
@@ -527,7 +652,17 @@ async fn get_general_settings(
 // ============================================================================
 
 /// GET /api/admin/dashboard — full dashboard statistics
-async fn get_dashboard_stats(
+#[utoipa::path(
+    get,
+    path = "/api/admin/dashboard",
+    responses(
+        (status = 200, description = "Dashboard statistics"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    tag = "admin"
+)]
+pub async fn get_dashboard_stats(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
@@ -603,7 +738,21 @@ async fn get_dashboard_stats(
 // ============================================================================
 
 /// GET /api/admin/users?limit=50&offset=0 — list all users
-async fn list_users(
+#[utoipa::path(
+    get,
+    path = "/api/admin/users",
+    params(
+        ("limit" = Option<i64>, Query, description = "Max users to return (default 100, max 500)"),
+        ("offset" = Option<i64>, Query, description = "Pagination offset")
+    ),
+    responses(
+        (status = 200, description = "List of users"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    tag = "admin"
+)]
+pub async fn list_users(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(query): Query<ListUsersQueryDto>,
@@ -639,7 +788,19 @@ async fn list_users(
 }
 
 /// GET /api/admin/users/:id — get single user
-async fn get_user(
+#[utoipa::path(
+    get,
+    path = "/api/admin/users/{id}",
+    params(("id" = String, Path, description = "User UUID")),
+    responses(
+        (status = 200, description = "User details"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+        (status = 404, description = "User not found")
+    ),
+    tag = "admin"
+)]
+pub async fn get_user(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -663,7 +824,19 @@ async fn get_user(
 }
 
 /// DELETE /api/admin/users/:id — delete a user
-async fn delete_user(
+#[utoipa::path(
+    delete,
+    path = "/api/admin/users/{id}",
+    params(("id" = String, Path, description = "User UUID")),
+    responses(
+        (status = 200, description = "User deleted"),
+        (status = 400, description = "Cannot delete own account"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    tag = "admin"
+)]
+pub async fn delete_user(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -700,7 +873,19 @@ async fn delete_user(
 }
 
 /// PUT /api/admin/users/:id/role — change user role
-async fn update_user_role(
+#[utoipa::path(
+    put,
+    path = "/api/admin/users/{id}/role",
+    params(("id" = String, Path, description = "User UUID")),
+    responses(
+        (status = 200, description = "Role updated"),
+        (status = 400, description = "Cannot change own role"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    tag = "admin"
+)]
+pub async fn update_user_role(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -738,7 +923,19 @@ async fn update_user_role(
 }
 
 /// PUT /api/admin/users/:id/active — activate/deactivate user
-async fn update_user_active(
+#[utoipa::path(
+    put,
+    path = "/api/admin/users/{id}/active",
+    params(("id" = String, Path, description = "User UUID")),
+    responses(
+        (status = 200, description = "User active status updated"),
+        (status = 400, description = "Cannot deactivate own account"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    tag = "admin"
+)]
+pub async fn update_user_active(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -781,7 +978,18 @@ async fn update_user_active(
 }
 
 /// PUT /api/admin/users/:id/quota — update user storage quota
-async fn update_user_quota(
+#[utoipa::path(
+    put,
+    path = "/api/admin/users/{id}/quota",
+    params(("id" = String, Path, description = "User UUID")),
+    responses(
+        (status = 200, description = "Quota updated"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    tag = "admin"
+)]
+pub async fn update_user_quota(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -815,7 +1023,18 @@ async fn update_user_quota(
 // ============================================================================
 
 /// POST /api/admin/users — create a new user (admin only)
-async fn create_user(
+#[utoipa::path(
+    post,
+    path = "/api/admin/users",
+    responses(
+        (status = 201, description = "User created"),
+        (status = 400, description = "Invalid user data"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    tag = "admin"
+)]
+pub async fn create_user(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(dto): Json<AdminCreateUserDto>,
@@ -843,7 +1062,19 @@ async fn create_user(
 }
 
 /// PUT /api/admin/users/:id/password — reset a user's password (admin only)
-async fn reset_user_password(
+#[utoipa::path(
+    put,
+    path = "/api/admin/users/{id}/password",
+    params(("id" = String, Path, description = "User UUID")),
+    responses(
+        (status = 200, description = "Password reset"),
+        (status = 400, description = "Invalid password"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    tag = "admin"
+)]
+pub async fn reset_user_password(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -882,7 +1113,17 @@ async fn reset_user_password(
 // ============================================================================
 
 /// GET /api/admin/settings/registration — check if public registration is enabled
-async fn get_registration_setting(
+#[utoipa::path(
+    get,
+    path = "/api/admin/settings/registration",
+    responses(
+        (status = 200, description = "Registration setting"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    tag = "admin"
+)]
+pub async fn get_registration_setting(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
@@ -901,7 +1142,18 @@ async fn get_registration_setting(
 }
 
 /// PUT /api/admin/settings/registration — enable/disable public registration
-async fn set_registration_setting(
+#[utoipa::path(
+    put,
+    path = "/api/admin/settings/registration",
+    responses(
+        (status = 200, description = "Registration setting updated"),
+        (status = 400, description = "Missing field"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    tag = "admin"
+)]
+pub async fn set_registration_setting(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,

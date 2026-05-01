@@ -1,8 +1,9 @@
 use crate::domain::services::i18n_service::Locale;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// DTO for locale information
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct LocaleDto {
     /// Locale code (e.g., "en", "es")
     pub code: String,
@@ -29,7 +30,7 @@ impl From<Locale> for LocaleDto {
 }
 
 /// DTO for translation request
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct TranslationRequestDto {
     /// The translation key
     pub key: String,
@@ -39,7 +40,7 @@ pub struct TranslationRequestDto {
 }
 
 /// DTO for translation response
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct TranslationResponseDto {
     /// The translation key
     pub key: String,
@@ -52,7 +53,7 @@ pub struct TranslationResponseDto {
 }
 
 /// DTO for translation error
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct TranslationErrorDto {
     /// The translation key that was not found
     pub key: String,

@@ -18,16 +18,21 @@ type AppState = Arc<I18nApplicationService>;
 pub struct I18nHandler;
 
 impl I18nHandler {
-    /// Gets a list of available locales
-    pub async fn get_locales(State(service): State<AppState>) -> impl IntoResponse {
+    // ── Why no #[utoipa::path] here? ─────────────────────────────────────────────
+    // utoipa 5.4.0's proc macro generates helper structs / impls inside its expansion.
+    // Rust allows struct definitions at module scope but forbids them inside impl blocks,
+    // so `#[utoipa::path]` fails on every method in this impl block regardless of HTTP
+    // verb or annotation content. All route handlers are free functions below.
+    // TODO: collapse after utoipa upgrade.
+    pub(super) async fn get_locales_impl(State(service): State<AppState>) -> impl IntoResponse {
         let locales = service.available_locales().await;
         let locale_dtos: Vec<LocaleDto> = locales.into_iter().map(LocaleDto::from).collect();
 
         (StatusCode::OK, Json(locale_dtos)).into_response()
     }
 
-    /// Translates a key to the requested locale
-    pub async fn translate(
+    /// Translates a single key to the requested locale.
+    pub(super) async fn translate_impl(
         State(service): State<AppState>,
         Query(query): Query<TranslationRequestDto>,
     ) -> impl IntoResponse {
@@ -79,8 +84,8 @@ impl I18nHandler {
         }
     }
 
-    /// Gets all translations for a locale (Axum-compatible: extracts locale from path)
-    pub async fn get_translations_by_locale(
+    /// Returns all translations for a locale as a flat key→value object.
+    pub(super) async fn get_translations_by_locale_impl(
         State(service): State<AppState>,
         Path(locale_code): Path<String>,
     ) -> impl IntoResponse {
@@ -115,4 +120,69 @@ impl I18nHandler {
         )
             .into_response()
     }
+}
+
+// ── Route handlers (free functions) ──────────────────────────────────────────
+//
+// All three route functions live here rather than as methods on I18nHandler
+// because utoipa 5.4.0's #[utoipa::path] macro generates helper structs inside
+// its expansion. Rust allows struct definitions at module scope but forbids them
+// inside impl blocks — so every #[utoipa::path] annotation on an I18nHandler
+// method fails to compile regardless of HTTP verb or annotation content.
+//
+// All logic lives in the I18nHandler::*_impl methods above; these thin wrappers
+// exist solely to carry the OpenAPI annotation at a scope where utoipa can
+// generate its helper types.
+//
+// routes.rs calls these free functions directly.
+// TODO: collapse back into the impl block after a utoipa upgrade resolves the issue.
+
+#[utoipa::path(
+    get,
+    path = "/api/i18n/locales",
+    responses(
+        (status = 200, description = "Available locales", body = Vec<LocaleDto>),
+    ),
+    tag = "i18n"
+)]
+pub async fn get_locales(state: State<AppState>) -> impl IntoResponse {
+    I18nHandler::get_locales_impl(state).await
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/i18n/translate",
+    params(
+        ("key" = String, Query, description = "Translation key"),
+        ("locale" = Option<String>, Query, description = "Target locale code (defaults to en)"),
+    ),
+    responses(
+        (status = 200, description = "Translation", body = TranslationResponseDto),
+        (status = 400, description = "Unsupported locale", body = TranslationErrorDto),
+        (status = 404, description = "Key not found"),
+    ),
+    tag = "i18n"
+)]
+pub async fn translate(
+    state: State<AppState>,
+    query: Query<TranslationRequestDto>,
+) -> impl IntoResponse {
+    I18nHandler::translate_impl(state, query).await
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/i18n/locales/{locale_code}",
+    params(("locale_code" = String, Path, description = "Locale code, e.g. en, fr, de")),
+    responses(
+        (status = 200, description = "All translations for this locale"),
+        (status = 400, description = "Unsupported locale"),
+    ),
+    tag = "i18n"
+)]
+pub async fn get_translations_by_locale(
+    state: State<AppState>,
+    path: Path<String>,
+) -> impl IntoResponse {
+    I18nHandler::get_translations_by_locale_impl(state, path).await
 }

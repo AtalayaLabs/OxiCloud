@@ -25,10 +25,24 @@ async fn get_openapi_spec() -> AxumJson<utoipa::openapi::OpenApi> {
 
 use crate::interfaces::api::handlers::admin_handler;
 use crate::interfaces::api::handlers::batch_handler::{self, BatchHandlerState};
-use crate::interfaces::api::handlers::chunked_upload_handler::ChunkedUploadHandler;
-use crate::interfaces::api::handlers::file_handler::FileHandler;
-use crate::interfaces::api::handlers::folder_handler::FolderHandler;
-use crate::interfaces::api::handlers::i18n_handler::I18nHandler;
+use crate::interfaces::api::handlers::chunked_upload_handler::{
+    cancel_upload, complete_upload, create_upload, get_upload_status, upload_chunk,
+};
+use crate::interfaces::api::handlers::file_handler::{
+    delete_file, download_file, get_file_metadata, get_thumbnail, list_files_query,
+    move_file_simple, rename_file, upload_file_with_thumbnails, upload_thumbnail,
+};
+use crate::interfaces::api::handlers::folder_handler::{
+    create_folder, delete_folder_with_trash, download_folder_zip, get_folder,
+    list_folder_contents, list_folder_contents_paginated, list_folder_listing,
+    list_root_folders, list_root_folders_paginated, move_folder, rename_folder,
+};
+use crate::interfaces::api::handlers::i18n_handler::{
+    get_locales, get_translations_by_locale, translate,
+};
+use crate::interfaces::api::handlers::search_handler::{
+    clear_search_cache, search_files_get, search_files_post, suggest_files,
+};
 use crate::interfaces::api::handlers::trash_handler;
 
 /// Creates public API routes that should NOT require authentication.
@@ -62,12 +76,9 @@ pub fn create_public_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppStat
     // i18n routes — no auth required (localization should be available before login)
     if let Some(i18n_service) = i18n_service {
         let i18n_router = Router::new()
-            .route("/locales", get(I18nHandler::get_locales))
-            .route("/translate", get(I18nHandler::translate))
-            .route(
-                "/locales/{locale_code}",
-                get(I18nHandler::get_translations_by_locale),
-            )
+            .route("/locales", get(get_locales))
+            .route("/translate", get(translate))
+            .route("/locales/{locale_code}", get(get_translations_by_locale))
             .with_state(i18n_service);
 
         router = router.nest("/i18n", i18n_router);
@@ -114,37 +125,31 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
 
     // Create the basic folders router with service operations
     let folders_basic_router = Router::new()
-        .route("/", post(FolderHandler::create_folder))
-        .route("/", get(FolderHandler::list_root_folders))
-        .route(
-            "/paginated",
-            get(FolderHandler::list_root_folders_paginated),
-        )
-        .route("/{id}", get(FolderHandler::get_folder))
-        .route("/{id}/contents", get(FolderHandler::list_folder_contents))
-        .route(
-            "/{id}/contents/paginated",
-            get(FolderHandler::list_folder_contents_paginated),
-        )
-        .route("/{id}/rename", put(FolderHandler::rename_folder))
-        .route("/{id}/move", put(FolderHandler::move_folder))
+        .route("/", post(create_folder))
+        .route("/", get(list_root_folders))
+        .route("/paginated", get(list_root_folders_paginated))
+        .route("/{id}", get(get_folder))
+        .route("/{id}/contents", get(list_folder_contents))
+        .route("/{id}/contents/paginated", get(list_folder_contents_paginated))
+        .route("/{id}/rename", put(rename_folder))
+        .route("/{id}/move", put(move_folder))
         .with_state(folder_service.clone());
 
     // Special route for ZIP download that requires AppState instead of just FolderService
     let folder_zip_router = Router::new()
-        .route("/{id}/download", get(FolderHandler::download_folder_zip))
+        .route("/{id}/download", get(download_folder_zip))
         .with_state(app_state.clone());
 
     // Combined listing endpoint: returns both sub-folders AND files in one
     // response.  Needs full AppState because it calls both FolderService
     // and FileRetrievalService concurrently.
     let folder_listing_router = Router::new()
-        .route("/{id}/listing", get(FolderHandler::list_folder_listing))
+        .route("/{id}/listing", get(list_folder_listing))
         .with_state(app_state.clone());
 
     // Create folder operations that use trash (requires full AppState)
     let folders_ops_router =
-        Router::new().route("/{id}", delete(FolderHandler::delete_folder_with_trash));
+        Router::new().route("/{id}", delete(delete_folder_with_trash));
 
     // Merge the routers
     let folders_router = folders_basic_router
@@ -154,14 +159,14 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
 
     // Create file routes for basic operations and trash-enabled delete
     let basic_file_router = Router::new()
-        .route("/", get(FileHandler::list_files_query))
-        .route("/upload", post(FileHandler::upload_file_with_thumbnails))
-        .route("/{id}", get(FileHandler::download_file))
+        .route("/", get(list_files_query))
+        .route("/upload", post(upload_file_with_thumbnails))
+        .route("/{id}", get(download_file))
         .route(
             "/{id}/thumbnail/{size}",
-            get(FileHandler::get_thumbnail).put(FileHandler::upload_thumbnail),
+            get(get_thumbnail).put(upload_thumbnail),
         )
-        .route("/{id}/metadata", get(FileHandler::get_file_metadata))
+        .route("/{id}/metadata", get(get_file_metadata))
         .layer(DefaultBodyLimit::max({
             // Use architecture-appropriate body limit: 10 GB on 64-bit, 1 GB on 32-bit
             #[cfg(target_pointer_width = "64")]
@@ -174,9 +179,9 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
 
     // File operations with trash support
     let file_operations_router = Router::new()
-        .route("/{id}", delete(FileHandler::delete_file))
-        .route("/{id}/move", put(FileHandler::move_file_simple))
-        .route("/{id}/rename", put(FileHandler::rename_file));
+        .route("/{id}", delete(delete_file))
+        .route("/{id}/move", put(move_file_simple))
+        .route("/{id}/rename", put(rename_file));
 
     // Merge the routers
     let files_router = basic_file_router.merge(file_operations_router);
@@ -201,17 +206,15 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
 
     // Create search routes if the service is available
     let search_router = if search_service.is_some() {
-        use crate::interfaces::api::handlers::search_handler::SearchHandler;
-
         Router::new()
             // Simple search with query parameters
-            .route("/", get(SearchHandler::search_files_get))
+            .route("/", get(search_files_get))
             // Lightweight autocomplete suggestions
-            .route("/suggest", get(SearchHandler::suggest_files))
+            .route("/suggest", get(suggest_files))
             // Advanced search with full criteria object
-            .route("/advanced", post(SearchHandler::search_files_post))
+            .route("/advanced", post(search_files_post))
             // Clear search cache
-            .route("/cache", delete(SearchHandler::clear_search_cache))
+            .route("/cache", delete(clear_search_cache))
             .with_state(app_state.clone())
     } else {
         Router::new()
@@ -275,49 +278,32 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         Router::new()
     };
 
-    // Create routes for chunked uploads (large files >10MB)
+    // Create routes for chunked uploads (large files >10MB).
+    // All five handlers are free functions — see chunked_upload_handler.rs for why
+    // #[utoipa::path] cannot be applied to ChunkedUploadHandler impl methods directly.
     let chunked_upload_router = Router::new()
-        .route("/", post(ChunkedUploadHandler::create_upload))
-        .route(
-            "/{upload_id}",
-            axum::routing::patch(ChunkedUploadHandler::upload_chunk),
-        )
-        .route(
-            "/{upload_id}",
-            axum::routing::head(ChunkedUploadHandler::get_upload_status),
-        )
-        .route(
-            "/{upload_id}/complete",
-            post(ChunkedUploadHandler::complete_upload),
-        )
-        .route("/{upload_id}", delete(ChunkedUploadHandler::cancel_upload))
+        .route("/", post(create_upload))
+        .route("/{upload_id}", axum::routing::patch(upload_chunk))
+        .route("/{upload_id}", axum::routing::head(get_upload_status))
+        .route("/{upload_id}/complete", post(complete_upload))
+        .route("/{upload_id}", delete(cancel_upload))
         .with_state(app_state.clone());
 
-    // Create routes for deduplication endpoints
+    // Create routes for deduplication endpoints.
+    // All handlers are free functions — see dedup_handler.rs for why
+    // #[utoipa::path] cannot be applied to DedupHandler impl methods directly.
+    use super::handlers::dedup_handler::{
+        check_hash, get_blob, get_stats, recalculate_stats, upload_with_dedup,
+    };
     let dedup_router = Router::new()
-        .route(
-            "/check/{hash}",
-            get(super::handlers::dedup_handler::DedupHandler::check_hash),
-        )
-        .route(
-            "/upload",
-            post(super::handlers::dedup_handler::DedupHandler::upload_with_dedup),
-        )
-        .route(
-            "/stats",
-            get(super::handlers::dedup_handler::DedupHandler::get_stats),
-        )
-        .route(
-            "/blob/{hash}",
-            get(super::handlers::dedup_handler::DedupHandler::get_blob),
-        )
+        .route("/check/{hash}", get(check_hash))
+        .route("/upload", post(upload_with_dedup))
+        .route("/stats", get(get_stats))
+        .route("/blob/{hash}", get(get_blob))
         // NOTE: remove_reference is intentionally NOT exposed as a public
         // endpoint — ref_count management is an internal concern handled
         // automatically when files are deleted via the file API.
-        .route(
-            "/recalculate",
-            post(super::handlers::dedup_handler::DedupHandler::recalculate_stats),
-        )
+        .route("/recalculate", post(recalculate_stats))
         .with_state(app_state.clone());
 
     let mut router = Router::new()

@@ -26,6 +26,20 @@ pub struct PhotosQueryParams {
 ///
 /// Supports cursor-based pagination via the `before` parameter.
 /// The `X-Next-Cursor` response header contains the cursor for the next page.
+#[utoipa::path(
+    get,
+    path = "/api/photos",
+    params(
+        ("before" = Option<i64>, Query, description = "Cursor: only return items with sort_date before this epoch value"),
+        ("limit" = Option<i64>, Query, description = "Max items to return (default 200, max 500)")
+    ),
+    responses(
+        (status = 200, description = "List of media files sorted by capture date"),
+        (status = 401, description = "Unauthorized"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "photos"
+)]
 pub async fn list_photos(
     State(state): State<Arc<AppState>>,
     auth_user: AuthUser,

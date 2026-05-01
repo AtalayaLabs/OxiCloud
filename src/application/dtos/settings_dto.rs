@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 // ============================================================================
 // OIDC Settings DTOs (Admin Panel)
@@ -24,7 +25,7 @@ pub struct OidcSettingsDto {
 }
 
 /// Request body for saving OIDC settings from the admin panel
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct SaveOidcSettingsDto {
     pub enabled: bool,
     pub issuer_url: String,
@@ -62,26 +63,26 @@ pub struct OidcTestResultDto {
 // ============================================================================
 
 /// Request body for updating a user's role
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct UpdateUserRoleDto {
     pub role: String,
 }
 
 /// Request body for updating a user's active status
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct UpdateUserActiveDto {
     pub active: bool,
 }
 
 /// Request body for updating a user's storage quota
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct UpdateUserQuotaDto {
     /// Quota in bytes. Use 0 for unlimited.
     pub quota_bytes: i64,
 }
 
 /// Request body for admin-created users
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
 pub struct AdminCreateUserDto {
     pub username: String,
     pub password: String,
@@ -96,7 +97,7 @@ pub struct AdminCreateUserDto {
 }
 
 /// Request body for admin password reset
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct AdminResetPasswordDto {
     pub new_password: String,
 }
@@ -156,7 +157,7 @@ pub struct StorageSettingsDto {
 }
 
 /// Request body for saving storage settings from the admin panel
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct SaveStorageSettingsDto {
     pub backend: String,
     pub s3_endpoint_url: Option<String>,
@@ -210,14 +211,14 @@ pub struct MigrationStateDto {
 }
 
 /// Request body for `POST /api/admin/storage/migration/start`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct StartMigrationDto {
     /// How many blobs to copy in parallel (default: 4).
     pub concurrency: Option<usize>,
 }
 
 /// Request body (empty) for `POST /api/admin/storage/migration/verify`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct VerifyMigrationDto {
     /// Number of random blobs to sample-check (default: 100).
     pub sample_size: Option<usize>,

@@ -280,6 +280,19 @@ pub async fn verify_shared_item_password(
 ///
 /// Validates the share token, checks it refers to a file (not folder),
 /// then streams the file content to the caller.
+#[utoipa::path(
+    get,
+    path = "/s/{token}/download",
+    params(("token" = String, Path, description = "Share token")),
+    responses(
+        (status = 200, description = "File content stream"),
+        (status = 401, description = "Password required"),
+        (status = 404, description = "Share not found"),
+        (status = 410, description = "Share expired"),
+        (status = 503, description = "Sharing disabled")
+    ),
+    tag = "shares"
+)]
 pub async fn download_shared_file(
     State(state): State<Arc<AppState>>,
     Path(token): Path<String>,

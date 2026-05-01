@@ -23,6 +23,16 @@ pub struct PaginationQuery {
     pub offset: Option<i64>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/playlists",
+    responses(
+        (status = 201, description = "Playlist created"),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized")
+    ),
+    tag = "playlists"
+)]
 pub async fn create_playlist(
     State(music_service): State<Arc<MusicService>>,
     auth_user: AuthUser,
@@ -34,6 +44,17 @@ pub async fn create_playlist(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/playlists/{playlist_id}",
+    params(("playlist_id" = String, Path, description = "Playlist ID")),
+    responses(
+        (status = 200, description = "Playlist details"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Playlist not found")
+    ),
+    tag = "playlists"
+)]
 pub async fn get_playlist(
     State(music_service): State<Arc<MusicService>>,
     auth_user: AuthUser,
@@ -45,6 +66,15 @@ pub async fn get_playlist(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/playlists",
+    responses(
+        (status = 200, description = "List of playlists"),
+        (status = 401, description = "Unauthorized")
+    ),
+    tag = "playlists"
+)]
 pub async fn list_playlists(
     State(music_service): State<Arc<MusicService>>,
     auth_user: AuthUser,
@@ -62,6 +92,17 @@ pub struct IncludeSharedQuery {
     pub include_public: Option<bool>,
 }
 
+#[utoipa::path(
+    put,
+    path = "/api/playlists/{playlist_id}",
+    params(("playlist_id" = String, Path, description = "Playlist ID")),
+    responses(
+        (status = 200, description = "Playlist updated"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Playlist not found")
+    ),
+    tag = "playlists"
+)]
 pub async fn update_playlist(
     State(music_service): State<Arc<MusicService>>,
     auth_user: AuthUser,
@@ -77,6 +118,17 @@ pub async fn update_playlist(
     }
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/playlists/{playlist_id}",
+    params(("playlist_id" = String, Path, description = "Playlist ID")),
+    responses(
+        (status = 204, description = "Playlist deleted"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Playlist not found")
+    ),
+    tag = "playlists"
+)]
 pub async fn delete_playlist(
     State(music_service): State<Arc<MusicService>>,
     auth_user: AuthUser,
@@ -91,6 +143,17 @@ pub async fn delete_playlist(
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/playlists/{playlist_id}/tracks",
+    params(("playlist_id" = String, Path, description = "Playlist ID")),
+    responses(
+        (status = 201, description = "Tracks added"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Playlist not found")
+    ),
+    tag = "playlists"
+)]
 pub async fn add_tracks(
     State(music_service): State<Arc<MusicService>>,
     auth_user: AuthUser,
@@ -106,6 +169,20 @@ pub async fn add_tracks(
     }
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/playlists/{playlist_id}/tracks/{file_id}",
+    params(
+        ("playlist_id" = String, Path, description = "Playlist ID"),
+        ("file_id" = String, Path, description = "File ID to remove")
+    ),
+    responses(
+        (status = 204, description = "Track removed"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Playlist or track not found")
+    ),
+    tag = "playlists"
+)]
 pub async fn remove_track(
     State(music_service): State<Arc<MusicService>>,
     auth_user: AuthUser,
@@ -120,6 +197,17 @@ pub async fn remove_track(
     }
 }
 
+#[utoipa::path(
+    put,
+    path = "/api/playlists/{playlist_id}/reorder",
+    params(("playlist_id" = String, Path, description = "Playlist ID")),
+    responses(
+        (status = 204, description = "Tracks reordered"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Playlist not found")
+    ),
+    tag = "playlists"
+)]
 pub async fn reorder_tracks(
     State(music_service): State<Arc<MusicService>>,
     auth_user: AuthUser,
@@ -135,6 +223,17 @@ pub async fn reorder_tracks(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/playlists/{playlist_id}/tracks",
+    params(("playlist_id" = String, Path, description = "Playlist ID")),
+    responses(
+        (status = 200, description = "List of playlist tracks"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Playlist not found")
+    ),
+    tag = "playlists"
+)]
 pub async fn list_playlist_tracks(
     State(music_service): State<Arc<MusicService>>,
     auth_user: AuthUser,
@@ -149,6 +248,17 @@ pub async fn list_playlist_tracks(
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/playlists/{playlist_id}/share",
+    params(("playlist_id" = String, Path, description = "Playlist ID")),
+    responses(
+        (status = 204, description = "Playlist shared"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Playlist not found")
+    ),
+    tag = "playlists"
+)]
 pub async fn share_playlist(
     State(music_service): State<Arc<MusicService>>,
     auth_user: AuthUser,
@@ -164,6 +274,20 @@ pub async fn share_playlist(
     }
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/playlists/{playlist_id}/share/{user_id}",
+    params(
+        ("playlist_id" = String, Path, description = "Playlist ID"),
+        ("user_id" = String, Path, description = "User ID to remove share")
+    ),
+    responses(
+        (status = 204, description = "Share removed"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Playlist or share not found")
+    ),
+    tag = "playlists"
+)]
 pub async fn remove_share(
     State(music_service): State<Arc<MusicService>>,
     auth_user: AuthUser,
@@ -178,6 +302,17 @@ pub async fn remove_share(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/playlists/{playlist_id}/shares",
+    params(("playlist_id" = String, Path, description = "Playlist ID")),
+    responses(
+        (status = 200, description = "List of playlist shares"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Playlist not found")
+    ),
+    tag = "playlists"
+)]
 pub async fn get_playlist_shares(
     State(music_service): State<Arc<MusicService>>,
     auth_user: AuthUser,
@@ -192,6 +327,17 @@ pub async fn get_playlist_shares(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/playlists/audio-metadata/{file_id}",
+    params(("file_id" = String, Path, description = "Audio file ID")),
+    responses(
+        (status = 200, description = "Audio metadata"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "File not found")
+    ),
+    tag = "playlists"
+)]
 pub async fn get_audio_metadata(
     State(music_service): State<Arc<MusicService>>,
     auth_user: AuthUser,

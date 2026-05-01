@@ -9,12 +9,13 @@
 
 use axum::{
     Json,
-    extract::{Path, Query, State},
+    extract::{Path, Query, Request, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use std::sync::Arc;
 
 use crate::application::ports::chunked_upload_ports::ChunkedUploadPort;
@@ -26,7 +27,7 @@ use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
 
 /// Request body for creating an upload session
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateUploadRequest {
     pub filename: String,
     pub folder_id: Option<String>,
@@ -43,7 +44,7 @@ pub struct ChunkUploadParams {
 }
 
 /// Final response after completing upload
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct CompleteUploadResponse {
     pub file_id: String,
     pub filename: String,
@@ -52,32 +53,21 @@ pub struct CompleteUploadResponse {
 }
 
 /// Chunked Upload Handler
+///
+/// The handler struct exists as a named grouping. All route functions are free
+/// functions at module scope — see the section below the impl block for the reason.
 pub struct ChunkedUploadHandler;
 
 impl ChunkedUploadHandler {
-    /// POST /api/uploads - Create a new upload session
-    ///
-    /// Request body:
-    /// ```json
-    /// {
-    ///   "filename": "large-video.mp4",
-    ///   "folder_id": "optional-folder-id",
-    ///   "content_type": "video/mp4",
-    ///   "total_size": 104857600,
-    ///   "chunk_size": 5242880
-    /// }
-    /// ```
-    ///
-    /// Response:
-    /// ```json
-    /// {
-    ///   "upload_id": "uuid",
-    ///   "chunk_size": 5242880,
-    ///   "total_chunks": 20,
-    ///   "expires_at": 86400
-    /// }
-    /// ```
-    pub async fn create_upload(
+    // ── Why no #[utoipa::path] here? ─────────────────────────────────────────────
+    // utoipa 5.4.0's proc macro generates helper structs / impls inside its expansion.
+    // Rust allows struct definitions at module scope but forbids them inside impl blocks,
+    // so `#[utoipa::path]` fails on every method in this impl block regardless of HTTP
+    // verb or annotation content. The same macro works fine on FileHandler / FolderHandler
+    // (root cause in utoipa unknown — likely a 5.4.x bug). All five route handlers are
+    // therefore declared as free functions below, which delegate to these `*_impl` methods.
+    // TODO: try removing free-function indirection after a utoipa upgrade.
+    pub(super) async fn create_upload_impl(
         State(state): State<Arc<AppState>>,
         auth_user: AuthUser,
         Json(request): Json<CreateUploadRequest>,
@@ -164,14 +154,7 @@ impl ChunkedUploadHandler {
         }
     }
 
-    /// PATCH /api/uploads/:upload_id - Upload a chunk
-    ///
-    /// Query params:
-    /// - chunk_index: The index of the chunk (0-based)
-    /// - checksum: Optional MD5 checksum for verification
-    ///
-    /// Body: Raw bytes of the chunk
-    pub async fn upload_chunk(
+    pub(super) async fn upload_chunk_impl(
         State(state): State<Arc<AppState>>,
         auth_user: AuthUser,
         Path(upload_id): Path<String>,
@@ -217,10 +200,7 @@ impl ChunkedUploadHandler {
         }
     }
 
-    /// HEAD /api/uploads/:upload_id - Get upload status
-    ///
-    /// Returns upload progress and pending chunks
-    pub async fn get_upload_status(
+    pub(super) async fn get_upload_status_impl(
         State(state): State<Arc<AppState>>,
         auth_user: AuthUser,
         Path(upload_id): Path<String>,
@@ -248,10 +228,7 @@ impl ChunkedUploadHandler {
         }
     }
 
-    /// POST /api/uploads/:upload_id/complete - Finalize upload
-    ///
-    /// Assembles all chunks into the final file and creates the file record
-    pub async fn complete_upload(
+    pub(super) async fn complete_upload_impl(
         State(state): State<Arc<AppState>>,
         auth_user: AuthUser,
         Path(upload_id): Path<String>,
@@ -321,10 +298,7 @@ impl ChunkedUploadHandler {
         }
     }
 
-    /// DELETE /api/uploads/:upload_id - Cancel upload
-    ///
-    /// Cancels an in-progress upload and cleans up temp files
-    pub async fn cancel_upload(
+    pub(super) async fn cancel_upload_impl(
         State(state): State<Arc<AppState>>,
         auth_user: AuthUser,
         Path(upload_id): Path<String>,
@@ -341,4 +315,135 @@ impl ChunkedUploadHandler {
             }
         }
     }
+}
+
+// ── Route handlers (free functions) ──────────────────────────────────────────
+//
+// All five route functions live here rather than as methods on ChunkedUploadHandler
+// because utoipa 5.4.0's #[utoipa::path] macro generates helper structs inside its
+// expansion. Rust allows struct definitions at module scope but forbids them inside
+// impl blocks — so every #[utoipa::path] annotation on a ChunkedUploadHandler method
+// fails to compile regardless of HTTP verb or annotation content.
+//
+// FileHandler and FolderHandler are not affected (root cause in utoipa unknown, likely
+// a 5.4.x regression). All logic lives in the ChunkedUploadHandler::*_impl methods
+// above; these thin wrappers exist solely to carry the OpenAPI annotation at a scope
+// where utoipa can generate its helper types.
+//
+// routes.rs calls these free functions directly.
+// TODO: collapse back into the impl block after a utoipa upgrade resolves the issue.
+
+#[utoipa::path(
+    post,
+    path = "/api/uploads",
+    request_body(content = CreateUploadRequest, content_type = "application/json", description = "Upload session parameters"),
+    responses(
+        (status = 201, description = "Upload session created", body = crate::application::ports::chunked_upload_ports::CreateUploadResponseDto),
+        (status = 400, description = "Invalid request (empty filename, zero size, chunk too small)"),
+        (status = 507, description = "Storage quota exceeded"),
+    ),
+    tag = "uploads",
+    security(("bearerAuth" = []))
+)]
+pub async fn create_upload(
+    state: State<Arc<AppState>>,
+    auth_user: AuthUser,
+    request: Json<CreateUploadRequest>,
+) -> impl IntoResponse {
+    ChunkedUploadHandler::create_upload_impl(state, auth_user, request).await
+}
+
+#[utoipa::path(
+    patch,
+    path = "/api/uploads/{upload_id}",
+    params(
+        ("upload_id" = String, Path, description = "Upload session ID"),
+        ("chunk_index" = usize, Query, description = "Zero-based chunk index"),
+        ("checksum" = Option<String>, Query, description = "Optional MD5 checksum for integrity verification"),
+    ),
+    request_body(content_type = "application/octet-stream", description = "Raw chunk bytes"),
+    responses(
+        (status = 200, description = "Chunk received", body = crate::application::ports::chunked_upload_ports::ChunkUploadResponseDto),
+        (status = 400, description = "Invalid chunk or checksum mismatch"),
+        (status = 404, description = "Upload session not found"),
+    ),
+    tag = "uploads",
+    security(("bearerAuth" = []))
+)]
+pub async fn upload_chunk(
+    state: State<Arc<AppState>>,
+    auth_user: AuthUser,
+    path: Path<String>,
+    query: Query<ChunkUploadParams>,
+    headers: HeaderMap,
+    request: Request,
+) -> impl IntoResponse {
+    let body = axum::body::to_bytes(request.into_body(), usize::MAX)
+        .await
+        .unwrap_or_default();
+    ChunkedUploadHandler::upload_chunk_impl(state, auth_user, path, query, headers, body).await
+}
+
+#[utoipa::path(
+    head,
+    path = "/api/uploads/{upload_id}",
+    params(
+        ("upload_id" = String, Path, description = "Upload session ID"),
+    ),
+    responses(
+        (status = 200, description = "Upload status in response headers and body", body = crate::application::ports::chunked_upload_ports::UploadStatusResponseDto),
+        (status = 404, description = "Upload session not found"),
+    ),
+    tag = "uploads",
+    security(("bearerAuth" = []))
+)]
+pub async fn get_upload_status(
+    state: State<Arc<AppState>>,
+    auth_user: AuthUser,
+    path: Path<String>,
+) -> impl IntoResponse {
+    ChunkedUploadHandler::get_upload_status_impl(state, auth_user, path).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/uploads/{upload_id}/complete",
+    params(
+        ("upload_id" = String, Path, description = "Upload session ID"),
+    ),
+    responses(
+        (status = 201, description = "File assembled and created", body = CompleteUploadResponse),
+        (status = 404, description = "Upload session not found"),
+        (status = 500, description = "Assembly or file creation failed"),
+    ),
+    tag = "uploads",
+    security(("bearerAuth" = []))
+)]
+pub async fn complete_upload(
+    state: State<Arc<AppState>>,
+    auth_user: AuthUser,
+    path: Path<String>,
+) -> impl IntoResponse {
+    ChunkedUploadHandler::complete_upload_impl(state, auth_user, path).await
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/uploads/{upload_id}",
+    params(
+        ("upload_id" = String, Path, description = "Upload session ID"),
+    ),
+    responses(
+        (status = 204, description = "Upload cancelled and temp files cleaned up"),
+        (status = 500, description = "Cancel failed"),
+    ),
+    tag = "uploads",
+    security(("bearerAuth" = []))
+)]
+pub async fn cancel_upload(
+    state: State<Arc<AppState>>,
+    auth_user: AuthUser,
+    path: Path<String>,
+) -> impl IntoResponse {
+    ChunkedUploadHandler::cancel_upload_impl(state, auth_user, path).await
 }
