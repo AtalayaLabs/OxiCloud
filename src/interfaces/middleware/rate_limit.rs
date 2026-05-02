@@ -99,13 +99,27 @@ impl RateLimiter {
 /// proxy in front of the app, an attacker can spoof these headers to bypass
 /// rate limiting.
 pub fn extract_client_ip<B>(req: &Request<B>) -> String {
+    extract_client_ip_from_parts(
+        req.headers(),
+        req.extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|c| &c.0),
+    )
+}
+
+/// Same as [`extract_client_ip`], but operates on already-extracted axum parts
+/// (a `&HeaderMap` plus an optional TCP peer). Handlers that don't take a full
+/// `Request<B>` (e.g. those that consume the body via `Json<…>`) can still
+/// derive a stable client identifier with this entry point.
+pub fn extract_client_ip_from_parts(
+    headers: &axum::http::HeaderMap,
+    peer: Option<&SocketAddr>,
+) -> String {
     let trust_proxy = *TRUST_PROXY.get_or_init(|| {
         std::env::var("OXICLOUD_TRUST_PROXY_HEADERS")
             .map(|v| v == "true" || v == "1")
             .unwrap_or(false)
     });
-
-    let headers = req.headers();
 
     if trust_proxy {
         // 1. X-Forwarded-For (first entry — closest to the client)
@@ -128,8 +142,8 @@ pub fn extract_client_ip<B>(req: &Request<B>) -> String {
     }
 
     // 3. TCP peer (ConnectInfo extension set by axum::serve)
-    if let Some(addr) = req.extensions().get::<ConnectInfo<SocketAddr>>() {
-        return addr.0.ip().to_string();
+    if let Some(addr) = peer {
+        return addr.ip().to_string();
     }
 
     // Fallback — should never happen behind axum::serve

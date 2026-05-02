@@ -62,14 +62,18 @@ pub async fn basic_auth_middleware(
     let (username, password) =
         parse_basic_auth(auth_header).ok_or(NextcloudAuthError::Unauthorized)?;
 
-    // Check account lockout before attempting password verification (saves CPU)
+    // Check account lockout before attempting password verification (saves CPU).
+    // The lockout is per (account, IP) — see #323 for rationale.
+    let client_ip =
+        crate::interfaces::middleware::rate_limit::extract_client_ip(&request);
     if let Some(auth_svc) = state.auth_service.as_ref()
-        && let Err(secs) = auth_svc.login_lockout.check(&username)
+        && let Err(secs) = auth_svc.login_lockout.check(&username, &client_ip)
     {
         tracing::warn!(
             username = %username,
+            client_ip = %client_ip,
             lockout_remaining_secs = secs,
-            "[NC] Account locked — too many failed attempts"
+            "[NC] Account locked — too many failed attempts from this IP"
         );
         return Err(NextcloudAuthError::Unauthorized);
     }
@@ -87,7 +91,7 @@ pub async fn basic_auth_middleware(
         Ok((user_id, uname, email, role)) => {
             // Reset lockout counter on success
             if let Some(auth_svc) = state.auth_service.as_ref() {
-                auth_svc.login_lockout.record_success(&username);
+                auth_svc.login_lockout.record_success(&username, &client_ip);
             }
             request.extensions_mut().insert(Arc::new(CurrentUser {
                 id: user_id,
@@ -100,7 +104,7 @@ pub async fn basic_auth_middleware(
         Err(_) => {
             // Record failed attempt for lockout tracking
             if let Some(auth_svc) = state.auth_service.as_ref() {
-                auth_svc.login_lockout.record_failure(&username);
+                auth_svc.login_lockout.record_failure(&username, &client_ip);
             }
             Err(NextcloudAuthError::Unauthorized)
         }
