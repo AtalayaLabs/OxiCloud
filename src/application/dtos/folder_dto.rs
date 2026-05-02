@@ -28,6 +28,18 @@ pub struct MoveFolderDto {
     pub parent_id: Option<String>,
 }
 
+/// Outcome of `FolderUseCase::ensure_path`. Distinguishes whether the
+/// leaf folder of the requested path was newly created or already existed,
+/// which is exactly the information WebDAV `MKCOL` needs to choose between
+/// `201 Created` and `405 Method Not Allowed` (RFC 4918 §9.3.1).
+#[derive(Debug, Clone)]
+pub enum EnsurePathOutcome {
+    /// The leaf already existed when the request arrived.
+    Existed(FolderDto),
+    /// The leaf was created by this call.
+    Created(FolderDto),
+}
+
 /// DTO for folder responses
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct FolderDto {

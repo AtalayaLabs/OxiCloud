@@ -3,7 +3,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::application::dtos::folder_dto::{
-    CreateFolderDto, FolderDto, MoveFolderDto, RenameFolderDto,
+    CreateFolderDto, EnsurePathOutcome, FolderDto, MoveFolderDto, RenameFolderDto,
 };
 use crate::application::dtos::search_dto::{
     SearchCriteriaDto, SearchResultsDto, SearchSuggestionsDto,
@@ -14,6 +14,19 @@ use crate::common::errors::DomainError;
 pub trait FolderUseCase: Send + Sync + 'static {
     /// Creates a new folder
     async fn create_folder(&self, dto: CreateFolderDto) -> Result<FolderDto, DomainError>;
+
+    /// Ensures every segment of `path` exists as a folder owned by `owner`,
+    /// creating missing intermediates as needed. Path lookup is owner-scoped:
+    /// folders belonging to other users are invisible.
+    ///
+    /// Returns whether the *leaf* segment was newly created or already existed,
+    /// so that WebDAV `MKCOL` handlers can distinguish `201 Created` from
+    /// `405 Method Not Allowed` (RFC 4918 §9.3.1).
+    ///
+    /// Returns `AlreadyExists` if the leaf path resolves to a non-folder
+    /// resource (i.e. a file): MKCOL on an existing resource of any kind
+    /// must be 405, not 201.
+    async fn ensure_path(&self, path: &str, owner: Uuid) -> Result<EnsurePathOutcome, DomainError>;
 
     /// Gets a folder by its ID
     async fn get_folder(&self, id: &str) -> Result<FolderDto, DomainError>;

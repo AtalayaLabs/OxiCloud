@@ -91,7 +91,7 @@ mod tests {
 
         let file_retrieval = Arc::new(FileRetrievalService::new(file_read_repo));
         let file_management = Arc::new(FileManagementService::new(file_write_repo));
-        let folder_service = Arc::new(FolderService::new(folder_repo));
+        let folder_service = Arc::new(FolderService::new(folder_repo, None));
 
         let _batch_service = BatchOperationService::new(
             file_retrieval,

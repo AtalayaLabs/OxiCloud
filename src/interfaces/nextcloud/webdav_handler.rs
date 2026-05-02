@@ -617,78 +617,30 @@ async fn handle_mkcol(
     user: &CurrentUser,
     subpath: &str,
 ) -> Result<Response<Body>, AppError> {
-    use crate::application::dtos::folder_dto::CreateFolderDto;
+    use crate::application::dtos::folder_dto::EnsurePathOutcome;
 
     let folder_service = &state.applications.folder_service;
     let internal_path = nc_to_internal_path(&user.username, subpath)?;
 
-    // If the folder already exists, return 405 per RFC 4918 §9.3.1
-    if folder_service
-        .get_folder_by_path(&internal_path)
-        .await
-        .is_ok()
-    {
-        return Ok(Response::builder()
+    match folder_service.ensure_path(&internal_path, user.id).await {
+        Ok(EnsurePathOutcome::Created(_)) => Ok(Response::builder()
+            .status(StatusCode::CREATED)
+            .body(Body::empty())
+            .unwrap()),
+        Ok(EnsurePathOutcome::Existed(_)) => Ok(Response::builder()
             .status(StatusCode::METHOD_NOT_ALLOWED)
             .body(Body::empty())
-            .unwrap());
-    }
-
-    // Collect path segments that need to be created (walk from root to leaf)
-    let segments: Vec<&str> = subpath.split('/').filter(|s| !s.is_empty()).collect();
-
-    let user_root = nc_to_internal_path(&user.username, "")?;
-    let mut current_path = user_root.clone();
-    let mut parent_id = folder_service
-        .get_folder_by_path(&user_root)
-        .await
-        .map_err(|_| AppError::not_found("User root folder not found"))?
-        .id
-        .clone();
-
-    for segment in &segments {
-        current_path = format!("{}/{}", current_path, segment);
-        match folder_service.get_folder_by_path(&current_path).await {
-            Ok(existing) => {
-                parent_id = existing.id.clone();
-            }
-            Err(_) => {
-                let dto = CreateFolderDto {
-                    name: segment.to_string(),
-                    parent_id: Some(parent_id.clone()),
-                };
-                match folder_service.create_folder(dto).await {
-                    Ok(created) => {
-                        parent_id = created.id.clone();
-                    }
-                    Err(e)
-                        if e.message.contains("already exists")
-                            || e.message.contains("Already Exists") =>
-                    {
-                        // Race condition — folder created concurrently
-                        let folder = folder_service
-                            .get_folder_by_path(&current_path)
-                            .await
-                            .map_err(|_| {
-                                AppError::internal_error("Folder exists but cannot be found")
-                            })?;
-                        parent_id = folder.id.clone();
-                    }
-                    Err(e) => {
-                        return Err(AppError::internal_error(format!(
-                            "Failed to create folder: {}",
-                            e
-                        )));
-                    }
-                }
-            }
+            .unwrap()),
+        Err(e) if e.kind == crate::common::errors::ErrorKind::AlreadyExists => {
+            // A non-folder resource (e.g. a file) sits at the leaf path.
+            // RFC 4918 §9.3.1: MKCOL on any existing resource → 405.
+            Ok(Response::builder()
+                .status(StatusCode::METHOD_NOT_ALLOWED)
+                .body(Body::empty())
+                .unwrap())
         }
+        Err(e) => Err(e.into()),
     }
-
-    Ok(Response::builder()
-        .status(StatusCode::CREATED)
-        .body(Body::empty())
-        .unwrap())
 }
 
 // ──────────────────── DELETE ────────────────────

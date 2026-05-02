@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::{
-    CreateFolderDto, FolderDto, MoveFolderDto, RenameFolderDto,
+    CreateFolderDto, EnsurePathOutcome, FolderDto, MoveFolderDto, RenameFolderDto,
 };
 use crate::application::dtos::pagination::{PaginatedResponseDto, PaginationRequestDto};
 use crate::application::dtos::search_dto::{
@@ -355,6 +355,14 @@ pub struct StubFolderUseCase;
 impl FolderUseCase for StubFolderUseCase {
     async fn create_folder(&self, _dto: CreateFolderDto) -> Result<FolderDto, DomainError> {
         Ok(FolderDto::default())
+    }
+
+    async fn ensure_path(
+        &self,
+        _path: &str,
+        _owner: Uuid,
+    ) -> Result<EnsurePathOutcome, DomainError> {
+        Ok(EnsurePathOutcome::Created(FolderDto::default()))
     }
 
     async fn get_folder(&self, _id: &str) -> Result<FolderDto, DomainError> {

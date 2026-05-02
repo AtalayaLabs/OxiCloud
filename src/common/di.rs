@@ -348,9 +348,12 @@ impl AppServiceFactory {
         repos: &RepositoryServices,
         trash_service: Option<Arc<TrashService>>,
         db_pool: &Arc<PgPool>,
+        path_resolver: Arc<PathResolverService>,
     ) -> ApplicationServices {
-        // Main services
-        let folder_service = Arc::new(FolderService::new(repos.folder_repository.clone()));
+        let folder_service = Arc::new(FolderService::new(
+            repos.folder_repository.clone(),
+            Some(path_resolver),
+        ));
 
         // Refactored services with all infrastructure ports
         // In blob model, dedup is handled by the repository — no separate write-behind needed
@@ -585,6 +588,11 @@ impl AppServiceFactory {
         let pool = Arc::new(pools.primary);
         let maintenance_pool = Arc::new(pools.maintenance);
 
+        // PathResolver — used by both FolderService (for ensure_path /
+        // owner-scoped MKCOL) and the WebDAV PROPFIND/GET path. Single
+        // shared instance; both consumers get the same Arc.
+        let path_resolver = Arc::new(PathResolverService::new(pool.clone()));
+
         // 1. Core services (PgPool needed for DedupService index)
         let core = self.create_core_services(&pool, &maintenance_pool).await?;
 
@@ -595,8 +603,13 @@ impl AppServiceFactory {
         let trash_service = self.create_trash_service(&repos, &core).await;
 
         // 4. Application services (with trash already wired)
-        let mut apps =
-            self.create_application_services(&core, &repos, trash_service.clone(), &pool);
+        let mut apps = self.create_application_services(
+            &core,
+            &repos,
+            trash_service.clone(),
+            &pool,
+            path_resolver.clone(),
+        );
 
         // 5. Share service
         let share_service = self.create_share_service(&repos, &pool);
@@ -853,11 +866,10 @@ impl AppServiceFactory {
             app_state.app_password_service = shared_app_pw_svc.clone();
         }
 
-        // 9e. Wire PathResolver for single-query WebDAV path resolution
-        {
-            app_state.path_resolver = Some(Arc::new(PathResolverService::new(pool.clone())));
-            tracing::info!("PathResolver service initialized");
-        }
+        // 9e. Wire PathResolver for single-query WebDAV path resolution.
+        // Same instance already injected into FolderService at step 4.
+        app_state.path_resolver = Some(path_resolver);
+        tracing::info!("PathResolver service initialized");
 
         // 10. Wire CalDAV/CardDAV services
         {

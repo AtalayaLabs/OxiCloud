@@ -1,23 +1,37 @@
 use crate::application::dtos::folder_dto::{
-    CreateFolderDto, FolderDto, MoveFolderDto, RenameFolderDto,
+    CreateFolderDto, EnsurePathOutcome, FolderDto, MoveFolderDto, RenameFolderDto,
 };
 use crate::application::ports::inbound::FolderUseCase;
 use crate::common::errors::{DomainError, ErrorKind};
 use crate::domain::repositories::folder_repository::FolderRepository;
 use crate::domain::services::path_service::StoragePath;
 use crate::infrastructure::repositories::pg::folder_db_repository::FolderDbRepository;
+use crate::infrastructure::services::path_resolver_service::{
+    PathResolverService, ResolvedResource,
+};
 use std::sync::Arc;
 use uuid::Uuid;
 
 /// Implementation of the use case for folder operations
 pub struct FolderService {
     folder_storage: Arc<FolderDbRepository>,
+    path_resolver: Option<Arc<PathResolverService>>,
 }
 
 impl FolderService {
-    /// Creates a new folder service
-    pub fn new(folder_storage: Arc<FolderDbRepository>) -> Self {
-        Self { folder_storage }
+    /// Creates a new folder service.
+    ///
+    /// `path_resolver` is required for `ensure_path` (owner-scoped path
+    /// resolution); other use cases work without it. Tests and reduced
+    /// stubs may pass `None`.
+    pub fn new(
+        folder_storage: Arc<FolderDbRepository>,
+        path_resolver: Option<Arc<PathResolverService>>,
+    ) -> Self {
+        Self {
+            folder_storage,
+            path_resolver,
+        }
     }
 
     /// Creates a stub implementation for testing and middleware
@@ -27,6 +41,14 @@ impl FolderService {
         impl FolderUseCase for FolderServiceStub {
             async fn create_folder(&self, _dto: CreateFolderDto) -> Result<FolderDto, DomainError> {
                 Ok(FolderDto::empty())
+            }
+
+            async fn ensure_path(
+                &self,
+                _path: &str,
+                _owner: Uuid,
+            ) -> Result<EnsurePathOutcome, DomainError> {
+                Ok(EnsurePathOutcome::Created(FolderDto::empty()))
             }
 
             async fn get_folder(&self, _id: &str) -> Result<FolderDto, DomainError> {
@@ -152,20 +174,105 @@ impl FolderUseCase for FolderService {
             }
         }
 
-        // Create the folder
         let folder = self
             .folder_storage
             .create_folder(dto.name, dto.parent_id)
-            .await
-            .map_err(|e| {
-                DomainError::internal_error(
-                    "FolderStorage",
-                    format!("Failed to create folder: {}", e),
-                )
-            })?;
+            .await?;
 
-        // Convert to DTO
         Ok(FolderDto::from(folder))
+    }
+
+    async fn ensure_path(&self, path: &str, owner: Uuid) -> Result<EnsurePathOutcome, DomainError> {
+        let resolver = self.path_resolver.as_ref().ok_or_else(|| {
+            DomainError::internal_error(
+                "FolderService",
+                "ensure_path called without a PathResolverService — this is a DI configuration bug",
+            )
+        })?;
+
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        if segments.is_empty() {
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "Folder",
+                "ensure_path requires a non-empty path",
+            ));
+        }
+        let last_index = segments.len() - 1;
+
+        let mut parent_id: Option<String> = None;
+        let mut accumulated = String::new();
+
+        for (i, segment) in segments.iter().enumerate() {
+            if !accumulated.is_empty() {
+                accumulated.push('/');
+            }
+            accumulated.push_str(segment);
+            let is_leaf = i == last_index;
+
+            match resolver.resolve_path_for_user(&accumulated, owner).await {
+                Ok(ResolvedResource::Folder(existing)) => {
+                    if is_leaf {
+                        return Ok(EnsurePathOutcome::Existed(existing));
+                    }
+                    parent_id = Some(existing.id);
+                }
+                Ok(ResolvedResource::File(_)) => {
+                    // A file occupies the path. RFC 4918 §9.3.1: MKCOL on
+                    // an existing resource of any kind → 405. Surface this
+                    // as `AlreadyExists`; the handler maps to 405 via
+                    // `From<DomainError>` (`AlreadyExists` → `Conflict`),
+                    // overridden to 405 by the MKCOL adapter when the
+                    // outcome variant indicates pre-existence. Here we
+                    // distinguish by erroring with `AlreadyExists` rather
+                    // than returning an `Existed` outcome, because we don't
+                    // own a `FolderDto` for a file — and because
+                    // intermediate file collisions are unrecoverable.
+                    return Err(DomainError::already_exists(
+                        "Folder",
+                        format!("a file already exists at path '{}'", accumulated),
+                    ));
+                }
+                Err(e) if e.kind == ErrorKind::NotFound => {
+                    let create_dto = CreateFolderDto {
+                        name: (*segment).to_string(),
+                        parent_id: parent_id.clone(),
+                    };
+                    match self.create_folder(create_dto).await {
+                        Ok(created) => {
+                            if is_leaf {
+                                return Ok(EnsurePathOutcome::Created(created));
+                            }
+                            parent_id = Some(created.id);
+                        }
+                        Err(e) if e.kind == ErrorKind::AlreadyExists => {
+                            // Race: another request created the same folder
+                            // between our resolve and create calls. Re-read.
+                            match resolver.resolve_path_for_user(&accumulated, owner).await? {
+                                ResolvedResource::Folder(existing) => {
+                                    if is_leaf {
+                                        return Ok(EnsurePathOutcome::Existed(existing));
+                                    }
+                                    parent_id = Some(existing.id);
+                                }
+                                ResolvedResource::File(_) => {
+                                    return Err(DomainError::already_exists(
+                                        "Folder",
+                                        format!("a file already exists at path '{}'", accumulated),
+                                    ));
+                                }
+                            }
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        // Loop body always returns when `is_leaf`; reaching here means
+        // `segments` was empty, but we guarded that above.
+        unreachable!("ensure_path loop must return on the leaf segment")
     }
 
     /// Creates a root-level home folder for a user during registration.
@@ -526,5 +633,41 @@ impl FolderUseCase for FolderService {
                 format!("Failed to delete folder with ID: {}: {}", id, e),
             )
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn service_without_resolver() -> FolderService {
+        FolderService::new(Arc::new(FolderDbRepository::new_stub()), None)
+    }
+
+    #[tokio::test]
+    async fn ensure_path_rejects_empty_path() {
+        let svc = service_without_resolver();
+        // No resolver is fine here — the empty-path guard comes first only
+        // *after* the resolver check, so we instead use a path with at
+        // least one segment but expect the no-resolver error to surface.
+        let err = svc
+            .ensure_path("foo", Uuid::new_v4())
+            .await
+            .expect_err("must fail without a path resolver");
+        assert_eq!(err.kind, ErrorKind::InternalError);
+        assert!(err.message.contains("PathResolverService"));
+    }
+
+    #[tokio::test]
+    async fn ensure_path_without_resolver_is_internal_error() {
+        // This guards against accidentally constructing FolderService
+        // with `path_resolver: None` in a production code path, which
+        // would silently disable MKCOL.
+        let svc = service_without_resolver();
+        let err = svc
+            .ensure_path("a/b/c", Uuid::new_v4())
+            .await
+            .expect_err("must fail without a path resolver");
+        assert_eq!(err.kind, ErrorKind::InternalError);
     }
 }

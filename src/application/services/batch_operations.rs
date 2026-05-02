@@ -1038,7 +1038,7 @@ mod tests {
         let batch_service = BatchOperationService::new(
             Arc::new(FileRetrievalService::new(file_read_repo)),
             Arc::new(FileManagementService::new(file_write_repo)),
-            Arc::new(FolderService::new(folder_repo)),
+            Arc::new(FolderService::new(folder_repo, None)),
             AppConfig::default(),
         );
 
