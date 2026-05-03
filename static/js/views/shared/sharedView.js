@@ -10,10 +10,14 @@ import { formatDateShort } from '../../core/formatters.js';
 import { i18n } from '../../core/i18n.js';
 import { fileSharing } from '../../features/sharing/fileSharing.js';
 
+/** @import {Share} from '../../core/types.js' */
+
 const TTL = 5 * 60 * 1000; // 5 min
 
 const sharedView = {
     // State
+
+    /** @type {Array<Share>} */
     items: [],
 
     _expires: 0,
@@ -21,6 +25,7 @@ const sharedView = {
     /** @type {Map<string, boolean>} key = "file:<id>" | "folder:<id>" */
     _knownItemsId: new Map(),
 
+    /** @type {Array<Share>} */
     filteredItems: [],
     currentItem: null,
 
@@ -67,7 +72,7 @@ const sharedView = {
      *
      * @param {boolean} force ignore cache
      */
-    async loadItems(force) {
+    async loadItems(force = false) {
         if (this._expires > Date.now() && !force) return;
 
         try {

@@ -34,7 +34,7 @@ const notifications = (() => {
 
         bellBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            const open = wrapper.classList.toggle('open');
+            const open = wrapper?.classList.toggle('open');
             bellBtn.classList.toggle('active', open);
 
             // Close user-menu if it's open
@@ -46,7 +46,7 @@ const notifications = (() => {
 
         // Close on outside click
         document.addEventListener('click', (e) => {
-            if (!wrapper.contains(e.target)) {
+            if (!wrapper?.contains(/** @type {Node | null} */ (e.target))) {
                 close();
             }
         });
@@ -63,8 +63,8 @@ const notifications = (() => {
     function close() {
         const bellBtn = $('notif-bell-btn');
         const wrapper = $('notif-wrapper');
-        wrapper.classList.remove('open');
-        bellBtn.classList.remove('active');
+        wrapper?.classList.remove('open');
+        bellBtn?.classList.remove('active');
     }
 
     /* ── badge helpers ──────────────────────────────────────── */
@@ -82,7 +82,7 @@ const notifications = (() => {
         if (!badge) return;
         if (_badgeCount > 0) {
             badge.classList.remove('hidden');
-            badge.textContent = _badgeCount > 99 ? '99+' : _badgeCount;
+            badge.textContent = _badgeCount > 99 ? '99+' : String(_badgeCount);
         } else {
             badge.classList.add('hidden');
         }

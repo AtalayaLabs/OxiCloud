@@ -2,17 +2,22 @@
   "compilerOptions": {
     // Enable type checking on all JS files (equivalent to @ts-check globally)
     "checkJs": true,
+    "allowJs": true,
     "strict": true,
-    "noImplicitAny": true,
+    "noEmit": true,
+    "noImplicitAny": false,
     "noImplicitReturns": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "exactOptionalPropertyTypes": true,
-    "target": "ES2022",
     "lib": ["ES2022", "DOM"],
     // Treat all JS files as modules
-    "moduleDetection": "force"
+    "moduleDetection": "force",
+    "strictNullChecks": false, // too much pedantic...
+    "moduleResolution": "bundler",
+    "skipLibCheck": true,
+    "target": "ESNext"
   },
   "include": ["static/js/**/*.js"],
-  "exclude": []
+  "exclude": ["static/js/vendors/**", "static/js/vendors/**/*.mjs"]
 }

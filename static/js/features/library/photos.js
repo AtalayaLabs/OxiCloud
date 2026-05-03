@@ -214,7 +214,7 @@ const photosView = {
                 if (grid?.classList.contains('photos-grid')) {
                     grid.insertAdjacentHTML('beforeend', tilesHtml);
                     const countSpan = existingHeader.querySelector('.photos-day-count');
-                    if (countSpan) countSpan.textContent = grid.children.length;
+                    if (countSpan) countSpan.textContent = String(grid.children.length);
                 }
             } else {
                 // New group — insert header + grid before sentinel
@@ -269,11 +269,14 @@ const photosView = {
     /** @param {number} [startIndex=0] When > 0, only process video tiles
      *  for items[startIndex..] — avoids re-scanning the entire DOM. */
     _setupVideoThumbnails(startIndex = 0) {
-        const tiles = this._container.querySelectorAll('.photo-tile[data-mime^="video/"]');
+        const tiles = /** @type {NodeListOf<HTMLDivElement> */ (this._container?.querySelectorAll('.photo-tile[data-mime^="video/"]'));
         const newIds = startIndex > 0 ? new Set(this.items.slice(startIndex).map((f) => f.id)) : null;
+
+        if (!tiles) return;
 
         for (const tile of tiles) {
             const fileId = tile.dataset.id;
+            if (!fileId) continue;
             if (newIds && !newIds.has(fileId)) continue;
             if (this._videoThumbCache.has(fileId)) continue;
 
@@ -313,6 +316,8 @@ const photosView = {
     /** Extract a single frame from a video and display it as the tile
      *  thumbnail, then upload the JPEG to the server for caching. */
     _generateVideoThumbnail(tile, img) {
+        // TODO: use thumbnail.js s common lib
+
         const fileId = tile.dataset.id;
         const video = document.createElement('video');
         video.crossOrigin = 'anonymous';
@@ -341,7 +346,7 @@ const photosView = {
                 canvas.width = Math.round(video.videoWidth * scale);
                 canvas.height = Math.round(video.videoHeight * scale);
                 const ctx = canvas.getContext('2d');
-                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                ctx?.drawImage(video, 0, 0, canvas.width, canvas.height);
 
                 // JPEG: explicit quality control, universally supported,
                 // and server stores as-is when dimensions fit (zero re-encode).
@@ -362,7 +367,7 @@ const photosView = {
 
                         // Upload to server for permanent caching
                         const token = localStorage.getItem('token') || sessionStorage.getItem('token');
-                        const headers = { 'Content-Type': blob.type, ...getCsrfHeaders() };
+                        const headers = /** @type {Record<String, String>} */ ({ 'Content-Type': blob.type, ...getCsrfHeaders() });
                         if (token) headers.Authorization = `Bearer ${token}`;
 
                         fetch(`/api/files/${fileId}/thumbnail/preview`, {
@@ -426,6 +431,7 @@ const photosView = {
 
     /** Render empty state */
     _renderEmpty() {
+        if (!this._container) return;
         this._container.innerHTML = `
             <div class="photos-empty">
                 <i class="fas fa-images"></i>
@@ -526,44 +532,53 @@ const photosView = {
             <button id="photos-sel-clear" title="Clear"><i class="fas fa-times"></i></button>
         `;
 
-        bar.querySelector('#photos-sel-clear').onclick = () => {
-            this.selected.clear();
-            this._container.querySelectorAll('.photo-tile.selected').forEach((t) => {
-                t.classList.remove('selected');
-            });
-            this._hideSelectionBar();
-        };
+        const bar_clear = /** @type {HTMLButtonElement} */ (bar.querySelector('#photos-sel-clear'));
+        if (bar_clear) {
+            bar_clear.onclick = () => {
+                this.selected.clear();
+                this._container.querySelectorAll('.photo-tile.selected').forEach((t) => {
+                    t.classList.remove('selected');
+                });
+                this._hideSelectionBar();
+            };
+        }
 
-        bar.querySelector('#photos-sel-delete').onclick = async () => {
-            if (!confirm('Delete selected items?')) return;
-            for (const fid of this.selected) {
-                try {
-                    await fetch(`/api/files/${fid}`, {
-                        method: 'DELETE',
-                        credentials: 'include',
-                        headers: this._headers()
-                    });
-                } catch (err) {
-                    console.error('Delete failed:', fid, err);
+        const bar_delete = /** @type {HTMLButtonElement} */ (bar.querySelector('#photos-sel-delete'));
+        if (bar_delete) {
+            bar_delete.onclick = async () => {
+                if (!confirm('Delete selected items?')) return;
+                for (const fid of this.selected) {
+                    try {
+                        await fetch(`/api/files/${fid}`, {
+                            method: 'DELETE',
+                            credentials: 'include',
+                            headers: this._headers()
+                        });
+                    } catch (err) {
+                        console.error('Delete failed:', fid, err);
+                    }
                 }
-            }
-            this.items = this.items.filter((f) => !this.selected.has(f.id));
-            this.selected.clear();
-            this._hideSelectionBar();
-            this._renderedCount = 0;
-            this._renderFull();
-        };
+                this.items = this.items.filter((f) => !this.selected.has(f.id));
+                this.selected.clear();
+                this._hideSelectionBar();
+                this._renderedCount = 0;
+                this._renderFull();
+            };
+        }
 
-        bar.querySelector('#photos-sel-download').onclick = async () => {
-            for (const fid of this.selected) {
-                const a = document.createElement('a');
-                a.href = `/api/files/${fid}`;
-                a.download = '';
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-            }
-        };
+        const bar_download = /** @type {HTMLButtonElement} */ (bar.querySelector('#photos-sel-download'));
+        if (bar_download) {
+            bar_download.onclick = async () => {
+                for (const fid of this.selected) {
+                    const a = document.createElement('a');
+                    a.href = `/api/files/${fid}`;
+                    a.download = '';
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                }
+            };
+        }
 
         bar.style.display = 'flex';
     },

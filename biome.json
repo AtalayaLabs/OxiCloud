@@ -1,6 +1,6 @@
 {
     "files": {
-        "includes": ["static/**/*.js", "static/**/*.css", "static/**/*.json"]
+        "includes": ["static/**/*.js", "static/**/*.css", "static/**/*.json", "!static/js/vendors/"]
     },
     "formatter": {
         "enabled": true,
@@ -15,7 +15,15 @@
             "recommended": true,
             "correctness": {
                 "noUnusedVariables": "warn",
-                "noUndeclaredVariables": "error"
+                "noUndeclaredVariables": "error",
+                "noUnreachable": "warn",
+                "noUnsafeFinally": "error"
+            },
+            "nursery": {
+                "useExplicitType": "error"
+            },
+            "security": {
+                "noGlobalEval": "error"
             },
             "style": {
                 "noDescendingSpecificity": "off"

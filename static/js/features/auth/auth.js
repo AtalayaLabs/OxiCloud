@@ -405,7 +405,7 @@ function initLanguageSelector() {
     const pickerName = document.getElementById('lang-picker-name');
     const searchInput = document.getElementById('lang-picker-search-input');
 
-    if (!languagePanel || !picker) return;
+    if (!languagePanel || !picker || !pickerFlag || !pickerName || !pickerList) return;
 
     // --- Auto-detect browser language ---
     const detected = detectBrowserLanguage();

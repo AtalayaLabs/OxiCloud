@@ -16,7 +16,7 @@ async function performSearch(query, sortBy) {
 
     try {
         app.isSearchMode = true;
-        ui.updateBreadcrumb(`Search: "${query}"`);
+        ui.updateBreadcrumb();
 
         ui.showError(`<h3><i class="fas fa-spinner fa-spin search-spinner"></i> Searching for "${query}"...</h3>`);
 
@@ -48,9 +48,10 @@ async function performSearch(query, sortBy) {
 }
 
 document.addEventListener('search-resort', (e) => {
-    const searchInput = document.querySelector('.search-container input');
+    const event = /** @type {CustomEvent<{sort_by: string}>} */ (e);
+    const searchInput = /** @type {HTMLInputElement} */ (document.querySelector('.search-container input'));
     if (searchInput?.value.trim()) {
-        performSearch(searchInput.value.trim(), e.detail.sort_by);
+        performSearch(searchInput.value.trim(), event.detail.sort_by);
     }
 });
 

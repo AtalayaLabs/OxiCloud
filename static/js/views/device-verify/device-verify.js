@@ -3,7 +3,7 @@ import { getCsrfHeaders } from '../../core/csrf.js';
 
 (() => {
     var API_BASE = window.location.origin;
-    var codeInput = document.getElementById('user-code');
+    var codeInput = /** @type {HTMLInputElement} */ (document.getElementById('user-code'));
     var deviceInfo = document.getElementById('device-info');
     var actionButtons = document.getElementById('action-buttons');
     var errorText = document.getElementById('error-text');

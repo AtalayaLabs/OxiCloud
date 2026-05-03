@@ -165,7 +165,7 @@ const fileSharing = {
 
     /**
      * Format expiration date for display (Unix timestamp in seconds or ISO string)
-     * @param {number|string} value
+     * @param {number|Date} value
      * @returns {string}
      */
     formatExpirationDate(value) {
@@ -177,7 +177,7 @@ const fileSharing = {
      * Send a notification about a shared resource (stub — no backend endpoint yet)
      * @param {string} shareUrl
      * @param {string} recipientEmail
-     * @param {string} message
+     * @param {string} _message
      * @returns {Promise<boolean>}
      */
     async sendShareNotification(shareUrl, recipientEmail, _message = '') {

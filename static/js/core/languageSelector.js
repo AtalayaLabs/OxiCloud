@@ -96,7 +96,7 @@ function createLanguageSelector(containerId = 'language-selector') {
         option.className = `language-option${lang.code === currentLocale ? ' active' : ''}`;
         option.setAttribute('role', 'option');
         option.setAttribute('data-lang', lang.code);
-        option.setAttribute('aria-selected', lang.code === currentLocale);
+        option.setAttribute('aria-selected', String(lang.code === currentLocale));
         option.innerHTML = `
             <span class="lang-flag">${lang.flag}</span>
             <span class="lang-name">${lang.name}</span>
@@ -134,7 +134,7 @@ function createLanguageSelector(containerId = 'language-selector') {
 
     // Close dropdown when clicking outside
     document.addEventListener('click', (e) => {
-        if (!container.contains(e.target)) {
+        if (!container.contains(/** @type {Node | null } */ (e.target))) {
             closeDropdown(container);
         }
     });

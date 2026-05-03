@@ -171,7 +171,7 @@ const favorites = {
             // FIXME: this case is not easy to understand, should apply better implementation
             multiSelect.init();
 
-            ui.updateBreadcrumb('');
+            ui.updateBreadcrumb();
 
             if (this._cache.size === 0) {
                 ui.showError(`

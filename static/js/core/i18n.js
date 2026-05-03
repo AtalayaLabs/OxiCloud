@@ -18,6 +18,7 @@ if (!supportedLocales.includes(currentLocale)) {
 }
 
 // Cache for translations
+/** @type {Record<string, Object>} */
 const translations = {};
 
 /**

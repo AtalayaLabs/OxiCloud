@@ -24,8 +24,6 @@ import { app } from './state.js';
 import { uiFileTypes } from './uiFileTypes.js';
 import { uiNotifications } from './uiNotifications.js';
 
-let __rubberBandJustFinished = false;
-
 // UI Module
 const ui = {
     /** @type {HTMLDListElement | null} */
@@ -235,22 +233,22 @@ const ui = {
             document.body.appendChild(shareDialog);
 
             // Add event listeners for share dialog
-            document.getElementById('share-close-btn').addEventListener('click', () => {
+            document.getElementById('share-close-btn')?.addEventListener('click', () => {
                 contextMenus.closeShareDialog();
             });
 
-            document.getElementById('share-confirm-btn').addEventListener('click', async () => {
+            document.getElementById('share-confirm-btn')?.addEventListener('click', async () => {
                 await contextMenus.createSharedLink();
             });
 
-            document.getElementById('copy-share-btn').addEventListener('click', async () => {
-                const shareUrl = document.getElementById('generated-share-url').value;
-                await fileSharing.copyLinkToClipboard(shareUrl);
+            document.getElementById('copy-share-btn')?.addEventListener('click', async () => {
+                const shareUrl = /** @type {HTMLInputElement | null} */ (document.getElementById('generated-share-url'))?.value;
+                if (shareUrl) await fileSharing.copyLinkToClipboard(shareUrl);
             });
 
-            document.getElementById('notify-share-btn').addEventListener('click', () => {
-                const shareUrl = document.getElementById('generated-share-url').value;
-                contextMenus.showEmailNotificationDialog(shareUrl);
+            document.getElementById('notify-share-btn')?.addEventListener('click', () => {
+                const shareUrl = /** @type {HTMLInputElement | null} */ (document.getElementById('generated-share-url'))?.value;
+                if (shareUrl) contextMenus.showEmailNotificationDialog(shareUrl);
             });
 
             // FIXME make generic function (close all dialog / etc)
@@ -301,11 +299,11 @@ const ui = {
             document.body.appendChild(notificationDialog);
 
             // Add event listeners for notification dialog
-            document.getElementById('notification-cancel-btn').addEventListener('click', () => {
+            document.getElementById('notification-cancel-btn')?.addEventListener('click', () => {
                 contextMenus.closeNotificationDialog();
             });
 
-            document.getElementById('notification-send-btn').addEventListener('click', () => {
+            document.getElementById('notification-send-btn')?.addEventListener('click', () => {
                 contextMenus.sendShareNotification();
             });
         }
@@ -332,7 +330,7 @@ const ui = {
             `;
             document.body.appendChild(playlistDialog);
 
-            document.getElementById('playlist-cancel-btn').addEventListener('click', () => {
+            document.getElementById('playlist-cancel-btn')?.addEventListener('click', () => {
                 if (contextMenus) contextMenus.closePlaylistDialog();
             });
         }
@@ -373,9 +371,9 @@ const ui = {
                         entry.file(
                             (file) => {
                                 out.push({ file, relativePath: `${prefix}${file.name}` });
-                                resolve();
+                                resolve(undefined);
                             },
-                            () => resolve()
+                            () => resolve(undefined)
                         );
                     });
                     return;
@@ -407,20 +405,26 @@ const ui = {
         };
 
         // Dropzone events
-        dropzone.addEventListener('dragover', (e) => {
+        dropzone?.addEventListener('dragover', (e) => {
             e.preventDefault();
             dropzone.classList.add('active');
         });
 
-        dropzone.addEventListener('dragleave', () => {
+        dropzone?.addEventListener('dragleave', () => {
             dropzone.classList.remove('active');
         });
 
-        dropzone.addEventListener('drop', async (e) => {
+        // remove previous hack e._oxiHandled
+        // WeakSet will automatically garbage collect entry
+        const handledDropEvents = new WeakSet();
+
+        dropzone?.addEventListener('drop', async (e) => {
             e.preventDefault();
             e.stopPropagation(); // Prevent bubbling to document's drop handler (avoids double upload)
-            e._oxiHandled = true; // Mark as handled for document-level fallback
+            handledDropEvents.add(e); // Mark as handled for document-level fallback
             dropzone.classList.remove('active');
+            if (!e.dataTransfer) return;
+
             if (e.dataTransfer.files.length > 0) {
                 // First try directory-aware extraction (Finder folder drag & drop)
                 const droppedEntries = await collectDroppedEntries(e.dataTransfer);
@@ -453,6 +457,7 @@ const ui = {
         // Document-wide drag and drop
         document.addEventListener('dragover', (e) => {
             e.preventDefault();
+            if (!e.dataTransfer) return;
             if (e.dataTransfer.types.includes('Files')) {
                 dropzone?.classList.remove('hidden');
                 dropzone?.classList.add('active');
@@ -461,9 +466,9 @@ const ui = {
 
         document.addEventListener('dragleave', (e) => {
             if (e.clientX <= 0 || e.clientY <= 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight) {
-                dropzone.classList.remove('active');
+                dropzone?.classList.remove('active');
                 setTimeout(() => {
-                    if (!dropzone.classList.contains('active')) {
+                    if (!dropzone?.classList.contains('active')) {
                         dropzone?.classList.add('hidden');
                     }
                 }, 100);
@@ -472,11 +477,12 @@ const ui = {
 
         document.addEventListener('drop', async (e) => {
             e.preventDefault();
-            dropzone.classList.remove('active');
+            dropzone?.classList.remove('active');
 
             // Skip if already handled by the dropzone handler (defensive against bubble leaks)
-            if (e._oxiHandled) return;
+            if (handledDropEvents.has(e)) return;
 
+            if (!e.dataTransfer) return;
             if (e.dataTransfer.files.length > 0) {
                 // First try directory-aware extraction (Finder folder drag & drop)
                 const droppedEntries = await collectDroppedEntries(e.dataTransfer);
@@ -539,7 +545,9 @@ const ui = {
      */
     updateBreadcrumb() {
         const breadcrumb = document.querySelector('.breadcrumb');
-        breadcrumb.innerHTML = '';
+        if (breadcrumb) {
+            breadcrumb.innerHTML = '';
+        }
         const path = app.breadcrumbPath; // [{id, name}, ...]
 
         // -- Home icon (always present, clickable to go to root) --
@@ -558,7 +566,7 @@ const ui = {
                 loadFiles();
             });
         }
-        breadcrumb.appendChild(homeIcon);
+        breadcrumb?.appendChild(homeIcon);
 
         // -- Root/Home folder name (if available) is always the first element of the breadcrumb --
         // TODO clarify the difference between homeIcon & this first element
@@ -579,7 +587,7 @@ const ui = {
             const separator = document.createElement('span');
             separator.className = 'breadcrumb-separator';
             separator.textContent = '>';
-            breadcrumb.appendChild(separator);
+            breadcrumb?.appendChild(separator);
 
             // Segment item
             const item = document.createElement('span');
@@ -600,7 +608,7 @@ const ui = {
                 // can drag files on this folder
                 // dragover – only folders are valid drop targets
                 item.addEventListener('dragover', (e) => {
-                    const card = e.target.closest('span');
+                    const card = /** @type {HTMLElement} */ (e.target).closest('span');
                     if (!card?.dataset.folderId) return;
                     e.preventDefault();
                     card.classList.add('drop-target');
@@ -609,14 +617,14 @@ const ui = {
                 // dragleave
                 item.addEventListener('dragleave', (e) => {
                     console.log('dragleave ', e);
-                    const card = e.target.closest('span');
+                    const card = /** @type {HTMLElement} */ (e.target).closest('span');
                     if (!card?.dataset.folderId) return;
                     card.classList.remove('drop-target');
                 });
 
                 // drop – only folders accept drops
                 item.addEventListener('drop', async (e) => {
-                    const card = e.target.closest('span');
+                    const card = /** @type {HTMLElement} */ (e.target).closest('span');
                     if (!card) return;
                     const targetFolderId = card.dataset.folderId;
                     if (!targetFolderId) return;
@@ -625,13 +633,15 @@ const ui = {
                     card.classList.remove('drop-target');
 
                     const action = e.dataTransfer?.dropEffect;
-                    await this._dropToFolder(action, targetFolderId, e.dataTransfer);
+                    if (action) {
+                        await this._dropToFolder(action, targetFolderId, e.dataTransfer);
+                    }
                 });
             } else {
                 // Last segment: current location, not clickable
                 item.classList.add('breadcrumb-current');
             }
-            breadcrumb.appendChild(item);
+            breadcrumb?.appendChild(item);
         });
     },
 
@@ -915,7 +925,7 @@ const ui = {
                     parent_id: card.dataset.parentId || ''
                 };
             } else {
-                const fileData = info.data || self._items.get(info.id);
+                const fileData = info.data || this._items.get(info.id);
                 app.contextMenuTargetFile = {
                     id: info.id,
                     name: card.dataset.fileName,
@@ -927,27 +937,27 @@ const ui = {
 
         // ──  click (open / navigate; select only via checkbox) ──
         filesList.addEventListener('click', (e) => {
-            const card = e.target.closest('.file-item');
+            const card = /** @type {HTMLElement} */ (e.target).closest('.file-item');
             if (!card) return;
 
-            if (e.target.closest('.file-actions')) {
+            if (/** @type {HTMLElement} */ (e.target).closest('.file-actions')) {
                 e.stopPropagation();
                 e.preventDefault();
                 const info = itemInfo(card);
                 if (!info) return;
                 setContextTarget(card, info);
                 const menuId = info.type === 'folder' ? 'folder-context-menu' : 'file-context-menu';
-                showContextMenuAtElement(e.target.closest('.file-actions'), menuId);
+                showContextMenuAtElement(/** @type {HTMLElement} */ (e.target).closest('.file-actions'), menuId);
                 return;
             }
 
-            if (e.target.closest('.checkbox-cell')) {
+            if (/** @type {HTMLElement} */ (e.target).closest('.checkbox-cell')) {
                 toggleCardSelection(card, e);
                 return;
             }
 
             // Favorite star – handled by direct onclick on the button
-            if (e.target.closest('.favorite-star')) return;
+            if (/** @type {HTMLElement} */ (e.target).closest('.favorite-star')) return;
 
             // Single-click opens/navigates (selection is only via checkbox)
             const info = itemInfo(card);
@@ -984,7 +994,7 @@ const ui = {
         // ── shared events ──────────────────────
 
         filesList.addEventListener('contextmenu', (e) => {
-            const card = e.target.closest('.file-item');
+            const card = /** @type {HTMLElement} */ (e.target).closest('.file-item');
             if (!card) return;
             e.preventDefault();
             const info = itemInfo(card);
@@ -1001,14 +1011,16 @@ const ui = {
             if (contextMenus && typeof contextMenus.syncAddToPlaylistOption === 'function') {
                 contextMenus.syncAddToPlaylistOption();
             }
-            menu.style.left = `${e.pageX}px`;
-            menu.style.top = `${e.pageY}px`;
-            menu?.classList.remove('hidden');
+            if (menu) {
+                menu.style.left = `${e.pageX}px`;
+                menu.style.top = `${e.pageY}px`;
+                menu.classList.remove('hidden');
+            }
         });
 
         // dragstart
         filesList.addEventListener('dragstart', (e) => {
-            const card = e.target.closest('.file-item');
+            const card = /** @type {HTMLElement} */ (e.target).closest('.file-item');
             if (!card) {
                 e.preventDefault();
                 return;
@@ -1019,6 +1031,8 @@ const ui = {
                 e.preventDefault();
                 return;
             }
+
+            if (!e.dataTransfer) return;
 
             e.dataTransfer.setData('text/plain', info.id);
             if (info.type === 'folder') {
@@ -1076,7 +1090,7 @@ const ui = {
 
             // if more than maxElements display the fading
             if (selectedCardFromList.length > maxElements) {
-                lastItemDiv.classList.add('fading');
+                lastItemDiv?.classList.add('fading');
             }
 
             this.dragPreview.appendChild(this.draggedItems);
@@ -1093,7 +1107,7 @@ const ui = {
 
         // dragover – only folders are valid drop targets
         filesList.addEventListener('dragover', (e) => {
-            const card = e.target.closest('.file-item');
+            const card = /** @type {HTMLElement} */ (/** @type {HTMLElement} */ (e.target).closest('.file-item'));
             if (!card || card.dataset.fileId) return;
             if (!card.dataset.folderId) return;
             e.preventDefault();
@@ -1102,14 +1116,14 @@ const ui = {
 
         // dragleave
         filesList.addEventListener('dragleave', (e) => {
-            const card = e.target.closest('.file-item');
+            const card = /** @type {HTMLElement} */ (/** @type {HTMLElement} */ (e.target).closest('.file-item'));
             if (!card || card.dataset.fileId) return;
             card.classList.remove('drop-target');
         });
 
         // drop – only folders accept drops
         filesList.addEventListener('drop', async (e) => {
-            const card = e.target.closest('.file-item');
+            const card = /** @type {HTMLElement} */ (/** @type {HTMLElement} */ (e.target).closest('.file-item'));
             if (!card || card.dataset.fileId) return;
             const targetFolderId = card.dataset.folderId;
             if (!targetFolderId) return;
@@ -1117,6 +1131,7 @@ const ui = {
             e.preventDefault();
             card.classList.remove('drop-target');
 
+            if (!e.dataTransfer) return;
             const action = e.dataTransfer.dropEffect;
             await this._dropToFolder(action, targetFolderId, e.dataTransfer);
         });
@@ -1203,7 +1218,7 @@ const ui = {
             const targetPath = isFavorite ? filledPath : outlinePath;
             if (svg && targetPath) {
                 const p = svg.querySelector('path');
-                if (p) p.setAttribute('d', targetPath[1]);
+                if (p) p.setAttribute('d', String(targetPath[1]));
                 svg.setAttribute('viewBox', `0 0 ${targetPath[0]} 512`);
             }
 
@@ -1379,6 +1394,8 @@ const ui = {
     /**
      * Render an array of folders into both grid and list views
      * using DocumentFragment for minimal reflows.
+     *
+     * @param {FolderInfo[]} folders
      */
     renderFolders(folders) {
         if (!this._delegationReady) this.initDelegation();
@@ -1502,6 +1519,8 @@ function showContextMenuAtElement(triggerElement, menuId) {
     menu.style.top = `${top}px`;
     menu.classList.remove('hidden');
 }
+
+let __rubberBandJustFinished = false;
 
 /**
  * Rubber band (lasso) selection — click + drag on empty grid area
@@ -1635,7 +1654,7 @@ if (document.readyState === 'loading') {
  * @param {boolean} [options.danger=false] - Use danger styling (red)
  * @returns {Promise<boolean>} true if confirmed, false if cancelled
  */
-function showConfirmDialog({ title, message, confirmText, cancelText, danger = true } = {}) {
+function showConfirmDialog({ title, message, confirmText, cancelText, danger = true }) {
     const ct = confirmText || i18n.t('actions.delete');
     const cc = cancelText || i18n.t('actions.cancel');
     const t = title || i18n.t('dialogs.confirm_title');
@@ -1674,8 +1693,8 @@ function showConfirmDialog({ title, message, confirmText, cancelText, danger = t
             resolve(result);
         };
 
-        overlay.querySelector('.confirm-dialog-cancel').addEventListener('click', () => cleanup(false));
-        overlay.querySelector('.confirm-dialog-ok').addEventListener('click', () => cleanup(true));
+        overlay.querySelector('.confirm-dialog-cancel')?.addEventListener('click', () => cleanup(false));
+        overlay.querySelector('.confirm-dialog-ok')?.addEventListener('click', () => cleanup(true));
         overlay.addEventListener('click', (e) => {
             if (e.target === overlay) cleanup(false);
         });
