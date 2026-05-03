@@ -568,6 +568,13 @@ async fn handle_put(
             }
         }
 
+        // Bug 1 & 2 fix: invalidate stale thumbnail and regenerate from new blob.
+        state.core.refresh_thumbnails_after_update(
+            updated.id.clone(),
+            updated.etag.clone(),
+            &content_type,
+        ).await;
+
         return Ok(Response::builder()
             .status(StatusCode::NO_CONTENT)
             .header(header::ETAG, format!("\"{}\"", updated.etag))

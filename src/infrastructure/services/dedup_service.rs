@@ -49,6 +49,7 @@ use crate::application::ports::dedup_ports::{
     BlobMetadataDto, DedupPort, DedupResultDto, DedupStatsDto,
 };
 use crate::domain::errors::{DomainError, ErrorKind};
+use crate::infrastructure::services::thumbnail_service::ThumbnailService;
 
 // ── CDC Constants ────────────────────────────────────────────────────────────
 
@@ -83,6 +84,9 @@ pub struct DedupService {
     /// Isolated maintenance pool for long-running operations
     /// (verify_integrity, garbage_collect) that must never starve the primary.
     maintenance_pool: Arc<PgPool>,
+    /// Optional thumbnail service — when set, blob-hash thumbnails are deleted
+    /// from disk whenever a blob's ref_count reaches zero.
+    thumbnail_service: Option<Arc<ThumbnailService>>,
 }
 
 impl DedupService {
@@ -100,7 +104,15 @@ impl DedupService {
             backend,
             pool,
             maintenance_pool,
+            thumbnail_service: None,
         }
+    }
+
+    /// Attach a thumbnail service so that disk thumbnails are cleaned up when
+    /// a blob's ref_count drops to zero.
+    pub fn with_thumbnail_service(mut self, svc: Arc<ThumbnailService>) -> Self {
+        self.thumbnail_service = Some(svc);
+        self
     }
 
     /// Creates a stub instance for testing — never hits PG or the filesystem.
@@ -117,6 +129,7 @@ impl DedupService {
             backend: Arc::new(LocalBlobBackend::new(Path::new("/tmp/oxicloud_stub_blobs"))),
             pool: stub_pool.clone(),
             maintenance_pool: stub_pool,
+            thumbnail_service: None,
         }
     }
 
@@ -772,6 +785,11 @@ impl DedupService {
                 }
             }
 
+            // Bug 4 fix: delete disk thumbnails keyed by file_hash (last reference gone)
+            if let Some(ts) = &self.thumbnail_service {
+                ts.delete_blob_thumbnails(file_hash).await;
+            }
+
             tracing::info!(
                 "MANIFEST DELETED: {} ({} chunks, {} orphan chunks removed)",
                 &file_hash[..12],
@@ -847,6 +865,11 @@ impl DedupService {
             // so no concurrent store_from_file can resurrect a reference.
             if let Err(e) = self.backend.delete_blob(hash).await {
                 tracing::warn!("Failed to delete blob file {}: {}", hash, e);
+            }
+
+            // Bug 3 fix: delete disk thumbnails keyed by hash (last reference gone)
+            if let Some(ts) = &self.thumbnail_service {
+                ts.delete_blob_thumbnails(hash).await;
             }
 
             tracing::info!("BLOB DELETED: {} (no more references)", &hash[..12]);
