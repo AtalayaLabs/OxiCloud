@@ -65,6 +65,14 @@
     color: var(--color-badge-blue-text);
 }
 
+.file-item .file-icon > i,
+.file-item .file-icon > svg {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
 /* ------------------File list View --------------------- */
 
 .list-header {
@@ -145,7 +153,7 @@
     align-items: center;
     justify-content: center;
     border-radius: 8px;
-    font-size: 20px;
+    font-size: 16px;
     margin-bottom: 0;
     flex-shrink: 0;
 }
@@ -422,17 +430,14 @@
 .files-grid-view .file-item .file-icon {
     margin: auto;
     margin-bottom: 10px;
+    font-size: 30px;
 }
 
 .files-grid-view .file-item .file-icon > i,
 .files-grid-view .file-item .file-icon > svg {
-    position: absolute;
     top: 5px;
     width: 60px;
     height: 60px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
 }
 
 /* ----------------------- dragged items -----------*/

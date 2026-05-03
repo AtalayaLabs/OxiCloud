@@ -128,15 +128,11 @@ fn process_release(manifest_dir: &Path, static_dir: &Path, out_dir: &Path) {
     // ── 6. Minify ALL individual JS files in static-dist/ ────────────────────
     minify_tree_js(&dist_dir.join("js"));
 
-    // ── 7. Inline theme-init.js  &  rewrite index.html ──────────────────────
-    let theme_init =
-        fs::read_to_string(static_dir.join("js/core/theme-init.js")).unwrap_or_default();
-    let theme_init_min = js_minify_safe(&theme_init);
+    // ── 7. Rewrite index.html ────────────────────────────────────────────────
     let rewritten_index = rewrite_index_html(
         &index_html,
         &format!("/css/{css_name}"),
         &format!("/js/{js_name}"),
-        &theme_init_min,
     );
     fs::write(dist_dir.join("index.html"), &rewritten_index).expect("write dist index.html");
 
@@ -326,7 +322,13 @@ fn collect_module_deps(
 
     for rel in extract_esm_import_paths(&src) {
         if rel.starts_with('.') {
-            collect_module_deps(&base.join(&rel), order, seen);
+            let target = base.join(&rel);
+            // Skip vendor bundles: they may use top-level await or other ESM
+            // patterns that are incompatible with IIFE wrapping. They must be
+            // loaded via dynamic import() at runtime instead.
+            if !target.components().any(|c| c.as_os_str() == "vendors") {
+                collect_module_deps(&target, order, seen);
+            }
         }
         // Non-relative (bare specifiers like 'react') are ignored — not used here.
     }
@@ -660,10 +662,9 @@ fn json_minify(source: &str) -> String {
 
 /// Rewrite index.html for release:
 ///   - Collapse all `<link stylesheet href="/css/…">` into the single CSS bundle.
-///   - Inline `theme-init.js` as a `<script>` block.
 ///   - Replace all `<script type="module" src="…">` with the single JS bundle.
-///   - Leave the non-module `sw-register.js` script untouched.
-fn rewrite_index_html(html: &str, css_path: &str, js_path: &str, inline_theme_js: &str) -> String {
+///   - Leave `theme-init.js` and `sw-register.js` as external src references.
+fn rewrite_index_html(html: &str, css_path: &str, js_path: &str) -> String {
     let mut out: Vec<String> = Vec::with_capacity(html.lines().count());
     let mut css_done = false;
     let mut js_done = false;
@@ -677,12 +678,6 @@ fn rewrite_index_html(html: &str, css_path: &str, js_path: &str, inline_theme_js
                 out.push(format!("    <link rel=\"stylesheet\" href=\"{css_path}\">"));
                 css_done = true;
             }
-            continue;
-        }
-
-        // ── Replace sync theme-init.js with inline <script> ─────────────────
-        if t.starts_with("<script") && !t.contains("defer") && t.contains("theme-init") {
-            out.push(format!("    <script>{inline_theme_js}</script>"));
             continue;
         }
 

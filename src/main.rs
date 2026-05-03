@@ -439,6 +439,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             HeaderValue::from_static(
                 "default-src 'self'; \
                  script-src 'self'; \
+                 worker-src 'self'; \
                  style-src 'self' 'unsafe-inline'; \
                  img-src 'self' data: blob:; \
                  media-src 'self' blob:; \

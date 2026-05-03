@@ -51,6 +51,15 @@
     color: var(--color-ft-video-text);
 }
 
+/* special case for vidao, add ▶ over the thumbnail (only if not hidden = thumb loaded) */
+.video-icon:has(img:not(.hidden))::before {
+    content: "▶";
+    color: var(--color-video-play);
+    text-shadow: 0 0 3px var(--color-video-play-shadow);
+    z-index: 2; /* above the img */
+    font-weight: bold;
+}
+
 .code-icon {
     background-color: var(--color-border);
 }
