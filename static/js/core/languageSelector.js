@@ -8,7 +8,7 @@ import { i18n } from './i18n.js';
 
 // Locale files that actually exist (have full translations)
 // Keep this list in sync when adding new locale JSON files
-const AVAILABLE_LOCALES = new Set(['en', 'es', 'zh', 'fa', 'fr', 'de', 'pt', 'it', 'nl', 'hi', 'ar', 'ru', 'ja', 'ko']);
+const AVAILABLE_LOCALES = new Set(['en', 'es', 'zh', 'fa', 'fr', 'de', 'pt', 'it', 'nl', 'hi', 'ar', 'ru', 'ja', 'ko', 'pl']);
 
 // Language codes, names, and flag emojis
 // Only returns languages that have a real locale file

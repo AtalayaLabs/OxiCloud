@@ -10,7 +10,7 @@ let currentLocale = navigator.language?.substring(0, 2) || navigator.userLanguag
 
 // Supported locales (languages that have locale files on the server)
 // When a locale file is not found, the system gracefully falls back to English
-const supportedLocales = ['en', 'es', 'zh', 'fa', 'fr', 'de', 'pt', 'nl', 'it', 'hi', 'ar', 'ru', 'ja', 'ko'];
+const supportedLocales = ['en', 'es', 'zh', 'fa', 'fr', 'de', 'pt', 'nl', 'it', 'hi', 'ar', 'ru', 'ja', 'ko', 'pl'];
 
 // Fallback to English if locale is not supported
 if (!supportedLocales.includes(currentLocale)) {
