@@ -188,6 +188,7 @@ pub async fn auth_middleware(
                                 role: claims.role,
                             });
                             request.extensions_mut().insert(current_user);
+                            tracing::Span::current().record("user_id", user_id.to_string());
                             return Ok(next.run(request).await);
                         }
                         Err(e) => {
@@ -234,6 +235,7 @@ pub async fn auth_middleware(
                                 role,
                             });
                             request.extensions_mut().insert(current_user);
+                            tracing::Span::current().record("user_id", user_id.to_string());
                             return Ok(next.run(request).await);
                         }
                         Err(e) => {
@@ -291,6 +293,7 @@ pub async fn auth_middleware(
                         });
                         request.extensions_mut().insert(current_user);
                         request.extensions_mut().insert(CookieAuthenticated);
+                        tracing::Span::current().record("user_id", user_id.to_string());
                         return Ok(next.run(request).await);
                     }
                     Err(e) => {

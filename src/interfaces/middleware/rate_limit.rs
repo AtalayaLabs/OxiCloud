@@ -4,28 +4,20 @@
 //! counts per client IP.  Each protected endpoint group gets its own
 //! [`RateLimiter`] instance with independently tuneable limits.
 //!
-//! The middleware extracts the client IP from (in order):
-//! 1. `X-Forwarded-For` header (first entry — set by reverse proxies)
-//! 2. `X-Real-Ip` header
-//! 3. The TCP peer address from the connection info
+//! Client IP resolution is delegated to [`super::trusted_proxy::client_ip`],
+//! which honours `OXICLOUD_TRUST_PROXY_CIDR` for proxy-header forwarding.
 //!
 //! When the limit is exceeded a `429 Too Many Requests` response is returned
 //! with a `Retry-After` header indicating how many seconds to wait.
 
 use axum::{
-    extract::ConnectInfo,
     http::{HeaderValue, Request, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
 use moka::sync::Cache;
-use std::net::SocketAddr;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
-
-/// Cached value of `OXICLOUD_TRUST_PROXY_HEADERS` env var.
-/// Read once on first access, never again — avoids a syscall per request.
-static TRUST_PROXY: OnceLock<bool> = OnceLock::new();
 
 /// A simple sliding-window counter keyed by IP address.
 ///
@@ -94,46 +86,11 @@ impl RateLimiter {
 
 /// Extract the most-likely real client IP from headers / connection info.
 ///
-/// Proxy headers (`X-Forwarded-For`, `X-Real-Ip`) are only trusted when
-/// `OXICLOUD_TRUST_PROXY_HEADERS=true` is set.  Without a trusted reverse
-/// proxy in front of the app, an attacker can spoof these headers to bypass
-/// rate limiting.
+/// Proxy headers (`X-Forwarded-For`, `X-Real-Ip`) are only trusted when the
+/// TCP peer address falls within `OXICLOUD_TRUST_PROXY_CIDR`.  Without a
+/// configured CIDR list an attacker could spoof headers to bypass rate limiting.
 pub fn extract_client_ip<B>(req: &Request<B>) -> String {
-    let trust_proxy = *TRUST_PROXY.get_or_init(|| {
-        std::env::var("OXICLOUD_TRUST_PROXY_HEADERS")
-            .map(|v| v == "true" || v == "1")
-            .unwrap_or(false)
-    });
-
-    let headers = req.headers();
-
-    if trust_proxy {
-        // 1. X-Forwarded-For (first entry — closest to the client)
-        if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
-            && let Some(first) = xff.split(',').next()
-        {
-            let ip = first.trim();
-            if !ip.is_empty() {
-                return ip.to_string();
-            }
-        }
-
-        // 2. X-Real-Ip
-        if let Some(xri) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
-            let ip = xri.trim();
-            if !ip.is_empty() {
-                return ip.to_string();
-            }
-        }
-    }
-
-    // 3. TCP peer (ConnectInfo extension set by axum::serve)
-    if let Some(addr) = req.extensions().get::<ConnectInfo<SocketAddr>>() {
-        return addr.0.ip().to_string();
-    }
-
-    // Fallback — should never happen behind axum::serve
-    "unknown".to_string()
+    super::trusted_proxy::client_ip(req, false)
 }
 
 /// Build a rate-limit response with the standard `Retry-After` header.

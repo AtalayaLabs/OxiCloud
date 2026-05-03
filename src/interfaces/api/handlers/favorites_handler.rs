@@ -43,7 +43,11 @@ pub async fn get_favorites(
 
     match favorites_service.get_favorites(user_id).await {
         Ok(favorites) => {
-            info!("Retrieved {} favorites for user", favorites.len());
+            info!(
+                "Retrieved {} favorites for user {}",
+                favorites.len(),
+                auth_user.id
+            );
             (StatusCode::OK, Json(serde_json::json!(favorites))).into_response()
         }
         Err(err) => {
