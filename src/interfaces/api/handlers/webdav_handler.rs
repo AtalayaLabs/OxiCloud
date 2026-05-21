@@ -999,66 +999,50 @@ async fn handle_mkcol(
     req: Request<Body>,
     path: String,
 ) -> Result<Response<Body>, AppError> {
+    let user = extract_user(&req)?;
     let folder_service = &state.applications.folder_service;
 
     if path.is_empty() || path == "/" {
-        return Err(AppError::conflict("Root folder already exists"));
+        // Root collection always exists — RFC 4918 §9.3.1 → 405.
+        return Ok(Response::builder()
+            .status(StatusCode::METHOD_NOT_ALLOWED)
+            .body(Body::empty())
+            .unwrap());
     }
 
-    // Read request body - must be empty for MKCOL (RFC 4918 §9.3)
+    // RFC 4918 §9.3 / RFC 5689: a base-MKCOL request body is unsupported.
     let body_bytes = {
         let body = req.into_body();
         body::to_bytes(body, MAX_MKCOL_BODY)
             .await
             .map_err(|e| AppError::payload_too_large(format!("MKCOL body too large: {}", e)))?
     };
-
     if !body_bytes.is_empty() {
         return Err(AppError::unsupported_media_type(
             "MKCOL request body must be empty",
         ));
     }
 
-    // Path is already translated by dispatch (e.g. "My Folder - jared/03/01").
-    // Walk each segment: the first is the home folder (already exists),
-    // subsequent segments are created as needed with proper parent_id.
-    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    let mut parent_id: Option<String> = None;
-    let mut accumulated_path = String::new();
-
-    for segment in &segments {
-        if !accumulated_path.is_empty() {
-            accumulated_path.push('/');
+    use crate::application::dtos::folder_dto::EnsurePathOutcome;
+    match folder_service.ensure_path(&path, user.id).await {
+        Ok(EnsurePathOutcome::Created(_)) => Ok(Response::builder()
+            .status(StatusCode::CREATED)
+            .body(Body::empty())
+            .unwrap()),
+        Ok(EnsurePathOutcome::Existed(_)) => Ok(Response::builder()
+            .status(StatusCode::METHOD_NOT_ALLOWED)
+            .body(Body::empty())
+            .unwrap()),
+        Err(e) if e.kind == crate::common::errors::ErrorKind::AlreadyExists => {
+            // A non-folder resource (e.g. a file) sits at the leaf path.
+            // RFC 4918 §9.3.1: MKCOL on any existing resource → 405.
+            Ok(Response::builder()
+                .status(StatusCode::METHOD_NOT_ALLOWED)
+                .body(Body::empty())
+                .unwrap())
         }
-        accumulated_path.push_str(segment);
-
-        match folder_service.get_folder_by_path(&accumulated_path).await {
-            Ok(existing) => {
-                parent_id = Some(existing.id);
-            }
-            Err(_) => {
-                let create_dto = crate::application::dtos::folder_dto::CreateFolderDto {
-                    name: segment.to_string(),
-                    parent_id: parent_id.clone(),
-                };
-                let created = folder_service
-                    .create_folder(create_dto)
-                    .await
-                    .map_err(|e| {
-                        AppError::internal_error(format!(
-                            "Failed to create folder '{}': {}",
-                            accumulated_path, e
-                        ))
-                    })?;
-                parent_id = Some(created.id);
-            }
-        }
+        Err(e) => Err(e.into()),
     }
-
-    Ok(Response::builder()
-        .status(StatusCode::CREATED)
-        .body(Body::empty())
-        .unwrap())
 }
 
 /**
