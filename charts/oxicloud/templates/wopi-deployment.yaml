@@ -44,7 +44,7 @@ spec:
             - name: password
               valueFrom:
                 secretKeyRef:
-                  name: {{ if .Values.secrets.existingSecret }}{{ .Values.secrets.existingSecret }}{{ else }}{{ include "oxicloud.fullname" . }}-secret{{ end }}
+                  name: {{ if .Values.secrets }}{{ .Values.secrets.existingSecret | default (print (include "oxicloud.fullname" .) "-secret") }}{{ else }}{{ include "oxicloud.fullname" . }}-secret{{ end }}
                   key: WOPI_ADMIN_PASSWORD
           readinessProbe:
             httpGet:

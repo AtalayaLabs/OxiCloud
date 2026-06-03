@@ -4,7 +4,7 @@ replicaCount: 1
 image:
   repository: diocrafts/oxicloud
   pullPolicy: IfNotPresent
-  tag: "0.5.6"
+  tag: "0.6.0"
 
 # cf : https://github.com/AtalayaLabs/OxiCloud/blob/main/example.env
 envs:
@@ -52,6 +52,9 @@ wopi:
 service:
   type: ClusterIP
   port: 8086
+
+secrets:
+  existingSecret: ""
 
 ingress:
   enabled: true
