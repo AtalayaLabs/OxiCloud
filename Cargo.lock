@@ -3857,6 +3857,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-normalization",
+ "url",
  "urlencoding",
  "utoipa",
  "uuid",

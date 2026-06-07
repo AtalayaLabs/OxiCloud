@@ -54,6 +54,56 @@ use interfaces::{
     create_api_routes, create_health_routes, create_public_api_routes, web::create_web_routes,
 };
 
+/// Parse a WOPI discovery URL string into an origin (scheme + host + optional port).
+///
+/// Returns `None` — after logging why — when the ariable is unset, empty, 
+/// unparseable, uses a non-HTTP(S) scheme, or has no host. Callers then fall 
+/// back to a self-only policy instead of panicking on operator misconfiguration.
+fn wopi_origin_from_str(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let url = match url::Url::parse(raw) {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::warn!(value = raw, error = %e,
+                "ignoring OXICLOUD_WOPI_DISCOVERY_URL: not a valid URL");
+            return None;
+        }
+    };
+
+    if !matches!(url.scheme(), "http" | "https") {
+        tracing::warn!(scheme = url.scheme(),
+            "ignoring OXICLOUD_WOPI_DISCOVERY_URL: scheme must be http or https");
+        return None;
+    }
+
+    let Some(host) = url.host_str() else {
+        tracing::warn!(value = raw,
+            "ignoring OXICLOUD_WOPI_DISCOVERY_URL: URL has no host");
+        return None;
+    };
+
+    // The url crate normalizes default ports away at parse time, so an explicit
+    // :80 / :443 already yields port() == None here — no special-casing needed.
+    // host_str() returns the bracketed form for IPv6 (e.g. "[::1]"), which is
+    // exactly what a CSP host-source expects.
+    let port = url.port().map_or(String::new(), |p| format!(":{p}"));
+    Some(format!("{}://{host}{port}", url.scheme()))
+}
+
+/// Read `OXICLOUD_WOPI_DISCOVERY_URL` and extract the origin.
+///
+/// Returns `None` when the env var is unset, empty, or malformed.
+fn wopi_origin() -> Option<String> {
+    let raw = std::env::var("OXICLOUD_WOPI_DISCOVERY_URL")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())?;
+    wopi_origin_from_str(&raw)
+}
+
 fn parse_addr(host: &str, port: u16) -> Result<SocketAddr, String> {
     // Strip surrounding brackets from IPv6: [::1] -> ::1
     let host = host.trim();
@@ -569,31 +619,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use axum::http::HeaderValue;
     use axum::http::header::HeaderName;
 
+    // Build CSP dynamically — WOPI editor origins need form-action + frame-src.
+    let wopi = wopi_origin();
+    let form_action = match &wopi {
+        Some(origin) => format!("form-action 'self' {origin}"),
+        None => "form-action 'self'".to_string(),
+    };
+
+    let frame_src = match &wopi {
+        Some(origin) => format!("frame-src 'self' {origin} blob:"),
+        None => "frame-src 'self' blob:".to_string(),
+    };
+
+    let csp_value = format!(
+        "default-src 'self'; \
+         script-src 'self'; \
+         worker-src 'self'; \
+         style-src 'self' 'unsafe-inline'; \
+         img-src 'self' data: blob: https:; \
+         media-src 'self' blob:; \
+         connect-src 'self'; \
+         font-src 'self' data:; \
+         object-src 'none'; \
+         {frame_src}; \
+         frame-ancestors 'none'; \
+         base-uri 'self'; \
+         {form_action}",
+    );
+
     app = app
         .layer(SetResponseHeaderLayer::overriding(
             HeaderName::from_static("content-security-policy"),
-            // Note: 'unsafe-inline' is required for style-src because the
-            // frontend JavaScript dynamically sets inline styles (e.g.,
-            // element.style.display = 'none'). This is a common pattern
-            // for UI state management and cannot be easily migrated to
-            // external CSS classes without significant refactoring.
-            // frame-src: '*' only matches network schemes, so 'blob:' must be
-            // listed explicitly for inline PDF/document viewers.
+            // style-src 'unsafe-inline': covers inline `style="..."` attributes
+            // and injected <style> blocks in the served markup.
             // media-src: needed for blob: video/audio playback.
-            HeaderValue::from_static(
-                "default-src 'self'; \
-                 script-src 'self'; \
-                 worker-src 'self'; \
-                 style-src 'self' 'unsafe-inline'; \
-                 img-src 'self' data: blob: https:; \
-                 media-src 'self' blob:; \
-                 connect-src 'self'; \
-                 font-src 'self' data:; \
-                 frame-src * blob:; \
-                 frame-ancestors 'none'; \
-                 base-uri 'self'; \
-                 form-action 'self'",
-            ),
+            HeaderValue::from_str(&csp_value).expect("CSP must be valid"),
         ))
         .layer(SetResponseHeaderLayer::overriding(
             HeaderName::from_static("x-content-type-options"),
@@ -661,4 +721,112 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Server shutdown completed");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod wopi_origin_tests {
+    use super::*;
+
+    #[test]
+    fn empty_string_returns_none() {
+        assert!(wopi_origin_from_str("").is_none());
+    }
+
+    #[test]
+    fn whitespace_only_returns_none() {
+        assert!(wopi_origin_from_str("   ").is_none());
+    }
+
+    #[test]
+    fn invalid_url_returns_none() {
+        assert!(wopi_origin_from_str("not a url").is_none());
+    }
+
+    #[test]
+    fn ftp_scheme_returns_none() {
+        assert!(wopi_origin_from_str("ftp://example.com").is_none());
+    }
+
+    #[test]
+    fn https_with_path_strips_path() {
+        let result = wopi_origin_from_str("https://collabora.example.com/hosting/discovery");
+        assert_eq!(result, Some("https://collabora.example.com".to_string()));
+    }
+
+    #[test]
+    fn deeply_nested_path_strips_all() {
+        let result = wopi_origin_from_str(
+            "https://onlyoffice.example.com:9980/hosting/discovery?param=value",
+        );
+        assert_eq!(
+            result,
+            Some("https://onlyoffice.example.com:9980".to_string())
+        );
+    }
+
+    #[test]
+    fn https_with_custom_port() {
+        let result = wopi_origin_from_str("https://example.com:8443/path");
+        assert_eq!(result, Some("https://example.com:8443".to_string()));
+    }
+
+    #[test]
+    fn http_url_preserves_scheme() {
+        let result = wopi_origin_from_str("http://localhost:9980/hosting/discovery");
+        assert_eq!(result, Some("http://localhost:9980".to_string()));
+    }
+
+    #[test]
+    fn default_https_port_omitted() {
+        let result = wopi_origin_from_str("https://example.com:443/path");
+        assert_eq!(result, Some("https://example.com".to_string()));
+    }
+
+    #[test]
+    fn default_http_port_omitted() {
+        let result = wopi_origin_from_str("http://example.com:80/path");
+        assert_eq!(result, Some("http://example.com".to_string()));
+    }
+
+    #[test]
+    fn trailing_slash_strips_slash() {
+        let result = wopi_origin_from_str("https://example.com/");
+        assert_eq!(result, Some("https://example.com".to_string()));
+    }
+
+    #[test]
+    fn no_trailing_slash_no_path() {
+        let result = wopi_origin_from_str("https://example.com");
+        assert_eq!(result, Some("https://example.com".to_string()));
+    }
+
+    #[test]
+    fn url_with_query_params_strips_query() {
+        let result = wopi_origin_from_str("https://example.com/path?foo=bar&baz=qux");
+        assert_eq!(result, Some("https://example.com".to_string()));
+    }
+
+    #[test]
+    fn url_with_fragment_strips_fragment() {
+        let result = wopi_origin_from_str("https://example.com/path#section");
+        assert_eq!(result, Some("https://example.com".to_string()));
+    }
+
+    #[test]
+    fn url_with_userinfo_strips_userinfo() {
+        let result = wopi_origin_from_str("https://user:pass@example.com/path");
+        assert_eq!(result, Some("https://example.com".to_string()));
+    }
+
+    #[test]
+    fn ipv6_without_port() {
+        let result = wopi_origin_from_str("http://[::1]:9980/path");
+        assert_eq!(result, Some("http://[::1]:9980".to_string()));
+    }
+
+    #[test]
+    fn ipv6_with_port() {
+        let result = wopi_origin_from_str("https://[2001:db8::1]/hosting");
+        assert_eq!(result, Some("https://[2001:db8::1]".to_string()));
+    }
 }
