@@ -80,6 +80,13 @@ pub fn nextcloud_routes_with_state(state: Arc<AppState>) -> Router<Arc<AppState>
 
     // Protected routes — require Basic Auth via app passwords.
     let protected = Router::new()
+        // Both v1 and v2 of the singular cloud/user endpoint return the
+        // same payload shape — NC's URL-versioning is a transport
+        // convention, not a protocol break for this endpoint. Older
+        // NC clients (and some third-party libraries) still hit v1
+        // first; without this route they get a 404 even though the
+        // handler exists.
+        .route("/ocs/v1.php/cloud/user", get(ocs_handler::handle_user_info))
         .route("/ocs/v2.php/cloud/user", get(ocs_handler::handle_user_info))
         .route(
             "/ocs/v1.php/cloud/users/{userid}",
@@ -125,6 +132,14 @@ pub fn nextcloud_routes_with_state(state: Arc<AppState>) -> Router<Arc<AppState>
         .route(
             "/index.php/avatar/{user}/{size}",
             get(avatar_handler::handle_avatar),
+        )
+        // NC desktop + several mobile clients fetch avatars from the
+        // DAV-shaped URL (with a literal `.png` extension on the
+        // size segment). Same SVG payload, different URL shape — the
+        // wrapper handler strips the extension and delegates.
+        .route(
+            "/remote.php/dav/avatars/{user}/{size}",
+            get(avatar_handler::handle_dav_avatar),
         )
         .route(
             "/remote.php/dav/files/{user}/{*subpath}",
