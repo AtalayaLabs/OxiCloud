@@ -31,19 +31,36 @@ impl StorageUsageService {
         }
     }
 
-    /// Calculates and updates storage usage for a specific user
+    /// Recalculates and stores one user's usage in a single statement.
+    ///
+    /// The correlated `SUM(size)` over the user's non-trashed files is
+    /// O(number of files) but runs as an index-only scan on the
+    /// `idx_files_user_size_active` covering partial index. One round-trip
+    /// (was three: user lookup + SUM + UPDATE). NOT called on the request
+    /// path — only by the per-upload background update and the sweep.
     pub async fn update_user_storage_usage(&self, user_id: Uuid) -> Result<i64, DomainError> {
-        info!("Updating storage usage for user: {}", user_id);
+        let total_usage: Option<i64> = sqlx::query_scalar(
+            r#"
+            UPDATE auth.users u
+               SET storage_used_bytes = COALESCE((
+                       SELECT SUM(f.size)::bigint
+                         FROM storage.files f
+                        WHERE f.user_id = u.id AND NOT f.is_trashed), 0)
+             WHERE u.id = $1
+            RETURNING u.storage_used_bytes
+            "#,
+        )
+        .bind(user_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| {
+            DomainError::internal_error("StorageUsage", format!("Failed to update usage: {e}"))
+        })?;
 
-        // Calculate storage usage directly from database
-        let total_usage = self.calculate_user_storage_usage(user_id).await?;
+        let total_usage = total_usage
+            .ok_or_else(|| DomainError::not_found("User", format!("User ID: {user_id}")))?;
 
-        // Update the user's storage usage in the database
-        self.user_repository
-            .update_storage_usage(user_id, total_usage)
-            .await?;
-
-        info!(
+        debug!(
             "Updated storage usage for user {} to {} bytes",
             user_id, total_usage
         );
@@ -51,61 +68,35 @@ impl StorageUsageService {
         Ok(total_usage)
     }
 
-    /// Calculates a user's storage usage by summing all their file sizes.
-    ///
-    /// This is `SUM(size)` over the user's non-trashed files — O(number of
-    /// files), backed by the `idx_files_user_size_active` covering partial
-    /// index so it runs as an index-only scan. It is NOT called on the request
-    /// path; only by the per-upload update and the background reconciliation
-    /// sweep.
-    async fn calculate_user_storage_usage(&self, user_id: Uuid) -> Result<i64, DomainError> {
-        debug!("Calculating storage for user: {}", user_id);
-
-        // Direct SQL query to sum all file sizes for this user
-        // This is much more efficient than recursively walking folders
-        let total_size: i64 = sqlx::query_scalar(
-            r#"
-            SELECT COALESCE(SUM(size), 0)::bigint
-              FROM storage.files
-             WHERE user_id = $1 AND NOT is_trashed
-            "#,
-        )
-        .bind(user_id)
-        .fetch_one(self.pool.as_ref())
-        .await
-        .map_err(|e| {
-            DomainError::internal_error("StorageUsage", format!("Failed to calculate usage: {e}"))
-        })?;
-
-        debug!(
-            "Calculated storage for user {}: {} bytes",
-            user_id, total_size
-        );
-
-        Ok(total_size)
-    }
-
-    /// Calculates and updates storage usage for a user identified by username.
+    /// Same as [`Self::update_user_storage_usage`], keyed by username.
     pub async fn update_user_storage_usage_by_username(
         &self,
         username: &str,
     ) -> Result<i64, DomainError> {
-        info!("Updating storage usage for username: {}", username);
+        let total_usage: Option<i64> = sqlx::query_scalar(
+            r#"
+            UPDATE auth.users u
+               SET storage_used_bytes = COALESCE((
+                       SELECT SUM(f.size)::bigint
+                         FROM storage.files f
+                        WHERE f.user_id = u.id AND NOT f.is_trashed), 0)
+             WHERE u.username = $1
+            RETURNING u.storage_used_bytes
+            "#,
+        )
+        .bind(username)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| {
+            DomainError::internal_error("StorageUsage", format!("Failed to update usage: {e}"))
+        })?;
 
-        let user = self.user_repository.get_user_by_username(username).await?;
-        let user_id = user.id();
+        let total_usage =
+            total_usage.ok_or_else(|| DomainError::not_found("User", username.to_string()))?;
 
-        // Reuse the existing calculation logic
-        let total_usage = self.calculate_user_storage_usage(user_id).await?;
-
-        // Update the user's storage usage in the database
-        self.user_repository
-            .update_storage_usage(user_id, total_usage)
-            .await?;
-
-        info!(
-            "Updated storage usage for username {} (id={}) to {} bytes",
-            username, user_id, total_usage
+        debug!(
+            "Updated storage usage for username {} to {} bytes",
+            username, total_usage
         );
 
         Ok(total_usage)
@@ -159,49 +150,49 @@ impl StorageUsagePort for StorageUsageService {
         StorageUsageService::update_user_storage_usage_by_username(self, username).await
     }
 
+    /// Reconcile every internal user's cached usage in ONE set-based UPDATE.
+    ///
+    /// Replaces the previous shape (paginated user list + one spawned task
+    /// per user, each issuing SUM + UPDATE — up to 2N queries and N
+    /// concurrent tasks fighting for pool connections). A single GROUP BY
+    /// over the covering index feeds all users at once, and the
+    /// `IS DISTINCT FROM` guard skips rewriting rows whose value didn't
+    /// change (no dead-tuple churn for idle users). This also removes the
+    /// old `LIMIT 1000` page cap, which silently left users beyond the
+    /// first thousand unreconciled.
+    ///
+    /// External users are excluded — they carry no storage by construction
+    /// (DB CHECK `users_external_no_storage`).
     async fn update_all_users_storage_usage(&self) -> Result<(), DomainError> {
-        info!("Starting batch update of all users' storage usage");
+        debug!("Starting storage-usage reconciliation sweep");
 
-        // Get the list of all users
-        // include_external=false — external users carry no storage by
-        // construction (DB CHECK `users_external_no_storage`), so there's
-        // nothing to compute for them.
-        let users = self.user_repository.list_users(1000, 0, false).await?;
+        let result = sqlx::query(
+            r#"
+            UPDATE auth.users u
+               SET storage_used_bytes = COALESCE(t.total, 0)
+              FROM auth.users u2
+              LEFT JOIN (
+                    SELECT user_id, SUM(size)::bigint AS total
+                      FROM storage.files
+                     WHERE NOT is_trashed
+                     GROUP BY user_id
+                   ) t ON t.user_id = u2.id
+             WHERE u.id = u2.id
+               AND NOT u2.is_external
+               AND u.storage_used_bytes IS DISTINCT FROM COALESCE(t.total, 0)
+            "#,
+        )
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| {
+            error!("Storage-usage reconciliation sweep failed: {}", e);
+            DomainError::internal_error("StorageUsage", format!("reconciliation sweep: {e}"))
+        })?;
 
-        let mut update_tasks = Vec::new();
-
-        // Process users in parallel
-        for user in users {
-            let user_id = user.id();
-            let service_clone = self.clone();
-
-            // Spawn a background task for each user
-            let task = task::spawn(async move {
-                match service_clone.update_user_storage_usage(user_id).await {
-                    Ok(usage) => {
-                        debug!(
-                            "Updated storage usage for user {}: {} bytes",
-                            user_id, usage
-                        );
-                        Ok(())
-                    }
-                    Err(e) => {
-                        error!("Failed to update storage for user {}: {}", user_id, e);
-                        Err(e)
-                    }
-                }
-            });
-
-            update_tasks.push(task);
-        }
-
-        // Wait for all tasks to complete
-        for task in update_tasks {
-            // We don't propagate errors from individual users to avoid failing the entire batch
-            let _ = task.await;
-        }
-
-        info!("Completed batch update of all users' storage usage");
+        info!(
+            "Storage-usage reconciliation corrected {} user(s)",
+            result.rows_affected()
+        );
         Ok(())
     }
 
