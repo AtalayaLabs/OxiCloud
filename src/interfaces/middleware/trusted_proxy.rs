@@ -158,9 +158,7 @@ pub fn client_ip_from_parts(
     if let Some(peer_addr) = peer {
         if is_trusted_proxy(peer_addr.ip()) {
             // Try X-Forwarded-For first (leftmost = original client)
-            if let Some(xff) = headers
-                .get("x-forwarded-for")
-                .and_then(|v| v.to_str().ok())
+            if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
                 && let Some(ip) = xff
                     .split(',')
                     .next()

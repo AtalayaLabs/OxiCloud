@@ -290,10 +290,7 @@ pub async fn login(
     // same account from a different address (issue #323). The check runs
     // BEFORE Argon2 to save CPU under brute-force attacks.
     let client_ip = client_ip_from_parts(&headers, Some(peer), false);
-    if let Err(lockout_secs) = auth_service
-        .login_lockout
-        .check(&dto.username, &client_ip)
-    {
+    if let Err(lockout_secs) = auth_service.login_lockout.check(&dto.username, &client_ip) {
         tracing::warn!(
             target: "audit",
             event = "auth.login",

@@ -64,8 +64,7 @@ pub async fn basic_auth_middleware(
 
     // Check account lockout before attempting password verification (saves CPU).
     // The lockout is per (account, IP), see #323 for rationale.
-    let client_ip =
-        crate::interfaces::middleware::rate_limit::extract_client_ip(&request);
+    let client_ip = crate::interfaces::middleware::rate_limit::extract_client_ip(&request);
     if let Some(auth_svc) = state.auth_service.as_ref()
         && let Err(secs) = auth_svc.login_lockout.check(&username, &client_ip)
     {
