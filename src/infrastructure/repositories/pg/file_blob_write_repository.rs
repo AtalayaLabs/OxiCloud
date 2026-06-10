@@ -137,16 +137,19 @@ impl FileBlobWriteRepository {
     /// removing the new blob reference.
     ///
     /// `modified_at`: if `Some`, sets `updated_at` to that Unix timestamp;
-    /// if `None`, uses `NOW()` (server time). Returns the new hash on success.
+    /// if `None`, uses `NOW()` (server time). Returns
+    /// `(new_hash, updated_at_epoch)` on success — the effective timestamp
+    /// is returned so callers can rebuild the fresh entity without
+    /// re-reading the row.
     async fn swap_blob_hash(
         &self,
         file_id: &str,
         new_hash: &str,
         new_size: i64,
         modified_at: Option<i64>,
-    ) -> Result<String, DomainError> {
+    ) -> Result<(String, i64), DomainError> {
         // Atomic CTE: capture old hash then update in one round-trip, no TOCTOU.
-        let old_hash = match sqlx::query_scalar::<_, String>(
+        let (old_hash, updated_at) = match sqlx::query_as::<_, (String, i64)>(
             r#"
             WITH old AS (
                 SELECT id, blob_hash FROM storage.files WHERE id = $3::uuid FOR UPDATE
@@ -156,7 +159,7 @@ impl FileBlobWriteRepository {
                    updated_at = COALESCE(to_timestamp($4), NOW())
               FROM old
              WHERE f.id = old.id
-            RETURNING old.blob_hash
+            RETURNING old.blob_hash, EXTRACT(EPOCH FROM f.updated_at)::bigint
             "#,
         )
         .bind(new_hash)
@@ -166,7 +169,7 @@ impl FileBlobWriteRepository {
         .fetch_optional(self.pool.as_ref())
         .await
         {
-            Ok(Some(old)) => old,
+            Ok(Some(row)) => row,
             Ok(None) => {
                 // File not found — compensate: remove the new blob ref
                 if let Err(e) = self.dedup.remove_reference(new_hash).await {
@@ -201,7 +204,7 @@ impl FileBlobWriteRepository {
             );
         }
 
-        Ok(new_hash.to_string())
+        Ok((new_hash.to_string(), updated_at))
     }
 
     /// Like [`FileWritePort::save_file_from_temp`] but also returns whether the
@@ -513,7 +516,7 @@ impl FileWritePort for FileBlobWriteRepository {
         content_type: Option<String>,
         pre_computed_hash: Option<String>,
         modified_at: Option<i64>,
-    ) -> Result<String, DomainError> {
+    ) -> Result<(String, i64), DomainError> {
         // Streaming: pass pre-computed hash so dedup skips re-reading the file.
         let dedup_result = self
             .dedup

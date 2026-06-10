@@ -319,7 +319,8 @@ impl FileUploadUseCase for FileUploadService {
             && let Some(file) = file_read.find_file_by_path(path).await?
         {
             let file_id = file.id().to_string();
-            self.file_write
+            let (new_hash, updated_at) = self
+                .file_write
                 .update_file_content_from_temp(
                     &file_id,
                     temp_path,
@@ -333,8 +334,26 @@ impl FileUploadUseCase for FileUploadService {
             if let Some(cc) = &self.content_cache {
                 cc.invalidate(&file_id).await;
             }
-            // Re-read to get fresh DTO with updated etag and timestamps.
-            let updated = file_read.get_file(&file_id).await?;
+            // Rebuild the fresh DTO from the entity already in hand plus the
+            // values the UPDATE just returned — a re-read would only fetch
+            // what we already know, at one extra round-trip per overwrite
+            // (WebDAV sync clients overwrite constantly).
+            let parts = file.into_parts();
+            let updated = crate::domain::entities::file::File::with_timestamps_and_blob_hash(
+                parts.id,
+                parts.name,
+                parts.storage_path,
+                size,
+                parts.mime_type,
+                parts.folder_id,
+                parts.created_at,
+                updated_at as u64,
+                parts.owner_id,
+                new_hash,
+            )
+            .map_err(|e| {
+                DomainError::internal_error("FileUpload", format!("rebuild entity: {e}"))
+            })?;
             let dto = FileDto::from(updated);
             if let Some(hook) = &self.file_lifecycle_hook {
                 hook.on_file_updated(&file_id, &dto.etag, content_type);

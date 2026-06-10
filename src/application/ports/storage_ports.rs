@@ -286,6 +286,10 @@ pub trait FileWritePort: Send + Sync + 'static {
     /// When `pre_computed_hash` is provided, the dedup service skips the
     /// hash re-read — zero extra I/O beyond the initial spool.
     /// Peak RAM: ~256 KB regardless of file size.
+    ///
+    /// Returns `(new_blob_hash, updated_at_epoch)` — everything a caller
+    /// needs to rebuild the fresh entity/ETag from a `File` it already
+    /// holds, without re-reading the row it just updated.
     async fn update_file_content_from_temp(
         &self,
         file_id: &str,
@@ -294,7 +298,7 @@ pub trait FileWritePort: Send + Sync + 'static {
         content_type: Option<String>,
         pre_computed_hash: Option<String>,
         modified_at: Option<i64>,
-    ) -> Result<String, DomainError>;
+    ) -> Result<(String, i64), DomainError>;
 
     /// Registers file metadata WITHOUT writing content to disk (write-behind).
     ///

@@ -193,8 +193,8 @@ impl FileWritePort for StubFileWritePort {
         _content_type: Option<String>,
         _pre_computed_hash: Option<String>,
         _modified_at: Option<i64>,
-    ) -> Result<String, DomainError> {
-        Ok(String::new())
+    ) -> Result<(String, i64), DomainError> {
+        Ok((String::new(), 0))
     }
 
     async fn register_file_deferred(
