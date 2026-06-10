@@ -95,7 +95,10 @@ pub trait BlobStorageBackend: Send + Sync + 'static {
     /// Stream the full blob content in chunks.
     fn get_blob_stream(&self, hash: &str) -> BoxFut<'_, Result<BlobStream, DomainError>>;
 
-    /// Stream a byte range of the blob (for HTTP Range requests / video seek).
+    /// Stream the byte range `[start, end)` of the blob (for HTTP Range
+    /// requests / video seek). `end` is **exclusive**; `None` means "to the
+    /// end of the blob". Callers translating inclusive HTTP Range headers
+    /// must pass `last_byte + 1`.
     fn get_blob_range_stream(
         &self,
         hash: &str,
