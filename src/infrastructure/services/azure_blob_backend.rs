@@ -11,12 +11,19 @@ use azure_storage_blobs::prelude::*;
 use bytes::Bytes;
 use futures::StreamExt;
 use tokio::fs;
+use tokio::io::AsyncReadExt;
 
 use crate::application::ports::blob_storage_ports::{
     BlobStorageBackend, BlobStream, StorageHealthStatus,
 };
 use crate::common::config::AzureStorageConfig;
 use crate::domain::errors::{DomainError, ErrorKind};
+
+/// Block size for staged uploads in `put_blob` (8 MiB).
+///
+/// Bounds peak RAM per concurrent upload to one block. Azure allows up to
+/// 50,000 blocks per blob, so this supports files up to 400 GB.
+const PUT_BLOCK_SIZE: u64 = 8 * 1024 * 1024;
 
 /// Azure Blob Storage backend.
 pub struct AzureBlobBackend {
@@ -52,6 +59,66 @@ impl AzureBlobBackend {
     fn blob_client(&self, hash: &str) -> BlobClient {
         self.container_client.blob_client(Self::blob_name(hash))
     }
+
+    /// Open a streaming read of a blob, optionally limited to a byte range.
+    ///
+    /// The SDK paginates the download into 16 MiB ranged GETs and each page
+    /// body is itself a chunk stream, so peak RAM stays at one network chunk
+    /// regardless of blob size. The first page is awaited eagerly so a
+    /// missing blob surfaces as `NotFound` before the HTTP handler commits
+    /// response headers.
+    async fn open_blob_stream(
+        &self,
+        hash: &str,
+        range: Option<azure_core::request_options::Range>,
+    ) -> Result<BlobStream, DomainError> {
+        let mut builder = self.blob_client(hash).get();
+        if let Some(range) = range {
+            builder = builder.range(range);
+        }
+        let mut pages = builder.into_stream();
+
+        let first = match pages.next().await {
+            None => return Ok(Box::pin(futures::stream::empty()) as BlobStream),
+            Some(Ok(page)) => page,
+            Some(Err(e)) => {
+                return Err(DomainError::new(
+                    ErrorKind::NotFound,
+                    "Azure",
+                    format!("Failed to get blob {hash}: {e}"),
+                ));
+            }
+        };
+
+        let hash = hash.to_owned();
+        let stream = async_stream::stream! {
+            let mut body = first.data;
+            loop {
+                while let Some(chunk) = body.next().await {
+                    match chunk {
+                        Ok(chunk) => yield Ok(chunk),
+                        Err(e) => {
+                            yield Err(std::io::Error::other(format!(
+                                "Azure stream read error for blob {hash}: {e}"
+                            )));
+                            return;
+                        }
+                    }
+                }
+                match pages.next().await {
+                    None => return,
+                    Some(Ok(page)) => body = page.data,
+                    Some(Err(e)) => {
+                        yield Err(std::io::Error::other(format!(
+                            "Azure stream read error for blob {hash}: {e}"
+                        )));
+                        return;
+                    }
+                }
+            }
+        };
+        Ok(Box::pin(stream) as BlobStream)
+    }
 }
 
 impl BlobStorageBackend for AzureBlobBackend {
@@ -85,30 +152,71 @@ impl BlobStorageBackend for AzureBlobBackend {
         Box::pin(async move {
             let client = self.blob_client(&hash);
 
+            let file_size = fs::metadata(&source_path)
+                .await
+                .map_err(|e| {
+                    DomainError::internal_error("Azure", format!("Failed to stat source file: {e}"))
+                })?
+                .len();
+
             // Check if blob already exists (idempotent)
             if client.get_properties().await.is_ok() {
-                let file_size = fs::metadata(&source_path)
-                    .await
-                    .map_err(|e| {
-                        DomainError::internal_error(
-                            "Azure",
-                            format!("Failed to stat source file: {e}"),
-                        )
-                    })?
-                    .len();
                 let _ = fs::remove_file(&source_path).await;
                 return Ok(file_size);
             }
 
-            // Read file and upload as block blob
-            let data = fs::read(&source_path).await.map_err(|e| {
-                DomainError::internal_error("Azure", format!("Failed to read source: {e}"))
-            })?;
-            let file_size = data.len() as u64;
-
-            client.put_block_blob(data).await.map_err(|e| {
-                DomainError::internal_error("Azure", format!("Failed to upload blob {hash}: {e}"))
-            })?;
+            if file_size <= PUT_BLOCK_SIZE {
+                // Small blob: single round trip
+                let data = fs::read(&source_path).await.map_err(|e| {
+                    DomainError::internal_error("Azure", format!("Failed to read source: {e}"))
+                })?;
+                client.put_block_blob(data).await.map_err(|e| {
+                    DomainError::internal_error(
+                        "Azure",
+                        format!("Failed to upload blob {hash}: {e}"),
+                    )
+                })?;
+            } else {
+                // Large blob: staged block upload — peak RAM stays at one
+                // block instead of the whole file
+                let mut file = fs::File::open(&source_path).await.map_err(|e| {
+                    DomainError::internal_error("Azure", format!("Failed to open source: {e}"))
+                })?;
+                let mut blocks = BlockList::default();
+                let mut index: u32 = 0;
+                loop {
+                    let mut buf = Vec::with_capacity(PUT_BLOCK_SIZE as usize);
+                    let read = (&mut file)
+                        .take(PUT_BLOCK_SIZE)
+                        .read_to_end(&mut buf)
+                        .await
+                        .map_err(|e| {
+                            DomainError::internal_error(
+                                "Azure",
+                                format!("Failed to read source: {e}"),
+                            )
+                        })?;
+                    if read == 0 {
+                        break;
+                    }
+                    // Azure requires all block ids in a blob to be the same length
+                    let block_id = format!("{index:08}");
+                    client.put_block(block_id.clone(), buf).await.map_err(|e| {
+                        DomainError::internal_error(
+                            "Azure",
+                            format!("Failed to upload block {index} of blob {hash}: {e}"),
+                        )
+                    })?;
+                    blocks.blocks.push(BlobBlockType::new_uncommitted(block_id));
+                    index += 1;
+                }
+                client.put_block_list(blocks).await.map_err(|e| {
+                    DomainError::internal_error(
+                        "Azure",
+                        format!("Failed to commit blocks of blob {hash}: {e}"),
+                    )
+                })?;
+            }
 
             let _ = fs::remove_file(&source_path).await;
             Ok(file_size)
@@ -130,7 +238,8 @@ impl BlobStorageBackend for AzureBlobBackend {
                 return Ok(size);
             }
 
-            client.put_block_blob(data.to_vec()).await.map_err(|e| {
+            // Bytes converts into the request body without copying
+            client.put_block_blob(data).await.map_err(|e| {
                 DomainError::internal_error("Azure", format!("Failed to upload blob {hash}: {e}"))
             })?;
 
@@ -144,34 +253,7 @@ impl BlobStorageBackend for AzureBlobBackend {
     ) -> Pin<Box<dyn std::future::Future<Output = Result<BlobStream, DomainError>> + Send + '_>>
     {
         let hash = hash.to_owned();
-        Box::pin(async move {
-            let client = self.blob_client(&hash);
-
-            let mut result_data: Vec<u8> = Vec::new();
-            let mut stream = client.get().into_stream();
-
-            while let Some(response) = stream.next().await {
-                let response = response.map_err(|e| {
-                    DomainError::new(
-                        ErrorKind::NotFound,
-                        "Azure",
-                        format!("Failed to get blob {hash}: {e}"),
-                    )
-                })?;
-                let mut body = response.data;
-                while let Some(chunk) = body.next().await {
-                    let chunk = chunk.map_err(|e| {
-                        DomainError::internal_error("Azure", format!("Stream read error: {e}"))
-                    })?;
-                    result_data.extend_from_slice(&chunk);
-                }
-            }
-
-            let stream: BlobStream = Box::pin(futures::stream::once(async move {
-                Ok(Bytes::from(result_data))
-            }));
-            Ok(stream)
-        })
+        Box::pin(async move { self.open_blob_stream(&hash, None).await })
     }
 
     fn get_blob_range_stream(
@@ -183,40 +265,11 @@ impl BlobStorageBackend for AzureBlobBackend {
     {
         let hash = hash.to_owned();
         Box::pin(async move {
-            let client = self.blob_client(&hash);
-
             let range = match end {
                 Some(e) => azure_core::request_options::Range::new(start, e),
                 None => azure_core::request_options::Range::new(start, u64::MAX),
             };
-
-            let mut result_data: Vec<u8> = Vec::new();
-            let mut stream = client.get().range(range).into_stream();
-
-            while let Some(response) = stream.next().await {
-                let response = response.map_err(|e| {
-                    DomainError::new(
-                        ErrorKind::NotFound,
-                        "Azure",
-                        format!("Failed to get blob range {hash}: {e}"),
-                    )
-                })?;
-                let mut body = response.data;
-                while let Some(chunk) = body.next().await {
-                    let chunk = chunk.map_err(|e| {
-                        DomainError::internal_error(
-                            "Azure",
-                            format!("Stream range read error: {e}"),
-                        )
-                    })?;
-                    result_data.extend_from_slice(&chunk);
-                }
-            }
-
-            let stream: BlobStream = Box::pin(futures::stream::once(async move {
-                Ok(Bytes::from(result_data))
-            }));
-            Ok(stream)
+            self.open_blob_stream(&hash, Some(range)).await
         })
     }
 

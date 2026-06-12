@@ -137,7 +137,7 @@ enum CommitMode {
 /// Outcome of a commit attempt.
 pub enum DeltaCommitOutcome {
     /// The file row exists; `created` distinguishes 201 from 200.
-    Done { file: FileDto, created: bool },
+    Done { file: Box<FileDto>, created: bool },
     /// Some chunks could not be pinned (GC race, skipped negotiate, or
     /// chunks the caller may not claim). The client uploads exactly these
     /// and retries the same commit.
@@ -346,7 +346,7 @@ impl DeltaUploadService {
                 .register_row(caller_id, &mode, metadata.content_type, blob)
                 .await?;
             return Ok(DeltaCommitOutcome::Done {
-                file,
+                file: Box::new(file),
                 created: matches!(mode, CommitMode::Create { .. }),
             });
         }
@@ -449,7 +449,7 @@ impl DeltaUploadService {
             .register_row(caller_id, &mode, Some(content_type), blob)
             .await?;
         Ok(DeltaCommitOutcome::Done {
-            file,
+            file: Box::new(file),
             created: matches!(mode, CommitMode::Create { .. }),
         })
     }
