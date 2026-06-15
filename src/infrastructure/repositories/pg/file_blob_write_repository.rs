@@ -231,47 +231,72 @@ impl FileBlobWriteRepository {
         blob_hash: &str,
         size: u64,
     ) -> Result<File, DomainError> {
-        let user_id = match self.resolve_user_id(folder_id.as_deref()).await {
-            Ok(user_id) => user_id,
-            Err(e) => {
-                if let Err(rollback_err) = self.dedup.remove_reference(blob_hash).await {
-                    tracing::error!(
-                        "Blob orphaned after owner resolution failure — hash: {}, err: {}",
-                        &blob_hash[..12],
-                        rollback_err
-                    );
-                }
-                return Err(e);
+        // Root files have no parent folder to derive an owner from — keep the
+        // previous resolve_user_id(None) contract (release the ref, error out).
+        let Some(fid) = folder_id.as_deref() else {
+            if let Err(rollback_err) = self.dedup.remove_reference(blob_hash).await {
+                tracing::error!(
+                    "Blob orphaned after missing folder_id — hash: {}, err: {}",
+                    &blob_hash[..12],
+                    rollback_err
+                );
             }
+            return Err(DomainError::internal_error(
+                "FileBlobWrite",
+                "folder_id is required to determine file owner",
+            ));
         };
 
+        // ONE round-trip: derive owner + materialized path from the parent
+        // folder and insert in a single statement. (Was resolve_user_id +
+        // INSERT + lookup_folder_path = 3 trips, two of them re-reading the
+        // same folders row.) An empty `parent` CTE — the folder vanished
+        // between ingest and insert — inserts zero rows, which surfaces as a
+        // clean NotFound instead of a generic owner-resolution error.
+        //
         // Deadlock victims (40P01) retry before the compensation below runs —
         // a successful retry must keep the blob reference alive. The final
         // attempt's error falls through untouched so the 23505 mapping holds
         // (a retried INSERT can legitimately lose to a concurrent identical
         // upload).
-        let row = match retry_on_deadlock("files.insert", || {
-            sqlx::query_as::<_, (String, i64, i64)>(
+        let result = retry_on_deadlock("files.insert", || {
+            sqlx::query_as::<_, (String, Uuid, String, i64, i64)>(
                 r#"
-                INSERT INTO storage.files (name, folder_id, user_id, blob_hash, size, mime_type, category_order)
-                VALUES ($1, $2::uuid, $3, $4, $5, $6, $7)
+                WITH parent AS (
+                    SELECT id, user_id, path FROM storage.folders WHERE id = $2::uuid
+                )
+                INSERT INTO storage.files
+                    (name, folder_id, user_id, blob_hash, size, mime_type, category_order)
+                SELECT $1, parent.id, parent.user_id, $3, $4, $5, $6 FROM parent
                 RETURNING id::text,
+                          user_id,
+                          (SELECT path FROM parent),
                           EXTRACT(EPOCH FROM created_at)::bigint,
                           EXTRACT(EPOCH FROM updated_at)::bigint
                 "#,
             )
             .bind(&name)
-            .bind(&folder_id)
-            .bind(user_id)
+            .bind(fid)
             .bind(blob_hash)
             .bind(size as i64)
             .bind(&content_type)
             .bind(category_order_for(&name, &content_type))
-            .fetch_one(self.pool.as_ref())
+            .fetch_optional(self.pool.as_ref())
         })
-        .await
-        {
-            Ok(row) => row,
+        .await;
+
+        let (id, user_id, folder_path, created_at, updated_at) = match result {
+            Ok(Some(row)) => row,
+            Ok(None) => {
+                if let Err(rollback_err) = self.dedup.remove_reference(blob_hash).await {
+                    tracing::error!(
+                        "Blob orphaned after missing parent folder — hash: {}, err: {}",
+                        &blob_hash[..12],
+                        rollback_err
+                    );
+                }
+                return Err(DomainError::not_found("Folder", fid));
+            }
             Err(e) => {
                 if let Err(rollback_err) = self.dedup.remove_reference(blob_hash).await {
                     tracing::error!(
@@ -302,20 +327,18 @@ impl FileBlobWriteRepository {
             &blob_hash[..12]
         );
 
-        let folder_path = self.lookup_folder_path(folder_id.as_deref()).await?;
-        let file = Self::row_to_file(
-            row.0,
+        Self::row_to_file(
+            id,
             name,
             folder_id,
-            folder_path,
+            Some(folder_path),
             size as i64,
             content_type,
-            row.1,
-            row.2,
+            created_at,
+            updated_at,
             Some(user_id),
             blob_hash.to_string(),
-        )?;
-        Ok(file)
+        )
     }
 }
 
