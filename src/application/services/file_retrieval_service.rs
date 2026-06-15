@@ -149,14 +149,23 @@ impl FileRetrievalService {
         let mime_type = dto.mime_type.clone();
         let file_size = dto.size;
         let file_name = dto.name.clone();
-        let modified_at = dto.modified_at;
+        // The content cache is content-addressed: keyed by the blob hash, not
+        // the file id. Identical content deduplicated to one blob on disk is
+        // then cached ONCE in RAM and shared by every file/user that references
+        // it — the cache benefits from dedup, not just the disk. Immutable by
+        // construction, so entries never go stale (no invalidation needed). A
+        // stub DTO without a hash disables caching for that request rather than
+        // colliding every hash-less file on the key "".
+        let cache_key = dto.content_hash.clone();
+        let cacheable = !cache_key.is_empty();
         let do_transcode = accept_webp && !prefer_original;
 
         // ── Tier 1: Hot cache + transcode (<10 MB) ──────────
         if file_size < CACHE_THRESHOLD {
-            // Check content cache first
-            if let Some(cache) = &self.content_cache
-                && let Some((cached, _etag, _ct)) = cache.get(id).await
+            // Check content cache first (keyed by blob hash — see above)
+            if cacheable
+                && let Some(cache) = &self.content_cache
+                && let Some((cached, _etag, _ct)) = cache.get(&cache_key).await
             {
                 debug!(
                     "🔥 TIER 1 Cache HIT: {} ({} bytes)",
@@ -199,12 +208,12 @@ impl FileRetrievalService {
             }
             let content_bytes = buf.freeze();
 
-            // Store in cache
-            if let Some(cache) = &self.content_cache {
-                let etag: Arc<str> = format!("\"{}-{}\"", id, modified_at).into();
+            // Store in cache (keyed by blob hash; ETag = the immutable hash)
+            if cacheable && let Some(cache) = &self.content_cache {
+                let etag: Arc<str> = format!("\"{}\"", cache_key).into();
                 let ct: Arc<str> = mime_type.clone();
                 cache
-                    .put(id.to_string(), content_bytes.clone(), etag, ct)
+                    .put(cache_key.clone(), content_bytes.clone(), etag, ct)
                     .await;
             }
 
