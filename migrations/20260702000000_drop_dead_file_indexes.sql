@@ -1,0 +1,35 @@
+-- ════════════════════════════════════════════════════════════════════════════
+-- Drop two never-used indexes on storage.files (pure write overhead)
+-- ════════════════════════════════════════════════════════════════════════════
+-- storage.files carries 13 indexes; every INSERT/DELETE and every rename
+-- (UPDATE of name) must maintain all of them. Two of those indexes are never
+-- chosen by the planner for any query the application issues — confirmed both
+-- statically (query text) and empirically (EXPLAIN + pg_stat_user_indexes over
+-- the real query shapes on a 50k-row table, idx_scan = 0 for both):
+--
+--   1. idx_files_name_search (user_id, name text_pattern_ops)
+--      Every file-name search is `name ILIKE '%term%'`. A `text_pattern_ops`
+--      B-tree cannot serve ILIKE (case-insensitive), a leading-`%` substring,
+--      nor a default-collation `ORDER BY name` — all of those are served by
+--      idx_files_name_trgm (GIN). The one exact `name = $1` lookup
+--      (find_file_by_path) is `WHERE folder_id = $1 AND name = $2`, served by
+--      the UNIQUE (folder_id, name, user_id) index, never by (user_id, name).
+--
+--   2. idx_files_category_order (category_order)
+--      `category_order` is only ever emitted as a derived `type_order` alias
+--      inside the folders⊎files UNION-ALL listing (and the favorites/recent/
+--      trash variants); the ORDER BY runs over the post-UNION result, so a
+--      single-column index on storage.files cannot provide presorted output.
+--      The real listing uses idx_files_folder_id + a top-N sort.
+--
+-- Dropping both removes a B-tree write from every file mutation. Measured
+-- ~6% faster single-row inserts (50k loop, all triggers active) with no query
+-- regression (the planner never used these indexes). Reversible: recreate from
+-- the definitions in 20260307000000 / 20260527000001 if a future query needs
+-- a (user_id, name) prefix or a category_order leading sort.
+--
+-- NOTE: the folder analog idx_folders_path (path text_pattern_ops) is KEPT —
+-- it is genuinely used for exact `WHERE path = $1` equality lookups.
+
+DROP INDEX IF EXISTS storage.idx_files_name_search;
+DROP INDEX IF EXISTS storage.idx_files_category_order;
