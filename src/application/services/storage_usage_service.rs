@@ -102,6 +102,32 @@ impl StorageUsageService {
         Ok(total_usage)
     }
 
+    /// Incrementally adjust one user's cached usage by `delta` bytes — O(1),
+    /// the per-upload counterpart to the O(N) full recompute above. An upload
+    /// adds `+size` (was a full `SUM(size)` over every file the user owns, i.e.
+    /// O(N) per upload and O(N²) for a bulk upload). Deletes/trash do not
+    /// decrement here (they never did); the periodic reconciliation sweep
+    /// ([`StorageUsagePort::update_all_users_storage_usage`]) remains the
+    /// correctness backstop for every mutation. Clamped at 0 so a late or
+    /// duplicate adjustment can never drive the counter negative.
+    pub async fn add_user_storage_usage_delta(
+        &self,
+        user_id: Uuid,
+        delta: i64,
+    ) -> Result<(), DomainError> {
+        sqlx::query(
+            "UPDATE auth.users
+                SET storage_used_bytes = GREATEST(0, storage_used_bytes + $2)
+              WHERE id = $1",
+        )
+        .bind(user_id)
+        .bind(delta)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| DomainError::internal_error("StorageUsage", format!("usage delta: {e}")))?;
+        Ok(())
+    }
+
     /// Spawn a background task that periodically reconciles every user's cached
     /// `storage_used_bytes` against the actual sum of their files.
     ///

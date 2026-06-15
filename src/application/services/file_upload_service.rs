@@ -14,26 +14,7 @@ use crate::infrastructure::repositories::pg::FileBlobWriteRepository;
 use crate::infrastructure::services::dedup_service::DedupService;
 use crate::infrastructure::services::file_content_cache::FileContentCache;
 use crate::infrastructure::services::pg_acl_engine::PgAclEngine;
-use tracing::{debug, info, warn};
-
-/// Helper function to extract username from folder path string.
-/// e.g. "My Folder - user1/subfolder/file.txt" → "user1"
-fn extract_username_from_path(path: &str) -> Option<String> {
-    if !path.contains("My Folder - ") {
-        return None;
-    }
-    let parts: Vec<&str> = path.split("My Folder - ").collect();
-    if parts.len() <= 1 {
-        return None;
-    }
-    let remainder = parts[1].trim();
-    let username = remainder.split('/').next().unwrap_or(remainder);
-    let username = username.trim();
-    if username.is_empty() {
-        return None;
-    }
-    Some(username.to_string())
-}
+use tracing::{info, warn};
 
 /// Service for file upload operations.
 ///
@@ -305,26 +286,35 @@ impl FileUploadService {
 
     // ── private helpers ──────────────────────────────────────────
 
-    /// Optionally update storage usage after a successful upload.
+    /// Bump the owner's cached storage usage after a successful upload.
+    ///
+    /// Incremental (`+size`, O(1)) and fire-and-forget on a background task, so
+    /// it adds neither latency nor a `SUM(size)` over the user's whole library
+    /// to the upload path (the previous full recompute was O(N) per upload,
+    /// O(N²) for a bulk upload). Keyed by the file's `owner_id`; drift — e.g.
+    /// deletes, which don't decrement — is reconciled by the periodic sweep. A
+    /// DTO without a resolvable owner is simply left to that sweep.
     fn maybe_update_storage_usage(&self, file: &FileDto) {
-        if let Some(storage_service) = &self.storage_usage_service {
-            let file_path = file.path.clone();
-            if let Some(username) = extract_username_from_path(&file_path) {
-                let service_clone = Arc::clone(storage_service);
-                tokio::spawn(async move {
-                    match service_clone
-                        .update_user_storage_usage_by_username(&username)
-                        .await
-                    {
-                        Ok(usage) => debug!(
-                            "Updated storage usage for user {} to {} bytes",
-                            username, usage
-                        ),
-                        Err(e) => warn!("Failed to update storage usage for {}: {}", username, e),
-                    }
-                });
+        let Some(storage_service) = &self.storage_usage_service else {
+            return;
+        };
+        let Some(owner) = file
+            .owner_id
+            .as_deref()
+            .and_then(|s| Uuid::parse_str(s).ok())
+        else {
+            return;
+        };
+        let delta = file.size as i64;
+        let service_clone = Arc::clone(storage_service);
+        tokio::spawn(async move {
+            if let Err(e) = service_clone
+                .add_user_storage_usage_delta(owner, delta)
+                .await
+            {
+                warn!("Failed to bump storage usage for {owner}: {e}");
             }
-        }
+        });
     }
 }
 
