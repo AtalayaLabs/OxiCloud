@@ -319,6 +319,11 @@ impl BlobStorageBackend for AzureBlobBackend {
         "azure"
     }
 
+    /// Remote object store: overlap chunk GETs to hide per-request latency.
+    fn read_prefetch(&self) -> usize {
+        8
+    }
+
     fn local_blob_path(&self, _hash: &str) -> Option<PathBuf> {
         None
     }

@@ -217,6 +217,12 @@ impl BlobStorageBackend for MigrationBlobBackend {
         "migration"
     }
 
+    /// Reads are served target-first (see `get_blob_stream`), so adopt the
+    /// target's read-ahead.
+    fn read_prefetch(&self) -> usize {
+        self.target.read_prefetch()
+    }
+
     fn local_blob_path(&self, hash: &str) -> Option<PathBuf> {
         // Prefer target, fall back to source.
         self.target

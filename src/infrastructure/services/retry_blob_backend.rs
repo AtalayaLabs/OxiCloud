@@ -268,6 +268,11 @@ impl BlobStorageBackend for RetryBlobBackend {
         "retry"
     }
 
+    /// Transparent wrapper: the inner backend serves the bytes.
+    fn read_prefetch(&self) -> usize {
+        self.inner.read_prefetch()
+    }
+
     fn local_blob_path(&self, hash: &str) -> Option<PathBuf> {
         self.inner.local_blob_path(hash)
     }

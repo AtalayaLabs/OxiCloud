@@ -385,6 +385,12 @@ impl BlobStorageBackend for CachedBlobBackend {
         "cached"
     }
 
+    /// A cache miss fetches from the inner backend, so adopt its read-ahead
+    /// (high for remote, where prefetch pays off; hits read local cache files).
+    fn read_prefetch(&self) -> usize {
+        self.inner.read_prefetch()
+    }
+
     fn local_blob_path(&self, hash: &str) -> Option<PathBuf> {
         // If the blob is cached locally, return that path
         let path = self.cached_path(hash);

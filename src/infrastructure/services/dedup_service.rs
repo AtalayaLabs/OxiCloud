@@ -1438,7 +1438,10 @@ impl DedupService {
         .map_err(|e| DomainError::internal_error("Dedup", format!("Manifest lookup: {}", e)))?;
 
         if let Some(chunk_hashes) = manifest {
-            // CDC file: stream chunks in order
+            // CDC file: stream chunks in order. Read-ahead depth is the
+            // backend's hint (1 for local disk, higher for remote object
+            // stores where overlapping fetches hide per-chunk latency).
+            let prefetch = self.backend.read_prefetch().max(1);
             let backend = self.backend.clone();
             let chunk_stream = stream::iter(chunk_hashes)
                 .map(move |chunk_hash| {
@@ -1450,7 +1453,7 @@ impl DedupService {
                             .map_err(|e| std::io::Error::other(e.to_string()))
                     }
                 })
-                .buffered(1)
+                .buffered(prefetch)
                 .try_flatten();
 
             Ok(Box::pin(chunk_stream))
@@ -1529,7 +1532,9 @@ impl DedupService {
                 }
             }
 
-            // Stream selected chunks with ranges
+            // Stream selected chunks with ranges. Read-ahead depth from the
+            // backend hint (local=1; remote overlaps fetches — see read_blob_stream).
+            let prefetch = self.backend.read_prefetch().max(1);
             let backend = self.backend.clone();
             let chunk_stream = stream::iter(selected)
                 .map(move |(chunk_hash, range_start, range_end)| {
@@ -1541,7 +1546,7 @@ impl DedupService {
                             .map_err(|e| std::io::Error::other(e.to_string()))
                     }
                 })
-                .buffered(1)
+                .buffered(prefetch)
                 .try_flatten();
 
             Ok(Box::pin(chunk_stream))

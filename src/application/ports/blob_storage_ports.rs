@@ -126,4 +126,18 @@ pub trait BlobStorageBackend: Send + Sync + 'static {
     /// Only meaningful for local-filesystem backends.  Remote backends
     /// return `None`; callers that need a local file must stream + spool.
     fn local_blob_path(&self, hash: &str) -> Option<PathBuf>;
+
+    /// How many chunk fetches the CDC reader may run concurrently when
+    /// reassembling a file (`read_blob_stream`'s `buffered(N)` read-ahead).
+    ///
+    /// The default is **1** — sequential, because for a local disk concurrent
+    /// opens turn one sequential read into several competing random-I/O streams
+    /// over content-addressed (scattered) chunk files, which is neutral on a
+    /// warm page cache and *slower* cold. Remote backends (S3/Azure) override
+    /// this with a higher value: there the dominant cost is per-chunk request
+    /// latency, and overlapping fetches hides it (≈ N× faster reassembly).
+    /// Wrapping backends delegate to the backend that actually serves the bytes.
+    fn read_prefetch(&self) -> usize {
+        1
+    }
 }

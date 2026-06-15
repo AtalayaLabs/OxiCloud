@@ -306,6 +306,11 @@ impl BlobStorageBackend for EncryptedBlobBackend {
         "encrypted"
     }
 
+    /// Transparent wrapper: the inner backend serves the bytes.
+    fn read_prefetch(&self) -> usize {
+        self.inner.read_prefetch()
+    }
+
     fn local_blob_path(&self, _hash: &str) -> Option<PathBuf> {
         // Encrypted blobs cannot be served directly from disk
         None

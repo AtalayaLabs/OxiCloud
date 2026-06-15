@@ -381,6 +381,11 @@ impl BlobStorageBackend for S3BlobBackend {
         "s3"
     }
 
+    /// Remote object store: overlap chunk GETs to hide per-request latency.
+    fn read_prefetch(&self) -> usize {
+        8
+    }
+
     fn local_blob_path(&self, _hash: &str) -> Option<PathBuf> {
         None // Remote backend — no local path
     }
