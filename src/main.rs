@@ -571,6 +571,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         use tower_http::compression::CompressionLayer;
         use tower_http::compression::predicate::{NotForContentType, Predicate, SizeAbove};
 
+        // Never compress file-body responses (downloads, inline previews, ZIP
+        // exports). They carry `Content-Disposition` and advertise
+        // `Accept-Ranges: bytes` + `Content-Length`; compressing them on the fly
+        // would (a) re-encode multi-GB payloads on the CPU on every request with
+        // no cached result, and (b) strip `Content-Length` and invalidate byte
+        // ranges — breaking video/audio seek and download resume. API JSON and
+        // static assets never set `Content-Disposition`, so they stay compressed.
+        #[derive(Clone, Copy)]
+        struct NotForDownloads;
+        impl Predicate for NotForDownloads {
+            fn should_compress<B>(&self, response: &axum::http::Response<B>) -> bool
+            where
+                B: http_body::Body,
+            {
+                !response
+                    .headers()
+                    .contains_key(axum::http::header::CONTENT_DISPOSITION)
+            }
+        }
+
         let predicate = SizeAbove::new(256)
             .and(NotForContentType::GRPC)
             .and(NotForContentType::SSE)
@@ -616,7 +636,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // ── PDF: streams are usually already deflated; often large ──
             .and(NotForContentType::const_new("application/pdf"))
             // ── opaque binary we couldn't identify ──
-            .and(NotForContentType::const_new("application/octet-stream"));
+            .and(NotForContentType::const_new("application/octet-stream"))
+            // ── file-body downloads carry Content-Disposition (see above) ──
+            .and(NotForDownloads);
 
         app = app.layer(CompressionLayer::new().compress_when(predicate));
     }
