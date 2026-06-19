@@ -108,7 +108,7 @@ fn git_status() {
         println!("cargo:rerun-if-env-changed={k}");
     }
 
-    println!("cargo:warning=OxiCloud building with git hash: {git_hash} and branch: {git_branch}");
+    println!("cargo:warning=OxiCloud built with git hash: {git_hash} and branch: {git_branch}");
 }
 
 fn git(args: &[&str]) -> Option<String> {
