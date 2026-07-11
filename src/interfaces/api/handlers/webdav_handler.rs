@@ -419,6 +419,7 @@ async fn handle_webdav_dispatch(
         "COPY" => handle_copy(state, req, path).await,
         "PROPFIND" => handle_propfind(state, req, path).await,
         "PROPPATCH" => handle_proppatch(state, req, path).await,
+        "REPORT" => handle_report(state, req, path).await,
         "LOCK" => handle_lock(state, req, path).await,
         "UNLOCK" => handle_unlock(state, req, path).await,
         _ => Err(AppError::method_not_allowed(format!(
@@ -444,7 +445,7 @@ async fn handle_options(_path: String) -> Result<Response<Body>, AppError> {
         .header(HEADER_DAV, "1, 2") // Class 1 and 2 WebDAV support
         .header(
             header::ALLOW,
-            "OPTIONS, GET, HEAD, PUT, PATCH, DELETE, PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK",
+            "OPTIONS, GET, HEAD, PUT, PATCH, DELETE, PROPFIND, PROPPATCH, REPORT, MKCOL, COPY, MOVE, LOCK, UNLOCK",
         )
         .body(Body::empty())
         .unwrap())
@@ -909,6 +910,151 @@ async fn build_streaming_propfind_response(
         .status(StatusCode::MULTI_STATUS)
         .header(header::CONTENT_TYPE, "application/xml; charset=utf-8")
         .body(Body::from_stream(stream))
+        .unwrap())
+}
+
+/**
+ * Handles REPORT requests (currently: RFC 6578 sync-collection).
+ *
+ * Extends sync-collection/sync-token support — previously only
+ * implemented for CalDAV/CardDAV — to the plain-file WebDAV surface.
+ * See [`WebDavAdapter::generate_sync_collection_response`] for why this
+ * is a full re-sync every time rather than true incremental sync.
+ *
+ * @param state The application state containing service dependencies
+ * @param req   The HTTP request containing the REPORT XML body
+ * @param path  The requested collection path
+ * @return HTTP response: 207 multistatus + trailing `<D:sync-token>`
+ */
+async fn handle_report(
+    state: Arc<AppState>,
+    req: Request<Body>,
+    path: String,
+) -> Result<Response<Body>, AppError> {
+    let user = extract_user(&req)?;
+    let folder_service = &state.applications.folder_service;
+    let file_retrieval_service = &state.applications.file_retrieval_service;
+
+    // RFC 6578 doesn't define a Depth semantic of its own; this server
+    // reuses PROPFIND's Depth cap (only Depth: 1 children are listed —
+    // deeper reports need a client-side recursive fetch, same as PROPFIND).
+    let depth = req
+        .headers()
+        .get("Depth")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("1")
+        .to_string();
+    if depth == "infinity" {
+        return Err(AppError::forbidden(
+            "sync-collection Depth: infinity is not supported",
+        ));
+    }
+
+    let client_path = extract_webdav_path(req.uri());
+    let base_href = if client_path.is_empty() || client_path == "/" {
+        "/webdav/".to_string()
+    } else {
+        format!("/webdav/{}/", encode_uri_path(&client_path))
+    };
+
+    let body_bytes = body::to_bytes(req.into_body(), MAX_XML_BODY)
+        .await
+        .map_err(|e| AppError::bad_request(format!("Failed to read request body: {}", e)))?;
+
+    let sync_req = WebDavAdapter::parse_sync_collection(body_bytes.reader())
+        .map_err(|e| AppError::bad_request(format!("Failed to parse REPORT: {}", e)))?;
+
+    let scope = resolve_webdav_scope_or_405(&state, user.id, &path).await?;
+    let drive_id = scope.drive_id;
+    let path = scope.db_path;
+
+    // Resolve the target — must be a collection (folder), drive root included.
+    let folder_id: Option<String> = if path.is_empty() {
+        None
+    } else if let Some(resolver) = &state.path_resolver {
+        match resolver.resolve_path_in_drive(&path, drive_id).await {
+            Ok(ResolvedResource::Folder(f)) => {
+                let folder_uuid = Uuid::parse_str(&f.id)
+                    .map_err(|_| AppError::not_found(format!("Resource not found: {}", path)))?;
+                state
+                    .authorization
+                    .require(
+                        Subject::User(user.id),
+                        Permission::Read,
+                        Resource::Folder(folder_uuid),
+                    )
+                    .await?;
+                Some(f.id)
+            }
+            Ok(ResolvedResource::File(_)) => {
+                return Err(AppError::conflict(
+                    "sync-collection REPORT target must be a collection",
+                ));
+            }
+            Err(_) => {
+                return Err(AppError::not_found(format!("Resource not found: {}", path)));
+            }
+        }
+    } else {
+        let f = folder_service
+            .get_folder_by_path(&path, drive_id)
+            .await
+            .map_err(|_| AppError::not_found(format!("Resource not found: {}", path)))?;
+        Some(f.id)
+    };
+    let fid_ref = folder_id.as_deref();
+
+    let (subfolders, files) = if depth == "1" {
+        let subfolders = folder_service
+            .list_folders_with_perms(fid_ref, user.id)
+            .await
+            .map_err(|e| AppError::internal_error(format!("Failed to list folders: {}", e)))?;
+        let files = file_retrieval_service
+            .list_files_with_perms(fid_ref, user.id)
+            .await
+            .map_err(|e| AppError::internal_error(format!("Failed to list files: {}", e)))?;
+        (subfolders, files)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
+    let subfolders: Vec<(FolderDto, String)> = subfolders
+        .into_iter()
+        .map(|f| {
+            let href = format!("{}{}/", base_href, encode_path_segment(&f.name));
+            (f, href)
+        })
+        .collect();
+    let files: Vec<(FileDto, String)> = files
+        .into_iter()
+        .map(|f| {
+            let href = format!("{}{}", base_href, encode_path_segment(&f.name));
+            (f, href)
+        })
+        .collect();
+
+    // Freshly minted per response — see the doc comment on
+    // `generate_sync_collection_response` for why this isn't a real
+    // incremental sync-token.
+    let sync_token = format!(
+        "http://oxicloud.local/ns/sync/{}",
+        Utc::now().timestamp_millis()
+    );
+
+    let mut response_body = Vec::new();
+    WebDavAdapter::generate_sync_collection_response(
+        &mut response_body,
+        &subfolders,
+        &files,
+        &sync_req.request,
+        &sync_token,
+    )
+    .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
+
+    Ok(Response::builder()
+        .status(StatusCode::MULTI_STATUS)
+        .header(header::CONTENT_TYPE, "application/xml; charset=utf-8")
+        .body(Body::from(response_body))
         .unwrap())
 }
 
