@@ -3,29 +3,37 @@ use axum::{
     http::{Request, StatusCode, header},
     response::Response,
 };
+use chrono::Utc;
 use quick_xml::{
     Reader, Writer,
     events::{BytesEnd, BytesStart, Event},
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use uuid::Uuid;
 
+use crate::application::adapters::webdav_adapter::WebDavAdapter;
 use crate::application::dtos::display_helpers::{format_file_size, intern_display};
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::application::dtos::search_dto::SearchCriteriaDto;
+use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::favorites_ports::FavoritesUseCase;
+use crate::application::ports::file_ports::FileRetrievalUseCase;
 use crate::application::ports::folder_ports::FolderUseCase;
 use crate::application::ports::inbound::SearchUseCase;
 use crate::common::di::AppState;
 use crate::domain::entities::file::File;
+use crate::domain::services::authorization::{Permission, Resource, Subject};
+use crate::infrastructure::services::path_resolver_service::ResolvedResource;
 use crate::interfaces::api::handlers::webdav_handler::{
     dead_props_for, files_dead_props_map, folders_dead_props_map,
 };
 use crate::interfaces::errors::AppError;
 use crate::interfaces::nextcloud::webdav_handler::{
-    batch_resolve_ids, format_oc_id_into, nc_collection_href_into, nc_href_into, nc_id_of,
-    write_file_response, write_folder_response,
+    batch_resolve_ids, format_oc_id, format_oc_id_into, nc_collection_href_into, nc_href,
+    nc_href_into, nc_id_of, nc_resolve_or_fallback, nc_to_internal_path, write_file_response,
+    write_folder_response, write_text_element,
 };
 
 /// Handle WebDAV REPORT and SEARCH methods for Nextcloud compatibility.
@@ -33,12 +41,21 @@ use crate::interfaces::nextcloud::webdav_handler::{
 /// Dispatches based on the XML body:
 /// - `oc:filter-files` -- list favorited items (REPORT)
 /// - `d:searchrequest`  -- search files by name (SEARCH)
+/// - `sync-collection`  -- full re-sync of a collection's children (REPORT)
 pub async fn handle_nc_report(
     state: Arc<AppState>,
     req: Request<Body>,
     session: &crate::interfaces::nextcloud::session::NcSession,
-    _subpath: &str,
+    subpath: &str,
 ) -> Result<Response<Body>, AppError> {
+    // `Depth` must be read before `req.into_body()` consumes `req`.
+    let depth = req
+        .headers()
+        .get("Depth")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("1")
+        .to_string();
+
     let body_bytes = body::to_bytes(req.into_body(), 64 * 1024)
         .await
         .map_err(|e| AppError::bad_request(format!("Failed to read body: {}", e)))?;
@@ -49,6 +66,8 @@ pub async fn handle_nc_report(
         handle_filter_files(state, &body_str, session).await
     } else if body_str.contains("searchrequest") {
         handle_search(state, &body_str, session).await
+    } else if body_str.contains("sync-collection") {
+        handle_sync_collection(state, &body_str, session, subpath, &depth).await
     } else {
         // Unknown REPORT type -- return empty multistatus.
         Ok(empty_multistatus())
@@ -414,6 +433,188 @@ async fn handle_search(
             )
             .map_err(|e| AppError::internal_error(format!("XML write error: {}", e)))?;
         }
+
+        xml.write_event(Event::End(BytesEnd::new("d:multistatus")))
+            .map_err(|e| AppError::internal_error(format!("XML write error: {}", e)))?;
+    }
+
+    Ok(Response::builder()
+        .status(StatusCode::MULTI_STATUS)
+        .header(header::CONTENT_TYPE, "application/xml; charset=utf-8")
+        .body(Body::from(buf))
+        .unwrap())
+}
+
+// ──────────────────── Sync-collection (RFC 6578) ────────────────────
+
+/// Handle the `<D:sync-collection>` REPORT (RFC 6578) — extends
+/// sync-token support (previously only implemented for CalDAV/CardDAV,
+/// and not at all on the NC surface, unlike the plain WebDAV surface's
+/// `handle_report`) here.
+///
+/// **This is a full re-sync every response, not true incremental
+/// sync** — same documented limitation as the plain WebDAV surface's
+/// implementation and the existing CalDAV/CardDAV sync-collection
+/// REPORTs in this codebase: `sync_token` is freshly minted per
+/// response (timestamp-based) and every request — initial or with a
+/// prior token — returns the complete current member list. A real
+/// incremental implementation would need a persistent per-folder
+/// change log, which is a separate, larger effort than this gap-fill.
+///
+/// `Depth: infinity` is rejected (403), matching PROPFIND's depth cap;
+/// the REPORT target must be a collection (409 if it resolves to a
+/// file).
+async fn handle_sync_collection(
+    state: Arc<AppState>,
+    body: &str,
+    session: &crate::interfaces::nextcloud::session::NcSession,
+    subpath: &str,
+    depth: &str,
+) -> Result<Response<Body>, AppError> {
+    if depth == "infinity" {
+        return Err(AppError::forbidden(
+            "sync-collection Depth: infinity is not supported",
+        ));
+    }
+
+    // Parsed only to validate the request body — like the NC PROPFIND
+    // surface, every response emits the full property set, so the
+    // parsed request isn't otherwise consulted.
+    WebDavAdapter::parse_sync_collection(body.as_bytes())
+        .map_err(|e| AppError::bad_request(format!("Failed to parse REPORT: {}", e)))?;
+
+    let user = &session.user;
+    let url_user = &session.raw_username;
+    let chroot = session.require_chroot()?;
+
+    let internal_path = nc_to_internal_path(chroot, subpath)?;
+    let resolved = nc_resolve_or_fallback(&state, &internal_path, chroot.drive_id)
+        .await
+        .ok_or_else(|| AppError::not_found("Resource not found"))?;
+    let folder = match resolved {
+        ResolvedResource::Folder(folder) => folder,
+        ResolvedResource::File(_) => {
+            return Err(AppError::conflict(
+                "sync-collection REPORT target must be a collection",
+            ));
+        }
+    };
+    let folder_uuid =
+        Uuid::parse_str(&folder.id).map_err(|_| AppError::not_found("Resource not found"))?;
+    state
+        .authorization
+        .require(
+            Subject::User(user.id),
+            Permission::Read,
+            Resource::Folder(folder_uuid),
+        )
+        .await?;
+
+    let folder_service = &state.applications.folder_service;
+    let file_service = &state.applications.file_retrieval_service;
+    let fav_svc = state.favorites_service.as_ref();
+    let nc = state.nextcloud.as_ref();
+    let file_id_svc = nc.map(|n| &n.file_ids);
+
+    let subfolders = if depth == "0" {
+        Vec::new()
+    } else {
+        folder_service
+            .list_folders_with_perms(Some(&folder.id), user.id)
+            .await
+            .map_err(|e| AppError::internal_error(format!("Failed to list folders: {}", e)))?
+    };
+    let files = if depth == "0" {
+        Vec::new()
+    } else {
+        file_service
+            .list_files_with_perms(Some(&folder.id), user.id)
+            .await
+            .map_err(|e| AppError::internal_error(format!("Failed to list files: {}", e)))?
+    };
+
+    let favorite_ids = if let Some(fav) = fav_svc {
+        let mut items: Vec<(&str, &str)> = subfolders
+            .iter()
+            .map(|f| (f.id.as_str(), "folder"))
+            .collect();
+        items.extend(files.iter().map(|f| (f.id.as_str(), "file")));
+        fav.batch_check_favorites(user.id, &items)
+            .await
+            .unwrap_or_default()
+    } else {
+        HashSet::new()
+    };
+
+    let file_uuids: Vec<String> = files.iter().map(|f| f.id.clone()).collect();
+    let folder_uuids: Vec<String> = subfolders.iter().map(|f| f.id.clone()).collect();
+    let (file_id_map, folder_id_map) =
+        batch_resolve_ids(file_id_svc, &file_uuids, &folder_uuids).await;
+
+    let file_deads = files_dead_props_map(&state.webdav_dead_props, &files).await;
+    let folder_deads = folders_dead_props_map(&state.webdav_dead_props, &subfolders).await;
+
+    let mut buf = Vec::new();
+    {
+        let mut xml = Writer::new(&mut buf);
+        write_multistatus_start(&mut xml)?;
+
+        for file in &files {
+            let child_sub = if subpath.is_empty() {
+                file.name.clone()
+            } else {
+                format!("{}/{}", subpath.trim_end_matches('/'), file.name)
+            };
+            let href = nc_href(url_user, &child_sub);
+            let fid = file_id_map.get(&file.id).copied();
+            let oc_id = fid.map(|id| format_oc_id(id, file_id_svc));
+            let dead = dead_props_for(&file.id, &file_deads);
+            write_file_response(
+                &mut xml,
+                file,
+                &href,
+                (fid, oc_id.as_deref()),
+                &user.username,
+                &favorite_ids,
+                dead,
+            )
+            .map_err(|e| AppError::internal_error(format!("XML write error: {}", e)))?;
+        }
+
+        for sf in &subfolders {
+            let child_sub = if subpath.is_empty() {
+                sf.name.clone()
+            } else {
+                format!("{}/{}", subpath.trim_end_matches('/'), sf.name)
+            };
+            let href = format!("{}/", nc_href(url_user, &child_sub));
+            let fid = folder_id_map.get(&sf.id).copied();
+            let oc_id = fid.map(|id| format_oc_id(id, file_id_svc));
+            let dead = dead_props_for(&sf.id, &folder_deads);
+            write_folder_response(
+                &mut xml,
+                sf,
+                &href,
+                (fid, oc_id.as_deref()),
+                &user.username,
+                &favorite_ids,
+                // sync-collection results aren't a PROPFIND on a single
+                // collection — quota isn't meaningful here (matches the
+                // favorites/search REPORT handlers above).
+                None,
+                dead,
+            )
+            .map_err(|e| AppError::internal_error(format!("XML write error: {}", e)))?;
+        }
+
+        // Freshly minted per response — see this function's doc comment
+        // for why this isn't a real incremental sync-token.
+        let sync_token = format!(
+            "http://oxicloud.local/ns/sync/{}",
+            Utc::now().timestamp_millis()
+        );
+        write_text_element(&mut xml, "d:sync-token", &sync_token)
+            .map_err(|e| AppError::internal_error(format!("XML write error: {}", e)))?;
 
         xml.write_event(Event::End(BytesEnd::new("d:multistatus")))
             .map_err(|e| AppError::internal_error(format!("XML write error: {}", e)))?;

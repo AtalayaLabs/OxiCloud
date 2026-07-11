@@ -458,7 +458,10 @@ async fn handle_propfind(
 /// to the double-query `get_*_by_path` pair when the resolver isn't
 /// configured. Same shape and drive-scope as the native surface —
 /// callers `authz.require(…)` on the returned resource.
-async fn nc_resolve_or_fallback(
+///
+/// `pub(crate)` so `report_handler.rs::handle_sync_collection` can reuse
+/// it instead of duplicating the resolver/fallback logic.
+pub(crate) async fn nc_resolve_or_fallback(
     state: &Arc<AppState>,
     internal_path: &str,
     drive_id: Uuid,
