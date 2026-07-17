@@ -11,15 +11,9 @@ use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::calendar_ports::{
     CalendarStoragePort, CalendarUseCase, UpsertEventsResult,
 };
-use crate::application::ports::change_log_port::{SyncChange, SyncDelta};
 use crate::common::errors::{DomainError, ErrorKind};
-use crate::domain::entities::sync_token::SyncToken;
-use crate::domain::repositories::calendar_sync_change_repository::{
-    CalendarSyncChangeRepository, SyncChangeKind,
-};
 use crate::domain::services::authorization::{Permission, Resource, Role, Subject};
 use crate::infrastructure::adapters::calendar_storage_adapter::CalendarStorageAdapter;
-use crate::infrastructure::repositories::pg::calendar_sync_change_pg_repository::CalendarSyncChangePgRepository;
 use crate::infrastructure::services::pg_acl_engine::PgAclEngine;
 
 /// Calendar service — the CalDAV / REST entry point for every calendar
@@ -38,21 +32,13 @@ pub struct CalendarService {
     /// "owning my own calendar" case takes a single indexed
     /// role_grants lookup.
     authz: Arc<PgAclEngine>,
-    /// RFC 6578 `sync-collection` change log — see
-    /// `list_event_changes_with_perms` / `mint_initial_event_token`.
-    sync_change_repo: Arc<CalendarSyncChangePgRepository>,
 }
 
 impl CalendarService {
-    pub fn new(
-        calendar_storage: Arc<CalendarStorageAdapter>,
-        authz: Arc<PgAclEngine>,
-        sync_change_repo: Arc<CalendarSyncChangePgRepository>,
-    ) -> Self {
+    pub fn new(calendar_storage: Arc<CalendarStorageAdapter>, authz: Arc<PgAclEngine>) -> Self {
         Self {
             calendar_storage,
             authz,
-            sync_change_repo,
         }
     }
 
@@ -97,87 +83,6 @@ impl CalendarService {
                 Resource::Calendar(uuid),
             )
             .await
-    }
-
-    /// Mints the token an **initial** sync response should hand back.
-    /// See `WebdavSyncCollectionService::mint_initial_token` for the
-    /// rationale (cheap — reads current max seq rather than walking the
-    /// full change history).
-    pub async fn mint_initial_event_token(
-        &self,
-        calendar_id: &str,
-        caller_id: Uuid,
-    ) -> Result<SyncToken, DomainError> {
-        let uuid = self
-            .require_calendar_perm(calendar_id, caller_id, Permission::Read)
-            .await?;
-        let seq = self.sync_change_repo.current_seq(uuid).await?;
-        Ok(SyncToken::mint(uuid, seq))
-    }
-
-    /// Resolves the delta for `calendar_id` since `since_token`. See
-    /// `WebdavSyncCollectionService::list_changes_with_perms` for the
-    /// shared shape and expiry semantics.
-    pub async fn list_event_changes_with_perms(
-        &self,
-        calendar_id: &str,
-        since_token: Option<SyncToken>,
-        caller_id: Uuid,
-    ) -> Result<SyncDelta<CalendarEventDto>, DomainError> {
-        let uuid = self
-            .require_calendar_perm(calendar_id, caller_id, Permission::Read)
-            .await?;
-
-        if let Some(token) = since_token
-            && self.sync_change_repo.is_seq_expired(token.seq()).await?
-        {
-            return Err(DomainError::sync_token_expired(
-                "CalendarSyncChange",
-                format!(
-                    "sync-token seq {} for calendar {} predates the retention window",
-                    token.seq(),
-                    uuid
-                ),
-            ));
-        }
-
-        let since_seq = since_token.map(|t| t.seq());
-        let (rows, new_seq) = self.sync_change_repo.changes_since(uuid, since_seq).await?;
-
-        let mut changes = Vec::with_capacity(rows.len());
-        for row in rows {
-            match row.kind {
-                SyncChangeKind::Deleted => {
-                    changes.push(SyncChange::Deleted {
-                        member_id: row.member_id,
-                        href_hint: format!("{}.ics", row.ical_uid),
-                        is_collection: false,
-                    });
-                }
-                SyncChangeKind::Created | SyncChangeKind::Updated => {
-                    match self
-                        .calendar_storage
-                        .get_event(&row.member_id.to_string())
-                        .await
-                    {
-                        Ok(event) => changes.push(SyncChange::Upserted(event)),
-                        // Hard-deleted/purged after this row was logged but
-                        // before we resolved it — degrade to a tombstone
-                        // rather than surfacing a lookup error.
-                        Err(_) => changes.push(SyncChange::Deleted {
-                            member_id: row.member_id,
-                            href_hint: format!("{}.ics", row.ical_uid),
-                            is_collection: false,
-                        }),
-                    }
-                }
-            }
-        }
-
-        Ok(SyncDelta {
-            changes,
-            new_token: SyncToken::mint(uuid, new_seq),
-        })
     }
 }
 

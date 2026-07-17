@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::application::adapters::sync_collection_xml;
 use crate::application::adapters::webdav_adapter::WebDavAdapter;
 use crate::application::dtos::display_helpers::{format_file_size, intern_display};
 use crate::application::dtos::file_dto::FileDto;
@@ -35,7 +36,7 @@ use crate::interfaces::errors::AppError;
 use crate::interfaces::nextcloud::webdav_handler::{
     batch_resolve_ids, format_oc_id, format_oc_id_into, nc_collection_href_into, nc_href,
     nc_href_into, nc_id_of, nc_resolve_or_fallback, nc_to_internal_path, write_file_response,
-    write_folder_response, write_text_element,
+    write_folder_response,
 };
 
 /// Handle WebDAV REPORT and SEARCH methods for Nextcloud compatibility.
@@ -664,10 +665,11 @@ async fn handle_sync_collection(
         }
 
         for href in &deleted_hrefs {
-            write_deleted_response(&mut xml, href)?;
+            sync_collection_xml::write_deleted_response(&mut xml, "d:", href)
+                .map_err(|e| AppError::internal_error(format!("XML write error: {}", e)))?;
         }
 
-        write_text_element(&mut xml, "d:sync-token", &sync_token)
+        sync_collection_xml::write_sync_token(&mut xml, "d:", &sync_token)
             .map_err(|e| AppError::internal_error(format!("XML write error: {}", e)))?;
 
         xml.write_event(Event::End(BytesEnd::new("d:multistatus")))
@@ -679,24 +681,6 @@ async fn handle_sync_collection(
         .header(header::CONTENT_TYPE, "application/xml; charset=utf-8")
         .body(Body::from(buf))
         .unwrap())
-}
-
-/// RFC 6578 §3.7 removed-member sub-response for the NC surface (lowercase
-/// `d:` prefix, matching this file's other XML writers): a `<d:response>`
-/// whose `<d:status>` is 404, with no `<d:propstat>` block.
-fn write_deleted_response<W: std::io::Write>(
-    xml: &mut Writer<W>,
-    href: &str,
-) -> Result<(), AppError> {
-    xml.write_event(Event::Start(BytesStart::new("d:response")))
-        .map_err(|e| AppError::internal_error(format!("XML write error: {}", e)))?;
-    write_text_element(xml, "d:href", href)
-        .map_err(|e| AppError::internal_error(format!("XML write error: {}", e)))?;
-    write_text_element(xml, "d:status", "HTTP/1.1 404 Not Found")
-        .map_err(|e| AppError::internal_error(format!("XML write error: {}", e)))?;
-    xml.write_event(Event::End(BytesEnd::new("d:response")))
-        .map_err(|e| AppError::internal_error(format!("XML write error: {}", e)))?;
-    Ok(())
 }
 
 // ──────────────────── DTO conversions ────────────────────

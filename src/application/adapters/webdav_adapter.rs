@@ -1,3 +1,4 @@
+use crate::application::adapters::sync_collection_xml;
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
 use chrono::Utc;
@@ -1731,33 +1732,12 @@ impl WebDavAdapter {
             Self::write_file_entry(&mut xml_writer, file, request, href)?;
         }
         for href in deleted {
-            Self::write_deleted_entry(&mut xml_writer, href)?;
+            sync_collection_xml::write_deleted_response(&mut xml_writer, "D:", href)?;
         }
 
-        xml_writer.write_event(Event::Start(BytesStart::new("D:sync-token")))?;
-        xml_writer.write_event(Event::Text(BytesText::new(sync_token)))?;
-        xml_writer.write_event(Event::End(BytesEnd::new("D:sync-token")))?;
+        sync_collection_xml::write_sync_token(&mut xml_writer, "D:", sync_token)?;
 
         xml_writer.write_event(Event::End(BytesEnd::new("D:multistatus")))?;
-        Ok(())
-    }
-
-    /// RFC 6578 §3.7 removed-member sub-response: a `<D:response>` whose
-    /// `<D:status>` is 404, with no `<D:propstat>` block — tells the
-    /// client this href was a member of the collection at the prior
-    /// sync-token and no longer is.
-    fn write_deleted_entry<W: Write>(xml_writer: &mut Writer<W>, href: &str) -> Result<()> {
-        xml_writer.write_event(Event::Start(BytesStart::new("D:response")))?;
-
-        xml_writer.write_event(Event::Start(BytesStart::new("D:href")))?;
-        xml_writer.write_event(Event::Text(BytesText::new(href)))?;
-        xml_writer.write_event(Event::End(BytesEnd::new("D:href")))?;
-
-        xml_writer.write_event(Event::Start(BytesStart::new("D:status")))?;
-        xml_writer.write_event(Event::Text(BytesText::new("HTTP/1.1 404 Not Found")))?;
-        xml_writer.write_event(Event::End(BytesEnd::new("D:status")))?;
-
-        xml_writer.write_event(Event::End(BytesEnd::new("D:response")))?;
         Ok(())
     }
 }

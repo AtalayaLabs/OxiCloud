@@ -29,6 +29,7 @@ pub mod file_blob_read_repository;
 pub mod file_blob_write_repository;
 pub mod folder_db_repository;
 pub mod folder_sync_change_pg_repository;
+pub mod sync_change_log_pg_repository;
 pub mod trash_db_repository;
 
 pub use address_book_pg_repository::AddressBookPgRepository;
@@ -60,6 +61,7 @@ pub use session_pg_repository::SessionPgRepository;
 pub use settings_pg_repository::SettingsPgRepository;
 pub use share_pg_repository::SharePgRepository;
 pub use subject_group_pg_repository::SubjectGroupPgRepository;
+pub use sync_change_log_pg_repository::{SyncChangeLogPgRepository, SyncChangeLogSchema};
 pub use trash_db_repository::TrashDbRepository;
 pub use user_pg_repository::UserPgRepository;
 

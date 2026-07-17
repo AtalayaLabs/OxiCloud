@@ -2073,6 +2073,7 @@ impl AppServiceFactory {
             grant_cleanup_service,
             calendar_service: None,
             calendar_use_case: None,
+            caldav_sync_collection_service: None,
             addressbook_use_case: None,
             contact_use_case: None,
             carddav_sync_collection_service: None,
@@ -2416,12 +2417,22 @@ impl AppServiceFactory {
             );
             let calendar_service = Arc::new(
                 crate::application::services::calendar_service::CalendarService::new(
-                    calendar_storage,
+                    calendar_storage.clone(),
                     authorization.clone(),
-                    calendar_sync_change_repo,
                 ),
             );
             app_state.calendar_use_case = Some(calendar_service as Arc<CalendarService>);
+
+            // RFC 6578 sync-collection — dedicated service (mirrors
+            // CarddavSyncCollectionService below), fixing the previous
+            // inconsistency of CalendarService owning this inline.
+            app_state.caldav_sync_collection_service = Some(Arc::new(
+                crate::application::services::caldav_sync_collection_service::CaldavSyncCollectionService::new(
+                    calendar_sync_change_repo,
+                    calendar_storage,
+                    authorization.clone(),
+                ),
+            ));
 
             // CardDAV
             let address_book_repo: Arc<AddressBookPgRepository> = Arc::new(
@@ -2862,6 +2873,12 @@ pub struct AppState {
     >,
     pub calendar_service: Option<Arc<CalendarService>>,
     pub calendar_use_case: Option<Arc<CalendarService>>,
+    /// RFC 6578 `sync-collection` REPORT — real incremental sync for
+    /// CalDAV events. Separate service (mirrors
+    /// `carddav_sync_collection_service`) rather than folded into
+    /// `CalendarService` — see `CaldavSyncCollectionService`'s doc comment.
+    pub caldav_sync_collection_service:
+        Option<Arc<crate::application::services::caldav_sync_collection_service::CaldavSyncCollectionService>>,
     pub addressbook_use_case: Option<Arc<ContactService>>,
     pub contact_use_case: Option<Arc<ContactService>>,
     /// RFC 6578 `sync-collection` REPORT — real incremental sync for

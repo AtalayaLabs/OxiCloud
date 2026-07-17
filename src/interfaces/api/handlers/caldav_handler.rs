@@ -38,6 +38,7 @@ use crate::application::dtos::calendar_dto::{
     CalendarEventDto, CreateCalendarDto, CreateEventICalDto, UpdateCalendarDto,
 };
 use crate::application::ports::calendar_ports::CalendarUseCase;
+use crate::application::services::caldav_sync_collection_service::CaldavSyncCollectionService;
 use crate::application::services::calendar_service::CalendarService;
 use crate::common::di::AppState;
 use crate::domain::entities::sync_token::SyncToken;
@@ -438,6 +439,21 @@ fn get_calendar_service(state: &AppState) -> Result<&Arc<CalendarService>, AppEr
     })
 }
 
+fn get_caldav_sync_collection_service(
+    state: &AppState,
+) -> Result<&Arc<CaldavSyncCollectionService>, AppError> {
+    state
+        .caldav_sync_collection_service
+        .as_ref()
+        .ok_or_else(|| {
+            AppError::new(
+                StatusCode::NOT_IMPLEMENTED,
+                "CalDAV sync-collection service is not configured",
+                "NotImplemented",
+            )
+        })
+}
+
 // ─── OPTIONS ─────────────────────────────────────────────────────────
 
 async fn handle_options() -> Result<Response<Body>, AppError> {
@@ -833,6 +849,7 @@ async fn handle_report(
                 (events, Vec::new(), None)
             }
             CalDavReportType::SyncCollection { sync_token, .. } => {
+                let sync_service = get_caldav_sync_collection_service(&state)?;
                 let calendar_uuid = Uuid::parse_str(calendar_id)
                     .map_err(|_| AppError::bad_request("Invalid calendar ID"))?;
 
@@ -843,15 +860,15 @@ async fn handle_report(
                         .map_err(|e| {
                             AppError::internal_error(format!("Failed to list events: {}", e))
                         })?;
-                    let new_token = calendar_service
-                        .mint_initial_event_token(calendar_id, user.id)
+                    let new_token = sync_service
+                        .mint_initial_token(calendar_uuid, user.id)
                         .await?;
                     (events, Vec::new(), Some(new_token.to_string()))
                 } else {
                     let token = SyncToken::parse_for_collection(sync_token, calendar_uuid)
                         .map_err(|e| AppError::bad_request(format!("Invalid sync-token: {e}")))?;
-                    let delta = calendar_service
-                        .list_event_changes_with_perms(calendar_id, Some(token), user.id)
+                    let delta = sync_service
+                        .list_changes_with_perms(calendar_uuid, Some(token), user.id)
                         .await?;
                     let new_token = delta.new_token.to_string();
                     let (events, deleted) = delta.split_homogeneous(base_href);

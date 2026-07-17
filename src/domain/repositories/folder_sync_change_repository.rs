@@ -6,6 +6,13 @@
 //! read-only plus the retention sweep's cleanup call. No repository method
 //! writes a change row; the application layer never needs to (and must
 //! not) duplicate that bookkeeping.
+//!
+//! Deliberately its own trait rather than an instance of
+//! `sync_change_log_repository::SyncChangeLogRepository` (which CalDAV and
+//! CardDAV share) — a WebDAV collection is heterogeneous (folders *and*
+//! files, populated from two source tables) and its rows carry an extra
+//! `member_type` dimension and move/trash semantics that don't fit the
+//! single-label homogeneous-collection shape the shared trait models.
 
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
