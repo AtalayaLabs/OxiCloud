@@ -38,7 +38,6 @@ use crate::application::dtos::calendar_dto::{
     CalendarEventDto, CreateCalendarDto, CreateEventICalDto, UpdateCalendarDto,
 };
 use crate::application::ports::calendar_ports::CalendarUseCase;
-use crate::application::ports::change_log_port::SyncChange;
 use crate::application::services::calendar_service::CalendarService;
 use crate::common::di::AppState;
 use crate::domain::entities::sync_token::SyncToken;
@@ -854,17 +853,9 @@ async fn handle_report(
                     let delta = calendar_service
                         .list_event_changes_with_perms(calendar_id, Some(token), user.id)
                         .await?;
-                    let mut events = Vec::new();
-                    let mut deleted = Vec::new();
-                    for change in delta.changes {
-                        match change {
-                            SyncChange::Upserted(event) => events.push(event),
-                            SyncChange::Deleted { href_hint, .. } => {
-                                deleted.push(format!("{}{}", base_href, href_hint));
-                            }
-                        }
-                    }
-                    (events, deleted, Some(delta.new_token.to_string()))
+                    let new_token = delta.new_token.to_string();
+                    let (events, deleted) = delta.split_homogeneous(base_href);
+                    (events, deleted, Some(new_token))
                 }
             }
         };

@@ -43,7 +43,7 @@ use crate::interfaces::nextcloud::webdav_handler::{
 /// Dispatches based on the XML body:
 /// - `oc:filter-files` -- list favorited items (REPORT)
 /// - `d:searchrequest`  -- search files by name (SEARCH)
-/// - `sync-collection`  -- full re-sync of a collection's children (REPORT)
+/// - `sync-collection`  -- incremental sync of a collection's children (REPORT)
 pub async fn handle_nc_report(
     state: Arc<AppState>,
     req: Request<Body>,

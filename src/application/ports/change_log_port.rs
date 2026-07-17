@@ -43,3 +43,25 @@ pub struct SyncDelta<M> {
     pub changes: Vec<SyncChange<M>>,
     pub new_token: SyncToken,
 }
+
+impl<M> SyncDelta<M> {
+    /// Splits `changes` into upserted DTOs and rendered-deleted hrefs
+    /// (`base_href` + `href_hint`), for a collection whose members are
+    /// never containers themselves (CalDAV events, CardDAV contacts —
+    /// `is_collection` is always `false` for both). WebDAV's mixed
+    /// folder/file collection needs a three-way split (subfolders/
+    /// files/deleted) instead and keeps its own inline match.
+    pub fn split_homogeneous(self, base_href: &str) -> (Vec<M>, Vec<String>) {
+        let mut upserted = Vec::with_capacity(self.changes.len());
+        let mut deleted = Vec::new();
+        for change in self.changes {
+            match change {
+                SyncChange::Upserted(m) => upserted.push(m),
+                SyncChange::Deleted { href_hint, .. } => {
+                    deleted.push(format!("{base_href}{href_hint}"));
+                }
+            }
+        }
+        (upserted, deleted)
+    }
+}

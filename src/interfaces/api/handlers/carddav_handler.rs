@@ -35,7 +35,6 @@ use crate::application::adapters::webdav_adapter::{PropFindRequest, PropFindType
 use crate::application::dtos::address_book_dto::{CreateAddressBookDto, UpdateAddressBookDto};
 use crate::application::dtos::contact_dto::{ContactDto, CreateContactVCardDto};
 use crate::application::ports::carddav_ports::{AddressBookUseCase, ContactUseCase};
-use crate::application::ports::change_log_port::SyncChange;
 use crate::application::services::carddav_sync_collection_service::CarddavSyncCollectionService;
 use crate::application::services::contact_service::ContactService;
 use crate::common::di::AppState;
@@ -665,17 +664,9 @@ async fn handle_report(
                     let delta = sync_service
                         .list_changes_with_perms(address_book_uuid, Some(token), user.id)
                         .await?;
-                    let mut contacts = Vec::new();
-                    let mut deleted = Vec::new();
-                    for change in delta.changes {
-                        match change {
-                            SyncChange::Upserted(contact) => contacts.push(contact),
-                            SyncChange::Deleted { href_hint, .. } => {
-                                deleted.push(format!("{}{}", base_href, href_hint));
-                            }
-                        }
-                    }
-                    (contacts, deleted, Some(delta.new_token.to_string()))
+                    let new_token = delta.new_token.to_string();
+                    let (contacts, deleted) = delta.split_homogeneous(base_href);
+                    (contacts, deleted, Some(new_token))
                 }
             }
         };
