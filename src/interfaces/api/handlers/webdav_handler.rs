@@ -26,6 +26,7 @@ use crate::application::dtos::display_helpers::intern_display;
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::application::ports::authorization_ports::AuthorizationEngine;
+use crate::application::ports::change_log_port::SyncChange;
 use crate::application::ports::file_ports::FileRetrievalUseCase;
 use crate::application::ports::file_ports::{FileManagementUseCase, FileUploadUseCase};
 use crate::application::ports::folder_ports::FolderUseCase;
@@ -33,7 +34,9 @@ use crate::application::ports::storage_ports::StorageUsagePort;
 use crate::application::services::file_retrieval_service::FileRetrievalService;
 use crate::application::services::file_upload_service::FileUploadService;
 use crate::application::services::folder_service::FolderService;
+use crate::application::services::webdav_sync_collection_service::WebdavSyncMember;
 use crate::common::di::AppState;
+use crate::domain::entities::sync_token::SyncToken;
 use crate::domain::repositories::drive_repository::DriveRepository;
 use crate::domain::services::authorization::{Permission, Resource, Subject};
 use crate::infrastructure::services::path_resolver_service::ResolvedResource;
@@ -916,15 +919,23 @@ async fn build_streaming_propfind_response(
 /**
  * Handles REPORT requests (currently: RFC 6578 sync-collection).
  *
- * Extends sync-collection/sync-token support — previously only
- * implemented for CalDAV/CardDAV — to the plain-file WebDAV surface.
- * See [`WebDavAdapter::generate_sync_collection_response`] for why this
- * is a full re-sync every time rather than true incremental sync.
+ * Real incremental sync for ordinary folder collections, backed by
+ * `storage.folder_sync_changes` (`WebdavSyncCollectionService`): an
+ * absent/empty client `sync-token` renders a full listing (paired with a
+ * freshly minted token); a present token renders only what changed,
+ * including RFC 6578 §3.7 404 sub-responses for removed members.
+ *
+ * The synthetic multi-drive root (`path.is_empty()`, no real
+ * `storage.folders` row to log against — see
+ * `migrations/20260911000000_folder_sync_changes.sql`'s header) is out of
+ * scope for this phase and keeps the old full-listing-every-call
+ * behavior with a fake timestamp token.
  *
  * @param state The application state containing service dependencies
  * @param req   The HTTP request containing the REPORT XML body
  * @param path  The requested collection path
- * @return HTTP response: 207 multistatus + trailing `<D:sync-token>`
+ * @return HTTP response: 207 multistatus + trailing `<D:sync-token>`,
+ *         or 507 if the client's token predates the retention window
  */
 async fn handle_report(
     state: Arc<AppState>,
@@ -934,6 +945,7 @@ async fn handle_report(
     let user = extract_user(&req)?;
     let folder_service = &state.applications.folder_service;
     let file_retrieval_service = &state.applications.file_retrieval_service;
+    let sync_service = &state.applications.webdav_sync_collection_service;
 
     // RFC 6578 doesn't define a Depth semantic of its own; this server
     // reuses PROPFIND's Depth cap (only Depth: 1 children are listed —
@@ -1004,18 +1016,102 @@ async fn handle_report(
     };
     let fid_ref = folder_id.as_deref();
 
-    let (subfolders, files) = if depth == "1" {
-        let subfolders = folder_service
-            .list_folders_with_perms(fid_ref, user.id)
-            .await
-            .map_err(|e| AppError::internal_error(format!("Failed to list folders: {}", e)))?;
-        let files = file_retrieval_service
-            .list_files_with_perms(fid_ref, user.id)
-            .await
-            .map_err(|e| AppError::internal_error(format!("Failed to list files: {}", e)))?;
-        (subfolders, files)
+    // Real collection UUID → real change log. The synthetic multi-drive
+    // root (`folder_id: None`) falls through to the old full-listing path.
+    let collection_id = folder_id.as_deref().and_then(|id| Uuid::parse_str(id).ok());
+
+    let (subfolders, files, deleted, sync_token): (
+        Vec<FolderDto>,
+        Vec<FileDto>,
+        Vec<String>,
+        String,
+    ) = if let Some(collection_id) = collection_id {
+        let requested_token = match sync_req.sync_token.as_deref() {
+            Some(raw) => Some(
+                SyncToken::parse_for_collection(raw, collection_id)
+                    .map_err(|e| AppError::bad_request(format!("Invalid sync-token: {e}")))?,
+            ),
+            None => None,
+        };
+
+        if depth != "1" {
+            // Depth:0 just refreshes the token — no children rendered,
+            // same as this handler's pre-existing behavior.
+            let new_token = sync_service
+                .mint_initial_token(collection_id, user.id)
+                .await?;
+            (Vec::new(), Vec::new(), Vec::new(), new_token.to_string())
+        } else {
+            match requested_token {
+                None => {
+                    let subfolders = folder_service
+                        .list_folders_with_perms(fid_ref, user.id)
+                        .await
+                        .map_err(|e| {
+                            AppError::internal_error(format!("Failed to list folders: {}", e))
+                        })?;
+                    let files = file_retrieval_service
+                        .list_files_with_perms(fid_ref, user.id)
+                        .await
+                        .map_err(|e| {
+                            AppError::internal_error(format!("Failed to list files: {}", e))
+                        })?;
+                    let new_token = sync_service
+                        .mint_initial_token(collection_id, user.id)
+                        .await?;
+                    (subfolders, files, Vec::new(), new_token.to_string())
+                }
+                Some(token) => {
+                    let delta = sync_service
+                        .list_changes_with_perms(collection_id, Some(token), user.id)
+                        .await?;
+                    let mut subfolders = Vec::new();
+                    let mut files = Vec::new();
+                    let mut deleted = Vec::new();
+                    for change in delta.changes {
+                        match change {
+                            SyncChange::Upserted(WebdavSyncMember::Folder(f)) => subfolders.push(f),
+                            SyncChange::Upserted(WebdavSyncMember::File(f)) => files.push(f),
+                            SyncChange::Deleted {
+                                href_hint,
+                                is_collection,
+                                ..
+                            } => {
+                                let mut href =
+                                    format!("{}{}", base_href, encode_path_segment(&href_hint));
+                                if is_collection {
+                                    href.push('/');
+                                }
+                                deleted.push(href);
+                            }
+                        }
+                    }
+                    (subfolders, files, deleted, delta.new_token.to_string())
+                }
+            }
+        }
     } else {
-        (Vec::new(), Vec::new())
+        let (subfolders, files) = if depth == "1" {
+            let subfolders = folder_service
+                .list_folders_with_perms(fid_ref, user.id)
+                .await
+                .map_err(|e| AppError::internal_error(format!("Failed to list folders: {}", e)))?;
+            let files = file_retrieval_service
+                .list_files_with_perms(fid_ref, user.id)
+                .await
+                .map_err(|e| AppError::internal_error(format!("Failed to list files: {}", e)))?;
+            (subfolders, files)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        // Freshly minted per response — no real collection id to scope
+        // a change-log token against for the synthetic root (see the
+        // doc comment above).
+        let sync_token = format!(
+            "http://oxicloud.local/ns/sync/{}",
+            Utc::now().timestamp_millis()
+        );
+        (subfolders, files, Vec::new(), sync_token)
     };
 
     let subfolders: Vec<(FolderDto, String)> = subfolders
@@ -1033,19 +1129,12 @@ async fn handle_report(
         })
         .collect();
 
-    // Freshly minted per response — see the doc comment on
-    // `generate_sync_collection_response` for why this isn't a real
-    // incremental sync-token.
-    let sync_token = format!(
-        "http://oxicloud.local/ns/sync/{}",
-        Utc::now().timestamp_millis()
-    );
-
     let mut response_body = Vec::new();
     WebDavAdapter::generate_sync_collection_response(
         &mut response_body,
         &subfolders,
         &files,
+        &deleted,
         &sync_req.request,
         &sync_token,
     )

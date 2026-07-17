@@ -491,12 +491,12 @@ impl WebDavAdapter {
     /// Parse an RFC 6578 `<D:sync-collection>` REPORT request.
     ///
     /// `sync_token` is `None` for an initial sync (empty or absent
-    /// `<D:sync-token/>`) — callers treat both the initial case and any
-    /// non-empty token identically, since this server always returns a
-    /// full listing (see [`WebDavAdapter::generate_sync_collection_response`]
-    /// docs for why: there's no change-tracking store backing incremental
-    /// sync here, matching the CalDAV/CardDAV sync-collection REPORTs,
-    /// which have the same limitation).
+    /// `<D:sync-token/>`) — the caller (`webdav_handler.rs::handle_report`)
+    /// renders a full listing for that case and an incremental delta via
+    /// `WebdavSyncCollectionService` when a token is present. The raw
+    /// string here is parsed into a structured `SyncToken`
+    /// (`domain/entities/sync_token.rs`) by the caller, not by this
+    /// function — this parser only extracts the wire-format XML.
     pub fn parse_sync_collection<R: Read>(reader: R) -> Result<SyncCollectionRequest> {
         let mut xml_reader = Reader::from_reader(BufReader::new(reader));
         xml_reader.config_mut().trim_text(true);
@@ -1697,28 +1697,24 @@ impl WebDavAdapter {
     }
 
     /// Generate the RFC 6578 §3.7 sync-collection response for the
-    /// plain-file WebDAV surface: a `<D:multistatus>` listing every
-    /// current member of the collection (subfolders + files), followed
-    /// by a `<D:sync-token>`.
+    /// plain-file WebDAV surface: a `<D:multistatus>` listing either the
+    /// full current membership (initial sync, no prior token) or the
+    /// incremental delta since the client's `sync-token` (real incremental
+    /// sync, backed by `storage.folder_sync_changes` — see
+    /// `WebdavSyncCollectionService`), followed by a trailing
+    /// `<D:sync-token>`. `deleted` renders each removed member as an RFC
+    /// 6578 §3.7 `<D:response>` carrying `<D:status>HTTP/1.1 404 Not
+    /// Found</D:status>` instead of a `<D:propstat>` block.
     ///
-    /// **This is a full re-sync every time, not incremental** — there is
-    /// no change-tracking store behind it (same limitation the existing
-    /// CalDAV/CardDAV sync-collection REPORTs have: they parse a
-    /// `sync-token` but never act on it either). `sync_token` here is
-    /// freshly minted per response (current timestamp) so clients get a
-    /// spec-shaped round-trip and can detect that a resync occurred, but
-    /// every request — initial or with a prior token — returns the
-    /// complete current member list. A real incremental implementation
-    /// would need a persistent change log keyed by folder, which is a
-    /// separate, larger effort than this gap-fill.
-    /// `subfolders`/`files` pair each resource with its already-encoded
-    /// href — encoding is the handler's job (see `encode_path_segment` in
+    /// `subfolders`/`files`/`deleted` all take already-encoded hrefs —
+    /// encoding is the handler's job (see `encode_path_segment` in
     /// `webdav_handler.rs`), matching how every other `write_*_entry*`
     /// caller in this module is fed pre-built hrefs.
     pub fn generate_sync_collection_response<W: Write>(
         writer: W,
         subfolders: &[(FolderDto, String)],
         files: &[(FileDto, String)],
+        deleted: &[String],
         request: &PropFindRequest,
         sync_token: &str,
     ) -> Result<()> {
@@ -1734,12 +1730,34 @@ impl WebDavAdapter {
         for (file, href) in files {
             Self::write_file_entry(&mut xml_writer, file, request, href)?;
         }
+        for href in deleted {
+            Self::write_deleted_entry(&mut xml_writer, href)?;
+        }
 
         xml_writer.write_event(Event::Start(BytesStart::new("D:sync-token")))?;
         xml_writer.write_event(Event::Text(BytesText::new(sync_token)))?;
         xml_writer.write_event(Event::End(BytesEnd::new("D:sync-token")))?;
 
         xml_writer.write_event(Event::End(BytesEnd::new("D:multistatus")))?;
+        Ok(())
+    }
+
+    /// RFC 6578 §3.7 removed-member sub-response: a `<D:response>` whose
+    /// `<D:status>` is 404, with no `<D:propstat>` block — tells the
+    /// client this href was a member of the collection at the prior
+    /// sync-token and no longer is.
+    fn write_deleted_entry<W: Write>(xml_writer: &mut Writer<W>, href: &str) -> Result<()> {
+        xml_writer.write_event(Event::Start(BytesStart::new("D:response")))?;
+
+        xml_writer.write_event(Event::Start(BytesStart::new("D:href")))?;
+        xml_writer.write_event(Event::Text(BytesText::new(href)))?;
+        xml_writer.write_event(Event::End(BytesEnd::new("D:href")))?;
+
+        xml_writer.write_event(Event::Start(BytesStart::new("D:status")))?;
+        xml_writer.write_event(Event::Text(BytesText::new("HTTP/1.1 404 Not Found")))?;
+        xml_writer.write_event(Event::End(BytesEnd::new("D:status")))?;
+
+        xml_writer.write_event(Event::End(BytesEnd::new("D:response")))?;
         Ok(())
     }
 }

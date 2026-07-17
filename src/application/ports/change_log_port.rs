@@ -22,11 +22,18 @@ pub enum SyncChange<M> {
     /// it exactly like a normal PROPFIND/REPORT entry.
     Upserted(M),
     /// Member was deleted (hard delete, or trashed) since the client's
-    /// token. `href_hint` is the last-known leaf name/path segment,
-    /// captured at tombstone time, so the handler can render an RFC 6578
-    /// §3.7 `<D:status>HTTP/1.1 404 Not Found</D:status>` sub-response
-    /// without needing the member row to still exist.
-    Deleted { member_id: Uuid, href_hint: String },
+    /// token. `href_hint` is the last-known leaf name/path segment
+    /// (unencoded, no trailing slash), captured at tombstone time, so the
+    /// handler can render an RFC 6578 §3.7 `<D:status>HTTP/1.1 404 Not
+    /// Found</D:status>` sub-response without needing the member row to
+    /// still exist. `is_collection` tells the handler whether to append
+    /// the trailing-slash collection-href convention (always `false` for
+    /// CalDAV/CardDAV, whose members are never containers).
+    Deleted {
+        member_id: Uuid,
+        href_hint: String,
+        is_collection: bool,
+    },
 }
 
 /// A page of changes for one collection, since one sync-token, paired with

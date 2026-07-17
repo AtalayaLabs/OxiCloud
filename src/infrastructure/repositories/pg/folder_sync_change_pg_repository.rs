@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -87,16 +88,66 @@ impl FolderSyncChangeRepository for FolderSyncChangePgRepository {
         Ok((changes, new_token_seq))
     }
 
+    async fn current_seq(&self, collection_folder_id: Uuid) -> Result<u64, DomainError> {
+        let max_seq: Option<i64> = sqlx::query_scalar(
+            "SELECT MAX(seq) FROM storage.folder_sync_changes WHERE collection_folder_id = $1",
+        )
+        .bind(collection_folder_id)
+        .fetch_one(&*self.pool)
+        .await
+        .map_err(|e| {
+            DomainError::database_error(format!("folder_sync_changes current_seq: {e}"))
+        })?;
+
+        Ok(max_seq.unwrap_or(0) as u64)
+    }
+
     async fn is_seq_expired(&self, seq: u64) -> Result<bool, DomainError> {
         let low_water_seq: i64 = sqlx::query_scalar(
             "SELECT low_water_seq FROM storage.folder_sync_watermark WHERE singleton = TRUE",
         )
         .fetch_one(&*self.pool)
         .await
-        .map_err(|e| {
-            DomainError::database_error(format!("folder_sync_watermark read: {e}"))
-        })?;
+        .map_err(|e| DomainError::database_error(format!("folder_sync_watermark read: {e}")))?;
 
         Ok((seq as i64) < low_water_seq)
+    }
+
+    async fn delete_expired_before(&self, cutoff: DateTime<Utc>) -> Result<u64, DomainError> {
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            DomainError::database_error(format!("folder_sync_changes retention begin: {e}"))
+        })?;
+
+        let deleted_seqs: Vec<i64> = sqlx::query_scalar(
+            "DELETE FROM storage.folder_sync_changes WHERE changed_at < $1 RETURNING seq",
+        )
+        .bind(cutoff)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| {
+            DomainError::database_error(format!("folder_sync_changes retention delete: {e}"))
+        })?;
+
+        let deleted_count = deleted_seqs.len() as u64;
+
+        if let Some(max_seq) = deleted_seqs.into_iter().max() {
+            sqlx::query(
+                "UPDATE storage.folder_sync_watermark
+                    SET low_water_seq = GREATEST(low_water_seq, $1)
+                  WHERE singleton = TRUE",
+            )
+            .bind(max_seq)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                DomainError::database_error(format!("folder_sync_watermark retention advance: {e}"))
+            })?;
+        }
+
+        tx.commit().await.map_err(|e| {
+            DomainError::database_error(format!("folder_sync_changes retention commit: {e}"))
+        })?;
+
+        Ok(deleted_count)
     }
 }

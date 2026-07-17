@@ -1,30 +1,25 @@
 # =============================================================
 # OxiCloud — NextCloud sync-collection (RFC 6578)
 # =============================================================
-# The NextCloud-compatible WebDAV surface's REPORT dispatch
-# (report_handler.rs::handle_nc_report) previously returned an EMPTY
-# multistatus for `<D:sync-collection>` bodies — it only recognized
-# `oc:filter-files` and `d:searchrequest`. NC desktop/mobile clients
-# commonly poll sync-collection for change detection, so this was a
-# real functional gap, not spec trivia. See
-# report_handler.rs::handle_sync_collection, which reuses
-# WebDavAdapter::parse_sync_collection (surface-agnostic) but writes
-# the response with NC's own write_folder_response/write_file_response
-# so oc:fileid/favorites aren't silently dropped. Mirrors the plain
-# WebDAV surface's webdav_sync_collection.hurl.
-#
-# NOTE: this is a full re-sync every response, not true incremental
-# sync (documented limitation — no change-tracking store backs it).
-# This test only asserts the spec-shaped round-trip.
+# Real incremental sync on the NC surface too — same change log
+# (`storage.folder_sync_changes`) the plain-WebDAV surface uses, via
+# `WebdavSyncCollectionService`. See
+# report_handler.rs::handle_sync_collection. Mirrors the plain WebDAV
+# surface's webdav_sync_collection.hurl.
 #
 # Coverage:
 #   1. Initial sync-collection (empty sync-token) on a fresh folder
 #      containing one file and one subfolder → 207, both members
 #      present, a sync-token is returned.
-#   2. sync-collection with a prior (arbitrary) sync-token still
-#      returns the full current member list (no incremental filtering).
-#   3. sync-collection with Depth: infinity → 403.
-#   4. sync-collection targeting a file (not a collection) → 409.
+#   2. sync-collection with that token and NO intervening changes →
+#      207, empty delta.
+#   3. Create a new file, then sync-collection with the prior token →
+#      only the new file appears.
+#   4. Delete that new file, then sync-collection with the
+#      just-issued token → an RFC 6578 §3.7 404 sub-response for it.
+#   5. sync-collection with Depth: infinity → 403.
+#   6. sync-collection targeting a file (not a collection) → 409.
+#   7. sync-collection with a malformed sync-token → 400.
 # =============================================================
 
 
@@ -73,9 +68,9 @@ HTTP 201
 
 
 PUT {{base_url}}/remote.php/dav/files/{{nc_username}}/nc-sync-test-folder/probe.txt
+Content-Type: text/plain
 [BasicAuth]
 {{nc_username}}: {{nc_password}}
-Content-Type: text/plain
 ```
 sync probe
 ```
@@ -87,10 +82,10 @@ HTTP 201
 # Step 2 — Initial sync-collection (empty sync-token).
 # ─────────────────────────────────────────────────────────────
 REPORT {{base_url}}/remote.php/dav/files/{{nc_username}}/nc-sync-test-folder/
-[BasicAuth]
-{{nc_username}}: {{nc_password}}
 Depth: 1
 Content-Type: application/xml; charset=utf-8
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
 ```
 <?xml version="1.0" encoding="utf-8"?>
 <d:sync-collection xmlns:d="DAV:">
@@ -112,14 +107,14 @@ first_sync_token: xpath "string(//*[local-name()='sync-token'])"
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 3 — sync-collection with a prior token still returns the
-#          full current member list (no incremental filtering).
+# Step 3 — sync-collection with that token and NO intervening
+#          changes → empty delta.
 # ─────────────────────────────────────────────────────────────
 REPORT {{base_url}}/remote.php/dav/files/{{nc_username}}/nc-sync-test-folder/
-[BasicAuth]
-{{nc_username}}: {{nc_password}}
 Depth: 1
 Content-Type: application/xml; charset=utf-8
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
 ```
 <?xml version="1.0" encoding="utf-8"?>
 <d:sync-collection xmlns:d="DAV:">
@@ -132,18 +127,90 @@ Content-Type: application/xml; charset=utf-8
 
 HTTP 207
 [Asserts]
-body contains "probe.txt"
-body contains "subfolder"
+body not contains "probe.txt"
+body not contains "subfolder"
+xpath "string(//*[local-name()='sync-token'])" != ""
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 4 — Depth: infinity is rejected.
+# Step 4 — Create a new file, then sync-collection with the prior
+#          token → only the new file appears in the delta.
 # ─────────────────────────────────────────────────────────────
-REPORT {{base_url}}/remote.php/dav/files/{{nc_username}}/nc-sync-test-folder/
+PUT {{base_url}}/remote.php/dav/files/{{nc_username}}/nc-sync-test-folder/new-file.txt
+Content-Type: text/plain
 [BasicAuth]
 {{nc_username}}: {{nc_password}}
+```
+new file after first sync
+```
+
+HTTP 201
+
+
+REPORT {{base_url}}/remote.php/dav/files/{{nc_username}}/nc-sync-test-folder/
+Depth: 1
+Content-Type: application/xml; charset=utf-8
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+```
+<?xml version="1.0" encoding="utf-8"?>
+<d:sync-collection xmlns:d="DAV:">
+  <d:sync-token>{{first_sync_token}}</d:sync-token>
+  <d:prop>
+    <d:getetag/>
+  </d:prop>
+</d:sync-collection>
+```
+
+HTTP 207
+[Asserts]
+body contains "new-file.txt"
+body not contains "probe.txt"
+body not contains "subfolder"
+[Captures]
+second_sync_token: xpath "string(//*[local-name()='sync-token'])"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 5 — Delete that new file, then sync-collection with the
+#          just-issued token → RFC 6578 §3.7 404 sub-response.
+# ─────────────────────────────────────────────────────────────
+DELETE {{base_url}}/remote.php/dav/files/{{nc_username}}/nc-sync-test-folder/new-file.txt
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+
+HTTP 204
+
+
+REPORT {{base_url}}/remote.php/dav/files/{{nc_username}}/nc-sync-test-folder/
+Depth: 1
+Content-Type: application/xml; charset=utf-8
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+```
+<?xml version="1.0" encoding="utf-8"?>
+<d:sync-collection xmlns:d="DAV:">
+  <d:sync-token>{{second_sync_token}}</d:sync-token>
+  <d:prop>
+    <d:getetag/>
+  </d:prop>
+</d:sync-collection>
+```
+
+HTTP 207
+[Asserts]
+body contains "new-file.txt"
+xpath "string(//*[local-name()='response'][contains(., 'new-file.txt')]/*[local-name()='status'])" contains "404"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 6 — Depth: infinity is rejected.
+# ─────────────────────────────────────────────────────────────
+REPORT {{base_url}}/remote.php/dav/files/{{nc_username}}/nc-sync-test-folder/
 Depth: infinity
 Content-Type: application/xml; charset=utf-8
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
 ```
 <?xml version="1.0" encoding="utf-8"?>
 <d:sync-collection xmlns:d="DAV:">
@@ -156,13 +223,13 @@ HTTP 403
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 5 — sync-collection on a file (not a collection) → 409.
+# Step 7 — sync-collection on a file (not a collection) → 409.
 # ─────────────────────────────────────────────────────────────
 REPORT {{base_url}}/remote.php/dav/files/{{nc_username}}/nc-sync-test-folder/probe.txt
-[BasicAuth]
-{{nc_username}}: {{nc_password}}
 Depth: 1
 Content-Type: application/xml; charset=utf-8
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
 ```
 <?xml version="1.0" encoding="utf-8"?>
 <d:sync-collection xmlns:d="DAV:">
@@ -172,6 +239,25 @@ Content-Type: application/xml; charset=utf-8
 ```
 
 HTTP 409
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 8 — Malformed sync-token → 400.
+# ─────────────────────────────────────────────────────────────
+REPORT {{base_url}}/remote.php/dav/files/{{nc_username}}/nc-sync-test-folder/
+Depth: 1
+Content-Type: application/xml; charset=utf-8
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+```
+<?xml version="1.0" encoding="utf-8"?>
+<d:sync-collection xmlns:d="DAV:">
+  <d:sync-token>not-a-real-token</d:sync-token>
+  <d:prop><d:getetag/></d:prop>
+</d:sync-collection>
+```
+
+HTTP 400
 
 
 # ─────────────────────────────────────────────────────────────

@@ -218,6 +218,8 @@ hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test 
   "$API_DIR/webdav_drive_root.hurl" \
   "$API_DIR/webdav_permissions.hurl" \
   "$API_DIR/webdav_nested_move_cascade.hurl" \
+  "$API_DIR/webdav_sync_collection.hurl" \
+  "$API_DIR/nc_webdav_sync_collection.hurl" \
   "$API_DIR/wopi_authz.hurl" \
   "$API_DIR/wopi_shared_drive.hurl"
 

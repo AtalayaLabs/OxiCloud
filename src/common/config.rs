@@ -208,6 +208,15 @@ pub struct StorageConfig {
     pub parallel_threshold: usize,
     /// Retention days for files in the trash
     pub trash_retention_days: u32,
+    /// Retention days for the RFC 6578 `sync-collection` change log
+    /// (`storage.folder_sync_changes`). A client whose sync-token predates
+    /// this window gets HTTP 507 and must do a fresh initial sync.
+    /// Default 30, matching `trash_retention_days`. Env:
+    /// `OXICLOUD_SYNC_LOG_RETENTION_DAYS`.
+    pub sync_log_retention_days: u32,
+    /// How often the sync-log retention sweep runs, in hours. Default 1.
+    /// Env: `OXICLOUD_SYNC_LOG_RETENTION_SWEEP_INTERVAL_HOURS`.
+    pub sync_log_retention_sweep_interval_hours: u64,
     /// Maximum upload file size in bytes (default: 10 GB).
     /// Applied as a hard limit to WebDAV PUT and streaming uploads.
     pub max_upload_size: usize,
@@ -1282,6 +1291,8 @@ impl Default for StorageConfig {
             chunk_size: 1024 * 1024,               // 1 MB
             parallel_threshold: 100 * 1024 * 1024, // 100 MB
             trash_retention_days: 30,              // 30 days
+            sync_log_retention_days: 30,
+            sync_log_retention_sweep_interval_hours: 1,
             max_upload_size: MAX_UPLOAD_SIZE,
             chunk_max_bytes: 100 * 1024 * 1024, // 100 MB — sane upper bound for a single chunked-upload PUT
             direct_put_max_bytes: 1024 * 1024 * 1024, // 1 GiB — pushes larger uploads onto the chunked protocol
@@ -3021,6 +3032,19 @@ impl AppConfig {
             && let Ok(val) = ms
         {
             config.storage.tree_etag_flush_ms = val;
+        }
+
+        // RFC 6578 sync-collection change-log retention
+        if let Ok(days) = env::var("OXICLOUD_SYNC_LOG_RETENTION_DAYS").map(|v| v.parse::<u32>())
+            && let Ok(val) = days
+        {
+            config.storage.sync_log_retention_days = val;
+        }
+        if let Ok(hours) =
+            env::var("OXICLOUD_SYNC_LOG_RETENTION_SWEEP_INTERVAL_HOURS").map(|v| v.parse::<u64>())
+            && let Ok(val) = hours
+        {
+            config.storage.sync_log_retention_sweep_interval_hours = val;
         }
 
         // Legacy whole-file blob re-chunk migration (startup background task)

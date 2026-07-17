@@ -77,7 +77,11 @@ impl SyncToken {
 
 impl Display for SyncToken {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "{}{}/{}", SYNC_TOKEN_PREFIX, self.collection_id, self.seq)
+        write!(
+            f,
+            "{}{}/{}",
+            SYNC_TOKEN_PREFIX, self.collection_id, self.seq
+        )
     }
 }
 
@@ -94,7 +98,9 @@ impl FromStr for SyncToken {
 
         let collection_id =
             Uuid::parse_str(collection_str).map_err(|_| SyncTokenError::Malformed)?;
-        let seq = seq_str.parse::<u64>().map_err(|_| SyncTokenError::Malformed)?;
+        let seq = seq_str
+            .parse::<u64>()
+            .map_err(|_| SyncTokenError::Malformed)?;
 
         Ok(Self { collection_id, seq })
     }

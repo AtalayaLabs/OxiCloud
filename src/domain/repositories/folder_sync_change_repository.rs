@@ -7,6 +7,7 @@
 //! writes a change row; the application layer never needs to (and must
 //! not) duplicate that bookkeeping.
 
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::common::errors::DomainError;
@@ -64,4 +65,19 @@ pub trait FolderSyncChangeRepository: Send + Sync + 'static {
     /// discard local state and restart with a fresh initial sync
     /// (RFC 6578 §3.6, HTTP 507).
     async fn is_seq_expired(&self, seq: u64) -> Result<bool, DomainError>;
+
+    /// The collection's current max `seq` (0 if it has no change-log
+    /// activity), for minting the token an **initial** sync response
+    /// hands back — cheaper than `changes_since` with `since_seq: None`,
+    /// which would also walk (and discard) the collection's full change
+    /// history just to read the same number.
+    async fn current_seq(&self, collection_folder_id: Uuid) -> Result<u64, DomainError>;
+
+    /// Retention sweep: deletes every row with `changed_at < cutoff`, then
+    /// advances `folder_sync_watermark.low_water_seq` to the highest `seq`
+    /// deleted (never decreases it) — in one transaction, so a crash
+    /// mid-sweep cannot advance the watermark past rows that are still
+    /// actually present (which would wrongly reject a still-valid token
+    /// as expired). Returns the number of rows deleted.
+    async fn delete_expired_before(&self, cutoff: DateTime<Utc>) -> Result<u64, DomainError>;
 }

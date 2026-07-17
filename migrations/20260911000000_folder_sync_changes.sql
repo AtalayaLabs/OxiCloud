@@ -40,10 +40,25 @@
 -- fresh `created`. The retention-window hard purge
 -- (`trash_db_repository.rs`) needs no additional log-writing: the member
 -- was already tombstoned at trash-time.
-
+--
+-- `collection_folder_id` is a plain UUID, deliberately WITHOUT a FK to
+-- `storage.folders(id)`: a bulk hard-delete (e.g. "empty trash") can
+-- delete a parent folder and its child in the SAME statement — the
+-- child's `deleted` row targets its parent as `collection_folder_id`,
+-- and by the time the AFTER STATEMENT trigger fires, that parent row is
+-- already gone from `storage.folders`. A real FK would reject that
+-- insert outright (reproduced live: "insert or update on table
+-- storage.folder_sync_changes violates foreign key constraint" during
+-- a bulk trash-empty). The orphaned row is harmless: a sync client can
+-- never present a token for a since-deleted collection anyway (path
+-- resolution 404s before the change-log query ever runs), so there's
+-- nothing to cascade-clean — the retention sweep ages the row out like
+-- any other. Same reasoning `storage.tree_etag_dirty` already applies
+-- to its own `folder_id` column (also FK-free, for the identical
+-- "target row may already be gone" reason).
 CREATE TABLE IF NOT EXISTS storage.folder_sync_changes (
     seq                  BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    collection_folder_id UUID NOT NULL REFERENCES storage.folders(id) ON DELETE CASCADE,
+    collection_folder_id UUID NOT NULL,
     member_type          TEXT NOT NULL CHECK (member_type IN ('file', 'folder')),
     member_id            UUID NOT NULL,
     member_href_name     TEXT NOT NULL,

@@ -1308,6 +1308,29 @@ impl AppServiceFactory {
         tracing::info!("Tree-ETag flush service initialized");
     }
 
+    /// Starts the RFC 6578 `sync-collection` change-log retention sweep
+    /// (requires database). Mirrors the trash cleanup job's shape —
+    /// fire-and-forget on the maintenance pool, always on (WebDAV isn't an
+    /// optional feature in this server, so its sync-log housekeeping isn't
+    /// either). Uses its own repository instance bound to `maintenance_pool`
+    /// so the periodic DELETE never competes with request-path queries on
+    /// the primary pool.
+    fn start_sync_log_retention_job(&self, maintenance_pool: &Arc<PgPool>) {
+        let change_log = Arc::new(
+            crate::infrastructure::repositories::pg::FolderSyncChangePgRepository::new(
+                maintenance_pool.clone(),
+            ),
+        );
+        let service =
+            crate::infrastructure::services::sync_log_retention_service::SyncLogRetentionService::new(
+                change_log,
+                self.config.storage.sync_log_retention_days,
+                self.config.storage.sync_log_retention_sweep_interval_hours,
+            );
+        service.start_retention_job();
+        tracing::info!("Sync-log retention service initialized");
+    }
+
     /// Start the primary-pool saturation watchdog (Finding #3). Logs a WARN as
     /// the user-facing pool approaches exhaustion — the early signal for raising
     /// `max_connections` or chasing a slow query before tail latency cliffs.
@@ -1726,6 +1749,8 @@ impl AppServiceFactory {
             storage_usage_service = Some(storage_usage.clone());
 
             self.start_tree_etag_flush_job(&maintenance_pool);
+
+            self.start_sync_log_retention_job(&maintenance_pool);
 
             self.start_db_pool_monitor(&pool);
 
@@ -2730,8 +2755,9 @@ pub struct ApplicationServices {
     pub media_metadata_service: Arc<MediaMetadataService>,
     /// RFC 6578 `sync-collection` REPORT — real incremental sync for
     /// WebDAV files/folders (plain WebDAV + NextCloud surfaces).
-    pub webdav_sync_collection_service:
-        Arc<crate::application::services::webdav_sync_collection_service::WebdavSyncCollectionService>,
+    pub webdav_sync_collection_service: Arc<
+        crate::application::services::webdav_sync_collection_service::WebdavSyncCollectionService,
+    >,
 }
 
 /// Container for authentication services

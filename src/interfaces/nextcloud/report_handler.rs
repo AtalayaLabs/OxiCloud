@@ -3,7 +3,6 @@ use axum::{
     http::{Request, StatusCode, header},
     response::Response,
 };
-use chrono::Utc;
 use quick_xml::{
     Reader, Writer,
     events::{BytesEnd, BytesStart, Event},
@@ -18,12 +17,15 @@ use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::application::dtos::search_dto::SearchCriteriaDto;
 use crate::application::ports::authorization_ports::AuthorizationEngine;
+use crate::application::ports::change_log_port::SyncChange;
 use crate::application::ports::favorites_ports::FavoritesUseCase;
 use crate::application::ports::file_ports::FileRetrievalUseCase;
 use crate::application::ports::folder_ports::FolderUseCase;
 use crate::application::ports::inbound::SearchUseCase;
+use crate::application::services::webdav_sync_collection_service::WebdavSyncMember;
 use crate::common::di::AppState;
 use crate::domain::entities::file::File;
+use crate::domain::entities::sync_token::SyncToken;
 use crate::domain::services::authorization::{Permission, Resource, Subject};
 use crate::infrastructure::services::path_resolver_service::ResolvedResource;
 use crate::interfaces::api::handlers::webdav_handler::{
@@ -447,23 +449,17 @@ async fn handle_search(
 
 // ──────────────────── Sync-collection (RFC 6578) ────────────────────
 
-/// Handle the `<D:sync-collection>` REPORT (RFC 6578) — extends
-/// sync-token support (previously only implemented for CalDAV/CardDAV,
-/// and not at all on the NC surface, unlike the plain WebDAV surface's
-/// `handle_report`) here.
-///
-/// **This is a full re-sync every response, not true incremental
-/// sync** — same documented limitation as the plain WebDAV surface's
-/// implementation and the existing CalDAV/CardDAV sync-collection
-/// REPORTs in this codebase: `sync_token` is freshly minted per
-/// response (timestamp-based) and every request — initial or with a
-/// prior token — returns the complete current member list. A real
-/// incremental implementation would need a persistent per-folder
-/// change log, which is a separate, larger effort than this gap-fill.
+/// Handle the `<D:sync-collection>` REPORT (RFC 6578) on the NextCloud
+/// surface — real incremental sync via `WebdavSyncCollectionService`,
+/// same change log (`storage.folder_sync_changes`) the plain-WebDAV
+/// surface's `webdav_handler.rs::handle_report` uses. An absent/empty
+/// client `sync-token` renders the full current listing (paired with a
+/// freshly minted token); a present token renders only the delta,
+/// including RFC 6578 §3.7 404 sub-responses for removed members.
 ///
 /// `Depth: infinity` is rejected (403), matching PROPFIND's depth cap;
 /// the REPORT target must be a collection (409 if it resolves to a
-/// file).
+/// file); an expired token yields 507 (RFC 6578 §3.6).
 async fn handle_sync_collection(
     state: Arc<AppState>,
     body: &str,
@@ -477,10 +473,7 @@ async fn handle_sync_collection(
         ));
     }
 
-    // Parsed only to validate the request body — like the NC PROPFIND
-    // surface, every response emits the full property set, so the
-    // parsed request isn't otherwise consulted.
-    WebDavAdapter::parse_sync_collection(body.as_bytes())
+    let sync_req = WebDavAdapter::parse_sync_collection(body.as_bytes())
         .map_err(|e| AppError::bad_request(format!("Failed to parse REPORT: {}", e)))?;
 
     let user = &session.user;
@@ -512,25 +505,88 @@ async fn handle_sync_collection(
 
     let folder_service = &state.applications.folder_service;
     let file_service = &state.applications.file_retrieval_service;
+    let sync_service = &state.applications.webdav_sync_collection_service;
     let fav_svc = state.favorites_service.as_ref();
     let nc = state.nextcloud.as_ref();
     let file_id_svc = nc.map(|n| &n.file_ids);
 
-    let subfolders = if depth == "0" {
-        Vec::new()
-    } else {
-        folder_service
-            .list_folders_with_perms(Some(&folder.id), user.id)
-            .await
-            .map_err(|e| AppError::internal_error(format!("Failed to list folders: {}", e)))?
+    let requested_token = match sync_req.sync_token.as_deref() {
+        Some(raw) => Some(
+            SyncToken::parse_for_collection(raw, folder_uuid)
+                .map_err(|e| AppError::bad_request(format!("Invalid sync-token: {e}")))?,
+        ),
+        None => None,
     };
-    let files = if depth == "0" {
-        Vec::new()
+
+    let (subfolders, files, deleted_hrefs, sync_token): (
+        Vec<FolderDto>,
+        Vec<FileDto>,
+        Vec<String>,
+        String,
+    ) = if depth == "0" {
+        // Depth:0 just refreshes the token — no children rendered, same
+        // as this handler's pre-existing behavior.
+        let new_token = sync_service
+            .mint_initial_token(folder_uuid, user.id)
+            .await?;
+        (Vec::new(), Vec::new(), Vec::new(), new_token.to_string())
     } else {
-        file_service
-            .list_files_with_perms(Some(&folder.id), user.id)
-            .await
-            .map_err(|e| AppError::internal_error(format!("Failed to list files: {}", e)))?
+        match requested_token {
+            None => {
+                let subfolders = folder_service
+                    .list_folders_with_perms(Some(&folder.id), user.id)
+                    .await
+                    .map_err(|e| {
+                        AppError::internal_error(format!("Failed to list folders: {}", e))
+                    })?;
+                let files = file_service
+                    .list_files_with_perms(Some(&folder.id), user.id)
+                    .await
+                    .map_err(|e| {
+                        AppError::internal_error(format!("Failed to list files: {}", e))
+                    })?;
+                let new_token = sync_service
+                    .mint_initial_token(folder_uuid, user.id)
+                    .await?;
+                (subfolders, files, Vec::new(), new_token.to_string())
+            }
+            Some(token) => {
+                let delta = sync_service
+                    .list_changes_with_perms(folder_uuid, Some(token), user.id)
+                    .await?;
+                let mut subfolders = Vec::new();
+                let mut files = Vec::new();
+                let mut deleted_hrefs = Vec::new();
+                for change in delta.changes {
+                    match change {
+                        SyncChange::Upserted(WebdavSyncMember::Folder(f)) => subfolders.push(f),
+                        SyncChange::Upserted(WebdavSyncMember::File(f)) => files.push(f),
+                        SyncChange::Deleted {
+                            href_hint,
+                            is_collection,
+                            ..
+                        } => {
+                            let child_sub = if subpath.is_empty() {
+                                href_hint
+                            } else {
+                                format!("{}/{}", subpath.trim_end_matches('/'), href_hint)
+                            };
+                            let mut href = nc_href(url_user, &child_sub);
+                            if is_collection {
+                                href.push('/');
+                            }
+                            deleted_hrefs.push(href);
+                        }
+                    }
+                }
+                (
+                    subfolders,
+                    files,
+                    deleted_hrefs,
+                    delta.new_token.to_string(),
+                )
+            }
+        }
     };
 
     let favorite_ids = if let Some(fav) = fav_svc {
@@ -607,12 +663,10 @@ async fn handle_sync_collection(
             .map_err(|e| AppError::internal_error(format!("XML write error: {}", e)))?;
         }
 
-        // Freshly minted per response — see this function's doc comment
-        // for why this isn't a real incremental sync-token.
-        let sync_token = format!(
-            "http://oxicloud.local/ns/sync/{}",
-            Utc::now().timestamp_millis()
-        );
+        for href in &deleted_hrefs {
+            write_deleted_response(&mut xml, href)?;
+        }
+
         write_text_element(&mut xml, "d:sync-token", &sync_token)
             .map_err(|e| AppError::internal_error(format!("XML write error: {}", e)))?;
 
@@ -625,6 +679,24 @@ async fn handle_sync_collection(
         .header(header::CONTENT_TYPE, "application/xml; charset=utf-8")
         .body(Body::from(buf))
         .unwrap())
+}
+
+/// RFC 6578 §3.7 removed-member sub-response for the NC surface (lowercase
+/// `d:` prefix, matching this file's other XML writers): a `<d:response>`
+/// whose `<d:status>` is 404, with no `<d:propstat>` block.
+fn write_deleted_response<W: std::io::Write>(
+    xml: &mut Writer<W>,
+    href: &str,
+) -> Result<(), AppError> {
+    xml.write_event(Event::Start(BytesStart::new("d:response")))
+        .map_err(|e| AppError::internal_error(format!("XML write error: {}", e)))?;
+    write_text_element(xml, "d:href", href)
+        .map_err(|e| AppError::internal_error(format!("XML write error: {}", e)))?;
+    write_text_element(xml, "d:status", "HTTP/1.1 404 Not Found")
+        .map_err(|e| AppError::internal_error(format!("XML write error: {}", e)))?;
+    xml.write_event(Event::End(BytesEnd::new("d:response")))
+        .map_err(|e| AppError::internal_error(format!("XML write error: {}", e)))?;
+    Ok(())
 }
 
 // ──────────────────── DTO conversions ────────────────────
