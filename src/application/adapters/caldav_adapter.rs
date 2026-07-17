@@ -1246,12 +1246,21 @@ impl CalDavAdapter {
         Ok(())
     }
 
-    /// Generate a response for calendar events
+    /// Generate a response for calendar events.
+    ///
+    /// `deleted_hrefs` renders each as an RFC 6578 §3.7
+    /// `<D:status>HTTP/1.1 404 Not Found</D:status>` sub-response instead
+    /// of a `<D:propstat>` block, and `sync_token` (when `Some`) renders
+    /// as a trailing `<D:sync-token>` — both empty/`None` for the
+    /// calendar-query / calendar-multiget report types, which don't use
+    /// either.
     pub fn generate_calendar_events_response<W: Write>(
         writer: W,
         events: &[CalendarEventDto],
         request: &CalDavReportType,
         base_href: &str,
+        deleted_hrefs: &[String],
+        sync_token: Option<&str>,
     ) -> Result<()> {
         let mut xml_writer = Writer::new(writer);
 
@@ -1263,8 +1272,38 @@ impl CalDavAdapter {
         // page by page.
         Self::write_report_page(&mut xml_writer, events, request, base_href)?;
 
+        for href in deleted_hrefs {
+            Self::write_deleted_event_response(&mut xml_writer, href)?;
+        }
+
+        if let Some(token) = sync_token {
+            xml_writer.write_event(Event::Start(BytesStart::new("D:sync-token")))?;
+            xml_writer.write_event(Event::Text(BytesText::new(token)))?;
+            xml_writer.write_event(Event::End(BytesEnd::new("D:sync-token")))?;
+        }
+
         Self::write_caldav_multistatus_end(&mut xml_writer)?;
 
+        Ok(())
+    }
+
+    /// RFC 6578 §3.7 removed-member sub-response: a `<D:response>` whose
+    /// `<D:status>` is 404, with no `<D:propstat>` block.
+    fn write_deleted_event_response<W: Write>(
+        xml_writer: &mut Writer<W>,
+        href: &str,
+    ) -> Result<()> {
+        xml_writer.write_event(Event::Start(BytesStart::new("D:response")))?;
+
+        xml_writer.write_event(Event::Start(BytesStart::new("D:href")))?;
+        xml_writer.write_event(Event::Text(BytesText::new(href)))?;
+        xml_writer.write_event(Event::End(BytesEnd::new("D:href")))?;
+
+        xml_writer.write_event(Event::Start(BytesStart::new("D:status")))?;
+        xml_writer.write_event(Event::Text(BytesText::new("HTTP/1.1 404 Not Found")))?;
+        xml_writer.write_event(Event::End(BytesEnd::new("D:status")))?;
+
+        xml_writer.write_event(Event::End(BytesEnd::new("D:response")))?;
         Ok(())
     }
 

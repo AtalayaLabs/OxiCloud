@@ -176,6 +176,7 @@ hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test 
   "$API_DIR/calendar.hurl" \
   "$API_DIR/caldav_recurring.hurl" \
   "$API_DIR/caldav_calendar_query.hurl" \
+  "$API_DIR/calendar_sync_collection.hurl" \
   "$API_DIR/playlists.hurl" \
   "$API_DIR/public_shares.hurl" \
   "$API_DIR/permissions.hurl" \

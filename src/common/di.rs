@@ -1316,14 +1316,20 @@ impl AppServiceFactory {
     /// so the periodic DELETE never competes with request-path queries on
     /// the primary pool.
     fn start_sync_log_retention_job(&self, maintenance_pool: &Arc<PgPool>) {
-        let change_log = Arc::new(
+        let folder_change_log = Arc::new(
             crate::infrastructure::repositories::pg::FolderSyncChangePgRepository::new(
+                maintenance_pool.clone(),
+            ),
+        );
+        let calendar_change_log = Arc::new(
+            crate::infrastructure::repositories::pg::CalendarSyncChangePgRepository::new(
                 maintenance_pool.clone(),
             ),
         );
         let service =
             crate::infrastructure::services::sync_log_retention_service::SyncLogRetentionService::new(
-                change_log,
+                folder_change_log,
+                calendar_change_log,
                 self.config.storage.sync_log_retention_days,
                 self.config.storage.sync_log_retention_sweep_interval_hours,
             );
@@ -2396,10 +2402,16 @@ impl AppServiceFactory {
                     event_repo,
                 )
             );
+            let calendar_sync_change_repo = Arc::new(
+                crate::infrastructure::repositories::pg::CalendarSyncChangePgRepository::new(
+                    pool.clone(),
+                ),
+            );
             let calendar_service = Arc::new(
                 crate::application::services::calendar_service::CalendarService::new(
                     calendar_storage,
                     authorization.clone(),
+                    calendar_sync_change_repo,
                 ),
             );
             app_state.calendar_use_case = Some(calendar_service as Arc<CalendarService>);

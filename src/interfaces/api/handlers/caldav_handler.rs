@@ -26,6 +26,7 @@ use percent_encoding::percent_decode_str;
 use quick_xml::Writer;
 use std::fmt::Write;
 use std::sync::Arc;
+use uuid::Uuid;
 
 use crate::application::adapters::caldav_adapter::{
     CalDavAdapter, CalDavReportType, bundle_to_calendar_body, extract_vevent_chunk,
@@ -37,6 +38,8 @@ use crate::application::dtos::calendar_dto::{
     CalendarEventDto, CreateCalendarDto, CreateEventICalDto, UpdateCalendarDto,
 };
 use crate::application::ports::calendar_ports::CalendarUseCase;
+use crate::application::ports::change_log_port::SyncChange;
+use crate::domain::entities::sync_token::SyncToken;
 use crate::application::services::calendar_service::CalendarService;
 use crate::common::di::AppState;
 use crate::interfaces::errors::AppError;
@@ -722,6 +725,8 @@ async fn handle_propfind(
                 std::slice::from_ref(&event),
                 &report_type,
                 base_href,
+                &[],
+                None,
             )
             .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
 
@@ -758,17 +763,21 @@ async fn handle_report(
         return Err(AppError::bad_request("Calendar ID required in path"));
     }
 
-    // Whole-calendar shapes (no-range calendar-query, sync-collection)
-    // stream: header + one chunk per hydrated UID page + footer, instead
-    // of materialising every DTO AND the full multistatus in RAM with
-    // TTFB = complete generation. Bounded shapes (time-range query,
-    // multiget) keep the buffered path.
+    // Whole-calendar, no-range calendar-query streams: header + one chunk
+    // per hydrated UID page + footer, instead of materialising every DTO
+    // AND the full multistatus in RAM with TTFB = complete generation.
+    // Bounded shapes (time-range query, multiget) keep the buffered path
+    // below, and so does sync-collection — the streaming path here has no
+    // notion of an incremental delta (it always streams the full current
+    // membership), so a real incremental sync-collection response has to
+    // go through the buffered path's mint/list_changes_with_perms flow
+    // instead of `build_streaming_report_response`.
     if matches!(
         &report,
         CalDavReportType::CalendarQuery {
             time_range: None,
             ..
-        } | CalDavReportType::SyncCollection { .. }
+        }
     ) {
         // Surface not-found / authz before committing to a 207 stream.
         calendar_service
@@ -785,43 +794,89 @@ async fn handle_report(
         ));
     }
 
-    let events = match &report {
-        CalDavReportType::CalendarQuery { time_range, .. } => {
-            if let Some((start, end)) = time_range {
-                calendar_service
-                    .get_events_in_range(calendar_id, *start, *end, user.id)
-                    .await
-                    .map_err(AppError::from)?
-            } else {
-                unreachable!("no-range calendar-query streams above")
-            }
-        }
-        CalDavReportType::CalendarMultiget { hrefs, .. } => {
-            // Indexed batch lookup (`ical_uid = ANY(...)`) — a multiget for
-            // a handful of events must not pay for listing the whole
-            // calendar and filtering client-side.
-            let uids: Vec<String> = hrefs
-                .iter()
-                .filter_map(|href| uid_from_multiget_href(href, ".ics"))
-                .collect();
-
-            calendar_service
-                .get_events_by_ical_uids(calendar_id, &uids, user.id)
-                .await
-                .map_err(AppError::from)?
-        }
-        CalDavReportType::SyncCollection { .. } => {
-            unreachable!("sync-collection streams above")
-        }
-    };
-
     let base_href = &format!("/caldav/{}/", calendar_id);
+
+    let (events, deleted_hrefs, sync_token): (Vec<CalendarEventDto>, Vec<String>, Option<String>) =
+        match &report {
+            CalDavReportType::CalendarQuery { time_range, .. } => {
+                let events = if let Some((start, end)) = time_range {
+                    calendar_service
+                        .get_events_in_range(calendar_id, *start, *end, user.id)
+                        .await
+                        .map_err(|e| {
+                            AppError::internal_error(format!("Failed to query events: {}", e))
+                        })?
+                } else {
+                    calendar_service
+                        .list_events(calendar_id, None, None, user.id)
+                        .await
+                        .map_err(|e| {
+                            AppError::internal_error(format!("Failed to list events: {}", e))
+                        })?
+                };
+                (events, Vec::new(), None)
+            }
+            CalDavReportType::CalendarMultiget { hrefs, .. } => {
+                // Indexed batch lookup (`ical_uid = ANY(...)`) — a multiget for
+                // a handful of events must not pay for listing the whole
+                // calendar and filtering client-side.
+                let uids: Vec<String> = hrefs
+                    .iter()
+                    .filter_map(|href| uid_from_multiget_href(href, ".ics"))
+                    .collect();
+
+                let events = calendar_service
+                    .get_events_by_ical_uids(calendar_id, &uids, user.id)
+                    .await
+                    .map_err(|e| {
+                        AppError::internal_error(format!("Failed to fetch events: {}", e))
+                    })?;
+                (events, Vec::new(), None)
+            }
+            CalDavReportType::SyncCollection { sync_token, .. } => {
+                let calendar_uuid = Uuid::parse_str(calendar_id)
+                    .map_err(|_| AppError::bad_request("Invalid calendar ID"))?;
+
+                if sync_token.is_empty() {
+                    let events = calendar_service
+                        .list_events(calendar_id, None, None, user.id)
+                        .await
+                        .map_err(|e| {
+                            AppError::internal_error(format!("Failed to list events: {}", e))
+                        })?;
+                    let new_token = calendar_service
+                        .mint_initial_event_token(calendar_id, user.id)
+                        .await?;
+                    (events, Vec::new(), Some(new_token.to_string()))
+                } else {
+                    let token = SyncToken::parse_for_collection(sync_token, calendar_uuid)
+                        .map_err(|e| AppError::bad_request(format!("Invalid sync-token: {e}")))?;
+                    let delta = calendar_service
+                        .list_event_changes_with_perms(calendar_id, Some(token), user.id)
+                        .await?;
+                    let mut events = Vec::new();
+                    let mut deleted = Vec::new();
+                    for change in delta.changes {
+                        match change {
+                            SyncChange::Upserted(event) => events.push(event),
+                            SyncChange::Deleted { href_hint, .. } => {
+                                deleted.push(format!("{}{}", base_href, href_hint));
+                            }
+                        }
+                    }
+                    (events, deleted, Some(delta.new_token.to_string()))
+                }
+            }
+        };
+
     let mut response_body = Vec::new();
     CalDavAdapter::generate_calendar_events_response(
         &mut response_body,
         &events,
         &report,
         base_href,
+        &deleted_hrefs,
+        sync_token.as_deref(),
     )
     .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
 

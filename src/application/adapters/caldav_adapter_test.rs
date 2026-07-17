@@ -356,6 +356,8 @@ mod tests {
             &events,
             &report,
             "/caldav/cal-001",
+            &[],
+            None,
         );
 
         assert!(
@@ -395,6 +397,8 @@ mod tests {
             &events,
             &report,
             "/caldav/cal-001",
+            &[],
+            None,
         );
 
         assert!(
