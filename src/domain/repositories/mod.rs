@@ -5,6 +5,7 @@ pub mod contact_repository;
 pub mod drive_repository;
 pub mod file_repository;
 pub mod folder_repository;
+pub mod folder_sync_change_repository;
 pub mod magic_link_token_repository;
 pub mod playlist_repository;
 pub mod session_repository;

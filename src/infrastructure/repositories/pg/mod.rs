@@ -26,6 +26,7 @@ mod user_pg_repository;
 pub mod file_blob_read_repository;
 pub mod file_blob_write_repository;
 pub mod folder_db_repository;
+pub mod folder_sync_change_pg_repository;
 pub mod trash_db_repository;
 
 pub use address_book_pg_repository::AddressBookPgRepository;
@@ -44,6 +45,7 @@ pub use file_blob_read_repository::FileBlobReadRepository;
 pub use file_blob_write_repository::FileBlobWriteRepository;
 pub use file_metadata_repository::FileMetadataRepository;
 pub use folder_db_repository::FolderDbRepository;
+pub use folder_sync_change_pg_repository::FolderSyncChangePgRepository;
 pub use magic_link_token_pg_repository::MagicLinkTokenPgRepository;
 pub use nextcloud_object_id_repository::NextcloudObjectIdRepository;
 pub use playlist_pg_repository::{
