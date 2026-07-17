@@ -3,6 +3,7 @@ pub mod calendar_event_repository;
 pub mod calendar_repository;
 pub mod calendar_sync_change_repository;
 pub mod contact_repository;
+pub mod contact_sync_change_repository;
 pub mod drive_repository;
 pub mod file_repository;
 pub mod folder_repository;

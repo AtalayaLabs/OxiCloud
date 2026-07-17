@@ -25,6 +25,7 @@ use axum::{
 use bytes::{Buf, Bytes};
 use quick_xml::Writer;
 use std::sync::Arc;
+use uuid::Uuid;
 
 use crate::application::adapters::carddav_adapter::{
     CardDavAdapter, CardDavReportType, contact_to_vcard,
@@ -34,8 +35,11 @@ use crate::application::adapters::webdav_adapter::{PropFindRequest, PropFindType
 use crate::application::dtos::address_book_dto::{CreateAddressBookDto, UpdateAddressBookDto};
 use crate::application::dtos::contact_dto::{ContactDto, CreateContactVCardDto};
 use crate::application::ports::carddav_ports::{AddressBookUseCase, ContactUseCase};
+use crate::application::ports::change_log_port::SyncChange;
+use crate::application::services::carddav_sync_collection_service::CarddavSyncCollectionService;
 use crate::application::services::contact_service::ContactService;
 use crate::common::di::AppState;
+use crate::domain::entities::sync_token::SyncToken;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::{AuthUser, CurrentUser};
 
@@ -356,6 +360,21 @@ fn get_contact_service(state: &AppState) -> Result<&Arc<ContactService>, AppErro
     })
 }
 
+fn get_carddav_sync_collection_service(
+    state: &AppState,
+) -> Result<&Arc<CarddavSyncCollectionService>, AppError> {
+    state
+        .carddav_sync_collection_service
+        .as_ref()
+        .ok_or_else(|| {
+            AppError::new(
+                StatusCode::NOT_IMPLEMENTED,
+                "CardDAV sync-collection service is not configured",
+                "NotImplemented",
+            )
+        })
+}
+
 // ─── OPTIONS ─────────────────────────────────────────────────────────
 
 async fn handle_options() -> Result<Response<Body>, AppError> {
@@ -551,6 +570,8 @@ async fn handle_propfind(
                 std::slice::from_ref(&contact),
                 &report,
                 base_href,
+                &[],
+                None,
             )
             .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
 
@@ -587,11 +608,11 @@ async fn handle_report(
         return Err(AppError::bad_request("Address book ID required in path"));
     }
 
-    // Whole-book shapes stream; bounded multiget keeps the buffered path.
-    if matches!(
-        &report,
-        CardDavReportType::AddressbookQuery { .. } | CardDavReportType::SyncCollection { .. }
-    ) {
+    // Whole-book queries stream; sync-collection needs incremental-delta
+    // awareness (deleted_hrefs/sync_token) the streaming path doesn't
+    // have, so it's excluded here — same as CalDAV's CalendarQuery-only
+    // fast path. Bounded multiget also keeps the buffered path.
+    if matches!(&report, CardDavReportType::AddressbookQuery { .. }) {
         let base_href = format!("/carddav/{}/", address_book_id);
         return Ok(build_streaming_contacts_report(
             contact_svc.clone(),
@@ -602,33 +623,73 @@ async fn handle_report(
         ));
     }
 
-    let contacts = match &report {
-        CardDavReportType::AddressbookQuery { .. } => {
-            unreachable!("addressbook-query streams above")
-        }
-        CardDavReportType::AddressbookMultiget { hrefs, .. } => {
-            // Indexed batch lookup (`uid = ANY(...)`) — a multiget for a
-            // handful of contacts must not pay for listing the whole
-            // address book and filtering client-side.
-            let uids: Vec<String> = hrefs
-                .iter()
-                .filter_map(|href| uid_from_multiget_href(href, ".vcf"))
-                .collect();
-
-            contact_svc
-                .get_contacts_by_uids(address_book_id, &uids, user.id)
-                .await
-                .map_err(AppError::from)?
-        }
-        CardDavReportType::SyncCollection { .. } => {
-            unreachable!("sync-collection streams above")
-        }
-    };
-
     let base_href = &format!("/carddav/{}/", address_book_id);
+
+    let (contacts, deleted_hrefs, sync_token): (Vec<ContactDto>, Vec<String>, Option<String>) =
+        match &report {
+            CardDavReportType::AddressbookQuery { .. } => {
+                unreachable!("addressbook-query streams above")
+            }
+            CardDavReportType::AddressbookMultiget { hrefs, .. } => {
+                // Indexed batch lookup (`uid = ANY(...)`) — a multiget for a
+                // handful of contacts must not pay for listing the whole
+                // address book and filtering client-side.
+                let uids: Vec<String> = hrefs
+                    .iter()
+                    .filter_map(|href| uid_from_multiget_href(href, ".vcf"))
+                    .collect();
+
+                let contacts = contact_svc
+                    .get_contacts_by_uids(address_book_id, &uids, user.id)
+                    .await
+                    .map_err(AppError::from)?;
+                (contacts, Vec::new(), None)
+            }
+            CardDavReportType::SyncCollection { sync_token, .. } => {
+                let sync_service = get_carddav_sync_collection_service(&state)?;
+                let address_book_uuid = Uuid::parse_str(address_book_id)
+                    .map_err(|_| AppError::bad_request("Invalid address book ID"))?;
+
+                if sync_token.is_empty() {
+                    let contacts = contact_svc
+                        .list_contacts(address_book_id, None, None, user.id)
+                        .await
+                        .map_err(AppError::from)?;
+                    let new_token = sync_service
+                        .mint_initial_token(address_book_uuid, user.id)
+                        .await?;
+                    (contacts, Vec::new(), Some(new_token.to_string()))
+                } else {
+                    let token = SyncToken::parse_for_collection(sync_token, address_book_uuid)
+                        .map_err(|e| AppError::bad_request(format!("Invalid sync-token: {e}")))?;
+                    let delta = sync_service
+                        .list_changes_with_perms(address_book_uuid, Some(token), user.id)
+                        .await?;
+                    let mut contacts = Vec::new();
+                    let mut deleted = Vec::new();
+                    for change in delta.changes {
+                        match change {
+                            SyncChange::Upserted(contact) => contacts.push(contact),
+                            SyncChange::Deleted { href_hint, .. } => {
+                                deleted.push(format!("{}{}", base_href, href_hint));
+                            }
+                        }
+                    }
+                    (contacts, deleted, Some(delta.new_token.to_string()))
+                }
+            }
+        };
+
     let mut response_body = Vec::new();
-    CardDavAdapter::generate_contacts_response(&mut response_body, &contacts, &report, base_href)
-        .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
+    CardDavAdapter::generate_contacts_response(
+        &mut response_body,
+        &contacts,
+        &report,
+        base_href,
+        &deleted_hrefs,
+        sync_token.as_deref(),
+    )
+    .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
 
     Ok(Response::builder()
         .status(StatusCode::MULTI_STATUS)

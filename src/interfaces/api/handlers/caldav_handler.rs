@@ -39,9 +39,9 @@ use crate::application::dtos::calendar_dto::{
 };
 use crate::application::ports::calendar_ports::CalendarUseCase;
 use crate::application::ports::change_log_port::SyncChange;
-use crate::domain::entities::sync_token::SyncToken;
 use crate::application::services::calendar_service::CalendarService;
 use crate::common::di::AppState;
+use crate::domain::entities::sync_token::SyncToken;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::{AuthUser, CurrentUser};
 

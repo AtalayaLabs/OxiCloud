@@ -173,6 +173,7 @@ hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test 
   "$API_DIR/dav_error_mapping.hurl" \
   "$API_DIR/carddav_vcard_properties.hurl" \
   "$API_DIR/contacts.hurl" \
+  "$API_DIR/contact_sync_collection.hurl" \
   "$API_DIR/calendar.hurl" \
   "$API_DIR/caldav_recurring.hurl" \
   "$API_DIR/caldav_calendar_query.hurl" \
