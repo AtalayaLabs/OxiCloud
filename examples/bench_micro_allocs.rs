@@ -538,8 +538,15 @@ fn main() {
         };
         let run_after = || {
             let mut out = Vec::with_capacity(contacts.len() * 256);
-            CardDavAdapter::generate_contacts_response(&mut out, &contacts, &report, base)
-                .expect("generate");
+            CardDavAdapter::generate_contacts_response(
+                &mut out,
+                &contacts,
+                &report,
+                base,
+                &[],
+                None,
+            )
+            .expect("generate");
             out
         };
         let t_b = time_passes(passes.min(30), run_before);

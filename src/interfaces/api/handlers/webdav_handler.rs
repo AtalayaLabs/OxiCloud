@@ -72,8 +72,9 @@ const PATH_SEGMENT_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b':')
     .remove(b'@');
 
-/// Percent-encode a single URI path segment (folder/file name).
-/// Percent-encode a full slash-separated path, encoding each segment individually.
+/// Percent-encode a full slash-separated path, encoding each segment
+/// individually — also safe for a single segment (folder/file name),
+/// which just has no `/` to split on.
 pub(crate) fn encode_uri_path(path: &str) -> String {
     use std::fmt::Write as _;
     // `utf8_percent_encode` returns a `Display` adapter, so write each encoded
@@ -1078,7 +1079,7 @@ async fn handle_report(
                                 ..
                             } => {
                                 let mut href =
-                                    format!("{}{}", base_href, encode_path_segment(&href_hint));
+                                    format!("{}{}", base_href, encode_uri_path(&href_hint));
                                 if is_collection {
                                     href.push('/');
                                 }
@@ -1117,14 +1118,14 @@ async fn handle_report(
     let subfolders: Vec<(FolderDto, String)> = subfolders
         .into_iter()
         .map(|f| {
-            let href = format!("{}{}/", base_href, encode_path_segment(&f.name));
+            let href = format!("{}{}/", base_href, encode_uri_path(&f.name));
             (f, href)
         })
         .collect();
     let files: Vec<(FileDto, String)> = files
         .into_iter()
         .map(|f| {
-            let href = format!("{}{}", base_href, encode_path_segment(&f.name));
+            let href = format!("{}{}", base_href, encode_uri_path(&f.name));
             (f, href)
         })
         .collect();

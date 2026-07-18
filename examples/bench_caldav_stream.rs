@@ -231,8 +231,15 @@ async fn buffered_report(
         .map(CalendarEventDto::from)
         .collect();
     let mut out = Vec::with_capacity(events.len() * 1024);
-    CalDavAdapter::generate_calendar_events_response(&mut out, &events, &report_shape(), base_href)
-        .expect("generate");
+    CalDavAdapter::generate_calendar_events_response(
+        &mut out,
+        &events,
+        &report_shape(),
+        base_href,
+        &[],
+        None,
+    )
+    .expect("generate");
     let wall = t0.elapsed().as_secs_f64() * 1e3;
     // Buffered: the first byte is only available when everything is.
     (wall, wall, out)

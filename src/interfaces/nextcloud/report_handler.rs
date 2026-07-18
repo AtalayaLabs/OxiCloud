@@ -608,6 +608,8 @@ async fn handle_sync_collection(
     let (file_id_map, folder_id_map) =
         batch_resolve_ids(file_id_svc, &file_uuids, &folder_uuids).await;
 
+    // Batched dead-props: one = ANY($1) query per type, not one per
+    // result (benches/DEAD-PROPS.md).
     let file_deads = files_dead_props_map(&state.webdav_dead_props, &files).await;
     let folder_deads = folders_dead_props_map(&state.webdav_dead_props, &subfolders).await;
 
