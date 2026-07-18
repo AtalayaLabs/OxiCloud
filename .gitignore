@@ -128,4 +128,6 @@ tests/load/storage/
 benches/corpus/
 
 # Claude Code scheduled-tasks runtime lock — machine-local, never committed.
+# Keeps getting re-added by broad `git add` sweeps (already removed from VCS
+# twice before: 7befc879, d256b279).
 .claude/scheduled_tasks.lock
