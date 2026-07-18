@@ -603,8 +603,8 @@ async fn handle_sync_collection(
         HashSet::new()
     };
 
-    let file_uuids: Vec<String> = files.iter().map(|f| f.id.clone()).collect();
-    let folder_uuids: Vec<String> = subfolders.iter().map(|f| f.id.clone()).collect();
+    let file_uuids: Vec<&str> = files.iter().map(|f| f.id.as_str()).collect();
+    let folder_uuids: Vec<&str> = subfolders.iter().map(|f| f.id.as_str()).collect();
     let (file_id_map, folder_id_map) =
         batch_resolve_ids(file_id_svc, &file_uuids, &folder_uuids).await;
 
@@ -625,7 +625,7 @@ async fn handle_sync_collection(
                 format!("{}/{}", subpath.trim_end_matches('/'), file.name)
             };
             let href = nc_href(url_user, &child_sub);
-            let fid = file_id_map.get(&file.id).copied();
+            let fid = nc_id_of(&file_id_map, &file.id);
             let oc_id = fid.map(|id| format_oc_id(id, file_id_svc));
             let dead = dead_props_for(&file.id, &file_deads);
             write_file_response(
@@ -647,7 +647,7 @@ async fn handle_sync_collection(
                 format!("{}/{}", subpath.trim_end_matches('/'), sf.name)
             };
             let href = format!("{}/", nc_href(url_user, &child_sub));
-            let fid = folder_id_map.get(&sf.id).copied();
+            let fid = nc_id_of(&folder_id_map, &sf.id);
             let oc_id = fid.map(|id| format_oc_id(id, file_id_svc));
             let dead = dead_props_for(&sf.id, &folder_deads);
             write_folder_response(

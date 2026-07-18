@@ -70,19 +70,20 @@ pub struct DrivePgRepository {
     /// through this repository or `DriveManagementService` invalidates
     /// explicitly (per-user when the subject is a User, whole cache for
     /// Group subjects, whose transitive membership is not resolvable
-    /// here). Root-folder renames — which update `drive.name` because it
-    /// reads through `folders.name` of the root row — also invalidate,
-    /// via the trait's `invalidate_readable_all` hook called from
-    /// `folder_service::rename_folder_with_perms` when
-    /// `parent_id IS NULL`. That path was missed by the perf commit
-    /// that introduced this cache (`12dc648c`) and surfaced by
-    /// `drives_membership.hurl` Step 23; the trait hook closes it
-    /// without folder_service knowing about the concrete moka cache.
-    ///
-    /// Residual staleness — a grant written by a path that can't reach
-    /// this cache — is bounded by the same 30 s TTL the sibling caches
-    /// accept; actual permission enforcement is unaffected (the ACL
-    /// engine re-checks per operation with its own invalidation).
+    /// here). Two further write paths carry a cached field but don't
+    /// flow through this repository — a drive-root folder rename
+    /// (`FolderService::rename_folder_with_perms`) and a `used_bytes`
+    /// reconciliation sweep (`StorageUsageService::invalidate_drive_lookup_caches`,
+    /// called after `update_all_drives_storage_usage`) — both reach
+    /// back in via the trait's `invalidate_readable_all`/
+    /// `invalidate_default_drive_all` hooks rather than waiting out the
+    /// TTL. That gap was missed by the perf commit that introduced this
+    /// cache (`12dc648c`) and surfaced by `drives_membership.hurl` Step
+    /// 23 and `drive_quota.hurl` Step 6. Residual staleness — a grant
+    /// written by a path that can't reach this cache at all — is
+    /// bounded by the same 30 s TTL the sibling caches accept; actual
+    /// permission enforcement is unaffected (the ACL engine re-checks
+    /// per operation with its own invalidation).
     readable_cache: Cache<Uuid, Arc<Vec<DriveWithRootName>>>,
 }
 

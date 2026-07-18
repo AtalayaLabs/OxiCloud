@@ -1,5 +1,6 @@
 use crate::application::ports::storage_ports::StorageUsagePort;
 use crate::common::errors::DomainError;
+use crate::domain::repositories::drive_repository::DriveRepository;
 use crate::infrastructure::repositories::pg::UserPgRepository;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -23,12 +24,10 @@ pub struct StorageUsageService {
     pool: Arc<PgPool>,
     user_repository: Arc<UserPgRepository>,
     /// Optional so DI can wire it lazily and older test constructors
-    /// keep compiling. When `Some`, every write path that mutates
-    /// `drives.used_bytes` or `users.storage_used_bytes` invalidates
-    /// the drive lookup caches so `GET /api/drives` reflects the new
-    /// usage on the next call (see the invalidation calls in the
-    /// delta / sweep methods below).
-    drive_repo: Option<Arc<dyn crate::domain::repositories::drive_repository::DriveRepository>>,
+    /// keep compiling. When `Some`, the reconciliation sweep
+    /// invalidates the drive lookup caches so `GET /api/drives`
+    /// reflects corrected usage (see `invalidate_drive_lookup_caches`).
+    drive_repo: Option<Arc<dyn DriveRepository>>,
 }
 
 impl StorageUsageService {
@@ -39,17 +38,6 @@ impl StorageUsageService {
             user_repository,
             drive_repo: None,
         }
-    }
-
-    /// Wires the drive repository used for cache-invalidation-on-write.
-    /// Production DI calls this in `common::di`; tests without a real
-    /// drive repo leave it `None` and the invalidation calls no-op.
-    pub fn with_drive_repo(
-        mut self,
-        drive_repo: Arc<dyn crate::domain::repositories::drive_repository::DriveRepository>,
-    ) -> Self {
-        self.drive_repo = Some(drive_repo);
-        self
     }
 
     /// Drop the per-caller readable-drive listing cache and the
@@ -76,6 +64,15 @@ impl StorageUsageService {
             repo.invalidate_readable_all();
             repo.invalidate_default_drive_all();
         }
+    }
+
+    /// Wires the drive repository so `add_drive_storage_usage_delta*`
+    /// can invalidate `GET /api/drives`' cached listing after adjusting
+    /// `used_bytes`. Production DI always calls this; omitted in
+    /// stub/test builds.
+    pub fn with_drive_repo(mut self, drive_repo: Arc<dyn DriveRepository>) -> Self {
+        self.drive_repo = Some(drive_repo);
+        self
     }
 
     /// Recalculates and stores one user's usage in a single statement.

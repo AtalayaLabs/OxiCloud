@@ -721,7 +721,8 @@ impl FolderUseCase for FolderService {
                 format!("Failed to look up folder before rename: {id}: {e}"),
             )
         })?;
-        let required_perm = if folder.parent_id().is_none() {
+        let is_drive_root = folder.parent_id().is_none();
+        let required_perm = if is_drive_root {
             Permission::Manage
         } else {
             Permission::Update
@@ -758,7 +759,7 @@ impl FolderUseCase for FolderService {
         // Step 23. Regression from commit `12dc648c` ("perf: round 4 —
         // drive-selector cache") which added the caches without
         // wiring the root-rename invalidation.
-        if folder.parent_id().is_none()
+        if is_drive_root
             && let Some(drive_repo) = &self.drive_repo
         {
             drive_repo.invalidate_readable_all();
