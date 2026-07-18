@@ -759,9 +759,7 @@ impl FolderUseCase for FolderService {
         // Step 23. Regression from commit `12dc648c` ("perf: round 4 —
         // drive-selector cache") which added the caches without
         // wiring the root-rename invalidation.
-        if is_drive_root
-            && let Some(drive_repo) = &self.drive_repo
-        {
+        if is_drive_root && let Some(drive_repo) = &self.drive_repo {
             drive_repo.invalidate_readable_all();
             drive_repo.invalidate_default_drive_all();
         }
