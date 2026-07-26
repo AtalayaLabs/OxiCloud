@@ -776,6 +776,74 @@
 	}
 
 	/**
+	 * Page-wide OS drag/drop safety net.
+	 *
+	 * `ResourceList` wires system-drop handlers on `.rl-root`, so a drop
+	 * on the list surface hits `onDrop` correctly. But `.rl-root` doesn't
+	 * cover the whole viewport — dropping OS files on the title strip,
+	 * the outer margin, or any gap around the list would either be
+	 * ignored (bad UX) or opened as a top-level navigation by the
+	 * browser (data-loss-esque: the tab replaces the app with the
+	 * dropped file). Both `dragover` and `drop` are captured at window
+	 * level here so anywhere on the `/files` page accepts the drop.
+	 *
+	 * The two `defaultPrevented` guards below defer to `.rl-root`'s
+	 * handler when the drop lands there: ResourceList's handlers
+	 * already `preventDefault`, so a bubbling window listener sees
+	 * `defaultPrevented === true` and skips — no double-upload.
+	 */
+	function onWindowDragOver(e: DragEvent) {
+		if (!e.dataTransfer?.types?.includes('Files')) return;
+		if (e.defaultPrevented) return;
+		// preventDefault on `dragover` is what tells the browser "this
+		// element accepts drops" — without it, `drop` never fires and
+		// the OS shows the "no-drop" cursor over the page's margins.
+		e.preventDefault();
+		if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+	}
+	function onWindowDrop(e: DragEvent) {
+		if (!e.dataTransfer?.types?.includes('Files')) return;
+		// Force-clear the overlay counter regardless of who handles the
+		// drop — .rl-root's inner handler doesn't touch the page-level
+		// counter and a stray unbalanced dragenter would otherwise
+		// leave the overlay stuck on.
+		pageSystemDragDepth = 0;
+		if (e.defaultPrevented) return;
+		onDrop(e);
+	}
+
+	/**
+	 * Page-wide drop-overlay trigger. The overlay itself lives in
+	 * `ResourceList` (`position: fixed`, already viewport-sized), but its
+	 * default trigger is a counter on `.rl-root` — so dragging OS files
+	 * over the page's title strip or the outer margins wouldn't light
+	 * up the overlay even though the drop WOULD be accepted (see
+	 * `onWindowDragOver`/`onWindowDrop` above). This counter tracks
+	 * the drag at window level and drives ResourceList via the
+	 * `systemDropOverlayActive` prop so the visual matches the
+	 * accepts-drop area exactly.
+	 *
+	 * Same enter/leave-counter shape ResourceList uses internally —
+	 * dragenter/leave chatter as the pointer moves between child
+	 * elements would flicker a naive boolean, so we count.
+	 * `drop`/`dragend` force-zero the counter to survive an
+	 * unbalanced enter (e.g. drag cancelled by the user pressing Esc).
+	 */
+	let pageSystemDragDepth = $state(0);
+	const pageSystemDropOver = $derived(pageSystemDragDepth > 0);
+	function onWindowDragEnter(e: DragEvent) {
+		if (!e.dataTransfer?.types?.includes('Files')) return;
+		pageSystemDragDepth++;
+	}
+	function onWindowDragLeave(e: DragEvent) {
+		if (!e.dataTransfer?.types?.includes('Files')) return;
+		if (pageSystemDragDepth > 0) pageSystemDragDepth--;
+	}
+	function onWindowDragEnd() {
+		pageSystemDragDepth = 0;
+	}
+
+	/**
 	 * Expand dropped OS entries into `{file, relativePath}` rows, walking any
 	 * directory tree via the (non-standard but ubiquitous) `webkitGetAsEntry` /
 	 * `createReader` API. Returns `null` when nothing dropped was a directory, so
@@ -1747,7 +1815,14 @@
 
 <svelte:head><title>{t('nav.files', 'Files')} · OxiCloud</title></svelte:head>
 
-<svelte:window onkeydown={onKeydown} />
+<svelte:window
+	onkeydown={onKeydown}
+	ondragenter={onWindowDragEnter}
+	ondragover={onWindowDragOver}
+	ondragleave={onWindowDragLeave}
+	ondragend={onWindowDragEnd}
+	ondrop={onWindowDrop}
+/>
 
 <div class="files-page" data-testid="files-dropzone">
 	<!-- Read-only freeze banner, placed inside the listing container so it
@@ -1808,6 +1883,7 @@
 		showDotfileToggle
 		enableSystemDrop
 		onsystemdrop={onDrop}
+		systemDropOverlayActive={pageSystemDropOver}
 		groupBys={rlGroupBys}
 		bind:groupBy
 		bind:reversed

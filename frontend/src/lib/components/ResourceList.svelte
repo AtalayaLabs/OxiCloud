@@ -298,6 +298,20 @@
 		 */
 		onsystemdrop?: (e: DragEvent) => void;
 		/**
+		 * Forces the OS-file drop overlay on regardless of whether the
+		 * pointer is currently over `.rl-root`. Only takes effect when
+		 * `enableSystemDrop` is true (otherwise there's no drop route
+		 * behind the overlay). Meant for pages that track drag state
+		 * at window level and want the overlay to react anywhere on
+		 * the viewport — not just over the list — so drops on the
+		 * page's title strip / margins get the same "drop to upload"
+		 * cue. `/files/[...path]/+page.svelte` uses this. The overlay
+		 * itself is already `position: fixed`, so activating it from a
+		 * broader trigger costs no visual change — it OR's with the
+		 * internal `systemDropOver` counter.
+		 */
+		systemDropOverlayActive?: boolean;
+		/**
 		 * Render `<img>` thumbnails on file rows and fall back to
 		 * client-side generation when the server doesn't have one
 		 * (image / PDF / video via `$lib/utils/thumbnail`). Default on
@@ -394,6 +408,7 @@
 		breadcrumb,
 		enableSystemDrop = false,
 		onsystemdrop,
+		systemDropOverlayActive = false,
 		enableThumbnails = true,
 		isDraggable,
 		isDropTarget,
@@ -1419,7 +1434,7 @@
 	     border alone read as decoration on busy folders. `pointer-events:
 	     none` on the container keeps it inert (drag events still hit
 	     `.rl-root` underneath so `dragleave`/`drop` fire correctly). -->
-	{#if systemDropOver && enableSystemDrop}
+	{#if enableSystemDrop && (systemDropOver || systemDropOverlayActive)}
 		<div class="rl-drop-overlay" aria-hidden="true">
 			<div class="rl-drop-overlay__inner">
 				<Icon name="cloud-arrow-up" class="rl-drop-overlay__icon" />
