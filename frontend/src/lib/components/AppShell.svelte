@@ -4,7 +4,7 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { logout } from '$lib/api/endpoints/auth';
-	import { searchFiles } from '$lib/api/endpoints/search';
+	import { searchResources } from '$lib/api/endpoints/search';
 	import { fileInlineUrl, deleteFile } from '$lib/api/endpoints/files';
 	import { deleteFolder } from '$lib/api/endpoints/folders';
 	import { addFavorite } from '$lib/api/endpoints/favorites';
@@ -17,6 +17,7 @@
 	import { i18n, LANGUAGES, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
 	import { apiFetch } from '$lib/api/client';
 	import { dialogs } from '$lib/stores/dialogs.svelte';
+	import { files as filesStore } from '$lib/stores/files.svelte';
 	import { preferences } from '$lib/stores/preferences.svelte';
 	import { session } from '$lib/stores/session.svelte';
 	import { theme, type Theme } from '$lib/stores/theme.svelte';
@@ -255,11 +256,22 @@
 
 	function goToResults() {
 		const q = searchQuery.trim();
-		if (q) {
-			suggestOpen = false;
-			searchActive = false;
-			goto(resolve(`/search?q=${encodeURIComponent(q)}`));
+		if (!q) return;
+		suggestOpen = false;
+		searchActive = false;
+		// Carry the currently-open folder into the search URL as `?in=<uuid>`
+		// so a hard refresh, a shared link, or a bookmark all restore the
+		// "This folder" scope. Trash section is always global — skip. See
+		// `/search/+page.svelte` for the receiver side.
+		//
+		// Built by hand instead of via `URLSearchParams` because the Svelte
+		// lint (svelte/prefer-svelte-reactivity) flags the mutable stdlib
+		// variant; the two params here don't need reactivity anyway.
+		const parts = [`q=${encodeURIComponent(q)}`];
+		if (filesStore.currentFolder && filesStore.section !== 'trash') {
+			parts.push(`in=${encodeURIComponent(filesStore.currentFolder)}`);
 		}
+		goto(resolve(`/search?${parts.join('&')}`));
 	}
 
 	function onSearch(e: SubmitEvent) {
@@ -285,12 +297,20 @@
 			suggestInflight = ctl;
 			suggestBusy = true;
 			try {
-				const r = await searchFiles(q, { recursive: true, limit: 6, signal: ctl.signal });
+				const r = await searchResources(q, { recursive: true, limit: 9, signal: ctl.signal });
 				if (seq !== suggestSeq) return; // superseded while awaiting
-				suggestions = [
-					...r.folders.slice(0, 3).map((item) => ({ kind: 'folder' as const, item })),
-					...r.files.slice(0, 6).map((item) => ({ kind: 'file' as const, item }))
-				];
+				// The wire is ordered — folders first, then files — but slice
+				// per kind explicitly so the header preview stays a folder-heavy
+				// list even when files dominate the result set.
+				const folders = r.items
+					.filter((it) => it.resource_type === 'folder')
+					.slice(0, 3)
+					.map((it) => ({ kind: 'folder' as const, item: it.resource as FolderItem }));
+				const files = r.items
+					.filter((it) => it.resource_type === 'file')
+					.slice(0, 6)
+					.map((it) => ({ kind: 'file' as const, item: it.resource as FileItem }));
+				suggestions = [...folders, ...files];
 				suggestOpen = suggestions.length > 0;
 			} catch {
 				if (seq !== suggestSeq || ctl.signal.aborted) return;
