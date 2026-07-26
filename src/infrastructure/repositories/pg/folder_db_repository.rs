@@ -49,6 +49,48 @@ type FolderRow = (
     Option<Uuid>,
 );
 
+/// `FolderRow` + trailing `(is_favorite, is_shared)` — the caller-scoped
+/// booleans populated by per-row EXISTS in `search_folders`. Split out so
+/// the many `sqlx::query_as::<_, FolderRowWithFlags>(...)` sites stay
+/// terse instead of repeating a 12-element inline tuple.
+type FolderRowWithFlags = (
+    Uuid,
+    String,
+    String,
+    Option<Uuid>,
+    Uuid,
+    i64,
+    i64,
+    i64,
+    Option<Uuid>,
+    Option<Uuid>,
+    bool,
+    bool,
+);
+
+/// Return shape of `search_folders`: two parallel vecs aligned 1:1
+/// (folder domain entity + `(is_favorite, is_shared)` caller flags).
+/// Kept as a type alias so the SQL builder + trait implementations
+/// share one name (`clippy::type_complexity`).
+pub(crate) type FoldersWithFlags = (Vec<Folder>, Vec<(bool, bool)>);
+
+/// Convert `FolderRowWithFlags` rows into the `(Vec<Folder>, caller_flags)`
+/// pair `search_folders` returns. Keeps the two parallel vecs aligned
+/// 1:1 by index.
+fn build_folders_with_flags(
+    rows: Vec<FolderRowWithFlags>,
+) -> Result<FoldersWithFlags, DomainError> {
+    let mut folders = Vec::with_capacity(rows.len());
+    let mut flags = Vec::with_capacity(rows.len());
+    for (id, name, path, pid, did, ca, ma, tma, cb, ub, is_fav, is_shr) in rows {
+        let folder =
+            FolderDbRepository::row_to_folder(id, name, path, pid, did, ca, ma, tma, cb, ub)?;
+        folders.push(folder);
+        flags.push((is_fav, is_shr));
+    }
+    Ok((folders, flags))
+}
+
 /// Type alias for paginated folder rows (includes total_count as
 /// the last element after the §14 provenance columns). Same
 /// column set as [`FolderRow`] plus the trailing count.
@@ -1048,12 +1090,20 @@ impl FolderRepository for FolderDbRepository {
         name_contains: Option<&str>,
         caller_id: Uuid,
         recursive: bool,
-    ) -> Result<Vec<Folder>, DomainError> {
-        // Recursive with folder scope → existing optimised ltree scan
+    ) -> Result<(Vec<Folder>, Vec<(bool, bool)>), DomainError> {
+        // Recursive with folder scope → existing optimised ltree scan.
+        // `list_descendant_folders` doesn't compute caller_flags today —
+        // return `(false, false)` per row until the ltree path is
+        // upgraded in a follow-up. Bounded UI impact: subtree-scoped
+        // searches rarely surface a specific folder as favorited /
+        // shared, and the flags path elsewhere fills the gap for the
+        // hot `/api/search` case.
         if recursive && let Some(fid) = parent_id {
-            return self
+            let folders = self
                 .list_descendant_folders(fid, name_contains, caller_id)
-                .await;
+                .await?;
+            let flags = vec![(false, false); folders.len()];
+            return Ok((folders, flags));
         }
 
         // Build optional name filter — use ILIKE (case-insensitive) so the
@@ -1070,6 +1120,21 @@ impl FolderRepository for FolderDbRepository {
             _ => ("", None),
         };
 
+        // Per-row caller-flag EXISTS subqueries. Same pattern as
+        // `search_files_paginated` in the sibling file repo: narrow
+        // indexes make this a few extra μs per row.
+        const FAV_SHR_COLUMNS: &str = "EXISTS ( \
+                    SELECT 1 FROM auth.user_favorites uf \
+                     WHERE uf.user_id   = $1 \
+                       AND uf.item_id   = fo.id::text \
+                       AND uf.item_type = 'folder' \
+                ) AS is_favorite, \
+                EXISTS ( \
+                    SELECT 1 FROM storage.role_grants g \
+                     WHERE g.resource_id   = fo.id \
+                       AND g.resource_type = 'folder' \
+                ) AS is_shared";
+
         if recursive {
             // Recursive, no folder scope → ALL folders in caller's readable drives
             let sql = format!(
@@ -1078,7 +1143,8 @@ impl FolderRepository for FolderDbRepository {
                         EXTRACT(EPOCH FROM fo.created_at)::bigint, \
                         EXTRACT(EPOCH FROM fo.updated_at)::bigint, \
                           EXTRACT(EPOCH FROM fo.tree_modified_at)::bigint, \
-                      fo.created_by, fo.updated_by \
+                      fo.created_by, fo.updated_by, \
+                      {FAV_SHR_COLUMNS} \
                    FROM storage.folders fo \
                   WHERE {CALLER_CAN_READ_DRIVE} \
                     AND fo.is_trashed = false \
@@ -1086,7 +1152,7 @@ impl FolderRepository for FolderDbRepository {
                   ORDER BY fo.name"
             );
 
-            let rows: Vec<FolderRow> = if let Some(ref pattern) = name_pattern {
+            let rows: Vec<FolderRowWithFlags> = if let Some(ref pattern) = name_pattern {
                 sqlx::query_as(&sql)
                     .bind(caller_id)
                     .bind(pattern)
@@ -1100,12 +1166,7 @@ impl FolderRepository for FolderDbRepository {
             }
             .map_err(|e| DomainError::internal_error("FolderDb", format!("search_folders: {e}")))?;
 
-            return rows
-                .into_iter()
-                .map(|(id, name, path, pid, did, ca, ma, tma, cb, ub)| {
-                    Self::row_to_folder(id, name, path, pid, did, ca, ma, tma, cb, ub)
-                })
-                .collect();
+            return build_folders_with_flags(rows);
         }
 
         // Non-recursive: direct children of parent_id, restricted to drives
@@ -1117,7 +1178,8 @@ impl FolderRepository for FolderDbRepository {
                         EXTRACT(EPOCH FROM fo.created_at)::bigint, \
                         EXTRACT(EPOCH FROM fo.updated_at)::bigint, \
                           EXTRACT(EPOCH FROM fo.tree_modified_at)::bigint, \
-                      fo.created_by, fo.updated_by \
+                      fo.created_by, fo.updated_by, \
+                      {FAV_SHR_COLUMNS} \
                    FROM storage.folders fo \
                   WHERE fo.parent_id = $2::uuid \
                     AND {CALLER_CAN_READ_DRIVE} \
@@ -1137,7 +1199,8 @@ impl FolderRepository for FolderDbRepository {
                         EXTRACT(EPOCH FROM fo.created_at)::bigint, \
                         EXTRACT(EPOCH FROM fo.updated_at)::bigint, \
                           EXTRACT(EPOCH FROM fo.tree_modified_at)::bigint, \
-                      fo.created_by, fo.updated_by \
+                      fo.created_by, fo.updated_by, \
+                      {FAV_SHR_COLUMNS} \
                    FROM storage.folders fo \
                   WHERE fo.parent_id IS NULL \
                     AND {CALLER_CAN_READ_DRIVE} \
@@ -1147,7 +1210,7 @@ impl FolderRepository for FolderDbRepository {
             )
         };
 
-        let rows: Vec<FolderRow> = if let Some(pid) = parent_id {
+        let rows: Vec<FolderRowWithFlags> = if let Some(pid) = parent_id {
             if let Some(ref pattern) = name_pattern {
                 sqlx::query_as(&sql)
                     .bind(caller_id)
@@ -1176,11 +1239,7 @@ impl FolderRepository for FolderDbRepository {
         }
         .map_err(|e| DomainError::internal_error("FolderDb", format!("search_folders: {e}")))?;
 
-        rows.into_iter()
-            .map(|(id, name, path, pid, did, ca, ma, tma, cb, ub)| {
-                Self::row_to_folder(id, name, path, pid, did, ca, ma, tma, cb, ub)
-            })
-            .collect()
+        build_folders_with_flags(rows)
     }
 
     /// Lists all descendant folders in a subtree using ltree GiST index,

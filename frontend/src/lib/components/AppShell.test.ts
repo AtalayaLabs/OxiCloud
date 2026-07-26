@@ -9,7 +9,9 @@ const { goto, pageState } = vi.hoisted(() => ({
 vi.mock('$app/navigation', () => ({ goto }));
 vi.mock('$app/state', () => ({ page: pageState }));
 vi.mock('$lib/api/endpoints/auth', () => ({ logout: vi.fn() }));
-vi.mock('$lib/api/endpoints/search', () => ({ searchFiles: vi.fn(async () => ({ items: [] })) }));
+vi.mock('$lib/api/endpoints/search', () => ({
+	searchResources: vi.fn(async () => ({ items: [], query_time_ms: 0 }))
+}));
 vi.mock('$lib/api/endpoints/files', () => ({ fileInlineUrl: () => '/in' }));
 
 import { logout } from '$lib/api/endpoints/auth';

@@ -4,6 +4,7 @@ use thiserror::Error;
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
+use crate::application::services::search_service::SearchService;
 use crate::domain::repositories::drive_repository::DriveRepository;
 use crate::domain::repositories::folder_repository::FolderRepository;
 use crate::domain::services::authorization::{Permission, Resource, Role, Subject};
@@ -98,6 +99,16 @@ pub struct ShareService {
     /// Bounds the number of in-flight Argon2 password hashes to avoid
     /// saturating the blocking thread pool and consuming excessive RAM.
     hash_semaphore: Arc<Semaphore>,
+    /// Optional search-cache invalidator. Every share create/delete flips
+    /// what `is_shared` returns on the calling user's cached search
+    /// result pages; without this hook the sharer sees a stale share
+    /// badge for up to the search cache's 5-minute TTL. `None` when
+    /// search is disabled (`OXICLOUD_ENABLE_SEARCH=false`).
+    ///
+    /// Only the CALLER's cache is invalidated — recipients of a share
+    /// still get stale-until-TTL for now (would need a per-resource
+    /// invalidation index; deferred).
+    search: Option<Arc<SearchService>>,
 }
 
 impl ShareService {
@@ -110,6 +121,7 @@ impl ShareService {
         drive_repository: Arc<DrivePgRepository>,
         password_hasher: Arc<Argon2PasswordHasher>,
         authorization: Arc<PgAclEngine>,
+        search: Option<Arc<SearchService>>,
     ) -> Self {
         Self {
             base_url: config.base_url(),
@@ -121,6 +133,7 @@ impl ShareService {
             password_hasher,
             authorization,
             hash_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_HASHES)),
+            search,
         }
     }
 
@@ -342,6 +355,13 @@ impl ShareUseCase for ShareService {
             .await
             .map_err(|e| ShareServiceError::Repository(e.to_string()))?;
 
+        // Sharer's search cache no longer reflects `is_shared` truthfully
+        // for the affected resource — flush their entries. Recipients are
+        // still stale-until-TTL (see the struct field comment).
+        if let Some(search) = &self.search {
+            search.invalidate_for_user(user_id).await;
+        }
+
         // Return DTO with the requested expires_at (grant subquery on the share
         // row would return NULL at this point since INSERT ran before the grant).
         let mut response = ShareDto::from_entity(&saved_share, &self.base_url);
@@ -445,6 +465,12 @@ impl ShareUseCase for ShareService {
         self.share_repository
             .delete_share_for_user(id, requester_id)
             .await?;
+        // Sharer's search cache no longer reflects `is_shared` truthfully
+        // for the affected resource — flush their entries. Recipients are
+        // still stale-until-TTL (see the struct field comment).
+        if let Some(search) = &self.search {
+            search.invalidate_for_user(requester_id).await;
+        }
 
         Ok(())
     }
@@ -920,8 +946,15 @@ mod tests {
             _folder_id: Option<&str>,
             _criteria: &crate::application::dtos::search_dto::SearchCriteriaDto,
             _user_id: Uuid,
-        ) -> Result<(Vec<crate::domain::entities::file::File>, usize), DomainError> {
-            Ok((Vec::new(), 0))
+        ) -> Result<
+            (
+                Vec<crate::domain::entities::file::File>,
+                Vec<(bool, bool)>,
+                usize,
+            ),
+            DomainError,
+        > {
+            Ok((Vec::new(), Vec::new(), 0))
         }
 
         async fn stream_files_in_subtree(

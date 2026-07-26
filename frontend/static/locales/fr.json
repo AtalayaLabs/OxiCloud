@@ -384,7 +384,13 @@
     "col_created_by": "Créé par",
     "col_opened": "Ouvert",
     "col_path": "Emplacement",
-    "new_elements": "Nouveaux éléments"
+    "new_elements": "Nouveaux éléments",
+    "open_parent": "Ouvrir le dossier parent",
+    "move": "Déplacer",
+    "favorite": "Ajouter aux favoris",
+    "unfavorite": "Retirer des favoris",
+    "open": "Ouvrir",
+    "download_zip": "Télécharger en ZIP"
   },
   "dialogs": {
     "rename_folder": "Renommer le dossier",
@@ -1197,9 +1203,43 @@
     "size_label": "Taille",
     "title": "Rechercher",
     "type": {
-      "audio": "Audio"
+      "audio": "Audio",
+      "all": "Tous les types",
+      "image": "Images",
+      "video": "Vidéos",
+      "document": "Documents",
+      "archive": "Archives"
     },
-    "type_label": "Type"
+    "type_label": "Type",
+    "sort": {
+      "relevance": "Pertinence"
+    },
+    "results_for": "Résultats pour « {{q}} »",
+    "results_summary": "Résultats pour « {{q}} » · {{n}} résultats en {{ms}} ms",
+    "results_summary_no_total": "Résultats pour « {{q}} » · {{ms}} ms",
+    "everywhere": "Partout",
+    "this_folder": "Ce dossier",
+    "this_folder_disabled": "Ouvrez un dossier dans Fichiers pour y limiter la recherche",
+    "scope": "Portée",
+    "date_label": "Date",
+    "sort_by": "Trier par",
+    "clear_filters": "Effacer les filtres",
+    "searching_for": "Recherche de « {{q}} »…",
+    "no_results": "Aucun résultat pour cette recherche",
+    "prompt": "Saisissez une requête dans la barre de recherche ci-dessus.",
+    "size": {
+      "all": "Toute taille",
+      "small": "< 1 Mo",
+      "medium": "1–100 Mo",
+      "large": "> 100 Mo"
+    },
+    "date": {
+      "all": "N'importe quand",
+      "day": "Dernières 24 heures",
+      "week": "Semaine dernière",
+      "month": "Mois dernier",
+      "year": "Année dernière"
+    }
   },
   "sizeBucket": {
     "folders": "Dossiers"

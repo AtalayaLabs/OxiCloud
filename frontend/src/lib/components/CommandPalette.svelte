@@ -2,7 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { logout } from '$lib/api/endpoints/auth';
-	import { searchFiles } from '$lib/api/endpoints/search';
+	import { searchResources } from '$lib/api/endpoints/search';
 	import { fileInlineUrl } from '$lib/api/endpoints/files';
 	import Icon from '$lib/icons/Icon.svelte';
 	import { t } from '$lib/i18n/index.svelte';
@@ -193,24 +193,33 @@
 		}
 		searchTimer = setTimeout(async () => {
 			try {
-				const r = await searchFiles(q, { recursive: true, limit: 5 });
-				const folders: Command[] = r.folders.slice(0, 3).map((f) => ({
-					id: `fld-${f.id}`,
-					label: f.name,
-					icon: 'folder',
-					hint: t('files.folder', 'Folder'),
-					run: nav(`/files/${f.id}`)
-				}));
-				const files: Command[] = r.files.slice(0, 5).map((f) => ({
-					id: `fil-${f.id}`,
-					label: f.name,
-					icon: 'file',
-					hint: t('files.file', 'File'),
-					run: () => {
-						close();
-						window.open(fileInlineUrl(f.id), '_blank', 'noopener');
-					}
-				}));
+				const r = await searchResources(q, { recursive: true, limit: 8 });
+				// Wire items are ordered folders-first-then-files, but demux
+				// explicitly so the palette keeps the two-section layout even
+				// when file hits dominate the result set.
+				const folders: Command[] = r.items
+					.filter((it) => it.resource_type === 'folder')
+					.slice(0, 3)
+					.map((it) => ({
+						id: `fld-${it.resource.id}`,
+						label: it.resource.name,
+						icon: 'folder',
+						hint: t('files.folder', 'Folder'),
+						run: nav(`/files/${it.resource.id}`)
+					}));
+				const files: Command[] = r.items
+					.filter((it) => it.resource_type === 'file')
+					.slice(0, 5)
+					.map((it) => ({
+						id: `fil-${it.resource.id}`,
+						label: it.resource.name,
+						icon: 'file',
+						hint: t('files.file', 'File'),
+						run: () => {
+							close();
+							window.open(fileInlineUrl(it.resource.id), '_blank', 'noopener');
+						}
+					}));
 				fileMatches = [...folders, ...files];
 			} catch {
 				fileMatches = [];

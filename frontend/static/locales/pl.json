@@ -384,7 +384,13 @@
     "col_created_by": "Utworzone przez",
     "col_opened": "Otwarte",
     "col_path": "Lokalizacja",
-    "new_elements": "Nowe elementy"
+    "new_elements": "Nowe elementy",
+    "open_parent": "Otwórz folder nadrzędny",
+    "move": "Przenieś",
+    "favorite": "Dodaj do ulubionych",
+    "unfavorite": "Usuń z ulubionych",
+    "open": "Otwórz",
+    "download_zip": "Pobierz jako ZIP"
   },
   "dialogs": {
     "rename_folder": "Zmień nazwę folderu",
@@ -1197,9 +1203,43 @@
     "size_label": "Rozmiar",
     "title": "Szukaj",
     "type": {
-      "audio": "Audio"
+      "audio": "Audio",
+      "all": "Wszystkie typy",
+      "image": "Obrazy",
+      "video": "Filmy",
+      "document": "Dokumenty",
+      "archive": "Archiwa"
     },
-    "type_label": "Typ"
+    "type_label": "Typ",
+    "sort": {
+      "relevance": "Trafność"
+    },
+    "results_for": "Wyniki dla \"{{q}}\"",
+    "results_summary": "Wyniki dla \"{{q}}\" · {{n}} wyników w {{ms}} ms",
+    "results_summary_no_total": "Wyniki dla \"{{q}}\" · {{ms}} ms",
+    "everywhere": "Wszędzie",
+    "this_folder": "Ten folder",
+    "this_folder_disabled": "Otwórz folder w Plikach, aby ograniczyć wyszukiwanie do niego",
+    "scope": "Zakres",
+    "date_label": "Data",
+    "sort_by": "Sortuj według",
+    "clear_filters": "Wyczyść filtry",
+    "searching_for": "Wyszukiwanie „{{q}}\"…",
+    "no_results": "Nie znaleziono wyników dla tego wyszukiwania",
+    "prompt": "Wpisz zapytanie na pasku wyszukiwania powyżej.",
+    "size": {
+      "all": "Dowolny rozmiar",
+      "small": "< 1 MB",
+      "medium": "1–100 MB",
+      "large": "> 100 MB"
+    },
+    "date": {
+      "all": "Kiedykolwiek",
+      "day": "Ostatnie 24 godziny",
+      "week": "Ostatni tydzień",
+      "month": "Ostatni miesiąc",
+      "year": "Ostatni rok"
+    }
   },
   "sizeBucket": {
     "folders": "Foldery"

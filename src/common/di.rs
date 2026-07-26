@@ -877,13 +877,17 @@ impl AppServiceFactory {
         Some(service as Arc<TrashService>)
     }
 
-    /// Creates the sharing service
+    /// Creates the sharing service. `search_service` is threaded through
+    /// so create/delete of a share can flush the caller's cached search
+    /// pages (2026-07-26 — per-user is_shared invalidation). `None` when
+    /// search is disabled; the flush becomes a no-op.
     pub fn create_share_service(
         &self,
         repos: &RepositoryServices,
         db_pool: &Arc<PgPool>,
         authorization: &Arc<crate::infrastructure::services::pg_acl_engine::PgAclEngine>,
         drive_repo: &Arc<crate::infrastructure::repositories::pg::DrivePgRepository>,
+        search_service: Option<Arc<SearchService>>,
     ) -> Option<Arc<ShareService>> {
         if !self.config.features.enable_file_sharing {
             tracing::info!("File sharing service is disabled in configuration");
@@ -909,6 +913,10 @@ impl AppServiceFactory {
             drive_repo.clone(),
             password_hasher,
             authorization.clone(),
+            // Optional per-user search-cache invalidator — set here so
+            // create/delete of a share drops the sharer's cached search
+            // pages (2026-07-26). `None` when search is disabled.
+            search_service.clone(),
         ));
 
         tracing::info!("File sharing service initialized");
@@ -917,16 +925,23 @@ impl AppServiceFactory {
 
     /// Creates the favorites service (requires database + authz engine
     /// for the Read gate on `add_to_favorites` — see the post-Drive
-    /// AuthZ audit).
+    /// AuthZ audit). `search_service` is threaded through so add/remove
+    /// can flush the caller's cached search pages (2026-07-26 — per-user
+    /// is_favorite invalidation). `None` when search is disabled.
     pub fn create_favorites_service(
         &self,
         db_pool: &Arc<PgPool>,
         authorization: &Arc<PgAclEngine>,
+        search_service: Option<Arc<SearchService>>,
     ) -> Arc<FavoritesService> {
         let repo = Arc::new(
             crate::infrastructure::repositories::pg::FavoritesPgRepository::new(db_pool.clone()),
         );
-        let service = Arc::new(FavoritesService::new(repo, authorization.clone()));
+        let service = Arc::new(FavoritesService::new(
+            repo,
+            authorization.clone(),
+            search_service,
+        ));
         tracing::info!("Favorites service initialized");
         service
     }
@@ -1325,7 +1340,13 @@ impl AppServiceFactory {
         );
 
         // 5. Share service
-        let share_service = self.create_share_service(&repos, &pool, &authorization, &drive_repo);
+        let share_service = self.create_share_service(
+            &repos,
+            &pool,
+            &authorization,
+            &drive_repo,
+            apps.search_service.clone(),
+        );
         apps.share_service = share_service.clone();
 
         let share_browse_service = share_service.as_ref().map(|s| {
@@ -1359,7 +1380,8 @@ impl AppServiceFactory {
         > = None;
 
         {
-            let favs = self.create_favorites_service(&pool, &authorization);
+            let favs =
+                self.create_favorites_service(&pool, &authorization, apps.search_service.clone());
             favorites_service = Some(favs.clone());
             apps.favorites_service = Some(favs);
 

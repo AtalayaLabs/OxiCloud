@@ -160,13 +160,22 @@ pub trait FileReadPort: Send + Sync + 'static {
     ///   are expanded inline via `storage.caller_group_ids($caller)`.
     ///
     /// # Returns
-    /// A tuple of (files, total_count) where files are paginated and filtered
+    /// A tuple `(files, caller_flags, total_count)`:
+    /// - `files`: the paginated + filtered file rows.
+    /// - `caller_flags`: parallel `Vec<(is_favorite, is_shared)>` aligned
+    ///   1:1 with `files` by index. Populated in-SQL via per-row EXISTS
+    ///   subqueries on `auth.user_favorites` and `storage.role_grants` so
+    ///   the caller's SPA can render badges without a follow-up round-trip
+    ///   (same pattern the photos-timeline listing uses). Kept as a
+    ///   parallel vec rather than folded into `File` so the domain
+    ///   entity stays caller-agnostic.
+    /// - `total_count`: `COUNT(*) OVER()` total for pagination.
     async fn search_files_paginated(
         &self,
         folder_id: Option<&str>,
         criteria: &SearchCriteriaDto,
         caller_id: Uuid,
-    ) -> Result<(Vec<File>, usize), DomainError>;
+    ) -> Result<(Vec<File>, Vec<(bool, bool)>, usize), DomainError>;
 
     /// Search files recursively in a folder subtree using ltree.
     ///
@@ -177,13 +186,14 @@ pub trait FileReadPort: Send + Sync + 'static {
     /// Post-PR-B: scoped by drive-membership grants (same semantics as
     /// `search_files_paginated`), not by `files.user_id`.
     ///
-    /// Returns a tuple of (matching files, total count for pagination).
+    /// Returns the same shape as [`Self::search_files_paginated`]:
+    /// `(files, caller_flags, total_count)`.
     async fn search_files_in_subtree(
         &self,
         root_folder_id: Option<&str>,
         criteria: &SearchCriteriaDto,
         caller_id: Uuid,
-    ) -> Result<(Vec<File>, usize), DomainError> {
+    ) -> Result<(Vec<File>, Vec<(bool, bool)>, usize), DomainError> {
         // Default: delegate to paginated search (non-recursive fallback)
         self.search_files_paginated(root_folder_id, criteria, caller_id)
             .await

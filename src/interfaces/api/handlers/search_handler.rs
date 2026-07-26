@@ -7,7 +7,7 @@ use serde_json::json;
 use tracing::{error, info};
 
 use crate::application::dtos::search_dto::{
-    SearchCriteriaDto, SearchResultsDto, SearchSuggestionsDto,
+    SearchResourcesDto, SearchResourcesQuery, SearchSuggestionsDto,
 };
 use crate::application::ports::inbound::SearchUseCase;
 use crate::common::di::AppState;
@@ -39,12 +39,32 @@ impl SearchHandler {
     // so `#[utoipa::path]` fails on every method in this impl block regardless of HTTP
     // verb or annotation content. All route handlers are free functions below.
     // TODO: collapse after utoipa upgrade.
-    pub(super) async fn search_files_get_impl(
+    /// `GET /api/search` — wire-normalised search endpoint.
+    ///
+    /// Returns the same `items[] { resource_type, resource, meta }`
+    /// envelope shape as every other `/*/resources` listing endpoint
+    /// (folders, favorites, recent, trash, shared) so the SPA's
+    /// `ResourceList` component consumes it as-is. Search-specific
+    /// enrichment (`meta.score` + optional `snippet` + `via`) sits
+    /// inline on each item.
+    ///
+    /// Phase 1-plus wire adapter: the internal `SearchService` still
+    /// speaks `SearchCriteriaDto`/`SearchResultsDto`. The query is
+    /// translated at this boundary; the result envelope is composed
+    /// via `SearchResourcesDto::from_service_result`. The `is_favorite`
+    /// / `is_shared` fields on each `FileDto`/`FolderDto` come from
+    /// per-row EXISTS subqueries in the search SQL (see
+    /// `search_files_paginated` and `search_folders`).
+    ///
+    /// The old `POST /api/search/advanced` variant was deleted in
+    /// the same PR — every field it accepted fits cleanly as a query
+    /// param.
+    pub(super) async fn search_resources_impl(
         State(state): State<Arc<AppState>>,
         auth_user: AuthUser,
-        Query(params): Query<SearchParams>,
+        Query(query): Query<SearchResourcesQuery>,
     ) -> impl IntoResponse {
-        info!("API: File search with parameters: {:?}", params);
+        info!("API: File search (normalized envelope)");
 
         let search_service = match &state.applications.search_service {
             Some(service) => service,
@@ -58,25 +78,13 @@ impl SearchHandler {
             }
         };
 
-        let search_criteria = SearchCriteriaDto {
-            name_contains: params.query,
-            file_types: params
-                .type_filter
-                .map(|t| t.split(',').map(|s| s.trim().to_string()).collect()),
-            created_after: params.created_after,
-            created_before: params.created_before,
-            modified_after: params.modified_after,
-            modified_before: params.modified_before,
-            min_size: params.min_size,
-            max_size: params.max_size,
-            folder_id: params.folder_id,
-            recursive: params.recursive.unwrap_or(true),
-            limit: params.limit.unwrap_or(100).min(MAX_SEARCH_LIMIT),
-            offset: params.offset.unwrap_or(0),
-            sort_by: params.sort_by.unwrap_or_else(|| "relevance".to_string()),
-        };
+        // Cap page size — `SearchResourcesQuery::limit_clamped` already
+        // hits `[1, 200]`, but re-clamp against MAX_SEARCH_LIMIT for
+        // defence-in-depth if the constant is ever raised above 200.
+        let mut criteria = query.to_criteria();
+        criteria.limit = criteria.limit.min(MAX_SEARCH_LIMIT);
 
-        match search_service.search(search_criteria, auth_user.id).await {
+        match search_service.search(criteria, auth_user.id).await {
             Ok(results) => {
                 info!(
                     "Search completed in {}ms — {} files, {} folders",
@@ -84,62 +92,18 @@ impl SearchHandler {
                     results.files.len(),
                     results.folders.len()
                 );
-                {
-                    // Pre-sized serialization (benches/ROUND12.md §M1).
-                    let rows = results.files.len() + results.folders.len();
-                    crate::interfaces::api::sized_json::sized_json(
-                        256 + rows * crate::interfaces::api::sized_json::EST_WRAPPED_ROW_BYTES,
-                        &*results,
-                    )
-                }
-            }
-            Err(err) => {
-                error!("Search error: {}", err);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": "Search error" })),
+                // Unwrap the Arc — the service caches `Arc<SearchResultsDto>`
+                // so consumers share the allocation. `from_service_result`
+                // consumes the DTO to move enriched rows into the envelope's
+                // `resource` slot without cloning; the Arc's shared clone
+                // pays one deep copy here but avoids allocating during the
+                // hot cache-hit path elsewhere.
+                let dto = SearchResourcesDto::from_service_result((*results).clone(), &query);
+                let rows = dto.items.len();
+                crate::interfaces::api::sized_json::sized_json(
+                    256 + rows * crate::interfaces::api::sized_json::EST_WRAPPED_ROW_BYTES,
+                    &dto,
                 )
-                    .into_response()
-            }
-        }
-    }
-
-    /// Advanced search with full criteria in the request body.
-    pub(super) async fn search_files_post_impl(
-        State(state): State<Arc<AppState>>,
-        auth_user: AuthUser,
-        Json(criteria): Json<SearchCriteriaDto>,
-    ) -> impl IntoResponse {
-        info!("API: Advanced file search");
-
-        let search_service = match &state.applications.search_service {
-            Some(service) => service,
-            None => {
-                error!("Search service not available");
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(json!({ "error": "Search service is not available" })),
-                )
-                    .into_response();
-            }
-        };
-
-        match search_service.search(criteria, auth_user.id).await {
-            Ok(results) => {
-                info!(
-                    "Advanced search completed in {}ms — {} files, {} folders",
-                    results.query_time_ms,
-                    results.files.len(),
-                    results.folders.len()
-                );
-                {
-                    // Pre-sized serialization (benches/ROUND12.md §M1).
-                    let rows = results.files.len() + results.folders.len();
-                    crate::interfaces::api::sized_json::sized_json(
-                        256 + rows * crate::interfaces::api::sized_json::EST_WRAPPED_ROW_BYTES,
-                        &*results,
-                    )
-                }
             }
             Err(err) => {
                 error!("Search error: {}", err);
@@ -258,50 +222,6 @@ impl SearchHandler {
     }
 }
 
-/// Search parameters for the GET /search endpoint
-#[derive(Debug, serde::Deserialize)]
-pub struct SearchParams {
-    /// Text to search in file and folder names
-    pub query: Option<String>,
-
-    /// Filter by file types (comma-separated extensions)
-    #[serde(rename = "type")]
-    pub type_filter: Option<String>,
-
-    /// Created after this timestamp
-    pub created_after: Option<u64>,
-
-    /// Created before this timestamp
-    pub created_before: Option<u64>,
-
-    /// Modified after this timestamp
-    pub modified_after: Option<u64>,
-
-    /// Modified before this timestamp
-    pub modified_before: Option<u64>,
-
-    /// Minimum file size in bytes
-    pub min_size: Option<u64>,
-
-    /// Maximum file size in bytes
-    pub max_size: Option<u64>,
-
-    /// Folder ID to limit the search scope
-    pub folder_id: Option<String>,
-
-    /// Recursive search in subfolders (default: true)
-    pub recursive: Option<bool>,
-
-    /// Result limit for pagination
-    pub limit: Option<usize>,
-
-    /// Offset for pagination
-    pub offset: Option<usize>,
-
-    /// Sort order: relevance | name | name_desc | date | date_desc | size | size_desc
-    pub sort_by: Option<String>,
-}
-
 /// Parameters for the GET /search/suggest endpoint
 #[derive(Debug, serde::Deserialize)]
 pub struct SuggestParams {
@@ -334,45 +254,35 @@ pub struct SuggestParams {
     get,
     path = "/api/search",
     params(
-        ("query" = Option<String>, Query, description = "Text to search in names"),
-        ("type" = Option<String>, Query, description = "Comma-separated MIME type filter"),
+        ("query" = Option<String>, Query, description = "Text to search in names / content"),
+        ("limit" = Option<u32>, Query, description = "Max items per page (1–200, default 50)"),
+        ("cursor" = Option<String>, Query, description = "Opaque cursor from a previous response"),
+        ("order_by" = Option<String>, Query, description = "Sort dimension: relevance (default) | name | size | updated_at | created_at"),
+        ("resource_types" = Option<String>, Query, description = "Comma-separated: file, folder (both by default)"),
+        ("reverse" = Option<bool>, Query, description = "Reverse the sort order"),
+        ("type" = Option<String>, Query, description = "Filter by file extensions (comma-separated)"),
         ("folder_id" = Option<String>, Query, description = "Restrict search to this folder"),
-        ("recursive" = Option<bool>, Query, description = "Include sub-folders"),
-        ("limit" = Option<u32>, Query, description = "Max results"),
-        ("offset" = Option<u32>, Query, description = "Pagination offset"),
+        ("recursive" = Option<bool>, Query, description = "Recurse into subfolders (default true)"),
+        ("created_after" = Option<u64>, Query, description = "Minimum creation timestamp (unix seconds)"),
+        ("created_before" = Option<u64>, Query, description = "Maximum creation timestamp"),
+        ("modified_after" = Option<u64>, Query, description = "Minimum modification timestamp"),
+        ("modified_before" = Option<u64>, Query, description = "Maximum modification timestamp"),
+        ("min_size" = Option<u64>, Query, description = "Minimum file size (bytes)"),
+        ("max_size" = Option<u64>, Query, description = "Maximum file size (bytes)"),
     ),
     responses(
-        (status = 200, description = "Search results", body = SearchResultsDto),
+        (status = 200, description = "Search results (cursor-paginated envelope shared with /*/resources)", body = SearchResourcesDto),
         (status = 503, description = "Search service unavailable"),
     ),
     security(("bearerAuth" = [])),
     tag = "search"
 )]
-pub async fn search_files_get(
+pub async fn search_resources(
     state: State<Arc<AppState>>,
     auth_user: AuthUser,
-    query: Query<SearchParams>,
+    query: Query<SearchResourcesQuery>,
 ) -> impl IntoResponse {
-    SearchHandler::search_files_get_impl(state, auth_user, query).await
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/search/advanced",
-    request_body(content = SearchCriteriaDto, content_type = "application/json", description = "Search criteria"),
-    responses(
-        (status = 200, description = "Search results", body = SearchResultsDto),
-        (status = 503, description = "Search service unavailable"),
-    ),
-    security(("bearerAuth" = [])),
-    tag = "search"
-)]
-pub async fn search_files_post(
-    state: State<Arc<AppState>>,
-    auth_user: AuthUser,
-    json: Json<SearchCriteriaDto>,
-) -> impl IntoResponse {
-    SearchHandler::search_files_post_impl(state, auth_user, json).await
+    SearchHandler::search_resources_impl(state, auth_user, query).await
 }
 
 #[utoipa::path(

@@ -384,7 +384,13 @@
     "col_created_by": "建立者",
     "col_opened": "開啟日期",
     "col_path": "位置",
-    "new_elements": "新項目"
+    "new_elements": "新項目",
+    "open_parent": "開啟上層資料夾",
+    "move": "移動",
+    "favorite": "加入我的最愛",
+    "unfavorite": "從我的最愛移除",
+    "open": "開啟",
+    "download_zip": "下載為 ZIP"
   },
   "dialogs": {
     "rename_folder": "重新命名資料夾",
@@ -1197,9 +1203,43 @@
     "size_label": "大小",
     "title": "搜尋",
     "type": {
-      "audio": "音訊"
+      "audio": "音訊",
+      "all": "所有類型",
+      "image": "圖片",
+      "video": "影片",
+      "document": "文件",
+      "archive": "壓縮檔"
     },
-    "type_label": "型別"
+    "type_label": "型別",
+    "sort": {
+      "relevance": "相關性"
+    },
+    "results_for": "\"{{q}}\" 的搜尋結果",
+    "results_summary": "\"{{q}}\" 的搜尋結果 · {{n}} 個結果 · {{ms}} 毫秒",
+    "results_summary_no_total": "\"{{q}}\" 的搜尋結果 · {{ms}} 毫秒",
+    "everywhere": "任何位置",
+    "this_folder": "此資料夾",
+    "this_folder_disabled": "開啟檔案中的資料夾以將搜尋限制在其中",
+    "scope": "範圍",
+    "date_label": "日期",
+    "sort_by": "排序方式",
+    "clear_filters": "清除篩選",
+    "searching_for": "正在搜尋「{{q}}」…",
+    "no_results": "此搜尋未找到結果",
+    "prompt": "在上方搜尋列中輸入查詢內容。",
+    "size": {
+      "all": "任何大小",
+      "small": "< 1 MB",
+      "medium": "1–100 MB",
+      "large": "> 100 MB"
+    },
+    "date": {
+      "all": "任何時間",
+      "day": "過去 24 小時",
+      "week": "過去一週",
+      "month": "過去一個月",
+      "year": "過去一年"
+    }
   },
   "sizeBucket": {
     "folders": "資料夾"

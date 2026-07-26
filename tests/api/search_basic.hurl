@@ -126,7 +126,12 @@ Authorization: Bearer {{admin_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.files" count >= 1
+# `/api/search` was normalised to the `/*/resources` envelope in
+# PR search-normalize (2026-07): items[] carry `resource_type` +
+# a `resource` (File | Folder | Drive) + inline search-meta. This
+# assertion checks the same anti-regression property as before
+# (needle file surfaces to its owner) against the new wire shape.
+jsonpath "$.items" count >= 1
 body contains "{{needle_file_id}}"
 
 
@@ -140,8 +145,7 @@ Authorization: Bearer {{admin_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.files" count == 0
-jsonpath "$.folders" count == 0
+jsonpath "$.items" count == 0
 
 
 # ─────────────────────────────────────────────────────────────
@@ -236,7 +240,7 @@ delay: 2500ms
 HTTP 200
 [Asserts]
 # Admin sees the content match — proves indexing landed.
-jsonpath "$.files" count >= 1
+jsonpath "$.items" count >= 1
 body contains "{{canary_file_id}}"
 
 
@@ -248,23 +252,22 @@ HTTP 200
 # Bob has no access to admin's drive → Tantivy's Must-clause
 # filters every doc that doesn't carry one of Bob's drive_ids,
 # so the file vanishes entirely.
-jsonpath "$.files" count == 0
-jsonpath "$.folders" count == 0
+jsonpath "$.items" count == 0
 body not contains "{{canary_file_id}}"
 body not contains "ContentIndexCanaryXyzzy2026Drive"
 # Anti-enum: every count the response surfaces must reflect the
 # FILTERED set — i.e. zero when the caller has no accessible
 # hits. The §11 rule is "no 'you have N hidden matches' field
-# anywhere". `total_count` is a legitimate pagination count and
-# is OK as long as it equals the filtered total (zero here). The
-# other field names below MUST stay absent: a future field
-# called `hidden_count`/`filtered`/etc. that reveals matches
-# Bob can't see would be the regression.
-jsonpath "$.total_count" == 0
-jsonpath "$.has_more" == false
+# anywhere". `total` is the visible-to-caller count (permission-
+# filtered SUM); it's OK when it equals the visible total (zero
+# here). Old `total_count` / `has_more` names are retired with
+# the `files/folders` split. Names below MUST stay absent — a
+# future field like `hidden_count`/`filtered`/etc. that reveals
+# matches Bob can't see would be the regression.
+jsonpath "$.total" == 0
+jsonpath "$.next_cursor" not exists
 jsonpath "$.hidden_count" not exists
 jsonpath "$.filtered" not exists
-jsonpath "$.total" not exists
 
 
 # ─────────────────────────────────────────────────────────────

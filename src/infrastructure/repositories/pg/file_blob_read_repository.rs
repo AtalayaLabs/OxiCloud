@@ -1212,20 +1212,27 @@ impl FileReadPort for FileBlobReadRepository {
         folder_id: Option<&str>,
         criteria: &SearchCriteriaDto,
         caller_id: Uuid,
-    ) -> Result<(Vec<File>, usize), DomainError> {
+    ) -> Result<(Vec<File>, Vec<(bool, bool)>, usize), DomainError> {
         let offset = criteria.offset as i64;
         let limit = criteria.limit as i64;
 
-        // Determine sort order
-        let (order_column, order_dir) = match criteria.sort_by.as_str() {
-            "name" => ("fi.name", "ASC"),
-            "name_desc" => ("fi.name", "DESC"),
-            "date" => ("fi.updated_at", "ASC"),
-            "date_desc" => ("fi.updated_at", "DESC"),
-            "size" => ("fi.size", "ASC"),
-            "size_desc" => ("fi.size", "DESC"),
-            _ => ("fi.name", "ASC"),
+        // Determine sort order. Canonical `sort_by` set (matches the wire
+        // `SearchResourcesQuery.order_by` 1:1 — no rename at any layer):
+        // `relevance | name | size | updated_at | created_at`. Direction
+        // comes from `criteria.reverse`; the old `_desc`-suffix pattern
+        // was retired 2026-07-26.
+        let order_column = match criteria.sort_by.as_str() {
+            "name" => "fi.name",
+            "updated_at" => "fi.updated_at",
+            "created_at" => "fi.created_at",
+            "size" => "fi.size",
+            // `relevance` (or anything unrecognised) has no dedicated
+            // column here — the recursive/non-recursive services blend
+            // in content-index hits and re-sort in memory. Falling back
+            // to name keeps the SQL page stable.
+            _ => "fi.name",
         };
+        let order_dir = if criteria.reverse { "DESC" } else { "ASC" };
 
         // ── Build dynamic WHERE + bind indices ───────────────────────────
         let mut conditions: Vec<String> = vec![
@@ -1250,6 +1257,15 @@ impl FileReadPort for FileBlobReadRepository {
         let limit_bind = bind_idx + 1;
         let offset_bind = bind_idx + 2;
 
+        // Per-row caller flags — populated in-SQL so the search result
+        // is a single round-trip. Mirrors the pattern used by the
+        // photos-timeline listing above (see `list_photos_paginated`).
+        // Both EXISTS clauses hit narrow indexes (favorites is keyed
+        // on `(user_id, item_id, item_type)`; role_grants on
+        // `(resource_type, resource_id)`), each a sub-ms lookup — the
+        // cost across a 100-row search page is a few ms of index
+        // probing vs a full second round-trip for the alternative
+        // post-hoc batch approach.
         let sql = format!(
             "SELECT fi.id, fi.name, fi.folder_id, fo.path, \
                     fi.size, fi.mime_type, \
@@ -1258,6 +1274,17 @@ impl FileReadPort for FileBlobReadRepository {
                     fi.blob_hash, \
                     \
                     fi.created_by, fi.updated_by, \
+                    EXISTS ( \
+                        SELECT 1 FROM auth.user_favorites uf \
+                         WHERE uf.user_id   = $1 \
+                           AND uf.item_id   = fi.id::text \
+                           AND uf.item_type = 'file' \
+                    ) AS is_favorite, \
+                    EXISTS ( \
+                        SELECT 1 FROM storage.role_grants g \
+                         WHERE g.resource_id   = fi.id \
+                           AND g.resource_type = 'file' \
+                    ) AS is_shared, \
                     COUNT(*) OVER() AS total_count \
                FROM storage.files fi \
                LEFT JOIN storage.folders fo ON fo.id = fi.folder_id \
@@ -1281,6 +1308,8 @@ impl FileReadPort for FileBlobReadRepository {
                 String,
                 Option<Uuid>, // created_by (§14)
                 Option<Uuid>, // updated_by (§14)
+                bool,         // is_favorite
+                bool,         // is_shared
                 i64,          // total_count
             ),
         >(&sql)
@@ -1303,20 +1332,25 @@ impl FileReadPort for FileBlobReadRepository {
             .map_err(|e| DomainError::internal_error("FileBlobRead", format!("search: {e}")))?;
 
         // total_count is the same in every row; 0 when result set is empty.
-        let total_count = rows.first().map_or(0, |r| r.11) as usize;
+        let total_count = rows.first().map_or(0, |r| r.13) as usize;
 
-        // Pre-size the result Vec (size-hint note in `hydrate`, ROUND20 §I1).
+        // Pre-size both parallel Vecs (size-hint note in `hydrate`,
+        // ROUND20 §I1). Caller-flags stay aligned with `files` by index.
         let mut files = Vec::with_capacity(rows.len());
-        for (id, name, fid, fpath, size, mime, ca, ma, blob_hash, cb, ub, _total) in rows {
+        let mut caller_flags = Vec::with_capacity(rows.len());
+        for (id, name, fid, fpath, size, mime, ca, ma, blob_hash, cb, ub, is_fav, is_shr, _total) in
+            rows
+        {
             files.push(
                 Self::row_to_file(id, name, fid, fpath, size, mime, ca, ma, blob_hash, cb, ub)
                     .map_err(|e| {
                         DomainError::internal_error("FileBlobRead", format!("mapping: {e}"))
                     })?,
             );
+            caller_flags.push((is_fav, is_shr));
         }
 
-        Ok((files, total_count))
+        Ok((files, caller_flags, total_count))
     }
 
     /// Recursive subtree search using ltree — single SQL query.
@@ -1337,7 +1371,7 @@ impl FileReadPort for FileBlobReadRepository {
         root_folder_id: Option<&str>,
         criteria: &SearchCriteriaDto,
         caller_id: Uuid,
-    ) -> Result<(Vec<File>, usize), DomainError> {
+    ) -> Result<(Vec<File>, Vec<(bool, bool)>, usize), DomainError> {
         // When no root folder specified, delegate to existing paginated search
         let root_id = match root_folder_id {
             None => {
@@ -1349,16 +1383,23 @@ impl FileReadPort for FileBlobReadRepository {
         let offset = criteria.offset as i64;
         let limit = criteria.limit as i64;
 
-        // Determine sort order
-        let (order_column, order_dir) = match criteria.sort_by.as_str() {
-            "name" => ("fi.name", "ASC"),
-            "name_desc" => ("fi.name", "DESC"),
-            "date" => ("fi.updated_at", "ASC"),
-            "date_desc" => ("fi.updated_at", "DESC"),
-            "size" => ("fi.size", "ASC"),
-            "size_desc" => ("fi.size", "DESC"),
-            _ => ("fi.name", "ASC"),
+        // Determine sort order. Canonical `sort_by` set (matches the wire
+        // `SearchResourcesQuery.order_by` 1:1 — no rename at any layer):
+        // `relevance | name | size | updated_at | created_at`. Direction
+        // comes from `criteria.reverse`; the old `_desc`-suffix pattern
+        // was retired 2026-07-26.
+        let order_column = match criteria.sort_by.as_str() {
+            "name" => "fi.name",
+            "updated_at" => "fi.updated_at",
+            "created_at" => "fi.created_at",
+            "size" => "fi.size",
+            // `relevance` (or anything unrecognised) has no dedicated
+            // column here — the recursive/non-recursive services blend
+            // in content-index hits and re-sort in memory. Falling back
+            // to name keeps the SQL page stable.
+            _ => "fi.name",
         };
+        let order_dir = if criteria.reverse { "DESC" } else { "ASC" };
 
         // ── Build dynamic WHERE clauses ──
         let mut conditions = Vec::new();
@@ -1382,7 +1423,9 @@ impl FileReadPort for FileBlobReadRepository {
         let limit_bind = bind_idx + 1;
         let offset_bind = bind_idx + 2;
 
-        // ── Single query with COUNT(*) OVER() ──
+        // ── Single query with COUNT(*) OVER() + per-row caller flags ──
+        // See `search_files_paginated` above for the EXISTS-subquery
+        // rationale; same shape applies here.
         let sql = format!(
             "SELECT fi.id, fi.name, fi.folder_id, fo.path, \
                     fi.size, fi.mime_type, \
@@ -1391,6 +1434,17 @@ impl FileReadPort for FileBlobReadRepository {
                     fi.blob_hash, \
                     \
                     fi.created_by, fi.updated_by, \
+                    EXISTS ( \
+                        SELECT 1 FROM auth.user_favorites uf \
+                         WHERE uf.user_id   = $1 \
+                           AND uf.item_id   = fi.id::text \
+                           AND uf.item_type = 'file' \
+                    ) AS is_favorite, \
+                    EXISTS ( \
+                        SELECT 1 FROM storage.role_grants g \
+                         WHERE g.resource_id   = fi.id \
+                           AND g.resource_type = 'file' \
+                    ) AS is_shared, \
                     COUNT(*) OVER() AS total_count \
                FROM storage.files fi \
                JOIN storage.folders fo ON fo.id = fi.folder_id \
@@ -1414,6 +1468,8 @@ impl FileReadPort for FileBlobReadRepository {
                 String,
                 Option<Uuid>, // created_by (§14)
                 Option<Uuid>, // updated_by (§14)
+                bool,         // is_favorite
+                bool,         // is_shared
                 i64,          // total_count
             ),
         >(&sql)
@@ -1434,20 +1490,24 @@ impl FileReadPort for FileBlobReadRepository {
             DomainError::internal_error("FileBlobRead", format!("subtree search: {e}"))
         })?;
 
-        let total_count = rows.first().map_or(0, |r| r.11) as usize;
+        let total_count = rows.first().map_or(0, |r| r.13) as usize;
 
-        // Pre-size the result Vec (size-hint note in `hydrate`, ROUND20 §I1).
+        // Pre-size both Vecs, keep caller_flags aligned by index.
         let mut files = Vec::with_capacity(rows.len());
-        for (id, name, fid, fpath, size, mime, ca, ma, blob_hash, cb, ub, _total) in rows {
+        let mut caller_flags = Vec::with_capacity(rows.len());
+        for (id, name, fid, fpath, size, mime, ca, ma, blob_hash, cb, ub, is_fav, is_shr, _total) in
+            rows
+        {
             files.push(
                 Self::row_to_file(id, name, fid, fpath, size, mime, ca, ma, blob_hash, cb, ub)
                     .map_err(|e| {
                         DomainError::internal_error("FileBlobRead", format!("subtree mapping: {e}"))
                     })?,
             );
+            caller_flags.push((is_fav, is_shr));
         }
 
-        Ok((files, total_count))
+        Ok((files, caller_flags, total_count))
     }
 
     #[allow(clippy::type_complexity)]

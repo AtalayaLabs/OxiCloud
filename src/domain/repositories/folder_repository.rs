@@ -237,31 +237,39 @@ pub trait FolderRepository: Send + Sync + 'static {
     ///
     /// The default implementation falls back to `list_folders` + in-memory
     /// filter so that stubs and mocks compile without changes.
+    ///
+    /// Returns `(folders, caller_flags)` where `caller_flags` is a
+    /// parallel `Vec<(is_favorite, is_shared)>` aligned 1:1 with
+    /// `folders` by index. The default impl fills with `(false, false)`
+    /// so stubs stay trivial; the concrete PG impl computes them via
+    /// per-row EXISTS on `auth.user_favorites` and `storage.role_grants`
+    /// (matching the file-side `search_files_paginated` pattern).
     async fn search_folders(
         &self,
         parent_id: Option<&str>,
         name_contains: Option<&str>,
         caller_id: Uuid,
         recursive: bool,
-    ) -> Result<Vec<Folder>, DomainError> {
+    ) -> Result<(Vec<Folder>, Vec<(bool, bool)>), DomainError> {
         // Recursive with folder_id → use optimised ltree scan
-        if recursive && let Some(fid) = parent_id {
-            return self
-                .list_descendant_folders(fid, name_contains, caller_id)
-                .await;
-        }
-        // Fallback: load + filter in memory (stubs / mocks)
-        let all = self.list_folders(parent_id).await?;
-        match name_contains {
-            Some(q) if !q.is_empty() => {
-                let q = q.to_lowercase();
-                Ok(all
-                    .into_iter()
-                    .filter(|f| f.name().to_lowercase().contains(&q))
-                    .collect())
+        let folders = if recursive && let Some(fid) = parent_id {
+            self.list_descendant_folders(fid, name_contains, caller_id)
+                .await?
+        } else {
+            // Fallback: load + filter in memory (stubs / mocks)
+            let all = self.list_folders(parent_id).await?;
+            match name_contains {
+                Some(q) if !q.is_empty() => {
+                    let q = q.to_lowercase();
+                    all.into_iter()
+                        .filter(|f| f.name().to_lowercase().contains(&q))
+                        .collect()
+                }
+                _ => all,
             }
-            _ => Ok(all),
-        }
+        };
+        let flags = vec![(false, false); folders.len()];
+        Ok((folders, flags))
     }
 
     /// Return up to `limit` folders whose name contains `query` (case-insensitive).

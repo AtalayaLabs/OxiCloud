@@ -197,11 +197,31 @@
 
 .list-header-checkbox input[type="checkbox"],
 .file-item .checkbox-cell input[type="checkbox"] {
-    width: 17px;
-    height: 17px;
+    /* Bumped from 17px to 20px so the row-selection checkbox reads at
+       a similar visual weight to the 28x28 action buttons that sit at
+       the other end of the row (Ed's 2026-07-26 UX note). 20px is the
+       upper end of the browser-native checkbox range — beyond that
+       platforms start rendering an oversized-and-blurry glyph. */
+    width: 20px;
+    height: 20px;
     cursor: pointer;
     accent-color: var(--color-accent);
     border-radius: var(--radius-sm);
+}
+
+/* Orange outline on hover for the row-selection checkbox (Ed's UX ask
+   2026-07-26). `outline` (not `border`) because native checkboxes in
+   list view honor `accent-color` but their border rendering is
+   platform-inconsistent — `outline` is drawn OUTSIDE the box and
+   doesn't reflow the layout. Grid view uses a custom-drawn checkbox
+   (see `.files-grid-view … input[type="checkbox"]` below) which
+   accepts real border styling; its hover override lives with that
+   block and beats this via specificity. Matches the "everything
+   hovers to accent" convention shared with row-action buttons. */
+.list-header-checkbox input[type="checkbox"]:hover,
+.file-item .checkbox-cell input[type="checkbox"]:hover {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
 }
 
 .list-header.selection-mode {
@@ -496,30 +516,58 @@
 
 .files-list-view .file-item .action-cell button:not(.btn-action):hover {
     background: var(--color-border-subtle);
-    color: var(--color-text-dark);
+    /* Accent-orange hover — matches the grid view's `.file-actions:hover`
+       and the shared `.btn-action:hover` rule. Semantic overrides on
+       `.favorite-star:hover` / `.shared-button:hover` (gold / blue) take
+       precedence via more-specific selectors below. */
+    color: var(--color-accent);
 }
 
-/* Fav-star + shared-button share the same visibility rule: hidden on
-   quiet rows, visible on row hover, and — crucially — always visible
-   when their `.active` class is set. That's what lets a favorited or
-   shared row be discoverable at a glance in list view without the
-   user having to mouse over it.
+/* List-view resting/active state colors for favorite (gold) and shared
+   (blue). Hover is intentionally NOT overridden here — the generic
+   `.action-cell button:not(.btn-action):hover → --color-accent` rule
+   above owns the orange hover for every button (kebab / favorite /
+   shared) per Ed's 2026-07-26 spec. This block only paints the
+   at-rest state on `.active` rows so the star / shared chip stays
+   discoverable on a quiet row. */
+.files-list-view .file-item .action-cell button.favorite-star.active {
+    color: var(--color-star-text-hover);
+}
 
-   We use `visibility: hidden` (not `display: none`) so a hidden
-   button still reserves its slot in the action cell. Otherwise a row
-   that's shared-but-not-favorited would slide its shared icon into
-   the fav-star's column, breaking vertical alignment across rows. */
+.files-list-view .file-item .action-cell button.shared-button.active {
+    color: var(--color-badge-blue-text);
+}
+
+/* Fav-star + shared-button — hidden on quiet rows, visible on row hover,
+   and always visible when their `.active` class is set (so a favorited /
+   shared row is discoverable without mousing over).
+
+   `opacity: 0` + `pointer-events: none` (instead of `visibility: hidden`)
+   so the hide transitions match the kebab's fade — Ed's 2026-07-26 UX
+   note: pre-refactor kebab faded over motion-fast while star/shared
+   snapped out instantly (visibility flips have no animatable value),
+   producing a staggered exit when the pointer left a row. The slot
+   still reserves layout because the button geometry is unchanged; only
+   its paint is toggled. */
 .files-list-view .file-item .action-cell button.favorite-star,
 .files-list-view .file-item .action-cell button.shared-button {
-    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
     border: none;
+    transition: opacity var(--motion-fast) var(--ease-standard);
 }
 
+/* Strict reveal: star + shared appear ONLY on `.active` (row is
+   favorited / shared) or pointer hover — Ed's 2026-07-26 spec. No
+   `:focus-within` reveal, so keyboard focus on the row-body (name /
+   path cells) does NOT flash the actions cluster. Quiet rows stay
+   quiet at rest. */
 .files-list-view .file-item:hover .action-cell button.favorite-star,
 .files-list-view .file-item:hover .action-cell button.shared-button,
 .files-list-view .file-item .action-cell button.favorite-star.active,
 .files-list-view .file-item .action-cell button.shared-button.active {
-    visibility: visible;
+    opacity: 1;
+    pointer-events: auto;
 }
 
 /* Reveal the kebab on hover for cleaner rows — but only on hover-capable
@@ -668,8 +716,11 @@
     position: absolute;
     top: calc(var(--space-3) + 8px);
     left: calc(var(--space-3) + 8px);
-    width: 26px;
-    height: 26px;
+    /* 30x30 matches the action-cell chip pills (`.file-actions`, star,
+       shared, `.btn-action`) so the checkbox and the corner-cluster
+       buttons read as siblings of one visual size (Ed 2026-07-26). */
+    width: 30px;
+    height: 30px;
     border-radius: var(--radius-md);
     background: var(--color-scrim-control);
     backdrop-filter: blur(6px);
@@ -699,8 +750,10 @@
 .files-grid-view .file-item .checkbox-cell input[type="checkbox"] {
     appearance: none;
     -webkit-appearance: none;
-    width: 18px;
-    height: 18px;
+    /* Custom-drawn glyph sized proportionally to the 30x30 chip pill —
+       bumped from 18x18 to match the list-view checkbox's 20x20. */
+    width: 20px;
+    height: 20px;
     margin: 0;
     border: 2px solid var(--color-border-medium);
     border-radius: var(--radius-sm);
@@ -711,6 +764,17 @@
     transition:
         background-color var(--motion-fast) var(--ease-standard),
         border-color var(--motion-fast) var(--ease-standard);
+}
+
+/* Grid view uses a custom-drawn checkbox (`appearance: none`) so we can
+   swap the real border color on hover — cleaner than the list-view
+   `outline` trick, and no double-ring on this variant. Specificity
+   (0,4,1 + 0,0,1) beats the shared `input[type="checkbox"]:hover`
+   outline rule above so the grid-view chip doesn't get both a border
+   AND an outline. */
+.files-grid-view .file-item .checkbox-cell input[type="checkbox"]:hover {
+    border-color: var(--color-accent);
+    outline: none;
 }
 
 .files-grid-view .file-item .checkbox-cell input[type="checkbox"]::after {
@@ -783,9 +847,11 @@
    markup still has shared, favorite, itemActions, kebab in that
    sequence so list-view's inline right-aligned flow is unchanged. */
 .files-grid-view .file-item .action-cell:has(.shared-button, .favorite-star) {
-    /* Start right after the checkbox column (26px chip + inline gap)
-       so the left group aligns visually with the checkbox row. */
-    left: calc(var(--space-3) + 8px + 26px + var(--space-2));
+    /* Start right after the checkbox column (30px chip + inline gap)
+       so the left group aligns visually with the checkbox row. Kept in
+       sync with `.checkbox-cell` width above — the two share this
+       constant. */
+    left: calc(var(--space-3) + 8px + 30px + var(--space-2));
     right: calc(var(--space-3) + 8px);
     display: flex;
     align-items: center;
@@ -826,26 +892,36 @@
 
 /* Per-button visibility (mirrors list view): each button is independently
    gated by its own `.active` flag OR row-hover. This prevents a favorited
-   row from also lighting up the shared button (and vice versa) — the cell
-   used to reveal all its children together via a single opacity toggle. */
+   row from also lighting up the shared button (and vice versa).
+   `opacity + pointer-events` so the fade timing matches the kebab and
+   every `.btn-action--hover` — see the list-view block above for why. */
 .files-grid-view .file-item .action-cell .favorite-star,
 .files-grid-view .file-item .action-cell .shared-button {
-    visibility: hidden;
-    transition: visibility var(--motion-fast) var(--ease-standard);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--motion-fast) var(--ease-standard);
 }
 
+/* Strict reveal: same rule as the list view — `.active` OR pointer
+   hover, no `:focus-within` (Ed's 2026-07-26 spec). */
 .files-grid-view .file-item:hover .action-cell .favorite-star,
 .files-grid-view .file-item:hover .action-cell .shared-button,
-.files-grid-view .file-item:focus-within .action-cell .favorite-star,
-.files-grid-view .file-item:focus-within .action-cell .shared-button,
 .files-grid-view .file-item .action-cell .favorite-star.active,
 .files-grid-view .file-item .action-cell .shared-button.active {
-    visibility: visible;
+    opacity: 1;
+    pointer-events: auto;
 }
 
 /* Chip visuals for anything inside the corner cluster — the kebab, the star,
    the shared button, any `.btn-action`. Uniform 30x30 scrim pill so they
-   line up in the flex row. */
+   line up in the flex row.
+   NOTE: no `opacity: 1` here. Per-button reveal rules above own the
+   opacity (star/shared: `.active` + `:hover`; kebab + btn-action:
+   `:hover`). Pre-refactor this block force-set `opacity: 1` on the
+   assumption that reveal lived on the parent `.action-cell` — that
+   assumption is gone (Ed 2026-07-26), and the leftover made star +
+   shared appear always-visible in grid view regardless of hover /
+   `.active` state. */
 .files-grid-view .file-item .action-cell .file-actions,
 .files-grid-view .file-item .action-cell .favorite-star,
 .files-grid-view .file-item .action-cell .shared-button,
@@ -871,11 +947,25 @@
     color: var(--color-text);
     font-size: var(--text-md);
     cursor: pointer;
-    /* Opacity/hover-reveal moves up to `.action-cell` — children stay opaque. */
-    opacity: 1;
 }
 
-.files-grid-view .file-item .action-cell .file-actions:hover {
+/* Unified row-action hover: every button in the grid-view corner cluster
+   (kebab, star, shared, btn-action*) turns accent-orange on hover.
+   Semantic states are conveyed by the `.active` class, not by hover
+   color, so favorite = gold when starred, shared = blue when shared,
+   both regardless of pointer position (see `.active` rules below).
+   Ed's 2026-07-26 UX call: "orange for mouse over on all buttons;
+   blue only for active shared."
+
+   Selector specificity (0,4,1 + 0,0,1 = high) beats the chip-visual
+   base rule at ~line 852 (`.files-grid-view .file-item .action-cell
+   .btn-action { color: var(--color-text) }`, 0,4,0), which is why the
+   simpler `.btn-action:hover` didn't take effect inside the corner
+   cluster. */
+.files-grid-view .file-item .action-cell .file-actions:hover,
+.files-grid-view .file-item .action-cell .btn-action:hover,
+.files-grid-view .file-item .action-cell .favorite-star:hover,
+.files-grid-view .file-item .action-cell .shared-button:hover {
     color: var(--color-accent);
 }
 
@@ -884,13 +974,20 @@
     border: 2px dashed var(--color-warning-border);
 }
 
-/* Favorite star + shared button — visual overrides only. Position,
-   hover-reveal, chip geometry all come from the shared corner-cluster
-   rule on `.files-grid-view .file-item .action-cell`. What's left
-   here is just the per-state colour: subtle at rest, saturated when
-   the item's flag is set. `.active` on either button also bumps the
-   parent cluster's opacity (via `:has()` above) so an unhovered card
-   still shows its favorited/shared state. */
+/* Favorite star + shared button — resting/active state colors only.
+   HOVER color for both lives in the unified `.action-cell button:hover
+   → --color-accent` rule above; the per-state palette here only fires
+   when the button is NOT hovered. Convention (Ed 2026-07-26):
+     • hover     → orange (accent) — every row action
+     • star.active (not hover)     → gold
+     • shared.active (not hover)   → blue
+
+   `.active` retains its color even on hover for `favorite-star` (star
+   users expect gold-on-gold on the currently-starred item; losing the
+   glyph mid-click reads as broken) but yields to orange for `shared`
+   per Ed's explicit "blue only for active shared" — pointer-over on
+   an already-shared row should still communicate "you're about to
+   toggle something." */
 .files-grid-view .file-item button.favorite-star,
 .files-grid-view .file-item button.shared-button {
     color: var(--color-text-subtle);
@@ -898,19 +995,10 @@
     line-height: var(--leading-none);
 }
 
-.files-grid-view .file-item button.favorite-star:hover {
-    color: var(--color-star-text);
-}
-
 .files-grid-view .file-item button.favorite-star.active {
     color: var(--color-star-text-hover);
 }
 
-.files-grid-view .file-item button.favorite-star.active:hover {
-    color: var(--color-star-active);
-}
-
-.files-grid-view .file-item button.shared-button:hover,
 .files-grid-view .file-item button.shared-button.active {
     color: var(--color-badge-blue-text);
 }
@@ -1274,25 +1362,41 @@
 
 .btn-action:hover {
     background: var(--color-border-subtle);
-    color: var(--color-text-dark);
+    /* Accent (orange) hover matches `.file-actions` (kebab) and the
+       favorite / shared button semantics — the pre-refactor grey-only
+       tint left `/recent`'s broom, `/trash`'s restore and `/search`'s
+       "open parent" reading as inert on hover next to the accented
+       kebab. Ed's 2026-07-26 UX ask: "all row buttons should change
+       color on hover, not just kebab and favorite." Section-specific
+       variants (`.btn-action--delete` in trash, `--on` in ShareDialog)
+       still win via more-specific selectors so red / etc. semantics
+       are preserved. */
+    color: var(--color-accent);
 }
 
 /* Opt-in modifier: hide the button until the row is hovered / focused.
-   Used by `/recent`'s per-row broom (a history-management action that
-   shouldn't distract from the row content at rest). Trash's Restore /
-   Delete stay on the plain `.btn-action` — those are the reason the
-   user opened trash, and hiding them would fail Fitts' law. */
+   Used by `/recent`'s per-row broom and `/search`'s open-parent
+   (history-management / navigational actions that shouldn't distract
+   from the row content at rest). Trash's Restore / Delete stay on the
+   plain `.btn-action` — those are the reason the user opened trash,
+   and hiding them would fail Fitts' law.
+   `opacity + pointer-events` (not `visibility`) so the fade timing
+   matches the kebab + star + shared button — Ed's 2026-07-26 UX note:
+   pre-refactor each reveal mechanism was different, producing a
+   staggered exit when the pointer left a row. */
 .files-list-view .file-item .action-cell .btn-action--hover,
 .files-grid-view .file-item .action-cell .btn-action--hover {
-    visibility: hidden;
-    transition: visibility var(--motion-fast) var(--ease-standard);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--motion-fast) var(--ease-standard);
 }
 
 .files-list-view .file-item:hover .action-cell .btn-action--hover,
 .files-list-view .file-item:focus-within .action-cell .btn-action--hover,
 .files-grid-view .file-item:hover .action-cell .btn-action--hover,
 .files-grid-view .file-item:focus-within .action-cell .btn-action--hover {
-    visibility: visible;
+    opacity: 1;
+    pointer-events: auto;
 }
 
 /* Legacy: a margin-top on `.btn-action` in grid view for the era when

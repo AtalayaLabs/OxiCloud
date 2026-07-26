@@ -72,7 +72,14 @@ pub struct SearchService {
     /// Keys span user × query × offset × limit, and each page holds up to 500
     /// enriched rows (~500–900 B of owned Strings each) — an entry-count bound
     /// let hundreds of MB of result pages accumulate invisibly.
-    search_cache: moka::future::Cache<u64, Arc<SearchResultsDto>>,
+    ///
+    /// Key is `(user_id, criteria_hash)` (not a single fused `u64`) so
+    /// `invalidate_for_user` can predicate on `k.0` — a per-user flush
+    /// runs when the user favorites/shares a file so their next search
+    /// sees the fresh `is_favorite` / `is_shared` flags instead of a
+    /// cache entry that hardened at compute-time (was up to 5 min stale
+    /// before 2026-07-26 — Ed reported the mismatch).
+    search_cache: moka::future::Cache<(Uuid, u64), Arc<SearchResultsDto>>,
 }
 
 // ─── Search-results cache (byte-bounded) ─────────────────────────────────
@@ -88,7 +95,7 @@ pub struct SearchService {
 ///
 /// `pub` so `examples/bench_search_cache_mem.rs` can recompute retained
 /// bytes with the exact production formula.
-pub fn search_results_entry_weight(_key: &u64, value: &Arc<SearchResultsDto>) -> u32 {
+pub fn search_results_entry_weight(_key: &(Uuid, u64), value: &Arc<SearchResultsDto>) -> u32 {
     /// Fixed per-row overhead: struct scalars + one 24-B header per `String`
     /// field (12 on a file row, 4 on a folder row) + `Vec` slot + allocator
     /// slop. Deliberately a round upper-ish estimate — under-weighing is the
@@ -132,11 +139,15 @@ pub fn search_results_entry_weight(_key: &u64, value: &Arc<SearchResultsDto>) ->
 pub fn build_search_results_cache(
     cache_ttl_secs: u64,
     max_bytes: u64,
-) -> moka::future::Cache<u64, Arc<SearchResultsDto>> {
+) -> moka::future::Cache<(Uuid, u64), Arc<SearchResultsDto>> {
     moka::future::Cache::builder()
         .max_capacity(max_bytes)
         .weigher(search_results_entry_weight)
         .time_to_live(Duration::from_secs(cache_ttl_secs))
+        // Required for `invalidate_entries_if` to actually match anything
+        // — without this the closure silently no-ops (per the
+        // `bug_moka_invalidate_entries_if_needs_opt_in` memo).
+        .support_invalidation_closures()
         .build()
 }
 
@@ -201,14 +212,23 @@ fn content_relevance(score: f32, max_score: f32) -> u32 {
 
 /// Re-sort the merged file list with the same semantics the folder list
 /// uses. Only invoked when content hits were merged into a SQL-ordered page.
-fn sort_enriched_files(files: &mut [SearchFileResultDto], sort_by: &str) {
+///
+/// Sort dimension + direction are orthogonal (matches the wire
+/// `SearchResourcesQuery` / internal `SearchCriteriaDto` split): 5
+/// canonical `sort_by` values (`relevance | name | size | updated_at |
+/// created_at`) × the boolean `reverse`.
+fn sort_enriched_files(files: &mut [SearchFileResultDto], sort_by: &str, reverse: bool) {
     match sort_by {
+        "name" if reverse => files.sort_by_cached_key(|f| Reverse(f.name.to_lowercase())),
         "name" => files.sort_by_cached_key(|f| f.name.to_lowercase()),
-        "name_desc" => files.sort_by_cached_key(|f| Reverse(f.name.to_lowercase())),
-        "date" => files.sort_by_key(|f| f.modified_at),
-        "date_desc" => files.sort_by_key(|f| Reverse(f.modified_at)),
+        "updated_at" if reverse => files.sort_by_key(|f| Reverse(f.modified_at)),
+        "updated_at" => files.sort_by_key(|f| f.modified_at),
+        "created_at" if reverse => files.sort_by_key(|f| Reverse(f.created_at)),
+        "created_at" => files.sort_by_key(|f| f.created_at),
+        "size" if reverse => files.sort_by_key(|f| Reverse(f.size)),
         "size" => files.sort_by_key(|f| f.size),
-        "size_desc" => files.sort_by_key(|f| Reverse(f.size)),
+        // `relevance` (default) — reverse is a no-op; descending
+        // relevance would be "least-relevant first," meaningless.
         _ => files.sort_by_key(|f| Reverse(f.relevance_score)),
     }
 }
@@ -261,10 +281,13 @@ impl SearchService {
     }
 
     /// Creates a cache key from the search criteria using zero-allocation hashing.
-    fn create_cache_key(criteria: &SearchCriteriaDto, user_id: &str) -> u64 {
+    /// Hash just the criteria — the caller pairs the returned `u64` with
+    /// the `Uuid` user_id to form the composite cache key `(Uuid, u64)`.
+    /// Split from the fused hash so `invalidate_for_user` can predicate
+    /// on the user side of the tuple without decoding the criteria.
+    fn create_cache_key(criteria: &SearchCriteriaDto) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         criteria.hash(&mut hasher);
-        user_id.hash(&mut hasher);
         hasher.finish()
     }
 
@@ -304,6 +327,16 @@ impl SearchService {
             blob_hash: file.content_hash,
             snippet: None,
             match_source: (!query_lower.is_empty() && relevance > 0).then(|| "name".to_string()),
+            // Phase 1-plus: carry the FileDto fields the old enrich
+            // shape dropped. Populates the normalised
+            // `SearchResourcesDto` items with a complete `FileDto` so
+            // the frontend `ResourceList` renders favorites / share
+            // badges / provenance consistently with other listings.
+            etag: file.etag,
+            created_by: file.created_by,
+            updated_by: file.updated_by,
+            is_favorite: file.is_favorite,
+            is_shared: file.is_shared,
         }
     }
 
@@ -329,6 +362,13 @@ impl SearchService {
             modified_at: folder.modified_at,
             is_root: folder.is_root,
             relevance_score: relevance,
+            // Phase 1-plus (see sibling `enrich_file`): carry the
+            // FolderDto fields the old enrich shape dropped.
+            etag: folder.etag,
+            created_by: folder.created_by,
+            updated_by: folder.updated_by,
+            is_favorite: folder.is_favorite,
+            is_shared: folder.is_shared,
         }
     }
 
@@ -502,7 +542,7 @@ impl SearchService {
             added += 1;
         }
         if added > 0 {
-            sort_enriched_files(enriched_files, &criteria.sort_by);
+            sort_enriched_files(enriched_files, &criteria.sort_by, criteria.reverse);
         }
         Ok(added)
     }
@@ -628,13 +668,11 @@ impl SearchUseCase for SearchService {
         criteria: SearchCriteriaDto,
         user_id: Uuid,
     ) -> Result<Arc<SearchResultsDto>> {
-        // Stack-encode the UUID (36 ASCII bytes) instead of `to_string()` — the
-        // hasher sees the identical byte sequence, so the u64 key is unchanged,
-        // but the per-request heap `String` is gone (the fn doc even claims
-        // "zero-allocation hashing"). See benches/ROUND19.md §M5.
-        let mut user_id_buf = [0u8; uuid::fmt::Hyphenated::LENGTH];
-        let user_id_str = user_id.hyphenated().encode_lower(&mut user_id_buf);
-        let cache_key = Self::create_cache_key(&criteria, user_id_str);
+        // Composite key: `(user_id, criteria_hash)`. Pairs the identity of
+        // the caller with the hash of the request so `invalidate_for_user`
+        // can drop just this user's entries when their favorites / shares
+        // change (see the `search_cache` field doc for the "why").
+        let cache_key = (user_id, Self::create_cache_key(&criteria));
 
         // Single-flight: collapse N identical concurrent searches into ONE
         // execution. `try_get_with` serves the cached result on a hit and, on a
@@ -651,18 +689,12 @@ impl SearchUseCase for SearchService {
                 // For non-recursive searches, use efficient database-level pagination
                 // This avoids loading all files into memory
                 if !criteria.recursive {
-                    // The content-index lookup (drive resolve + Tantivy +
-                    // ReBAC batch), the file page and the folder query are
-                    // mutually independent — overlap them so the search pays
-                    // ~max() instead of the serial sum (`suggest_with_perms`
-                    // already used this shape; ROUND10 brought it here).
-                    let (content_hits, files_page, folders_res) = tokio::join!(
+                    // Same folders-first sequencing as the recursive branch
+                    // below (see the block comment there for the rationale
+                    // — SQL applies file offset+limit, so folder_count has
+                    // to be known before the file query is issued).
+                    let (content_hits, folders_res) = tokio::join!(
                         self.lookup_content_hits(&criteria, user_id),
-                        self.file_repository.search_files_paginated(
-                            criteria.folder_id.as_deref(),
-                            &criteria,
-                            user_id,
-                        ),
                         self.folder_repository.search_folders(
                             criteria.folder_id.as_deref(),
                             criteria.name_contains.as_deref(),
@@ -670,74 +702,120 @@ impl SearchUseCase for SearchService {
                             false,
                         ),
                     );
-                    let (files, total_file_count) = files_page?;
-                    let folders = folders_res?;
+                    let (folders, folder_flags) = folders_res?;
+
+                    let folder_count = folders.len();
+                    let folders_before_page = criteria.offset.min(folder_count);
+                    let folders_on_page = (folder_count - folders_before_page).min(criteria.limit);
+                    let file_offset = criteria.offset - folders_before_page;
+                    let file_limit_needed = criteria.limit - folders_on_page;
+                    let file_limit_probe = file_limit_needed.max(1);
+
+                    let mut file_criteria = criteria.clone();
+                    file_criteria.offset = file_offset;
+                    file_criteria.limit = file_limit_probe;
+
+                    let (files, file_flags, total_file_count) = self
+                        .file_repository
+                        .search_files_paginated(
+                            criteria.folder_id.as_deref(),
+                            &file_criteria,
+                            user_id,
+                        )
+                        .await?;
 
                     // Convert to DTOs and enrich with metadata — one fused
                     // pass, no intermediate Vec<FileDto> materialization.
+                    // `file_flags` is aligned 1:1 with `files` (in-SQL
+                    // per-row EXISTS on favorites + role_grants) so a
+                    // simple parallel zip plumbs the caller-scoped
+                    // booleans onto the FileDto before enrichment.
                     let mut enriched_files: Vec<SearchFileResultDto> = files
                         .into_iter()
-                        .map(|f| Self::enrich_file(FileDto::from(f), &query_lower))
+                        .zip(file_flags)
+                        .map(|(f, (is_fav, is_shr))| {
+                            let mut dto = FileDto::from(f);
+                            dto.is_favorite = is_fav;
+                            dto.is_shared = is_shr;
+                            Self::enrich_file(dto, &query_lower)
+                        })
                         .collect();
 
-                    // For folders, apply sorting and pagination in memory (usually fewer folders)
+                    // For folders, apply sorting and pagination in memory (usually fewer folders).
+                    // Same parallel-zip shape as the file branch above —
+                    // `folder_flags` is aligned 1:1 by index.
                     let mut enriched_folders: Vec<SearchFolderResultDto> = folders
                         .into_iter()
-                        .map(|f| Self::enrich_folder(FolderDto::from(f), &query_lower))
+                        .zip(folder_flags)
+                        .map(|(f, (is_fav, is_shr))| {
+                            let mut dto = FolderDto::from(f);
+                            dto.is_favorite = is_fav;
+                            dto.is_shared = is_shr;
+                            Self::enrich_folder(dto, &query_lower)
+                        })
                         .collect();
 
-                    // Sort folders (cached_key avoids O(N log N) temporary String allocations)
-                    match criteria.sort_by.as_str() {
-                        "name" => {
+                    // Sort folders (cached_key avoids O(N log N) temporary String allocations).
+                    // 5-dimension model (`relevance | name | size | updated_at | created_at`)
+                    // × the boolean `reverse` — matches the file-side `sort_enriched_files`
+                    // + the SQL match in `file_blob_read_repository`. `size` isn't
+                    // meaningful for folders (no size column), so it falls through
+                    // to the relevance default.
+                    match (criteria.sort_by.as_str(), criteria.reverse) {
+                        ("name", false) => {
                             enriched_folders.sort_by_cached_key(|f| f.name.to_lowercase());
                         }
-                        "name_desc" => {
+                        ("name", true) => {
                             enriched_folders.sort_by_cached_key(|f| Reverse(f.name.to_lowercase()));
                         }
-                        "date" => {
+                        ("updated_at", false) => {
                             enriched_folders.sort_by_key(|f| f.modified_at);
                         }
-                        "date_desc" => {
+                        ("updated_at", true) => {
                             enriched_folders.sort_by_key(|f| Reverse(f.modified_at));
                         }
+                        ("created_at", false) => {
+                            enriched_folders.sort_by_key(|f| f.created_at);
+                        }
+                        ("created_at", true) => {
+                            enriched_folders.sort_by_key(|f| Reverse(f.created_at));
+                        }
+                        // `relevance` (default) + `size` (N/A for folders) +
+                        // anything unrecognised — all land on relevance-desc.
                         _ => {
                             enriched_folders.sort_by_key(|f| Reverse(f.relevance_score));
                         }
                     }
 
-                    // Blend in content-discovered files before the pagination math.
-                    let added = self
+                    // Blend in content-discovered files, then truncate to
+                    // the exact page size — see the recursive branch's
+                    // block comment for why the truncate is required.
+                    //
+                    // Note: `total_count` is intentionally the pure SQL
+                    // name-match count (plus folders) — NOT inflated by
+                    // `added` content-hit rows. `added` counts hits that
+                    // aren't already in the *current* SQL slice, which is
+                    // per-page (different SQL rows on each page produce
+                    // different dedup outcomes and a different `added`).
+                    // Including it made the client-visible `total`
+                    // flicker as the user paginated (2026-07-26 report:
+                    // 4184 → 4186 across scope + page toggles for a
+                    // stable dataset). Content-hits still bubble into
+                    // each page's `items`; they just don't move the
+                    // grand total.
+                    let _added = self
                         .merge_content_hits(content_hits, &mut enriched_files, &criteria, user_id)
                         .await?;
-                    let total_file_count = total_file_count + added;
+                    enriched_files.truncate(file_limit_needed);
 
-                    let folder_count = enriched_folders.len();
                     let total_count = total_file_count + folder_count;
 
-                    // Combine and paginate (folders first, then files)
-                    let start_idx = criteria.offset.min(total_count);
-                    let end_idx = (criteria.offset + criteria.limit).min(total_count);
-
-                    let folder_start = start_idx.min(folder_count);
-                    let folder_end = end_idx.min(folder_count);
-                    // Move the page out of the owned vecs instead of
-                    // deep-cloning the slice — the source is dropped right
-                    // after (benches/ROUND11.md §11: −300 allocs per page).
                     let paginated_folders: Vec<_> = enriched_folders
                         .into_iter()
-                        .skip(folder_start)
-                        .take(folder_end - folder_start)
+                        .skip(folders_before_page)
+                        .take(folders_on_page)
                         .collect();
-
-                    let file_start = start_idx.saturating_sub(folder_count);
-                    let file_end = end_idx
-                        .saturating_sub(folder_count)
-                        .min(enriched_files.len());
-                    let paginated_files: Vec<_> = enriched_files
-                        .into_iter()
-                        .skip(file_start)
-                        .take(file_end - file_start)
-                        .collect();
+                    let paginated_files = enriched_files;
 
                     let elapsed_ms = start.elapsed().as_millis() as u64;
 
@@ -757,16 +835,30 @@ impl SearchUseCase for SearchService {
                 // ── Recursive search via ltree (single SQL query per entity type) ──
                 // Uses PostgreSQL ltree GiST index to find all files and folders
                 // in the subtree in O(1) queries, replacing the O(N) spawn-per-folder
-                // approach that could saturate the connection pool. The content
-                // lookup, subtree file query and folder query overlap (`join!`),
-                // same as the non-recursive branch.
-                let (content_hits, files_page, folders_res) = tokio::join!(
+                // approach that could saturate the connection pool.
+                //
+                // ── Correct pagination across a folders-then-files list ──
+                // Pre-fix the service ran (content, file-page, folder-page)
+                // in one `tokio::join!` with the SAME `criteria.offset/limit`
+                // going to the file SQL, then re-paginated in memory using
+                // ABSOLUTE offsets. That was doubly wrong: SQL already
+                // applied `[offset, offset+limit)` and the in-memory slice
+                // then tried to skip `offset` MORE rows — for any query
+                // with few folders this dropped whole pages (2026-07-26:
+                // 4002-file query returned 50 rows on page 1 then `items:[]`
+                // on page 2 with a valid `next_cursor`).
+                //
+                // Fix: fold folders + content lookup first (they're both
+                // cheap and folder_count is what tells us how many files
+                // to skip). Then run the file SQL with `offset` shifted by
+                // `folder_count` and `limit` reduced by whatever folders
+                // fit on the current page — so SQL returns EXACTLY the
+                // file slice that belongs here, no in-memory re-slicing.
+                // The min-1 probe below preserves `COUNT(*) OVER()` even
+                // when folders fill the whole page (LIMIT 0 → 0 rows →
+                // total_count column projects nowhere → false zero).
+                let (content_hits, folders_res) = tokio::join!(
                     self.lookup_content_hits(&criteria, user_id),
-                    self.file_repository.search_files_in_subtree(
-                        criteria.folder_id.as_deref(),
-                        &criteria,
-                        user_id,
-                    ),
                     self.folder_repository.search_folders(
                         criteria.folder_id.as_deref(),
                         criteria.name_contains.as_deref(),
@@ -774,19 +866,50 @@ impl SearchUseCase for SearchService {
                         true,
                     ),
                 );
-                let (found_files, total_file_count) = files_page?;
-                let found_folders: Vec<Folder> = folders_res?;
+                let (found_folders, folder_flags): (Vec<Folder>, Vec<(bool, bool)>) = folders_res?;
+
+                let folder_count = found_folders.len();
+                let folders_before_page = criteria.offset.min(folder_count);
+                let folders_on_page = (folder_count - folders_before_page).min(criteria.limit);
+                let file_offset = criteria.offset - folders_before_page;
+                let file_limit_needed = criteria.limit - folders_on_page;
+                // Probe with LIMIT ≥ 1 so `COUNT(*) OVER()` has a row to
+                // project onto; the extra row (if any) is truncated below.
+                let file_limit_probe = file_limit_needed.max(1);
+
+                let mut file_criteria = criteria.clone();
+                file_criteria.offset = file_offset;
+                file_criteria.limit = file_limit_probe;
+
+                let (found_files, file_flags, total_file_count) = self
+                    .file_repository
+                    .search_files_in_subtree(criteria.folder_id.as_deref(), &file_criteria, user_id)
+                    .await?;
 
                 // ── Convert to DTOs and enrich with server-computed metadata ──
                 // Fused single pass: no intermediate DTO Vec materialization.
+                // Same shape as the non-recursive branch above — parallel
+                // zip of `found_files` with the in-SQL caller_flags.
                 let mut enriched_files: Vec<SearchFileResultDto> = found_files
                     .into_iter()
-                    .map(|f| Self::enrich_file(FileDto::from(f), &query_lower))
+                    .zip(file_flags)
+                    .map(|(f, (is_fav, is_shr))| {
+                        let mut dto = FileDto::from(f);
+                        dto.is_favorite = is_fav;
+                        dto.is_shared = is_shr;
+                        Self::enrich_file(dto, &query_lower)
+                    })
                     .collect();
 
                 let mut enriched_folders: Vec<SearchFolderResultDto> = found_folders
                     .into_iter()
-                    .map(|f| Self::enrich_folder(FolderDto::from(f), &query_lower))
+                    .zip(folder_flags)
+                    .map(|(f, (is_fav, is_shr))| {
+                        let mut dto = FolderDto::from(f);
+                        dto.is_favorite = is_fav;
+                        dto.is_shared = is_shr;
+                        Self::enrich_folder(dto, &query_lower)
+                    })
                     .collect();
 
                 // ── Sort folders (cached_key avoids O(N log N) temporary String allocations) ──
@@ -808,38 +931,35 @@ impl SearchUseCase for SearchService {
                     }
                 }
 
-                // Blend in content-discovered files before the pagination math.
-                let added = self
+                // Blend in content-discovered files. `merge_content_hits`
+                // pushes candidates from the Tantivy index onto the tail
+                // and re-sorts by the criteria; the SQL limit above only
+                // bounded the name-match set, so truncate after merging
+                // to the exact page size we intended to return.
+                //
+                // `total_count` is the pure SQL name-match count + folder
+                // count — see the non-recursive branch's block comment
+                // for why `added` is deliberately excluded (per-page
+                // dedup outcome, would flicker the client-visible
+                // total across pages).
+                let _added = self
                     .merge_content_hits(content_hits, &mut enriched_files, &criteria, user_id)
                     .await?;
-                let total_file_count = total_file_count + added;
+                enriched_files.truncate(file_limit_needed);
 
-                // ── Pagination (folders first, then files) ──
-                let folder_count = enriched_folders.len();
                 let total_count = total_file_count + folder_count;
-                let start_idx = criteria.offset.min(total_count);
-                let end_idx = (criteria.offset + criteria.limit).min(total_count);
 
-                let folder_start = start_idx.min(folder_count);
-                let folder_end = end_idx.min(folder_count);
-                // Move the page out instead of deep-cloning the slice — the
-                // recursive branch's vecs can hold the whole subtree match
-                // set, all dropped right after (benches/ROUND11.md §11).
+                // Fetches were pre-sliced: enriched_files is already the
+                // exact file page (SQL applied file_offset + file_limit),
+                // and folders_before_page / folders_on_page tell us which
+                // slice of `enriched_folders` belongs here. No in-memory
+                // absolute-offset math — see the block comment above.
                 let paginated_folders: Vec<_> = enriched_folders
                     .into_iter()
-                    .skip(folder_start)
-                    .take(folder_end - folder_start)
+                    .skip(folders_before_page)
+                    .take(folders_on_page)
                     .collect();
-
-                let file_start = start_idx.saturating_sub(folder_count);
-                let file_end = end_idx
-                    .saturating_sub(folder_count)
-                    .min(enriched_files.len());
-                let paginated_files: Vec<_> = enriched_files
-                    .into_iter()
-                    .skip(file_start)
-                    .take(file_end - file_start)
-                    .collect();
+                let paginated_files = enriched_files;
 
                 let elapsed_ms = start.elapsed().as_millis() as u64;
 
@@ -886,6 +1006,41 @@ impl SearchUseCase for SearchService {
         self.search_cache.invalidate_all();
         self.search_cache.run_pending_tasks().await;
         Ok(())
+    }
+}
+
+impl SearchService {
+    /// Drop every cached search page for a single user. Called by the
+    /// favorites / share services after a mutation that changes what
+    /// `is_favorite` / `is_shared` would return for one of the caller's
+    /// files — without this the caller would see a stale flag for up
+    /// to `cache_ttl_secs` (Ed's 2026-07-26 report).
+    ///
+    /// `invalidate_entries_if` needs `.support_invalidation_closures()`
+    /// on the cache builder — set in `build_search_results_cache`. This
+    /// is scoped (predicate matches `k.0 == user_id` on the composite
+    /// `(Uuid, u64)` key), so a per-user favorite toggle does NOT
+    /// cold-start every other tenant's cache the way `invalidate_all`
+    /// does on the admin cache-flush endpoint.
+    pub async fn invalidate_for_user(&self, user_id: Uuid) {
+        // moka registers the predicate and returns a `PredicateId` — we
+        // don't need the id (we're not planning to unregister). Errors
+        // here are non-critical: worst case the caller sees stale
+        // is_favorite / is_shared for TTL seconds, exactly the state
+        // before this fix. Log-and-swallow keeps the mutation path
+        // reliable even under moka pressure.
+        if let Err(e) = self
+            .search_cache
+            .invalidate_entries_if(move |k, _| k.0 == user_id)
+        {
+            tracing::warn!(
+                target: "oxicloud::search",
+                error = %e,
+                %user_id,
+                "search cache invalidate_entries_if failed — user will see \
+                 stale is_favorite / is_shared until TTL expires",
+            );
+        }
     }
 }
 
@@ -960,6 +1115,11 @@ mod tests {
             blob_hash: String::new(),
             snippet: None,
             match_source: None,
+            etag: String::new(),
+            created_by: None,
+            updated_by: None,
+            is_favorite: false,
+            is_shared: false,
         }
     }
 
@@ -967,7 +1127,7 @@ mod tests {
     fn entry_weight_counts_every_owned_string_plus_overheads() {
         // Empty page: entry overhead + sort_by ("relevance" = 9 bytes).
         let empty = Arc::new(SearchResultsDto::empty());
-        let base = search_results_entry_weight(&0, &empty) as usize;
+        let base = search_results_entry_weight(&(Uuid::nil(), 0), &empty) as usize;
         assert_eq!(base, 256 + 9);
 
         // One file row: base + row overhead + its owned string bytes
@@ -981,7 +1141,7 @@ mod tests {
             0,
             "relevance".to_string(),
         ));
-        let w = search_results_entry_weight(&0, &one_file) as usize;
+        let w = search_results_entry_weight(&(Uuid::nil(), 0), &one_file) as usize;
         assert_eq!(w, base + 200 + 7 + 7 + 8 + 10);
 
         // Folder rows weigh too (id 2 + name 4 + path 5 + parent 6 = 17).
@@ -997,6 +1157,11 @@ mod tests {
                 modified_at: 0,
                 is_root: false,
                 relevance_score: 50,
+                etag: String::new(),
+                created_by: None,
+                updated_by: None,
+                is_favorite: false,
+                is_shared: false,
             }],
             100,
             0,
@@ -1004,7 +1169,7 @@ mod tests {
             0,
             "relevance".to_string(),
         ));
-        let w = search_results_entry_weight(&0, &one_folder) as usize;
+        let w = search_results_entry_weight(&(Uuid::nil(), 0), &one_folder) as usize;
         assert_eq!(w, base + 200 + 2 + 4 + 5 + 6);
     }
 
@@ -1025,12 +1190,12 @@ mod tests {
                 "relevance".to_string(),
             ))
         };
-        let per_entry = search_results_entry_weight(&0, &entry(0)) as u64;
+        let per_entry = search_results_entry_weight(&(Uuid::nil(), 0), &entry(0)) as u64;
         let budget = per_entry * 2 + per_entry / 2;
 
         let cache = build_search_results_cache(300, budget);
         for i in 0..20u64 {
-            cache.insert(i, entry(i as usize)).await;
+            cache.insert((Uuid::nil(), i), entry(i as usize)).await;
         }
         cache.run_pending_tasks().await;
 
@@ -1051,17 +1216,20 @@ mod tests {
             dto("b-content.txt", 30, 10, 200),
             dto("a-name.txt", 80, 99, 100),
         ];
-        sort_enriched_files(&mut files, "relevance");
+        sort_enriched_files(&mut files, "relevance", false);
         assert_eq!(
             files[0].name, "a-name.txt",
             "name match must outrank content match"
         );
 
-        sort_enriched_files(&mut files, "size_desc");
+        // 5-dimension sort model (2026-07-26): direction is a separate
+        // boolean, `_desc` suffixes retired. `size + reverse=true` = old
+        // `size_desc`, `updated_at + reverse=false` = old `date`, etc.
+        sort_enriched_files(&mut files, "size", true);
         assert_eq!(files[0].name, "a-name.txt");
-        sort_enriched_files(&mut files, "date");
+        sort_enriched_files(&mut files, "updated_at", false);
         assert_eq!(files[0].name, "a-name.txt");
-        sort_enriched_files(&mut files, "name_desc");
+        sort_enriched_files(&mut files, "name", true);
         assert_eq!(files[0].name, "b-content.txt");
     }
 }

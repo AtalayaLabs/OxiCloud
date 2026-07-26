@@ -248,40 +248,52 @@ export interface AuthResponse {
 	expires_in: number;
 }
 
-export type SortBy =
-	| 'relevance'
-	| 'name'
-	| 'name_desc'
-	| 'date'
-	| 'date_desc'
-	| 'size'
-	| 'size_desc';
+/**
+ * Sort dimension for `GET /api/search`. Wire-matches the backend's
+ * `SearchResourcesQuery.order_by` — 5 canonical values, direction is
+ * a separate `reverse` boolean (the `_desc` suffix pattern was
+ * retired 2026-07-26; `date` was renamed to the more explicit
+ * `updated_at` alongside the new `created_at`).
+ */
+export type SortBy = 'relevance' | 'name' | 'size' | 'updated_at' | 'created_at';
 
-export interface SearchCriteria {
-	sort_by: SortBy;
-	recursive: boolean;
-	limit: number;
-	offset: number;
-	name_contains?: string;
-	file_types?: string[];
-	folder_id?: string;
-	min_size?: number;
-	max_size?: number;
-	created_before?: number;
-	created_after?: number;
-	modified_before?: number;
-	modified_after?: number;
+/**
+ * Per-item search metadata inline on every hit in the normalized
+ * `/api/search` envelope. Mirrors backend `SearchMeta` — see
+ * `application/dtos/search_dto.rs`.
+ */
+export interface SearchMeta {
+	/** Relevance in [0, 1]; the higher the better. */
+	score: number;
+	/** Optional HTML-safe excerpt when the match fired via content index. */
+	snippet?: string;
+	/** Where the match fired. */
+	via?: 'name' | 'content' | 'path';
 }
 
-export interface SearchResults {
-	files: FileItem[];
-	folders: FolderItem[];
-	total_count: number | null;
-	limit: number;
-	offset: number;
-	has_more: boolean;
+/**
+ * Single hit in the `/api/search` envelope. `resource_type` disambiguates
+ * `resource`'s union so the shared `ResourceList` component can render it
+ * exactly like a folders/favorites/recent/trash row.
+ */
+export interface SearchResourceItem {
+	resource_type: ItemType;
+	resource: FileItem | FolderItem;
+	meta: SearchMeta;
+}
+
+/**
+ * Wire response of `GET /api/search`. Same envelope shape as the other
+ * "resources" listing endpoints (`items[]` + optional `next_cursor`),
+ * plus two search-specific top-level fields: `query_time_ms` (health
+ * signal for admins, "Found N in Xms" for users) and `total` (approximate,
+ * caller-visible; never leaks a count for rows the caller can't see).
+ */
+export interface SearchResourcesResponse {
+	items: SearchResourceItem[];
+	next_cursor?: string;
 	query_time_ms: number;
-	sort_by: string;
+	total?: number;
 }
 
 export type DriveKind = 'personal' | 'shared';

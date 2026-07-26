@@ -24,7 +24,7 @@
 		type Playlist,
 		type PlaylistItem
 	} from '$lib/api/endpoints/music';
-	import { searchFiles } from '$lib/api/endpoints/search';
+	import { searchResources } from '$lib/api/endpoints/search';
 	import type { FileItem } from '$lib/api/types';
 	import Icon from '$lib/icons/Icon.svelte';
 	import { confirmDialog, promptDialog } from '$lib/stores/dialogs.svelte';
@@ -450,17 +450,25 @@
 	async function runAddSearch(query = '') {
 		addSearching = true;
 		try {
-			const res = await searchFiles(query.trim(), {
+			const res = await searchResources(query.trim(), {
 				recursive: true,
 				fileTypes: AUDIO_TYPES,
+				resourceTypes: ['file'],
 				limit: 200
 			});
-			// Belt-and-braces: keep only audio mime types.
-			addResults = res.files.filter(
-				(f) =>
-					(f.mime_type ?? '').startsWith('audio/') ||
-					AUDIO_TYPES.some((e) => f.name.toLowerCase().endsWith(`.${e}`))
-			);
+			// Belt-and-braces: keep only audio mime types. The envelope
+			// items are `{resource_type, resource}` — resourceTypes:['file']
+			// already restricts to files, but re-narrow here so the
+			// downstream `FileItem[]` cast is honest even if the wire
+			// ordering ever surfaces a folder.
+			addResults = res.items
+				.filter((it) => it.resource_type === 'file')
+				.map((it) => it.resource as FileItem)
+				.filter(
+					(f) =>
+						(f.mime_type ?? '').startsWith('audio/') ||
+						AUDIO_TYPES.some((e) => f.name.toLowerCase().endsWith(`.${e}`))
+				);
 		} catch (e) {
 			errorToast(e);
 			addResults = [];
