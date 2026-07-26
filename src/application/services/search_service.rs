@@ -201,14 +201,23 @@ fn content_relevance(score: f32, max_score: f32) -> u32 {
 
 /// Re-sort the merged file list with the same semantics the folder list
 /// uses. Only invoked when content hits were merged into a SQL-ordered page.
-fn sort_enriched_files(files: &mut [SearchFileResultDto], sort_by: &str) {
+///
+/// Sort dimension + direction are orthogonal (matches the wire
+/// `SearchResourcesQuery` / internal `SearchCriteriaDto` split): 5
+/// canonical `sort_by` values (`relevance | name | size | updated_at |
+/// created_at`) × the boolean `reverse`.
+fn sort_enriched_files(files: &mut [SearchFileResultDto], sort_by: &str, reverse: bool) {
     match sort_by {
+        "name" if reverse => files.sort_by_cached_key(|f| Reverse(f.name.to_lowercase())),
         "name" => files.sort_by_cached_key(|f| f.name.to_lowercase()),
-        "name_desc" => files.sort_by_cached_key(|f| Reverse(f.name.to_lowercase())),
-        "date" => files.sort_by_key(|f| f.modified_at),
-        "date_desc" => files.sort_by_key(|f| Reverse(f.modified_at)),
+        "updated_at" if reverse => files.sort_by_key(|f| Reverse(f.modified_at)),
+        "updated_at" => files.sort_by_key(|f| f.modified_at),
+        "created_at" if reverse => files.sort_by_key(|f| Reverse(f.created_at)),
+        "created_at" => files.sort_by_key(|f| f.created_at),
+        "size" if reverse => files.sort_by_key(|f| Reverse(f.size)),
         "size" => files.sort_by_key(|f| f.size),
-        "size_desc" => files.sort_by_key(|f| Reverse(f.size)),
+        // `relevance` (default) — reverse is a no-op; descending
+        // relevance would be "least-relevant first," meaningless.
         _ => files.sort_by_key(|f| Reverse(f.relevance_score)),
     }
 }
@@ -519,7 +528,7 @@ impl SearchService {
             added += 1;
         }
         if added > 0 {
-            sort_enriched_files(enriched_files, &criteria.sort_by);
+            sort_enriched_files(enriched_files, &criteria.sort_by, criteria.reverse);
         }
         Ok(added)
     }
@@ -734,20 +743,33 @@ impl SearchUseCase for SearchService {
                         })
                         .collect();
 
-                    // Sort folders (cached_key avoids O(N log N) temporary String allocations)
-                    match criteria.sort_by.as_str() {
-                        "name" => {
+                    // Sort folders (cached_key avoids O(N log N) temporary String allocations).
+                    // 5-dimension model (`relevance | name | size | updated_at | created_at`)
+                    // × the boolean `reverse` — matches the file-side `sort_enriched_files`
+                    // + the SQL match in `file_blob_read_repository`. `size` isn't
+                    // meaningful for folders (no size column), so it falls through
+                    // to the relevance default.
+                    match (criteria.sort_by.as_str(), criteria.reverse) {
+                        ("name", false) => {
                             enriched_folders.sort_by_cached_key(|f| f.name.to_lowercase());
                         }
-                        "name_desc" => {
+                        ("name", true) => {
                             enriched_folders.sort_by_cached_key(|f| Reverse(f.name.to_lowercase()));
                         }
-                        "date" => {
+                        ("updated_at", false) => {
                             enriched_folders.sort_by_key(|f| f.modified_at);
                         }
-                        "date_desc" => {
+                        ("updated_at", true) => {
                             enriched_folders.sort_by_key(|f| Reverse(f.modified_at));
                         }
+                        ("created_at", false) => {
+                            enriched_folders.sort_by_key(|f| f.created_at);
+                        }
+                        ("created_at", true) => {
+                            enriched_folders.sort_by_key(|f| Reverse(f.created_at));
+                        }
+                        // `relevance` (default) + `size` (N/A for folders) +
+                        // anything unrecognised — all land on relevance-desc.
                         _ => {
                             enriched_folders.sort_by_key(|f| Reverse(f.relevance_score));
                         }
@@ -1147,17 +1169,20 @@ mod tests {
             dto("b-content.txt", 30, 10, 200),
             dto("a-name.txt", 80, 99, 100),
         ];
-        sort_enriched_files(&mut files, "relevance");
+        sort_enriched_files(&mut files, "relevance", false);
         assert_eq!(
             files[0].name, "a-name.txt",
             "name match must outrank content match"
         );
 
-        sort_enriched_files(&mut files, "size_desc");
+        // 5-dimension sort model (2026-07-26): direction is a separate
+        // boolean, `_desc` suffixes retired. `size + reverse=true` = old
+        // `size_desc`, `updated_at + reverse=false` = old `date`, etc.
+        sort_enriched_files(&mut files, "size", true);
         assert_eq!(files[0].name, "a-name.txt");
-        sort_enriched_files(&mut files, "date");
+        sort_enriched_files(&mut files, "updated_at", false);
         assert_eq!(files[0].name, "a-name.txt");
-        sort_enriched_files(&mut files, "name_desc");
+        sort_enriched_files(&mut files, "name", true);
         assert_eq!(files[0].name, "b-content.txt");
     }
 }

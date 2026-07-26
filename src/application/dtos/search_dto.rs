@@ -64,9 +64,18 @@ pub struct SearchCriteriaDto {
     #[serde(default)]
     pub offset: usize,
 
-    /// Sort order for results: "relevance", "name", "name_desc", "date", "date_desc", "size", "size_desc"
+    /// Sort dimension. Canonical set: `"relevance"` | `"name"` | `"size"`
+    /// | `"updated_at"` | `"created_at"`. Direction is `reverse` below —
+    /// the `_desc` suffix pattern was retired 2026-07-26 in favour of
+    /// a single boolean, so every consumer treats "which column" and
+    /// "which direction" as orthogonal concerns.
     #[serde(default = "default_sort_by")]
     pub sort_by: String,
+
+    /// Reverse the sort direction — descending for name/size/date,
+    /// no-op for `relevance` (a descending relevance sort is meaningless).
+    #[serde(default)]
+    pub reverse: bool,
 }
 
 /// Default value for recursive search (true)
@@ -100,6 +109,7 @@ impl Default for SearchCriteriaDto {
             limit: default_limit(),
             offset: 0,
             sort_by: default_sort_by(),
+            reverse: false,
         }
     }
 }
@@ -345,10 +355,11 @@ pub struct SearchResourcesQuery {
     pub cursor: Option<String>,
 
     /// Sort dimension. Supported: `"relevance"` (default), `"name"`,
-    /// `"name_desc"`, `"date"` (= `modified_at`), `"date_desc"`,
-    /// `"size"`, `"size_desc"`. Names match the pre-normalisation
-    /// values `SearchCriteriaDto.sort_by` accepted so cached results
-    /// remain reachable.
+    /// `"size"`, `"updated_at"`, `"created_at"`. Direction is the
+    /// separate `reverse` flag — the historical `_desc` suffix pattern
+    /// (`name_desc`, `date_desc`, `size_desc`) was retired 2026-07-26
+    /// in favour of a single boolean, and `"date"` was renamed to the
+    /// more explicit `"updated_at"` alongside the new `"created_at"`.
     pub order_by: Option<String>,
 
     /// Comma-separated resource types to include, e.g. `"file,folder"`.
@@ -399,10 +410,11 @@ impl SearchResourcesQuery {
             .as_deref()
             .and_then(SearchResourceCursor::decode)
     }
-    /// Convert to the internal `SearchCriteriaDto` the service still
-    /// consumes. `limit` / `offset` come from the decoded cursor (or the
-    /// query's `limit` on the first page). Sort names pass through
-    /// verbatim — the service's `sort_by` matcher accepts the same set.
+    /// Convert to the internal `SearchCriteriaDto` the service consumes.
+    /// `limit` / `offset` come from the decoded cursor (or the query's
+    /// `limit` on the first page). `sort_by` + `reverse` pass through as
+    /// two orthogonal fields — every downstream consumer (SQL builders,
+    /// in-memory folder sort) reads both.
     pub fn to_criteria(&self) -> SearchCriteriaDto {
         let offset = self.decode_cursor().map(|c| c.offset).unwrap_or(0);
         let file_types = self.type_filter.as_deref().map(|s| {
@@ -425,6 +437,7 @@ impl SearchResourcesQuery {
             limit: self.limit_clamped(),
             offset,
             sort_by: self.order_by.clone().unwrap_or_else(default_sort_by),
+            reverse: self.reverse,
         }
     }
     /// Which resource kinds to include. `None` = both. Anything else

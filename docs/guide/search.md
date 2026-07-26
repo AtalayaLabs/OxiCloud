@@ -27,8 +27,8 @@ additionally restricted to administrators — see [Result Caching](#result-cachi
 | `modified_after` / `modified_before` | Filter by modification time |
 | `min_size` / `max_size` | Filter by file size in bytes |
 | `resource_types` | Comma-separated: `file`, `folder` (both by default) |
-| `order_by` | `relevance` (default), `name`, `name_desc`, `date`, `date_desc`, `size`, `size_desc` |
-| `reverse` | Reverse the sort order |
+| `order_by` | Sort dimension: `relevance` (default), `name`, `size`, `updated_at`, `created_at` |
+| `reverse` | Reverse sort direction (no-op for `relevance`) |
 | `limit` | Page size (1–200, default 50) |
 | `cursor` | Opaque cursor returned by the previous page |
 

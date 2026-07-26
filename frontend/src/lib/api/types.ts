@@ -248,14 +248,14 @@ export interface AuthResponse {
 	expires_in: number;
 }
 
-export type SortBy =
-	| 'relevance'
-	| 'name'
-	| 'name_desc'
-	| 'date'
-	| 'date_desc'
-	| 'size'
-	| 'size_desc';
+/**
+ * Sort dimension for `GET /api/search`. Wire-matches the backend's
+ * `SearchResourcesQuery.order_by` — 5 canonical values, direction is
+ * a separate `reverse` boolean (the `_desc` suffix pattern was
+ * retired 2026-07-26; `date` was renamed to the more explicit
+ * `updated_at` alongside the new `created_at`).
+ */
+export type SortBy = 'relevance' | 'name' | 'size' | 'updated_at' | 'created_at';
 
 /**
  * Per-item search metadata inline on every hit in the normalized

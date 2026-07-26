@@ -235,8 +235,14 @@
 		{
 			key: 'modifiedAt',
 			label: t('groupby.modifiedAt', 'Modified date'),
-			orderBy: 'date',
+			orderBy: 'updated_at',
 			bucketOf: (item) => dateBucket(item.modified_at)
+		},
+		{
+			key: 'createdAt',
+			label: t('groupby.createdAt', 'Created date'),
+			orderBy: 'created_at',
+			bucketOf: (item) => dateBucket(item.created_at)
 		}
 	];
 

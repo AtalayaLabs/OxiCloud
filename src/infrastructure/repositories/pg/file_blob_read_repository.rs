@@ -1216,16 +1216,23 @@ impl FileReadPort for FileBlobReadRepository {
         let offset = criteria.offset as i64;
         let limit = criteria.limit as i64;
 
-        // Determine sort order
-        let (order_column, order_dir) = match criteria.sort_by.as_str() {
-            "name" => ("fi.name", "ASC"),
-            "name_desc" => ("fi.name", "DESC"),
-            "date" => ("fi.updated_at", "ASC"),
-            "date_desc" => ("fi.updated_at", "DESC"),
-            "size" => ("fi.size", "ASC"),
-            "size_desc" => ("fi.size", "DESC"),
-            _ => ("fi.name", "ASC"),
+        // Determine sort order. Canonical `sort_by` set (matches the wire
+        // `SearchResourcesQuery.order_by` 1:1 — no rename at any layer):
+        // `relevance | name | size | updated_at | created_at`. Direction
+        // comes from `criteria.reverse`; the old `_desc`-suffix pattern
+        // was retired 2026-07-26.
+        let order_column = match criteria.sort_by.as_str() {
+            "name" => "fi.name",
+            "updated_at" => "fi.updated_at",
+            "created_at" => "fi.created_at",
+            "size" => "fi.size",
+            // `relevance` (or anything unrecognised) has no dedicated
+            // column here — the recursive/non-recursive services blend
+            // in content-index hits and re-sort in memory. Falling back
+            // to name keeps the SQL page stable.
+            _ => "fi.name",
         };
+        let order_dir = if criteria.reverse { "DESC" } else { "ASC" };
 
         // ── Build dynamic WHERE + bind indices ───────────────────────────
         let mut conditions: Vec<String> = vec![
@@ -1376,16 +1383,23 @@ impl FileReadPort for FileBlobReadRepository {
         let offset = criteria.offset as i64;
         let limit = criteria.limit as i64;
 
-        // Determine sort order
-        let (order_column, order_dir) = match criteria.sort_by.as_str() {
-            "name" => ("fi.name", "ASC"),
-            "name_desc" => ("fi.name", "DESC"),
-            "date" => ("fi.updated_at", "ASC"),
-            "date_desc" => ("fi.updated_at", "DESC"),
-            "size" => ("fi.size", "ASC"),
-            "size_desc" => ("fi.size", "DESC"),
-            _ => ("fi.name", "ASC"),
+        // Determine sort order. Canonical `sort_by` set (matches the wire
+        // `SearchResourcesQuery.order_by` 1:1 — no rename at any layer):
+        // `relevance | name | size | updated_at | created_at`. Direction
+        // comes from `criteria.reverse`; the old `_desc`-suffix pattern
+        // was retired 2026-07-26.
+        let order_column = match criteria.sort_by.as_str() {
+            "name" => "fi.name",
+            "updated_at" => "fi.updated_at",
+            "created_at" => "fi.created_at",
+            "size" => "fi.size",
+            // `relevance` (or anything unrecognised) has no dedicated
+            // column here — the recursive/non-recursive services blend
+            // in content-index hits and re-sort in memory. Falling back
+            // to name keeps the SQL page stable.
+            _ => "fi.name",
         };
+        let order_dir = if criteria.reverse { "DESC" } else { "ASC" };
 
         // ── Build dynamic WHERE clauses ──
         let mut conditions = Vec::new();
