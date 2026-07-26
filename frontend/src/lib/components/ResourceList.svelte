@@ -163,6 +163,17 @@
 		 * the action is meaningful for and returns nothing otherwise.
 		 */
 		bucketAction?: Snippet<[string]>;
+		/**
+		 * Optional custom renderer for the swimlane header label. Receives
+		 * the bucket key + the default label string (from `labelOf`, or
+		 * the key itself if no `labelOf`). Pages that want rich header
+		 * content (e.g. `/shared-with-me` prefixing the "Shared by X"
+		 * header with the sharer's avatar) use this; pages happy with
+		 * a plain text label leave it undefined and ResourceList renders
+		 * `{section.label}` as before. The default label is passed too
+		 * so pages don't have to re-invoke `labelOf` themselves.
+		 */
+		bucketLabel?: Snippet<[string, string]>;
 		/** Show the owner column + vignette (list view) and hover tooltip. */
 		showOwner?: boolean;
 		/**
@@ -248,6 +259,20 @@
 		 * don't have to piggyback on the bar.
 		 */
 		itemActions?: Snippet<[FileItem | FolderItem]>;
+		/**
+		 * Free-form overlay rendered inside `.file-item` (as a sibling of
+		 * `.action-cell`), so the page can absolute-position content
+		 * anywhere on the card. Used by `/shared-with-me` to anchor the
+		 * sharer avatar at the bottom-right of the card — the pre-fix
+		 * `rowBadge` slot rendered inside `.file-icon` (a positioned
+		 * ancestor), which couldn't align with `.action-cell`'s
+		 * `.file-item`-scoped coordinates. The page provides its own
+		 * absolute-positioning CSS via a scoped style block.
+		 *
+		 * Fires in grid view only — list view has explicit columns
+		 * (owner cell, etc.) for the same information.
+		 */
+		cardOverlay?: Snippet<[FileItem | FolderItem, ItemContext | undefined]>;
 		/**
 		 * Action-bar left cluster — always-visible page action buttons
 		 * (Upload / New folder / Empty trash / Clear recent / …). Swaps
@@ -385,6 +410,7 @@
 		dateLabel,
 		dateCell,
 		bucketAction,
+		bucketLabel,
 		showOwner = false,
 		ownerLabel,
 		showViewToggle = true,
@@ -402,6 +428,7 @@
 		oncontextmenu: onContextMenuOverride,
 		menuPrepare,
 		itemActions,
+		cardOverlay,
 		actions,
 		batchActions,
 		rowBadge,
@@ -1240,6 +1267,17 @@
 				{/if}
 			</div>
 		{/if}
+		<!--
+			Page-provided card overlay — grid view only. Fires as the
+			last child of `.file-item` (which is already `position:
+			relative` to anchor `.action-cell`), so the page can
+			absolute-position content anywhere inside the card without
+			creating a new positioned ancestor. See `/shared-with-me`
+			for the sharer-avatar consumer.
+		-->
+		{#if cardOverlay && filesStore.viewMode === 'grid'}
+			{@render cardOverlay(item, ctx)}
+		{/if}
 	</div>
 {/snippet}
 
@@ -1370,7 +1408,13 @@
 					{#each sections as section (section.key)}
 						{#if section.label}
 							<div class="rl-swimlane-header" role="rowheader">
-								<span class="rl-swimlane-header__label">{section.label}</span>
+								<span class="rl-swimlane-header__label">
+									{#if bucketLabel}
+										{@render bucketLabel(section.key, section.label)}
+									{:else}
+										{section.label}
+									{/if}
+								</span>
 								{#if bucketAction}
 									<span class="rl-swimlane-header__action">
 										{@render bucketAction(section.key)}
@@ -1395,7 +1439,13 @@
 					{#each sections as section (section.key)}
 						{#if section.label}
 							<div class="rl-swimlane-header rl-swimlane-header--grid" role="rowheader">
-								<span class="rl-swimlane-header__label">{section.label}</span>
+								<span class="rl-swimlane-header__label">
+									{#if bucketLabel}
+										{@render bucketLabel(section.key, section.label)}
+									{:else}
+										{section.label}
+									{/if}
+								</span>
 								{#if bucketAction}
 									<span class="rl-swimlane-header__action">
 										{@render bucketAction(section.key)}
@@ -1678,6 +1728,17 @@
 	.rl-swimlane-header__action {
 		display: inline-flex;
 		align-items: center;
+	}
+
+	/* Label slot — inline-flex + gap so pages injecting rich content
+	   via the `bucketLabel` snippet (e.g. `/shared-with-me` prefixing
+	   with a sharer avatar) render avatar-then-text on one baseline
+	   without hand-tuned spacing. Plain-text labels (no snippet) still
+	   look identical — flex on a single text node is a no-op. */
+	.rl-swimlane-header__label {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-2);
 	}
 
 	/* Grouped-grid container: a vertical stack of (header + its own windowed
