@@ -538,27 +538,36 @@
     color: var(--color-badge-blue-text);
 }
 
-/* Fav-star + shared-button share the same visibility rule: hidden on
-   quiet rows, visible on row hover, and — crucially — always visible
-   when their `.active` class is set. That's what lets a favorited or
-   shared row be discoverable at a glance in list view without the
-   user having to mouse over it.
+/* Fav-star + shared-button — hidden on quiet rows, visible on row hover,
+   and always visible when their `.active` class is set (so a favorited /
+   shared row is discoverable without mousing over).
 
-   We use `visibility: hidden` (not `display: none`) so a hidden
-   button still reserves its slot in the action cell. Otherwise a row
-   that's shared-but-not-favorited would slide its shared icon into
-   the fav-star's column, breaking vertical alignment across rows. */
+   `opacity: 0` + `pointer-events: none` (instead of `visibility: hidden`)
+   so the hide transitions match the kebab's fade — Ed's 2026-07-26 UX
+   note: pre-refactor kebab faded over motion-fast while star/shared
+   snapped out instantly (visibility flips have no animatable value),
+   producing a staggered exit when the pointer left a row. The slot
+   still reserves layout because the button geometry is unchanged; only
+   its paint is toggled. */
 .files-list-view .file-item .action-cell button.favorite-star,
 .files-list-view .file-item .action-cell button.shared-button {
-    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
     border: none;
+    transition: opacity var(--motion-fast) var(--ease-standard);
 }
 
+/* Strict reveal: star + shared appear ONLY on `.active` (row is
+   favorited / shared) or pointer hover — Ed's 2026-07-26 spec. No
+   `:focus-within` reveal, so keyboard focus on the row-body (name /
+   path cells) does NOT flash the actions cluster. Quiet rows stay
+   quiet at rest. */
 .files-list-view .file-item:hover .action-cell button.favorite-star,
 .files-list-view .file-item:hover .action-cell button.shared-button,
 .files-list-view .file-item .action-cell button.favorite-star.active,
 .files-list-view .file-item .action-cell button.shared-button.active {
-    visibility: visible;
+    opacity: 1;
+    pointer-events: auto;
 }
 
 /* Reveal the kebab on hover for cleaner rows — but only on hover-capable
@@ -883,26 +892,36 @@
 
 /* Per-button visibility (mirrors list view): each button is independently
    gated by its own `.active` flag OR row-hover. This prevents a favorited
-   row from also lighting up the shared button (and vice versa) — the cell
-   used to reveal all its children together via a single opacity toggle. */
+   row from also lighting up the shared button (and vice versa).
+   `opacity + pointer-events` so the fade timing matches the kebab and
+   every `.btn-action--hover` — see the list-view block above for why. */
 .files-grid-view .file-item .action-cell .favorite-star,
 .files-grid-view .file-item .action-cell .shared-button {
-    visibility: hidden;
-    transition: visibility var(--motion-fast) var(--ease-standard);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--motion-fast) var(--ease-standard);
 }
 
+/* Strict reveal: same rule as the list view — `.active` OR pointer
+   hover, no `:focus-within` (Ed's 2026-07-26 spec). */
 .files-grid-view .file-item:hover .action-cell .favorite-star,
 .files-grid-view .file-item:hover .action-cell .shared-button,
-.files-grid-view .file-item:focus-within .action-cell .favorite-star,
-.files-grid-view .file-item:focus-within .action-cell .shared-button,
 .files-grid-view .file-item .action-cell .favorite-star.active,
 .files-grid-view .file-item .action-cell .shared-button.active {
-    visibility: visible;
+    opacity: 1;
+    pointer-events: auto;
 }
 
 /* Chip visuals for anything inside the corner cluster — the kebab, the star,
    the shared button, any `.btn-action`. Uniform 30x30 scrim pill so they
-   line up in the flex row. */
+   line up in the flex row.
+   NOTE: no `opacity: 1` here. Per-button reveal rules above own the
+   opacity (star/shared: `.active` + `:hover`; kebab + btn-action:
+   `:hover`). Pre-refactor this block force-set `opacity: 1` on the
+   assumption that reveal lived on the parent `.action-cell` — that
+   assumption is gone (Ed 2026-07-26), and the leftover made star +
+   shared appear always-visible in grid view regardless of hover /
+   `.active` state. */
 .files-grid-view .file-item .action-cell .file-actions,
 .files-grid-view .file-item .action-cell .favorite-star,
 .files-grid-view .file-item .action-cell .shared-button,
@@ -928,8 +947,6 @@
     color: var(--color-text);
     font-size: var(--text-md);
     cursor: pointer;
-    /* Opacity/hover-reveal moves up to `.action-cell` — children stay opaque. */
-    opacity: 1;
 }
 
 /* Unified row-action hover: every button in the grid-view corner cluster
@@ -1358,21 +1375,28 @@
 }
 
 /* Opt-in modifier: hide the button until the row is hovered / focused.
-   Used by `/recent`'s per-row broom (a history-management action that
-   shouldn't distract from the row content at rest). Trash's Restore /
-   Delete stay on the plain `.btn-action` — those are the reason the
-   user opened trash, and hiding them would fail Fitts' law. */
+   Used by `/recent`'s per-row broom and `/search`'s open-parent
+   (history-management / navigational actions that shouldn't distract
+   from the row content at rest). Trash's Restore / Delete stay on the
+   plain `.btn-action` — those are the reason the user opened trash,
+   and hiding them would fail Fitts' law.
+   `opacity + pointer-events` (not `visibility`) so the fade timing
+   matches the kebab + star + shared button — Ed's 2026-07-26 UX note:
+   pre-refactor each reveal mechanism was different, producing a
+   staggered exit when the pointer left a row. */
 .files-list-view .file-item .action-cell .btn-action--hover,
 .files-grid-view .file-item .action-cell .btn-action--hover {
-    visibility: hidden;
-    transition: visibility var(--motion-fast) var(--ease-standard);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--motion-fast) var(--ease-standard);
 }
 
 .files-list-view .file-item:hover .action-cell .btn-action--hover,
 .files-list-view .file-item:focus-within .action-cell .btn-action--hover,
 .files-grid-view .file-item:hover .action-cell .btn-action--hover,
 .files-grid-view .file-item:focus-within .action-cell .btn-action--hover {
-    visibility: visible;
+    opacity: 1;
+    pointer-events: auto;
 }
 
 /* Legacy: a margin-top on `.btn-action` in grid view for the era when
