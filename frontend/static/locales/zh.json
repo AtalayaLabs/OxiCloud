@@ -384,7 +384,13 @@
     "col_created_by": "创建者",
     "col_opened": "打开日期",
     "col_path": "位置",
-    "new_elements": "新元素"
+    "new_elements": "新元素",
+    "open_parent": "打开父文件夹",
+    "move": "移动",
+    "favorite": "添加到收藏",
+    "unfavorite": "从收藏中移除",
+    "open": "打开",
+    "download_zip": "下载为 ZIP"
   },
   "dialogs": {
     "rename_folder": "重命名文件夹",

@@ -384,7 +384,13 @@
     "col_created_by": "ایجاد شده توسط",
     "col_opened": "باز شده",
     "col_path": "مکان",
-    "new_elements": "موارد جدید"
+    "new_elements": "موارد جدید",
+    "open_parent": "باز کردن پوشه والد",
+    "move": "انتقال",
+    "favorite": "افزودن به علاقه‌مندی‌ها",
+    "unfavorite": "حذف از علاقه‌مندی‌ها",
+    "open": "باز کردن",
+    "download_zip": "دانلود به صورت ZIP"
   },
   "dialogs": {
     "rename_folder": "تغییر نام پوشه",

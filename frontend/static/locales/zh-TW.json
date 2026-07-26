@@ -384,7 +384,13 @@
     "col_created_by": "建立者",
     "col_opened": "開啟日期",
     "col_path": "位置",
-    "new_elements": "新項目"
+    "new_elements": "新項目",
+    "open_parent": "開啟上層資料夾",
+    "move": "移動",
+    "favorite": "加入我的最愛",
+    "unfavorite": "從我的最愛移除",
+    "open": "開啟",
+    "download_zip": "下載為 ZIP"
   },
   "dialogs": {
     "rename_folder": "重新命名資料夾",

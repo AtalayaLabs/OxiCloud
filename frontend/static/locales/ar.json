@@ -384,7 +384,13 @@
     "col_created_by": "أنشئ بواسطة",
     "col_opened": "افتُح",
     "col_path": "الموقع",
-    "new_elements": "عناصر جديدة"
+    "new_elements": "عناصر جديدة",
+    "open_parent": "فتح المجلد الأصلي",
+    "move": "نقل",
+    "favorite": "إضافة إلى المفضلة",
+    "unfavorite": "إزالة من المفضلة",
+    "open": "فتح",
+    "download_zip": "تنزيل كملف مضغوط"
   },
   "dialogs": {
     "rename_folder": "إعادة تسمية المجلد",

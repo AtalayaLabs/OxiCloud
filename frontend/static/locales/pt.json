@@ -384,7 +384,13 @@
     "col_created_by": "Criado por",
     "col_opened": "Aberto",
     "col_path": "Localização",
-    "new_elements": "Novos itens"
+    "new_elements": "Novos itens",
+    "open_parent": "Abrir pasta pai",
+    "move": "Mover",
+    "favorite": "Adicionar aos favoritos",
+    "unfavorite": "Remover dos favoritos",
+    "open": "Abrir",
+    "download_zip": "Baixar como ZIP"
   },
   "dialogs": {
     "rename_folder": "Renomear pasta",

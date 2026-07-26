@@ -384,7 +384,13 @@
     "col_created_by": "Gemaakt door",
     "col_opened": "Geopend",
     "col_path": "Locatie",
-    "new_elements": "Nieuwe items"
+    "new_elements": "Nieuwe items",
+    "open_parent": "Bovenliggende map openen",
+    "move": "Verplaatsen",
+    "favorite": "Toevoegen aan favorieten",
+    "unfavorite": "Verwijderen uit favorieten",
+    "open": "Openen",
+    "download_zip": "Downloaden als ZIP"
   },
   "dialogs": {
     "rename_folder": "Map hernoemen",

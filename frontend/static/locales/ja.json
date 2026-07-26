@@ -384,7 +384,13 @@
     "col_created_by": "作成者",
     "col_opened": "アクセス日時",
     "col_path": "場所",
-    "new_elements": "新しいアイテム"
+    "new_elements": "新しいアイテム",
+    "open_parent": "親フォルダーを開く",
+    "move": "移動",
+    "favorite": "お気に入りに追加",
+    "unfavorite": "お気に入りから削除",
+    "open": "開く",
+    "download_zip": "ZIP形式でダウンロード"
   },
   "dialogs": {
     "rename_folder": "フォルダ名を変更",

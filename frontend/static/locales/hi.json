@@ -384,7 +384,13 @@
     "col_created_by": "द्वारा बनाया गया",
     "col_opened": "खोला गया",
     "col_path": "स्थान",
-    "new_elements": "नए तत्व"
+    "new_elements": "नए तत्व",
+    "open_parent": "मूल फ़ोल्डर खोलें",
+    "move": "स्थानांतरित करें",
+    "favorite": "पसंदीदा में जोड़ें",
+    "unfavorite": "पसंदीदा से हटाएं",
+    "open": "खोलें",
+    "download_zip": "ZIP के रूप में डाउनलोड करें"
   },
   "dialogs": {
     "rename_folder": "फ़ोल्डर का नाम बदलें",

@@ -384,7 +384,13 @@
     "col_created_by": "Utworzone przez",
     "col_opened": "Otwarte",
     "col_path": "Lokalizacja",
-    "new_elements": "Nowe elementy"
+    "new_elements": "Nowe elementy",
+    "open_parent": "Otwórz folder nadrzędny",
+    "move": "Przenieś",
+    "favorite": "Dodaj do ulubionych",
+    "unfavorite": "Usuń z ulubionych",
+    "open": "Otwórz",
+    "download_zip": "Pobierz jako ZIP"
   },
   "dialogs": {
     "rename_folder": "Zmień nazwę folderu",

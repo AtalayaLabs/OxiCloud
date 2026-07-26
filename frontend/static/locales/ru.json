@@ -384,7 +384,13 @@
     "col_created_by": "Создано",
     "col_opened": "Открыт",
     "col_path": "Расположение",
-    "new_elements": "Новые элементы"
+    "new_elements": "Новые элементы",
+    "open_parent": "Открыть родительскую папку",
+    "move": "Переместить",
+    "favorite": "Добавить в избранное",
+    "unfavorite": "Удалить из избранного",
+    "open": "Открыть",
+    "download_zip": "Скачать как ZIP"
   },
   "dialogs": {
     "rename_folder": "Переименовать папку",

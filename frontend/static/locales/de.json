@@ -384,7 +384,13 @@
     "col_created_by": "Erstellt von",
     "col_opened": "Geöffnet",
     "col_path": "Speicherort",
-    "new_elements": "Neue Elemente"
+    "new_elements": "Neue Elemente",
+    "open_parent": "Übergeordneten Ordner öffnen",
+    "move": "Verschieben",
+    "favorite": "Zu Favoriten hinzufügen",
+    "unfavorite": "Aus Favoriten entfernen",
+    "open": "Öffnen",
+    "download_zip": "Als ZIP herunterladen"
   },
   "dialogs": {
     "rename_folder": "Ordner umbenennen",

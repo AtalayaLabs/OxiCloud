@@ -384,7 +384,13 @@
     "col_created_by": "Creato da",
     "col_opened": "Aperto",
     "col_path": "Posizione",
-    "new_elements": "Nuovi elementi"
+    "new_elements": "Nuovi elementi",
+    "open_parent": "Apri cartella principale",
+    "move": "Sposta",
+    "favorite": "Aggiungi ai preferiti",
+    "unfavorite": "Rimuovi dai preferiti",
+    "open": "Apri",
+    "download_zip": "Scarica come ZIP"
   },
   "dialogs": {
     "rename_folder": "Rinomina cartella",
