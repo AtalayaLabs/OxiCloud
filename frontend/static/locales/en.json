@@ -1576,7 +1576,10 @@
       "image": "Images",
       "video": "Videos"
     },
-    "type_label": "Type"
+    "type_label": "Type",
+    "results_summary": "Results for “{{q}}” · {{n}} results in {{ms}} ms",
+    "results_summary_no_total": "Results for “{{q}}” · {{ms}} ms",
+    "this_folder_disabled": "Open a folder in Files to scope search to it"
   },
   "settings": {
     "language": "Language"

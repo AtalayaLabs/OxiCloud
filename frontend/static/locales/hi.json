@@ -1203,9 +1203,43 @@
     "size_label": "आकार",
     "title": "खोजें",
     "type": {
-      "audio": "ऑडियो"
+      "audio": "ऑडियो",
+      "all": "सभी प्रकार",
+      "image": "छवियाँ",
+      "video": "वीडियो",
+      "document": "दस्तावेज़",
+      "archive": "संग्रह"
     },
-    "type_label": "प्रकार"
+    "type_label": "प्रकार",
+    "sort": {
+      "relevance": "प्रासंगिकता"
+    },
+    "results_for": "\"{{q}}\" के लिए परिणाम",
+    "results_summary": "\"{{q}}\" के लिए परिणाम · {{n}} परिणाम {{ms}} ms में",
+    "results_summary_no_total": "\"{{q}}\" के लिए परिणाम · {{ms}} ms",
+    "everywhere": "कहीं भी",
+    "this_folder": "यह फ़ोल्डर",
+    "this_folder_disabled": "खोज को इसमें सीमित करने के लिए फ़ाइलें में एक फ़ोल्डर खोलें",
+    "scope": "दायरा",
+    "date_label": "दिनांक",
+    "sort_by": "क्रमबद्ध करें",
+    "clear_filters": "फ़िल्टर साफ़ करें",
+    "searching_for": "\"{{q}}\" खोजा जा रहा है…",
+    "no_results": "इस खोज के लिए कोई परिणाम नहीं मिला",
+    "prompt": "ऊपर सर्च बार में एक क्वेरी टाइप करें।",
+    "size": {
+      "all": "कोई भी आकार",
+      "small": "< 1 MB",
+      "medium": "1–100 MB",
+      "large": "> 100 MB"
+    },
+    "date": {
+      "all": "कोई भी समय",
+      "day": "पिछले 24 घंटे",
+      "week": "पिछला सप्ताह",
+      "month": "पिछला महीना",
+      "year": "पिछला वर्ष"
+    }
   },
   "sizeBucket": {
     "folders": "फ़ोल्डर"

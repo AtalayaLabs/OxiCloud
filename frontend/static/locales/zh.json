@@ -1203,9 +1203,43 @@
     "size_label": "大小",
     "title": "搜索",
     "type": {
-      "audio": "音频"
+      "audio": "音频",
+      "all": "所有类型",
+      "image": "图片",
+      "video": "视频",
+      "document": "文档",
+      "archive": "压缩包"
     },
-    "type_label": "类型"
+    "type_label": "类型",
+    "sort": {
+      "relevance": "相关度"
+    },
+    "results_for": "\"{{q}}\" 的搜索结果",
+    "results_summary": "\"{{q}}\" 的搜索结果 · {{n}} 条结果 · {{ms}} 毫秒",
+    "results_summary_no_total": "\"{{q}}\" 的搜索结果 · {{ms}} 毫秒",
+    "everywhere": "任何位置",
+    "this_folder": "此文件夹",
+    "this_folder_disabled": "打开文件中的文件夹以将搜索限制在其中",
+    "scope": "范围",
+    "date_label": "日期",
+    "sort_by": "排序方式",
+    "clear_filters": "清除筛选",
+    "searching_for": "正在搜索\"{{q}}\"…",
+    "no_results": "此搜索未找到结果",
+    "prompt": "在上方搜索栏中输入查询内容。",
+    "size": {
+      "all": "任意大小",
+      "small": "< 1 MB",
+      "medium": "1–100 MB",
+      "large": "> 100 MB"
+    },
+    "date": {
+      "all": "任何时间",
+      "day": "过去24小时",
+      "week": "过去一周",
+      "month": "过去一个月",
+      "year": "过去一年"
+    }
   },
   "sizeBucket": {
     "folders": "文件夹"

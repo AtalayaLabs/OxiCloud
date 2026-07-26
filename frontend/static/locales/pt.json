@@ -1203,9 +1203,43 @@
     "size_label": "Tamanho",
     "title": "Pesquisar",
     "type": {
-      "audio": "Áudio"
+      "audio": "Áudio",
+      "all": "Todos os tipos",
+      "image": "Imagens",
+      "video": "Vídeos",
+      "document": "Documentos",
+      "archive": "Arquivos"
     },
-    "type_label": "Tipo"
+    "type_label": "Tipo",
+    "sort": {
+      "relevance": "Relevância"
+    },
+    "results_for": "Resultados para \"{{q}}\"",
+    "results_summary": "Resultados para \"{{q}}\" · {{n}} resultados em {{ms}} ms",
+    "results_summary_no_total": "Resultados para \"{{q}}\" · {{ms}} ms",
+    "everywhere": "Em qualquer lugar",
+    "this_folder": "Esta pasta",
+    "this_folder_disabled": "Abra uma pasta em Ficheiros para limitar a pesquisa a ela",
+    "scope": "Âmbito",
+    "date_label": "Data",
+    "sort_by": "Ordenar por",
+    "clear_filters": "Limpar filtros",
+    "searching_for": "Pesquisando \"{{q}}\"…",
+    "no_results": "Nenhum resultado encontrado para esta pesquisa",
+    "prompt": "Digite uma consulta na barra de pesquisa acima.",
+    "size": {
+      "all": "Qualquer tamanho",
+      "small": "< 1 MB",
+      "medium": "1–100 MB",
+      "large": "> 100 MB"
+    },
+    "date": {
+      "all": "A qualquer momento",
+      "day": "Últimas 24 horas",
+      "week": "Última semana",
+      "month": "Último mês",
+      "year": "Último ano"
+    }
   },
   "sizeBucket": {
     "folders": "Pastas"

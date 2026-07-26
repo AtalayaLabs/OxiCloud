@@ -1203,9 +1203,43 @@
     "size_label": "サイズ",
     "title": "検索",
     "type": {
-      "audio": "音声"
+      "audio": "音声",
+      "all": "すべての種類",
+      "image": "画像",
+      "video": "動画",
+      "document": "文書",
+      "archive": "アーカイブ"
     },
-    "type_label": "種類"
+    "type_label": "種類",
+    "sort": {
+      "relevance": "関連度"
+    },
+    "results_for": "「{{q}}」の検索結果",
+    "results_summary": "「{{q}}」の検索結果 · {{n}}件 · {{ms}} ms",
+    "results_summary_no_total": "「{{q}}」の検索結果 · {{ms}} ms",
+    "everywhere": "どこでも",
+    "this_folder": "このフォルダー",
+    "this_folder_disabled": "検索を限定するには、ファイル内でフォルダーを開いてください",
+    "scope": "範囲",
+    "date_label": "日付",
+    "sort_by": "並べ替え",
+    "clear_filters": "フィルターをクリア",
+    "searching_for": "「{{q}}」を検索中…",
+    "no_results": "この検索の結果が見つかりませんでした",
+    "prompt": "上の検索バーにクエリを入力してください。",
+    "size": {
+      "all": "任意のサイズ",
+      "small": "1 MB 未満",
+      "medium": "1–100 MB",
+      "large": "100 MB 超"
+    },
+    "date": {
+      "all": "任意の期間",
+      "day": "過去24時間",
+      "week": "過去1週間",
+      "month": "過去1ヶ月",
+      "year": "過去1年"
+    }
   },
   "sizeBucket": {
     "folders": "フォルダ"

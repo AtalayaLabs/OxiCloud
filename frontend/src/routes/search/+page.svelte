@@ -86,15 +86,29 @@
 	// (`<svelte:head>`); when there IS a query, ResourceList never mounts
 	// with this string — the `else` branch below owns the render.
 	const resultsTitle = $derived.by(() => {
-		const base = query
-			? t('search.results_for', { q: query }, 'Results for “{{q}}”')
-			: t('search.title', 'Search');
-		if (queryTimeMs == null) return base;
-		const suffix =
-			total != null
-				? t('search.found_n_in_ms', { n: total, ms: queryTimeMs }, '{{n}} results in {{ms}} ms')
-				: `${queryTimeMs} ms`;
-		return `${base} · ${suffix}`;
+		// No query yet — the fresh-page tab title.
+		if (!query) return t('search.title', 'Search');
+		// Still loading the first response — show just the "Results for X"
+		// half. `queryTimeMs` becomes non-null the moment the backend answers.
+		if (queryTimeMs == null) return t('search.results_for', { q: query }, 'Results for “{{q}}”');
+		// Full summary keys concatenate the whole title in one string so
+		// translators can rearrange the `·` join, punctuation, and word
+		// order (Ed's 2026-07-26 i18n pass — pre-refactor the JS
+		// concatenated the "Results for" head and "N results in Xms" tail
+		// with a hard-coded ` · ` separator, which is awkward for RTL
+		// locales and CJK spacing).
+		if (total != null) {
+			return t(
+				'search.results_summary',
+				{ q: query, n: total, ms: queryTimeMs },
+				'Results for “{{q}}” · {{n}} results in {{ms}} ms'
+			);
+		}
+		return t(
+			'search.results_summary_no_total',
+			{ q: query, ms: queryTimeMs },
+			'Results for “{{q}}” · {{ms}} ms'
+		);
 	});
 
 	// Accumulated pages of results. Cursor pagination — a filter/sort/query

@@ -1203,9 +1203,43 @@
     "size_label": "Grootte",
     "title": "Zoeken",
     "type": {
-      "audio": "Audio"
+      "audio": "Audio",
+      "all": "Alle typen",
+      "image": "Afbeeldingen",
+      "video": "Video's",
+      "document": "Documenten",
+      "archive": "Archieven"
     },
-    "type_label": "Type"
+    "type_label": "Type",
+    "sort": {
+      "relevance": "Relevantie"
+    },
+    "results_for": "Resultaten voor \"{{q}}\"",
+    "results_summary": "Resultaten voor \"{{q}}\" · {{n}} resultaten in {{ms}} ms",
+    "results_summary_no_total": "Resultaten voor \"{{q}}\" · {{ms}} ms",
+    "everywhere": "Overal",
+    "this_folder": "Deze map",
+    "this_folder_disabled": "Open een map in Bestanden om de zoekopdracht ertoe te beperken",
+    "scope": "Bereik",
+    "date_label": "Datum",
+    "sort_by": "Sorteren op",
+    "clear_filters": "Filters wissen",
+    "searching_for": "Zoeken naar \"{{q}}\"…",
+    "no_results": "Geen resultaten gevonden voor deze zoekopdracht",
+    "prompt": "Typ een zoekopdracht in de zoekbalk hierboven.",
+    "size": {
+      "all": "Elke grootte",
+      "small": "< 1 MB",
+      "medium": "1–100 MB",
+      "large": "> 100 MB"
+    },
+    "date": {
+      "all": "Elk moment",
+      "day": "Afgelopen 24 uur",
+      "week": "Afgelopen week",
+      "month": "Afgelopen maand",
+      "year": "Afgelopen jaar"
+    }
   },
   "sizeBucket": {
     "folders": "Mappen"
