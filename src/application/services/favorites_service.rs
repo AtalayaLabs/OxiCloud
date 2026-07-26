@@ -11,6 +11,7 @@ use crate::application::dtos::favorites_dto::{
 };
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::favorites_ports::{FavoritesRepositoryPort, FavoritesUseCase};
+use crate::application::services::search_service::SearchService;
 use crate::common::errors::Result;
 use crate::domain::services::authorization::{Permission, Resource, ResourceKind, Subject};
 use crate::infrastructure::repositories::pg::FavoritesPgRepository;
@@ -29,14 +30,28 @@ pub struct FavoritesService {
     /// return name/mime/size/drive_id for any UUID the caller was
     /// able to enroll. See `docs/plan/authz_audit/rest_storage.md`.
     authorization: Arc<PgAclEngine>,
+    /// Optional search-cache invalidator. Every favorite mutation
+    /// changes what `is_favorite` returns on the caller's cached
+    /// search result pages; without this hook the user sees a stale
+    /// star badge for up to the search cache's 5-minute TTL (Ed's
+    /// 2026-07-26 UX report). `None` when search is disabled
+    /// (`OXICLOUD_ENABLE_SEARCH=false`).
+    search: Option<Arc<SearchService>>,
 }
 
 impl FavoritesService {
-    /// Create a new FavoritesService with the given repository port
-    pub fn new(repo: Arc<FavoritesPgRepository>, authorization: Arc<PgAclEngine>) -> Self {
+    /// Create a new FavoritesService with the given repository port.
+    /// `search` is `None` when search is disabled — the favorites path
+    /// still works, just without the cache-invalidation callback.
+    pub fn new(
+        repo: Arc<FavoritesPgRepository>,
+        authorization: Arc<PgAclEngine>,
+        search: Option<Arc<SearchService>>,
+    ) -> Self {
         Self {
             repo,
             authorization,
+            search,
         }
     }
 
@@ -103,6 +118,12 @@ impl FavoritesUseCase for FavoritesService {
             .await?;
 
         self.repo.add_favorite(user_id, item_id, item_type).await?;
+        // Drop this user's cached search pages so a subsequent search
+        // reflects the new star. Scoped to the caller — other tenants'
+        // caches are untouched.
+        if let Some(search) = &self.search {
+            search.invalidate_for_user(user_id).await;
+        }
         info!(
             "Successfully added {} '{}' to favorites for user {}",
             item_type, item_id, user_id
@@ -125,6 +146,12 @@ impl FavoritesUseCase for FavoritesService {
             .repo
             .remove_favorite(user_id, item_id, item_type)
             .await?;
+        // Only invalidate when a row was actually removed — a no-op
+        // remove (item wasn't favorited) doesn't need to cold-start the
+        // cache. Keeps the "toggle a non-favorite" no-op cheap.
+        if removed && let Some(search) = &self.search {
+            search.invalidate_for_user(user_id).await;
+        }
         info!(
             "{} {} '{}' from favorites for user {}",
             if removed {
@@ -181,6 +208,14 @@ impl FavoritesUseCase for FavoritesService {
         let requested = items.len();
         let inserted = self.repo.add_favorites_batch(user_id, items).await?;
         let already_existed = requested as u64 - inserted;
+        // Any actual insert flips is_favorite for at least one row —
+        // invalidate. Skip when the batch was fully idempotent (every
+        // item was already favorited); no user-visible change.
+        if inserted > 0
+            && let Some(search) = &self.search
+        {
+            search.invalidate_for_user(user_id).await;
+        }
 
         info!(
             "Batch favorites for user {}: {} requested, {} inserted, {} already existed",

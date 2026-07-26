@@ -208,12 +208,20 @@ struct PhaseReport {
 /// Insert the full corpus, settle the cache, then measure retention and
 /// hot-key read latency. Identical for both variants — only the cache
 /// configuration differs.
-async fn run_phase(cache: &moka::future::Cache<u64, Arc<SearchResultsDto>>) -> PhaseReport {
+async fn run_phase(
+    cache: &moka::future::Cache<(uuid::Uuid, u64), Arc<SearchResultsDto>>,
+) -> PhaseReport {
     let hwm_start_kb = status_kb("VmHWM");
     let rss_start_kb = status_kb("VmRSS");
 
+    // Cache key changed to `(Uuid, u64)` in the per-user invalidation
+    // refactor (2026-07-26). Bench uses one fixed user across all keys —
+    // varying the u64 part exercises the same cardinality the pre-refactor
+    // benchmark did (one entry per query variant).
+    let bench_user = uuid::Uuid::nil();
+
     for i in 0..ENTRIES {
-        cache.insert(i, synth_entry(i)).await;
+        cache.insert((bench_user, i), synth_entry(i)).await;
         // Let eviction run as it would under live traffic, so evicted pages
         // are actually freed instead of piling up in moka's pending queue.
         if i % 64 == 0 {
@@ -231,7 +239,7 @@ async fn run_phase(cache: &moka::future::Cache<u64, Arc<SearchResultsDto>>) -> P
         .sum();
 
     // Hot-key read latency: p50 over GETS reads of one resident key.
-    let hot: u64 = *cache.iter().next().expect("cache is empty after fill").0;
+    let hot: (uuid::Uuid, u64) = *cache.iter().next().expect("cache is empty after fill").0;
     for _ in 0..1_000 {
         black_box(cache.get(&hot).await); // warmup
     }
@@ -262,7 +270,10 @@ async fn run_phase(cache: &moka::future::Cache<u64, Arc<SearchResultsDto>>) -> P
 
 #[tokio::main]
 async fn main() {
-    let entry_weight = u64::from(search_results_entry_weight(&0, &synth_entry(0)));
+    let entry_weight = u64::from(search_results_entry_weight(
+        &(uuid::Uuid::nil(), 0),
+        &synth_entry(0),
+    ));
     println!("\n###########################################################");
     println!("# Search-results cache: entry-count bound vs byte bound");
     println!(
@@ -279,7 +290,10 @@ async fn main() {
     println!("###########################################################\n");
 
     // --- Phase 1: BEFORE (entry-count bound, exactly the old wiring) ---
-    let before_cache: moka::future::Cache<u64, Arc<SearchResultsDto>> =
+    // Key type mirrors production's post-2026-07-26 tuple key so both
+    // phases exercise the same `Cache<(Uuid, u64), _>` shape; only the
+    // capacity bound differs (entry-count here vs weigher below).
+    let before_cache: moka::future::Cache<(uuid::Uuid, u64), Arc<SearchResultsDto>> =
         moka::future::Cache::builder()
             .max_capacity(BEFORE_MAX_ENTRIES)
             .time_to_live(Duration::from_secs(TTL_SECS))

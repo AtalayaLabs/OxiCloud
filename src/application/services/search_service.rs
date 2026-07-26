@@ -72,7 +72,14 @@ pub struct SearchService {
     /// Keys span user × query × offset × limit, and each page holds up to 500
     /// enriched rows (~500–900 B of owned Strings each) — an entry-count bound
     /// let hundreds of MB of result pages accumulate invisibly.
-    search_cache: moka::future::Cache<u64, Arc<SearchResultsDto>>,
+    ///
+    /// Key is `(user_id, criteria_hash)` (not a single fused `u64`) so
+    /// `invalidate_for_user` can predicate on `k.0` — a per-user flush
+    /// runs when the user favorites/shares a file so their next search
+    /// sees the fresh `is_favorite` / `is_shared` flags instead of a
+    /// cache entry that hardened at compute-time (was up to 5 min stale
+    /// before 2026-07-26 — Ed reported the mismatch).
+    search_cache: moka::future::Cache<(Uuid, u64), Arc<SearchResultsDto>>,
 }
 
 // ─── Search-results cache (byte-bounded) ─────────────────────────────────
@@ -88,7 +95,7 @@ pub struct SearchService {
 ///
 /// `pub` so `examples/bench_search_cache_mem.rs` can recompute retained
 /// bytes with the exact production formula.
-pub fn search_results_entry_weight(_key: &u64, value: &Arc<SearchResultsDto>) -> u32 {
+pub fn search_results_entry_weight(_key: &(Uuid, u64), value: &Arc<SearchResultsDto>) -> u32 {
     /// Fixed per-row overhead: struct scalars + one 24-B header per `String`
     /// field (12 on a file row, 4 on a folder row) + `Vec` slot + allocator
     /// slop. Deliberately a round upper-ish estimate — under-weighing is the
@@ -132,11 +139,15 @@ pub fn search_results_entry_weight(_key: &u64, value: &Arc<SearchResultsDto>) ->
 pub fn build_search_results_cache(
     cache_ttl_secs: u64,
     max_bytes: u64,
-) -> moka::future::Cache<u64, Arc<SearchResultsDto>> {
+) -> moka::future::Cache<(Uuid, u64), Arc<SearchResultsDto>> {
     moka::future::Cache::builder()
         .max_capacity(max_bytes)
         .weigher(search_results_entry_weight)
         .time_to_live(Duration::from_secs(cache_ttl_secs))
+        // Required for `invalidate_entries_if` to actually match anything
+        // — without this the closure silently no-ops (per the
+        // `bug_moka_invalidate_entries_if_needs_opt_in` memo).
+        .support_invalidation_closures()
         .build()
 }
 
@@ -270,10 +281,13 @@ impl SearchService {
     }
 
     /// Creates a cache key from the search criteria using zero-allocation hashing.
-    fn create_cache_key(criteria: &SearchCriteriaDto, user_id: &str) -> u64 {
+    /// Hash just the criteria — the caller pairs the returned `u64` with
+    /// the `Uuid` user_id to form the composite cache key `(Uuid, u64)`.
+    /// Split from the fused hash so `invalidate_for_user` can predicate
+    /// on the user side of the tuple without decoding the criteria.
+    fn create_cache_key(criteria: &SearchCriteriaDto) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         criteria.hash(&mut hasher);
-        user_id.hash(&mut hasher);
         hasher.finish()
     }
 
@@ -654,13 +668,11 @@ impl SearchUseCase for SearchService {
         criteria: SearchCriteriaDto,
         user_id: Uuid,
     ) -> Result<Arc<SearchResultsDto>> {
-        // Stack-encode the UUID (36 ASCII bytes) instead of `to_string()` — the
-        // hasher sees the identical byte sequence, so the u64 key is unchanged,
-        // but the per-request heap `String` is gone (the fn doc even claims
-        // "zero-allocation hashing"). See benches/ROUND19.md §M5.
-        let mut user_id_buf = [0u8; uuid::fmt::Hyphenated::LENGTH];
-        let user_id_str = user_id.hyphenated().encode_lower(&mut user_id_buf);
-        let cache_key = Self::create_cache_key(&criteria, user_id_str);
+        // Composite key: `(user_id, criteria_hash)`. Pairs the identity of
+        // the caller with the hash of the request so `invalidate_for_user`
+        // can drop just this user's entries when their favorites / shares
+        // change (see the `search_cache` field doc for the "why").
+        let cache_key = (user_id, Self::create_cache_key(&criteria));
 
         // Single-flight: collapse N identical concurrent searches into ONE
         // execution. `try_get_with` serves the cached result on a hit and, on a
@@ -997,6 +1009,41 @@ impl SearchUseCase for SearchService {
     }
 }
 
+impl SearchService {
+    /// Drop every cached search page for a single user. Called by the
+    /// favorites / share services after a mutation that changes what
+    /// `is_favorite` / `is_shared` would return for one of the caller's
+    /// files — without this the caller would see a stale flag for up
+    /// to `cache_ttl_secs` (Ed's 2026-07-26 report).
+    ///
+    /// `invalidate_entries_if` needs `.support_invalidation_closures()`
+    /// on the cache builder — set in `build_search_results_cache`. This
+    /// is scoped (predicate matches `k.0 == user_id` on the composite
+    /// `(Uuid, u64)` key), so a per-user favorite toggle does NOT
+    /// cold-start every other tenant's cache the way `invalidate_all`
+    /// does on the admin cache-flush endpoint.
+    pub async fn invalidate_for_user(&self, user_id: Uuid) {
+        // moka registers the predicate and returns a `PredicateId` — we
+        // don't need the id (we're not planning to unregister). Errors
+        // here are non-critical: worst case the caller sees stale
+        // is_favorite / is_shared for TTL seconds, exactly the state
+        // before this fix. Log-and-swallow keeps the mutation path
+        // reliable even under moka pressure.
+        if let Err(e) = self
+            .search_cache
+            .invalidate_entries_if(move |k, _| k.0 == user_id)
+        {
+            tracing::warn!(
+                target: "oxicloud::search",
+                error = %e,
+                %user_id,
+                "search cache invalidate_entries_if failed — user will see \
+                 stale is_favorite / is_shared until TTL expires",
+            );
+        }
+    }
+}
+
 // ─── Stub for testing ────────────────────────────────────────────────────
 
 impl SearchService {
@@ -1080,7 +1127,7 @@ mod tests {
     fn entry_weight_counts_every_owned_string_plus_overheads() {
         // Empty page: entry overhead + sort_by ("relevance" = 9 bytes).
         let empty = Arc::new(SearchResultsDto::empty());
-        let base = search_results_entry_weight(&0, &empty) as usize;
+        let base = search_results_entry_weight(&(Uuid::nil(), 0), &empty) as usize;
         assert_eq!(base, 256 + 9);
 
         // One file row: base + row overhead + its owned string bytes
@@ -1094,7 +1141,7 @@ mod tests {
             0,
             "relevance".to_string(),
         ));
-        let w = search_results_entry_weight(&0, &one_file) as usize;
+        let w = search_results_entry_weight(&(Uuid::nil(), 0), &one_file) as usize;
         assert_eq!(w, base + 200 + 7 + 7 + 8 + 10);
 
         // Folder rows weigh too (id 2 + name 4 + path 5 + parent 6 = 17).
@@ -1122,7 +1169,7 @@ mod tests {
             0,
             "relevance".to_string(),
         ));
-        let w = search_results_entry_weight(&0, &one_folder) as usize;
+        let w = search_results_entry_weight(&(Uuid::nil(), 0), &one_folder) as usize;
         assert_eq!(w, base + 200 + 2 + 4 + 5 + 6);
     }
 
@@ -1143,12 +1190,12 @@ mod tests {
                 "relevance".to_string(),
             ))
         };
-        let per_entry = search_results_entry_weight(&0, &entry(0)) as u64;
+        let per_entry = search_results_entry_weight(&(Uuid::nil(), 0), &entry(0)) as u64;
         let budget = per_entry * 2 + per_entry / 2;
 
         let cache = build_search_results_cache(300, budget);
         for i in 0..20u64 {
-            cache.insert(i, entry(i as usize)).await;
+            cache.insert((Uuid::nil(), i), entry(i as usize)).await;
         }
         cache.run_pending_tasks().await;
 
