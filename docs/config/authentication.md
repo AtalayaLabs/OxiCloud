@@ -115,6 +115,42 @@ Comma-separated allowlist. Rejected registrations return 403 `RegistrationDomain
 
 The verification-piggyback flow above deliberately **bypasses the `has_password` gate** — that path is only reachable after the user has already proven identity via password on the same login request, so mailbox-only trust is not being extended beyond what the password already established.
 
+## OPAQUE aPAKE (zero-knowledge password login)
+
+OPAQUE (RFC 9807) replaces the traditional "browser sends passphrase, server hashes it" flow with a two-round cryptographic exchange in which the passphrase **never leaves the client**. On registration the client encrypts a random key blob under the passphrase and uploads that opaque envelope. On login the client proves possession of the passphrase without transmitting it — the server can neither read it nor derive it from what it stores.
+
+This is the substrate for planned end-to-end encryption work (see `docs/plan/opaque.md` for the full multi-phase roadmap). This build ships **Phase 0 only** — the primitives, migration column, and configuration substrate. Endpoints are inert until `OXICLOUD_OPAQUE_MODE` is enabled in a future release.
+
+### When to enable OPAQUE
+
+OPAQUE only touches the password login path. If your deployment doesn't use password auth at all — you've set `OXICLOUD_AUTH_METHODS=oidc`, or `magic_link`, or the OIDC master-rule has locked things down to SSO only — OPAQUE has nothing to shadow and there's no reason to enable it. **Leave every `OXICLOUD_OPAQUE_*` variable at default** (unset). No `OXICLOUD_OPAQUE_SERVER_SETUP` is required in that case; the server won't ask for one.
+
+Even if you accidentally set `OXICLOUD_OPAQUE_MODE=migrate` in an OIDC-only deployment, the boot-time cross-check downgrades the effective mode to `off` and emits an audit-channel INFO explaining why. This is intentional so operators aren't blocked by a setup requirement for a feature they don't use.
+
+### Enabling OPAQUE (when the endpoints ship in Phase 1)
+
+Password-using deployments will opt in via three env vars:
+
+1. **`OXICLOUD_OPAQUE_MODE`** — set to `migrate` for the dual-mode phase where both OPAQUE and legacy password login are accepted, then later to `opaque_only` after most users have completed migration.
+2. **`OXICLOUD_OPAQUE_SERVER_SETUP`** — generated once and persisted like your JWT secret. Rotating this invalidates every user's registration; treat it as one of the crown jewels. Two ways to generate:
+   ```bash
+   # Docker (recommended in production — no toolchain needed):
+   docker run --rm ghcr.io/atalayalabs/oxicloud:latest opaque-setup
+
+   # From a source checkout:
+   cargo run --bin opaque-setup
+   ```
+   Both print the base64 value on stdout (with guidance on stderr, so shell pipelines like `$(docker run ... opaque-setup)` capture cleanly).
+3. **`OXICLOUD_OPAQUE_KSF_*`** — client-side Argon2id key-stretching cost. Defaults (256 MiB / 3 iter / 4 lanes) are appropriate for modern desktop / phone hardware. Bumping later is safe (only affects new registrations); lowering is not (still-registered users get a security downgrade the next time they change their passphrase).
+
+The `OXICLOUD_HASH_*` variables (server-side legacy Argon2) and `OXICLOUD_OPAQUE_KSF_*` (client-side OPAQUE Argon2) are intentionally separate: the server-side path is RAM-bounded by concurrent-login traffic and needs to stay modest; the client-side path is single-user per attempt and can afford much higher memory. Tuning them together would force a bad compromise in one direction or the other.
+
+### What OPAQUE does NOT touch
+
+Basic-Auth surfaces (Nextcloud sync, WebDAV `/remote.php/dav/…`, CalDAV, CardDAV) accept **app passwords only** — they never accepted the user's primary password to begin with. App passwords are issued via the SPA (`POST /api/auth/app-passwords`) or the Nextcloud Login Flow v2 device-code exchange, live in the `auth.app_passwords` table with their own Argon2id hash, and are verified against that table only. OPAQUE is orthogonal to this — the app-password model already keeps the primary password off the Basic-Auth wire.
+
+The **Nextcloud Login Flow v2** browser exchange (`POST /login/v2/flow` used by NC clients to bootstrap an app password) currently accepts the primary password once during that browser flow. When OPAQUE ships (Phase 1+), that surface migrates in lock-step with `POST /api/auth/login` — either the browser flow runs OPAQUE too, or it redirects the user to a device-approval flow initiated from a currently-logged-in session. Nothing operators need to configure for this; the transition ships as one piece.
+
 ## Auth policy vector
 
 `OXICLOUD_AUTH_POLICIES` is a comma-separated list of additive policy switches. Distinct from `OXICLOUD_AUTH_METHODS` (which enables/disables a method wholesale), each entry here grants a specific exception or restriction to default auth behaviour. Vector shape so future policies can be added by appending a token instead of introducing a new env var per behaviour. Variant names carry their own polarity (`Permit...`, future `Require...` / `Deny...`).

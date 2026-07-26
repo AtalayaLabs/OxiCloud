@@ -44,7 +44,8 @@ RUN mkdir -p src/bin && \
     echo 'fn main() { println!("Dummy build for caching dependencies"); }' > src/main.rs && \
     echo 'fn main() {}' > src/bin/generate-openapi.rs && \
     echo 'fn main() {}' > src/bin/migrate-nfc-filenames.rs && \
-    cargo build --release --bin oxicloud --bin generate-openapi --bin migrate-nfc-filenames && \
+    echo 'fn main() {}' > src/bin/opaque-setup.rs && \
+    cargo build --release --bin oxicloud --bin generate-openapi --bin migrate-nfc-filenames --bin opaque-setup && \
     rm -rf src static-dist target/release/deps/oxicloud* target/release/build/oxicloud-*
 
 # ─── Stage 3: Build the application ──────────────────────────────────────────
@@ -84,7 +85,7 @@ RUN DATABASE_URL="${DATABASE_URL}" \
     GITHUB_SHA="${GITHUB_SHA}" \
     GITHUB_REF_NAME="${GITHUB_REF_NAME}" \
     GITHUB_HEAD_REF="${GITHUB_HEAD_REF}" \
-    cargo build --release --bin oxicloud --bin generate-openapi --bin migrate-nfc-filenames
+    cargo build --release --bin oxicloud --bin generate-openapi --bin migrate-nfc-filenames --bin opaque-setup
 # The SPA is built by the Vite frontend stage; bring it in for the runtime copy
 # below (build.rs has no asset pipeline — it only injects git metadata).
 COPY --from=frontend /static-dist ./static-dist
@@ -125,7 +126,8 @@ RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharin
     cargo build --release && \
     mkdir -p /app/bin && \
     cp target/release/oxicloud /app/bin/oxicloud && \
-    cp target/release/migrate-nfc-filenames /app/bin/migrate-nfc-filenames
+    cp target/release/migrate-nfc-filenames /app/bin/migrate-nfc-filenames && \
+    cp target/release/opaque-setup /app/bin/opaque-setup
 
 # ─── Stage 3c: Select the builder & normalise the binary path ─────────────────
 # FROM expands the global ${BUILDER} arg to alias the chosen builder stage
@@ -137,7 +139,7 @@ RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharin
 FROM ${BUILDER} AS app
 ARG BIN_DIR
 RUN mkdir -p /app/release && \
-    cp "${BIN_DIR}/oxicloud" "${BIN_DIR}/migrate-nfc-filenames" /app/release/
+    cp "${BIN_DIR}/oxicloud" "${BIN_DIR}/migrate-nfc-filenames" "${BIN_DIR}/opaque-setup" /app/release/
 
 # ─── Stage 4: Minimal runtime image ──────────────────────────────────────────
 FROM alpine:3.24.0
@@ -168,6 +170,13 @@ COPY --from=app --chmod=755 /app/release/oxicloud /usr/local/bin/
 # to preview, drop `--dry-run` to execute. One-shot tool, safe to
 # ship; it only mutates `storage.files` rows whose name ≠ NFC(name).
 COPY --from=app --chmod=755 /app/release/migrate-nfc-filenames /usr/local/bin/
+# Ship the OPAQUE server-setup generator alongside the server so operators
+# can generate their `OXICLOUD_OPAQUE_SERVER_SETUP` value inside the
+# container without a separate Rust toolchain:
+#   docker run --rm <image> opaque-setup   # prints the base64 value
+# One-shot, side-effect-free — safe to include; the runtime doesn't
+# invoke it, admins do (see docs/config/authentication.md §OPAQUE).
+COPY --from=app --chmod=755 /app/release/opaque-setup /usr/local/bin/
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN sed -i 's/\r//' /usr/local/bin/entrypoint.sh && \
     chmod 755 /usr/local/bin/entrypoint.sh

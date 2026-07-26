@@ -52,6 +52,13 @@ sqlx = { version = "0.8.6", features = ["postgres", "runtime-tokio", "tls-rustls
 jsonwebtoken = { version = "10.4.0", features = ["rust_crypto"] }
 argon2 = "0.5.3"
 rand_core = { version = "0.6", features = ["std", "getrandom"] }
+# OPAQUE aPAKE (RFC 9807) — zero-knowledge password auth. Ristretto255-SHA512
+# 3DH with Argon2id as the KSF. Server-side envelope + login; matching WASM
+# client bundle lives in `frontend/` (`@serenity-kit/opaque`). Ciphersuite
+# frozen at bind-time (see `infrastructure::services::opaque_service`) —
+# changing it invalidates every user's registration record, plan a
+# migration before touching. `argon2` feature gates the memory-hard KSF.
+opaque-ke = { version = "3", features = ["argon2"] }
 quick-xml = "0.41.0"
 dotenvy = "0.15.7"
 moka = { version = "0.12.15", features = ["future", "sync"] }
@@ -166,6 +173,14 @@ path = "src/bin/generate-openapi.rs"
 [[bin]]
 name = "migrate-nfc-filenames"
 path = "src/bin/migrate-nfc-filenames.rs"
+
+[[bin]]
+name = "opaque-setup"
+path = "src/bin/opaque-setup.rs"
+# One-shot operator helper — prints a base64 OPAQUE ServerSetup for
+# OXICLOUD_OPAQUE_SERVER_SETUP. Runs once per deployment; the output
+# must be persisted verbatim (rotating invalidates every user's
+# registration — see docs/config/authentication.md §OPAQUE).
 
 [[bin]]
 name = "load-seed"

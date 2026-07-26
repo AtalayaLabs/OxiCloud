@@ -146,6 +146,7 @@ log "Running Hurl tests..."
 hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test --jobs 1 \
   "$API_DIR/setup.hurl" \
   "$API_DIR/auth_login.hurl" \
+  "$API_DIR/opaque_substrate.hurl" \
   "$API_DIR/user_ui_preferences.hurl" \
   "$API_DIR/auth_session_lifecycle.hurl" \
   "$API_DIR/auth_magic_link_login.hurl" \

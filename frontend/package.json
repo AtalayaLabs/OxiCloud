@@ -45,5 +45,8 @@
     "vite": "^6.4.3",
     "vite-plugin-istanbul": "^8.0.0",
     "vitest": "^4.1.9"
+  },
+  "dependencies": {
+    "@serenity-kit/opaque": "^1.1.0"
   }
 }

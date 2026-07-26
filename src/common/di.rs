@@ -1909,6 +1909,50 @@ impl AppServiceFactory {
             user_lifecycle_handle = Some(user_lifecycle);
         }
 
+        // OPAQUE aPAKE substrate — construct only when effective_mode != Off.
+        // The `effective_mode` helper resolves the cross-check against
+        // `OXICLOUD_AUTH_METHODS` (password must be enabled for OPAQUE to
+        // have anything to shadow), so OIDC-only / magic-link-only
+        // deployments transparently get `opaque_service = None` even if
+        // the operator accidentally set `OXICLOUD_OPAQUE_MODE=migrate`.
+        //
+        // Failing here (missing SERVER_SETUP, malformed base64, ciphersuite
+        // drift) refuses server boot — same fail-closed posture as the
+        // auth-service init above. Better to catch a misconfigured
+        // deployment at startup than at first login attempt.
+        let opaque_service = {
+            use crate::infrastructure::services::opaque_service::{OpaqueMode, OpaqueService};
+            let effective = self.config.opaque.effective_mode(&self.config.auth);
+            if effective == OpaqueMode::Off {
+                None
+            } else {
+                let svc = OpaqueService::from_config(self.config.opaque.clone()).map_err(|e| {
+                    tracing::error!(
+                        "FATAL: OPAQUE mode is {:?} but service failed to initialize: {}",
+                        effective,
+                        e
+                    );
+                    DomainError::internal_error(
+                        "OpaqueInit",
+                        format!(
+                            "OXICLOUD_OPAQUE_MODE={:?} but the OPAQUE service failed: {}. \
+                             Persist a valid OXICLOUD_OPAQUE_SERVER_SETUP or set \
+                             OXICLOUD_OPAQUE_MODE=off. Refusing to start.",
+                            effective, e
+                        ),
+                    )
+                })?;
+                tracing::info!(
+                    target: "audit",
+                    event = "opaque.service_initialized",
+                    mode = ?effective,
+                    ciphersuite_version = svc.ciphersuite_version(),
+                    "OPAQUE substrate active — endpoints will be wired in a subsequent phase"
+                );
+                Some(Arc::new(svc))
+            }
+        };
+
         // Shared App Password service — created once, used by both NC routes and native API
         let shared_app_pw_svc: Option<Arc<AppPasswordService>> =
             if self.config.nextcloud.enabled || self.config.features.enable_auth {
@@ -2003,6 +2047,7 @@ impl AppServiceFactory {
             maintenance_pool: Some(maintenance_pool),
             mount_router,
             auth_service: auth_services,
+            opaque_service,
             nextcloud: nextcloud_services,
             admin_settings_service: None,
             storage_settings_service: None,
@@ -2749,6 +2794,17 @@ pub struct AppState {
     pub mount_router:
         Arc<crate::application::services::external_mount_router::MountRouter>,
     pub auth_service: Option<AuthServices>,
+    /// OPAQUE aPAKE substrate (RFC 9807). Populated only when
+    /// [`OpaqueConfig::effective_mode`] is not `Off` — that method
+    /// cross-checks `OXICLOUD_OPAQUE_MODE` against
+    /// `OXICLOUD_AUTH_METHODS` so an OIDC-only or magic-link-only
+    /// deployment gets `None` here even if `OXICLOUD_OPAQUE_MODE` was
+    /// set (with an audit-channel INFO explaining why). `None` also
+    /// means the future OPAQUE endpoints must 404 — a handler that
+    /// unwraps this without a nil check would break the phase gate.
+    pub opaque_service: Option<
+        Arc<crate::infrastructure::services::opaque_service::OpaqueService>,
+    >,
     pub nextcloud: Option<NextcloudServices>,
     pub admin_settings_service: Option<Arc<AdminSettingsService>>,
     /// WASM plugin management (list/install/toggle/remove), backing the admin
