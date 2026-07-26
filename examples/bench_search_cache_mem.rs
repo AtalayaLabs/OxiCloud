@@ -145,6 +145,11 @@ fn synth_entry(idx: u64) -> Arc<SearchResultsDto> {
             blob_hash: pseudo_hex(&mut rng, 64),
             snippet: content_hit.then(|| SNIPPET.to_string()),
             match_source: Some(match_source.to_string()),
+            etag: pseudo_hex(&mut rng, 16),
+            created_by: None,
+            updated_by: None,
+            is_favorite: false,
+            is_shared: false,
         });
     }
 

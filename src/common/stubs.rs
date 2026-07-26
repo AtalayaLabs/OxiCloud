@@ -126,8 +126,8 @@ impl FileReadPort for StubFileReadPort {
         _folder_id: Option<&str>,
         _criteria: &SearchCriteriaDto,
         _user_id: Uuid,
-    ) -> Result<(Vec<File>, usize), DomainError> {
-        Ok((Vec::new(), 0))
+    ) -> Result<(Vec<File>, Vec<(bool, bool)>, usize), DomainError> {
+        Ok((Vec::new(), Vec::new(), 0))
     }
 
     async fn stream_files_in_subtree(

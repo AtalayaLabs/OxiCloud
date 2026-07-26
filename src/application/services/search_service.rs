@@ -304,6 +304,16 @@ impl SearchService {
             blob_hash: file.content_hash,
             snippet: None,
             match_source: (!query_lower.is_empty() && relevance > 0).then(|| "name".to_string()),
+            // Phase 1-plus: carry the FileDto fields the old enrich
+            // shape dropped. Populates the normalised
+            // `SearchResourcesDto` items with a complete `FileDto` so
+            // the frontend `ResourceList` renders favorites / share
+            // badges / provenance consistently with other listings.
+            etag: file.etag,
+            created_by: file.created_by,
+            updated_by: file.updated_by,
+            is_favorite: file.is_favorite,
+            is_shared: file.is_shared,
         }
     }
 
@@ -329,6 +339,13 @@ impl SearchService {
             modified_at: folder.modified_at,
             is_root: folder.is_root,
             relevance_score: relevance,
+            // Phase 1-plus (see sibling `enrich_file`): carry the
+            // FolderDto fields the old enrich shape dropped.
+            etag: folder.etag,
+            created_by: folder.created_by,
+            updated_by: folder.updated_by,
+            is_favorite: folder.is_favorite,
+            is_shared: folder.is_shared,
         }
     }
 
@@ -651,18 +668,12 @@ impl SearchUseCase for SearchService {
                 // For non-recursive searches, use efficient database-level pagination
                 // This avoids loading all files into memory
                 if !criteria.recursive {
-                    // The content-index lookup (drive resolve + Tantivy +
-                    // ReBAC batch), the file page and the folder query are
-                    // mutually independent — overlap them so the search pays
-                    // ~max() instead of the serial sum (`suggest_with_perms`
-                    // already used this shape; ROUND10 brought it here).
-                    let (content_hits, files_page, folders_res) = tokio::join!(
+                    // Same folders-first sequencing as the recursive branch
+                    // below (see the block comment there for the rationale
+                    // — SQL applies file offset+limit, so folder_count has
+                    // to be known before the file query is issued).
+                    let (content_hits, folders_res) = tokio::join!(
                         self.lookup_content_hits(&criteria, user_id),
-                        self.file_repository.search_files_paginated(
-                            criteria.folder_id.as_deref(),
-                            &criteria,
-                            user_id,
-                        ),
                         self.folder_repository.search_folders(
                             criteria.folder_id.as_deref(),
                             criteria.name_contains.as_deref(),
@@ -670,20 +681,57 @@ impl SearchUseCase for SearchService {
                             false,
                         ),
                     );
-                    let (files, total_file_count) = files_page?;
-                    let folders = folders_res?;
+                    let (folders, folder_flags) = folders_res?;
+
+                    let folder_count = folders.len();
+                    let folders_before_page = criteria.offset.min(folder_count);
+                    let folders_on_page = (folder_count - folders_before_page).min(criteria.limit);
+                    let file_offset = criteria.offset - folders_before_page;
+                    let file_limit_needed = criteria.limit - folders_on_page;
+                    let file_limit_probe = file_limit_needed.max(1);
+
+                    let mut file_criteria = criteria.clone();
+                    file_criteria.offset = file_offset;
+                    file_criteria.limit = file_limit_probe;
+
+                    let (files, file_flags, total_file_count) = self
+                        .file_repository
+                        .search_files_paginated(
+                            criteria.folder_id.as_deref(),
+                            &file_criteria,
+                            user_id,
+                        )
+                        .await?;
 
                     // Convert to DTOs and enrich with metadata — one fused
                     // pass, no intermediate Vec<FileDto> materialization.
+                    // `file_flags` is aligned 1:1 with `files` (in-SQL
+                    // per-row EXISTS on favorites + role_grants) so a
+                    // simple parallel zip plumbs the caller-scoped
+                    // booleans onto the FileDto before enrichment.
                     let mut enriched_files: Vec<SearchFileResultDto> = files
                         .into_iter()
-                        .map(|f| Self::enrich_file(FileDto::from(f), &query_lower))
+                        .zip(file_flags)
+                        .map(|(f, (is_fav, is_shr))| {
+                            let mut dto = FileDto::from(f);
+                            dto.is_favorite = is_fav;
+                            dto.is_shared = is_shr;
+                            Self::enrich_file(dto, &query_lower)
+                        })
                         .collect();
 
-                    // For folders, apply sorting and pagination in memory (usually fewer folders)
+                    // For folders, apply sorting and pagination in memory (usually fewer folders).
+                    // Same parallel-zip shape as the file branch above —
+                    // `folder_flags` is aligned 1:1 by index.
                     let mut enriched_folders: Vec<SearchFolderResultDto> = folders
                         .into_iter()
-                        .map(|f| Self::enrich_folder(FolderDto::from(f), &query_lower))
+                        .zip(folder_flags)
+                        .map(|(f, (is_fav, is_shr))| {
+                            let mut dto = FolderDto::from(f);
+                            dto.is_favorite = is_fav;
+                            dto.is_shared = is_shr;
+                            Self::enrich_folder(dto, &query_lower)
+                        })
                         .collect();
 
                     // Sort folders (cached_key avoids O(N log N) temporary String allocations)
@@ -705,39 +753,35 @@ impl SearchUseCase for SearchService {
                         }
                     }
 
-                    // Blend in content-discovered files before the pagination math.
-                    let added = self
+                    // Blend in content-discovered files, then truncate to
+                    // the exact page size — see the recursive branch's
+                    // block comment for why the truncate is required.
+                    //
+                    // Note: `total_count` is intentionally the pure SQL
+                    // name-match count (plus folders) — NOT inflated by
+                    // `added` content-hit rows. `added` counts hits that
+                    // aren't already in the *current* SQL slice, which is
+                    // per-page (different SQL rows on each page produce
+                    // different dedup outcomes and a different `added`).
+                    // Including it made the client-visible `total`
+                    // flicker as the user paginated (2026-07-26 report:
+                    // 4184 → 4186 across scope + page toggles for a
+                    // stable dataset). Content-hits still bubble into
+                    // each page's `items`; they just don't move the
+                    // grand total.
+                    let _added = self
                         .merge_content_hits(content_hits, &mut enriched_files, &criteria, user_id)
                         .await?;
-                    let total_file_count = total_file_count + added;
+                    enriched_files.truncate(file_limit_needed);
 
-                    let folder_count = enriched_folders.len();
                     let total_count = total_file_count + folder_count;
 
-                    // Combine and paginate (folders first, then files)
-                    let start_idx = criteria.offset.min(total_count);
-                    let end_idx = (criteria.offset + criteria.limit).min(total_count);
-
-                    let folder_start = start_idx.min(folder_count);
-                    let folder_end = end_idx.min(folder_count);
-                    // Move the page out of the owned vecs instead of
-                    // deep-cloning the slice — the source is dropped right
-                    // after (benches/ROUND11.md §11: −300 allocs per page).
                     let paginated_folders: Vec<_> = enriched_folders
                         .into_iter()
-                        .skip(folder_start)
-                        .take(folder_end - folder_start)
+                        .skip(folders_before_page)
+                        .take(folders_on_page)
                         .collect();
-
-                    let file_start = start_idx.saturating_sub(folder_count);
-                    let file_end = end_idx
-                        .saturating_sub(folder_count)
-                        .min(enriched_files.len());
-                    let paginated_files: Vec<_> = enriched_files
-                        .into_iter()
-                        .skip(file_start)
-                        .take(file_end - file_start)
-                        .collect();
+                    let paginated_files = enriched_files;
 
                     let elapsed_ms = start.elapsed().as_millis() as u64;
 
@@ -757,16 +801,30 @@ impl SearchUseCase for SearchService {
                 // ── Recursive search via ltree (single SQL query per entity type) ──
                 // Uses PostgreSQL ltree GiST index to find all files and folders
                 // in the subtree in O(1) queries, replacing the O(N) spawn-per-folder
-                // approach that could saturate the connection pool. The content
-                // lookup, subtree file query and folder query overlap (`join!`),
-                // same as the non-recursive branch.
-                let (content_hits, files_page, folders_res) = tokio::join!(
+                // approach that could saturate the connection pool.
+                //
+                // ── Correct pagination across a folders-then-files list ──
+                // Pre-fix the service ran (content, file-page, folder-page)
+                // in one `tokio::join!` with the SAME `criteria.offset/limit`
+                // going to the file SQL, then re-paginated in memory using
+                // ABSOLUTE offsets. That was doubly wrong: SQL already
+                // applied `[offset, offset+limit)` and the in-memory slice
+                // then tried to skip `offset` MORE rows — for any query
+                // with few folders this dropped whole pages (2026-07-26:
+                // 4002-file query returned 50 rows on page 1 then `items:[]`
+                // on page 2 with a valid `next_cursor`).
+                //
+                // Fix: fold folders + content lookup first (they're both
+                // cheap and folder_count is what tells us how many files
+                // to skip). Then run the file SQL with `offset` shifted by
+                // `folder_count` and `limit` reduced by whatever folders
+                // fit on the current page — so SQL returns EXACTLY the
+                // file slice that belongs here, no in-memory re-slicing.
+                // The min-1 probe below preserves `COUNT(*) OVER()` even
+                // when folders fill the whole page (LIMIT 0 → 0 rows →
+                // total_count column projects nowhere → false zero).
+                let (content_hits, folders_res) = tokio::join!(
                     self.lookup_content_hits(&criteria, user_id),
-                    self.file_repository.search_files_in_subtree(
-                        criteria.folder_id.as_deref(),
-                        &criteria,
-                        user_id,
-                    ),
                     self.folder_repository.search_folders(
                         criteria.folder_id.as_deref(),
                         criteria.name_contains.as_deref(),
@@ -774,19 +832,50 @@ impl SearchUseCase for SearchService {
                         true,
                     ),
                 );
-                let (found_files, total_file_count) = files_page?;
-                let found_folders: Vec<Folder> = folders_res?;
+                let (found_folders, folder_flags): (Vec<Folder>, Vec<(bool, bool)>) = folders_res?;
+
+                let folder_count = found_folders.len();
+                let folders_before_page = criteria.offset.min(folder_count);
+                let folders_on_page = (folder_count - folders_before_page).min(criteria.limit);
+                let file_offset = criteria.offset - folders_before_page;
+                let file_limit_needed = criteria.limit - folders_on_page;
+                // Probe with LIMIT ≥ 1 so `COUNT(*) OVER()` has a row to
+                // project onto; the extra row (if any) is truncated below.
+                let file_limit_probe = file_limit_needed.max(1);
+
+                let mut file_criteria = criteria.clone();
+                file_criteria.offset = file_offset;
+                file_criteria.limit = file_limit_probe;
+
+                let (found_files, file_flags, total_file_count) = self
+                    .file_repository
+                    .search_files_in_subtree(criteria.folder_id.as_deref(), &file_criteria, user_id)
+                    .await?;
 
                 // ── Convert to DTOs and enrich with server-computed metadata ──
                 // Fused single pass: no intermediate DTO Vec materialization.
+                // Same shape as the non-recursive branch above — parallel
+                // zip of `found_files` with the in-SQL caller_flags.
                 let mut enriched_files: Vec<SearchFileResultDto> = found_files
                     .into_iter()
-                    .map(|f| Self::enrich_file(FileDto::from(f), &query_lower))
+                    .zip(file_flags)
+                    .map(|(f, (is_fav, is_shr))| {
+                        let mut dto = FileDto::from(f);
+                        dto.is_favorite = is_fav;
+                        dto.is_shared = is_shr;
+                        Self::enrich_file(dto, &query_lower)
+                    })
                     .collect();
 
                 let mut enriched_folders: Vec<SearchFolderResultDto> = found_folders
                     .into_iter()
-                    .map(|f| Self::enrich_folder(FolderDto::from(f), &query_lower))
+                    .zip(folder_flags)
+                    .map(|(f, (is_fav, is_shr))| {
+                        let mut dto = FolderDto::from(f);
+                        dto.is_favorite = is_fav;
+                        dto.is_shared = is_shr;
+                        Self::enrich_folder(dto, &query_lower)
+                    })
                     .collect();
 
                 // ── Sort folders (cached_key avoids O(N log N) temporary String allocations) ──
@@ -808,38 +897,35 @@ impl SearchUseCase for SearchService {
                     }
                 }
 
-                // Blend in content-discovered files before the pagination math.
-                let added = self
+                // Blend in content-discovered files. `merge_content_hits`
+                // pushes candidates from the Tantivy index onto the tail
+                // and re-sorts by the criteria; the SQL limit above only
+                // bounded the name-match set, so truncate after merging
+                // to the exact page size we intended to return.
+                //
+                // `total_count` is the pure SQL name-match count + folder
+                // count — see the non-recursive branch's block comment
+                // for why `added` is deliberately excluded (per-page
+                // dedup outcome, would flicker the client-visible
+                // total across pages).
+                let _added = self
                     .merge_content_hits(content_hits, &mut enriched_files, &criteria, user_id)
                     .await?;
-                let total_file_count = total_file_count + added;
+                enriched_files.truncate(file_limit_needed);
 
-                // ── Pagination (folders first, then files) ──
-                let folder_count = enriched_folders.len();
                 let total_count = total_file_count + folder_count;
-                let start_idx = criteria.offset.min(total_count);
-                let end_idx = (criteria.offset + criteria.limit).min(total_count);
 
-                let folder_start = start_idx.min(folder_count);
-                let folder_end = end_idx.min(folder_count);
-                // Move the page out instead of deep-cloning the slice — the
-                // recursive branch's vecs can hold the whole subtree match
-                // set, all dropped right after (benches/ROUND11.md §11).
+                // Fetches were pre-sliced: enriched_files is already the
+                // exact file page (SQL applied file_offset + file_limit),
+                // and folders_before_page / folders_on_page tell us which
+                // slice of `enriched_folders` belongs here. No in-memory
+                // absolute-offset math — see the block comment above.
                 let paginated_folders: Vec<_> = enriched_folders
                     .into_iter()
-                    .skip(folder_start)
-                    .take(folder_end - folder_start)
+                    .skip(folders_before_page)
+                    .take(folders_on_page)
                     .collect();
-
-                let file_start = start_idx.saturating_sub(folder_count);
-                let file_end = end_idx
-                    .saturating_sub(folder_count)
-                    .min(enriched_files.len());
-                let paginated_files: Vec<_> = enriched_files
-                    .into_iter()
-                    .skip(file_start)
-                    .take(file_end - file_start)
-                    .collect();
+                let paginated_files = enriched_files;
 
                 let elapsed_ms = start.elapsed().as_millis() as u64;
 
@@ -960,6 +1046,11 @@ mod tests {
             blob_hash: String::new(),
             snippet: None,
             match_source: None,
+            etag: String::new(),
+            created_by: None,
+            updated_by: None,
+            is_favorite: false,
+            is_shared: false,
         }
     }
 
@@ -997,6 +1088,11 @@ mod tests {
                 modified_at: 0,
                 is_root: false,
                 relevance_score: 50,
+                etag: String::new(),
+                created_by: None,
+                updated_by: None,
+                is_favorite: false,
+                is_shared: false,
             }],
             100,
             0,

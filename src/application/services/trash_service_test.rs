@@ -532,8 +532,8 @@ impl FileReadPort for MockFileRepository {
         _folder_id: Option<&str>,
         _criteria: &crate::application::dtos::search_dto::SearchCriteriaDto,
         _user_id: Uuid,
-    ) -> std::result::Result<(Vec<File>, usize), DomainError> {
-        Ok((Vec::new(), 0))
+    ) -> std::result::Result<(Vec<File>, Vec<(bool, bool)>, usize), DomainError> {
+        Ok((Vec::new(), Vec::new(), 0))
     }
 
     async fn stream_files_in_subtree(

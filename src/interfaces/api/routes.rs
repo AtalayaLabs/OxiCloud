@@ -88,9 +88,7 @@ use crate::interfaces::api::handlers::folder_handler::{
 use crate::interfaces::api::handlers::i18n_handler::{
     get_locales, get_translations_by_locale, translate,
 };
-use crate::interfaces::api::handlers::search_handler::{
-    search_files_get, search_files_post, suggest_files,
-};
+use crate::interfaces::api::handlers::search_handler::{search_resources, suggest_files};
 use crate::interfaces::api::handlers::trash_handler;
 
 /// Creates root-level health check routes — mounted directly at `/`, not under `/api/`.
@@ -298,11 +296,14 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     let search_router = if search_service.is_some() {
         Router::new()
             // Simple search with query parameters
-            .route("/", get(search_files_get))
+            // Cursor-paginated search with the `/*/resources` envelope
+            // (items + next_cursor + meta). `POST /search/advanced` was
+            // deleted alongside this normalization — every field it
+            // accepted fits fine as a query param, and it shared 100%
+            // of the service call with GET (no fast-vs-deep semantics).
+            .route("/", get(search_resources))
             // Lightweight autocomplete suggestions
             .route("/suggest", get(suggest_files))
-            // Advanced search with full criteria object
-            .route("/advanced", post(search_files_post))
             // `DELETE /api/search/cache` used to live here as a per-user-
             // reachable endpoint. It's an operator-only debug lever
             // (moka `invalidate_all()` — nukes every tenant), so it

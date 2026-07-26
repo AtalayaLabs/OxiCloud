@@ -920,8 +920,15 @@ mod tests {
             _folder_id: Option<&str>,
             _criteria: &crate::application::dtos::search_dto::SearchCriteriaDto,
             _user_id: Uuid,
-        ) -> Result<(Vec<crate::domain::entities::file::File>, usize), DomainError> {
-            Ok((Vec::new(), 0))
+        ) -> Result<
+            (
+                Vec<crate::domain::entities::file::File>,
+                Vec<(bool, bool)>,
+                usize,
+            ),
+            DomainError,
+        > {
+            Ok((Vec::new(), Vec::new(), 0))
         }
 
         async fn stream_files_in_subtree(

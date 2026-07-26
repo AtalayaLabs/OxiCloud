@@ -34,8 +34,8 @@ use crate::application::dtos::i18n_dto::{
 use crate::application::dtos::pagination::{PaginationDto, PaginationRequestDto};
 use crate::application::dtos::recent_dto::{RecentItemDto, RecentResourceItemDto};
 use crate::application::dtos::search_dto::{
-    SearchCriteriaDto, SearchFileResultDto, SearchFolderResultDto, SearchResultsDto,
-    SearchSuggestionItem, SearchSuggestionsDto,
+    SearchCriteriaDto, SearchFileResultDto, SearchFolderResultDto, SearchMeta, SearchResourceItem,
+    SearchResourcesDto, SearchResultsDto, SearchSuggestionItem, SearchSuggestionsDto,
 };
 use crate::application::dtos::share_dto::{CreateShareDto, ShareDto, UpdateShareDto};
 use crate::application::dtos::trash_dto::{
@@ -103,8 +103,7 @@ use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
         handlers::folder_handler::delete_folder_with_trash,
         handlers::folder_handler::download_folder_zip,
         // Search handlers (free functions — see search_handler.rs for why)
-        handlers::search_handler::search_files_get,
-        handlers::search_handler::search_files_post,
+        handlers::search_handler::search_resources,
         handlers::search_handler::suggest_files,
         handlers::search_handler::clear_search_cache,
         // i18n handlers (free functions — see i18n_handler.rs for why)
@@ -302,7 +301,15 @@ use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
             MoveToTrashRequest,
             RestoreFromTrashRequest,
             DeletePermanentlyRequest,
-            // Search schemas
+            // Search schemas — wire envelope shares the /*/resources
+            // shape (SearchResourcesDto → items[] { resource_type,
+            // resource, meta }). The internal SearchCriteriaDto /
+            // SearchResultsDto types are still emitted so external
+            // consumers browsing the OpenAPI doc can see the service-
+            // layer shape referenced by other docs.
+            SearchResourcesDto,
+            SearchResourceItem,
+            SearchMeta,
             SearchCriteriaDto,
             SearchResultsDto,
             SearchFileResultDto,
