@@ -298,8 +298,34 @@ export interface SearchResourcesResponse {
 
 export type DriveKind = 'personal' | 'shared';
 
-/** Role-keyed share strength. Matches `Role` in the backend authz model. */
-export type DriveRole = 'owner' | 'editor' | 'contributor' | 'commenter' | 'viewer';
+/**
+ * Full role set from `storage.grant_role` — every value that can appear
+ * on a `role_grants` row regardless of `resource_type` (drive, folder,
+ * file, playlist, calendar, address_book, …). Use this for folder-level
+ * and file-level `caller_role` fields where all five values are valid.
+ * Matches `RoleDto` in the backend.
+ */
+export type GrantRole = 'owner' | 'editor' | 'contributor' | 'commenter' | 'viewer';
+
+/**
+ * Role assignable at DRIVE scope — a strict subset of `GrantRole`.
+ * Drives only meaningfully take the three management-ladder tiers:
+ * - `owner`  — full control (rename, delete, quota, membership).
+ * - `editor` — can create/modify content anywhere in the drive.
+ * - `viewer` — read-only access to the whole drive.
+ *
+ * `contributor` (create-in-folder-without-touching-siblings) and
+ * `commenter` (react without modifying) are folder/file-scope
+ * semantics: they describe fine-grained access to a specific item,
+ * not to a whole drive. Grants of those roles happen at folder or
+ * file scope via a separate `role_grants` row, not at the drive
+ * boundary. Do NOT widen this type without a matching backend
+ * check — the DB ENUM permits all 5 today, so the constraint is
+ * conventional.
+ *
+ * Use `GrantRole` for folder/file-level `caller_role` fields.
+ */
+export type DriveRole = 'owner' | 'editor' | 'viewer';
 
 /** Subject of a grant. Mirrors `SubjectDto`. */
 export type SubjectKind = 'user' | 'group' | 'token';
@@ -465,8 +491,26 @@ export interface AccessSource {
 	kind: AccessSourceKind;
 	/** Populated when `kind === 'drive'`. */
 	drive?: AccessSourceDrive;
-	/** Optional grantee info for shares / group grants. */
+	/**
+	 * SHARER — the user who created the grant that gave the caller
+	 * access at the boundary (`role_grants.granted_by`). Kind is always
+	 * `'user'` today (a group can't perform an action), but the type
+	 * stays open in case a future model permits it. Null when the
+	 * boundary can't be resolved to a single grant (e.g. `token`).
+	 */
 	subject?: AccessSourceSubject;
+	/**
+	 * Caller's role via the boundary grant (`role_grants.role` on the
+	 * same row that carries `granted_by`). Lets the FE render permission-
+	 * aware affordances at the ancestor scope. Reflects the boundary grant
+	 * only — aggregate effective role via other channels may be stronger.
+	 * Null on `token` access.
+	 *
+	 * Typed as `GrantRole` (not `DriveRole`): the boundary can be a
+	 * folder-level share where all five role_grant values are valid,
+	 * not just the drive-scoped subset.
+	 */
+	caller_role?: GrantRole | null;
 }
 
 /**

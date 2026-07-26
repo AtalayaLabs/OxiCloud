@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::application::dtos::cursor::{CursorListResponse, CursorQuery, PageCursor};
 use crate::application::dtos::display_helpers::intern_display;
-use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
+use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto, RoleDto};
 use crate::domain::entities::folder::Folder;
 use crate::domain::services::authorization::ResourceKind;
 use chrono::{DateTime, Utc};
@@ -437,13 +437,21 @@ pub struct AccessSourceDto {
     /// Populated when `kind == Drive`. Null otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub drive: Option<AccessSourceDriveDto>,
-    /// Populated when a `role_grants` row identifies the grantee (self
-    /// or a group). MVP leaves this null — subject enrichment (grantor
-    /// name / group name lookup) is a follow-up. Once populated the FE
-    /// tooltip becomes "shared with **your team**" / "shared with **you
-    /// by X**" instead of the generic "shared with you".
+    /// SHARER — the user who created the grant that gave the caller
+    /// access at the boundary (`storage.role_grants.granted_by`). Kind
+    /// is always `User` today: `granted_by` references `auth.users` and
+    /// a group can't perform an action. Null when the boundary can't be
+    /// resolved to a single grant (e.g. `token` access).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subject: Option<AccessSourceSubjectDto>,
+    /// Caller's own role via the boundary grant (`role_grants.role` on
+    /// the same row that carries `granted_by`). Lets the FE render
+    /// permission-aware affordances — "you can Edit / Comment /
+    /// View this share" — without a second lookup. Reflects the boundary
+    /// grant only: aggregate effective role via other channels may be
+    /// stronger. Null on `token` access.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller_role: Option<RoleDto>,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]

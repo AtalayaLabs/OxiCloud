@@ -1549,6 +1549,67 @@ impl FolderDbRepository {
             .map_err(|e| DomainError::internal_error("FolderDb", format!("ancestor walk: {e}")))
     }
 
+    /// Boundary-grant SHARER (`granted_by`) for `AccessSourceDto.subject`.
+    /// Given the resource (drive or folder) the caller reached the topmost
+    /// accessible ancestor through, find one active grant THAT CONCERNS
+    /// THE CALLER (user grant on caller, or group grant on one of the
+    /// caller's groups) and return `(kind, id, name)` for the user who
+    /// CREATED that grant — the sharer, not the grantee. The breadcrumb
+    /// consumer wants "who shared this with me?" not "who has permission?"
+    /// (Ed 2026-07-27).
+    ///
+    /// Kind is always `user`: `granted_by` references `auth.users` and
+    /// is never a group (a group can't perform an action). Name is
+    /// looked up from `auth.users.username` in the same round-trip.
+    ///
+    /// Grant selection prefers a user grant on the caller over a group
+    /// grant on one of their groups when both exist on the same resource
+    /// (the more specific one is likely the truer "who shared this with
+    /// me"). Only the OUTPUT pivots to the grantor.
+    ///
+    /// No `expires_at` filter — the ancestor-walk guard has already
+    /// established the caller is authorized to see this ancestor
+    /// (visibility decision made upstream). See
+    /// `feedback_trust_grant_janitor_no_expires_at_read` — this is the
+    /// narrow exception where skipping is safe.
+    pub async fn fetch_grant_by(
+        &self,
+        caller_id: Uuid,
+        resource_type: &str,
+        resource_id: Uuid,
+    ) -> Result<Option<(String, Uuid, Option<String>, String)>, DomainError> {
+        // Same row also carries the caller's role — piggyback the lookup
+        // so consumers can render "who shared this" AND "what can I do
+        // with it" from one round-trip (Ed 2026-07-27). The role is the
+        // grant's own role, i.e. the caller's effective role via THIS
+        // specific boundary grant. If the caller has additional grants
+        // via other channels the aggregate effective role may differ;
+        // `caller_role` on the boundary DTO reflects the boundary grant
+        // only.
+        let sql = r#"
+            SELECT
+                'user'::text                                                    AS kind,
+                g.granted_by                                                    AS id,
+                (SELECT u.username FROM auth.users u WHERE u.id = g.granted_by) AS name,
+                g.role::text                                                    AS role
+              FROM storage.role_grants g
+             WHERE g.resource_type = $2
+               AND g.resource_id   = $3::uuid
+               AND ( (g.subject_type = 'user'  AND g.subject_id = $1)
+                  OR (g.subject_type = 'group' AND g.subject_id IN
+                        (SELECT storage.caller_group_ids($1))) )
+             ORDER BY g.subject_type = 'user' DESC
+             LIMIT 1
+        "#;
+        sqlx::query_as::<_, (String, Uuid, Option<String>, String)>(sql)
+            .bind(caller_id)
+            .bind(resource_type)
+            .bind(resource_id)
+            .fetch_optional(self.pool())
+            .await
+            .map_err(|e| DomainError::internal_error("FolderDb", format!("grant by lookup: {e}")))
+    }
+
     /// Drive header (`id + name + kind`) for the drive-source arm of
     /// `AccessSourceDto`. Read-only; no authz gate — the caller already
     /// proved drive-membership via the ancestor walk before invoking.

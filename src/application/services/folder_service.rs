@@ -1,10 +1,11 @@
 use crate::application::dtos::cursor::PageCursor;
 use crate::application::dtos::drive_dto::DriveKindDto;
 use crate::application::dtos::folder_dto::{
-    AccessSourceDriveDto, AccessSourceDto, AccessSourceKind, CreateFolderDto, FolderAncestorDto,
-    FolderAncestorsDto, FolderDto, FolderResourceCursor, FolderResourceRow, ListResourcesOptions,
-    MoveFolderDto, RenameFolderDto,
+    AccessSourceDriveDto, AccessSourceDto, AccessSourceKind, AccessSourceSubjectDto,
+    AccessSourceSubjectKind, CreateFolderDto, FolderAncestorDto, FolderAncestorsDto, FolderDto,
+    FolderResourceCursor, FolderResourceRow, ListResourcesOptions, MoveFolderDto, RenameFolderDto,
 };
+use crate::application::dtos::grant_dto::RoleDto;
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::external_mount_ports::MountEntry;
 use crate::application::ports::file_lifecycle::FileLifecycleHook;
@@ -17,7 +18,7 @@ use crate::application::services::mount_dto::{
 use crate::application::services::mount_registry::MountConfig;
 use crate::common::errors::{DomainError, ErrorKind};
 use crate::domain::repositories::folder_repository::FolderRepository;
-use crate::domain::services::authorization::{Permission, Resource, ResourceKind, Subject};
+use crate::domain::services::authorization::{Permission, Resource, ResourceKind, Role, Subject};
 use crate::domain::services::external_mount_id::NodeId;
 use crate::domain::services::path_service::{StoragePath, validate_storage_name};
 use crate::infrastructure::repositories::pg::folder_db_repository::FolderDbRepository;
@@ -1069,6 +1070,46 @@ impl FolderService {
         // The topmost surviving row is the root of the caller's view.
         // Its grant profile drives `AccessSource`.
         let top = &rows[0];
+
+        // Subject enrichment: identify the specific grant that gave the
+        // caller access to `top`, then resolve its subject's display
+        // name in the same query. Drives the tooltip on the breadcrumb
+        // root chip ("Shared with you by Alice" / "Shared with your
+        // team via Design"). No `expires_at` filter — the ancestor
+        // walk's guard already proved the caller is authorized to see
+        // this ancestor, so the follow-up name lookup is display-only
+        // (see `feedback_trust_grant_janitor_no_expires_at_read`).
+        let (grant_resource_type, grant_resource_id) = if top.has_drive_grant {
+            ("drive", top.drive_id)
+        } else {
+            ("folder", top.id)
+        };
+        let grant_by = self
+            .folder_storage
+            .fetch_grant_by(caller_id, grant_resource_type, grant_resource_id)
+            .await?;
+        let subject = grant_by
+            .as_ref()
+            .map(
+                |(subject_type_str, subject_id, name, _role)| AccessSourceSubjectDto {
+                    kind: match subject_type_str.as_str() {
+                        "group" => AccessSourceSubjectKind::Group,
+                        _ => AccessSourceSubjectKind::User,
+                    },
+                    id: *subject_id,
+                    name: name.clone(),
+                },
+            );
+        // Caller's role via the boundary grant. `Role::parse` returns
+        // None only if the SQL stored a role we don't understand — the
+        // ENUM constraint makes that a schema drift, not a runtime case
+        // to chase. Silent None keeps the endpoint working with an older
+        // deployment if a future role is added ahead of the code.
+        let caller_role = grant_by
+            .as_ref()
+            .and_then(|(_, _, _, role_str)| Role::parse(role_str))
+            .map(RoleDto::from);
+
         let access_source = if top.has_drive_grant {
             // Drive-membership Read — even if a direct folder grant also
             // exists, the drive channel is the more useful "how did I
@@ -1092,16 +1133,18 @@ impl FolderService {
             AccessSourceDto {
                 kind: AccessSourceKind::Drive,
                 drive,
-                subject: None,
+                subject,
+                caller_role,
             }
         } else {
-            // Direct folder-level grant (share). Subject enrichment is a
-            // follow-up (see the DTO comment) — MVP surfaces the kind and
-            // lets the FE render a generic "shared with you" tooltip.
+            // Direct folder-level grant (share). Subject carries who
+            // shared it (user or group), enabling "shared with you by X"
+            // in the FE tooltip.
             AccessSourceDto {
                 kind: AccessSourceKind::DirectShare,
                 drive: None,
-                subject: None,
+                subject,
+                caller_role,
             }
         };
 

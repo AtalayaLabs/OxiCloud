@@ -3,6 +3,7 @@
 	import { getFolderAncestors } from '$lib/api/endpoints/folders';
 	import type { AccessSource, FolderAncestor, FolderAncestorsResponse } from '$lib/api/types';
 	import Icon from '$lib/icons/Icon.svelte';
+	import UserAvatar from '$lib/components/UserAvatar.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 
 	/**
@@ -85,6 +86,26 @@
 				? chain.ancestors.slice(1)
 				: chain.ancestors
 			: []
+	);
+
+	/**
+	 * Index of the crumb that carries the ACTUAL grant giving the
+	 * caller access — the "boundary" crumb. Rendered with an inline
+	 * sharer avatar (or group chip) so the breadcrumb answers both
+	 * "how did I get here?" (root chip icon) AND "who shared this?"
+	 * (avatar on the specific granted folder) — Ed's 2026-07-27 UX call.
+	 *
+	 * - `direct_share`: always index 0 of `visibleCrumbs` (the
+	 *   endpoint's walk stops at the granted folder, so the topmost
+	 *   accessible ancestor IS the share boundary).
+	 * - `drive`: null — the grant lives on the drive itself, not on
+	 *   any visible folder. The drive-root chip already carries the
+	 *   drive name; adding a subject chip to a sub-folder would be
+	 *   semantically misleading (that sub-folder wasn't the grant).
+	 * - `token`: null — no user-facing subject to render.
+	 */
+	const boundaryCrumbIndex = $derived<number | null>(
+		chain?.access_source.kind === 'direct_share' && visibleCrumbs.length > 0 ? 0 : null
 	);
 
 	// ── Root-icon derivation ────────────────────────────────────────────
@@ -285,10 +306,12 @@
 				`onDrop` handler. Absent everywhere except `/files`.
 			-->
 			{@const isLeaf = i === visibleCrumbs.length - 1}
+			{@const isBoundary = i === boundaryCrumbIndex}
 			<a
 				href={resolve(`/files/${c.id}`)}
 				class="breadcrumb-item breadcrumb-link"
 				class:breadcrumb-current={isLeaf}
+				class:breadcrumb-boundary={isBoundary}
 				class:drop-target={onDrop != null && dropTargetId === c.id}
 				data-testid={isLeaf ? `folder-breadcrumb-current-${c.id}` : `folder-breadcrumb-${c.id}`}
 				ondragover={onDrop
@@ -311,7 +334,35 @@
 						}
 					: undefined}
 			>
-				{c.name}
+				<!--
+					Sharer decoration on the BOUNDARY crumb (the topmost
+					accessible ancestor that carries the actual grant).
+					Only rendered for `direct_share` — drive-kind grants
+					live on the drive itself and the drive-root chip
+					already carries that context. Ed's 2026-07-27 design:
+					  [share-alt] > folder[avatar] > sub …
+					so the root chip keeps the access-CHANNEL semantic
+					(share / drive / link) and the person/group chip
+					attaches to the folder that WAS shared.
+				-->
+				{#if isBoundary && chain?.access_source.subject}
+					{@const subj = chain.access_source.subject}
+					{#if subj.kind === 'user'}
+						<UserAvatar userId={subj.id} size={18} />
+					{:else}
+						<span
+							class="breadcrumb-group-chip"
+							title={t(
+								'breadcrumb.subject.group_tooltip',
+								{ name: subj.name ?? '' },
+								'Shared with group: {{name}}'
+							)}
+						>
+							<Icon name="users" />
+						</span>
+					{/if}
+				{/if}
+				<span class="breadcrumb-crumb-name">{c.name}</span>
 			</a>
 		{/each}
 	</nav>
@@ -335,9 +386,38 @@
 	   anchor → highlight clears (Ed's 2026-07-26 report). Pointer-events
 	   off on children collapses the whole chip to a single drag target;
 	   drop still lands because the anchor's own handlers stay live.
-	   Intermediate crumbs don't need this (they contain only a text
-	   node — no child element to cross into). */
-	.breadcrumb-home > * {
+	   Boundary crumbs (with an inline avatar/group chip child) get the
+	   same treatment — same drop-flicker mechanism, one child element to
+	   cross into. Plain intermediate crumbs are pure text nodes and
+	   don't need it, but the selector is harmless there. */
+	.breadcrumb-home > *,
+	.breadcrumb-link > * {
 		pointer-events: none;
+	}
+
+	/* Boundary crumbs align the inline sharer decoration (avatar or
+	   group chip) with the folder-name text on the vertical midline —
+	   inline-flex + baseline gap. Non-boundary crumbs stay inline (no
+	   flex overhead) so wide breadcrumbs still wrap the same way. */
+	.breadcrumb-boundary {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1);
+	}
+
+	/* Group-subject chip — small `users` glyph in a subtle badge, sits
+	   next to the folder name on the boundary crumb. Matches the size
+	   footprint of the inline UserAvatar (18px) so user- vs group-shared
+	   crumbs feel visually consistent. */
+	.breadcrumb-group-chip {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 18px;
+		height: 18px;
+		border-radius: 50%;
+		background: var(--color-bg-subtle);
+		color: var(--color-text-secondary);
+		font-size: 11px;
 	}
 </style>
