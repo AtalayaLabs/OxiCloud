@@ -1953,6 +1953,36 @@ impl AppServiceFactory {
             }
         };
 
+        // OPAQUE persistence repo — mirrors the service's mode gate so
+        // both are `Some`/`None` in lock-step. Kept as
+        // `Arc<dyn OpaqueRepositoryPort>` on `AppState` so future
+        // handlers can inject the trait instead of the concrete PG
+        // type — matches the trait-first convention used by
+        // FavoritesRepositoryPort / RecentItemsRepositoryPort.
+        let opaque_repo: Option<
+            Arc<dyn crate::application::ports::opaque_ports::OpaqueRepositoryPort>,
+        > = if opaque_service.is_some() {
+            Some(Arc::new(
+                crate::infrastructure::repositories::pg::OpaquePgRepository::new(pool.clone()),
+            ))
+        } else {
+            None
+        };
+
+        // OPAQUE login-exchange cache — holds ServerLogin state between
+        // KE1 and KE3 (~60s TTL). Same lock-step gate as the repo and
+        // service. Process-local; single-instance deployments only —
+        // multi-instance would need Redis or LB session affinity, but
+        // the swap is local to this cache since callers use
+        // `store`/`take` opaque handles.
+        let opaque_login_exchange = if opaque_service.is_some() {
+            Some(Arc::new(
+                crate::infrastructure::services::opaque_login_exchange::OpaqueLoginExchange::new(),
+            ))
+        } else {
+            None
+        };
+
         // Shared App Password service — created once, used by both NC routes and native API
         let shared_app_pw_svc: Option<Arc<AppPasswordService>> =
             if self.config.nextcloud.enabled || self.config.features.enable_auth {
@@ -2048,6 +2078,8 @@ impl AppServiceFactory {
             mount_router,
             auth_service: auth_services,
             opaque_service,
+            opaque_repo,
+            opaque_login_exchange,
             nextcloud: nextcloud_services,
             admin_settings_service: None,
             storage_settings_service: None,
@@ -2804,6 +2836,21 @@ pub struct AppState {
     /// unwraps this without a nil check would break the phase gate.
     pub opaque_service: Option<
         Arc<crate::infrastructure::services::opaque_service::OpaqueService>,
+    >,
+    /// OPAQUE envelope persistence. Populated in lock-step with
+    /// [`Self::opaque_service`] — both `Some` or both `None`, gated
+    /// on the same `effective_mode` cross-check. Handlers should
+    /// consume both together so a partial-`Some` never occurs.
+    pub opaque_repo: Option<
+        Arc<dyn crate::application::ports::opaque_ports::OpaqueRepositoryPort>,
+    >,
+    /// OPAQUE login-exchange state cache (KE1 → KE3). Populated in
+    /// lock-step with [`Self::opaque_service`] and [`Self::opaque_repo`]
+    /// — all three `Some` or all three `None`. Process-local moka;
+    /// 60s TTL; atomic single-use `take` prevents replay of an
+    /// exchange_id.
+    pub opaque_login_exchange: Option<
+        Arc<crate::infrastructure::services::opaque_login_exchange::OpaqueLoginExchange>,
     >,
     pub nextcloud: Option<NextcloudServices>,
     pub admin_settings_service: Option<Arc<AdminSettingsService>>,

@@ -790,6 +790,19 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 auth_middleware,
             ))
             .with_state(app_state.clone());
+        // OPAQUE register routes — require auth + CSRF. The handlers
+        // return 503 `OpaqueDisabled` when the substrate isn't wired
+        // (mode=off or password auth disabled), so mounting them
+        // unconditionally is safe: the mode gate lives in the DI
+        // factory, not the router.
+        let opaque_register_protected =
+            oxicloud::interfaces::api::handlers::opaque_auth_handler::opaque_register_routes()
+                .layer(axum::middleware::from_fn(csrf_middleware))
+                .layer(axum::middleware::from_fn_with_state(
+                    app_state.clone(),
+                    auth_middleware,
+                ))
+                .with_state(app_state.clone());
         // One-time setup route — public, rate-limited like register
         let setup_router = setup_route()
             .layer(axum::middleware::from_fn_with_state(
@@ -895,6 +908,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .nest(
                 "/api/auth",
                 app_pw_protected.layer(access_log!("http::api::auth")),
+            )
+            // OPAQUE aPAKE — session-required register endpoints. Login
+            // endpoints (public) are mounted in a later Phase 1 step.
+            .nest(
+                "/api/auth",
+                opaque_register_protected.layer(access_log!("http::api::auth")),
             )
             // One-time setup endpoint — public, rate-limited
             .nest("/api", setup_router.layer(access_log!("http::api")))
