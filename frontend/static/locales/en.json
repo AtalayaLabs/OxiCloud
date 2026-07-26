@@ -605,7 +605,14 @@
     "forbidden": "Could not load files"
   },
   "breadcrumb": {
-    "home": "Home"
+    "home": "Home",
+    "aria": "Breadcrumb",
+    "root": {
+      "personal_drive": "Personal drive: {{name}}",
+      "shared_drive": "Shared drive: {{name}}",
+      "direct_share": "Shared with you",
+      "token": "Via shared link"
+    }
   },
   "trash": {
     "empty_trash": "Empty Trash",

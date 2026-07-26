@@ -504,6 +504,33 @@
 
 	const SKELETON = [0, 1, 2, 3, 4, 5];
 
+	// ── Delayed-skeleton reveal ──────────────────────────────────────────
+	// Fast fetches (< 150 ms) don't render the skeleton bars — the flash
+	// is worse UX than briefly-empty content. The skeleton appears only
+	// when a load is genuinely slow. Ed's 2026-07-26 report: navigating
+	// from an empty folder to its parent showed "6 blank elements" (the
+	// skeleton) for the ~25 ms fetch window because stale-while-revalidate
+	// at the /files layer has no previous content to keep on screen here.
+	//
+	// Pairs with the empty-state gate below (`!loading && isEmpty`) so
+	// the pre-fix "Folder is empty" flash during the delay window
+	// doesn't come back — during load, neither skeleton nor empty state
+	// renders; the container just holds empty until content or the
+	// 150 ms timer elapses.
+	let renderSkeleton = $state(false);
+	$effect(() => {
+		if (loading && items.length === 0) {
+			const timer = setTimeout(() => {
+				renderSkeleton = true;
+			}, 150);
+			return () => {
+				clearTimeout(timer);
+				renderSkeleton = false;
+			};
+		}
+		renderSkeleton = false;
+	});
+
 	// ── Group-by / direction ──────────────────────────────────────────────────
 	const activeGroup = $derived(groupBys?.find((g) => g.key === groupBy));
 
@@ -1319,9 +1346,15 @@
 
 	{#if error}
 		<EmptyState icon="exclamation-circle" title={error} error />
-	{:else if loading && isEmpty}
+	{:else if renderSkeleton}
+		<!-- Only renders after the 150 ms delay elapses AND we're still
+		     loading with no items — fast loads skip this entirely. -->
 		<SkeletonList count={SKELETON.length} />
-	{:else if isEmpty}
+	{:else if isEmpty && !loading}
+		<!-- Empty state gates on `!loading` (not just `isEmpty`) so
+		     mid-load empty-content windows don't flash the "Folder is
+		     empty" banner. Renders only when the fetch has definitively
+		     completed with zero items. -->
 		<EmptyState
 			icon={emptyIcon}
 			title={emptyText ?? t('common.empty', 'Nothing here yet.')}

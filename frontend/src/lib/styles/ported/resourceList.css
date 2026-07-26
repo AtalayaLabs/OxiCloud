@@ -571,9 +571,21 @@
 }
 
 /* Reveal the kebab on hover for cleaner rows — but only on hover-capable
-   devices, so touch users (no hover) keep it always tappable. Stays visible
-   on keyboard focus within the row. Applies to both list and grid views
-   because both keep the kebab inside `.action-cell`. */
+   devices, so touch users (no hover) keep it always tappable. Applies
+   to both list and grid views because both keep the kebab inside
+   `.action-cell`.
+
+   Keyboard accessibility comes from `:focus-visible` on the kebab
+   button itself (below), NOT `:focus-within` on the row. Using
+   `:focus-within` on the row was a lingering-visibility trap:
+     • dragstart landed focus on the dragged descendant → row
+       `:focus-within` stayed true after the pointer left → kebab
+       stayed visible on an otherwise-idle row.
+     • Opening a context-menu / ShareDialog portal moved focus outside
+       the row (good) but if focus briefly bounced through the kebab
+       first, the reveal could persist through the transition.
+   Ed's 2026-07-26 report: "when starting dragging or when using the
+   share dialog, I have the [...] button that remains visible." */
 @media (hover: hover) {
     .files-list-view .file-item .action-cell button.file-actions,
     .files-grid-view .file-item .action-cell button.file-actions {
@@ -582,9 +594,9 @@
     }
 
     .files-list-view .file-item:hover .action-cell button.file-actions,
-    .files-list-view .file-item:focus-within .action-cell button.file-actions,
     .files-grid-view .file-item:hover .action-cell button.file-actions,
-    .files-grid-view .file-item:focus-within .action-cell button.file-actions {
+    .files-list-view .file-item .action-cell button.file-actions:focus-visible,
+    .files-grid-view .file-item .action-cell button.file-actions:focus-visible {
         opacity: 1;
     }
 }
@@ -1391,10 +1403,15 @@
     transition: opacity var(--motion-fast) var(--ease-standard);
 }
 
+/* Reveal on hover OR when the button itself has keyboard focus. The
+   pre-fix `:focus-within` on the row was a lingering-visibility trap
+   during drag / dialog transitions — see the `.file-actions` block
+   above for the full rationale. `:focus-visible` on the button gives
+   keyboard users the same reveal without the row-scope side effect. */
 .files-list-view .file-item:hover .action-cell .btn-action--hover,
-.files-list-view .file-item:focus-within .action-cell .btn-action--hover,
 .files-grid-view .file-item:hover .action-cell .btn-action--hover,
-.files-grid-view .file-item:focus-within .action-cell .btn-action--hover {
+.files-list-view .file-item .action-cell .btn-action--hover:focus-visible,
+.files-grid-view .file-item .action-cell .btn-action--hover:focus-visible {
     opacity: 1;
     pointer-events: auto;
 }

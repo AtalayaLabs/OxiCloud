@@ -570,7 +570,14 @@
     "forbidden": "파일을 불러올 수 없습니다"
   },
   "breadcrumb": {
-    "home": "홈"
+    "home": "홈",
+    "aria": "탐색 경로",
+    "root": {
+      "personal_drive": "개인 드라이브: {{name}}",
+      "shared_drive": "공유 드라이브: {{name}}",
+      "direct_share": "내게 공유됨",
+      "token": "공유 링크로"
+    }
   },
   "trash": {
     "empty_trash": "휴지통 비우기",

@@ -459,7 +459,14 @@
     "group_name_taken": "توجد بالفعل مجموعة بهذا الاسم."
   },
   "breadcrumb": {
-    "home": "الرئيسية"
+    "home": "الرئيسية",
+    "aria": "مسار التنقل",
+    "root": {
+      "personal_drive": "قرص شخصي: {{name}}",
+      "shared_drive": "قرص مشترك: {{name}}",
+      "direct_share": "تمت مشاركته معك",
+      "token": "عبر رابط مشترك"
+    }
   },
   "trash": {
     "empty_trash": "تفريغ سلة المهملات",

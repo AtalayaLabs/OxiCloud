@@ -368,3 +368,108 @@ pub struct FolderResourceItemDto {
 
 /// Response envelope for `GET /api/folders/{id}/resources`.
 pub type FolderResourcesDto = CursorListResponse<FolderResourceItemDto>;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Folder ancestor chain (`GET /api/folders/{id}/ancestors`)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Serves the shared breadcrumb component on `/files` (and, when re-wired,
+// `/search`). One round-trip returns the whole caller-visible parent chain
+// plus an `access_source` describing HOW the caller reached the topmost
+// accessible ancestor (own drive / shared drive / direct folder share).
+// See docs/plan/… — added 2026-07-26.
+
+/// Single crumb in the walk from the drive root (or share-boundary) down
+/// to the leaf. Present only for ancestors the caller has Read on; the
+/// walk stops at the first inaccessible parent.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct FolderAncestorDto {
+    pub id: Uuid,
+    pub name: String,
+    /// `None` on the drive-root folder. On boundary crumbs it's the id
+    /// of the (invisible-to-caller) parent — clients don't render it
+    /// but the field is preserved for debugging.
+    pub parent_id: Option<Uuid>,
+    /// Drive the folder belongs to. Always populated (every folder has
+    /// a drive_id in the D0+ schema). Lets clients derive the current
+    /// drive from `ancestors.at(-1).drive_id` without a second
+    /// `GET /api/folders/{id}` round-trip — the ancestors response is
+    /// the authoritative "everything I need for the folder-context
+    /// header" call. See 2026-07-26 UX pass on /files load traffic.
+    pub drive_id: Uuid,
+}
+
+/// How the caller reached the topmost accessible ancestor. Drives the
+/// breadcrumb's root icon + tooltip.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessSourceKind {
+    /// Caller reached the topmost ancestor via drive membership (own
+    /// personal drive OR a shared drive they are a member of). The
+    /// `drive` field carries the drive info; render its `kind`-specific
+    /// icon + name.
+    Drive,
+    /// Caller reached the topmost ancestor via a direct folder-level
+    /// `role_grants` row (share). No drive-membership Read on any
+    /// ancestor. The `subject` field (if known) says who was granted
+    /// (self or a group); render the share icon.
+    DirectShare,
+    /// Reserved for public/token access. Not emitted by the MVP
+    /// endpoint — no live UI code path drives an authenticated /files
+    /// request via token yet.
+    #[allow(dead_code)]
+    Token,
+}
+
+/// Drive info for `AccessSourceKind::Drive`. Split out so serde can drop
+/// it (`skip_serializing_if = "Option::is_none"`) when the kind isn't drive.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct AccessSourceDriveDto {
+    pub id: Uuid,
+    pub name: String,
+    pub kind: crate::application::dtos::drive_dto::DriveKindDto,
+}
+
+/// Access-source detail returned alongside the ancestors chain.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct AccessSourceDto {
+    pub kind: AccessSourceKind,
+    /// Populated when `kind == Drive`. Null otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drive: Option<AccessSourceDriveDto>,
+    /// Populated when a `role_grants` row identifies the grantee (self
+    /// or a group). MVP leaves this null — subject enrichment (grantor
+    /// name / group name lookup) is a follow-up. Once populated the FE
+    /// tooltip becomes "shared with **your team**" / "shared with **you
+    /// by X**" instead of the generic "shared with you".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<AccessSourceSubjectDto>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessSourceSubjectKind {
+    User,
+    Group,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct AccessSourceSubjectDto {
+    pub kind: AccessSourceSubjectKind,
+    pub id: Uuid,
+    /// Display name (username / group name). MVP leaves this out — the
+    /// endpoint returns `subject: None` entirely rather than emitting a
+    /// half-populated `{id, name: null}`.
+    pub name: Option<String>,
+}
+
+/// Response envelope for `GET /api/folders/{id}/ancestors`.
+///
+/// `ancestors` is root-first (drive root or share boundary as element
+/// 0), leaf-last. Length ≥ 1 (the leaf itself is always included).
+/// `access_source` describes the boundary at element 0.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct FolderAncestorsDto {
+    pub ancestors: Vec<FolderAncestorDto>,
+    pub access_source: AccessSourceDto,
+}

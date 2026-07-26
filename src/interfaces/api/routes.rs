@@ -82,7 +82,7 @@ use crate::interfaces::api::handlers::file_handler::{
     list_files_query, move_file_simple, rename_file, upload_file_with_thumbnails, upload_thumbnail,
 };
 use crate::interfaces::api::handlers::folder_handler::{
-    create_folder, delete_folder_with_trash, download_folder_zip, get_folder,
+    create_folder, delete_folder_with_trash, download_folder_zip, get_folder, get_folder_ancestors,
     list_folder_resources, list_root_folders, move_folder, rename_folder,
 };
 use crate::interfaces::api::handlers::i18n_handler::{
@@ -218,6 +218,11 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     let folders_crud_router = Router::new()
         .route("/", post(create_folder))
         .route("/{id}", get(get_folder))
+        // Ancestor chain for the shared breadcrumb component — one
+        // round-trip vs the pre-2026-07-26 per-segment `getFolder` walk
+        // on the /files client. Returns caller-visible parents (walk
+        // stops at share/drive-membership boundary) + access_source.
+        .route("/{id}/ancestors", get(get_folder_ancestors))
         .route("/{id}/rename", put(rename_folder))
         .route("/{id}/move", put(move_folder))
         .with_state(app_state.clone());

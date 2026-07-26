@@ -459,7 +459,14 @@
     "group_name_taken": "Группа с таким именем уже существует."
   },
   "breadcrumb": {
-    "home": "Главная"
+    "home": "Главная",
+    "aria": "Хлебные крошки",
+    "root": {
+      "personal_drive": "Личный диск: {{name}}",
+      "shared_drive": "Общий диск: {{name}}",
+      "direct_share": "Поделено с вами",
+      "token": "Через общую ссылку"
+    }
   },
   "trash": {
     "empty_trash": "Очистить корзину",

@@ -413,3 +413,68 @@ export interface DriveMember {
 	granted_at: string;
 	expires_at?: string | null;
 }
+
+// ─── Folder ancestors (breadcrumb endpoint) ──────────────────────────────
+// Wire shape of `GET /api/folders/{id}/ancestors`. Mirrors the backend
+// `FolderAncestorsDto` — see `src/application/dtos/folder_dto.rs`. One
+// round-trip returns the whole caller-visible parent chain plus an
+// `access_source` telling the breadcrumb component which root icon /
+// tooltip to render.
+
+export interface FolderAncestor {
+	id: string;
+	name: string;
+	/** `null` on the drive-root ancestor. */
+	parent_id: string | null;
+	/**
+	 * Drive the folder belongs to (always populated — every folder has a
+	 * drive_id post-D0). Lets `/files` derive `currentFolderDriveId` from
+	 * the ancestors response instead of firing an extra
+	 * `GET /api/folders/{id}` on load. Same value across every entry in
+	 * `ancestors` (all folders in a chain live in one drive).
+	 */
+	drive_id: string;
+}
+
+/**
+ * How the caller reached the topmost accessible ancestor.
+ * - `drive` — via drive membership (own personal, secondary personal, or
+ *   shared drive). `drive` field carries the drive's id/name/kind for
+ *   the root icon.
+ * - `direct_share` — via a folder-level `role_grants` row (share).
+ *   `subject` may name the grantee (self or a group) once subject
+ *   enrichment lands; MVP leaves it null.
+ * - `token` — reserved for public-link callers. Not emitted today.
+ */
+export type AccessSourceKind = 'drive' | 'direct_share' | 'token';
+
+export interface AccessSourceDrive {
+	id: string;
+	name: string;
+	kind: DriveKind;
+}
+
+export interface AccessSourceSubject {
+	kind: 'user' | 'group';
+	id: string;
+	/** Nullable in MVP (subject enrichment deferred). */
+	name?: string | null;
+}
+
+export interface AccessSource {
+	kind: AccessSourceKind;
+	/** Populated when `kind === 'drive'`. */
+	drive?: AccessSourceDrive;
+	/** Optional grantee info for shares / group grants. */
+	subject?: AccessSourceSubject;
+}
+
+/**
+ * Response envelope of `GET /api/folders/{id}/ancestors`. `ancestors`
+ * is root-first, leaf-last (length ≥ 1). `access_source` describes
+ * the boundary at element 0 (drive root or share boundary).
+ */
+export interface FolderAncestorsResponse {
+	ancestors: FolderAncestor[];
+	access_source: AccessSource;
+}

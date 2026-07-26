@@ -91,6 +91,24 @@ fn build_folders_with_flags(
     Ok((folders, flags))
 }
 
+/// Row projected by `fetch_ancestor_walk`. One per folder in the
+/// leaf→root walk (root order is reversed to root-first by the caller).
+/// `has_folder_grant` = caller has a `role_grants` row on THIS folder;
+/// `has_drive_grant` = caller has drive-membership on the containing drive.
+/// Either grant satisfies Read; the split lets the service pick the right
+/// `AccessSource` kind (`Drive` vs `DirectShare`).
+#[derive(Debug, sqlx::FromRow)]
+pub struct AncestorRow {
+    pub id: Uuid,
+    pub name: String,
+    pub parent_id: Option<Uuid>,
+    pub drive_id: Uuid,
+    #[allow(dead_code)]
+    pub depth: i32,
+    pub has_folder_grant: bool,
+    pub has_drive_grant: bool,
+}
+
 /// Type alias for paginated folder rows (includes total_count as
 /// the last element after the §14 provenance columns). Same
 /// column set as [`FolderRow`] plus the trailing count.
@@ -1465,6 +1483,94 @@ impl FolderDbRepository {
             .await
             .map_err(|e| DomainError::internal_error("FolderDb", format!("drive_id lookup: {e}")))?
             .ok_or_else(|| DomainError::not_found("Folder", folder_id))
+    }
+
+    /// Raw ancestor row returned by the recursive walk. `depth` is 0 at
+    /// the leaf, growing as we move up. `has_drive_grant` / `has_folder_grant`
+    /// are the two Read predicates the service uses to identify the
+    /// share/drive boundary and choose the access-source kind.
+    pub async fn fetch_ancestor_walk(
+        &self,
+        caller_id: Uuid,
+        leaf_id: Uuid,
+    ) -> Result<Vec<AncestorRow>, DomainError> {
+        // Recursive CTE walks `parent_id` from the leaf upward. Group ids
+        // are hoisted into a one-row CTE so `caller_group_ids($1)` fires
+        // once per query instead of per ancestor row (perf: the function
+        // is `RECURSIVE` and non-trivial). Grant EXISTS are unions over
+        // user + group subjects; the drive-grant subquery matches the
+        // ambient `CALLER_CAN_READ_DRIVE` predicate used elsewhere so
+        // access decisions stay consistent across the repo.
+        let sql = r#"
+            WITH RECURSIVE
+            groups AS (
+                SELECT ARRAY(SELECT storage.caller_group_ids($1)) AS ids
+            ),
+            chain AS (
+                SELECT id, name, parent_id, drive_id, 0::int AS depth
+                  FROM storage.folders WHERE id = $2::uuid
+                UNION ALL
+                SELECT f.id, f.name, f.parent_id, f.drive_id, c.depth + 1
+                  FROM storage.folders f
+                  JOIN chain c ON f.id = c.parent_id
+                 WHERE c.parent_id IS NOT NULL
+                   AND c.depth < 64
+            )
+            SELECT
+                c.id,
+                c.name,
+                c.parent_id,
+                c.drive_id,
+                c.depth,
+                EXISTS (
+                    SELECT 1 FROM storage.role_grants g, groups
+                     WHERE g.resource_type = 'folder'
+                       AND g.resource_id = c.id
+                       AND (g.expires_at IS NULL OR g.expires_at > NOW())
+                       AND ((g.subject_type = 'user'  AND g.subject_id = $1)
+                         OR (g.subject_type = 'group' AND g.subject_id = ANY(groups.ids)))
+                ) AS has_folder_grant,
+                EXISTS (
+                    SELECT 1 FROM storage.role_grants g, groups
+                     WHERE g.resource_type = 'drive'
+                       AND g.resource_id = c.drive_id
+                       AND (g.expires_at IS NULL OR g.expires_at > NOW())
+                       AND ((g.subject_type = 'user'  AND g.subject_id = $1)
+                         OR (g.subject_type = 'group' AND g.subject_id = ANY(groups.ids)))
+                ) AS has_drive_grant
+              FROM chain c
+             ORDER BY c.depth DESC
+        "#;
+        sqlx::query_as::<_, AncestorRow>(sql)
+            .bind(caller_id)
+            .bind(leaf_id)
+            .fetch_all(self.pool())
+            .await
+            .map_err(|e| DomainError::internal_error("FolderDb", format!("ancestor walk: {e}")))
+    }
+
+    /// Drive header (`id + name + kind`) for the drive-source arm of
+    /// `AccessSourceDto`. Read-only; no authz gate — the caller already
+    /// proved drive-membership via the ancestor walk before invoking.
+    ///
+    /// Drive name lives on the drive's root folder, not the drive row
+    /// itself (`docs/plan/drive.md §3`). The JOIN resolves it; a drive
+    /// with a NULL `root_folder_id` returns None (backfill invariant
+    /// violation — surfaced as "drive vanished mid-query" in the caller).
+    pub async fn fetch_drive_header(
+        &self,
+        drive_id: Uuid,
+    ) -> Result<Option<(Uuid, String, String)>, DomainError> {
+        sqlx::query_as::<_, (Uuid, String, String)>(
+            "SELECT d.id, fo.name, d.kind::text \
+               FROM storage.drives d \
+               JOIN storage.folders fo ON fo.id = d.root_folder_id \
+              WHERE d.id = $1::uuid",
+        )
+        .bind(drive_id)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(|e| DomainError::internal_error("FolderDb", format!("drive header lookup: {e}")))
     }
 
     /// Cursor-paginated combined listing of sub-folders and files inside

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import EmptyState from '$lib/components/EmptyState.svelte';
+	import FolderBreadcrumb from '$lib/components/FolderBreadcrumb.svelte';
 	import ResourceList, {
 		isFile,
 		type ContextAction,
@@ -11,7 +12,7 @@
 	import { page } from '$app/state';
 	import { searchResources } from '$lib/api/endpoints/search';
 	import { fileDownloadUrl, renameFile, deleteFile } from '$lib/api/endpoints/files';
-	import { renameFolder, deleteFolder, getFolder, getFolderName } from '$lib/api/endpoints/folders';
+	import { renameFolder, deleteFolder } from '$lib/api/endpoints/folders';
 	import {
 		addFavorite,
 		removeFavorite,
@@ -47,36 +48,14 @@
 	// this session (the pre-URL-param behaviour).
 	const effectiveFolder = $derived(scopeFolderId ?? filesStore.currentFolder ?? null);
 
-	// Breadcrumb — resolves the scope folder's display name so the sticky
-	// header can show WHICH directory the results come from ("we have no
-	// clue on which directory the search was done" — Ed 2026-07-26).
-	// `getFolderName` is a sync cache peek populated by prior /files
-	// listings; on a cold /search deep-link we fall back to `getFolder`
-	// once, cache the result, and re-render. `$state<string | null>`
-	// with a `$effect` primer avoids blocking the initial render.
-	let scopeFolderName = $state<string | null>(null);
-	$effect(() => {
-		if (!scopeFolderId) {
-			scopeFolderName = null;
-			return;
-		}
-		const cached = getFolderName(scopeFolderId);
-		if (cached) {
-			scopeFolderName = cached;
-			return;
-		}
-		// Cold deep-link — fire once, populate on resolve. If it fails
-		// (folder was deleted, caller lost Read), keep name null so the
-		// breadcrumb just falls back to a short UUID.
-		const id = scopeFolderId;
-		void getFolder(id)
-			.then((f) => {
-				if (scopeFolderId === id) scopeFolderName = f.name;
-			})
-			.catch(() => {
-				if (scopeFolderId === id) scopeFolderName = id.slice(0, 8);
-			});
-	});
+	// Breadcrumb rendering is delegated to the shared `<FolderBreadcrumb>`
+	// component (2026-07-26 migration). It consumes
+	// `GET /api/folders/{id}/ancestors` and renders the full parent chain
+	// with the access-source-appropriate root icon (drive / share / link).
+	// The per-name resolver that used to live here (`getFolder`/`getFolderName`
+	// on the scope folder) is retired — the ancestors endpoint returns the
+	// whole chain in one round-trip, and its inflight-dedup map means the
+	// component's fetch reuses whatever other pages have already primed.
 
 	// Rendered as `<h1 class="page-title">` inside ResourceList. Bakes the
 	// query time / result count into the title string because ResourceList
@@ -756,37 +735,19 @@
 		{/snippet}
 		{#snippet breadcrumb()}
 			<!--
-				Only render when the search is folder-scoped AND the URL
-				param is present — the sticky "Home > Photos" cue answers
-				the "which directory was this search done in?" question
-				Ed raised 2026-07-26. Hidden for scope='all' (searching
-				everywhere → no folder to breadcrumb) and for a fresh
-				`/search?q=…` with no `in=` param.
-
-				Single-segment for now (Home icon + scope folder as a
-				link). Full parent-chain walk is a follow-up; it needs
-				stepping through `parent_id` via `getFolder`, which
-				would be a second pass here.
+				Shared component (same one `/files` uses). Renders only when
+				the search is folder-scoped AND the URL carries `?in=<uuid>`
+				— in "Everywhere" mode `folderId={null}` and the component
+				collapses to empty. Root icon + tooltip come from the
+				ancestors endpoint's `access_source`, so a `/search?in=<X>`
+				where X sits inside a shared drive automatically shows the
+				`[users]` chip + drive name, and a share-boundary scope
+				shows `[share-alt]` + a "Shared with you" link back to
+				/shared-with-me. No `onDrop` — /search doesn't accept row
+				drops into folders.
 			-->
 			{#if scope === 'folder' && scopeFolderId}
-				<nav class="breadcrumb" aria-label={t('breadcrumb.aria', 'Breadcrumb')}>
-					<a
-						href={resolve('/files')}
-						class="breadcrumb-item breadcrumb-home breadcrumb-link"
-						title={t('breadcrumb.home', 'Home')}
-						data-testid="search-breadcrumb-home-link"
-					>
-						<Icon name="home" />
-					</a>
-					<span class="breadcrumb-separator">&gt;</span>
-					<a
-						href={resolve(`/files/${scopeFolderId}`)}
-						class="breadcrumb-item breadcrumb-current breadcrumb-link"
-						data-testid="search-breadcrumb-folder-link"
-					>
-						{scopeFolderName ?? '…'}
-					</a>
-				</nav>
+				<FolderBreadcrumb folderId={scopeFolderId} />
 			{/if}
 		{/snippet}
 		{#snippet itemActions(item)}

@@ -12,8 +12,8 @@ use crate::application::dtos::display_helpers::{
 };
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::{
-    CreateFolderDto, FolderDto, FolderResourceItemDto, FolderResourcesDto, FolderResourcesQuery,
-    ListResourcesOptions, MoveFolderDto, RenameFolderDto,
+    CreateFolderDto, FolderAncestorsDto, FolderDto, FolderResourceItemDto, FolderResourcesDto,
+    FolderResourcesQuery, ListResourcesOptions, MoveFolderDto, RenameFolderDto,
 };
 use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
 use crate::application::ports::external_mount_ports::MountEntry;
@@ -108,6 +108,21 @@ impl FolderHandler {
                 enrich_folder_flags(&state, &mut folder, auth_user.id).await;
                 (StatusCode::OK, Json(folder)).into_response()
             }
+            Err(err) => AppError::from(err).into_response(),
+        }
+    }
+
+    /// `GET /api/folders/{id}/ancestors` — parent-chain + access-source
+    /// for the shared breadcrumb component. See `FolderAncestorsDto`
+    /// for the response shape. Anti-enum via `NotFound` on Read denial.
+    pub(super) async fn get_folder_ancestors_impl(
+        State(state): State<Arc<GlobalAppState>>,
+        auth_user: AuthUser,
+        Path(id): Path<String>,
+    ) -> impl IntoResponse {
+        let service = &state.applications.folder_service_concrete;
+        match service.get_ancestors_with_perms(&id, auth_user.id).await {
+            Ok(dto) => (StatusCode::OK, Json(dto)).into_response(),
             Err(err) => AppError::from(err).into_response(),
         }
     }
@@ -365,6 +380,25 @@ pub async fn get_folder(
     path: Path<String>,
 ) -> impl IntoResponse {
     FolderHandler::get_folder_impl(state, auth_user, path).await
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/folders/{id}/ancestors",
+    params(("id" = String, Path, description = "Leaf folder ID — the walk starts here and climbs the parent chain up to the drive root or the caller's share/drive-membership boundary.")),
+    responses(
+        (status = 200, description = "Ancestor chain + access-source. `ancestors` is root-first, leaf-last (length ≥ 1). See `FolderAncestorsDto`.", body = FolderAncestorsDto),
+        (status = 404, description = "Folder not found or caller lacks Read (anti-enum)"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "folders"
+)]
+pub async fn get_folder_ancestors(
+    state: State<Arc<GlobalAppState>>,
+    auth_user: AuthUser,
+    path: Path<String>,
+) -> impl IntoResponse {
+    FolderHandler::get_folder_ancestors_impl(state, auth_user, path).await
 }
 
 #[utoipa::path(
