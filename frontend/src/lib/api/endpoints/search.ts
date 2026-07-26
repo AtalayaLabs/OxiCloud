@@ -25,6 +25,8 @@ export interface SearchOptions {
 	cursor?: string;
 	/** Sort dimension; maps to backend `order_by`. */
 	sortBy?: SortBy;
+	/** Reverse sort direction; maps to backend `reverse`. */
+	reverse?: boolean;
 	/** Restrict to files, folders, or both (default). */
 	resourceTypes?: ItemType[];
 	/** Abort the request when a newer search supersedes it. */
@@ -58,6 +60,7 @@ export function searchResources(
 	if (opts.limit != null) params.append('limit', String(opts.limit));
 	if (opts.cursor) params.append('cursor', opts.cursor);
 	if (opts.sortBy) params.append('order_by', opts.sortBy);
+	if (opts.reverse) params.append('reverse', 'true');
 	return apiJson<SearchResourcesResponse>(`/api/search?${params.toString()}`, {
 		credentials: 'same-origin',
 		signal: opts.signal

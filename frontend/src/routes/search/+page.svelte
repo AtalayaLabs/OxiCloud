@@ -1,6 +1,10 @@
 <script lang="ts">
 	import EmptyState from '$lib/components/EmptyState.svelte';
-	import ResourceList, { isFile, type ContextAction } from '$lib/components/ResourceList.svelte';
+	import ResourceList, {
+		isFile,
+		type ContextAction,
+		type GroupByDef
+	} from '$lib/components/ResourceList.svelte';
 	import { errorMessage, errorToast } from '$lib/utils/errors';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
@@ -8,7 +12,12 @@
 	import { searchResources } from '$lib/api/endpoints/search';
 	import { fileDownloadUrl, renameFile, deleteFile } from '$lib/api/endpoints/files';
 	import { renameFolder, deleteFolder } from '$lib/api/endpoints/folders';
-	import { addFavorite, removeFavorite } from '$lib/api/endpoints/favorites';
+	import {
+		addFavorite,
+		removeFavorite,
+		dateBucket,
+		sizeBucket
+	} from '$lib/api/endpoints/favorites';
 	import type { FileItem, FolderItem, SearchResourceItem, SortBy } from '$lib/api/types';
 	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
 	import { folderAccessCached, probeFolderAccess } from '$lib/utils/folderAccess';
@@ -65,7 +74,13 @@
 	let total = $state<number | undefined>(undefined);
 	let loading = $state(false);
 	let error = $state<string | null>(null);
-	let sortBy = $state<SortBy>('relevance');
+	// Sort dimension + direction are surfaced through ResourceList's
+	// built-in group-by selector (DisplayModeControls) rather than a
+	// standalone sort `<select>`, so /search matches /favorites /
+	// /recent / /trash. `groupBy` = active group-by key from the
+	// `groupBys` list below; `reversed` = the asc/desc toggle.
+	let groupBy = $state('');
+	let reversed = $state(false);
 	// Derived from the URL — URL is the single source of truth so refresh,
 	// bookmarks and shared links all restore the same scope. Rules:
 	//   `?scope=all`               → 'all' (explicit "Everywhere" toggle;
@@ -193,15 +208,41 @@
 		dateFilter = 'all';
 	}
 
-	const SORTS: { v: SortBy; l: string }[] = [
-		{ v: 'relevance', l: t('search.sort.relevance', 'Relevance') },
-		{ v: 'name', l: t('search.sort.name_asc', 'Name A-Z') },
-		{ v: 'name_desc', l: t('search.sort.name_desc', 'Name Z-A') },
-		{ v: 'date_desc', l: t('search.sort.newest', 'Newest') },
-		{ v: 'date', l: t('search.sort.oldest', 'Oldest') },
-		{ v: 'size_desc', l: t('search.sort.largest', 'Largest') },
-		{ v: 'size', l: t('search.sort.smallest', 'Smallest') }
+	// ── Group / sort dimensions (shown in the DisplayModeControls dropdown) ──
+	// Ed's 2026-07-26 spec: 4 options total —
+	//   • Relevance (default, flat)  — search's native ranking
+	//   • Name       (flat)           — A-Z with the asc/desc toggle for Z-A
+	//   • Size       (grouped)        — bucketed via the shared `sizeBucket`
+	//   • Modified   (grouped)        — bucketed via the shared `dateBucket`
+	// Omitting `bucketOf` = flat list (see the ResourceList interface).
+	// `orderBy` values map 1:1 to the backend `SearchResourcesQuery.order_by`.
+	// The asc/desc button binds to `reversed` and passes through to the
+	// backend `reverse` flag.
+	const groupBys: GroupByDef[] = [
+		{
+			key: '',
+			label: t('search.sort.relevance', 'Relevance'),
+			orderBy: 'relevance',
+			icon: 'ranking-star'
+		},
+		{ key: 'name', label: t('files.name', 'Name'), orderBy: 'name', icon: 'arrow-up-a-z' },
+		{
+			key: 'size',
+			label: t('groupby.size', 'Size'),
+			orderBy: 'size',
+			bucketOf: (item) => sizeBucket(isFile(item) ? item.size : null)
+		},
+		{
+			key: 'modifiedAt',
+			label: t('groupby.modifiedAt', 'Modified date'),
+			orderBy: 'date',
+			bucketOf: (item) => dateBucket(item.modified_at)
+		}
 	];
+
+	function orderByForGroup(): string {
+		return groupBys.find((g) => g.key === groupBy)?.orderBy ?? 'relevance';
+	}
 
 	// Stale-response guard: rapid-fire query/filter/sort changes each start a
 	// full recursive backend search; without the token a SLOW earlier response
@@ -225,7 +266,8 @@
 				: undefined;
 		return {
 			recursive: true,
-			sortBy,
+			sortBy: orderByForGroup() as SortBy,
+			reverse: reversed,
 			folderId,
 			fileTypes: typeFilter === 'all' ? undefined : TYPE_EXT[typeFilter],
 			...sizeBounds(sizeFilter),
@@ -482,8 +524,9 @@
 	];
 
 	$effect(() => {
-		// re-run when query, sort, scope, or any filter changes
-		void sortBy;
+		// re-run when query, sort/direction, scope, or any filter changes
+		void groupBy;
+		void reversed;
 		void scope;
 		void typeFilter;
 		void sizeFilter;
@@ -562,6 +605,17 @@
 		onfavorite={toggleFavorite}
 		onshared={openShareDialog}
 		{contextActions}
+		{groupBys}
+		bind:groupBy
+		bind:reversed
+		onreload={() => {
+			// Group-by or asc/desc changed — reset pagination and let the
+			// `$effect` above pick up the new state on its next tick (it's
+			// already reactive on `groupBy` + `reversed`). Explicit
+			// `cursor = undefined` here just guarantees the in-flight
+			// `next_cursor` from the OLD sort can't feed a stale page 2.
+			cursor = undefined;
+		}}
 		menuPrepare={async (item) => {
 			// Lazy folder-access probe — fires only when the user opens
 			// the context menu on a row, not proactively for every row on
@@ -634,15 +688,14 @@
 				{#each DATES as o (o.v)}<option value={o.v} data-testid={`search-date-${o.v}`}>{o.l}</option
 					>{/each}
 			</select>
-			<select
-				class="sort-select"
-				bind:value={sortBy}
-				aria-label={t('search.sort_by', 'Sort by')}
-				data-testid="search-sort-select"
-			>
-				{#each SORTS as s (s.v)}<option value={s.v} data-testid={`search-sort-${s.v}`}>{s.l}</option
-					>{/each}
-			</select>
+			<!--
+				NOTE: sort dimension + asc/desc live in ResourceList's
+				built-in DisplayModeControls now (fed by `groupBys` +
+				`bind:groupBy` + `bind:reversed` below), matching
+				/favorites / /recent / /trash. The old
+				`<select bind:value={sortBy}>` was removed with the
+				`SORTS` array.
+			-->
 			{#if hasFilters}
 				<button class="clear-filters" data-testid="search-clear-filters-btn" onclick={clearFilters}>
 					<Icon name="times" />
