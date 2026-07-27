@@ -247,7 +247,10 @@ pub struct JobRegistry {
 
 struct RegisteredJob {
     handler: Arc<dyn JobHandler>,
-    interval: Duration,
+    /// `None` = on-demand only (admin trigger + programmatic
+    /// `registry.trigger(name)`), never fires periodically.
+    /// `Some(dur)` = fires every `dur` AND admin-triggerable.
+    interval: Option<Duration>,
     timeout: Option<Duration>,
     /// Single-permit gate that enforces the "one in-flight run per
     /// `job_name`" invariant (see Exclusivity above). A tick that
@@ -258,7 +261,9 @@ struct RegisteredJob {
     /// `running_for_ms` in the skip warning.
     current_run_start: Arc<parking_lot::Mutex<Option<Instant>>>,
     last_outcome: Option<(chrono::DateTime<Utc>, JobOutcome)>,
-    next_run_at: chrono::DateTime<Utc>,
+    /// Only populated for periodic jobs (`interval = Some(_)`). None
+    /// for on-demand-only jobs — `pick_next` skips them.
+    next_run_at: Option<chrono::DateTime<Utc>>,
 }
 ```
 
@@ -266,12 +271,67 @@ struct RegisteredJob {
 themselves during DI:
 
 ```rust
+// Scheduled: fires every N hours AND admin-triggerable.
 registry.register(
     Arc::clone(&trash_cleanup) as Arc<dyn JobHandler>,
-    Duration::from_secs(interval_hours * 3600),
+    Some(Duration::from_secs(interval_hours * 3600)),
     None, // no timeout
 );
+
+// On-demand only: no periodic tick, but the job is still catalogued
+// so the admin endpoint can trigger it uniformly and callers get the
+// same panic-containment + exclusivity guarantees. Used by dedup GC
+// (piggybacks on trash cleanup for its main work; admin trigger for
+// operator-driven runs).
+registry.register(
+    Arc::clone(&dedup_service) as Arc<dyn JobHandler>,
+    None,     // interval — no periodic tick
+    None,     // timeout
+);
 ```
+
+**Interval semantics.**
+- `Some(dur)` — supervisor fires the job every `dur`. Also admin-triggerable.
+- `None` — supervisor never fires the job. Admin-triggerable only. Dispatch still routes through the same `JobRegistry::trigger(name)` path so the job gets the same panic-containment, timeout, exclusivity, and log-line treatment as scheduled ones.
+
+### Manual dispatch — `JobRegistry::trigger(name)`
+
+```rust
+pub async fn trigger(&self, name: &str) -> Option<JobOutcome>;
+```
+
+The single entry point for running a registered job outside the
+scheduler's tick loop. Called by:
+- The admin endpoint (`POST /api/admin/internal/trigger-job/{name}`).
+- Any service that wants a scheduler-uniform dispatch of a peer job
+  (e.g. an inline call from trash cleanup to `trigger("dedup_gc")`,
+  if we later route the piggyback through the registry).
+
+Returns `None` when the name doesn't exist. Returns `Some(JobOutcome)`
+otherwise — even when exclusivity kicks the trigger out (that maps
+to `Ok { count: 0, extra: {"skipped": "already_running"} }`, not
+`None`).
+
+### Design boundary — registry is a catalog, not an event system
+
+Because a job can be triggered from multiple sources (scheduler,
+admin, another service), the registry visually resembles an event
+system. It is not. The distinction matters so we don't accidentally
+extend it into one.
+
+- **Registry:** *"operator or scheduler wants to run this SPECIFIC
+  named job right now."* Imperative. Single handler per name. Direct
+  dispatch. No subscription API.
+- **Event system:** *"when SOMETHING happens, notify anyone
+  interested."* Reactive. Multiple listeners per event type.
+  Publish + subscribe API. Fan-out semantics.
+
+Event-reactive work in OxiCloud goes through the existing lifecycle
+hooks — `FileLifecycleHook`, `BlobLifecycleHook`,
+`UserLifecycleHook`. Those already support multi-subscription and
+event-typed dispatch. Never add subscription machinery to
+`JobRegistry`; if a "when job A finishes, do B" case appears,
+publish a `JobCompleted` lifecycle event and let a hook subscribe.
 
 ### Engine loop
 

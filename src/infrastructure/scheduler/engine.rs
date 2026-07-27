@@ -61,6 +61,9 @@ async fn run(registry: Arc<JobRegistry>) {
     );
 
     loop {
+        // `pick_next` only returns scheduled jobs (interval = Some);
+        // on-demand jobs never appear here and are only reachable
+        // through `JobRegistry::trigger`.
         let Some((name, next_at)) = registry.pick_next().await else {
             tokio::time::sleep(IDLE_POLL).await;
             continue;
@@ -88,19 +91,28 @@ async fn run(registry: Arc<JobRegistry>) {
             continue;
         };
 
-        dispatch(&name, entry).await;
+        // Fire and forget from the supervisor's perspective — we
+        // don't care about the outcome, `dispatch` records it on the
+        // entry and emits the log line itself.
+        let _ = dispatch(&name, entry).await;
     }
 }
 
-/// Dispatch a single tick for `name`. Handles:
+/// Dispatch a single run of `name`. Handles:
 /// - exclusivity: try-acquire the in-flight permit; skip + warn if held,
 /// - spawning under panic containment (via `tokio::spawn` + `JoinHandle`),
 /// - timeout enforcement (if `ScheduledJob.timeout` is set),
-/// - recording `last_outcome` + advancing `next_run_at` on completion.
+/// - recording `last_outcome` + advancing `next_run_at` on completion,
+/// - emitting the uniform `oxicloud::scheduler::job.run` log line.
+///
+/// Returns the [`JobOutcome`] the run produced. The scheduler loop
+/// discards this (records-only-via-side-effect); admin/programmatic
+/// callers via [`JobRegistry::trigger`](super::registry::JobRegistry::trigger)
+/// surface it to the caller.
 ///
 /// Non-panicking; every failure path resolves to a `JobOutcome::Err`
 /// with a `cause` log field.
-async fn dispatch(name: &str, entry: Arc<JobEntry>) {
+pub(super) async fn dispatch(name: &str, entry: Arc<JobEntry>) -> JobOutcome {
     // Try to acquire the single-permit gate. `try_acquire` is
     // non-blocking — if held, we know the previous run is still
     // executing and skip this tick.
@@ -116,17 +128,26 @@ async fn dispatch(name: &str, entry: Arc<JobEntry>) {
                     .map(|t| t.elapsed().as_millis())
                     .unwrap_or(0)
             };
+            // On-demand jobs have `interval = None`; log 0 rather than
+            // fabricate one. Operators reading this line for a scheduled
+            // job compare `interval_ms` vs `running_for_ms`; the same
+            // line for an on-demand job just tells them a concurrent
+            // trigger raced an in-flight run.
+            let interval_ms = entry.interval.map(|d| d.as_millis()).unwrap_or(0);
             tracing::warn!(
                 target: "oxicloud::scheduler",
                 event = "job.tick_skipped",
                 job = %name,
-                interval_ms = entry.interval.as_millis(),
+                interval_ms = interval_ms,
                 running_for_ms = running_for_ms,
                 "{} still running past its interval — tick skipped",
                 name,
             );
             advance_next_run(&entry);
-            return;
+            return JobOutcome::ok_with(
+                0,
+                serde_json::json!({ "skipped": "already_running" }),
+            );
         }
     };
 
@@ -169,14 +190,15 @@ async fn dispatch(name: &str, entry: Arc<JobEntry>) {
         let mut state = entry.state.lock().expect("JobState mutex poisoned");
         state.current_run_start = None;
         state.last_outcome = Some((started_wall, outcome.clone()));
-        // Same rule as the skip branch — schedule advances by one
-        // interval, no backlog queueing. If this run took longer than
-        // the interval, the next `pick_next` immediately sees a past
-        // due time and dispatches with zero sleep, but the exclusivity
-        // check keeps the in-flight guarantee intact.
-        state.next_run_at = Utc::now()
-            + chrono::Duration::from_std(entry.interval)
-                .unwrap_or_else(|_| chrono::Duration::seconds(0));
+        // Only scheduled jobs advance next_run_at. On-demand jobs stay
+        // at None so `pick_next` never returns them, even after a
+        // trigger. Same rule as the skip branch — schedule advances
+        // by one interval, no backlog queueing.
+        state.next_run_at = entry.interval.map(|dur| {
+            Utc::now()
+                + chrono::Duration::from_std(dur)
+                    .unwrap_or_else(|_| chrono::Duration::seconds(0))
+        });
     }
 
     // Log line. `outcome=ok` runs are informational; `outcome=err` include
@@ -184,16 +206,20 @@ async fn dispatch(name: &str, entry: Arc<JobEntry>) {
     log_outcome(name, &outcome, cause, elapsed_ms);
 
     drop(permit);
+    outcome
 }
 
 /// Advance `next_run_at` by one interval without touching outcome or
-/// run-start (skip-path helper). Keeps the schedule steady rather
-/// than queueing missed ticks.
+/// run-start (skip-path helper). No-op for on-demand jobs — `interval`
+/// is `None`, so `next_run_at` stays `None` and `pick_next` continues
+/// to skip them.
 fn advance_next_run(entry: &JobEntry) {
     let mut state = entry.state.lock().expect("JobState mutex poisoned");
-    state.next_run_at = Utc::now()
-        + chrono::Duration::from_std(entry.interval)
-            .unwrap_or_else(|_| chrono::Duration::seconds(0));
+    state.next_run_at = entry.interval.map(|dur| {
+        Utc::now()
+            + chrono::Duration::from_std(dur)
+                .unwrap_or_else(|_| chrono::Duration::seconds(0))
+    });
 }
 
 /// Convert the `Result<JobOutcome, JoinError>` returned by the spawned
@@ -332,7 +358,7 @@ mod tests {
 
         let registry = Arc::new(JobRegistry::new());
         registry
-            .register(handler, Duration::from_millis(100), None)
+            .register(handler, Some(Duration::from_millis(100)), None)
             .await
             .unwrap();
         let entry = registry.get("overrun").await.unwrap();
@@ -368,7 +394,7 @@ mod tests {
         registry
             .register(
                 handler,
-                Duration::from_millis(100),
+                Some(Duration::from_millis(100)),
                 Some(Duration::from_millis(50)),
             )
             .await

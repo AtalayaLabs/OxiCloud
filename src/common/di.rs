@@ -886,7 +886,7 @@ impl AppServiceFactory {
         let interval = cleanup_service.interval();
         if let Err(e) = core
             .job_registry
-            .register(cleanup_service.clone(), interval, None)
+            .register(cleanup_service.clone(), Some(interval), None)
             .await
         {
             // Duplicate registration is the only failure mode today and
@@ -1146,7 +1146,7 @@ impl AppServiceFactory {
         );
         if let Err(e) = core
             .job_registry
-            .register(service.clone(), interval, None)
+            .register(service.clone(), Some(interval), None)
             .await
         {
             tracing::error!("Failed to register storage_reconcile job: {e}");
