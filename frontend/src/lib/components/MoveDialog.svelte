@@ -10,9 +10,12 @@
 	import { drives as drivesStore, driveIcon } from '$lib/stores/drives.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 
-	// A drive accepts new items only if the caller can Create on its root.
-	// Owner / Editor / Contributor cover that; Commenter + Viewer cannot.
-	const WRITABLE_ROLES: readonly DriveRole[] = ['owner', 'editor', 'contributor'] as const;
+	// A drive accepts new items only if the caller can Create on its
+	// root. Drive-scope roles are the management-ladder subset —
+	// Owner / Editor / Viewer — so writability collapses to the top two;
+	// Viewer cannot. `contributor`/`commenter` don't appear at drive
+	// scope (folder/file-scope semantics), so they're not in `DriveRole`.
+	const WRITABLE_ROLES: readonly DriveRole[] = ['owner', 'editor'] as const;
 	function isWritable(d: Drive): boolean {
 		return d.caller_role != null && WRITABLE_ROLES.includes(d.caller_role);
 	}

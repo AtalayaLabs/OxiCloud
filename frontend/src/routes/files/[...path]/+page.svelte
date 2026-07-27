@@ -10,8 +10,7 @@
 		createFolder,
 		deleteFolder,
 		fetchFolderPage,
-		getFolder,
-		getFolderName,
+		getFolderAncestors,
 		invalidateFolderCache,
 		moveFolder,
 		rememberFolderName,
@@ -41,6 +40,7 @@
 	import { preferences } from '$lib/stores/preferences.svelte';
 	import type { FileItem, FolderItem, ItemType } from '$lib/api/types';
 	import ReadOnlyBanner from '$lib/components/ReadOnlyBanner.svelte';
+	import FolderBreadcrumb from '$lib/components/FolderBreadcrumb.svelte';
 	import ResourceList, {
 		isFile,
 		type GroupByDef as RLGroupByDef
@@ -48,7 +48,7 @@
 	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 	import { confirmDialog, promptDialog } from '$lib/stores/dialogs.svelte';
-	import { drives as drivesStore, driveIcon } from '$lib/stores/drives.svelte';
+	import { drives as drivesStore } from '$lib/stores/drives.svelte';
 	import { files as filesStore } from '$lib/stores/files.svelte';
 	import { session } from '$lib/stores/session.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
@@ -67,26 +67,16 @@
 	// /files → home root; /files/a/b → folder b inside a inside home.
 	const pathSegments = $derived((page.params.path ?? '').split('/').filter((s) => s.length > 0));
 
-	// First-crumb icon mirrors the drive at pathSegments[0]: `home` for the
-	// default-personal, `folder` for a secondary personal, `users` for a
-	// shared drive. Falls back to `home` while the drives list is loading
-	// or when the URL's leading segment isn't a known drive root (deep-link
-	// into a sub-folder bypasses drive identification — same limitation as
-	// the breadcrumb name resolution).
-	const rootIcon = $derived.by(() => {
-		const drive = drivesStore.findByRootFolderId(pathSegments[0] ?? null);
-		return drive ? driveIcon(drive) : 'home';
-	});
-
 	// The drive whose content the user is currently browsing.
 	//
 	// Priorities (first match wins):
-	//   1. `currentFolderDriveId` — set by `load()` after a `getFolder`
-	//      fetch on the current folder. Authoritative for deep-links
-	//      too (the URL's leading segment might not be a drive root).
+	//   1. `currentFolderDriveId` — set by `load()` from the ancestors
+	//      response (`chain.ancestors.at(-1).drive_id`). Authoritative
+	//      for deep-links too (the URL's leading segment might not be a
+	//      drive root).
 	//   2. `listing.folders[0]?.drive_id` — fast-path when the folder
-	//      has at least one subfolder; avoids the extra round-trip on
-	//      the initial `applyListing` before `getFolder` returns.
+	//      has at least one subfolder; avoids waiting on the ancestors
+	//      response before the initial `applyListing`.
 	//      (`FileDto` doesn't carry `drive_id` today, so we can't use
 	//      files as a fallback source; folders alone.)
 	//   3. `drivesStore.findByRootFolderId(pathSegments[0])` — legacy
@@ -156,11 +146,23 @@
 	const hiddenCount = $derived(
 		preferences.hideDotfiles ? countHidden(listing.folders) + countHidden(listing.files) : 0
 	);
-	let crumbs = $state<Array<{ id: string; name: string }>>([]);
 	let currentId = $state<string | null>(null);
-	let loading = $state(false);
-	// Skeleton is delayed ~100ms behind `loading` so fast loads don't flash it.
-	let showSkeleton = $state(false);
+	// Default `true` (not `false`) so the first render — before the
+	// `$effect` fires `load()` — shows the "loading" arm of ResourceList
+	// (skeleton, gated on 100 ms delay) instead of the "empty" arm
+	// ("No elements here"). Ed's 2026-07-26 report: a brief empty-state
+	// flash appeared between page mount and the first fetch landing.
+	// `load()` still writes `loading = true` before its first await, so
+	// mid-navigation clears work as before.
+	let loading = $state(true);
+	// `showSkeleton` used to sit 100 ms behind `loading` to avoid flashing
+	// skeleton bars on fast loads. Retired 2026-07-26 because ResourceList
+	// received `loading={showSkeleton}` (not the real `loading` state), so
+	// during those 100 ms it saw `loading=false && items=[]` and rendered
+	// the empty-state ("Folder is empty") — the flash Ed reported. Pass
+	// the real `loading` instead; the skeleton renders instantly for
+	// slow loads and instantly-disappears for fast loads (users don't
+	// perceive a sub-100 ms frame flip).
 	let error = $state<string | null>(null);
 	let fileInput = $state<HTMLInputElement | null>(null);
 	let uploading = $state(false);
@@ -219,24 +221,6 @@
 		}
 	}
 
-	async function buildCrumbs(segments: string[]): Promise<Array<{ id: string; name: string }>> {
-		// Names come from the cache first (every listing names its children, so
-		// step-by-step navigation needs zero requests); only ids we've never seen
-		// — a cold deep-link's ancestors — are fetched, in parallel.
-		return Promise.all(
-			segments.map(async (id) => {
-				const known = getFolderName(id);
-				if (known !== undefined) return { id, name: known };
-				try {
-					const f = await getFolder(id);
-					return { id, name: f.name };
-				} catch {
-					return { id, name: '…' };
-				}
-			})
-		);
-	}
-
 	// Bumped on every load; a stale in-flight response checks this before it
 	// writes state, so a fast navigation can't be clobbered by an older fetch.
 	let loadSeq = 0;
@@ -262,7 +246,6 @@
 		const seq = ++loadSeq;
 
 		let folderId: string;
-		let skeletonTimer: ReturnType<typeof setTimeout> | undefined;
 		if (reset) {
 			// External users have no home folder; send them to shared-with-me.
 			if (session.isExternalUser && pathSegments.length === 0) {
@@ -294,32 +277,55 @@
 			currentId = folderId;
 			filesStore.currentFolder = folderId;
 
-			// Reset paging state: previous folder's cursor is meaningless here,
-			// and mixing its rows with the new folder's would flash a wrong list.
-			pageCursor = undefined;
-			listing = { folders: [], files: [] };
-			orderedItems = [];
+			// Reset paging state: previous folder's cursor is meaningless
+			// on the new folder — must clear or the first append would
+			// paginate the OLD folder's next-page slice.
+			//
+			// `listing` / `orderedItems` are deliberately NOT cleared —
+			// the previous folder's rows stay on screen during the (~25 ms)
+			// fetch, then the response handler swaps in the new folder's
+			// content atomically. Stale-while-revalidate for the inter-
+			// folder case (Ed 2026-07-26: the pre-refactor clear-then-
+			// fetch-then-render sequence flashed either the SkeletonList
+			// or the "Folder is empty" empty-state for the fetch window,
+			// depending on which arm ResourceList happened to render for
+			// the empty-loading state; neither is useful for a 25 ms
+			// transition). First-mount (no previous content) still hits
+			// the skeleton correctly because `orderedItems` defaults `[]`
+			// and `loading` defaults `true` — the empty-loading arm
+			// gates on that.
 			loading = true;
+			pageCursor = undefined;
 
-			// Delayed skeleton so fast loads don't flash it.
-			skeletonTimer = setTimeout(() => {
-				if (loading) showSkeleton = true;
-			}, 100);
+			// Legacy path-chain URLs canonicalize to the single-id form on
+			// load. `/files/A/B/C` still resolves (router matches `[...path]`)
+			// but the URL bar and any subsequent bookmark reflects the
+			// canonical `/files/C` — see 2026-07-26 URL-format discussion.
+			// `replaceState` (not `pushState`) so the back button doesn't
+			// gain a spurious entry.
+			if (pathSegments.length > 1 && typeof window !== 'undefined') {
+				window.history.replaceState({}, '', resolve(`/files/${folderId}`));
+			}
 
-			// Breadcrumbs resolve independently so they never block the grid paint.
-			void buildCrumbs(pathSegments).then((trail) => {
-				if (seq === loadSeq) crumbs = trail;
-			});
-
-			// Resolve the current folder's drive_id so the read-only banner
-			// works even on deep-links into a sub-folder. Guarded by `seq`.
-			void getFolder(folderId)
-				.then((folder) => {
-					if (seq === loadSeq) currentFolderDriveId = folder.drive_id;
+			// Resolve the current folder's drive_id via the ancestors
+			// response — every `FolderAncestor` carries `drive_id`, so
+			// the shared `<FolderBreadcrumb>`'s in-flight call is the
+			// same round-trip we'd otherwise duplicate here. The
+			// `ancestorsInflight` dedup map inside `getFolderAncestors`
+			// means this second caller gets the same promise, not a
+			// second HTTP request — the extra `getFolder(folderId)`
+			// that used to fire here is gone (2026-07-26 UX pass on
+			// /files load traffic).
+			void getFolderAncestors(folderId)
+				.then((chain) => {
+					if (seq !== loadSeq) return;
+					const leaf = chain.ancestors.at(-1);
+					if (leaf) currentFolderDriveId = leaf.drive_id;
 				})
 				.catch(() => {
 					// Fallback chain in `currentDrive` still gives us a
-					// best-effort drive resolution.
+					// best-effort drive resolution (listing.folders[0].drive_id,
+					// then drivesStore lookup by root-folder id).
 				});
 		} else {
 			// Append path: reuse `currentId`. `pageCursor === undefined` means
@@ -360,10 +366,8 @@
 						? e.message
 						: String(e);
 		} finally {
-			if (skeletonTimer !== undefined) clearTimeout(skeletonTimer);
 			if (seq === loadSeq && reset) {
 				loading = false;
-				showSkeleton = false;
 			}
 		}
 	}
@@ -421,7 +425,10 @@
 	}
 
 	function openFolder(folder: FolderItem) {
-		goto(resolve(`/files/${[...pathSegments, folder.id].join('/')}`));
+		// Canonical single-id URL. Legacy `/files/A/B/C` still resolves
+		// (canonicalize-on-load rewrites it inside `load()`), but new
+		// navigation lands directly on `/files/{id}`.
+		goto(resolve(`/files/${folder.id}`));
 	}
 
 	async function onNewFolder() {
@@ -1185,12 +1192,12 @@
 	// ── Drag-to-move ─────────────────────────────────────────────────────────
 	const DRAG_TYPE = 'application/x-oxi-item';
 	let dropFolderId = $state<string | null>(null);
-	// Highlighted breadcrumb crumb during an OxiCloud drag. Holds the
-	// crumb's folder id, or the sentinel `'__home__'` for the home link
-	// (which doesn't have a stable folder id — depends on the caller's
-	// home folder resolution).
-	const CRUMB_HOME_ID = '__home__';
-	let dropCrumbId = $state<string | null>(null);
+	// Per-crumb drop highlight state lived here until the breadcrumb
+	// migrated to the shared `<FolderBreadcrumb>` component (2026-07-26),
+	// which owns its own hover state. The `CRUMB_HOME_ID` sentinel is
+	// gone too — the shared component's root icon isn't a drop target
+	// (the drive root's ancestor is always the drive itself, and
+	// dropping "at the drive" is ambiguous).
 
 	// Copy-vs-move on drop.
 	//
@@ -1871,7 +1878,7 @@
 				)
 			: t('files.empty_hint', 'Drop files here or use the Upload button to add files.')}
 		emptyIcon={hiddenCount > 0 ? 'eye-slash' : undefined}
-		loading={showSkeleton}
+		{loading}
 		error={error ?? undefined}
 		selectable
 		shiftRangeSelect
@@ -1923,61 +1930,24 @@
 		{/snippet}
 
 		{#snippet breadcrumb()}
-			<nav class="breadcrumb" aria-label="Breadcrumb">
-				<!-- Persistent home link → the root listing (bare /files canonicalizes to
-				     the user's drive root). `buildCrumbs` returns only the path folders,
-				     so this is the single always-present "go home" affordance. Both the
-				     home link and every crumb accept row drops via the same
-				     `application/x-oxi-item` MIME the item-drag uses. The
-				     `.drop-target` class visually highlights the crumb during a
-				     hover-over so the user sees WHICH crumb the drop will land on. -->
-				<a
-					href={resolve('/files')}
-					class="breadcrumb-item breadcrumb-home breadcrumb-link"
-					class:drop-target={dropCrumbId === CRUMB_HOME_ID}
-					title={t('breadcrumb.home', 'Home')}
-					data-testid="files-breadcrumb-home-link"
-					ondragover={(e) => e.dataTransfer?.types.includes(DRAG_TYPE) && e.preventDefault()}
-					ondragenter={(e) => {
-						if (e.dataTransfer?.types.includes(DRAG_TYPE)) dropCrumbId = CRUMB_HOME_ID;
-					}}
-					ondragleave={() => {
-						if (dropCrumbId === CRUMB_HOME_ID) dropCrumbId = null;
-					}}
-					ondrop={(e) => {
-						dropCrumbId = null;
-						if (session.homeFolderId) onCrumbDrop(e, session.homeFolderId);
-					}}
-				>
-					<Icon name={rootIcon} />
-				</a>
-				{#each crumbs as c, i (c.id)}
-					<span class="breadcrumb-separator">&gt;</span>
-					{#if i === crumbs.length - 1}
-						<span class="breadcrumb-item breadcrumb-current">{c.name}</span>
-					{:else}
-						<a
-							href={resolve(`/files/${pathSegments.slice(0, i + 1).join('/')}`)}
-							class="breadcrumb-item breadcrumb-link"
-							class:drop-target={dropCrumbId === c.id}
-							data-testid={`files-breadcrumb-${c.id}`}
-							ondragover={(e) => e.dataTransfer?.types.includes(DRAG_TYPE) && e.preventDefault()}
-							ondragenter={(e) => {
-								if (e.dataTransfer?.types.includes(DRAG_TYPE)) dropCrumbId = c.id;
-							}}
-							ondragleave={() => {
-								if (dropCrumbId === c.id) dropCrumbId = null;
-							}}
-							ondrop={(e) => {
-								dropCrumbId = null;
-								onCrumbDrop(e, c.id);
-							}}
-						>
-							{c.name}
-						</a>
-					{/if}
-				{/each}
-			</nav>
+			<!--
+				Shared component (2026-07-26 migration). Fetches the ancestor
+				chain in ONE round-trip via `GET /api/folders/{id}/ancestors`
+				(replaces the per-segment `buildCrumbs` walker + N `getFolder`
+				requests). Root icon is derived from `access_source.kind` on
+				the endpoint response — no more `drivesStore.findByRootFolderId`
+				lookup here.
+
+				`onDrop` prop preserves the row-drop-to-crumb behaviour: the
+				component handles the `dragover`/`dragenter`/`dragleave` UI +
+				`.drop-target` highlight; we get the target folder id + the
+				raw event and dispatch to `onCrumbDrop`.
+			-->
+			<FolderBreadcrumb
+				folderId={currentId}
+				onDrop={(target, e) => onCrumbDrop(e, target)}
+				dragMime={DRAG_TYPE}
+			/>
 		{/snippet}
 
 		{#snippet actions()}
@@ -2142,7 +2112,8 @@
 				onclick={() => {
 					const id = ctxTarget!.id;
 					closeContext();
-					goto(resolve(`/files/${[...pathSegments, id].join('/')}`));
+					// Canonical single-id URL — see `openFolder` above.
+					goto(resolve(`/files/${id}`));
 				}}><Icon name="folder-open" /> {t('files.open', 'Open')}</button
 			>
 			<button

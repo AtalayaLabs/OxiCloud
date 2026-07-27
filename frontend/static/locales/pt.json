@@ -459,7 +459,14 @@
     "group_name_taken": "Já existe um grupo com este nome."
   },
   "breadcrumb": {
-    "home": "Início"
+    "home": "Início",
+    "aria": "Trilha de navegação",
+    "root": {
+      "personal_drive": "Unidade pessoal: {{name}}",
+      "shared_drive": "Unidade compartilhada: {{name}}",
+      "direct_share": "Compartilhado com você",
+      "token": "Via link compartilhado"
+    }
   },
   "trash": {
     "empty_trash": "Esvaziar lixeira",

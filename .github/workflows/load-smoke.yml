@@ -18,6 +18,14 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # `.cargo/config.toml` sets `-C target-cpu=native` for dev speed, but
+  # GitHub-hosted runners are a heterogeneous pool — cached rlibs / proc-
+  # macro dylibs baked with AVX-512 on one runner crash with SIGILL when
+  # rustc dlopens them on a leaner one. Env RUSTFLAGS fully replaces the
+  # config.toml value (they don't merge), so pinning to `x86-64-v3` here
+  # (AVX2 baseline — every GHA runner has it) makes cached artifacts
+  # portable across the pool without touching local dev.
+  RUSTFLAGS: "-C target-cpu=x86-64-v3"
 
 jobs:
   smoke:
@@ -31,7 +39,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: load
+          # Bumped suffix busts any existing cache poisoned with native-CPU
+          # ISA from a prior build (see RUSTFLAGS note above).
+          shared-key: load-v2
 
       - name: Install k6
         uses: grafana/setup-k6-action@v1

@@ -21,6 +21,14 @@
 .breadcrumb-link {
     cursor: pointer;
     color: var(--color-text-muted);
+    /* No underline at rest OR on hover — Ed's 2026-07-26 UX call: the
+       hover background alone is enough affordance, and the pre-fix
+       browser-default underline mixed awkwardly with the bold-leaf
+       styling (leaf was bold+plain, root link was underlined+plain,
+       and the styling difference read as "these do different things"
+       when in fact both are simple navigations). Uniform link chrome
+       via background-on-hover; the bold-current class flags the leaf. */
+    text-decoration: none;
 }
 
 .breadcrumb-link.drop-target {
@@ -29,15 +37,19 @@
 }
 
 .breadcrumb-link:hover {
-    text-decoration: underline;
     color: var(--color-accent);
     background: var(--color-accent-bg);
 }
 
+/* Applied to the LEAF crumb (last visible item in the chain) so it
+   reads as "you are here". Every crumb — leaf included — is now a
+   link (Ed's 2026-07-26 UX ask: from `/search` the fastest way to
+   jump into the searched folder is to click its name in the crumb
+   trail; making the leaf clickable serves that path with zero extra
+   clicks). Only the bold weight distinguishes it from an intermediate. */
 .breadcrumb-current {
     font-weight: var(--weight-semibold);
     color: var(--color-text-black);
-    cursor: default;
 }
 
 .breadcrumb-separator {

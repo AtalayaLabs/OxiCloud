@@ -20,7 +20,9 @@ use crate::application::dtos::favorites_dto::{
 };
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::{
-    CreateFolderDto, FolderDto, FolderResourceItemDto, MoveFolderDto, RenameFolderDto,
+    AccessSourceDriveDto, AccessSourceDto, AccessSourceKind, AccessSourceSubjectDto,
+    AccessSourceSubjectKind, CreateFolderDto, FolderAncestorDto, FolderAncestorsDto, FolderDto,
+    FolderResourceItemDto, MoveFolderDto, RenameFolderDto,
 };
 use crate::application::dtos::folder_listing_dto::FolderListingDto;
 use crate::application::dtos::grant_dto::{
@@ -96,6 +98,7 @@ use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
         // Folder handlers (free functions — see folder_handler.rs for why)
         handlers::folder_handler::create_folder,
         handlers::folder_handler::get_folder,
+        handlers::folder_handler::get_folder_ancestors,
         handlers::folder_handler::list_root_folders,
         handlers::folder_handler::list_folder_resources,
         handlers::folder_handler::rename_folder,
@@ -264,6 +267,14 @@ use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
             FolderListingDto,
             FolderResourceItemDto,
             ResourceContentDto,
+            // Folder ancestor chain (breadcrumb endpoint)
+            FolderAncestorsDto,
+            FolderAncestorDto,
+            AccessSourceDto,
+            AccessSourceKind,
+            AccessSourceDriveDto,
+            AccessSourceSubjectDto,
+            AccessSourceSubjectKind,
             // File schemas
             FileDto,
             // Delta-upload schemas

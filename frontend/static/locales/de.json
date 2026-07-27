@@ -459,7 +459,14 @@
     "group_name_taken": "Eine Gruppe mit diesem Namen existiert bereits."
   },
   "breadcrumb": {
-    "home": "Startseite"
+    "home": "Startseite",
+    "aria": "Brotkrumen",
+    "root": {
+      "personal_drive": "Persönliches Laufwerk: {{name}}",
+      "shared_drive": "Geteiltes Laufwerk: {{name}}",
+      "direct_share": "Für Sie freigegeben",
+      "token": "Über freigegebenen Link"
+    }
   },
   "trash": {
     "empty_trash": "Papierkorb leeren",

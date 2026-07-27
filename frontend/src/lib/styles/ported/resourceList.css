@@ -360,6 +360,19 @@
     white-space: nowrap;
 }
 
+/* List-view rows are fixed 56px (VirtualList `rowHeight={56}`), and a
+   full UserVignette stacks avatar (32px) + name (20px) + email (15px)
+   → ~40px block that doesn't visually fit the flex-centered cell —
+   the email tail was cropped. Hide the email in dense-row contexts
+   (Ed 2026-07-26); the identity signal remains (avatar + name), and
+   the email survives in the ShareDialog / recipient pickers where
+   UserVignette was originally scaled for. Grid view's owner cell is
+   unaffected (it never renders a UserVignette — the sharer surfaces
+   through the `.file-icon__badge` slot instead). */
+.files-list-view .file-item .owner-cell .uv__email {
+    display: none;
+}
+
 /* Expand the grid track as soon as at least one owner cell is visible. */
 .files-list-view:has(.owner-cell:not(.hidden)) {
     --files-list-columns: 36px minmax(200px, 2fr) 120px 100px 110px 130px 200px;
@@ -409,7 +422,10 @@
     overflow: hidden;
 }
 
-.files-list-view .file-item .name-cell span {
+/* Same narrowing rationale as the grid view rule below — target only
+   the name text span, not every descendant span, so `.file-icon__badge`
+   overlay contents (avatars, chips) aren't sized as text. */
+.files-list-view .file-item .name-cell__text {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -571,9 +587,21 @@
 }
 
 /* Reveal the kebab on hover for cleaner rows — but only on hover-capable
-   devices, so touch users (no hover) keep it always tappable. Stays visible
-   on keyboard focus within the row. Applies to both list and grid views
-   because both keep the kebab inside `.action-cell`. */
+   devices, so touch users (no hover) keep it always tappable. Applies
+   to both list and grid views because both keep the kebab inside
+   `.action-cell`.
+
+   Keyboard accessibility comes from `:focus-visible` on the kebab
+   button itself (below), NOT `:focus-within` on the row. Using
+   `:focus-within` on the row was a lingering-visibility trap:
+     • dragstart landed focus on the dragged descendant → row
+       `:focus-within` stayed true after the pointer left → kebab
+       stayed visible on an otherwise-idle row.
+     • Opening a context-menu / ShareDialog portal moved focus outside
+       the row (good) but if focus briefly bounced through the kebab
+       first, the reveal could persist through the transition.
+   Ed's 2026-07-26 report: "when starting dragging or when using the
+   share dialog, I have the [...] button that remains visible." */
 @media (hover: hover) {
     .files-list-view .file-item .action-cell button.file-actions,
     .files-grid-view .file-item .action-cell button.file-actions {
@@ -582,9 +610,9 @@
     }
 
     .files-list-view .file-item:hover .action-cell button.file-actions,
-    .files-list-view .file-item:focus-within .action-cell button.file-actions,
     .files-grid-view .file-item:hover .action-cell button.file-actions,
-    .files-grid-view .file-item:focus-within .action-cell button.file-actions {
+    .files-list-view .file-item .action-cell button.file-actions:focus-visible,
+    .files-grid-view .file-item .action-cell button.file-actions:focus-visible {
         opacity: 1;
     }
 }
@@ -1024,11 +1052,16 @@
     margin-top: var(--space-1);
 }
 
-.files-grid-view .file-item .name-cell span {
+/* Narrowed from the pre-fix `.name-cell span` (descendant selector) to
+   the specific name-text span. The broad rule caught EVERY span inside
+   `.name-cell` — including the `.file-icon__badge` overlay and, inside
+   it, `<UserAvatar>`'s `.ua` wrapper — and slapped 8 px of top/bottom
+   padding on them, which crushed the badge's `<img>` from 22 × 22 down
+   to 22 × 6 (Ed 2026-07-26). Text ellipsis / padding stays on the text
+   span alone; overlay children in `.file-icon` are unaffected. */
+.files-grid-view .file-item .name-cell__text {
     display: block;
     max-width: 100%;
-    /* Ellipsis must live on the span (the text node), not the flex parent,
-       or long names clip with no "…". */
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1391,10 +1424,15 @@
     transition: opacity var(--motion-fast) var(--ease-standard);
 }
 
+/* Reveal on hover OR when the button itself has keyboard focus. The
+   pre-fix `:focus-within` on the row was a lingering-visibility trap
+   during drag / dialog transitions — see the `.file-actions` block
+   above for the full rationale. `:focus-visible` on the button gives
+   keyboard users the same reveal without the row-scope side effect. */
 .files-list-view .file-item:hover .action-cell .btn-action--hover,
-.files-list-view .file-item:focus-within .action-cell .btn-action--hover,
 .files-grid-view .file-item:hover .action-cell .btn-action--hover,
-.files-grid-view .file-item:focus-within .action-cell .btn-action--hover {
+.files-list-view .file-item .action-cell .btn-action--hover:focus-visible,
+.files-grid-view .file-item .action-cell .btn-action--hover:focus-visible {
     opacity: 1;
     pointer-events: auto;
 }

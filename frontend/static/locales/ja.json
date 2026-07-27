@@ -459,7 +459,14 @@
     "group_name_taken": "この名前のグループはすでに存在します。"
   },
   "breadcrumb": {
-    "home": "ホーム"
+    "home": "ホーム",
+    "aria": "パンくずリスト",
+    "root": {
+      "personal_drive": "個人ドライブ: {{name}}",
+      "shared_drive": "共有ドライブ: {{name}}",
+      "direct_share": "あなたに共有されました",
+      "token": "共有リンク経由"
+    }
   },
   "trash": {
     "empty_trash": "ゴミ箱を空にする",

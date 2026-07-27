@@ -464,7 +464,14 @@
     "group_name_taken": "Ya existe un grupo con este nombre."
   },
   "breadcrumb": {
-    "home": "Inicio"
+    "home": "Inicio",
+    "aria": "Ruta de navegación",
+    "root": {
+      "personal_drive": "Unidad personal: {{name}}",
+      "shared_drive": "Unidad compartida: {{name}}",
+      "direct_share": "Compartido contigo",
+      "token": "A través de enlace compartido"
+    }
   },
   "trash": {
     "empty_trash": "Vaciar papelera",

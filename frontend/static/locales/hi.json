@@ -459,7 +459,14 @@
     "group_name_taken": "इस नाम का एक समूह पहले से मौजूद है।"
   },
   "breadcrumb": {
-    "home": "होम"
+    "home": "होम",
+    "aria": "ब्रेडक्रम्ब",
+    "root": {
+      "personal_drive": "निजी ड्राइव: {{name}}",
+      "shared_drive": "साझा ड्राइव: {{name}}",
+      "direct_share": "आपके साथ साझा किया गया",
+      "token": "साझा लिंक के माध्यम से"
+    }
   },
   "trash": {
     "empty_trash": "रद्दी खाली करें",

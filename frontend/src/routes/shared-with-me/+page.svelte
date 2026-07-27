@@ -24,6 +24,7 @@
 		type GroupByDef,
 		type ItemContext
 	} from '$lib/components/ResourceList.svelte';
+	import UserAvatar from '$lib/components/UserAvatar.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 	import { session } from '$lib/stores/session.svelte';
 
@@ -259,7 +260,43 @@
 		cursor = undefined;
 		load(true, orderBy, rev);
 	}}
-/>
+>
+	{#snippet cardOverlay(_item, ctx)}
+		<!--
+			Sharer avatar anchored to the bottom-right of the CARD (not
+			the file-icon). Uses ResourceList's `cardOverlay` slot,
+			which renders inside `.file-item` as a sibling of
+			`.action-cell` — same positioned ancestor, so the offset
+			matches the top-right cluster exactly. Grid view only;
+			list view surfaces the sharer through the owner column.
+
+			Positioning lives in the `<style>` block below; the snippet
+			just emits the chip and lets CSS place it. `ctx.ownerId`
+			(seeded from `granted_by` in `load()`) is the source of
+			truth for "who shared this."
+		-->
+		{#if ctx?.ownerId}
+			<span class="shared-with-me__sharer">
+				<UserAvatar userId={ctx.ownerId} size={30} />
+			</span>
+		{/if}
+	{/snippet}
+	{#snippet bucketLabel(_key, label)}
+		<!--
+			"Shared by" swimlane header — prefix the label with the
+			sharer's avatar so the group is visually anchored to a
+			person, not just a UUID-ish name. Other group-by dimensions
+			(`type`, `sharedAt`, or the flat `Name` sort) don't have
+			an ownerId as the key, so render only the plain label —
+			`_key` for those is a category / date-bucket / empty string
+			that has no avatar equivalent.
+		-->
+		{#if groupBy === 'sharedBy' && _key}
+			<UserAvatar userId={_key} size={30} />
+		{/if}
+		<span class="rl-swimlane-header__text">{label}</span>
+	{/snippet}
+</ResourceList>
 
 {#if fileViewer.component}
 	{@const FileViewer = fileViewer.component}
@@ -267,6 +304,35 @@
 {/if}
 
 <style>
+	/*
+	 * Sharer avatar chip — anchored to the bottom-right of the card
+	 * (grid view). Rendered inside `.file-item` via ResourceList's
+	 * `cardOverlay` snippet slot, so `position: absolute` climbs to
+	 * `.file-item`'s own `position: relative` (the same containing
+	 * block `.action-cell` uses in the top-right). The `right` +
+	 * `bottom` offset matches `.action-cell`'s `top` + `right`
+	 * offset so the two chips sit in the same vertical column at
+	 * opposite corners — Ed 2026-07-26.
+	 *
+	 * The wrapper is `:global` so the scoped-CSS renaming Svelte
+	 * applies to the `<span>` this snippet emits doesn't strip our
+	 * selector. Only fires inside the grid view — the parent
+	 * `{@render cardOverlay}` in ResourceList already gates on
+	 * `filesStore.viewMode === 'grid'`, so no need to gate here.
+	 */
+	:global(.files-grid-view .file-item .shared-with-me__sharer) {
+		position: absolute;
+		right: 5px;
+		/* Pushed 15 px closer to the card bottom so the chip sits at
+		   the same vertical band as the item title instead of hovering
+		   above it (Ed 2026-07-26). `calc(var(--space-3) + 8px)` was
+		   20 px from the bottom edge, right in the thumbnail area
+		   overlapping the title's top; 5 px anchors the chip cleanly
+		   at the card's bottom-right corner. */
+		bottom: 5px;
+		z-index: 10;
+	}
+
 	.upgrade-banner {
 		display: flex;
 		align-items: center;

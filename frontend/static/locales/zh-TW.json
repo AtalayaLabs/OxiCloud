@@ -459,7 +459,14 @@
     "group_name_taken": "已存在同名群組。"
   },
   "breadcrumb": {
-    "home": "主頁"
+    "home": "主頁",
+    "aria": "導覽路徑",
+    "root": {
+      "personal_drive": "個人雲端硬碟：{{name}}",
+      "shared_drive": "共用雲端硬碟：{{name}}",
+      "direct_share": "已分享給您",
+      "token": "透過分享連結"
+    }
   },
   "trash": {
     "empty_trash": "清空回收站",

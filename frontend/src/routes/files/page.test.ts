@@ -61,6 +61,13 @@ vi.mock('$lib/api/endpoints/folders', () => ({
 	folderZipUrl: () => '/zip',
 	getFolder: vi.fn(async (id: string) => ({ id, name: id })),
 	getFolderName: () => undefined,
+	// Consumed by the new shared `<FolderBreadcrumb>` component that
+	// `/files` mounts. Return an empty chain so the breadcrumb renders
+	// nothing — tests here don't assert on breadcrumb content.
+	getFolderAncestors: vi.fn(async (id: string) => ({
+		ancestors: [{ id, name: id, parent_id: null, drive_id: 'test-drive' }],
+		access_source: { kind: 'drive' as const }
+	})),
 	invalidateFolderCache: vi.fn(),
 	moveFolder: vi.fn(),
 	rememberFolderName: vi.fn(),

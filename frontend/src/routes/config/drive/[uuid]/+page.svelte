@@ -125,10 +125,6 @@
 				return t('drive.role.owner', 'Owner');
 			case 'editor':
 				return t('drive.role.editor', 'Editor');
-			case 'contributor':
-				return t('drive.role.contributor', 'Contributor');
-			case 'commenter':
-				return t('drive.role.commenter', 'Commenter');
 			case 'viewer':
 				return t('drive.role.viewer', 'Viewer');
 		}

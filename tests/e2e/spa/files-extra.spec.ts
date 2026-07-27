@@ -205,9 +205,12 @@ test('breadcrumb navigates back to home', async ({ page }) => {
   const folderName = uniq('Crumb');
   const folder = await apiCreateFolder(page, folderName);
   await page.goto(`/files/${folder.id}`);
-  // Breadcrumb home link leaves the subfolder for the root listing. Bare /files
+  // Breadcrumb root chip leaves the subfolder for the root listing. Bare /files
   // canonicalizes to the user's drive root, where the just-created folder lives.
-  await page.getByTestId('files-breadcrumb-home-link').click();
+  // Testid changed to `folder-breadcrumb-root-link` when the breadcrumb was
+  // extracted into the shared `<FolderBreadcrumb>` component (used by /files
+  // AND /search) — the /files-specific `files-breadcrumb-*` prefix retired.
+  await page.getByTestId('folder-breadcrumb-root-link').click();
   await expect(page).not.toHaveURL(new RegExp(folder.id));
   await expect(page.getByTestId(folderName)).toBeVisible({ timeout: 15_000 });
 });
@@ -246,6 +249,13 @@ test('copy a folder into another (copy mode keeps the source)', async ({ page })
   await expect(page.getByTestId('move-dialog')).toBeVisible();
   await page.getByTestId(`move-dialog-folder-${dest.id}`).click();
   await page.getByTestId('move-dialog-confirm-btn').click();
+
+  // MoveDialog closes only AFTER `await copyFolders(...)` resolves, so
+  // waiting for its disappearance is equivalent to waiting for the
+  // batch-copy request to complete. Without this the navigation to
+  // /files/{dest.id} below can race the in-flight POST and land on
+  // an empty listing.
+  await expect(page.getByTestId('move-dialog')).toHaveCount(0, { timeout: 15_000 });
 
   // Copy leaves the source in place.
   await expect(page.getByTestId(srcName)).toBeVisible({ timeout: 15_000 });

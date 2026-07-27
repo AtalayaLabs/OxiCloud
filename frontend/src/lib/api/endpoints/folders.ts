@@ -1,7 +1,7 @@
 /** Folder endpoints — ported from filesModel.js + fileOperations.js. */
 import { apiFetch, apiJson } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
-import type { FileItem, FolderItem, ItemType } from '$lib/api/types';
+import type { FileItem, FolderAncestorsResponse, FolderItem, ItemType } from '$lib/api/types';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 const NO_CACHE: RequestInit = {
@@ -106,6 +106,35 @@ export function getFolder(id: string): Promise<FolderItem> {
 		}
 	})();
 	folderInflight.set(id, request);
+	return request;
+}
+
+// ── Ancestor chain (breadcrumb) ──────────────────────────────────────────
+// Backing store + inflight dedup for `GET /api/folders/{id}/ancestors` —
+// mirrors the folderInflight pattern for `getFolder`. Rapid navigation
+// (files → sub → sub-sub in <1s) folds concurrent requests for the same
+// leaf into one round-trip. Response also seeds `folderNames` for every
+// ancestor, so subsequent `getFolderName(id)` lookups are cache-free.
+const ancestorsInflight = new Map<string, Promise<FolderAncestorsResponse>>();
+
+export function getFolderAncestors(id: string): Promise<FolderAncestorsResponse> {
+	const inflight = ancestorsInflight.get(id);
+	if (inflight) return inflight;
+	const request = (async () => {
+		try {
+			const chain = await apiJson<FolderAncestorsResponse>(
+				`/api/folders/${id}/ancestors`,
+				NO_CACHE
+			);
+			// Prime the shared folder-name cache — the breadcrumb walk
+			// happens to be the exact input that populates it.
+			for (const a of chain.ancestors) rememberFolderName(a.id, a.name);
+			return chain;
+		} finally {
+			ancestorsInflight.delete(id);
+		}
+	})();
+	ancestorsInflight.set(id, request);
 	return request;
 }
 

@@ -459,7 +459,14 @@
     "group_name_taken": "Un groupe portant ce nom existe déjà."
   },
   "breadcrumb": {
-    "home": "Accueil"
+    "home": "Accueil",
+    "aria": "Fil d’Ariane",
+    "root": {
+      "personal_drive": "Disque personnel : {{name}}",
+      "shared_drive": "Disque partagé : {{name}}",
+      "direct_share": "Partagé avec vous",
+      "token": "Via un lien partagé"
+    }
   },
   "trash": {
     "empty_trash": "Vider la corbeille",

@@ -459,7 +459,14 @@
     "group_name_taken": "Er bestaat al een groep met deze naam."
   },
   "breadcrumb": {
-    "home": "Start"
+    "home": "Start",
+    "aria": "Kruimelpad",
+    "root": {
+      "personal_drive": "Persoonlijke schijf: {{name}}",
+      "shared_drive": "Gedeelde schijf: {{name}}",
+      "direct_share": "Met u gedeeld",
+      "token": "Via gedeelde link"
+    }
   },
   "trash": {
     "empty_trash": "Prullenbak legen",

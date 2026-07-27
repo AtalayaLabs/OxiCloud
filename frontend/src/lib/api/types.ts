@@ -298,8 +298,34 @@ export interface SearchResourcesResponse {
 
 export type DriveKind = 'personal' | 'shared';
 
-/** Role-keyed share strength. Matches `Role` in the backend authz model. */
-export type DriveRole = 'owner' | 'editor' | 'contributor' | 'commenter' | 'viewer';
+/**
+ * Full role set from `storage.grant_role` — every value that can appear
+ * on a `role_grants` row regardless of `resource_type` (drive, folder,
+ * file, playlist, calendar, address_book, …). Use this for folder-level
+ * and file-level `caller_role` fields where all five values are valid.
+ * Matches `RoleDto` in the backend.
+ */
+export type GrantRole = 'owner' | 'editor' | 'contributor' | 'commenter' | 'viewer';
+
+/**
+ * Role assignable at DRIVE scope — a strict subset of `GrantRole`.
+ * Drives only meaningfully take the three management-ladder tiers:
+ * - `owner`  — full control (rename, delete, quota, membership).
+ * - `editor` — can create/modify content anywhere in the drive.
+ * - `viewer` — read-only access to the whole drive.
+ *
+ * `contributor` (create-in-folder-without-touching-siblings) and
+ * `commenter` (react without modifying) are folder/file-scope
+ * semantics: they describe fine-grained access to a specific item,
+ * not to a whole drive. Grants of those roles happen at folder or
+ * file scope via a separate `role_grants` row, not at the drive
+ * boundary. Do NOT widen this type without a matching backend
+ * check — the DB ENUM permits all 5 today, so the constraint is
+ * conventional.
+ *
+ * Use `GrantRole` for folder/file-level `caller_role` fields.
+ */
+export type DriveRole = 'owner' | 'editor' | 'viewer';
 
 /** Subject of a grant. Mirrors `SubjectDto`. */
 export type SubjectKind = 'user' | 'group' | 'token';
@@ -412,4 +438,87 @@ export interface DriveMember {
 	granted_by: string;
 	granted_at: string;
 	expires_at?: string | null;
+}
+
+// ─── Folder ancestors (breadcrumb endpoint) ──────────────────────────────
+// Wire shape of `GET /api/folders/{id}/ancestors`. Mirrors the backend
+// `FolderAncestorsDto` — see `src/application/dtos/folder_dto.rs`. One
+// round-trip returns the whole caller-visible parent chain plus an
+// `access_source` telling the breadcrumb component which root icon /
+// tooltip to render.
+
+export interface FolderAncestor {
+	id: string;
+	name: string;
+	/** `null` on the drive-root ancestor. */
+	parent_id: string | null;
+	/**
+	 * Drive the folder belongs to (always populated — every folder has a
+	 * drive_id post-D0). Lets `/files` derive `currentFolderDriveId` from
+	 * the ancestors response instead of firing an extra
+	 * `GET /api/folders/{id}` on load. Same value across every entry in
+	 * `ancestors` (all folders in a chain live in one drive).
+	 */
+	drive_id: string;
+}
+
+/**
+ * How the caller reached the topmost accessible ancestor.
+ * - `drive` — via drive membership (own personal, secondary personal, or
+ *   shared drive). `drive` field carries the drive's id/name/kind for
+ *   the root icon.
+ * - `direct_share` — via a folder-level `role_grants` row (share).
+ *   `subject` may name the grantee (self or a group) once subject
+ *   enrichment lands; MVP leaves it null.
+ * - `token` — reserved for public-link callers. Not emitted today.
+ */
+export type AccessSourceKind = 'drive' | 'direct_share' | 'token';
+
+export interface AccessSourceDrive {
+	id: string;
+	name: string;
+	kind: DriveKind;
+}
+
+export interface AccessSourceSubject {
+	kind: 'user' | 'group';
+	id: string;
+	/** Nullable in MVP (subject enrichment deferred). */
+	name?: string | null;
+}
+
+export interface AccessSource {
+	kind: AccessSourceKind;
+	/** Populated when `kind === 'drive'`. */
+	drive?: AccessSourceDrive;
+	/**
+	 * SHARER — the user who created the grant that gave the caller
+	 * access at the boundary (`role_grants.granted_by`). Kind is always
+	 * `'user'` today (a group can't perform an action), but the type
+	 * stays open in case a future model permits it. Null when the
+	 * boundary can't be resolved to a single grant (e.g. `token`).
+	 */
+	subject?: AccessSourceSubject;
+	/**
+	 * Caller's role via the boundary grant (`role_grants.role` on the
+	 * same row that carries `granted_by`). Lets the FE render permission-
+	 * aware affordances at the ancestor scope. Reflects the boundary grant
+	 * only — aggregate effective role via other channels may be stronger.
+	 * Null on `token` access.
+	 *
+	 * Typed as `GrantRole` (not `DriveRole`): the boundary can be a
+	 * folder-level share where all five role_grant values are valid,
+	 * not just the drive-scoped subset.
+	 */
+	caller_role?: GrantRole | null;
+}
+
+/**
+ * Response envelope of `GET /api/folders/{id}/ancestors`. `ancestors`
+ * is root-first, leaf-last (length ≥ 1). `access_source` describes
+ * the boundary at element 0 (drive root or share boundary).
+ */
+export interface FolderAncestorsResponse {
+	ancestors: FolderAncestor[];
+	access_source: AccessSource;
 }

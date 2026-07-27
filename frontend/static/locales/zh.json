@@ -459,7 +459,14 @@
     "group_name_taken": "同名组已存在。"
   },
   "breadcrumb": {
-    "home": "主页"
+    "home": "主页",
+    "aria": "面包屑",
+    "root": {
+      "personal_drive": "个人云盘：{{name}}",
+      "shared_drive": "共享云盘：{{name}}",
+      "direct_share": "已共享给您",
+      "token": "通过共享链接"
+    }
   },
   "trash": {
     "empty_trash": "清空回收站",

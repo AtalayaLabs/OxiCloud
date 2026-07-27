@@ -157,6 +157,7 @@ hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test 
   "$API_DIR/nc_ocs_user_info.hurl" \
   "$API_DIR/nc_avatar_preview.hurl" \
   "$API_DIR/files-folders.hurl" \
+  "$API_DIR/folder_ancestors.hurl" \
   "$API_DIR/photos_etag.hurl" \
   "$API_DIR/favorites.hurl" \
   "$API_DIR/trash.hurl" \

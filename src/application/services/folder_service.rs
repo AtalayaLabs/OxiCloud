@@ -1,8 +1,11 @@
 use crate::application::dtos::cursor::PageCursor;
+use crate::application::dtos::drive_dto::DriveKindDto;
 use crate::application::dtos::folder_dto::{
-    CreateFolderDto, FolderDto, FolderResourceCursor, FolderResourceRow, ListResourcesOptions,
-    MoveFolderDto, RenameFolderDto,
+    AccessSourceDriveDto, AccessSourceDto, AccessSourceKind, AccessSourceSubjectDto,
+    AccessSourceSubjectKind, CreateFolderDto, FolderAncestorDto, FolderAncestorsDto, FolderDto,
+    FolderResourceCursor, FolderResourceRow, ListResourcesOptions, MoveFolderDto, RenameFolderDto,
 };
+use crate::application::dtos::grant_dto::RoleDto;
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::external_mount_ports::MountEntry;
 use crate::application::ports::file_lifecycle::FileLifecycleHook;
@@ -15,7 +18,7 @@ use crate::application::services::mount_dto::{
 use crate::application::services::mount_registry::MountConfig;
 use crate::common::errors::{DomainError, ErrorKind};
 use crate::domain::repositories::folder_repository::FolderRepository;
-use crate::domain::services::authorization::{Permission, Resource, ResourceKind, Subject};
+use crate::domain::services::authorization::{Permission, Resource, ResourceKind, Role, Subject};
 use crate::domain::services::external_mount_id::NodeId;
 use crate::domain::services::path_service::{StoragePath, validate_storage_name};
 use crate::infrastructure::repositories::pg::folder_db_repository::FolderDbRepository;
@@ -1004,6 +1007,163 @@ fn cross_boundary_move_err() -> DomainError {
 // ── FolderService — cursor-paginated resource listing ────────────────────────
 
 impl FolderService {
+    /// Ancestor chain for the shared breadcrumb component. Returns the
+    /// list of folders from the caller-visible root (drive root or
+    /// share boundary) down to the leaf, plus an `access_source`
+    /// describing HOW the caller reached that topmost ancestor.
+    ///
+    /// AuthZ: requires `Read` on the leaf. Anti-enum via `NotFound` on
+    /// denial (the `require` helper turns denials into 404 to match
+    /// listing endpoints — same pattern used by `get_folder_with_perms`).
+    ///
+    /// Boundary detection: the recursive SQL walks all the way to the
+    /// drive root and reports two Read predicates per ancestor
+    /// (`has_folder_grant`, `has_drive_grant`). We drop ancestors that
+    /// have NEITHER — that's a folder the caller can't Read, which by
+    /// definition means everything above it is also invisible to them.
+    /// The last surviving ancestor is the "root of this caller's view."
+    ///
+    /// Access-source kind: `Drive` when the topmost accessible ancestor's
+    /// Read came (even in part) from drive-membership; `DirectShare`
+    /// otherwise. `Token` is reserved for future public-link callers.
+    /// Subject enrichment (grantor / group name) is deferred — MVP
+    /// returns `subject: None` and the FE renders a generic tooltip.
+    pub async fn get_ancestors_with_perms(
+        &self,
+        leaf_id: &str,
+        caller_id: Uuid,
+    ) -> Result<FolderAncestorsDto, DomainError> {
+        // Gate: caller must have Read on the leaf. Denial → 404 (anti-enum).
+        self.authz
+            .require(
+                Subject::User(caller_id),
+                Permission::Read,
+                Self::folder_resource(leaf_id)?,
+            )
+            .await?;
+
+        let leaf_uuid =
+            Uuid::parse_str(leaf_id).map_err(|_| DomainError::not_found("Folder", leaf_id))?;
+
+        let mut rows = self
+            .folder_storage
+            .fetch_ancestor_walk(caller_id, leaf_uuid)
+            .await?;
+        if rows.is_empty() {
+            return Err(DomainError::not_found("Folder", leaf_id));
+        }
+        // Repo returns root-first (ORDER BY depth DESC). Walk from index 0
+        // (topmost) and drop entries with NO Read grant — that's the
+        // share/drive boundary, everything above is invisible.
+        let boundary = rows
+            .iter()
+            .position(|r| r.has_folder_grant || r.has_drive_grant)
+            .unwrap_or(rows.len());
+        rows.drain(..boundary);
+        if rows.is_empty() {
+            // Shouldn't happen: `authz.require(Read, leaf)` above passed,
+            // so at least the leaf must have some Read source. Defensive
+            // 404 rather than emit an empty chain.
+            return Err(DomainError::not_found("Folder", leaf_id));
+        }
+
+        // The topmost surviving row is the root of the caller's view.
+        // Its grant profile drives `AccessSource`.
+        let top = &rows[0];
+
+        // Subject enrichment: identify the specific grant that gave the
+        // caller access to `top`, then resolve its subject's display
+        // name in the same query. Drives the tooltip on the breadcrumb
+        // root chip ("Shared with you by Alice" / "Shared with your
+        // team via Design"). No `expires_at` filter — the ancestor
+        // walk's guard already proved the caller is authorized to see
+        // this ancestor, so the follow-up name lookup is display-only
+        // (see `feedback_trust_grant_janitor_no_expires_at_read`).
+        let (grant_resource_type, grant_resource_id) = if top.has_drive_grant {
+            ("drive", top.drive_id)
+        } else {
+            ("folder", top.id)
+        };
+        let grant_by = self
+            .folder_storage
+            .fetch_grant_by(caller_id, grant_resource_type, grant_resource_id)
+            .await?;
+        let subject = grant_by
+            .as_ref()
+            .map(
+                |(subject_type_str, subject_id, name, _role)| AccessSourceSubjectDto {
+                    kind: match subject_type_str.as_str() {
+                        "group" => AccessSourceSubjectKind::Group,
+                        _ => AccessSourceSubjectKind::User,
+                    },
+                    id: *subject_id,
+                    name: name.clone(),
+                },
+            );
+        // Caller's role via the boundary grant. `Role::parse` returns
+        // None only if the SQL stored a role we don't understand — the
+        // ENUM constraint makes that a schema drift, not a runtime case
+        // to chase. Silent None keeps the endpoint working with an older
+        // deployment if a future role is added ahead of the code.
+        let caller_role = grant_by
+            .as_ref()
+            .and_then(|(_, _, _, role_str)| Role::parse(role_str))
+            .map(RoleDto::from);
+
+        let access_source = if top.has_drive_grant {
+            // Drive-membership Read — even if a direct folder grant also
+            // exists, the drive channel is the more useful "how did I
+            // get here" signal (it names the drive the caller sees in
+            // their picker). Fetch the drive header for id/name/kind.
+            // `.map` (not `match`) — the drive-vanished-mid-query fallback
+            // is a straight `None`, no side effects; clippy's manual_map
+            // lint prefers this shape.
+            let drive = self
+                .folder_storage
+                .fetch_drive_header(top.drive_id)
+                .await?
+                .map(|(id, name, kind_str)| AccessSourceDriveDto {
+                    id,
+                    name,
+                    kind: match kind_str.as_str() {
+                        "personal" => DriveKindDto::Personal,
+                        _ => DriveKindDto::Shared,
+                    },
+                });
+            AccessSourceDto {
+                kind: AccessSourceKind::Drive,
+                drive,
+                subject,
+                caller_role,
+            }
+        } else {
+            // Direct folder-level grant (share). Subject carries who
+            // shared it (user or group), enabling "shared with you by X"
+            // in the FE tooltip.
+            AccessSourceDto {
+                kind: AccessSourceKind::DirectShare,
+                drive: None,
+                subject,
+                caller_role,
+            }
+        };
+
+        let ancestors = rows
+            .into_iter()
+            .map(|r| FolderAncestorDto {
+                id: r.id,
+                name: r.name,
+                parent_id: r.parent_id,
+                drive_id: r.drive_id,
+            })
+            .collect();
+
+        Ok(FolderAncestorsDto {
+            ancestors,
+            access_source,
+        })
+    }
+
     /// Cursor-paginated listing of sub-folders **and** files inside `parent_id`.
     ///
     /// Enforces `Permission::Read` on the parent folder before querying.

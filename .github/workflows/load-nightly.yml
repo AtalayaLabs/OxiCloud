@@ -57,7 +57,15 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: load
+          # Distinct from load-smoke's `load-v2`. Nightly runs on the
+          # self-hosted `nuc-loadtest` runner (homogeneous), where
+          # `-C target-cpu=native` from `.cargo/config.toml` gives the
+          # accurate perf baseline we want. Smoke runs on the GHA
+          # heterogeneous pool with `RUSTFLAGS=-C target-cpu=x86-64-v3`.
+          # Sharing the same cache key would let native-baked proc-macro
+          # dylibs from nightly leak into smoke's restore set → SIGILL
+          # on a leaner GHA runner. Separate namespaces prevent that.
+          shared-key: load-nightly-v2
 
       - name: Install Node 20
         # The self-hosted runner image ships Node 12, which can't parse the
