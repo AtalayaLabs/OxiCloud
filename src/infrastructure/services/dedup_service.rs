@@ -3170,7 +3170,7 @@ impl crate::infrastructure::scheduler::JobHandler for DedupService {
                 items,
                 serde_json::json!({ "bytes_reclaimed": bytes, "forced": args.force }),
             ),
-            Err(e) => JobOutcome::Err(format!("dedup GC failed: {e}")),
+            Err(e) => JobOutcome::err(format!("dedup GC failed: {e}")),
         }
     }
 }

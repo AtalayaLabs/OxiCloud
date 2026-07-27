@@ -132,7 +132,7 @@ impl JobHandler for GrantCleanupService {
                     "forced": args.force,
                 }),
             ),
-            Err(e) => JobOutcome::Err(format!("grant cleanup failed: {e}")),
+            Err(e) => JobOutcome::err(format!("grant cleanup failed: {e}")),
         }
     }
 }

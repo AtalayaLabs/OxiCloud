@@ -608,11 +608,11 @@ impl JobHandler for StorageUsageService {
     async fn run(&self, _args: &JobRunArgs) -> JobOutcome {
         let drives = match self.update_all_drives_storage_usage().await {
             Ok(n) => n,
-            Err(e) => return JobOutcome::Err(format!("drive reconciliation failed: {e}")),
+            Err(e) => return JobOutcome::err(format!("drive reconciliation failed: {e}")),
         };
         let users = match self.update_all_users_storage_usage().await {
             Ok(n) => n,
-            Err(e) => return JobOutcome::Err(format!("user reconciliation failed: {e}")),
+            Err(e) => return JobOutcome::err(format!("user reconciliation failed: {e}")),
         };
         JobOutcome::ok_with(
             drives + users,

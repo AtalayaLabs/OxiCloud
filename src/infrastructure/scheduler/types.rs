@@ -51,7 +51,12 @@ pub enum JobOutcome {
         #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
         extra: serde_json::Value,
     },
-    Err(String),
+    /// `Err` is a struct variant (not tuple-newtype) so it composes
+    /// with `#[serde(tag = "outcome")]`. Serde's internal tagging
+    /// refuses to serialise a tuple variant wrapping a bare String
+    /// — the tag has nowhere to live. The struct form `{ message }`
+    /// lets serde emit `{"outcome":"err","message":"..."}` cleanly.
+    Err { message: String },
 }
 
 impl JobOutcome {
@@ -69,11 +74,19 @@ impl JobOutcome {
         JobOutcome::Ok { count, extra }
     }
 
+    /// Convenience constructor for `Err` — call-site ergonomics
+    /// match the retired tuple form.
+    pub fn err(message: impl Into<String>) -> Self {
+        JobOutcome::Err {
+            message: message.into(),
+        }
+    }
+
     /// Terse discriminant for logs / metrics: `"ok"` | `"err"`.
     pub fn kind(&self) -> &'static str {
         match self {
             JobOutcome::Ok { .. } => "ok",
-            JobOutcome::Err(_) => "err",
+            JobOutcome::Err { .. } => "err",
         }
     }
 
@@ -125,7 +138,7 @@ mod tests {
     #[test]
     fn joboutcome_kind_label() {
         assert_eq!(JobOutcome::ok(0).kind(), "ok");
-        assert_eq!(JobOutcome::Err("boom".into()).kind(), "err");
+        assert_eq!(JobOutcome::err("boom").kind(), "err");
     }
 
     #[test]

@@ -178,7 +178,7 @@ pub(super) async fn dispatch(name: &str, entry: Arc<JobEntry>, args: &JobRunArgs
                 // yield points may run to completion in the background.
                 // We still record timeout and release the permit.
                 (
-                    JobOutcome::Err(format!("wall-clock timeout of {:?} exceeded", dur)),
+                    JobOutcome::err(format!("wall-clock timeout of {:?} exceeded", dur)),
                     Some(ErrCause::Timeout),
                 )
             }
@@ -249,12 +249,12 @@ fn translate_join(
                 "unknown panic payload".to_string()
             };
             (
-                JobOutcome::Err(format!("handler panicked: {msg}")),
+                JobOutcome::err(format!("handler panicked: {msg}")),
                 Some(ErrCause::Panicked),
             )
         }
         Err(join_err) => (
-            JobOutcome::Err(format!("task cancelled: {join_err}")),
+            JobOutcome::err(format!("task cancelled: {join_err}")),
             Some(ErrCause::Handler),
         ),
     }
@@ -278,7 +278,7 @@ fn log_outcome(name: &str, outcome: &JobOutcome, cause: Option<ErrCause>, elapse
                 name,
             );
         }
-        JobOutcome::Err(msg) => {
+        JobOutcome::Err { message: msg } => {
             tracing::warn!(
                 target: "oxicloud::scheduler",
                 event = "job.run",
@@ -342,7 +342,7 @@ mod tests {
         let (outcome, cause) = translate_join(join.await);
         assert!(!outcome.is_ok());
         assert_eq!(cause, Some(ErrCause::Panicked));
-        if let JobOutcome::Err(msg) = outcome {
+        if let JobOutcome::Err { message: msg } = outcome {
             assert!(msg.contains("panicked"), "expected panic marker in: {msg}");
         }
     }

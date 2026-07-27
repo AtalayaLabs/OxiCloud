@@ -183,7 +183,7 @@ impl JobHandler for TrashCleanupService {
                     }),
                 )
             }
-            Err(e) => JobOutcome::Err(format!("trash cleanup failed: {e}")),
+            Err(e) => JobOutcome::err(format!("trash cleanup failed: {e}")),
         }
     }
 }
