@@ -68,6 +68,19 @@ export async function changePassword(currentPw: string, newPw: string): Promise<
 		body: JSON.stringify({ current_password: currentPw, new_password: newPw })
 	});
 	if (!res.ok) throw new Error(`password change failed: ${res.status}`);
+	// Re-mint the OPAQUE envelope under the new passphrase — session
+	// stays valid across change-password (backend doesn't invalidate),
+	// so the session-authenticated register endpoints are reachable
+	// straight away. Non-fatal on failure: silent migration on next
+	// legacy login recovers the envelope. See
+	// `$lib/api/endpoints/opaque.ts::syncOpaqueEnvelope`.
+	//
+	// Dynamic import keeps the ~200 KiB `@serenity-kit/opaque` WASM
+	// bundle out of the profile route's initial chunk — the module
+	// only loads for users who actually reach the change-password
+	// success path.
+	const { syncOpaqueEnvelope } = await import('$lib/api/endpoints/opaque');
+	await syncOpaqueEnvelope(newPw);
 }
 
 export async function updateAvatar(image: string | null): Promise<void> {

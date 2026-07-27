@@ -256,7 +256,10 @@ mod tests {
         let id = cache.store(state, Some(Uuid::new_v4()));
         // Second call after take must miss — single-use semantic.
         let taken = cache.take(id).expect("first take retrieves the state");
-        assert!(taken.user_id.is_some(), "user_id round-trips through the stash");
+        assert!(
+            taken.user_id.is_some(),
+            "user_id round-trips through the stash"
+        );
         assert!(
             cache.take(id).is_none(),
             "second take must miss — exchange_id is single-use"
@@ -306,6 +309,9 @@ mod tests {
         let cache = OpaqueLoginExchange::new();
         let id = cache.store(build_server_login_state(), None);
         let taken = cache.take(id).expect("take dummy stash");
-        assert!(taken.user_id.is_none(), "dummy-branch stash carries no user_id");
+        assert!(
+            taken.user_id.is_none(),
+            "dummy-branch stash carries no user_id"
+        );
     }
 }

@@ -54,6 +54,95 @@ export interface OpaqueKsfConfig {
 	parallelism: number;
 }
 
+/**
+ * Wire shape of `GET /api/auth/opaque/params`. `enabled: false` means
+ * the server's OPAQUE substrate is off — the SPA should short-circuit
+ * all `syncOpaqueEnvelope` / `opaqueLogin` calls and stay on the legacy
+ * password path. Numeric fields carry safe defaults regardless so a
+ * client that ignored the flag wouldn't nil-deref.
+ */
+export interface OpaqueServerParams {
+	enabled: boolean;
+	ciphersuiteVersion: number;
+	ksf: OpaqueKsfConfig;
+}
+
+/**
+ * In-memory cache of the params response. Fetched once per page load
+ * (per SPA runtime), invalidated only by a hard refresh — this matches
+ * the operator contract that changing OPAQUE env vars requires a server
+ * restart, and the SPA reload that follows picks up the new values.
+ *
+ * Unresolved `null` = we haven't tried yet. A settled promise (or a
+ * thrown one) is what subsequent callers await, so concurrent first
+ * touches collapse into ONE `GET /params` round-trip.
+ */
+let opaqueParamsInflight: Promise<OpaqueServerParams> | null = null;
+
+/**
+ * Test-only: drop the params cache so the next call re-fetches.
+ * Exposed as `__resetOpaqueParamsCache` to signal "internal — call
+ * from tests only." Runtime code MUST NOT use this; the operator
+ * contract is that params change requires a page reload.
+ */
+export function __resetOpaqueParamsCache(): void {
+	opaqueParamsInflight = null;
+}
+
+/** Fetch (and cache) the server's OPAQUE params. See [`OpaqueServerParams`]. */
+export function fetchOpaqueParams(): Promise<OpaqueServerParams> {
+	if (opaqueParamsInflight) return opaqueParamsInflight;
+	opaqueParamsInflight = (async () => {
+		const res = await apiFetch('/api/auth/opaque/params', {
+			credentials: 'same-origin'
+		});
+		if (!res.ok) {
+			// Treat a broken /params as "OPAQUE not available" rather
+			// than propagating an error — the SPA should degrade to
+			// legacy password auth, not crash. Cache the negative
+			// result so we don't hammer a broken endpoint.
+			return {
+				enabled: false,
+				ciphersuiteVersion: 0,
+				ksf: { memoryKib: 0, iterations: 0, parallelism: 0 }
+			};
+		}
+		return (await res.json()) as OpaqueServerParams;
+	})();
+	return opaqueParamsInflight;
+}
+
+/**
+ * Silent OPAQUE registration after a passphrase-touching action
+ * (signup completion, change-password, silent migration on legacy
+ * login). Fetches params on demand, runs the two-round OPAQUE
+ * register handshake with `password`, and swallows errors — a
+ * failure here leaves the envelope stale, but a subsequent legacy
+ * login will retry via the silent-migration hook. Callers should
+ * clear their local copy of `password` from memory as soon as this
+ * settles (either await or catch — the promise resolves in both
+ * paths so `.finally(() => clearPw())` is the idiomatic wire).
+ *
+ * Callers MUST hold a valid session — the register endpoints are
+ * session-authenticated (they bind the envelope to the current
+ * user_id). Post-signup / post-change-password sessions qualify.
+ */
+export async function syncOpaqueEnvelope(password: string): Promise<void> {
+	const params = await fetchOpaqueParams();
+	if (!params.enabled) return; // Substrate off — no-op.
+	try {
+		await opaqueRegister(password, params.ksf, params.ciphersuiteVersion);
+	} catch (err) {
+		// Non-fatal: legacy login still works, silent migration will
+		// retry on next legacy /api/auth/login. Log to console so a
+		// developer poking at DevTools sees the failure but the user
+		// doesn't get a confusing toast for something they didn't ask
+		// for. Reset the cache so the next call re-probes /params —
+		// the failure might have been a transient outage.
+		console.warn('OPAQUE envelope sync failed (silent migration will retry):', err);
+	}
+}
+
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
 /** Build the shape `@serenity-kit/opaque` expects for its `keyStretching` opt. */

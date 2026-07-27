@@ -468,41 +468,41 @@ mod integration_tests {
     #[tokio::test]
     async fn mark_migrated_stamps_once_and_is_idempotent() {
         let repo = test_repo().await;
-        let user =
-            seed_user(&repo, &format!("opaque-mig-{}@example.invalid", Uuid::new_v4())).await;
+        let user = seed_user(
+            &repo,
+            &format!("opaque-mig-{}@example.invalid", Uuid::new_v4()),
+        )
+        .await;
 
         // Read the initial NULL state
-        let initial: (Option<chrono::DateTime<chrono::Utc>>,) = sqlx::query_as(
-            "SELECT opaque_migrated_at FROM auth.users WHERE id = $1",
-        )
-        .bind(user)
-        .fetch_one(repo.pool())
-        .await
-        .unwrap();
+        let initial: (Option<chrono::DateTime<chrono::Utc>>,) =
+            sqlx::query_as("SELECT opaque_migrated_at FROM auth.users WHERE id = $1")
+                .bind(user)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
         assert!(
             initial.0.is_none(),
             "new user starts with no opaque_migrated_at"
         );
 
         repo.mark_migrated(user).await.expect("first mark");
-        let first: (Option<chrono::DateTime<chrono::Utc>>,) = sqlx::query_as(
-            "SELECT opaque_migrated_at FROM auth.users WHERE id = $1",
-        )
-        .bind(user)
-        .fetch_one(repo.pool())
-        .await
-        .unwrap();
+        let first: (Option<chrono::DateTime<chrono::Utc>>,) =
+            sqlx::query_as("SELECT opaque_migrated_at FROM auth.users WHERE id = $1")
+                .bind(user)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
         let first_ts = first.0.expect("timestamp set after first mark");
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         repo.mark_migrated(user).await.expect("second mark");
-        let second: (Option<chrono::DateTime<chrono::Utc>>,) = sqlx::query_as(
-            "SELECT opaque_migrated_at FROM auth.users WHERE id = $1",
-        )
-        .bind(user)
-        .fetch_one(repo.pool())
-        .await
-        .unwrap();
+        let second: (Option<chrono::DateTime<chrono::Utc>>,) =
+            sqlx::query_as("SELECT opaque_migrated_at FROM auth.users WHERE id = $1")
+                .bind(user)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
         assert_eq!(
             second.0.unwrap(),
             first_ts,

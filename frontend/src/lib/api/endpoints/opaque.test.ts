@@ -54,7 +54,13 @@ vi.mock('@serenity-kit/opaque', () => ({
 
 import { apiFetch, ApiError } from '$lib/api/client';
 import * as opaque from '@serenity-kit/opaque';
-import { opaqueLogin, opaqueRegister } from './opaque';
+import {
+	__resetOpaqueParamsCache,
+	fetchOpaqueParams,
+	opaqueLogin,
+	opaqueRegister,
+	syncOpaqueEnvelope
+} from './opaque';
 
 const f = apiFetch as unknown as ReturnType<typeof vi.fn>;
 const fin = opaque.client.finishLogin as unknown as ReturnType<typeof vi.fn>;
@@ -87,6 +93,10 @@ function errJson(status: number, body: unknown) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	// Reset the params-fetch cache — tests below assert first-call
+	// behaviour, and the singleton cache would carry a prior test's
+	// resolved params into the next test if left alone.
+	__resetOpaqueParamsCache();
 	// Reset finishLogin to the truthy default; individual tests override.
 	fin.mockReturnValue({
 		finishLoginRequest: 'FIN-L',
@@ -191,5 +201,63 @@ describe('opaqueLogin', () => {
 		);
 		expect(err).toBeInstanceOf(ApiError);
 		expect(err).toMatchObject({ status: 429, errorType: 'RateLimited' });
+	});
+});
+
+describe('fetchOpaqueParams', () => {
+	it('returns the payload and caches it (second call = no HTTP)', async () => {
+		f.mockResolvedValueOnce(okJson({ enabled: true, ciphersuiteVersion: 1, ksf: KSF }));
+		const first = await fetchOpaqueParams();
+		expect(first.enabled).toBe(true);
+		expect(first.ciphersuiteVersion).toBe(1);
+		expect(first.ksf).toEqual(KSF);
+
+		// Second call MUST NOT hit the wire — the operator contract is
+		// that params change requires a page reload, so caching is safe.
+		const second = await fetchOpaqueParams();
+		expect(second).toEqual(first);
+		expect(f).toHaveBeenCalledTimes(1);
+	});
+
+	it('degrades to enabled=false on a broken /params (no crash)', async () => {
+		f.mockResolvedValueOnce(errJson(500, {}));
+		const params = await fetchOpaqueParams();
+		expect(params.enabled).toBe(false);
+	});
+});
+
+describe('syncOpaqueEnvelope', () => {
+	it('is a no-op when params.enabled=false', async () => {
+		f.mockResolvedValueOnce(okJson({ enabled: false, ciphersuiteVersion: 0, ksf: KSF }));
+		await syncOpaqueEnvelope('any-password');
+		// Only the /params fetch — no register/start or register/finish.
+		expect(f).toHaveBeenCalledTimes(1);
+		expect(f.mock.calls[0][0]).toBe('/api/auth/opaque/params');
+	});
+
+	it('runs the register handshake when params.enabled=true', async () => {
+		f.mockResolvedValueOnce(okJson({ enabled: true, ciphersuiteVersion: 1, ksf: KSF }))
+			.mockResolvedValueOnce(okJson({ registrationResponse: 'RESP-R' }))
+			.mockResolvedValueOnce(okJson({}, 204));
+		await syncOpaqueEnvelope('correct horse battery staple');
+		// /params + /register/start + /register/finish
+		expect(f).toHaveBeenCalledTimes(3);
+		expect(f.mock.calls[0][0]).toBe('/api/auth/opaque/params');
+		expect(f.mock.calls[1][0]).toBe('/api/auth/opaque/register/start');
+		expect(f.mock.calls[2][0]).toBe('/api/auth/opaque/register/finish');
+	});
+
+	it('swallows opaqueRegister errors — silent-migration retry recovers', async () => {
+		// /params succeeds, register/start returns a server error. The
+		// contract is "swallow, log, don't throw" so the caller (change-
+		// password success handler) doesn't surface a user-facing toast
+		// for a migration-hint step they didn't ask for.
+		f.mockResolvedValueOnce(
+			okJson({ enabled: true, ciphersuiteVersion: 1, ksf: KSF })
+		).mockResolvedValueOnce(errJson(500, { error_type: 'InternalError' }));
+		const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		await expect(syncOpaqueEnvelope('pw')).resolves.toBeUndefined();
+		expect(consoleSpy).toHaveBeenCalled();
+		consoleSpy.mockRestore();
 	});
 });

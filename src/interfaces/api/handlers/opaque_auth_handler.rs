@@ -76,9 +76,7 @@ use uuid::Uuid;
 
 use crate::application::dtos::user_dto::AuthResponseDto;
 use crate::common::di::AppState;
-use crate::infrastructure::services::opaque_login_exchange::{
-    ExchangeId, OpaqueLoginExchange,
-};
+use crate::infrastructure::services::opaque_login_exchange::{ExchangeId, OpaqueLoginExchange};
 use crate::infrastructure::services::opaque_service::{OpaqueService, OxiCloudSuite};
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::CurrentUserId;
@@ -381,9 +379,9 @@ pub async fn login_ke1(
     let repo = require_opaque_repo(&state)?;
     let exchange = require_opaque_exchange(&state)?;
 
-    let cred_bytes = B64.decode(dto.start_login_request.trim()).map_err(|_| {
-        malformed("startLoginRequest is not valid base64")
-    })?;
+    let cred_bytes = B64
+        .decode(dto.start_login_request.trim())
+        .map_err(|_| malformed("startLoginRequest is not valid base64"))?;
     let cred_request = CredentialRequest::<OxiCloudSuite>::deserialize(&cred_bytes)
         .map_err(|_| malformed("startLoginRequest failed to deserialize"))?;
 
@@ -513,9 +511,9 @@ pub async fn login_ke3(
         invalid_credentials()
     })?;
 
-    let cred_bytes = B64.decode(dto.finish_login_request.trim()).map_err(|_| {
-        malformed("finishLoginRequest is not valid base64")
-    })?;
+    let cred_bytes = B64
+        .decode(dto.finish_login_request.trim())
+        .map_err(|_| malformed("finishLoginRequest is not valid base64"))?;
     let cred_final = CredentialFinalization::<OxiCloudSuite>::deserialize(&cred_bytes)
         .map_err(|_| malformed("finishLoginRequest failed to deserialize"))?;
 
@@ -552,22 +550,19 @@ pub async fn login_ke3(
     // Fetch the user entity — needed by mint_session_for_authenticated_user
     // (it calls dispatch_login + register_login + generates tokens
     // from the user's role/email/etc.).
-    let user = auth
-        .get_user_entity(user_id)
-        .await
-        .map_err(|_| {
-            // User row vanished between KE1's envelope fetch and now
-            // (delete race). Same shape as bad passphrase — never
-            // leak "you passed the crypto but the account is gone."
-            tracing::warn!(
-                target: "audit",
-                event = "opaque.login_ke3_rejected",
-                reason = "user_gone_after_ke3",
-                user_id = %user_id,
-                "👮🏻‍♂️ OPAQUE KE3: user disappeared between KE1 and KE3"
-            );
-            invalid_credentials()
-        })?;
+    let user = auth.get_user_entity(user_id).await.map_err(|_| {
+        // User row vanished between KE1's envelope fetch and now
+        // (delete race). Same shape as bad passphrase — never
+        // leak "you passed the crypto but the account is gone."
+        tracing::warn!(
+            target: "audit",
+            event = "opaque.login_ke3_rejected",
+            reason = "user_gone_after_ke3",
+            user_id = %user_id,
+            "👮🏻‍♂️ OPAQUE KE3: user disappeared between KE1 and KE3"
+        );
+        invalid_credentials()
+    })?;
 
     // Mint the session BEFORE stamping opaque_migrated_at — if the
     // session mint fails (rare, but not impossible under DB failure),
@@ -653,9 +648,7 @@ pub struct OpaqueParamsResponse {
     ),
     tag = "auth"
 )]
-pub async fn opaque_params(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+pub async fn opaque_params(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // Reads from OpaqueService when substrate is wired; falls back
     // to the OpaqueConfig defaults otherwise so an
     // `enabled=false` payload still has plausible-shape numeric
