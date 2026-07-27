@@ -3,7 +3,6 @@ use crate::common::errors::DomainError;
 use crate::infrastructure::repositories::pg::UserPgRepository;
 use sqlx::PgPool;
 use std::sync::Arc;
-use tokio::task;
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
@@ -569,43 +568,55 @@ impl StorageUsageService {
         Ok(())
     }
 
-    /// Spawn a background task that periodically reconciles every user's cached
-    /// `storage_used_bytes` against the actual sum of their files.
+    /// Interval helper — same clamping (min 30 s) the retired
+    /// `start_reconciliation_job` applied, exposed so DI can pass a
+    /// sanitised `Duration` to `JobRegistry::register`.
+    pub fn reconciliation_interval(interval_secs: u64) -> std::time::Duration {
+        std::time::Duration::from_secs(interval_secs.max(30))
+    }
+}
+
+pub const STORAGE_RECONCILE_JOB_NAME: &str = "storage_reconcile";
+
+use crate::infrastructure::scheduler::{JobHandler, JobOutcome};
+use async_trait::async_trait;
+
+#[async_trait]
+impl JobHandler for StorageUsageService {
+    fn name(&self) -> &str {
+        STORAGE_RECONCILE_JOB_NAME
+    }
+
+    /// Runs both reconciliation sweeps — drives first, then users —
+    /// and reports the total number of rows corrected.
     ///
-    /// `GET /api/auth/me` no longer recomputes usage on the request path; this
-    /// sweep (plus the per-upload update) keeps the cached value current for
-    /// all mutations — including deletes and trash — without any O(N) work on a
-    /// hot endpoint. Runs on the maintenance pool. The first sweep is deferred
-    /// by one interval so it never adds load at boot.
-    pub fn start_reconciliation_job(&self, interval_secs: u64) {
-        // Floor the interval so a misconfiguration can't busy-loop the sweep.
-        let interval_secs = interval_secs.max(30);
-        let service = self.clone();
-        info!(
-            "Starting storage-usage reconciliation job (every {}s)",
-            interval_secs
-        );
-        task::spawn(async move {
-            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
-            // tokio's first `tick()` fires immediately — consume it so the
-            // first real sweep happens one interval after startup.
-            ticker.tick().await;
-            loop {
-                ticker.tick().await;
-                debug!("Running scheduled storage-usage reconciliation");
-                // Drive sweep runs FIRST: the user-side sweep below
-                // reads `drives.used_bytes` (the per-drive sum) to
-                // compute its own counter, so the drive counter must
-                // be honest first. Failure of one is logged but
-                // doesn't skip the other or the next tick.
-                if let Err(e) = service.update_all_drives_storage_usage().await {
-                    error!("Scheduled drive storage-usage reconciliation failed: {}", e);
-                }
-                if let Err(e) = service.update_all_users_storage_usage().await {
-                    error!("Scheduled user storage-usage reconciliation failed: {}", e);
-                }
-            }
-        });
+    /// **Sweep order matters.** The user envelope is computed from
+    /// `SUM(drives.used_bytes)` over the caller's personal drives
+    /// (`docs/plan/drive.md` §7). Running the user sweep before the
+    /// drive sweep would read a stale per-drive counter and freeze
+    /// the user counter on the previous tick's numbers — invisible in
+    /// steady state, breaks any Hurl that trashes + sweeps within one
+    /// call. See memory note `bug_storage_sweep_order_drive_first`.
+    ///
+    /// Failure of one sub-sweep short-circuits the tick to `Err`;
+    /// operators see `outcome=err, cause=handler` in the scheduler
+    /// log and the individual sweep's own `error!` line above it.
+    async fn run(&self) -> JobOutcome {
+        let drives = match self.update_all_drives_storage_usage().await {
+            Ok(n) => n,
+            Err(e) => return JobOutcome::Err(format!("drive reconciliation failed: {e}")),
+        };
+        let users = match self.update_all_users_storage_usage().await {
+            Ok(n) => n,
+            Err(e) => return JobOutcome::Err(format!("user reconciliation failed: {e}")),
+        };
+        JobOutcome::ok_with(
+            drives + users,
+            serde_json::json!({
+                "drives_corrected": drives,
+                "users_corrected": users,
+            }),
+        )
     }
 }
 
@@ -638,7 +649,7 @@ impl StorageUsagePort for StorageUsageService {
     ///
     /// External users are excluded — they carry no storage by construction
     /// (DB CHECK `users_external_no_storage`).
-    async fn update_all_users_storage_usage(&self) -> Result<(), DomainError> {
+    async fn update_all_users_storage_usage(&self) -> Result<u64, DomainError> {
         debug!("Starting storage-usage reconciliation sweep");
 
         // User envelope = SUM of `drives.used_bytes` across the user's
@@ -681,11 +692,9 @@ impl StorageUsagePort for StorageUsageService {
             DomainError::internal_error("StorageUsage", format!("reconciliation sweep: {e}"))
         })?;
 
-        info!(
-            "Storage-usage reconciliation corrected {} user(s)",
-            result.rows_affected()
-        );
-        Ok(())
+        let corrected = result.rows_affected();
+        info!("Storage-usage reconciliation corrected {} user(s)", corrected);
+        Ok(corrected)
     }
 
     async fn check_storage_quota(
@@ -720,7 +729,7 @@ impl StorageUsagePort for StorageUsageService {
     /// FROM` guard to skip no-op rewrites so idle drives don't churn
     /// dead tuples. Runs from the same reconciliation ticker as the
     /// user sweep; failure is logged but doesn't stop the next tick.
-    async fn update_all_drives_storage_usage(&self) -> Result<(), DomainError> {
+    async fn update_all_drives_storage_usage(&self) -> Result<u64, DomainError> {
         debug!("Starting drive storage-usage reconciliation sweep");
         let result = sqlx::query(
             r#"
@@ -744,9 +753,10 @@ impl StorageUsagePort for StorageUsageService {
             DomainError::internal_error("StorageUsage", format!("drive reconciliation sweep: {e}"))
         })?;
 
+        let corrected = result.rows_affected();
         info!(
             "Drive storage-usage reconciliation corrected {} drive(s)",
-            result.rows_affected()
+            corrected
         );
         // Unconditional invalidation — do NOT gate on
         // `rows_affected() > 0`. When a fire-and-forget delta has
@@ -762,7 +772,7 @@ impl StorageUsagePort for StorageUsageService {
         // already right → zero rows → without unconditional
         // invalidation, cache stays at the previous step's value.
         self.invalidate_drive_lookup_caches();
-        Ok(())
+        Ok(corrected)
     }
 
     async fn check_drive_quota(

@@ -1104,12 +1104,16 @@ impl AppServiceFactory {
     ///
     /// Uses the `maintenance_pool` for batch operations
     /// (`update_all_users_storage_usage`) to avoid starving user requests.
-    pub fn create_storage_usage_service(
+    ///
+    /// Note: this is `async` (unlike the pre-migration version) because
+    /// registration with `core.job_registry` requires an `await`.
+    pub async fn create_storage_usage_service(
         &self,
         _repos: &RepositoryServices,
         db_pool: &Arc<PgPool>,
         maintenance_pool: &Arc<PgPool>,
         drive_repo: Arc<crate::infrastructure::repositories::pg::DrivePgRepository>,
+        core: &CoreServices,
     ) -> Arc<StorageUsageService> {
         let user_repository = Arc::new(
             crate::infrastructure::repositories::pg::UserPgRepository::new(db_pool.clone()),
@@ -1131,11 +1135,27 @@ impl AppServiceFactory {
                     as Arc<dyn crate::domain::repositories::drive_repository::DriveRepository>,
             ),
         );
-        // Keep cached storage usage fresh off the request path: GET /api/auth/me
-        // no longer recomputes the O(N) SUM per call; a periodic sweep does it
-        // instead (on the maintenance pool).
-        service.start_reconciliation_job(self.config.storage.usage_reconcile_secs);
-        tracing::info!("Storage usage service initialized");
+        // Keep cached storage usage fresh off the request path: GET
+        // /api/auth/me no longer recomputes the O(N) SUM per call; a
+        // periodic sweep does it instead (on the maintenance pool).
+        // Registered with the periodic-job scheduler
+        // (`docs/plan/job-registry.md` Part 1); the retired
+        // `start_reconciliation_job` used to spawn its own interval loop.
+        let interval = StorageUsageService::reconciliation_interval(
+            self.config.storage.usage_reconcile_secs,
+        );
+        if let Err(e) = core
+            .job_registry
+            .register(service.clone(), interval, None)
+            .await
+        {
+            tracing::error!("Failed to register storage_reconcile job: {e}");
+        } else {
+            tracing::info!(
+                "Storage-usage reconciliation registered with scheduler (interval {}s)",
+                interval.as_secs()
+            );
+        }
         service
     }
 
@@ -1315,8 +1335,9 @@ impl AppServiceFactory {
         // 3c. Storage usage / quota service (needed by the instant-upload
         // path inside the application services, and re-exposed on AppState
         // for the handler-side quota checks of the byte-upload paths).
-        let storage_usage =
-            self.create_storage_usage_service(&repos, &pool, &maintenance_pool, drive_repo.clone());
+        let storage_usage = self
+            .create_storage_usage_service(&repos, &pool, &maintenance_pool, drive_repo.clone(), &core)
+            .await;
 
         // 3d. Content index (embedded Tantivy) — opened before application
         // services so SearchService can hold the query port; the feeding
