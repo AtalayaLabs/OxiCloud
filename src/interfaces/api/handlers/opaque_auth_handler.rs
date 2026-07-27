@@ -65,22 +65,51 @@ use axum::response::IntoResponse;
 use axum::routing::post;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
-use opaque_ke::{RegistrationRequest, RegistrationUpload, ServerRegistration};
+use opaque_ke::{
+    CredentialFinalization, CredentialRequest, RegistrationRequest, RegistrationUpload,
+    ServerLoginStartParameters, ServerRegistration,
+};
+use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use crate::application::dtos::user_dto::AuthResponseDto;
 use crate::common::di::AppState;
+use crate::infrastructure::services::opaque_login_exchange::{
+    ExchangeId, OpaqueLoginExchange,
+};
 use crate::infrastructure::services::opaque_service::{OpaqueService, OxiCloudSuite};
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::CurrentUserId;
 
 /// Session-required OPAQUE routes. Callers layer the auth + CSRF
 /// middlewares in `main.rs` (mirrors [`auth_protected_routes`]).
+/// Session-required OPAQUE register routes. Mount under
+/// `/api/auth/opaque/register` in `main.rs` with the auth + CSRF
+/// layer stack (mirrors [`auth_protected_routes`]).
+///
+/// **The mount prefix MUST be distinct from `opaque_login_routes`'s
+/// prefix.** Nesting both routers at the same `/api/auth` node
+/// causes axum's `.layer()` to cross-apply between siblings on
+/// shared prefixes — the login endpoints would then inherit
+/// register's auth+CSRF middleware and 403 every unauthenticated
+/// KE1. Separate prefixes side-step the composition rule cleanly.
 pub fn opaque_register_routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/opaque/register/start", post(register_start))
-        .route("/opaque/register/finish", post(register_finish))
+        .route("/start", post(register_start))
+        .route("/finish", post(register_finish))
+}
+
+/// Public (unauthenticated) OPAQUE login routes. Mount under
+/// `/api/auth/opaque/login` with the same `rate_limit_login`
+/// layer used on legacy `/api/auth/login` so an attacker can't
+/// halve the per-identity budget by spraying both endpoints. See
+/// [`opaque_register_routes`] on why the prefix must be distinct.
+pub fn opaque_login_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/ke1", post(login_ke1))
+        .route("/ke3", post(login_ke3))
 }
 
 /// Client → server on register KE1. `registrationRequest` is the
@@ -266,7 +295,379 @@ pub async fn register_finish(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ── Login: KE1 + KE3 ─────────────────────────────────────────────────
+
+/// Client → server on KE1. `userIdentifier` is the same string the
+/// SPA sends to legacy `/api/auth/login` — email if it contains `@`,
+/// username otherwise (server dispatches on `@`, same as legacy).
+/// `startLoginRequest` is the base64-encoded output of
+/// `ClientLogin::start(...).message`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct OpaqueLoginKe1Dto {
+    #[serde(rename = "userIdentifier")]
+    pub user_identifier: String,
+    #[serde(rename = "startLoginRequest")]
+    pub start_login_request: String,
+}
+
+/// Server → client on KE1. `exchangeId` is an opaque handle the
+/// client MUST echo back on KE3 (single-use, 60 s TTL); the client
+/// can't derive server state from it. `loginResponse` is the
+/// base64-encoded output of `ServerLogin::start(...).message`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpaqueLoginKe1Response {
+    #[serde(rename = "exchangeId")]
+    #[schema(value_type = String, format = "uuid")]
+    pub exchange_id: ExchangeId,
+    #[serde(rename = "loginResponse")]
+    pub login_response: String,
+}
+
+/// Client → server on KE3. `exchangeId` matches what KE1 handed
+/// back; `finishLoginRequest` is the base64-encoded output of
+/// `ClientLogin::finish(...).message`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct OpaqueLoginKe3Dto {
+    #[serde(rename = "exchangeId")]
+    #[schema(value_type = String, format = "uuid")]
+    pub exchange_id: ExchangeId,
+    #[serde(rename = "finishLoginRequest")]
+    pub finish_login_request: String,
+}
+
+/// KE1: user lookup → envelope fetch → `ServerLogin::start` → stash
+/// state under a fresh exchange_id → return handle + response bytes.
+///
+/// ## Anti-enumeration
+///
+/// A KE1 that CAN'T be honestly answered (unknown user, or user
+/// exists but has no OPAQUE envelope yet) MUST look identical to a
+/// KE1 that CAN. opaque-ke's `ServerLogin::start` supports a "dummy"
+/// branch (`password_file = None`) that generates a well-formed
+/// KE2 response indistinguishable from the real branch. The
+/// dummy-branch KE3 will fail at the client-side `ClientLogin::finish`
+/// (wrong MAC), never reaching the server — so KE3 for the
+/// non-existent user is symmetric with KE3 for a wrong passphrase.
+///
+/// User is NOT looked up via `_with_perms` — this is the auth
+/// bootstrap; there's no caller identity yet. We use the same
+/// dispatch as legacy `/api/auth/login`.
+#[utoipa::path(
+    post,
+    path = "/api/auth/opaque/login/ke1",
+    request_body = OpaqueLoginKe1Dto,
+    responses(
+        (status = 200, description = "Login response + single-use exchange handle",
+            body = OpaqueLoginKe1Response),
+        (status = 400, description = "Malformed request payload"),
+        (status = 503, description = "OPAQUE service not configured"),
+    ),
+    tag = "auth"
+)]
+pub async fn login_ke1(
+    State(state): State<Arc<AppState>>,
+    Json(dto): Json<OpaqueLoginKe1Dto>,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = require_opaque_service(&state)?;
+    let repo = require_opaque_repo(&state)?;
+    let exchange = require_opaque_exchange(&state)?;
+
+    let cred_bytes = B64.decode(dto.start_login_request.trim()).map_err(|_| {
+        malformed("startLoginRequest is not valid base64")
+    })?;
+    let cred_request = CredentialRequest::<OxiCloudSuite>::deserialize(&cred_bytes)
+        .map_err(|_| malformed("startLoginRequest failed to deserialize"))?;
+
+    // Resolve identifier → user_id, then fetch the envelope. Both
+    // steps can fail (unknown user, no envelope) — collapse into a
+    // single Option so `ServerLogin::start` sees the anti-enum
+    // shape cleanly.
+    let (user_bytes, password_file) = resolve_user_and_envelope(&state, &dto.user_identifier)
+        .await
+        .unwrap_or_else(|| (dto.user_identifier.as_bytes().to_vec(), None));
+
+    // `ServerLogin::start(..., Some(file), ...)` runs the real
+    // handshake; `None` runs the dummy branch that still produces a
+    // well-formed KE2 tied to the same suite so a probing attacker
+    // can't distinguish the two paths from response shape or timing
+    // (opaque-ke pads the dummy branch to match).
+    let mut server_rng = OsRng;
+    let started = opaque_ke::ServerLogin::start(
+        &mut server_rng,
+        svc.setup(),
+        password_file,
+        cred_request,
+        &user_bytes,
+        ServerLoginStartParameters::default(),
+    )
+    .map_err(|e| {
+        // A start error at this stage is a genuine protocol failure
+        // (bad KE1 payload, ciphersuite mismatch in the wire bytes).
+        // We STILL respond 400 rather than 200-with-dummy — 200
+        // response would let the attacker distinguish "protocol
+        // error" from "unknown user"; the caller getting a 400 has
+        // to try a different KE1 anyway.
+        tracing::info!(
+            target: "audit",
+            event = "opaque.login_ke1_rejected",
+            reason = "server_start_error",
+            attempted_identifier = %dto.user_identifier,
+            error = %e,
+            "👮🏻‍♂️ OPAQUE KE1 rejected: protocol error"
+        );
+        AppError::new(
+            StatusCode::BAD_REQUEST,
+            "OPAQUE login start failed",
+            "OpaqueMalformedRequest",
+        )
+    })?;
+
+    // Silence unused-warning for repo when the branch above returns
+    // None — repo IS used inside `resolve_user_and_envelope` (via
+    // `state.opaque_repo`) but the closure hides that from the
+    // compiler's flow analysis.
+    let _ = &repo;
+
+    // Stash user_id alongside ServerLogin so KE3 knows which account
+    // just proved possession of the passphrase without having to
+    // re-parse the AKE payload (opaque-ke doesn't hand the identifier
+    // back on `finish` — it's checked implicitly against the KE1
+    // state's expected identifier).
+    let user_id = user_id_from_bytes(&user_bytes);
+    let response_b64 = B64.encode(started.message.serialize());
+    let exchange_id = exchange.store(started.state, user_id);
+    Ok(Json(OpaqueLoginKe1Response {
+        exchange_id,
+        login_response: response_b64,
+    }))
+}
+
+/// KE3: consume exchange state → `ServerLogin::finish` → mint session.
+///
+/// On success:
+///
+///   * Stamp `opaque_migrated_at` (Phase 3 signal that this user
+///     has completed at least one OPAQUE login — future legacy
+///     login attempts will be refused once Phase 4 flips to
+///     `opaque_only`).
+///   * Mint access + refresh tokens under a fresh session family,
+///     via `AuthApplicationService::mint_session_for_authenticated_user`.
+///   * Return the shared `AuthResponseDto` shape identical to
+///     `POST /api/auth/login` — the SPA consumes both paths through
+///     one downstream handler.
+///
+/// On failure (bad passphrase, replay, expired exchange, unknown
+/// exchange_id): 401 `InvalidCredentials` — the SAME shape for every
+/// failure branch so attackers can't distinguish "expired" from
+/// "wrong password" from "id already consumed".
+#[utoipa::path(
+    post,
+    path = "/api/auth/opaque/login/ke3",
+    request_body = OpaqueLoginKe3Dto,
+    responses(
+        (status = 200, description = "Session issued", body = AuthResponseDto),
+        (status = 400, description = "Malformed request payload"),
+        (status = 401, description = "Invalid credentials"),
+        (status = 503, description = "OPAQUE service not configured"),
+    ),
+    tag = "auth"
+)]
+pub async fn login_ke3(
+    State(state): State<Arc<AppState>>,
+    Json(dto): Json<OpaqueLoginKe3Dto>,
+) -> Result<impl IntoResponse, AppError> {
+    let _svc = require_opaque_service(&state)?;
+    let repo = require_opaque_repo(&state)?;
+    let exchange = require_opaque_exchange(&state)?;
+    let auth = require_auth_application_service(&state)?;
+
+    // Atomic take FIRST — before touching the payload. Two reasons:
+    //
+    //   1. Anti-enum: an unknown / expired / already-consumed
+    //      exchange_id returns 401 `InvalidCredentials` regardless
+    //      of payload shape, matching the wrong-passphrase case
+    //      exactly. If we parsed the payload first, a malformed
+    //      body would 400 EVEN for an unknown id — leaking the fact
+    //      that some KE3 shapes are valid vs invalid.
+    //   2. Anti-replay: consuming the exchange first guarantees the
+    //      handle is single-use even if the caller sends garbage
+    //      afterwards — an attacker with a stolen id can't spam
+    //      "try shapes until one parses" against the same handle.
+    let stash = exchange.take(dto.exchange_id).ok_or_else(|| {
+        tracing::info!(
+            target: "audit",
+            event = "opaque.login_ke3_rejected",
+            reason = "unknown_or_expired_exchange",
+            exchange_id = %dto.exchange_id,
+            "👮🏻‍♂️ OPAQUE KE3 rejected: unknown/expired/replayed exchange_id"
+        );
+        invalid_credentials()
+    })?;
+
+    let cred_bytes = B64.decode(dto.finish_login_request.trim()).map_err(|_| {
+        malformed("finishLoginRequest is not valid base64")
+    })?;
+    let cred_final = CredentialFinalization::<OxiCloudSuite>::deserialize(&cred_bytes)
+        .map_err(|_| malformed("finishLoginRequest failed to deserialize"))?;
+
+    // If the AKE integrity check fails (wrong passphrase, dummy-branch
+    // KE1 for an unknown user, tampered bytes), `finish` errors and
+    // we return the same 401 shape as an unknown exchange_id above.
+    let _finished = stash.state.finish(cred_final).map_err(|e| {
+        tracing::info!(
+            target: "audit",
+            event = "opaque.login_ke3_rejected",
+            reason = "ake_check_failed",
+            exchange_id = %dto.exchange_id,
+            error = %e,
+            "👮🏻‍♂️ OPAQUE KE3 rejected: AKE / passphrase check failed"
+        );
+        invalid_credentials()
+    })?;
+
+    // Both sides now agree on a shared session_key. The current
+    // implementation does NOT derive the bearer token from it —
+    // reusing the existing token minter keeps the session shape
+    // identical to legacy login. Cryptographically tying the
+    // access_token to `session_key` via HKDF is a follow-up (see
+    // docs/plan/opaque.md §Step 5 notes).
+    //
+    // The user_id comes from the KE1-side stash (resolved from the
+    // client's identifier before the dummy-vs-real branch), not from
+    // the AKE payload. Anti-enum: the dummy branch has
+    // `stash.user_id = None`; a dummy KE3 that somehow reached this
+    // point (should not — it fails at `finish` above) returns the
+    // same InvalidCredentials shape.
+    let user_id = stash.user_id.ok_or_else(invalid_credentials)?;
+
+    // Fetch the user entity — needed by mint_session_for_authenticated_user
+    // (it calls dispatch_login + register_login + generates tokens
+    // from the user's role/email/etc.).
+    let user = auth
+        .get_user_entity(user_id)
+        .await
+        .map_err(|_| {
+            // User row vanished between KE1's envelope fetch and now
+            // (delete race). Same shape as bad passphrase — never
+            // leak "you passed the crypto but the account is gone."
+            tracing::warn!(
+                target: "audit",
+                event = "opaque.login_ke3_rejected",
+                reason = "user_gone_after_ke3",
+                user_id = %user_id,
+                "👮🏻‍♂️ OPAQUE KE3: user disappeared between KE1 and KE3"
+            );
+            invalid_credentials()
+        })?;
+
+    // Mint the session BEFORE stamping opaque_migrated_at — if the
+    // session mint fails (rare, but not impossible under DB failure),
+    // we don't want to have flipped the migration flag for a user
+    // whose login didn't actually complete.
+    let session = auth
+        .mint_session_for_authenticated_user(user)
+        .await
+        .map_err(AppError::from)?;
+
+    if let Err(e) = repo.mark_migrated(user_id).await {
+        // Non-fatal: session is already issued, user is logged in.
+        // Log at warn so ops sees any consistent trend, but don't
+        // fail the response — the mark is idempotent so a later
+        // login will retry.
+        tracing::warn!(
+            target: "audit",
+            event = "opaque.mark_migrated_deferred",
+            user_id = %user_id,
+            error = %e,
+            "OPAQUE login succeeded but mark_migrated failed — will retry on next login"
+        );
+    }
+
+    tracing::info!(
+        target: "audit",
+        event = "opaque.login_ok",
+        user_id = %user_id,
+        "OPAQUE login completed"
+    );
+
+    Ok(Json(session))
+}
+
 // ── Small helpers ────────────────────────────────────────────────────
+
+fn require_opaque_exchange(state: &Arc<AppState>) -> Result<Arc<OpaqueLoginExchange>, AppError> {
+    state.opaque_login_exchange.clone().ok_or_else(|| {
+        AppError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "OPAQUE login-exchange cache is not wired",
+            "OpaqueDisabled",
+        )
+    })
+}
+
+fn require_auth_application_service(
+    state: &Arc<AppState>,
+) -> Result<
+    Arc<crate::application::services::auth_application_service::AuthApplicationService>,
+    AppError,
+> {
+    Ok(state
+        .auth_service
+        .as_ref()
+        .ok_or_else(|| AppError::internal_error("Authentication service not configured"))?
+        .auth_application_service
+        .clone())
+}
+
+/// Resolve KE1's `userIdentifier` to the OPAQUE server-side user
+/// identifier + the stored envelope. Returns `None` (silently)
+/// when either the user doesn't exist or has no envelope on file —
+/// both branches converge to the anti-enum dummy-KE1 path.
+///
+/// The tuple's first element (`Vec<u8>`) is what we pass to
+/// `ServerLogin::start` as the OPAQUE user identifier. For real users
+/// we use `user_id.as_bytes()` (matches the register handler); for
+/// the unknown-user branch we hash the CLAIMED identifier so the
+/// dummy branch's identifier bytes are still deterministic
+/// per-attempt (opaque-ke uses this in the AKE derivation).
+async fn resolve_user_and_envelope(
+    state: &Arc<AppState>,
+    identifier: &str,
+) -> Option<(Vec<u8>, Option<ServerRegistration<OxiCloudSuite>>)> {
+    let auth = state.auth_service.as_ref()?;
+    let repo = state.opaque_repo.as_ref()?;
+
+    let user = auth
+        .auth_application_service
+        .lookup_user_for_login(identifier)
+        .await
+        .ok()?;
+
+    let stored = repo.read_registration(user.id()).await.ok().flatten();
+    let password_file =
+        stored.and_then(|s| ServerRegistration::<OxiCloudSuite>::deserialize(&s.envelope).ok());
+
+    Some((user.id().as_bytes().to_vec(), password_file))
+}
+
+/// Recover a UUID from the OPAQUE user identifier bytes IF they're
+/// the 16-byte shape written by `resolve_user_and_envelope`. For the
+/// dummy branch (identifier = raw caller-supplied string), the bytes
+/// are almost never 16 long, so this returns `None` — that's the
+/// correct signal to KE1's callers ("don't stamp a user_id in the
+/// stash for the dummy branch").
+fn user_id_from_bytes(bytes: &[u8]) -> Option<Uuid> {
+    let arr: [u8; 16] = bytes.try_into().ok()?;
+    Some(Uuid::from_bytes(arr))
+}
+
+fn invalid_credentials() -> AppError {
+    AppError::new(
+        StatusCode::UNAUTHORIZED,
+        "Invalid credentials",
+        "InvalidCredentials",
+    )
+}
 
 fn require_opaque_service(state: &Arc<AppState>) -> Result<Arc<OpaqueService>, AppError> {
     state.opaque_service.clone().ok_or_else(|| {

@@ -56,24 +56,12 @@ Content-Type: application/json
 HTTP 401
 
 # ─────────────────────────────────────────────────────────────
-# Case 3 — Login KE1 endpoint not routed (401 anti-enum).
-#           Will flip to 400 in Phase 1 (public + malformed body).
+# NOTE — The Phase 0 "login endpoints 401 anti-enum" cases were
+# retired at Phase 1 landing. KE1 / KE3 are now routed (public,
+# rate-limited). Cases 7 & 8 below assert the Phase 1 shape:
+# KE1 400 `OpaqueMalformedRequest` on bad body, KE3 401
+# `InvalidCredentials` on unknown exchange_id.
 # ─────────────────────────────────────────────────────────────
-POST {{base_url}}/api/auth/opaque/login/ke1
-Content-Type: application/json
-{ "userIdentifier": "{{username}}", "startLoginRequest": "unused-phase-0" }
-
-HTTP 401
-
-# ─────────────────────────────────────────────────────────────
-# Case 4 — Login KE3 endpoint not routed (401 anti-enum).
-#           Will flip to 400 in Phase 1 (public + malformed body).
-# ─────────────────────────────────────────────────────────────
-POST {{base_url}}/api/auth/opaque/login/ke3
-Content-Type: application/json
-{ "exchangeId": "unused-phase-0", "finishLoginRequest": "unused-phase-0" }
-
-HTTP 401
 
 
 # =============================================================
@@ -143,3 +131,48 @@ Content-Type: application/json
 HTTP 400
 [Asserts]
 jsonpath "$.error_type" == "OpaqueCiphersuiteMismatch"
+
+
+# =============================================================
+# Phase 1 — Login endpoints (KE1 / KE3, public + rate-limited)
+# =============================================================
+# The KE1 / KE3 endpoints are public — no session required, no
+# CSRF (bearer/basic exempt anyway). Rate-limited by the same
+# per-IP budget as legacy `/api/auth/login` so an attacker can't
+# double their guessing rate by spraying both endpoints.
+#
+# The full crypto handshake (real opaque-ke bytes) is proved in
+# the Rust integration test (in-process, no HTTP). What Hurl
+# covers here is the wire wiring: routing exists, error paths
+# fire with the stable error_type contract.
+
+# ─────────────────────────────────────────────────────────────
+# Case 7 — KE1 with garbage base64 → 400 OpaqueMalformedRequest.
+#           Proves the endpoint is publicly reachable (no auth
+#           required — no 401), the JSON body is parsed, and the
+#           malformed-base64 error path is stable.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/auth/opaque/login/ke1
+Content-Type: application/json
+{ "userIdentifier": "{{username}}", "startLoginRequest": "not-valid-base64!" }
+
+HTTP 400
+[Asserts]
+jsonpath "$.error_type" == "OpaqueMalformedRequest"
+
+
+# ─────────────────────────────────────────────────────────────
+# Case 8 — KE3 with an unknown exchange_id → 401
+#           InvalidCredentials. The `exchange_id` handle is
+#           single-use and 60s-TTL; unknown ids MUST return the
+#           SAME error shape as a wrong-passphrase failure so
+#           attackers can't distinguish "id expired" from
+#           "wrong password" from "id already consumed".
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/auth/opaque/login/ke3
+Content-Type: application/json
+{ "exchangeId": "00000000-0000-0000-0000-000000000000", "finishLoginRequest": "AAAA" }
+
+HTTP 401
+[Asserts]
+jsonpath "$.error_type" == "InvalidCredentials"

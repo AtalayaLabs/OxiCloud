@@ -125,6 +125,30 @@ impl OpaqueRepositoryPort for OpaquePgRepository {
         }
     }
 
+    async fn mark_migrated(&self, user_id: Uuid) -> Result<()> {
+        // COALESCE preserves the first-migration timestamp — same
+        // pattern as write_registration preserves opaque_registered_at.
+        // Ops dashboards read this to answer "what fraction of users
+        // have completed the OPAQUE cutover", so overwriting on every
+        // login would erase the signal.
+        let res = sqlx::query(
+            r#"
+            UPDATE auth.users
+               SET opaque_migrated_at = COALESCE(opaque_migrated_at, NOW())
+             WHERE id = $1
+            "#,
+        )
+        .bind(user_id)
+        .execute(self.pool())
+        .await
+        .map_err(|e| DomainError::internal_error("OpaquePg", format!("mark_migrated: {e}")))?;
+
+        if res.rows_affected() == 0 {
+            return Err(DomainError::not_found("User", user_id.to_string()));
+        }
+        Ok(())
+    }
+
     async fn clear_registration(&self, user_id: Uuid) -> Result<()> {
         // One UPDATE writes both the envelope invalidation AND the
         // force-change flag — matches the atomicity we promise in the
@@ -438,6 +462,54 @@ mod integration_tests {
         );
     }
 
+    /// Mark_migrated is idempotent — a second call preserves the
+    /// first-migration timestamp, matching the ops-dashboard contract
+    /// ("when did this user first complete OPAQUE?").
+    #[tokio::test]
+    async fn mark_migrated_stamps_once_and_is_idempotent() {
+        let repo = test_repo().await;
+        let user =
+            seed_user(&repo, &format!("opaque-mig-{}@example.invalid", Uuid::new_v4())).await;
+
+        // Read the initial NULL state
+        let initial: (Option<chrono::DateTime<chrono::Utc>>,) = sqlx::query_as(
+            "SELECT opaque_migrated_at FROM auth.users WHERE id = $1",
+        )
+        .bind(user)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+        assert!(
+            initial.0.is_none(),
+            "new user starts with no opaque_migrated_at"
+        );
+
+        repo.mark_migrated(user).await.expect("first mark");
+        let first: (Option<chrono::DateTime<chrono::Utc>>,) = sqlx::query_as(
+            "SELECT opaque_migrated_at FROM auth.users WHERE id = $1",
+        )
+        .bind(user)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+        let first_ts = first.0.expect("timestamp set after first mark");
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        repo.mark_migrated(user).await.expect("second mark");
+        let second: (Option<chrono::DateTime<chrono::Utc>>,) = sqlx::query_as(
+            "SELECT opaque_migrated_at FROM auth.users WHERE id = $1",
+        )
+        .bind(user)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            second.0.unwrap(),
+            first_ts,
+            "second mark_migrated preserves the first timestamp (COALESCE)"
+        );
+    }
+
     #[tokio::test]
     async fn missing_user_surfaces_notfound_on_write_and_read_and_clear() {
         let repo = test_repo().await;
@@ -449,6 +521,7 @@ mod integration_tests {
                 .unwrap_err(),
             repo.read_registration(ghost).await.unwrap_err(),
             repo.clear_registration(ghost).await.unwrap_err(),
+            repo.mark_migrated(ghost).await.unwrap_err(),
         ] {
             assert_eq!(
                 err.kind,

@@ -71,10 +71,39 @@ pub const DEFAULT_MAX_INFLIGHT: u64 = 10_000;
 /// correct passphrase).
 pub type ExchangeId = Uuid;
 
+/// Server-side state stashed between KE1 and KE3.
+///
+/// Holds the [`ServerLogin`] (opaque-ke handshake continuation) plus
+/// the `user_id` KE1 resolved from the client's identifier — `Some`
+/// for a real user, `None` for the anti-enum dummy branch (unknown
+/// user or user without an envelope). KE3 uses this to know which
+/// account to mint the session for on success; the dummy branch's
+/// KE3 will fail the AKE check inside `ServerLogin::finish` and
+/// never reach the session mint, so the `None` variant is a
+/// belt-and-braces guard we never rely on for correctness.
+///
+/// `state` lives in a `Mutex<Option<_>>` because moka's `Cache::remove`
+/// returns a *clone* of the stored `Arc` (not the original). That means
+/// unwrapping the Arc to consume `ServerLogin` (which isn't `Clone`)
+/// would race the briefly-lingering cache-side ref. `Mutex::lock().take()`
+/// gives us ownership of the inner value regardless of how many Arc
+/// clones exist.
+struct StashedExchange {
+    state: std::sync::Mutex<Option<ServerLogin<OxiCloudSuite>>>,
+    user_id: Option<Uuid>,
+}
+
+/// Exchange state handed back to the KE3 handler — a plain owned
+/// tuple so consumers work with the concrete types, not Arc<Mutex<_>>.
+pub struct TakenExchange {
+    pub state: ServerLogin<OxiCloudSuite>,
+    pub user_id: Option<Uuid>,
+}
+
 /// In-memory cache holding server-side login state between KE1 and KE3.
 #[derive(Clone)]
 pub struct OpaqueLoginExchange {
-    inner: Arc<Cache<ExchangeId, ServerLogin<OxiCloudSuite>>>,
+    inner: Arc<Cache<ExchangeId, Arc<StashedExchange>>>,
 }
 
 impl OpaqueLoginExchange {
@@ -97,25 +126,43 @@ impl OpaqueLoginExchange {
         }
     }
 
-    /// Stash a fresh `ServerLogin` state and return the handle to
-    /// hand back to the client. The exchange_id is generated here so
-    /// callers can't accidentally reuse one — every KE1 gets its own.
-    pub fn store(&self, state: ServerLogin<OxiCloudSuite>) -> ExchangeId {
+    /// Stash a fresh exchange and return the handle to hand back to
+    /// the client. The exchange_id is generated here so callers
+    /// can't accidentally reuse one — every KE1 gets its own.
+    pub fn store(&self, state: ServerLogin<OxiCloudSuite>, user_id: Option<Uuid>) -> ExchangeId {
         let id = Uuid::new_v4();
-        self.inner.insert(id, state);
+        self.inner.insert(
+            id,
+            Arc::new(StashedExchange {
+                state: std::sync::Mutex::new(Some(state)),
+                user_id,
+            }),
+        );
         id
     }
 
-    /// Atomically consume the state for `exchange_id`. Returns `None`
-    /// if the id is unknown, already consumed, or expired. Callers
-    /// must treat those three cases identically (anti-enum): a KE3
-    /// with a bad id, a replay, and a timeout should all surface as
-    /// the same `InvalidCredentials` shape to the client.
+    /// Atomically consume the exchange for `exchange_id`. Returns
+    /// `None` if the id is unknown, already consumed, or expired.
+    /// Callers must treat those three cases identically (anti-enum):
+    /// a KE3 with a bad id, a replay, and a timeout should all
+    /// surface as the same `InvalidCredentials` shape to the client.
     ///
-    /// Uses moka's atomic `remove` (verified single get-and-invalidate
-    /// in moka 0.12+, no race window between the two operations).
-    pub fn take(&self, exchange_id: ExchangeId) -> Option<ServerLogin<OxiCloudSuite>> {
-        self.inner.remove(&exchange_id)
+    /// Combines two atomicity guarantees:
+    ///
+    ///   * `moka::Cache::remove` is a single get-and-invalidate on
+    ///     the cache side (verified in moka 0.12+).
+    ///   * `Mutex::lock().take()` gives us ownership of the inner
+    ///     `ServerLogin` even when moka returns a *clone* of the
+    ///     stored `Arc` (which it does — `remove` yields a clone,
+    ///     not the original), and prevents two concurrent takers
+    ///     from both seeing `Some`.
+    pub fn take(&self, exchange_id: ExchangeId) -> Option<TakenExchange> {
+        let arc = self.inner.remove(&exchange_id)?;
+        let state = arc.state.lock().ok()?.take()?;
+        Some(TakenExchange {
+            state,
+            user_id: arc.user_id,
+        })
     }
 
     /// Force runtime maintenance (LRU eviction + TTL sweep). Moka runs
@@ -206,9 +253,10 @@ mod tests {
         let cache = OpaqueLoginExchange::with_params(Duration::from_secs(60), 100);
         let state = build_server_login_state();
 
-        let id = cache.store(state);
+        let id = cache.store(state, Some(Uuid::new_v4()));
         // Second call after take must miss — single-use semantic.
-        assert!(cache.take(id).is_some(), "first take retrieves the state");
+        let taken = cache.take(id).expect("first take retrieves the state");
+        assert!(taken.user_id.is_some(), "user_id round-trips through the stash");
         assert!(
             cache.take(id).is_none(),
             "second take must miss — exchange_id is single-use"
@@ -228,7 +276,7 @@ mod tests {
         // (it runs pending tasks lazily), so `run_pending_tasks`
         // forces a deterministic sweep.
         let cache = OpaqueLoginExchange::with_params(Duration::from_millis(100), 100);
-        let id = cache.store(build_server_login_state());
+        let id = cache.store(build_server_login_state(), None);
 
         std::thread::sleep(Duration::from_millis(150));
         cache.run_pending_tasks();
@@ -245,8 +293,19 @@ mod tests {
         // — reusing one would enable a KE3 to consume the wrong
         // exchange's state.
         let cache = OpaqueLoginExchange::new();
-        let a = cache.store(build_server_login_state());
-        let b = cache.store(build_server_login_state());
+        let a = cache.store(build_server_login_state(), None);
+        let b = cache.store(build_server_login_state(), None);
         assert_ne!(a, b, "each store() must mint a fresh UUID");
+    }
+
+    #[test]
+    fn dummy_branch_stash_carries_no_user_id() {
+        // KE1 for an unknown user stashes `user_id: None` (anti-enum
+        // — dummy branch). KE3 for the dummy will fail at AKE, but
+        // the stash contract is: real user → Some(id), unknown → None.
+        let cache = OpaqueLoginExchange::new();
+        let id = cache.store(build_server_login_state(), None);
+        let taken = cache.take(id).expect("take dummy stash");
+        assert!(taken.user_id.is_none(), "dummy-branch stash carries no user_id");
     }
 }

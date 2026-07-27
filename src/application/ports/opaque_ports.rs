@@ -92,4 +92,14 @@ pub trait OpaqueRepositoryPort: Send + Sync + 'static {
     /// on the envelope columns but STILL sets the force-change flag
     /// (that's the point of the admin call).
     async fn clear_registration(&self, user_id: Uuid) -> Result<()>;
+
+    /// Stamp `opaque_migrated_at` on `user_id` if it isn't set yet.
+    /// Called by the login-KE3 handler after a successful OPAQUE
+    /// handshake — the presence of this timestamp is the Phase 3+
+    /// signal that legacy `POST /api/auth/login` should refuse for
+    /// this user.
+    ///
+    /// Idempotent (COALESCE preserves the first-migration timestamp
+    /// so a later login doesn't rewrite the operational signal).
+    async fn mark_migrated(&self, user_id: Uuid) -> Result<()>;
 }

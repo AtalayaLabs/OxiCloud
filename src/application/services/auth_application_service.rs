@@ -712,7 +712,7 @@ impl AuthApplicationService {
         } else {
             self.user_storage.get_user_by_username(&dto.username).await
         };
-        let mut user = lookup.map_err(|_| {
+        let user = lookup.map_err(|_| {
             // Audit: unknown-identifier login attempt. Reason key kept
             // stable so log search can aggregate without parsing the
             // human-readable message. Caller's client IP + request id
@@ -827,6 +827,38 @@ impl AuthApplicationService {
             ));
         }
 
+        // Mint the session — factored so the OPAQUE login handler
+        // can reuse the exact same shape after a successful OPAQUE
+        // handshake (Phase 1, `login/ke3`). Both paths converge here
+        // so lifecycle + token + session-family semantics stay in
+        // one place.
+        self.mint_session_for_authenticated_user(user).await
+    }
+
+    /// Emit a fresh session for a user who has ALREADY been
+    /// authenticated by a mechanism the caller trusts (legacy
+    /// password verify, OPAQUE KE3 success, magic-link redemption).
+    ///
+    /// This method does NOT verify any credential — the caller must
+    /// have proven identity before invoking it. What it DOES do:
+    ///
+    ///   * Dispatch `on_user_login` lifecycle (so
+    ///     `PersonalDriveLifecycleHook` can safety-net first-login
+    ///     provisioning).
+    ///   * Update `last_login_at` (in-memory; `create_session`
+    ///     persists it as a side effect via its own transaction).
+    ///   * Mint access + refresh tokens under a fresh token family.
+    ///   * Persist the session row.
+    ///   * Return the shared [`AuthResponseDto`] shape.
+    ///
+    /// Callers: `login()` (after password verify),
+    /// `redeem_magic_link()` (after token redemption),
+    /// `interfaces::api::handlers::opaque_auth_handler::login_ke3`
+    /// (after OPAQUE handshake).
+    pub async fn mint_session_for_authenticated_user(
+        &self,
+        mut user: crate::domain::entities::user::User,
+    ) -> Result<AuthResponseDto, DomainError> {
         // Lifecycle: dispatch login BEFORE register_login() so hooks
         // observing `last_login_at().is_none()` see "first ever login"
         // correctly. See tip #1 in user_lifecycle.rs.
@@ -2071,6 +2103,26 @@ impl AuthApplicationService {
         user_id: Uuid,
     ) -> Result<crate::domain::entities::user::User, DomainError> {
         UserStoragePort::get_user_by_id(&*self.user_storage, user_id).await
+    }
+
+    /// Login-style identifier lookup: dispatches on `@` in the input
+    /// (email path when present, username path when not), identical
+    /// to `login()`'s dispatch. Exposed so the OPAQUE login handler
+    /// (`opaque_auth_handler::login_ke1`) can resolve the same
+    /// identifier shape without duplicating the `@` heuristic.
+    ///
+    /// Returns the raw DB error on miss — callers are responsible
+    /// for the anti-enum shape (do NOT surface the DomainError kind
+    /// distinction to unauthenticated clients).
+    pub async fn lookup_user_for_login(
+        &self,
+        identifier: &str,
+    ) -> Result<crate::domain::entities::user::User, DomainError> {
+        if identifier.contains('@') {
+            self.user_storage.get_user_by_email(identifier).await
+        } else {
+            self.user_storage.get_user_by_username(identifier).await
+        }
     }
 
     /// Visibility-checked profile lookup for `GET /api/users/{id}`.
