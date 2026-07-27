@@ -1487,9 +1487,25 @@ impl AppServiceFactory {
                         core.config.features.grant_cleanup.interval_hours,
                     ),
                 );
-                // First tick fires immediately inside start_cleanup_job —
-                // matches the trash/storage-usage daemon shape.
-                svc.clone().start_cleanup_job().await;
+                // Registered with the periodic-job scheduler
+                // (`docs/plan/job-registry.md` Part 1); the retired
+                // `start_cleanup_job` used to spawn its own interval loop.
+                // Admin `?force=true` trigger still calls `svc.purge(Some(0))`
+                // directly — grace override doesn't fit the JobHandler shape.
+                let interval = svc.interval();
+                if let Err(e) = core
+                    .job_registry
+                    .register(svc.clone(), Some(interval), None)
+                    .await
+                {
+                    tracing::error!("Failed to register grant_cleanup job: {e}");
+                } else {
+                    tracing::info!(
+                        "Grant cleanup registered with scheduler (every {}h, grace = {}d)",
+                        interval.as_secs() / 3600,
+                        core.config.features.grant_cleanup.grace_days,
+                    );
+                }
                 Some(svc)
             } else {
                 tracing::info!(

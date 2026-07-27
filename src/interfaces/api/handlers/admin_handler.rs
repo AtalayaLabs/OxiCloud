@@ -2280,7 +2280,12 @@ pub async fn internal_trigger_grant_cleanup(
     // only — the daemon's configured grace is untouched. Mirrors the
     // `trigger-gc?force=true` shape.
     let grace_override = if query.force { Some(0) } else { None };
-    let grants_deleted = svc.purge(grace_override).await;
+    let grants_deleted = match svc.purge(grace_override).await {
+        Ok(n) => n,
+        Err(e) => {
+            return AppError::internal_error(format!("grant cleanup failed: {e}")).into_response();
+        }
+    };
     let grace_days = grace_override.unwrap_or_else(|| svc.grace_days());
     (
         StatusCode::OK,
