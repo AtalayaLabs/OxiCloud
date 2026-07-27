@@ -23,7 +23,7 @@ use tracing::{error, info};
 
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::common::errors::DomainError;
-use crate::infrastructure::scheduler::{JobHandler, JobOutcome};
+use crate::infrastructure::scheduler::{JobHandler, JobOutcome, JobRunArgs};
 use crate::infrastructure::services::pg_acl_engine::PgAclEngine;
 use async_trait::async_trait;
 
@@ -112,19 +112,26 @@ impl JobHandler for GrantCleanupService {
         GRANT_CLEANUP_JOB_NAME
     }
 
-    /// Runs one purge with the configured grace window. `count` on the
-    /// returned `JobOutcome::Ok` is the number of `role_grants` rows
-    /// physically deleted; `extra.grace_days` records which grace was
-    /// applied so admin listings can see it without a second lookup.
+    /// Runs one purge. `count` on the returned `JobOutcome::Ok` is
+    /// the number of `role_grants` rows physically deleted;
+    /// `extra.grace_days` records which grace was applied so admin
+    /// listings can see it without a second lookup.
     ///
-    /// Admin `?force=true` (grace = 0) does NOT come through here —
-    /// that path calls `purge(Some(0))` directly on the shared
-    /// `Arc<GrantCleanupService>` from the handler.
-    async fn run(&self) -> JobOutcome {
-        match self.purge(None).await {
-            Ok(count) => {
-                JobOutcome::ok_with(count, serde_json::json!({ "grace_days": self.grace_days }))
-            }
+    /// `args.force = true` collapses the grace window to zero for
+    /// this run only — matches the legacy
+    /// `POST /admin/internal/trigger-grant-cleanup?force=true` shape.
+    /// The configured `self.grace_days` is not mutated.
+    async fn run(&self, args: &JobRunArgs) -> JobOutcome {
+        let grace_override = if args.force { Some(0) } else { None };
+        let effective_grace = grace_override.unwrap_or(self.grace_days);
+        match self.purge(grace_override).await {
+            Ok(count) => JobOutcome::ok_with(
+                count,
+                serde_json::json!({
+                    "grace_days": effective_grace,
+                    "forced": args.force,
+                }),
+            ),
             Err(e) => JobOutcome::Err(format!("grant cleanup failed: {e}")),
         }
     }

@@ -1281,7 +1281,7 @@ impl AppServiceFactory {
         // sweep already runs GC as its tail step, so a periodic dedup
         // schedule would double the work. Registering with `interval =
         // None` keeps it admin-triggerable through the uniform scheduler
-        // surface (`POST /api/admin/internal/trigger-job/dedup_gc`).
+        // surface (`POST /api/admin/jobs/dedup_gc/trigger`).
         if let Err(e) = core
             .job_registry
             .register(

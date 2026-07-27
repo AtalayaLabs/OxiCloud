@@ -6,7 +6,7 @@ use tracing::{debug, error, info, instrument};
 use crate::common::errors::Result;
 use crate::domain::repositories::trash_repository::TrashRepository;
 use crate::infrastructure::repositories::pg::trash_db_repository::TrashDbRepository;
-use crate::infrastructure::scheduler::{JobHandler, JobOutcome};
+use crate::infrastructure::scheduler::{JobHandler, JobOutcome, JobRunArgs};
 use crate::infrastructure::services::dedup_service::DedupService;
 use async_trait::async_trait;
 
@@ -165,7 +165,11 @@ impl JobHandler for TrashCleanupService {
     ///
     /// Failure of the trash sweep itself → `Err`. GC failure alone is
     /// non-fatal and stays logged only.
-    async fn run(&self) -> JobOutcome {
+    ///
+    /// `args.force` is ignored — trash cleanup has no acceleration
+    /// concept (retention windows are per-item metadata, not a runtime
+    /// knob).
+    async fn run(&self, _args: &JobRunArgs) -> JobOutcome {
         match self.run_once().await {
             Ok(stats) => {
                 let removed = stats.files_purged + stats.folders_purged;

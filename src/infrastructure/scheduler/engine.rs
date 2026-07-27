@@ -21,7 +21,7 @@ use chrono::Utc;
 use tokio::task::JoinHandle;
 
 use super::registry::{JobEntry, JobRegistry};
-use super::types::{ErrCause, JobOutcome};
+use super::types::{ErrCause, JobOutcome, JobRunArgs};
 
 /// Public handle to the running supervisor.
 ///
@@ -93,8 +93,9 @@ async fn run(registry: Arc<JobRegistry>) {
 
         // Fire and forget from the supervisor's perspective — we
         // don't care about the outcome, `dispatch` records it on the
-        // entry and emits the log line itself.
-        let _ = dispatch(&name, entry).await;
+        // entry and emits the log line itself. Periodic ticks never
+        // force — that's an admin-trigger-only affordance.
+        let _ = dispatch(&name, entry, &JobRunArgs::default()).await;
     }
 }
 
@@ -112,7 +113,15 @@ async fn run(registry: Arc<JobRegistry>) {
 ///
 /// Non-panicking; every failure path resolves to a `JobOutcome::Err`
 /// with a `cause` log field.
-pub(super) async fn dispatch(name: &str, entry: Arc<JobEntry>) -> JobOutcome {
+///
+/// `args` is passed through to `JobHandler::run`. The supervisor's
+/// periodic ticks pass `JobRunArgs::default()`; the admin trigger
+/// endpoint forwards parsed query params such as `?force=true`.
+pub(super) async fn dispatch(
+    name: &str,
+    entry: Arc<JobEntry>,
+    args: &JobRunArgs,
+) -> JobOutcome {
     // Try to acquire the single-permit gate. `try_acquire` is
     // non-blocking — if held, we know the previous run is still
     // executing and skip this tick.
@@ -157,9 +166,11 @@ pub(super) async fn dispatch(name: &str, entry: Arc<JobEntry>) -> JobOutcome {
     let start_instant = Instant::now();
 
     // Spawn so panics land as `JoinError::is_panic()` instead of
-    // unwinding into the supervisor loop.
+    // unwinding into the supervisor loop. Args cloned into the spawn
+    // scope so the borrow doesn't outlive the caller.
     let handler = entry.handler.clone();
-    let join = tokio::spawn(async move { handler.run().await });
+    let args_owned = args.clone();
+    let join = tokio::spawn(async move { handler.run(&args_owned).await });
 
     let (outcome, cause) = match entry.timeout {
         Some(dur) => match tokio::time::timeout(dur, join).await {
@@ -305,7 +316,7 @@ mod tests {
         fn name(&self) -> &str {
             &self.name
         }
-        async fn run(&self) -> JobOutcome {
+        async fn run(&self, _args: &JobRunArgs) -> JobOutcome {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if !self.sleep.is_zero() {
                 tokio::time::sleep(self.sleep).await;
@@ -321,7 +332,7 @@ mod tests {
         fn name(&self) -> &str {
             "panicker"
         }
-        async fn run(&self) -> JobOutcome {
+        async fn run(&self, _args: &JobRunArgs) -> JobOutcome {
             panic!("intentional test panic");
         }
     }
@@ -331,7 +342,7 @@ mod tests {
         // Directly exercise translate_join with a spawned panic — the
         // supervisor loop's dispatch path uses this same helper.
         let handler = Arc::new(PanickingHandler);
-        let join = tokio::spawn(async move { handler.run().await });
+        let join = tokio::spawn(async move { handler.run(&JobRunArgs::default()).await });
         let (outcome, cause) = translate_join(join.await);
         assert!(!outcome.is_ok());
         assert_eq!(cause, Some(ErrCause::Panicked));
@@ -361,13 +372,15 @@ mod tests {
         // Kick off dispatch 1 in the background — it holds the permit
         // for ~200 ms.
         let entry_bg = entry.clone();
-        let bg = tokio::spawn(async move { dispatch("overrun", entry_bg).await });
+        let bg = tokio::spawn(async move {
+            dispatch("overrun", entry_bg, &JobRunArgs::default()).await
+        });
 
         // Give dispatch 1 time to grab the permit.
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Dispatch 2 should observe the permit taken and skip.
-        dispatch("overrun", entry.clone()).await;
+        dispatch("overrun", entry.clone(), &JobRunArgs::default()).await;
 
         // Only dispatch 1's handler should have actually run so far.
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -396,7 +409,7 @@ mod tests {
             .unwrap();
         let entry = registry.get("slow").await.unwrap();
 
-        dispatch("slow", entry.clone()).await;
+        dispatch("slow", entry.clone(), &JobRunArgs::default()).await;
 
         // The timeout fired; last_outcome must be Err.
         let state = entry.state.lock().unwrap();

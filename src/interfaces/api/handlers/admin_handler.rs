@@ -155,6 +155,12 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
             "/internal/trigger-grant-cleanup",
             post(internal_trigger_grant_cleanup),
         )
+        // JobRegistry admin surface — production, always-on,
+        // audit-logged. See `docs/plan/job-registry.md` §Cross-cutting.
+        // The `/internal/trigger-*` shims above will be retired in a
+        // follow-up PR (deprecated forwards to these endpoints).
+        .route("/jobs", get(list_jobs))
+        .route("/jobs/{name}/trigger", post(trigger_job))
         // Drives — admin-wide view (distinct from `/api/drives` which
         // is filtered to the caller's role grants).
         .route("/drives", get(list_all_drives))
@@ -2297,4 +2303,99 @@ pub async fn internal_trigger_grant_cleanup(
         })),
     )
         .into_response()
+}
+
+// ─────────────────────────────────────────────────────
+// JobRegistry admin surface (`/api/admin/jobs/*`)
+// ─────────────────────────────────────────────────────
+
+/// `GET /api/admin/jobs` — enumerate every registered job with its
+/// interval, next-run/last-run timestamps, and last outcome.
+///
+/// Production endpoint (no `OXICLOUD_ENABLE_ADMIN_INTERNAL_ENDPOINTS`
+/// gate). Read-only, so no audit line — the standard admin-middleware
+/// auth check is enough.
+#[utoipa::path(
+    get,
+    path = "/api/admin/jobs",
+    responses(
+        (status = 200, description = "Jobs listed"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let summary = state.core.job_registry.snapshot().await;
+    (StatusCode::OK, Json(summary)).into_response()
+}
+
+/// Query parameters for `POST /api/admin/jobs/{name}/trigger`.
+///
+/// `force=true` requests acceleration semantics from handlers that
+/// support it (dedup_gc → grace = 0, grant_cleanup → grace = 0).
+/// Silently ignored by handlers that don't (trash_cleanup,
+/// storage_reconcile).
+#[derive(serde::Deserialize)]
+pub struct TriggerJobQuery {
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// `POST /api/admin/jobs/{name}/trigger` — dispatch one run off-schedule.
+///
+/// Returns the job's `JobOutcome` inline. Idempotent under exclusivity:
+/// if the previous run is still in flight, the handler returns
+/// `Ok { count: 0, extra: { "skipped": "already_running" } }` rather
+/// than spawning a parallel dispatch.
+///
+/// Emits an audit line before dispatch — bulk-mutation side effects on
+/// operator command belong on the audit stream.
+#[utoipa::path(
+    post,
+    path = "/api/admin/jobs/{name}/trigger",
+    params(("name" = String, Path, description = "Registered job name")),
+    responses(
+        (status = 200, description = "Dispatched; outcome inline"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+        (status = 404, description = "Job not registered"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn trigger_job(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<TriggerJobQuery>,
+) -> impl IntoResponse {
+    use crate::infrastructure::scheduler::JobRunArgs;
+    // Audit line BEFORE dispatch so an operator triggering something
+    // that then hangs still leaves a trail.
+    tracing::info!(
+        target: "audit",
+        event = "job.trigger",
+        job = %name,
+        force = query.force,
+        "👮🏻‍♂️ Admin triggered job {} (force={})",
+        name,
+        query.force,
+    );
+    let args = JobRunArgs { force: query.force };
+    match state.core.job_registry.trigger(&name, &args).await {
+        Some(outcome) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "ok": true, "outcome": outcome })),
+        )
+            .into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "job not registered",
+                "name": name,
+            })),
+        )
+            .into_response(),
+    }
 }

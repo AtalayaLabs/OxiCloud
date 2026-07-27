@@ -9,6 +9,27 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+/// Per-dispatch parameters passed from the caller (scheduler tick or
+/// admin trigger) into [`JobHandler::run`](super::handler::JobHandler::run).
+///
+/// Deliberately a struct — not a bare `bool` — so we don't churn every
+/// handler signature the next time a job needs another knob. Grows by
+/// addition; renaming a field is a breaking change to admin scripts
+/// that pass query params, so treat like SQL columns.
+///
+/// **Handlers that don't understand a given arg silently ignore it.**
+/// No error path just because a caller set an unused flag — that would
+/// leak per-job semantics into callers who don't need to know.
+///
+/// Semantics of `force`, per job:
+/// - `dedup_gc` — skip the orphan grace window (grace = 0).
+/// - `grant_cleanup` — grace = 0.
+/// - Others (trash_cleanup, storage_reconcile, …) — ignored.
+#[derive(Debug, Clone, Default)]
+pub struct JobRunArgs {
+    pub force: bool,
+}
+
 /// Uniform outcome the supervisor logs and stores for every job dispatch.
 ///
 /// Two variants, deliberately. Distinguishing *why* a job failed

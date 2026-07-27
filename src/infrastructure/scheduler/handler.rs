@@ -3,12 +3,13 @@
 //! Everything a native service needs to write to plug into the periodic
 //! scheduler is on this page. See `docs/plan/job-registry.md` Part 1
 //! for the design rationale and migration criterion (the "operator
-//! trigger" question — if an operator would never `POST /trigger-job`
-//! for this loop, it doesn't belong here; keep it as a core worker).
+//! trigger" question — if an operator would never
+//! `POST /api/admin/jobs/{name}/trigger` for this loop, it doesn't
+//! belong here; keep it as a core worker).
 
 use async_trait::async_trait;
 
-use super::types::JobOutcome;
+use super::types::{JobOutcome, JobRunArgs};
 
 /// Implemented by every service that wants to run on a fixed interval
 /// through the periodic scheduler.
@@ -31,7 +32,7 @@ use super::types::JobOutcome;
 ///
 /// Return a stable, unique snake_case identifier. Log lines
 /// (`job = %name`), admin listing, admin trigger URLs
-/// (`POST /api/admin/internal/trigger-job/{name}`) and env vars
+/// (`POST /api/admin/jobs/{name}/trigger`) and env vars
 /// (`OXICLOUD_JOB_<NAME>_INTERVAL_HOURS`) all key on this. Renaming
 /// after release is a breaking change to operator scripts and log
 /// dashboards.
@@ -64,7 +65,15 @@ pub trait JobHandler: Send + Sync {
     fn name(&self) -> &str;
 
     /// One execution. Called at the registered interval and (optionally)
-    /// on admin trigger. See trait-level docs for guidance on when to
-    /// return Ok vs Err.
-    async fn run(&self) -> JobOutcome;
+    /// on admin trigger.
+    ///
+    /// `args` carries per-dispatch parameters (`force: bool` today).
+    /// Periodic ticks pass [`JobRunArgs::default()`]; admin triggers
+    /// forward query params such as `?force=true`. Handlers that don't
+    /// understand a given arg silently ignore it — the arg exists to
+    /// give per-job acceleration semantics without spreading per-job
+    /// knowledge into every caller.
+    ///
+    /// See trait-level docs for guidance on when to return Ok vs Err.
+    async fn run(&self, args: &JobRunArgs) -> JobOutcome;
 }

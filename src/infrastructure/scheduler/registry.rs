@@ -16,10 +16,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use tokio::sync::{RwLock, Semaphore};
 
 use super::handler::JobHandler;
-use super::types::JobOutcome;
+use super::types::{JobOutcome, JobRunArgs};
 
 /// A registered job plus its runtime state. Held as `Arc<JobEntry>`
 /// inside the registry so the engine can hold a snapshot across an
@@ -158,6 +159,32 @@ impl JobRegistry {
         guard.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 
+    /// Serialisable snapshot for `GET /api/admin/jobs`. Each entry
+    /// captures the operator-visible state: interval (null for on-
+    /// demand), next scheduled dispatch (null for on-demand), when
+    /// the last run started, and its outcome.
+    pub async fn snapshot(&self) -> Vec<JobSummary> {
+        let entries = self.snapshot_all().await;
+        entries
+            .into_iter()
+            .map(|(name, entry)| {
+                let state = entry.state.lock().expect("JobState mutex poisoned");
+                let (last_run_at, last_outcome) = match &state.last_outcome {
+                    Some((at, outcome)) => (Some(*at), Some(outcome.clone())),
+                    None => (None, None),
+                };
+                JobSummary {
+                    name,
+                    interval_ms: entry.interval.map(|d| d.as_millis() as u64),
+                    next_run_at: state.next_run_at,
+                    last_run_at,
+                    last_outcome,
+                    running: state.current_run_start.is_some(),
+                }
+            })
+            .collect()
+    }
+
     /// Count of registered jobs — used for the startup log line.
     pub async fn len(&self) -> usize {
         self.entries.read().await.len()
@@ -171,7 +198,7 @@ impl JobRegistry {
     /// Manual dispatch — the single entry point for running a
     /// registered job outside the scheduler's tick loop. Called by:
     ///
-    /// - The admin endpoint `POST /api/admin/internal/trigger-job/{name}`.
+    /// - The admin endpoint `POST /api/admin/jobs/{name}/trigger`.
     /// - Any service that wants a scheduler-uniform dispatch of a
     ///   peer job (uniform log line, exclusivity, panic containment,
     ///   timeout enforcement).
@@ -185,9 +212,17 @@ impl JobRegistry {
     ///
     /// Works for BOTH scheduled and on-demand jobs — for on-demand
     /// jobs this is the only way they ever run.
-    pub async fn trigger(self: &Arc<Self>, name: &str) -> Option<JobOutcome> {
+    ///
+    /// `args` is forwarded to `JobHandler::run`. Admin trigger routes
+    /// use `JobRunArgs { force: query.force }`; programmatic callers
+    /// that just want a plain run pass `JobRunArgs::default()`.
+    pub async fn trigger(
+        self: &Arc<Self>,
+        name: &str,
+        args: &JobRunArgs,
+    ) -> Option<JobOutcome> {
         let entry = self.get(name).await?;
-        Some(super::engine::dispatch(name, entry).await)
+        Some(super::engine::dispatch(name, entry, args).await)
     }
 }
 
@@ -201,6 +236,29 @@ impl Default for JobRegistry {
 pub enum RegisterError {
     #[error("job name already registered: {0}")]
     DuplicateName(String),
+}
+
+/// Per-job row in the `GET /api/admin/jobs` response.
+///
+/// - `interval_ms` — periodic cadence; `null` for on-demand jobs.
+/// - `next_run_at` — next scheduled dispatch; `null` for on-demand.
+/// - `last_run_at` / `last_outcome` — most recent completed run;
+///   `null` until the first run finishes.
+/// - `running` — true iff the in-flight permit is currently held
+///   (either the supervisor tick is in progress or an admin trigger
+///   raced in).
+#[derive(Debug, Clone, Serialize)]
+pub struct JobSummary {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interval_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_run_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_run_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_outcome: Option<JobOutcome>,
+    pub running: bool,
 }
 
 #[cfg(test)]
@@ -217,7 +275,7 @@ mod tests {
         fn name(&self) -> &str {
             &self.name
         }
-        async fn run(&self) -> JobOutcome {
+        async fn run(&self, _args: &JobRunArgs) -> JobOutcome {
             JobOutcome::ok(0)
         }
     }
@@ -299,13 +357,20 @@ mod tests {
         let reg = Arc::new(JobRegistry::new());
         reg.register(handler("gc"), None, None).await.unwrap();
 
-        let outcome = reg.trigger("gc").await.expect("job exists");
+        let outcome = reg
+            .trigger("gc", &JobRunArgs::default())
+            .await
+            .expect("job exists");
         assert!(outcome.is_ok());
     }
 
     #[tokio::test]
     async fn trigger_returns_none_for_unknown_job() {
         let reg = Arc::new(JobRegistry::new());
-        assert!(reg.trigger("nope").await.is_none());
+        assert!(
+            reg.trigger("nope", &JobRunArgs::default())
+                .await
+                .is_none()
+        );
     }
 }

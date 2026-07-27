@@ -578,7 +578,7 @@ impl StorageUsageService {
 
 pub const STORAGE_RECONCILE_JOB_NAME: &str = "storage_reconcile";
 
-use crate::infrastructure::scheduler::{JobHandler, JobOutcome};
+use crate::infrastructure::scheduler::{JobHandler, JobOutcome, JobRunArgs};
 use async_trait::async_trait;
 
 #[async_trait]
@@ -601,7 +601,11 @@ impl JobHandler for StorageUsageService {
     /// Failure of one sub-sweep short-circuits the tick to `Err`;
     /// operators see `outcome=err, cause=handler` in the scheduler
     /// log and the individual sweep's own `error!` line above it.
-    async fn run(&self) -> JobOutcome {
+    ///
+    /// `args.force` is ignored — reconciliation is idempotent and has
+    /// no acceleration semantics; every run does the same set-based
+    /// UPDATE regardless.
+    async fn run(&self, _args: &JobRunArgs) -> JobOutcome {
         let drives = match self.update_all_drives_storage_usage().await {
             Ok(n) => n,
             Err(e) => return JobOutcome::Err(format!("drive reconciliation failed: {e}")),

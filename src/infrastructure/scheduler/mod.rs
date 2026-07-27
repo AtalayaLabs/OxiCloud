@@ -29,5 +29,5 @@ mod types;
 
 pub use engine::SchedulerEngine;
 pub use handler::JobHandler;
-pub use registry::{JobEntry, JobRegistry, RegisterError};
-pub use types::{ErrCause, JobOutcome};
+pub use registry::{JobEntry, JobRegistry, JobSummary, RegisterError};
+pub use types::{ErrCause, JobOutcome, JobRunArgs};

@@ -3124,7 +3124,7 @@ impl DedupPort for DedupService {
 
 /// Registered name for the dedup GC job. Stable identifier used in
 /// log lines, `admin.background_runs.job_name` (when Part 2 lands),
-/// and admin URLs (`POST /api/admin/internal/trigger-job/dedup_gc`).
+/// and admin URLs (`POST /api/admin/jobs/dedup_gc/trigger`).
 pub const DEDUP_GC_JOB_NAME: &str = "dedup_gc";
 
 #[async_trait::async_trait]
@@ -3136,7 +3136,7 @@ impl crate::infrastructure::scheduler::JobHandler for DedupService {
     /// Runs one `garbage_collect` sweep — the same reclamation that
     /// `TrashCleanupService` invokes inline as its tail step, exposed
     /// through the scheduler so operators can trigger it uniformly via
-    /// `POST /api/admin/internal/trigger-job/dedup_gc`.
+    /// `POST /api/admin/jobs/dedup_gc/trigger`.
     ///
     /// Registered with `interval = None` (on-demand only): the periodic
     /// tick belongs to trash cleanup, whose sweep already runs GC as
@@ -3148,12 +3148,28 @@ impl crate::infrastructure::scheduler::JobHandler for DedupService {
     /// `count` reports blobs reclaimed; `extra.bytes_reclaimed` reports
     /// the freed disk. GC returning `(0, 0)` is normal — it means trash
     /// cleanup already reaped everything.
-    async fn run(&self) -> crate::infrastructure::scheduler::JobOutcome {
+    ///
+    /// `args.force = true` skips the orphan grace window
+    /// (`garbage_collect_force` — grace_secs = 0), matching the legacy
+    /// `POST /admin/internal/trigger-gc?force=true` semantics. Unsafe
+    /// under concurrent uploads: only reachable through the admin
+    /// endpoint and only intentionally used by tests + operator
+    /// diagnostic sessions.
+    async fn run(
+        &self,
+        args: &crate::infrastructure::scheduler::JobRunArgs,
+    ) -> crate::infrastructure::scheduler::JobOutcome {
         use crate::infrastructure::scheduler::JobOutcome;
-        match self.garbage_collect().await {
-            Ok((items, bytes)) => {
-                JobOutcome::ok_with(items, serde_json::json!({ "bytes_reclaimed": bytes }))
-            }
+        let result = if args.force {
+            self.garbage_collect_force().await
+        } else {
+            self.garbage_collect().await
+        };
+        match result {
+            Ok((items, bytes)) => JobOutcome::ok_with(
+                items,
+                serde_json::json!({ "bytes_reclaimed": bytes, "forced": args.force }),
+            ),
             Err(e) => JobOutcome::Err(format!("dedup GC failed: {e}")),
         }
     }

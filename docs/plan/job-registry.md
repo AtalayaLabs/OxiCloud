@@ -53,8 +53,8 @@ duplicating them between parts.
 Not every background loop belongs in JobRegistry. The single question
 that decides:
 
-> **"Would an operator plausibly `POST /trigger-job/{name}` to make
-> it run right now?"**
+> **"Would an operator plausibly `POST /api/admin/jobs/{name}/trigger`
+> to make it run right now?"**
 
 **Yes → migrate.** The whole payoff of JobRegistry is a uniform
 *operator surface* — list, trigger, last-outcome, log line, config
@@ -144,7 +144,26 @@ pub trait JobHandler: Send + Sync {
     /// extra }` on success — the count is the primary scalar the job
     /// reports (rows swept, ETags flushed, blobs GC'd). Return
     /// `Err(msg)` on failure; the supervisor logs it and continues.
-    async fn run(&self) -> JobOutcome;
+    ///
+    /// `args` carries per-dispatch parameters. Periodic ticks pass
+    /// `JobRunArgs::default()`; admin triggers can set `force: true`
+    /// to request acceleration semantics (e.g. dedup GC skips its
+    /// orphan grace window, grant cleanup uses grace = 0). Handlers
+    /// that don't understand a given arg silently ignore it — no
+    /// return-error path just because a caller set an unused flag.
+    async fn run(&self, args: &JobRunArgs) -> JobOutcome;
+}
+
+/// Per-dispatch parameters. Grows over time; today it carries only
+/// `force`. Kept as a struct (not `bool`) so we don't have to change
+/// signatures the next time a job needs another knob.
+#[derive(Debug, Clone, Default)]
+pub struct JobRunArgs {
+    /// Request acceleration semantics. Semantics are per-job:
+    /// - `dedup_gc`: skip the orphan grace window (grace = 0).
+    /// - `grant_cleanup`: grace = 0.
+    /// - Others: silently ignored.
+    pub force: bool,
 }
 ```
 
@@ -294,18 +313,21 @@ registry.register(
 - `Some(dur)` — supervisor fires the job every `dur`. Also admin-triggerable.
 - `None` — supervisor never fires the job. Admin-triggerable only. Dispatch still routes through the same `JobRegistry::trigger(name)` path so the job gets the same panic-containment, timeout, exclusivity, and log-line treatment as scheduled ones.
 
-### Manual dispatch — `JobRegistry::trigger(name)`
+### Manual dispatch — `JobRegistry::trigger(name, args)`
 
 ```rust
-pub async fn trigger(&self, name: &str) -> Option<JobOutcome>;
+pub async fn trigger(&self, name: &str, args: &JobRunArgs) -> Option<JobOutcome>;
 ```
 
 The single entry point for running a registered job outside the
 scheduler's tick loop. Called by:
-- The admin endpoint (`POST /api/admin/internal/trigger-job/{name}`).
+- The admin endpoint (`POST /api/admin/jobs/{name}/trigger?force=<bool>`).
 - Any service that wants a scheduler-uniform dispatch of a peer job
-  (e.g. an inline call from trash cleanup to `trigger("dedup_gc")`,
+  (e.g. an inline call from trash cleanup to `trigger("dedup_gc", &args)`,
   if we later route the piggyback through the registry).
+
+The supervisor's periodic ticks invoke the same underlying dispatch
+with `JobRunArgs::default()` — periodic runs never force.
 
 Returns `None` when the name doesn't exist. Returns `Some(JobOutcome)`
 otherwise — even when exclusivity kicks the trigger out (that maps
@@ -384,11 +406,11 @@ into the scheduler.
 2. **Boot**: start server; expect `scheduler started, N job(s) registered`.
 3. **Admin listing**:
    ```
-   curl -s http://localhost:8086/api/admin/internal/jobs -H "Authorization: Bearer $TOKEN"
+   curl -s http://localhost:8086/api/admin/jobs -H "Authorization: Bearer $TOKEN"
    ```
    returns a JSON array with each registered job, its `interval_ms`,
    `next_run_at`, and `last_outcome` (null until first tick).
-4. **Trigger**: `POST /api/admin/internal/trigger-job/trash_cleanup`
+4. **Trigger**: `POST /api/admin/jobs/trash_cleanup/trigger`
    invokes the handler immediately, records the outcome.
 5. **Panic containment**: unit test a handler that panics; `last_outcome`
    records `Err(...)` with `cause = "panicked"` in the log; the scheduler
@@ -665,16 +687,17 @@ into this general one.
 
 ### Admin surface (recoverable runs)
 
-Same URL taxonomy as Part 1, extended for run identity:
+Same URL taxonomy as Part 1 — resource-first, action second, all
+under `/api/admin/jobs/{name}/*`. Extended for run identity:
 
 ```
-POST /api/admin/internal/trigger-job/{name}
+POST /api/admin/jobs/{name}/trigger
     → { run_id, status }                  # starts or resumes; idempotent
-POST /api/admin/internal/trigger-job/{name}/cancel
+POST /api/admin/jobs/{name}/cancel
     → { run_id, status: "CancelRequested" }
-GET  /api/admin/internal/jobs/{name}/runs
+GET  /api/admin/jobs/{name}/runs
     → [{ run_id, status, started_at, last_progress_at, stats, ... }]
-GET  /api/admin/internal/jobs/{name}/runs/{id}
+GET  /api/admin/jobs/{name}/runs/{id}
     → { run_id, status, cursor_hex, stats, params, error_message, ... }
 ```
 
@@ -696,13 +719,13 @@ GET  /api/admin/internal/jobs/{name}/runs/{id}
 ### Verification (Part 2)
 
 1. **Compile + schema-migration idempotence.**
-2. **Fresh run:** `POST /trigger-job/storage_migration` → new row with
+2. **Fresh run:** `POST /api/admin/jobs/storage_migration/trigger` → new row with
    `status='Running'`, `cursor=NULL`.
 3. **Concurrent trigger:** second `POST` while the first is running
    returns the SAME `run_id` (idempotent, DB unique index enforces).
-4. **Cancel + resume round-trip:** `trigger-job/…/cancel` flips to
+4. **Cancel + resume round-trip:** `/api/admin/jobs/…/cancel` flips to
    `CancelRequested`; handler polls, returns `Paused { cursor }`;
-   engine writes `Paused`. `POST /trigger-job/…` again resumes; cursor
+   engine writes `Paused`. `POST /api/admin/jobs/…/trigger` again resumes; cursor
    picks up where left off; `stats.count` continues accumulating.
 5. **Crash recovery:** stop the server mid-run; restart; boot sweep
    flips the row to `Paused` with `error_message = 'server restart mid-run'`;
@@ -721,16 +744,46 @@ GET  /api/admin/internal/jobs/{name}/runs/{id}
 
 ### Admin URL taxonomy
 
-All under `/api/admin/internal/*`, gated by the existing
-`OXICLOUD_ENABLE_ADMIN_INTERNAL_ENDPOINTS` env var — reuses the same
-admin-guard middleware and the same "disabled → 404" contract as
-today's per-service triggers.
+All scheduler endpoints live on the **production admin surface**:
+`/api/admin/jobs/*`. Always on, audit-logged, no feature-flag gate —
+these are the operational levers you actually want ops to reach in
+prod. See `project_admin_url_taxonomy` for the `/admin` vs
+`/admin/internal` split we're honouring here.
 
-**Existing per-service shims** (`trigger-sweep`, `trigger-gc`,
-`trigger-grant-cleanup`) stay as thin forwards to `trigger-job/{name}`
-during migration so the existing Hurl suites keep working.
-Deprecation surfaces via a `Deprecation: true` response header
-operators can grep for.
+**Resource-first URL taxonomy** for every scheduler-owned endpoint:
+
+```
+GET  /api/admin/jobs                       # list all
+POST /api/admin/jobs/{name}/trigger        # one dispatch (Part 1 + 2)
+POST /api/admin/jobs/{name}/cancel         # cooperative pause (Part 2)
+GET  /api/admin/jobs/{name}/runs           # run history (Part 2)
+GET  /api/admin/jobs/{name}/runs/{id}      # single run detail (Part 2)
+```
+
+`{name}` is the stable `JobHandler::name()` identifier. `trigger`
+accepts an optional `?force=<bool>` query param that maps to
+`JobRunArgs.force`.
+
+**Audit logging.** Every `POST` to `/api/admin/jobs/*` emits a
+`target: "audit"` line before invoking the registry — bulk-effect
+mutations belong on the audit stream. Success/failure outcome fires
+its own `oxicloud::scheduler` line via the existing supervisor path.
+
+**Legacy shim retirement** (Stage 2 — follow-up PR after this one):
+
+The three existing internal endpoints map 1:1 to the new surface:
+
+| Legacy                                       | Replacement                                          |
+|---|---|
+| `POST /admin/internal/trigger-sweep`         | `POST /admin/jobs/storage_reconcile/trigger`          |
+| `POST /admin/internal/trigger-gc?force=X`    | `POST /admin/jobs/dedup_gc/trigger?force=X`           |
+| `POST /admin/internal/trigger-grant-cleanup?force=X` | `POST /admin/jobs/grant_cleanup/trigger?force=X` |
+
+Rewritten as thin forwards to the new endpoints with a `Deprecation:
+true` response header while Hurl suites migrate to the new paths. Once
+all callers cut over, the shims are deleted AND the
+`OXICLOUD_ENABLE_ADMIN_INTERNAL_ENDPOINTS` env var is removed — its
+sole purpose was gating those shims.
 
 ### Config surface — env vars
 
