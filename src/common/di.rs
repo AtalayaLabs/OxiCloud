@@ -1277,6 +1277,27 @@ impl AppServiceFactory {
         // 1. Core services (PgPool needed for DedupService index)
         let core = self.create_core_services(&pool, &maintenance_pool).await?;
 
+        // Register on-demand-only jobs whose owning service lives on
+        // CoreServices. Dedup GC has NO periodic tick — trash cleanup's
+        // sweep already runs GC as its tail step, so a periodic dedup
+        // schedule would double the work. Registering with `interval =
+        // None` keeps it admin-triggerable through the uniform scheduler
+        // surface (`POST /api/admin/internal/trigger-job/dedup_gc`).
+        if let Err(e) = core
+            .job_registry
+            .register(
+                core.dedup_service.clone()
+                    as Arc<dyn crate::infrastructure::scheduler::JobHandler>,
+                None, // on-demand only
+                None, // no timeout
+            )
+            .await
+        {
+            tracing::error!("Failed to register dedup_gc job with scheduler: {e}");
+        } else {
+            tracing::info!("Dedup GC registered with scheduler (on-demand only)");
+        }
+
         // 2. Repository services (requires PgPool for all metadata)
         let repos = self.create_repository_services(&core, &pool);
 

@@ -3120,6 +3120,46 @@ impl DedupPort for DedupService {
     }
 }
 
+// ─── JobRegistry integration ────────────────────────────────────────────────
+
+/// Registered name for the dedup GC job. Stable identifier used in
+/// log lines, `admin.background_runs.job_name` (when Part 2 lands),
+/// and admin URLs (`POST /api/admin/internal/trigger-job/dedup_gc`).
+pub const DEDUP_GC_JOB_NAME: &str = "dedup_gc";
+
+#[async_trait::async_trait]
+impl crate::infrastructure::scheduler::JobHandler for DedupService {
+    fn name(&self) -> &str {
+        DEDUP_GC_JOB_NAME
+    }
+
+    /// Runs one `garbage_collect` sweep — the same reclamation that
+    /// `TrashCleanupService` invokes inline as its tail step, exposed
+    /// through the scheduler so operators can trigger it uniformly via
+    /// `POST /api/admin/internal/trigger-job/dedup_gc`.
+    ///
+    /// Registered with `interval = None` (on-demand only): the periodic
+    /// tick belongs to trash cleanup, whose sweep already runs GC as
+    /// its final phase. Registering a redundant periodic tick here
+    /// would double the reclamation work with no benefit; the admin
+    /// trigger is what the registered entry buys us — uniform log lines,
+    /// panic containment, exclusivity vs. any concurrent trigger.
+    ///
+    /// `count` reports blobs reclaimed; `extra.bytes_reclaimed` reports
+    /// the freed disk. GC returning `(0, 0)` is normal — it means trash
+    /// cleanup already reaped everything.
+    async fn run(&self) -> crate::infrastructure::scheduler::JobOutcome {
+        use crate::infrastructure::scheduler::JobOutcome;
+        match self.garbage_collect().await {
+            Ok((items, bytes)) => JobOutcome::ok_with(
+                items,
+                serde_json::json!({ "bytes_reclaimed": bytes }),
+            ),
+            Err(e) => JobOutcome::Err(format!("dedup GC failed: {e}")),
+        }
+    }
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
