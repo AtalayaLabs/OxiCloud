@@ -360,11 +360,11 @@ grace window has zero effect on live access decisions — an expired grant is
 invisible to `check(...)` even during the grace period. Cleanup only affects
 storage bloat and the `list_grants_*` history surface.
 
-The daemon runs inside the same process (`tokio::spawn` at startup, same
-lifecycle as trash-cleanup / storage-usage sweep), so no external scheduler
-is needed. An admin-triggered `POST /api/admin/internal/trigger-grant-cleanup`
-lets operators force a purge in test or incident scenarios; the internal-
-endpoints gate (`OXICLOUD_ENABLE_ADMIN_INTERNAL_ENDPOINTS`) applies.
+The daemon runs inside the same process, registered with the periodic-job
+scheduler (`docs/plan/job-registry.md`) on a 24-hour tick. An admin-
+triggered `POST /api/admin/jobs/grant_cleanup/trigger?force=true` lets
+operators force a purge in test or incident scenarios — `force=true`
+collapses the grace window to zero for that call only.
 
 The [Share Integration](/architecture/share-integration) doc's reverse
 trigger takes it from there: when the daemon deletes the last `role_grants`

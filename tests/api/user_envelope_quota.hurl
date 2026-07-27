@@ -19,13 +19,11 @@
 #   4. Sweep self-heals — after trashing the personal file and
 #      `trigger-sweep`, `/me.storage_used_bytes` returns to 0.
 #
-# `trigger-sweep` is the deterministic synchronisation point:
-# it runs the drive-side sweep then the user-side sweep
-# (`StorageUsageService::start_reconciliation_job`), so both
-# cached counters are authoritative ground-truth by the time
-# the assertion fires. Gated by
-# `OXICLOUD_ENABLE_ADMIN_INTERNAL_ENDPOINTS=true`
-# (set in `tests/common/server.env`).
+# `POST /api/admin/jobs/storage_reconcile/trigger` is the
+# deterministic synchronisation point: it runs the drive-side sweep
+# then the user-side sweep (both under the periodic scheduler), so
+# both cached counters are authoritative ground-truth by the time
+# the assertion fires. Production surface — always on, no gate.
 #
 # Self-contained: provisions `ue_owner` so it can run alongside
 # the rest of the suite.
@@ -141,7 +139,7 @@ HTTP 201
 #      acts as the synchronisation point for the user-envelope
 #      assertion below — the sweep is the authoritative
 #      ground-truth for both drive- and user-side counters.
-POST {{base_url}}/api/admin/internal/trigger-sweep
+POST {{base_url}}/api/admin/jobs/storage_reconcile/trigger
 Authorization: Bearer {{admin_token}}
 [Options]
 delay: 200ms
@@ -161,7 +159,7 @@ jsonpath "$[?(@.id=='{{shared_drive_id}}')].used_bytes" == 32
 # If the delta path incorrectly fired the user counter, the sweep
 # would still correct it back to 0 (the new SQL excludes shared
 # drives) — this also validates the sweep formula.
-POST {{base_url}}/api/admin/internal/trigger-sweep
+POST {{base_url}}/api/admin/jobs/storage_reconcile/trigger
 Authorization: Bearer {{admin_token}}
 
 HTTP 200
@@ -209,7 +207,7 @@ jsonpath "$.storage_used_bytes" == 32
 
 # Confirm the sweep agrees with the delta — both code paths must
 # give the same number.
-POST {{base_url}}/api/admin/internal/trigger-sweep
+POST {{base_url}}/api/admin/jobs/storage_reconcile/trigger
 Authorization: Bearer {{admin_token}}
 
 HTTP 200
@@ -239,7 +237,7 @@ Authorization: Bearer {{owner_token}}
 
 HTTP 200
 
-POST {{base_url}}/api/admin/internal/trigger-sweep
+POST {{base_url}}/api/admin/jobs/storage_reconcile/trigger
 Authorization: Bearer {{admin_token}}
 
 HTTP 200

@@ -216,11 +216,7 @@ impl JobRegistry {
     /// `args` is forwarded to `JobHandler::run`. Admin trigger routes
     /// use `JobRunArgs { force: query.force }`; programmatic callers
     /// that just want a plain run pass `JobRunArgs::default()`.
-    pub async fn trigger(
-        self: &Arc<Self>,
-        name: &str,
-        args: &JobRunArgs,
-    ) -> Option<JobOutcome> {
+    pub async fn trigger(self: &Arc<Self>, name: &str, args: &JobRunArgs) -> Option<JobOutcome> {
         let entry = self.get(name).await?;
         Some(super::engine::dispatch(name, entry, args).await)
     }
@@ -367,10 +363,6 @@ mod tests {
     #[tokio::test]
     async fn trigger_returns_none_for_unknown_job() {
         let reg = Arc::new(JobRegistry::new());
-        assert!(
-            reg.trigger("nope", &JobRunArgs::default())
-                .await
-                .is_none()
-        );
+        assert!(reg.trigger("nope", &JobRunArgs::default()).await.is_none());
     }
 }

@@ -2471,15 +2471,15 @@ impl DedupService {
             .await
     }
 
-    /// Test-only variant that bypasses the orphan grace window — used by
-    /// `POST /api/admin/internal/trigger-gc?force=true` so the
+    /// Test-only variant that bypasses the orphan grace window — used
+    /// by `POST /api/admin/jobs/dedup_gc/trigger?force=true` (via the
+    /// `JobRunArgs.force` dispatch in `JobHandler::run`) so the
     /// integration suite can reap just-orphaned blobs synchronously
     /// (waiting out the production 1 h grace inside a test run is a
     /// non-starter). Drops the same rows the regular sweep would, just
     /// without the time floor. Unsafe under concurrent uploads because
     /// it reopens the TOCTOU window the grace closes — only the
-    /// admin-internal route, itself gated by
-    /// `OXICLOUD_ENABLE_ADMIN_INTERNAL_ENDPOINTS`, may reach here.
+    /// admin-triggered `?force=true` path reaches here.
     pub async fn garbage_collect_force(&self) -> Result<(u64, u64), DomainError> {
         self.garbage_collect_with_grace(0).await
     }
@@ -3150,8 +3150,8 @@ impl crate::infrastructure::scheduler::JobHandler for DedupService {
     /// cleanup already reaped everything.
     ///
     /// `args.force = true` skips the orphan grace window
-    /// (`garbage_collect_force` — grace_secs = 0), matching the legacy
-    /// `POST /admin/internal/trigger-gc?force=true` semantics. Unsafe
+    /// (`garbage_collect_force` — grace_secs = 0). Same semantic as
+    /// `POST /api/admin/jobs/dedup_gc/trigger?force=true`. Unsafe
     /// under concurrent uploads: only reachable through the admin
     /// endpoint and only intentionally used by tests + operator
     /// diagnostic sessions.

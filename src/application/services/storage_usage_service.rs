@@ -65,8 +65,8 @@ impl StorageUsageService {
     /// `GET /api/drives` therefore lags by up to the cache TTL (30 s),
     /// which matches the sibling caches' accepted UX phantom for
     /// drive-name staleness. Tests / operators that need immediate
-    /// freshness call `POST /api/admin/internal/trigger-sweep`, which
-    /// runs `update_all_drives_storage_usage` → this method.
+    /// freshness call `POST /api/admin/jobs/storage_reconcile/trigger`,
+    /// which runs `update_all_drives_storage_usage` → this method.
     ///
     /// Security posture unaffected: `check_drive_quota` reads
     /// directly from SQL, bypassing the cache entirely, so quota

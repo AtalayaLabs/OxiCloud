@@ -117,11 +117,7 @@ async fn run(registry: Arc<JobRegistry>) {
 /// `args` is passed through to `JobHandler::run`. The supervisor's
 /// periodic ticks pass `JobRunArgs::default()`; the admin trigger
 /// endpoint forwards parsed query params such as `?force=true`.
-pub(super) async fn dispatch(
-    name: &str,
-    entry: Arc<JobEntry>,
-    args: &JobRunArgs,
-) -> JobOutcome {
+pub(super) async fn dispatch(name: &str, entry: Arc<JobEntry>, args: &JobRunArgs) -> JobOutcome {
     // Try to acquire the single-permit gate. `try_acquire` is
     // non-blocking — if held, we know the previous run is still
     // executing and skip this tick.
@@ -372,9 +368,10 @@ mod tests {
         // Kick off dispatch 1 in the background — it holds the permit
         // for ~200 ms.
         let entry_bg = entry.clone();
-        let bg = tokio::spawn(async move {
-            dispatch("overrun", entry_bg, &JobRunArgs::default()).await
-        });
+        let bg =
+            tokio::spawn(
+                async move { dispatch("overrun", entry_bg, &JobRunArgs::default()).await },
+            );
 
         // Give dispatch 1 time to grab the permit.
         tokio::time::sleep(Duration::from_millis(50)).await;

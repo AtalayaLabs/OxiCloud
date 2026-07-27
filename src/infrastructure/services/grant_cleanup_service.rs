@@ -118,9 +118,9 @@ impl JobHandler for GrantCleanupService {
     /// listings can see it without a second lookup.
     ///
     /// `args.force = true` collapses the grace window to zero for
-    /// this run only — matches the legacy
-    /// `POST /admin/internal/trigger-grant-cleanup?force=true` shape.
-    /// The configured `self.grace_days` is not mutated.
+    /// this run only — same semantic as
+    /// `POST /api/admin/jobs/grant_cleanup/trigger?force=true`. The
+    /// configured `self.grace_days` is not mutated.
     async fn run(&self, args: &JobRunArgs) -> JobOutcome {
         let grace_override = if args.force { Some(0) } else { None };
         let effective_grace = grace_override.unwrap_or(self.grace_days);

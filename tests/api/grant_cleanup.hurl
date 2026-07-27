@@ -12,12 +12,10 @@
 # assertions here catch it before the daemon runs against real
 # data.
 #
-# Uses the `POST /api/admin/internal/trigger-grant-cleanup`
-# admin endpoint (gated by
-# `OXICLOUD_ENABLE_ADMIN_INTERNAL_ENDPOINTS=true`, on for the
-# api-test suite). `?force=true` collapses the grace window to
-# zero for the call so we can plant a past-dated grant and
-# immediately observe it purged, without waiting 15+ days.
+# Uses the `POST /api/admin/jobs/grant_cleanup/trigger` admin
+# endpoint (production surface, always on). `?force=true` collapses
+# the grace window to zero for the call so we can plant a past-dated
+# grant and immediately observe it purged, without waiting 15+ days.
 # =============================================================
 
 
@@ -150,16 +148,17 @@ permanent_grant_id: jsonpath "$.grants[0].id"
 #          Expect `grants_deleted >= 1` (the past-dated row),
 #          `grace_days == 0`, `forced == true`.
 # ─────────────────────────────────────────────────────────────
-POST {{base_url}}/api/admin/internal/trigger-grant-cleanup?force=true
+POST {{base_url}}/api/admin/jobs/grant_cleanup/trigger?force=true
 Authorization: Bearer {{alice_token}}
 
 HTTP 200
 [Asserts]
 jsonpath "$.ok" == true
-jsonpath "$.forced" == true
-jsonpath "$.grace_days" == 0
+jsonpath "$.outcome.outcome" == "ok"
+jsonpath "$.outcome.extra.forced" == true
+jsonpath "$.outcome.extra.grace_days" == 0
 # At least the expired-fixture row we just planted.
-jsonpath "$.grants_deleted" >= 1
+jsonpath "$.outcome.count" >= 1
 
 
 # ─────────────────────────────────────────────────────────────
@@ -194,28 +193,29 @@ jsonpath "$[?(@.id=='{{permanent_grant_id}}')].role" == "viewer"
 #          false in SQL, so it's already correct; but a
 #          mistyped predicate could regress).
 # ─────────────────────────────────────────────────────────────
-POST {{base_url}}/api/admin/internal/trigger-grant-cleanup?force=true
+POST {{base_url}}/api/admin/jobs/grant_cleanup/trigger?force=true
 Authorization: Bearer {{alice_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.grants_deleted" == 0
+jsonpath "$.outcome.count" == 0
 
 
 # ─────────────────────────────────────────────────────────────
 # Step 9 — Unforced trigger. Grace = configured value (15).
 #          No new expired grants planted, so purge is a no-op.
 # ─────────────────────────────────────────────────────────────
-POST {{base_url}}/api/admin/internal/trigger-grant-cleanup
+POST {{base_url}}/api/admin/jobs/grant_cleanup/trigger
 Authorization: Bearer {{alice_token}}
 
 HTTP 200
 [Asserts]
 jsonpath "$.ok" == true
-jsonpath "$.forced" == false
+jsonpath "$.outcome.outcome" == "ok"
+jsonpath "$.outcome.extra.forced" == false
 # Response echoes the configured grace (15 days by default).
-jsonpath "$.grace_days" == 15
-jsonpath "$.grants_deleted" == 0
+jsonpath "$.outcome.extra.grace_days" == 15
+jsonpath "$.outcome.count" == 0
 
 
 # Permanent grant still there after the unforced call.

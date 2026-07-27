@@ -265,34 +265,29 @@ log "API confirms trash is empty."
 # its `clear_trash_in` path, but that GC honours the 1-hour orphan-grace
 # window — a blob orphaned seconds ago survives the inline sweep. The
 # regular periodic sweep would catch it eventually, but tests need the
-# disk state to be quiescent NOW. The two admin-internal triggers below
-# (gated by `OXICLOUD_ENABLE_ADMIN_INTERNAL_ENDPOINTS=true`, set in
-# tests/common/server.env) make this deterministic:
+# disk state to be quiescent NOW. The two JobRegistry admin triggers
+# below (production surface, always on) make this deterministic:
 #
-#   1. trigger-sweep    — reconciles users.storage_used_bytes and
-#                         drives.used_bytes from SUM(size) — keeps the
-#                         cached counters honest for any quota
-#                         assertions that follow.
-#   2. trigger-gc?force=true — same `garbage_collect()` as the inline
-#                         call, but `force=true` bypasses the orphan
-#                         grace so freshly-orphaned blobs ARE reaped.
-#                         Safe here because the test has no concurrent
-#                         uploaders to race the row-delete → unlink
-#                         window the grace normally protects.
-#
-# Without `force=true`, the test would have to wait an hour for the
-# probe blob's `orphaned_at` timestamp to age past the grace window —
-# why this script was disabled until the admin-internal triggers
-# landed (commit `74b33744`).
+#   1. storage_reconcile  — reconciles users.storage_used_bytes and
+#                           drives.used_bytes from SUM(size) — keeps
+#                           the cached counters honest for any quota
+#                           assertions that follow.
+#   2. dedup_gc?force=true — same `garbage_collect()` as the inline
+#                           call, but `force=true` bypasses the
+#                           orphan grace so freshly-orphaned blobs
+#                           ARE reaped. Safe here because the test
+#                           has no concurrent uploaders to race the
+#                           row-delete → unlink window the grace
+#                           normally protects.
 
-curl -sf -X POST -H "$AUTH" "$base_url/api/admin/internal/trigger-sweep" >/dev/null \
-    || fail "trigger-sweep failed (is OXICLOUD_ENABLE_ADMIN_INTERNAL_ENDPOINTS=true?)"
+curl -sf -X POST -H "$AUTH" "$base_url/api/admin/jobs/storage_reconcile/trigger" >/dev/null \
+    || fail "storage_reconcile trigger failed"
 log "Reconciliation sweep triggered."
 
-GC_RESULT=$(curl -sf -X POST -H "$AUTH" "$base_url/api/admin/internal/trigger-gc?force=true")
+GC_RESULT=$(curl -sf -X POST -H "$AUTH" "$base_url/api/admin/jobs/dedup_gc/trigger?force=true")
 [[ -z "$GC_RESULT" ]] && fail "trigger-gc returned an empty body"
-GC_BLOBS=$(echo "$GC_RESULT" | jq -r '.blobs_deleted')
-GC_BYTES=$(echo "$GC_RESULT" | jq -r '.bytes_freed')
+GC_BLOBS=$(echo "$GC_RESULT" | jq -r '.outcome.count')
+GC_BYTES=$(echo "$GC_RESULT" | jq -r '.outcome.extra.bytes_reclaimed')
 log "GC reaped $GC_BLOBS blob(s), $GC_BYTES byte(s) freed."
 
 # ── 4. Disk verification ──────────────────────────────────────────────────────

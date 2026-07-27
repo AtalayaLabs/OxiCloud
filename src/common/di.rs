@@ -2309,11 +2309,12 @@ pub struct AppState {
     pub places_service: Option<Arc<PlacesService>>,
     pub people_service: Option<Arc<PeopleService>>,
     pub storage_usage_service: Option<Arc<StorageUsageService>>,
-    /// Handle to the background daemon that purges expired
-    /// `storage.role_grants` rows. `None` when the daemon is disabled
-    /// via `OXICLOUD_GRANT_CLEANUP_ENABLED=false`. The admin
-    /// `POST /api/admin/internal/trigger-grant-cleanup` handler uses
-    /// this to invoke the purge on demand (test-only).
+    /// Handle to the service that purges expired `storage.role_grants`
+    /// rows. Registered with the periodic-job scheduler on the
+    /// configured cadence; `None` when disabled via
+    /// `OXICLOUD_GRANT_CLEANUP_ENABLED=false`. Exposed on `AppState`
+    /// so the admin trigger endpoint can invoke `purge(Some(0))` for
+    /// the `?force=true` grace-override path.
     pub grant_cleanup_service: Option<
         Arc<crate::infrastructure::services::grant_cleanup_service::GrantCleanupService>,
     >,

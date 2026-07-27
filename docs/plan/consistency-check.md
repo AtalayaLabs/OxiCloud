@@ -426,7 +426,8 @@ pub trait CheckStore: Send + Sync {
 ///
 /// See `BlobConsistencyCheck` for the canonical impl to copy-adapt.
 pub trait StatefulAdapter: Send + Sync {
-    /// Subsystem slug — appears in `POST /api/admin/internal/consistency/{name}`
+    /// Subsystem slug — appears in the JobRegistry-registered
+    /// `job_name` (`consistency_<subsystem>`, e.g. `consistency_blobs`)
     /// and in audit log `event` values. Lowercase snake_case, unique
     /// per adapter. Convention: `"blobs"`, `"thumbnails"`, `"trash"`,
     /// `"folder_tree"`, `"used_bytes"`.
@@ -483,26 +484,36 @@ impl ConsistencyRegistry {
 
 ## Admin surface
 
-```
-POST   /api/admin/internal/consistency/{name}
-       → 202 { run_id }   (starts a new run)
+Consistency runs are ordinary `RecoverableJob`s (see
+`docs/plan/job-registry.md` Part 2), so most operator actions reach
+them through the shared scheduler surface:
 
-POST   /api/admin/internal/consistency/runs/{id}/cancel
-       → 200 { status: "CancelRequested" }
+```
+GET    /api/admin/jobs
+       → summary list — consistency runs appear as
+         `job_name = "consistency_<name>"`
+
+POST   /api/admin/jobs/consistency_{name}/trigger
+       → 200 { ok, outcome: { run_id, status } }
+         (starts a new run or resumes the latest Paused one — see
+         Part 2's `run_or_resume`)
+
+POST   /api/admin/jobs/consistency_{name}/cancel
+       → 200 { run_id, status: "CancelRequested" }
        (cooperative — check finishes its current batch and returns Paused)
 
-POST   /api/admin/internal/consistency/runs/{id}/resume
-       → 202 { run_id }   (picks up cursor)
+GET    /api/admin/jobs/consistency_{name}/runs?status=<status>
+       → 200 [{ id, status, scanned_count, last_progress_at, … }]
 
-GET    /api/admin/internal/consistency/runs?check=<name>&status=<status>
-       → 200 [{ id, check_name, status, scanned_count, last_progress_at, … }]
-
-GET    /api/admin/internal/consistency/runs/{id}
+GET    /api/admin/jobs/consistency_{name}/runs/{id}
        → 200 { run: {...}, findings: [...paginated] }
 ```
 
-Gated by `OXICLOUD_ENABLE_ADMIN_INTERNAL_ENDPOINTS` — same admin-guard
-middleware as `trigger-sweep`, `trigger-gc`, `trigger-grant-cleanup`.
+Findings enrichment on `runs/{id}` is consistency-specific — read
+from `admin.consistency_findings` and joined into the response.
+Everything else is generic Part 2 behaviour.
+
+Production surface — always on, audit-logged. No feature-flag gate.
 
 ## Approach
 
@@ -630,8 +641,9 @@ Ship this PR without the actual checks. Grep `TODO(consistency)` = punch list.
 - `list_runs(filter)` — SELECT with filters + paginate.
 - `get_run(id)` — SELECT run + paginated findings.
 
-Same admin-guard + `OXICLOUD_ENABLE_ADMIN_INTERNAL_ENDPOINTS` gate as
-existing internal endpoints.
+Same admin-guard as the JobRegistry surface (`trigger_job`,
+`list_jobs`). Production surface — always on, audit-logged, no
+feature-flag gate.
 
 ### 6. Boot-time crashed-run recovery
 
@@ -726,10 +738,10 @@ count decreases by one per PR.
 
 ## Reused existing utilities
 
-- **Admin-guard + gate pattern** at
-  `src/interfaces/api/handlers/admin_handler.rs::internal_trigger_gc` —
-  same shape for the new endpoints.
-- **`OXICLOUD_ENABLE_ADMIN_INTERNAL_ENDPOINTS` gate** — same env var.
+- **Admin-guard + audit-log pattern** at
+  `src/interfaces/api/handlers/admin_handler.rs::trigger_job` —
+  same shape for the new endpoints (production surface, always-on,
+  audit-logged; no feature-flag gate).
 - **Dedup GC's orphan-detection logic** (`dedup_service.rs`) — the
   algorithmic template for `BlobConsistencyCheck`'s orphan phase.
   Reference impl, not a callsite — the check needs its own two-pass
@@ -762,8 +774,8 @@ count decreases by one per PR.
 7. **Grace-window sanity**: run against a fresh 10 s window; upload a
    file mid-scan; confirm the young blob does NOT surface as
    `MissingInStorage` (grace window covers it).
-8. **Env-flag off**: `OXICLOUD_ENABLE_ADMIN_INTERNAL_ENDPOINTS=false`
-   → endpoints return 404, no leakage in the audit channel.
+8. **AuthZ gate**: non-admin caller hits `POST /api/admin/jobs/consistency_blobs/trigger`
+   → 403 from the admin middleware, audit line records the rejection.
 
 ## Out of scope
 

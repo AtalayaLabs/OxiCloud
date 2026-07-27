@@ -769,21 +769,26 @@ accepts an optional `?force=<bool>` query param that maps to
 mutations belong on the audit stream. Success/failure outcome fires
 its own `oxicloud::scheduler` line via the existing supervisor path.
 
-**Legacy shim retirement** (Stage 2 — follow-up PR after this one):
+**Legacy shim retirement** (Stage 2 — landed):
 
-The three existing internal endpoints map 1:1 to the new surface:
+The three legacy internal endpoints have been retired in favour of
+the JobRegistry surface. Kept here for archaeology / URL migration
+reference for any external tool that still expects the old paths:
 
-| Legacy                                       | Replacement                                          |
+| Legacy (retired)                                     | Replacement                                          |
 |---|---|
-| `POST /admin/internal/trigger-sweep`         | `POST /admin/jobs/storage_reconcile/trigger`          |
-| `POST /admin/internal/trigger-gc?force=X`    | `POST /admin/jobs/dedup_gc/trigger?force=X`           |
-| `POST /admin/internal/trigger-grant-cleanup?force=X` | `POST /admin/jobs/grant_cleanup/trigger?force=X` |
+| `POST /admin/internal/trigger-sweep`                 | `POST /admin/jobs/storage_reconcile/trigger`          |
+| `POST /admin/internal/trigger-gc?force=X`            | `POST /admin/jobs/dedup_gc/trigger?force=X`           |
+| `POST /admin/internal/trigger-grant-cleanup?force=X` | `POST /admin/jobs/grant_cleanup/trigger?force=X`      |
 
-Rewritten as thin forwards to the new endpoints with a `Deprecation:
-true` response header while Hurl suites migrate to the new paths. Once
-all callers cut over, the shims are deleted AND the
-`OXICLOUD_ENABLE_ADMIN_INTERNAL_ENDPOINTS` env var is removed — its
-sole purpose was gating those shims.
+The `OXICLOUD_ENABLE_ADMIN_INTERNAL_ENDPOINTS` env var was removed
+alongside — its sole purpose was gating those shims.
+
+Response shape also changed: the old endpoints returned custom fields
+(`grants_deleted`, `blobs_deleted`, `bytes_freed`, `forced`); the new
+endpoint returns a uniform `{ ok, outcome: JobOutcome }` envelope with
+job-specific fields under `outcome.extra`. Any external caller reading
+the old fields needs updating.
 
 ### Config surface — env vars
 
