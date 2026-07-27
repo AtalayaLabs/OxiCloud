@@ -62,7 +62,7 @@ use axum::Router;
 use axum::extract::{Json, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::post;
+use axum::routing::{get, post};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use opaque_ke::{
@@ -110,6 +110,15 @@ pub fn opaque_login_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/ke1", post(login_ke1))
         .route("/ke3", post(login_ke3))
+}
+
+/// Public config-publish endpoint. Mount under `/api/auth/opaque`
+/// with NO rate limit — it's a static config read the SPA hits
+/// once at page load (cache-friendly). Kept distinct from the
+/// login mount to avoid layering the login rate limiter on a read
+/// that isn't a login attempt.
+pub fn opaque_params_routes() -> Router<Arc<AppState>> {
+    Router::new().route("/params", get(opaque_params))
 }
 
 /// Client → server on register KE1. `registrationRequest` is the
@@ -591,6 +600,99 @@ pub async fn login_ke3(
     );
 
     Ok(Json(session))
+}
+
+// ── Params publish ───────────────────────────────────────────────────
+
+/// Client-side Argon2id parameters the SPA must feed to
+/// `@serenity-kit/opaque` on `finishRegistration` / `finishLogin`.
+/// Values MUST match the server's `OpaqueConfig::ksf_*` — the
+/// handshake fails to derive matching keys otherwise, so publishing
+/// these is what keeps client and server in lock-step across param
+/// bumps.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpaqueKsfParams {
+    #[serde(rename = "memoryKib")]
+    pub memory_kib: u32,
+    pub iterations: u32,
+    pub parallelism: u32,
+}
+
+/// Payload of `GET /api/auth/opaque/params`. `enabled = false` when
+/// the OPAQUE substrate is not wired for this deployment (mode=off,
+/// or password auth disabled — the same cross-check
+/// `OpaqueConfig::effective_mode` runs). SPA gates the OPAQUE code
+/// path on this flag; when false, it falls back to legacy password
+/// auth as if OPAQUE didn't exist.
+///
+/// `ciphersuiteVersion` + `ksf` are ALWAYS populated (safe defaults
+/// even when `enabled = false`) so a client that ignored `enabled`
+/// wouldn't nil-deref.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpaqueParamsResponse {
+    pub enabled: bool,
+    #[serde(rename = "ciphersuiteVersion")]
+    pub ciphersuite_version: i16,
+    pub ksf: OpaqueKsfParams,
+}
+
+/// Publish the OPAQUE client config. Safe to call unauthenticated
+/// (nothing about individual users is returned) and cache-friendly
+/// (the response only changes when the operator rotates env vars).
+///
+/// Note: `Cache-Control` is deliberately unset — the SPA fetches
+/// this once at page load, and if the operator rotates the KSF
+/// params mid-flight, we want the change to be picked up on the
+/// next SPA reload rather than lingering behind an intermediary
+/// cache.
+#[utoipa::path(
+    get,
+    path = "/api/auth/opaque/params",
+    responses(
+        (status = 200, description = "OPAQUE client config", body = OpaqueParamsResponse),
+    ),
+    tag = "auth"
+)]
+pub async fn opaque_params(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    // Reads from OpaqueService when substrate is wired; falls back
+    // to the OpaqueConfig defaults otherwise so an
+    // `enabled=false` payload still has plausible-shape numeric
+    // fields (the SPA logic just short-circuits on the flag).
+    let (enabled, ciphersuite_version, ksf_memory_kib, ksf_iterations, ksf_parallelism) =
+        match state.opaque_service.as_ref() {
+            Some(svc) => (
+                true,
+                svc.ciphersuite_version(),
+                svc.config_ksf_memory_kib(),
+                svc.config_ksf_iterations(),
+                svc.config_ksf_parallelism(),
+            ),
+            None => {
+                // Substrate off — publish safe defaults matching
+                // `OpaqueConfig::default()` so a curious client can
+                // still parse the payload cleanly.
+                let cfg = crate::common::config::OpaqueConfig::default();
+                (
+                    false,
+                    cfg.ciphersuite_version,
+                    cfg.ksf_memory_kib,
+                    cfg.ksf_iterations,
+                    cfg.ksf_parallelism,
+                )
+            }
+        };
+
+    Json(OpaqueParamsResponse {
+        enabled,
+        ciphersuite_version,
+        ksf: OpaqueKsfParams {
+            memory_kib: ksf_memory_kib,
+            iterations: ksf_iterations,
+            parallelism: ksf_parallelism,
+        },
+    })
 }
 
 // ── Small helpers ────────────────────────────────────────────────────

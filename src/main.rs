@@ -815,6 +815,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     rate_limit_login,
                 ))
                 .with_state(app_state.clone());
+        // OPAQUE aPAKE — public params (KSF + ciphersuite) — GET,
+        // no rate limit, SPA fetches once at page load. Distinct
+        // mount so no login limiter attaches to a non-login read.
+        let opaque_params_public =
+            oxicloud::interfaces::api::handlers::opaque_auth_handler::opaque_params_routes()
+                .with_state(app_state.clone());
         // One-time setup route — public, rate-limited like register
         let setup_router = setup_route()
             .layer(axum::middleware::from_fn_with_state(
@@ -933,6 +939,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .nest(
                 "/api/auth/opaque/login",
                 opaque_login_public.layer(access_log!("http::api::auth")),
+            )
+            // OPAQUE aPAKE — public params publish. No rate limit
+            // (static config read); distinct sub-prefix from login
+            // for the same middleware-composition reason.
+            .nest(
+                "/api/auth/opaque",
+                opaque_params_public.layer(access_log!("http::api::auth")),
             )
             // One-time setup endpoint — public, rate-limited
             .nest("/api", setup_router.layer(access_log!("http::api")))

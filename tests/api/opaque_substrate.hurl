@@ -176,3 +176,36 @@ Content-Type: application/json
 HTTP 401
 [Asserts]
 jsonpath "$.error_type" == "InvalidCredentials"
+
+
+# =============================================================
+# Phase 1 — Public params publish
+# =============================================================
+# GET /api/auth/opaque/params is the SPA's read-only bootstrap:
+# fetched once at page load, tells the client whether OPAQUE is
+# enabled and (crucially) which Argon2id KSF params to feed to
+# `@serenity-kit/opaque` on register/login finish. Mismatched
+# params → the handshake derives different keys on the two sides
+# and everything fails. This test pins the wire shape.
+# =============================================================
+
+# ─────────────────────────────────────────────────────────────
+# Case 9 — Params publish returns enabled=true under the test
+#           env (`OXICLOUD_OPAQUE_MODE=migrate`), the current
+#           ciphersuite version (1 — see `docs/config/env.md`),
+#           and the fast test-only KSF params
+#           (memoryKib=8 / iter=1 / lanes=1 from server.env).
+#           If the test env's KSF values ever drift from the
+#           handler's, this assertion catches the drift before
+#           any downstream test tries the crypto and fails
+#           confusingly.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/auth/opaque/params
+
+HTTP 200
+[Asserts]
+jsonpath "$.enabled" == true
+jsonpath "$.ciphersuiteVersion" == 1
+jsonpath "$.ksf.memoryKib" == 8
+jsonpath "$.ksf.iterations" == 1
+jsonpath "$.ksf.parallelism" == 1

@@ -112,6 +112,25 @@ impl OpaqueService {
         self.config.ciphersuite_version
     }
 
+    /// Client-side Argon2id memory cost (KiB) — published to the SPA
+    /// via `GET /api/auth/opaque/params` so both sides configure
+    /// matching KSF parameters. Values below are read-through from
+    /// [`OpaqueConfig`]; individual accessors keep handlers from
+    /// having to plumb the whole config struct.
+    pub fn config_ksf_memory_kib(&self) -> u32 {
+        self.config.ksf_memory_kib
+    }
+
+    /// Client-side Argon2id iterations. See [`config_ksf_memory_kib`].
+    pub fn config_ksf_iterations(&self) -> u32 {
+        self.config.ksf_iterations
+    }
+
+    /// Client-side Argon2id parallelism. See [`config_ksf_memory_kib`].
+    pub fn config_ksf_parallelism(&self) -> u32 {
+        self.config.ksf_parallelism
+    }
+
     /// The persistent server setup — passed to `ServerRegistration::start`
     /// and `ServerLogin::start` in the handler layer. Kept accessible so
     /// callers can hold their own refs to it if they need to (e.g. inside
