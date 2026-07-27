@@ -3151,10 +3151,9 @@ impl crate::infrastructure::scheduler::JobHandler for DedupService {
     async fn run(&self) -> crate::infrastructure::scheduler::JobOutcome {
         use crate::infrastructure::scheduler::JobOutcome;
         match self.garbage_collect().await {
-            Ok((items, bytes)) => JobOutcome::ok_with(
-                items,
-                serde_json::json!({ "bytes_reclaimed": bytes }),
-            ),
+            Ok((items, bytes)) => {
+                JobOutcome::ok_with(items, serde_json::json!({ "bytes_reclaimed": bytes }))
+            }
             Err(e) => JobOutcome::Err(format!("dedup GC failed: {e}")),
         }
     }

@@ -1141,9 +1141,8 @@ impl AppServiceFactory {
         // Registered with the periodic-job scheduler
         // (`docs/plan/job-registry.md` Part 1); the retired
         // `start_reconciliation_job` used to spawn its own interval loop.
-        let interval = StorageUsageService::reconciliation_interval(
-            self.config.storage.usage_reconcile_secs,
-        );
+        let interval =
+            StorageUsageService::reconciliation_interval(self.config.storage.usage_reconcile_secs);
         if let Err(e) = core
             .job_registry
             .register(service.clone(), Some(interval), None)
@@ -1286,8 +1285,7 @@ impl AppServiceFactory {
         if let Err(e) = core
             .job_registry
             .register(
-                core.dedup_service.clone()
-                    as Arc<dyn crate::infrastructure::scheduler::JobHandler>,
+                core.dedup_service.clone() as Arc<dyn crate::infrastructure::scheduler::JobHandler>,
                 None, // on-demand only
                 None, // no timeout
             )
@@ -1357,7 +1355,13 @@ impl AppServiceFactory {
         // path inside the application services, and re-exposed on AppState
         // for the handler-side quota checks of the byte-upload paths).
         let storage_usage = self
-            .create_storage_usage_service(&repos, &pool, &maintenance_pool, drive_repo.clone(), &core)
+            .create_storage_usage_service(
+                &repos,
+                &pool,
+                &maintenance_pool,
+                drive_repo.clone(),
+                &core,
+            )
             .await;
 
         // 3d. Content index (embedded Tantivy) — opened before application

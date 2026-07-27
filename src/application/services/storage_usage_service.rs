@@ -693,7 +693,10 @@ impl StorageUsagePort for StorageUsageService {
         })?;
 
         let corrected = result.rows_affected();
-        info!("Storage-usage reconciliation corrected {} user(s)", corrected);
+        info!(
+            "Storage-usage reconciliation corrected {} user(s)",
+            corrected
+        );
         Ok(corrected)
     }
 

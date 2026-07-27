@@ -122,10 +122,9 @@ impl JobHandler for GrantCleanupService {
     /// `Arc<GrantCleanupService>` from the handler.
     async fn run(&self) -> JobOutcome {
         match self.purge(None).await {
-            Ok(count) => JobOutcome::ok_with(
-                count,
-                serde_json::json!({ "grace_days": self.grace_days }),
-            ),
+            Ok(count) => {
+                JobOutcome::ok_with(count, serde_json::json!({ "grace_days": self.grace_days }))
+            }
             Err(e) => JobOutcome::Err(format!("grant cleanup failed: {e}")),
         }
     }

@@ -144,10 +144,7 @@ pub(super) async fn dispatch(name: &str, entry: Arc<JobEntry>) -> JobOutcome {
                 name,
             );
             advance_next_run(&entry);
-            return JobOutcome::ok_with(
-                0,
-                serde_json::json!({ "skipped": "already_running" }),
-            );
+            return JobOutcome::ok_with(0, serde_json::json!({ "skipped": "already_running" }));
         }
     };
 
@@ -196,8 +193,7 @@ pub(super) async fn dispatch(name: &str, entry: Arc<JobEntry>) -> JobOutcome {
         // by one interval, no backlog queueing.
         state.next_run_at = entry.interval.map(|dur| {
             Utc::now()
-                + chrono::Duration::from_std(dur)
-                    .unwrap_or_else(|_| chrono::Duration::seconds(0))
+                + chrono::Duration::from_std(dur).unwrap_or_else(|_| chrono::Duration::seconds(0))
         });
     }
 
@@ -217,8 +213,7 @@ fn advance_next_run(entry: &JobEntry) {
     let mut state = entry.state.lock().expect("JobState mutex poisoned");
     state.next_run_at = entry.interval.map(|dur| {
         Utc::now()
-            + chrono::Duration::from_std(dur)
-                .unwrap_or_else(|_| chrono::Duration::seconds(0))
+            + chrono::Duration::from_std(dur).unwrap_or_else(|_| chrono::Duration::seconds(0))
     });
 }
 

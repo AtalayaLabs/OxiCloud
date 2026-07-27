@@ -95,8 +95,7 @@ impl JobRegistry {
         }
         let next_run_at = interval.map(|dur| {
             Utc::now()
-                + chrono::Duration::from_std(dur)
-                    .unwrap_or_else(|_| chrono::Duration::seconds(0))
+                + chrono::Duration::from_std(dur).unwrap_or_else(|_| chrono::Duration::seconds(0))
         });
         let entry = Arc::new(JobEntry {
             handler,
@@ -186,10 +185,7 @@ impl JobRegistry {
     ///
     /// Works for BOTH scheduled and on-demand jobs — for on-demand
     /// jobs this is the only way they ever run.
-    pub async fn trigger(
-        self: &Arc<Self>,
-        name: &str,
-    ) -> Option<JobOutcome> {
+    pub async fn trigger(self: &Arc<Self>, name: &str) -> Option<JobOutcome> {
         let entry = self.get(name).await?;
         Some(super::engine::dispatch(name, entry).await)
     }
@@ -287,7 +283,9 @@ mod tests {
             .await
             .unwrap();
         // On-demand job — supervisor must never pick it.
-        reg.register(handler("on_demand"), None, None).await.unwrap();
+        reg.register(handler("on_demand"), None, None)
+            .await
+            .unwrap();
 
         let (next_name, _) = reg.pick_next().await.expect("scheduled job due");
         assert_eq!(
