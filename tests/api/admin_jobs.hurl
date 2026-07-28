@@ -144,15 +144,54 @@ jsonpath "$..last_outcome.outcome" contains "ok"
 #           drives_consistency (opens a run row, walks the
 #           `storage.folders` cursor, marks Completed). Success
 #           envelope shape identical.
+#
+#           Captures the run_id so Step 4b-findings can pin the
+#           `GET /runs/{id}/findings` endpoint.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/admin/jobs/folders_consistency/trigger
 Authorization: Bearer {{admin_token}}
 
 HTTP 200
+[Captures]
+folders_run_id: jsonpath "$.outcome.extra.run_id"
 [Asserts]
 jsonpath "$.ok" == true
 jsonpath "$.outcome.outcome" == "ok"
 jsonpath "$.outcome.count" exists
+jsonpath "$.outcome.extra.completed" == true
+jsonpath "$.outcome.extra.run_id" exists
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 4b-findings — List findings for the run we just kicked.
+# The response body is a JSON array (possibly empty on a clean
+# test DB — the fresh Hurl DB has no folder-tree drift). Assert:
+#   * 200 on a real run_id.
+#   * response is an array (isCollection covers both empty + non-
+#     empty). Structural shape of individual finding rows is pinned
+#     by the drives_consistency_service integration test which seeds
+#     drift and asserts kind/severity/detail — not repeated here.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/admin/jobs/folders_consistency/runs/{{folders_run_id}}/findings
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$" isCollection
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 4b-findings-404 — Findings for a run_id that doesn't
+# exist. Endpoint returns 404, not 200 [] — otherwise a broken
+# link from the admin UI would look like "no findings" instead
+# of "run missing".
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/admin/jobs/folders_consistency/runs/00000000-0000-0000-0000-000000000000/findings
+Authorization: Bearer {{admin_token}}
+
+HTTP 404
+[Asserts]
+jsonpath "$.error" == "run not found"
 
 
 # ─────────────────────────────────────────────────────────────

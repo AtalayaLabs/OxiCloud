@@ -209,6 +209,37 @@ pub trait JobStore: Send + Sync {
     /// batches — the run's heartbeat.
     async fn checkpoint(&self, cursor: Vec<u8>, delta_count: u64) -> Result<(), DomainError>;
 
+    /// Persist one finding to `jobs.run_findings` and bump
+    /// `stats.finding_count` on the parent run. Consistency handlers
+    /// call this in place of the transitional
+    /// `tracing::warn!(event = "consistency_finding", …)` — see
+    /// `docs/plan/job-registry.md` Part 2 §Findings.
+    ///
+    /// `kind` — stable machine-readable enum-style key (e.g.
+    /// `"stale_used_bytes"`, `"missing_blob"`). Never rename across
+    /// releases; new failure modes get new values.
+    ///
+    /// `severity` — one of `"data_loss"`, `"inconsistent"`, `"anomaly"`.
+    ///
+    /// `resource_id` — the file / folder / drive / blob the finding
+    /// pertains to. `None` for run-wide findings (e.g. "backend
+    /// enumeration truncated at 1M keys").
+    ///
+    /// `detail` — per-tenant per-kind JSON blob. Consumers key off
+    /// `kind` to know the shape (cached/actual/delta for
+    /// `stale_used_bytes`, blob_hash for `missing_blob`, etc.).
+    ///
+    /// Failure surfaces to the caller as `Err`. Handlers should
+    /// log-and-continue rather than fail the whole run — a lost
+    /// finding is bad but not worse than aborting the walk.
+    async fn record_finding(
+        &self,
+        kind: &str,
+        severity: &str,
+        resource_id: Option<Uuid>,
+        detail: serde_json::Value,
+    ) -> Result<(), DomainError>;
+
     // ─── Terminal writes — engine-only. Do not call from handler code.
 
     /// Engine-only. Called by [`run_or_resume`] on
@@ -278,6 +309,33 @@ pub trait JobStoreProvider: Send + Sync {
     /// the handler doesn't poll, cancel is a no-op until the run
     /// completes naturally.
     async fn request_cancel(&self, job_name: &str) -> Result<Option<Uuid>, DomainError>;
+
+    /// Findings for a specific run, newest-last, paginated.
+    /// Powers `GET /api/admin/jobs/{name}/runs/{id}/findings`.
+    /// `limit` caps rows; the API layer clamps it too. `offset` is
+    /// simple integer paging — findings-per-run is typically small
+    /// enough that cursor pagination is overkill.
+    async fn list_findings(
+        &self,
+        run_id: Uuid,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<Finding>, DomainError>;
+}
+
+/// Serialisable snapshot of one `jobs.run_findings` row, returned by
+/// `GET /api/admin/jobs/{name}/runs/{id}/findings`. Consumers key off
+/// `kind` to know the shape of `detail`.
+#[derive(Debug, Clone, Serialize)]
+pub struct Finding {
+    pub id: Uuid,
+    pub run_id: Uuid,
+    pub kind: String,
+    pub severity: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_id: Option<Uuid>,
+    pub detail: serde_json::Value,
+    pub created_at: DateTime<Utc>,
 }
 
 /// Serialisable snapshot of one `jobs.recoverable_runs` row, returned
@@ -402,6 +460,40 @@ fn log_terminal_write_err(op: &str, run_id: Uuid, res: Result<(), DomainError>) 
     }
 }
 
+// ─── Recording helper — used by every consistency tenant ───────────────────
+
+/// Persist a finding via `store.record_finding` and, if the write
+/// fails, drop a `record_finding.failed` line to the tenant's
+/// tracing target so operators don't lose the event silently.
+///
+/// Exists because every consistency tenant needs the same
+/// log-and-continue shape — extracting it here keeps each tenant's
+/// per-row branch a single call.
+pub async fn record_or_log(
+    store: &dyn JobStore,
+    job: &str,
+    kind: &str,
+    severity: &str,
+    resource_id: Option<Uuid>,
+    detail: serde_json::Value,
+) {
+    if let Err(e) = store
+        .record_finding(kind, severity, resource_id, detail)
+        .await
+    {
+        tracing::warn!(
+            target: "oxicloud::consistency",
+            event = "record_finding.failed",
+            run_id = %store.run_id(),
+            job = job,
+            kind = kind,
+            resource_id = ?resource_id,
+            error = %e,
+            "failed to persist finding; dropped (walk continues)"
+        );
+    }
+}
+
 // ─── Adapter — bridge to Part 1's JobHandler ────────────────────────────────
 
 /// Wraps a `RecoverableJobHandler` behind a `JobHandler` face so it
@@ -488,6 +580,7 @@ mod tests {
         cursor: Option<Vec<u8>>,
         scanned_count: u64,
         error_message: Option<String>,
+        findings: Vec<Finding>,
     }
 
     #[async_trait]
@@ -505,6 +598,25 @@ mod tests {
             let mut s = self.state.lock().unwrap();
             s.cursor = Some(cursor);
             s.scanned_count += delta_count;
+            Ok(())
+        }
+        async fn record_finding(
+            &self,
+            kind: &str,
+            severity: &str,
+            resource_id: Option<Uuid>,
+            detail: serde_json::Value,
+        ) -> Result<(), DomainError> {
+            let mut s = self.state.lock().unwrap();
+            s.findings.push(Finding {
+                id: Uuid::new_v4(),
+                run_id: self.run_id,
+                kind: kind.to_string(),
+                severity: severity.to_string(),
+                resource_id,
+                detail,
+                created_at: Utc::now(),
+            });
             Ok(())
         }
         async fn mark_completed(&self) -> Result<(), DomainError> {
@@ -555,6 +667,7 @@ mod tests {
                     cursor: None,
                     scanned_count: 0,
                     error_message: None,
+                    findings: Vec::new(),
                 }),
             });
             let id = store.run_id;
@@ -610,6 +723,7 @@ mod tests {
                     cursor: None,
                     scanned_count: 0,
                     error_message: None,
+                    findings: Vec::new(),
                 }),
             });
             stores.push(store.clone());
@@ -681,6 +795,26 @@ mod tests {
                     error_message: state.error_message.clone(),
                 }
             }))
+        }
+
+        async fn list_findings(
+            &self,
+            run_id: Uuid,
+            limit: u32,
+            offset: u32,
+        ) -> Result<Vec<Finding>, DomainError> {
+            let stores = self.stores.lock().unwrap();
+            let Some(store) = stores.iter().find(|s| s.run_id == run_id) else {
+                return Ok(Vec::new());
+            };
+            let state = store.state.lock().unwrap();
+            Ok(state
+                .findings
+                .iter()
+                .skip(offset as usize)
+                .take(limit as usize)
+                .cloned()
+                .collect())
         }
 
         async fn request_cancel(&self, _job_name: &str) -> Result<Option<Uuid>, DomainError> {

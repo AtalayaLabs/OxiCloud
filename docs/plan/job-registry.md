@@ -853,17 +853,20 @@ what already exists.
 - Status colour: `ok` = green, `err` = red, `Running` = blue-pulse,
   `Paused` = amber, `CancelRequested` = amber-flash, `Completed` =
   neutral grey, `Failed` = red.
-- Findings surfacing waits for `jobs.run_findings` — until then the
-  drawer's "Findings" tab is disabled with a tooltip explaining
-  drift shows up in the `oxicloud::consistency` log stream today.
+- Findings surfacing is live as of Slice 7 (`jobs.run_findings` +
+  `store.record_finding` + `GET /api/admin/jobs/{name}/runs/{id}/findings`).
+  Drawer's "Findings" tab renders `kind`, `severity`, `resource_id`,
+  and per-tenant `detail` JSON.
 
 **Slice ordering:** frontend page is a follow-up PR, not blocking any
 backend slice. Order of appearance:
 1. Backend Part 2 slices (engine, admin surface, first tenant) — done.
-2. `jobs.run_findings` table + `store.record_finding` API.
-3. `consistency_batch` + more tenants.
+2. `jobs.run_findings` table + `store.record_finding` API — done (Slice 7).
+3. `consistency_batch` + more tenants — done (Slices 5–6: drives + folders + files, plus batch).
 4. Frontend `/admin/jobs` page — takes the completed backend surface
    as-is; no backend changes required by the UI landing.
+5. **Deferred, post-UI:** progress estimation (`fraction`, `kind` on
+   `RunSummary`). See memory `project_job_progress_estimation`.
 
 ### Notifications & alerting
 

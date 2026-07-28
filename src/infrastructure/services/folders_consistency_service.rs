@@ -63,7 +63,7 @@ use uuid::Uuid;
 
 use crate::infrastructure::scheduler::{
     JobRegistry, JobRunArgs, JobStore, JobStoreProvider, RecoverableJobHandler, RunOutcome,
-    RunStatus,
+    RunStatus, record_or_log,
 };
 
 pub const FOLDERS_CONSISTENCY_JOB_NAME: &str = "folders_consistency";
@@ -233,41 +233,36 @@ impl RecoverableJobHandler for FoldersConsistencyCheck {
                 // soft-deleted parent. Cascade missed.
                 if !row.is_trashed && row.parent_is_trashed == Some(true) {
                     finding_count += 1;
-                    tracing::warn!(
-                        target: "oxicloud::consistency",
-                        event = "consistency_finding",
-                        run_id = %store.run_id(),
-                        job = FOLDERS_CONSISTENCY_JOB_NAME,
-                        kind = "parent_trashed_mismatch",
-                        severity = "inconsistent",
-                        resource_id = %row.id,
-                        parent_id = ?row.parent_id,
-                        "folder {} is live but its parent {:?} is trashed",
-                        row.id,
-                        row.parent_id
-                    );
+                    record_or_log(
+                        store,
+                        FOLDERS_CONSISTENCY_JOB_NAME,
+                        "parent_trashed_mismatch",
+                        "inconsistent",
+                        Some(row.id),
+                        serde_json::json!({
+                            "parent_id": row.parent_id,
+                        }),
+                    )
+                    .await;
                 }
 
                 // (2) path_mismatch: materialised path drifted from
                 // the parent-chain reconstruction.
                 if row.path != row.expected_path {
                     finding_count += 1;
-                    tracing::warn!(
-                        target: "oxicloud::consistency",
-                        event = "consistency_finding",
-                        run_id = %store.run_id(),
-                        job = FOLDERS_CONSISTENCY_JOB_NAME,
-                        kind = "path_mismatch",
-                        severity = "inconsistent",
-                        resource_id = %row.id,
-                        stored = %row.path,
-                        expected = %row.expected_path,
-                        parent_path = ?row.parent_path,
-                        "folder {} path drift: stored={:?} expected={:?}",
-                        row.id,
-                        row.path,
-                        row.expected_path
-                    );
+                    record_or_log(
+                        store,
+                        FOLDERS_CONSISTENCY_JOB_NAME,
+                        "path_mismatch",
+                        "inconsistent",
+                        Some(row.id),
+                        serde_json::json!({
+                            "stored":      row.path,
+                            "expected":    row.expected_path,
+                            "parent_path": row.parent_path,
+                        }),
+                    )
+                    .await;
                 }
 
                 // (3) lpath_mismatch: materialised lpath drifted from
@@ -276,22 +271,19 @@ impl RecoverableJobHandler for FoldersConsistencyCheck {
                 // silently break different query shapes.
                 if row.lpath_text != row.expected_lpath_text {
                     finding_count += 1;
-                    tracing::warn!(
-                        target: "oxicloud::consistency",
-                        event = "consistency_finding",
-                        run_id = %store.run_id(),
-                        job = FOLDERS_CONSISTENCY_JOB_NAME,
-                        kind = "lpath_mismatch",
-                        severity = "inconsistent",
-                        resource_id = %row.id,
-                        stored = %row.lpath_text,
-                        expected = %row.expected_lpath_text,
-                        parent_lpath = ?row.parent_lpath_text,
-                        "folder {} lpath drift: stored={:?} expected={:?}",
-                        row.id,
-                        row.lpath_text,
-                        row.expected_lpath_text
-                    );
+                    record_or_log(
+                        store,
+                        FOLDERS_CONSISTENCY_JOB_NAME,
+                        "lpath_mismatch",
+                        "inconsistent",
+                        Some(row.id),
+                        serde_json::json!({
+                            "stored":       row.lpath_text,
+                            "expected":     row.expected_lpath_text,
+                            "parent_lpath": row.parent_lpath_text,
+                        }),
+                    )
+                    .await;
                 }
             }
 

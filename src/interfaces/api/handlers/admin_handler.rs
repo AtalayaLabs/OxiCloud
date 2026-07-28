@@ -160,6 +160,7 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         .route("/jobs/{name}/cancel", post(cancel_job))
         .route("/jobs/{name}/runs", get(list_job_runs))
         .route("/jobs/{name}/runs/{id}", get(get_job_run))
+        .route("/jobs/{name}/runs/{id}/findings", get(list_job_run_findings))
         // Drives — admin-wide view (distinct from `/api/drives` which
         // is filtered to the caller's role grants).
         .route("/drives", get(list_all_drives))
@@ -2311,5 +2312,80 @@ pub async fn get_job_run(
         )
             .into_response(),
         Err(e) => AppError::internal_error(format!("get_run failed: {e}")).into_response(),
+    }
+}
+
+/// Query parameters for `GET /api/admin/jobs/{name}/runs/{id}/findings`.
+#[derive(serde::Deserialize)]
+pub struct ListFindingsQuery {
+    /// Page size — server clamps to 500 defensively.
+    #[serde(default = "default_findings_limit")]
+    pub limit: u32,
+    #[serde(default)]
+    pub offset: u32,
+}
+
+fn default_findings_limit() -> u32 {
+    100
+}
+
+/// `GET /api/admin/jobs/{name}/runs/{id}/findings?limit=N&offset=M` —
+/// paginated findings emitted by a specific run of a recoverable job.
+///
+/// 404 when the run id doesn't exist (anti-enum: caller knew the id
+/// somehow; we don't leak whether it was pruned vs never-existed).
+/// Read-only, no audit — standard admin-middleware auth is enough.
+///
+/// `{name}` is not validated against the run's `job_name` (the id is
+/// globally unique) but keeps the URL path consistent with the other
+/// per-run endpoints for stable per-job history links.
+#[utoipa::path(
+    get,
+    path = "/api/admin/jobs/{name}/runs/{id}/findings",
+    params(
+        ("name" = String, Path, description = "Registered job name"),
+        ("id" = String, Path, description = "Run UUID"),
+        ("limit" = Option<u32>, Query, description = "Max rows (default 100, capped at 500)"),
+        ("offset" = Option<u32>, Query, description = "Rows to skip (default 0)"),
+    ),
+    responses(
+        (status = 200, description = "Findings listed (may be empty)"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+        (status = 404, description = "Run not found"),
+        (status = 500, description = "DB error"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn list_job_run_findings(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path((_name, id)): axum::extract::Path<(String, uuid::Uuid)>,
+    axum::extract::Query(query): axum::extract::Query<ListFindingsQuery>,
+) -> impl IntoResponse {
+    use crate::infrastructure::scheduler::JobStoreProvider as _;
+    // Existence check first — otherwise a paged listing of a
+    // nonexistent run returns 200 [] which is indistinguishable from
+    // "run exists, no findings" and breaks operator drill-down.
+    match state.core.job_store_provider.get_run_by_id(id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "run not found", "id": id.to_string() })),
+            )
+                .into_response();
+        }
+        Err(e) => return AppError::internal_error(format!("get_run failed: {e}")).into_response(),
+    }
+    let limit = query.limit.clamp(1, 500);
+    match state
+        .core
+        .job_store_provider
+        .list_findings(id, limit, query.offset)
+        .await
+    {
+        Ok(findings) => (StatusCode::OK, Json(findings)).into_response(),
+        Err(e) => AppError::internal_error(format!("list_findings failed: {e}")).into_response(),
     }
 }

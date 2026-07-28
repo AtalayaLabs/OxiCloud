@@ -27,7 +27,7 @@ use uuid::Uuid;
 
 use crate::infrastructure::scheduler::{
     JobRegistry, JobRunArgs, JobStore, JobStoreProvider, RecoverableJobHandler, RunOutcome,
-    RunStatus,
+    RunStatus, record_or_log,
 };
 
 pub const DRIVES_CONSISTENCY_JOB_NAME: &str = "drives_consistency";
@@ -170,31 +170,23 @@ impl RecoverableJobHandler for DrivesConsistencyCheck {
             for (drive_id, cached, actual) in &rows {
                 if *cached != *actual {
                     drift_count += 1;
-                    // Finding — logged for now, will migrate to
-                    // `store.record_finding(...)` when `jobs.run_findings`
-                    // lands. Kind + severity chosen to match the
-                    // consistency-check plan's convention:
-                    //   kind = 'stale_used_bytes'
-                    //   severity = 'inconsistent' (counters wrong,
-                    //   content intact — the reconciliation sweep
-                    //   will fix on its next tick).
-                    tracing::warn!(
-                        target: "oxicloud::consistency",
-                        event = "consistency_finding",
-                        run_id = %store.run_id(),
-                        job = DRIVES_CONSISTENCY_JOB_NAME,
-                        kind = "stale_used_bytes",
-                        severity = "inconsistent",
-                        resource_id = %drive_id,
-                        cached = *cached,
-                        actual = *actual,
-                        delta = *cached - *actual,
-                        "drive {} used_bytes drift: cached={} actual={} (delta={})",
-                        drive_id,
-                        cached,
-                        actual,
-                        cached - actual
-                    );
+                    // Persisted finding via the shared helper.
+                    // `stale_used_bytes` + severity `inconsistent`
+                    // (counters wrong, content intact — the
+                    // reconciliation sweep will fix on its next tick).
+                    record_or_log(
+                        store,
+                        DRIVES_CONSISTENCY_JOB_NAME,
+                        "stale_used_bytes",
+                        "inconsistent",
+                        Some(*drive_id),
+                        serde_json::json!({
+                            "cached": cached,
+                            "actual": actual,
+                            "delta": cached - actual,
+                        }),
+                    )
+                    .await;
                 }
             }
 
@@ -251,8 +243,6 @@ mod integration_tests {
     use crate::infrastructure::scheduler::{JobStoreProvider, OpenedRun, RunStatus};
     use sqlx::Row;
     use sqlx::postgres::PgPoolOptions;
-    use std::collections::HashMap;
-    use std::sync::Mutex;
 
     async fn test_pool() -> Arc<sqlx::PgPool> {
         let url = crate::integration_test_support::test_db_url();
@@ -415,77 +405,6 @@ mod integration_tests {
             .ok();
     }
 
-    // ─── Scoped tracing capture — Layer over Registry ─────────────────────
-    //
-    // Hand-rolling `Subscriber` from scratch is fragile (callsite
-    // registration, level filtering, missing default impls). Layer over
-    // `tracing_subscriber::Registry` is the blessed pattern — Registry
-    // handles span storage + callsite management, our Layer just captures
-    // events on the target we care about. Installed per-test via
-    // `tracing::subscriber::set_default` (returns a drop-guard).
-
-    use tracing_subscriber::{Layer, Registry, layer::SubscriberExt};
-
-    #[derive(Default, Debug)]
-    struct CapturedFields {
-        strings: HashMap<String, String>,
-        signed: HashMap<String, i64>,
-    }
-
-    impl tracing::field::Visit for CapturedFields {
-        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-            self.strings
-                .insert(field.name().to_string(), value.to_string());
-        }
-        fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
-            self.signed.insert(field.name().to_string(), value);
-        }
-        fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
-            self.signed.insert(field.name().to_string(), value as i64);
-        }
-        fn record_bool(&mut self, _: &tracing::field::Field, _: bool) {}
-        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-            self.strings
-                .insert(field.name().to_string(), format!("{value:?}"));
-        }
-    }
-
-    struct CaptureLayer {
-        target: &'static str,
-        events: Arc<Mutex<Vec<CapturedFields>>>,
-    }
-
-    impl<S: tracing::Subscriber> Layer<S> for CaptureLayer {
-        fn on_event(
-            &self,
-            event: &tracing::Event<'_>,
-            _ctx: tracing_subscriber::layer::Context<'_, S>,
-        ) {
-            if event.metadata().target() != self.target {
-                return;
-            }
-            let mut fields = CapturedFields::default();
-            event.record(&mut fields);
-            self.events.lock().unwrap().push(fields);
-        }
-    }
-
-    fn install_capture(
-        target: &'static str,
-    ) -> (
-        Arc<Mutex<Vec<CapturedFields>>>,
-        tracing::subscriber::DefaultGuard,
-    ) {
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let layer = CaptureLayer {
-            target,
-            events: events.clone(),
-        };
-        let subscriber = Registry::default().with(layer);
-        let guard = tracing::subscriber::set_default(subscriber);
-        (events, guard)
-    }
-
     // ─── Parallel-test serialization ───────────────────────────────────────
     //
     // Cargo runs `#[test]` fns in parallel; the three tests in this
@@ -518,12 +437,12 @@ mod integration_tests {
         // Cached = 999, actual = 200 → delta = 799 (positive = cached over-reports).
         let drive_id = seed_drift(pool.as_ref(), 999, 200).await;
 
-        // Install scoped capture BEFORE dispatch.
-        let (events, guard) = install_capture("oxicloud::consistency");
-
         // Run end-to-end through the recoverable engine: PgJobStoreProvider
         // creates a run row, run_or_resume dispatches DrivesConsistencyCheck,
-        // handler walks the drive, marks Completed.
+        // handler walks the drive, marks Completed. Findings land in
+        // `jobs.run_findings` via `store.record_finding()` — asserted
+        // via `provider.list_findings(run_id, ...)` below (post-Slice 7,
+        // no more tracing-event capture).
         let provider: Arc<dyn JobStoreProvider> = Arc::new(
             crate::infrastructure::scheduler::PgJobStoreProvider::new(pool.clone()),
         );
@@ -536,55 +455,8 @@ mod integration_tests {
         )
         .await;
 
-        drop(guard);
-
         // Framework assertions.
         assert!(outcome.is_ok(), "run must complete: {outcome:?}");
-
-        // Drift-detection assertion — find the finding event for our drive.
-        let events = events.lock().unwrap();
-        let finding = events
-            .iter()
-            .find(|e| {
-                e.strings
-                    .get("event")
-                    .map(|v| v == "consistency_finding")
-                    .unwrap_or(false)
-                    && e.strings
-                        .get("resource_id")
-                        .map(|v| v == &drive_id.to_string())
-                        .unwrap_or(false)
-            })
-            .unwrap_or_else(|| {
-                panic!(
-                    "expected a consistency_finding for drive {drive_id}, got events: {events:?}"
-                );
-            });
-        assert_eq!(
-            finding.strings.get("kind").map(String::as_str),
-            Some("stale_used_bytes"),
-            "wrong kind on finding: {finding:?}"
-        );
-        assert_eq!(
-            finding.strings.get("severity").map(String::as_str),
-            Some("inconsistent"),
-            "wrong severity on finding: {finding:?}"
-        );
-        assert_eq!(
-            finding.signed.get("cached").copied(),
-            Some(999),
-            "cached mismatch: {finding:?}"
-        );
-        assert_eq!(
-            finding.signed.get("actual").copied(),
-            Some(200),
-            "actual mismatch: {finding:?}"
-        );
-        assert_eq!(
-            finding.signed.get("delta").copied(),
-            Some(799),
-            "delta mismatch: {finding:?}"
-        );
 
         // Read-only invariant — drive's used_bytes is UNCHANGED by the check.
         let post_cached: i64 = sqlx::query("SELECT used_bytes FROM storage.drives WHERE id = $1")
@@ -615,6 +487,51 @@ mod integration_tests {
             "scanned_count must include at least our drive, got {scanned}"
         );
 
+        // Drift-detection assertion — the finding for our seeded drive
+        // is now a persisted row. Query via the same interface the
+        // admin endpoint uses so the test also pins the read path.
+        let findings = provider
+            .list_findings(run_id, 500, 0)
+            .await
+            .expect("list_findings");
+        let ours = findings
+            .iter()
+            .find(|f| f.resource_id == Some(drive_id))
+            .unwrap_or_else(|| {
+                panic!("expected a persisted finding for drive {drive_id}, got: {findings:?}")
+            });
+        assert_eq!(ours.kind, "stale_used_bytes", "wrong kind: {ours:?}");
+        assert_eq!(ours.severity, "inconsistent", "wrong severity: {ours:?}");
+        assert_eq!(
+            ours.detail.get("cached").and_then(|v| v.as_i64()),
+            Some(999),
+            "cached mismatch in detail: {ours:?}"
+        );
+        assert_eq!(
+            ours.detail.get("actual").and_then(|v| v.as_i64()),
+            Some(200),
+            "actual mismatch in detail: {ours:?}"
+        );
+        assert_eq!(
+            ours.detail.get("delta").and_then(|v| v.as_i64()),
+            Some(799),
+            "delta mismatch in detail: {ours:?}"
+        );
+
+        // Counter mirror — record_finding also bumps stats.finding_count.
+        let stored_finding_count: i64 = sqlx::query(
+            "SELECT COALESCE((stats->>'finding_count')::bigint, 0) FROM jobs.recoverable_runs WHERE id = $1",
+        )
+        .bind(run_id)
+        .fetch_one(pool.as_ref())
+        .await
+        .expect("query stats.finding_count")
+        .get(0);
+        assert!(
+            stored_finding_count >= 1,
+            "finding_count must be bumped, got {stored_finding_count}"
+        );
+
         // Cleanup — even on assertion failure the test panics before this,
         // leaving the test DB slightly dirty. That's fine per session; the
         // next spawn-db.sh reset clears everything.
@@ -630,8 +547,6 @@ mod integration_tests {
         // cached == actual → no drift.
         let drive_id = seed_drift(pool.as_ref(), 500, 500).await;
 
-        let (events, guard) = install_capture("oxicloud::consistency");
-
         let provider: Arc<dyn JobStoreProvider> = Arc::new(
             crate::infrastructure::scheduler::PgJobStoreProvider::new(pool.clone()),
         );
@@ -639,46 +554,39 @@ mod integration_tests {
             Arc::new(DrivesConsistencyCheck::new(pool.clone()));
         let outcome = crate::infrastructure::scheduler::run_or_resume(
             handler,
-            provider,
+            provider.clone(),
             &JobRunArgs::default(),
         )
         .await;
 
-        drop(guard);
         assert!(outcome.is_ok());
 
-        // For THIS drive, no finding event. Other drives in the test DB
-        // may still surface findings (unrelated fixture data); we only
-        // assert the invariant scoped to our drive_id.
-        let events = events.lock().unwrap();
-        let our_findings = events
-            .iter()
-            .filter(|e| {
-                e.strings
-                    .get("event")
-                    .map(|v| v == "consistency_finding")
-                    .unwrap_or(false)
-                    && e.strings
-                        .get("resource_id")
-                        .map(|v| v == &drive_id.to_string())
-                        .unwrap_or(false)
-            })
-            .count();
-        assert_eq!(
-            our_findings, 0,
-            "no drift on this drive, expected 0 findings, got {our_findings}"
-        );
-
-        // Cleanup.
+        // Locate the run row we just wrote.
         let latest_run: Option<(Uuid,)> = sqlx::query_as(
             "SELECT id FROM jobs.recoverable_runs WHERE job_name='drives_consistency' ORDER BY started_at DESC LIMIT 1",
         )
         .fetch_optional(pool.as_ref())
         .await
         .expect("query recoverable_runs");
-        if let Some((run_id,)) = latest_run {
-            cleanup_run(pool.as_ref(), run_id).await;
-        }
+        let (run_id,) = latest_run.expect("run row must exist");
+
+        // For THIS drive, no persisted finding. Other drives in the test
+        // DB may still surface findings (unrelated fixture data); we only
+        // assert the invariant scoped to our drive_id.
+        let findings = provider
+            .list_findings(run_id, 500, 0)
+            .await
+            .expect("list_findings");
+        let ours = findings
+            .iter()
+            .filter(|f| f.resource_id == Some(drive_id))
+            .count();
+        assert_eq!(
+            ours, 0,
+            "no drift on this drive, expected 0 findings, got {ours}: {findings:?}"
+        );
+
+        cleanup_run(pool.as_ref(), run_id).await;
         cleanup_test_drive(pool.as_ref(), drive_id).await;
     }
 

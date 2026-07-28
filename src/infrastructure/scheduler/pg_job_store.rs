@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::common::errors::DomainError;
 
-use super::recoverable::{JobStore, JobStoreProvider, OpenedRun, RunStatus, RunSummary};
+use super::recoverable::{Finding, JobStore, JobStoreProvider, OpenedRun, RunStatus, RunSummary};
 
 // ─── PgJobStore — bound to one run ──────────────────────────────────────────
 
@@ -96,6 +96,68 @@ impl JobStore for PgJobStore {
         .execute(self.pool.as_ref())
         .await
         .map_err(|e| map_sqlx_err("checkpoint", e))?;
+        Ok(())
+    }
+
+    async fn record_finding(
+        &self,
+        kind: &str,
+        severity: &str,
+        resource_id: Option<Uuid>,
+        detail: serde_json::Value,
+    ) -> Result<(), DomainError> {
+        // Two writes in one round-trip via CTE: INSERT the finding
+        // row + UPDATE stats.finding_count on the parent run. The
+        // counter stays a coarse UI hint — the source of truth is
+        // the `jobs.run_findings` table itself. Even if the counter
+        // drifts (crash mid-statement, hand-edited row), aggregations
+        // stay accurate. Bumping in the same statement avoids two
+        // round trips per finding on a hot scan; on a normal
+        // consistency run the ratio of findings-to-batches is low
+        // enough that a round trip either way is fine, but this shape
+        // scales to a bulk-finding tenant without change.
+        //
+        // `resource_id` is nullable in the schema; when None here we
+        // bind `Option::<Uuid>::None` and sqlx encodes it as SQL NULL.
+        let bumped = sqlx::query(
+            r#"
+            WITH inserted AS (
+                INSERT INTO jobs.run_findings
+                    (run_id, kind, severity, resource_id, detail)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING run_id
+            )
+            UPDATE jobs.recoverable_runs
+               SET stats = jsonb_set(
+                              stats,
+                              '{finding_count}',
+                              ((COALESCE(stats->>'finding_count', '0')::bigint + 1)::text)::jsonb
+                           )
+             WHERE id = (SELECT run_id FROM inserted)
+            "#,
+        )
+        .bind(self.run_id)
+        .bind(kind)
+        .bind(severity)
+        .bind(resource_id)
+        .bind(&detail)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| map_sqlx_err("record_finding", e))?;
+
+        // A rows_affected == 0 on the UPDATE would mean the parent run
+        // row vanished between INSERT and UPDATE — theoretically
+        // impossible under our CASCADE FK (deleting the run drops the
+        // finding), so we don't error, but a debug log covers the
+        // defensive path.
+        if bumped.rows_affected() == 0 {
+            tracing::debug!(
+                target: "oxicloud::scheduler",
+                event = "record_finding.counter_bump_noop",
+                run_id = %self.run_id,
+                "record_finding: parent run row missing during counter bump"
+            );
+        }
         Ok(())
     }
 
@@ -260,6 +322,54 @@ impl JobStoreProvider for PgJobStoreProvider {
             .await
             .map_err(|e| map_sqlx_err("get_run_by_id", e))?;
         row.map(row_to_summary).transpose()
+    }
+
+    async fn list_findings(
+        &self,
+        run_id: Uuid,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<Finding>, DomainError> {
+        let capped = limit.min(500) as i64;
+        let off = offset as i64;
+        let rows: Vec<(
+            Uuid,
+            Uuid,
+            String,
+            String,
+            Option<Uuid>,
+            serde_json::Value,
+            DateTime<Utc>,
+        )> = sqlx::query_as(
+            r#"
+            SELECT id, run_id, kind, severity, resource_id, detail, created_at
+              FROM jobs.run_findings
+             WHERE run_id = $1
+             ORDER BY created_at, id
+             LIMIT $2 OFFSET $3
+            "#,
+        )
+        .bind(run_id)
+        .bind(capped)
+        .bind(off)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| map_sqlx_err("list_findings", e))?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, run_id, kind, severity, resource_id, detail, created_at)| Finding {
+                    id,
+                    run_id,
+                    kind,
+                    severity,
+                    resource_id,
+                    detail,
+                    created_at,
+                },
+            )
+            .collect())
     }
 
     async fn request_cancel(&self, job_name: &str) -> Result<Option<Uuid>, DomainError> {
