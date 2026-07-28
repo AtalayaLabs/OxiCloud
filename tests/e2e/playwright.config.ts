@@ -66,6 +66,13 @@ export default defineConfig({
       // Verbose startup so a CI webServer-readiness timeout shows where the
       // server stalls (DB connect, migrations, bind) instead of nothing.
       RUST_LOG: 'info,oxicloud=debug,sqlx=warn,tower_http=info',
+      // OPAQUE substrate is off for the E2E suite — Hurl exercises it via
+      // `tests/common/server.env`; the SPA-facing coverage suite doesn't
+      // need the boot-time init nor the ~200 KiB WASM client. Blanking
+      // the inherited commonEnv values takes the DI factory's
+      // `effective_mode == Off` short-circuit.
+      OXICLOUD_OPAQUE_MODE: 'off',
+      OXICLOUD_OPAQUE_SERVER_SETUP: '',
     },
   },
 });
