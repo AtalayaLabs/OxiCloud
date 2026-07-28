@@ -115,8 +115,8 @@ are already there. Keeping it as its own loop is right.
    of trash-cleanup + storage-usage + db_pool_monitor + dedup GC +
    grant-cleanup + tree-etag flush + content-index. High mechanical
    payoff, zero new schema, minimal review surface.
-2. **Part 2 lands next** — introduces `admin.background_runs` schema
-   + `RecoverableJob` trait + `JobStore` port + `run_or_resume`. On
+2. **Part 2 lands next** — introduces `jobs.recoverable_runs` schema
+   + `RecoverableJobHandler` trait + `JobStore` port + `run_or_resume`. On
    its own PR (schema change deserves independent review).
 3. **Consistency-check framework (`docs/plan/consistency-check.md`)**
    lands third, consuming Part 2 as its runtime.
@@ -432,16 +432,16 @@ into the scheduler.
 
 ## Part 2 — Recoverable-Run Engine
 
-### Contract — `RecoverableJob` trait
+### Contract — `RecoverableJobHandler` trait
 
 Sibling to `JobHandler`, NOT a subtrait. A stateless job that only
 implements `JobHandler` never needs to know Part 2 exists.
 
 ```rust
 #[async_trait]
-pub trait RecoverableJob: Send + Sync {
+pub trait RecoverableJobHandler: Send + Sync {
     /// Stable snake_case identifier — matches the `job_name` column
-    /// in `admin.background_runs`.
+    /// in `jobs.recoverable_runs`.
     fn name(&self) -> &str;
 
     /// Long-running, cooperative scan. The store is the job's ONLY
@@ -479,13 +479,13 @@ pub enum RunOutcome {
 ### `JobStore` trait
 
 The port the engine passes to a recoverable job. Backed by
-`admin.background_runs` in production; can be mocked for unit tests.
+`jobs.recoverable_runs` in production; can be mocked for unit tests.
 
 ```rust
 #[async_trait]
 pub trait JobStore: Send + Sync {
     /// The `run_id` this handler was invoked with. Uniquely identifies
-    /// the row in `admin.background_runs`.
+    /// the row in `jobs.recoverable_runs`.
     fn run_id(&self) -> Uuid;
 
     /// Fixed at run start; used by consistency checks (and any other
@@ -517,12 +517,12 @@ instance) are separate traits the impl composes on top of `JobStore`.
 `JobStore` itself carries no findings/severity concept — those are
 Layer C in the consistency-check plan, not the engine's concern.
 
-### Schema — `admin.background_runs`
+### Schema — `jobs.recoverable_runs`
 
 ```sql
 CREATE SCHEMA IF NOT EXISTS admin;
 
-CREATE TABLE admin.background_runs (
+CREATE TABLE jobs.recoverable_runs (
     id                 UUID PRIMARY KEY,
     job_name           TEXT NOT NULL,
     status             TEXT NOT NULL,               -- Running / Paused / CancelRequested / Completed / Failed
@@ -536,10 +536,10 @@ CREATE TABLE admin.background_runs (
 );
 
 CREATE UNIQUE INDEX one_active_run_per_job
-    ON admin.background_runs (job_name)
+    ON jobs.recoverable_runs (job_name)
     WHERE status IN ('Running', 'Paused', 'CancelRequested');
 
-CREATE INDEX ON admin.background_runs (last_progress_at)
+CREATE INDEX ON jobs.recoverable_runs (last_progress_at)
     WHERE status = 'Running';
 ```
 
@@ -549,9 +549,9 @@ so it survives concurrent triggers, admin-vs-scheduler races, and
 transaction interleavings. The `CancelRequested` inclusion prevents
 a second trigger during cancel from spawning a parallel run.
 
-`admin.*` is a NEW schema — kept distinct from `auth.*` / `storage.*`
+`jobs.*` is a NEW schema — kept distinct from `auth.*` / `storage.*` / `admin.*`
 so operational tables don't pollute domain schemas. Consistency
-checks own their own `admin.consistency_findings` in the same
+checks own their own `jobs.run_findings` in the same
 schema.
 
 Cursor is `BYTEA`, not JSONB, because per-job cursors are fixed-shape
@@ -579,7 +579,7 @@ One `UPDATE` per checkpoint. Cheap, no row-lock contention (this
 process owns the row):
 
 ```sql
-UPDATE admin.background_runs
+UPDATE jobs.recoverable_runs
    SET cursor            = $2,
        stats             = jsonb_set(
                               stats,
@@ -618,7 +618,7 @@ that's a success. Log lines stay meaningful (`outcome=ok`,
 The engine module exposes:
 
 ```rust
-pub async fn run_or_resume<J: RecoverableJob + ?Sized>(
+pub async fn run_or_resume<J: RecoverableJobHandler + ?Sized>(
     job: Arc<J>,
     store_factory: &dyn JobStoreFactory,
 ) -> JobOutcome
@@ -671,7 +671,7 @@ At `AppServiceFactory` init, after DB pool is up:
 
 ```rust
 sqlx::query!(
-    "UPDATE admin.background_runs
+    "UPDATE jobs.recoverable_runs
         SET status = 'Paused',
             error_message = COALESCE(error_message, 'server restart mid-run')
       WHERE status IN ('Running', 'CancelRequested')"
@@ -704,16 +704,16 @@ GET  /api/admin/jobs/{name}/runs/{id}
 ### Native tenants (Part 2)
 
 - **Blob storage backend migration.** `migration_job.rs` becomes a
-  `RecoverableJob` impl. Cursor = last processed blob hash. Retires
+  `RecoverableJobHandler` impl. Cursor = last processed blob hash. Retires
   the `Arc<RwLock<MigrationState>>` in-memory struct.
 - **Reextract audio metadata.** Currently synchronous inside the
-  admin HTTP request. Becomes a `RecoverableJob` iterating audio
+  admin HTTP request. Becomes a `RecoverableJobHandler` iterating audio
   files by `file_id`.
 - **Reextract image/video capture dates.** Same as above.
 - **Consistency-check runs.** Every `ConsistencyCheck` impl gets
-  wrapped by a `RecoverableJob` adapter; the wrapper writes to
-  `admin.background_runs` via `JobStore`, and separately writes
-  findings to `admin.consistency_findings` via a check-specific
+  wrapped by a `RecoverableJobHandler` adapter; the wrapper writes to
+  `jobs.recoverable_runs` via `JobStore`, and separately writes
+  findings to `jobs.run_findings` via a check-specific
   extension trait. See `docs/plan/consistency-check.md`.
 
 ### Verification (Part 2)
@@ -733,7 +733,7 @@ GET  /api/admin/jobs/{name}/runs/{id}
 6. **Idempotent replay:** for consistency-check specifically, verify
    that re-processing the last unpersisted batch does NOT double-record
    findings (`UNIQUE (run_id, kind, resource_id)` on
-   `admin.consistency_findings`).
+   `jobs.run_findings`).
 7. **`RunOutcome` bridge log lines:** completed run logs
    `outcome=ok, extra.completed=true`; paused logs
    `outcome=ok, extra.paused=true`; failed logs `outcome=err, cause=handler`.
@@ -874,7 +874,7 @@ precludes it.
 
 ### Job-history observability
 
-`admin.background_runs` already carries the latest run per Part 2 job
+`jobs.recoverable_runs` already carries the latest run per Part 2 job
 — "last run time + status" is a `SELECT DISTINCT ON (job_name) …`
 query. Deeper history (retention window, per-run drill-down UI) is
 deferred; the log stream is the source of truth for older runs.
@@ -889,7 +889,7 @@ No such need today.
 
 - **Cross-job dependencies.** Register-time ordering only, not runtime
   graph.
-- **Retention pruning of terminal `background_runs` rows.** Deferred
+- **Retention pruning of terminal `recoverable_runs` rows.** Deferred
   until the volume warrants a policy.
 - **Prometheus / OpenMetrics export.** Log-only for now.
 - **Distributed scheduling.** Single-process. If OxiCloud ever runs

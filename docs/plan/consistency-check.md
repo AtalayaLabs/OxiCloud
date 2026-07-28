@@ -38,14 +38,14 @@ This plan lands:
    compiles without declaring its consistency contract.
 3. An **educational surface** in trait doc-comments — decision axes
    (severity, direction, grace, cursor) and canonical-example pointers.
-4. **Consistency-specific persistence** — `admin.consistency_findings`,
+4. **Consistency-specific persistence** — `jobs.run_findings`,
    idempotent-on-`(run_id, kind, resource_id)`.
 5. A **first check** — `BlobConsistencyCheck` (both directions,
    blob-keyed cursor, severity split).
 
 **Layer boundary — the runtime is not in this plan.** The resumable
 execution engine (cursor persistence, exclusivity, cancel protocol,
-crash recovery, `admin.background_runs` schema, `JobStore`,
+crash recovery, `jobs.recoverable_runs` schema, `JobStore`,
 `RunOutcome`, `run_or_resume`) lives in `docs/plan/job-registry.md`
 Part 2. This plan describes what `ConsistencyCheck` implementors
 write and how the check-specific bits (findings, severity,
@@ -53,7 +53,7 @@ write and how the check-specific bits (findings, severity,
 
 **Order:** ships **after** the job-registry Part 2 engine lands.
 Consistency closes an operator-visibility gap today, but it depends
-on Part 2's `RecoverableJob` + `JobStore` + `admin.background_runs`
+on Part 2's `RecoverableJobHandler` + `JobStore` + `jobs.recoverable_runs`
 primitives — those come first. Once both are in, consistency runs
 are admin-triggered v1, becoming periodic-triggered when a
 `JobRegistry` (Part 1) tenant wraps `run_or_resume` for each
@@ -157,11 +157,11 @@ Race matrix — missing direction:
 Nothing before "byte-exact whole-table snapshot verification" needs a
 quiescent server. Reserve `concurrent_safe() = false` for that one.
 
-### Resumability — runs live in Part 2's `background_runs`
+### Resumability — runs live in Part 2's `recoverable_runs`
 
-Consistency runs are ordinary `RecoverableJob`s. The runtime plumbing
+Consistency runs are ordinary `RecoverableJobHandler`s. The runtime plumbing
 — cursor persistence, exclusivity, cancel protocol, crash recovery,
-`admin.background_runs` schema, `JobStore` trait, `RunOutcome`,
+`jobs.recoverable_runs` schema, `JobStore` trait, `RunOutcome`,
 `run_or_resume` helper — lives in `docs/plan/job-registry.md` Part 2.
 This plan does not redefine any of it.
 
@@ -172,10 +172,10 @@ This plan does not redefine any of it.
   `SELECT DISTINCT ON (job_name)` return the last run of every check
   alongside every other background job.
 - Consistency's per-check knobs — `grace_window_secs`, `batch_size`,
-  `concurrent_safe` — live inside `background_runs.params` JSONB at
+  `concurrent_safe` — live inside `recoverable_runs.params` JSONB at
   run-start time. The check reads them back via
   `serde_json::from_value(store.params()?)`.
-- `background_runs.stats` accumulates `{"scanned_count": …,
+- `recoverable_runs.stats` accumulates `{"scanned_count": …,
   "findings_this_run": …}`; readers call
   `(stats->>'scanned_count')::bigint`.
 
@@ -183,9 +183,9 @@ The findings themselves are Layer C (this plan) — they don't
 generalise to storage-migration or reextract:
 
 ```sql
-CREATE TABLE admin.consistency_findings (
+CREATE TABLE jobs.run_findings (
     id             UUID PRIMARY KEY,
-    run_id         UUID NOT NULL REFERENCES admin.background_runs(id) ON DELETE CASCADE,
+    run_id         UUID NOT NULL REFERENCES jobs.recoverable_runs(id) ON DELETE CASCADE,
     kind           TEXT NOT NULL,             -- OrphanBlob / MissingBlob / ...
     severity       TEXT NOT NULL,             -- DataLoss / Reclaimable / ...
     resource_id    TEXT NOT NULL,
@@ -193,15 +193,15 @@ CREATE TABLE admin.consistency_findings (
     found_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (run_id, kind, resource_id)        -- idempotent re-scan on resume
 );
-CREATE INDEX ON admin.consistency_findings (run_id, severity);
+CREATE INDEX ON jobs.run_findings (run_id, severity);
 ```
 
-FK on `background_runs.id` links a finding back to the run that
+FK on `recoverable_runs.id` links a finding back to the run that
 produced it; `ON DELETE CASCADE` clears findings when their run row
 is pruned by a future retention job.
 
-`admin.*` is a NEW schema, created by Part 2's migration — keep it
-distinct from `auth.*` / `storage.*` so operational tables don't
+`jobs.*` is a NEW schema, created by Part 2's migration — keep it
+distinct from `auth.*` / `storage.*` / `admin.*` so operational tables don't
 pollute domain schemas.
 
 ### Non-obvious traps
@@ -223,7 +223,7 @@ learned the hard way in similar systems:
    transitioned (was `MissingBlob`, blob has since landed → drop the
    finding, not the whole run).
 4. **Cooperative cancellation ONLY.** Between batches, poll
-   `background_runs.status`. A `tokio::spawn` abort mid-batch leaks —
+   `recoverable_runs.status`. A `tokio::spawn` abort mid-batch leaks —
    cursor unpersisted, findings half-written. Cancel path writes
    `status='Paused'` + current cursor before returning.
 5. **Crash recovery on boot.** Any `status='Running'` at server start =
@@ -484,7 +484,7 @@ impl ConsistencyRegistry {
 
 ## Admin surface
 
-Consistency runs are ordinary `RecoverableJob`s (see
+Consistency runs are ordinary `RecoverableJobHandler`s (see
 `docs/plan/job-registry.md` Part 2), so most operator actions reach
 them through the shared scheduler surface:
 
@@ -510,7 +510,7 @@ GET    /api/admin/jobs/consistency_{name}/runs/{id}
 ```
 
 Findings enrichment on `runs/{id}` is consistency-specific — read
-from `admin.consistency_findings` and joined into the response.
+from `jobs.run_findings` and joined into the response.
 Everything else is generic Part 2 behaviour.
 
 Production surface — always on, audit-logged. No feature-flag gate.
@@ -528,22 +528,22 @@ Production surface — always on, audit-logged. No feature-flag gate.
 `src/infrastructure/services/consistency/mod.rs`
 - `ConsistencyRegistry` (data structure only).
 - `PgCheckStore` — impl of `CheckStore` reading/writing
-  `admin.background_runs` (filtered to `job_name LIKE 'consistency_%'`)
-  + `admin.consistency_findings`.
+  `jobs.recoverable_runs` (filtered to `job_name LIKE 'consistency_%'`)
+  + `jobs.run_findings`.
 - `run_check(check, cursor, store)` — the runner that calls
   `run_resumable`, applies timeout, records outcome.
 
 ### 2. Schema migration
 
 `migrations/YYYYMMDDHHMMSS_background_runs_admin_schema.sql` — creates
-the merged `admin.background_runs` table shared with the JobRegistry
-plan. Consistency checks own the `admin.consistency_findings` table
-alone and reference `background_runs.id` via FK.
+the merged `jobs.recoverable_runs` table shared with the JobRegistry
+plan. Consistency checks own the `jobs.run_findings` table
+alone and reference `recoverable_runs.id` via FK.
 
 ```sql
 CREATE SCHEMA IF NOT EXISTS admin;
 
-CREATE TABLE admin.background_runs (
+CREATE TABLE jobs.recoverable_runs (
     id                 UUID PRIMARY KEY,
     job_name           TEXT NOT NULL,               -- 'consistency_blobs', 'storage_migration', 'reextract_audio', ...
     status             TEXT NOT NULL,               -- Running / Paused / Completed / Failed / CancelRequested
@@ -556,13 +556,13 @@ CREATE TABLE admin.background_runs (
     error_message      TEXT
 );
 CREATE UNIQUE INDEX one_active_run_per_job
-    ON admin.background_runs (job_name)
+    ON jobs.recoverable_runs (job_name)
     WHERE status IN ('Running', 'Paused');
-CREATE INDEX ON admin.background_runs (last_progress_at) WHERE status = 'Running';
+CREATE INDEX ON jobs.recoverable_runs (last_progress_at) WHERE status = 'Running';
 
-CREATE TABLE admin.consistency_findings (
+CREATE TABLE jobs.run_findings (
     id             UUID PRIMARY KEY,
-    run_id         UUID NOT NULL REFERENCES admin.background_runs(id) ON DELETE CASCADE,
+    run_id         UUID NOT NULL REFERENCES jobs.recoverable_runs(id) ON DELETE CASCADE,
     kind           TEXT NOT NULL,
     severity       TEXT NOT NULL,
     resource_id    TEXT NOT NULL,
@@ -570,7 +570,7 @@ CREATE TABLE admin.consistency_findings (
     found_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (run_id, kind, resource_id)
 );
-CREATE INDEX ON admin.consistency_findings (run_id, severity);
+CREATE INDEX ON jobs.run_findings (run_id, severity);
 ```
 
 ### 3. Supertrait bounds on existing state-owning ports
@@ -631,7 +631,7 @@ Ship this PR without the actual checks. Grep `TODO(consistency)` = punch list.
 `src/interfaces/api/handlers/admin_handler.rs`
 
 - `start_consistency_check(name, force)` — insert an
-  `admin.background_runs` row with `job_name = 'consistency_<name>'`
+  `jobs.recoverable_runs` row with `job_name = 'consistency_<name>'`
   and `status = 'Running'`, spawn a tokio task calling `run_check`,
   return `run_id`. Concurrent triggers hit the partial unique index
   and short-circuit to returning the surviving row.
@@ -651,7 +651,7 @@ In `AppServiceFactory` init, after DB pool is up:
 
 ```rust
 sqlx::query!(
-    "UPDATE admin.background_runs
+    "UPDATE jobs.recoverable_runs
         SET status = 'Paused',
             error_message = COALESCE(error_message, 'server restart mid-run')
       WHERE job_name LIKE 'consistency_%'
@@ -660,7 +660,7 @@ sqlx::query!(
 ```
 
 Filtering on `job_name LIKE 'consistency_%'` scopes the sweep to
-consistency runs; other tenants of `background_runs` (storage
+consistency runs; other tenants of `recoverable_runs` (storage
 migration, reextract-*) run the same auto-Pause sweep from their own
 boot-time hook. The JobRegistry supervisor's boot check may
 generalise this into a single scheduler-wide sweep — until then, one
