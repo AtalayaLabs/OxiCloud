@@ -1304,6 +1304,36 @@ impl AppServiceFactory {
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
         .await;
 
+        // Third recoverable-run tenant. Iterates `storage.files`
+        // and reports parent-folder-trashed cascade misses,
+        // `missing_blob` (data-loss indicator — file references
+        // absent blob row), and `blob_size_mismatch` (denormalised
+        // size drift). One SQL round-trip loads folder + blob via
+        // two LEFT JOINs; per-row branches key off the join
+        // results.
+        let _ = Arc::new(
+            crate::infrastructure::services::files_consistency_service::FilesConsistencyCheck::new(
+                maintenance_pool.clone(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
+        // "Run all consistency checks" coordinator. Plain JobHandler
+        // (not RecoverableJobHandler) — it dispatches, doesn't scan.
+        // MUST register AFTER every `*_consistency` tenant so the
+        // snapshot ordering in `GET /api/admin/jobs` shows children
+        // then wrapper; snapshot filtering happens at run time so
+        // late registration is fine. Weak<JobRegistry> internally
+        // breaks the Arc cycle.
+        let _ = Arc::new(
+            crate::infrastructure::services::consistency_batch_service::ConsistencyBatch::new(
+                &core.job_registry,
+            ),
+        )
+        .register_job(&core.job_registry)
+        .await;
+
         // 2. Repository services (requires PgPool for all metadata)
         let repos = self.create_repository_services(&core, &pool);
 

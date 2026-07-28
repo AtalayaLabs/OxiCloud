@@ -713,13 +713,13 @@ rationale + the merges/separations that fall out of the rule.
 |---|---|---|---|---|
 | `drives_consistency` | `storage.drives` | drive UUID | `used_bytes` drift (drive + user envelope) | Shipped Slice 3. |
 | `folders_consistency` | `storage.folders` | folder UUID | `parent_trashed_mismatch` (live folder under trashed parent), `path_mismatch`, `lpath_mismatch` — both materialised columns compared to parent-chain reconstruction | Shipped Slice 4. Room to grow: `drive_id_parent_mismatch`, `orphan_root` (self-join already loads the fields). |
-| `files_consistency` | `storage.files` | file UUID | parent folder alive, `path` correct, `blob_hash` present in `storage.blobs` | Missing-side of the old bidirectional blob check. |
+| `files_consistency` | `storage.files` | file UUID | `parent_folder_trashed` (live file under trashed folder), `missing_blob` (severity `data_loss` — file's `blob_hash` absent from `storage.blobs`), `blob_size_mismatch` (denormalised `files.size` diverges from `blobs.size`) | Shipped Slice 6. Missing-side of the old bidirectional blob check. `path` sub-check dropped — files carry no materialised path in the post-D7 schema. Room to grow: `drive_id_parent_mismatch`, mime-type reconciliation. |
 | `storage_consistency` | Storage backend (fs / S3) | object key / path | Each blob has a `storage.blobs` row (orphan detection) | `?deep=true` adds re-BLAKE3 + mime sniff. Orphan-side of the old bidirectional blob check + former `blob_integrity` + former `thumbnail_consistency`. |
 | `grants_consistency` (future) | `storage.role_grants` | grant UUID | subject/resource/granted_by exist | |
 | `storage_migration` | `storage.blobs` (source) → target backend | blob hash | Copy bytes; failures → `stats.failed_blobs` (and eventually `jobs.run_findings`) | Retires `Arc<RwLock<MigrationState>>` in `migration_job.rs`. |
 | `reextract_audio` | `storage.files` where audio | file UUID | Re-run audio-tag parser, upsert `audio_metadata` | Retires synchronous admin-request execution. |
 | `reextract_image` | `storage.files` where image/video | file UUID | Re-run EXIF/container date parser, upsert capture date | Same shape as reextract_audio. |
-| `consistency_batch` (wrapper) | Iterates registered `*_consistency` jobs | — (JobHandler, not RecoverableJobHandler) | Sequentially triggers each sub-job; `?deep=true` propagates | One-click "run all" without per-job clicks; exclusivity via `job_name` prevents concurrent batches from stepping on each other. |
+| `consistency_batch` (wrapper) | Iterates registered `*_consistency` jobs | — (JobHandler, not RecoverableJobHandler) | Sequentially triggers each sub-job; `?deep=true` propagates | Shipped Slice 5. One-click "run all" without per-job clicks; exclusivity via `job_name` prevents concurrent batches from stepping on each other. Batch itself always returns `Ok` — child failures land in `outcome.extra.per_check[<name>].outcome`. |
 
 **Not consistency**: `POST /api/admin/dedup/recalculate` is aggregate-
 stats-only (`unique_blobs`, `total_references`, `bytes_saved`) — one
