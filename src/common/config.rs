@@ -1078,15 +1078,6 @@ pub struct FeaturesConfig {
     /// trash/search). OFF by default — opt-in per deployment.
     /// Env: `OXICLOUD_ENABLE_EXTERNAL_MOUNTS`.
     pub enable_external_mounts: bool,
-    /// Expose `/api/admin/internal/*` test-only endpoints that trigger
-    /// background sweeps on demand (storage-usage reconciliation, blob
-    /// GC). Intended for Hurl / integration tests that need to wait
-    /// for these maintenance jobs deterministically rather than
-    /// polling the cached value. Off by default — these endpoints
-    /// short-circuit the operator-visible cadence, so production
-    /// deployments don't want them reachable. Env:
-    /// `OXICLOUD_ENABLE_ADMIN_INTERNAL_ENDPOINTS`.
-    pub enable_admin_internal_endpoints: bool,
     /// Native WebDAV path segment that lists the caller's drives.
     ///
     /// * Default `"@drive"` — bare `/webdav/` addresses the caller's
@@ -1163,10 +1154,6 @@ impl Default for FeaturesConfig {
             expose_system_users: true,     // Expose OxiCloud users as address book by default
             enable_video_thumbnails: true, // Video thumbs via ffmpeg (if detected)
             enable_external_mounts: false, // External mounts — opt-in, off by default
-            // Test-only sweep triggers — strictly opt-in. Production
-            // deployments do NOT need this; the periodic ticker handles
-            // reconciliation transparently.
-            enable_admin_internal_endpoints: false,
             // Back-compat with pre-multi-drive clients — bare `/webdav/`
             // maps to the caller's default drive; drive listing is
             // reachable at `/webdav/@drive/`.
@@ -1865,16 +1852,6 @@ impl AppConfig {
             && let Ok(val) = enable_video_thumbnails
         {
             config.features.enable_video_thumbnails = val;
-        }
-
-        // `/api/admin/internal/*` test-only triggers. Disabled by
-        // default; production deployments never need this. The Hurl
-        // suite flips it on via `OXICLOUD_ENABLE_ADMIN_INTERNAL_ENDPOINTS=true`.
-        if let Ok(enable_internal) =
-            env::var("OXICLOUD_ENABLE_ADMIN_INTERNAL_ENDPOINTS").map(|v| v.parse::<bool>())
-            && let Ok(val) = enable_internal
-        {
-            config.features.enable_admin_internal_endpoints = val;
         }
 
         // Grant-cleanup daemon. Purges rows from `storage.role_grants`

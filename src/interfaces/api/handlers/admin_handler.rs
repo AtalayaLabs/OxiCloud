@@ -24,7 +24,6 @@ use crate::application::dtos::settings_dto::{
 use crate::application::dtos::user_dto::{AdminUserSummaryDto, UserDto};
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::plugin_ports::{LogQuery, PluginManagementPort, PluginMgmtError};
-use crate::application::ports::storage_ports::StorageUsagePort;
 use crate::common::di::AppState;
 use crate::domain::repositories::drive_repository::DriveRepository;
 use crate::domain::services::authorization::{Resource, Subject};
@@ -144,17 +143,12 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         // when `OXICLOUD_SMTP_MOCK` is off, so production deployments
         // can route the path freely without leaking inboxes.
         .route("/smtp/test/captured", get(get_captured_email))
-        // Test-only sweep triggers. Routes are always registered; the
-        // handlers themselves short-circuit to 404 when
-        // `features.enable_admin_internal_endpoints` is off — matches
-        // the `/smtp/test/captured` convention so production
-        // deployments don't need a different route table.
-        .route("/internal/trigger-sweep", post(internal_trigger_sweep))
-        .route("/internal/trigger-gc", post(internal_trigger_gc))
-        .route(
-            "/internal/trigger-grant-cleanup",
-            post(internal_trigger_grant_cleanup),
-        )
+        // JobRegistry admin surface — production, always-on,
+        // audit-logged. See `docs/plan/job-registry.md` §Cross-cutting.
+        // Retired the `/internal/trigger-sweep|gc|grant-cleanup` shims
+        // that used to sit here (Stage 2 of the job-registry rollout).
+        .route("/jobs", get(list_jobs))
+        .route("/jobs/{name}/trigger", post(trigger_job))
         // Drives — admin-wide view (distinct from `/api/drives` which
         // is filtered to the caller's role grants).
         .route("/drives", get(list_all_drives))
@@ -2059,237 +2053,96 @@ pub async fn delete_drive_admin(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// Test-only sweep triggers (`/api/admin/internal/*`)
-//
-// Wraps the periodic background jobs (storage-usage reconciliation,
-// blob garbage collection) behind admin-gated synchronous endpoints
-// so Hurl / integration tests can wait for them deterministically
-// rather than polling the cached value. Disabled at the handler edge
-// when `features.enable_admin_internal_endpoints == false` — match
-// the `/smtp/test/captured` convention so production deployments
-// don't need a different route table.
-// ════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────
+// JobRegistry admin surface (`/api/admin/jobs/*`)
+// ─────────────────────────────────────────────────────
 
-/// Refusal when the test-only endpoints are disabled. Returns 404
-/// rather than 403 to avoid leaking the route's existence (and the
-/// corresponding config flag) to an unauthenticated probe — the
-/// legitimate test runner sets the env explicitly.
-fn internal_endpoints_disabled() -> axum::response::Response {
-    use axum::response::IntoResponse;
-    (
-        StatusCode::NOT_FOUND,
-        Json(serde_json::json!({ "error": "endpoint not available" })),
-    )
-        .into_response()
-}
-
-/// `POST /api/admin/internal/trigger-sweep` — run the storage-usage
-/// reconciliation sweep synchronously.
+/// `GET /api/admin/jobs` — enumerate every registered job with its
+/// interval, next-run/last-run timestamps, and last outcome.
 ///
-/// Test-only. Recomputes `users.storage_used_bytes` and
-/// `drives.used_bytes` from `SUM(size) WHERE NOT is_trashed`, in the
-/// same set-based UPDATEs the periodic ticker runs. Used by Hurl
-/// suites that need to assert post-delete quota convergence without
-/// waiting out the sweep interval (default 600 s).
+/// Production endpoint, always on. Read-only, so no audit line —
+/// the standard admin-middleware auth check is enough.
 #[utoipa::path(
-    post,
-    path = "/api/admin/internal/trigger-sweep",
+    get,
+    path = "/api/admin/jobs",
     responses(
-        (status = 200, description = "Sweep ran"),
+        (status = 200, description = "Jobs listed"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required"),
-        (status = 404, description = "Endpoint disabled (set OXICLOUD_ENABLE_ADMIN_INTERNAL_ENDPOINTS=true)"),
     ),
     security(("bearerAuth" = [])),
     tag = "admin"
 )]
-pub async fn internal_trigger_sweep(
-    State(state): State<Arc<AppState>>,
-) -> axum::response::Response {
-    use axum::response::IntoResponse;
-    if !state.core.config.features.enable_admin_internal_endpoints {
-        return internal_endpoints_disabled();
-    }
-    let svc = match state.storage_usage_service.as_ref() {
-        Some(s) => s,
-        None => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({
-                    "error": "storage_usage_service not available",
-                })),
-            )
-                .into_response();
-        }
-    };
-    // Order matches the periodic ticker (`start_reconciliation_job`):
-    // drive sweep first because the user sweep reads `drives.used_bytes`
-    // (sum-of-personal-drives — `docs/plan/drive.md` §7). Running them
-    // in the other order makes the user counter freeze on the previous
-    // tick's drive numbers — invisible in steady state but breaks any
-    // Hurl that trashes + sweeps within one call.
-    if let Err(e) = svc.update_all_drives_storage_usage().await {
-        return AppError::internal_error(format!("drive sweep failed: {e}")).into_response();
-    }
-    if let Err(e) = svc.update_all_users_storage_usage().await {
-        return AppError::internal_error(format!("user sweep failed: {e}")).into_response();
-    }
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({ "ok": true, "ran": ["drives", "users"] })),
-    )
-        .into_response()
+pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let summary = state.core.job_registry.snapshot().await;
+    (StatusCode::OK, Json(summary)).into_response()
 }
 
-/// Query parameters for `POST /api/admin/internal/trigger-gc`.
+/// Query parameters for `POST /api/admin/jobs/{name}/trigger`.
 ///
-/// `force=true` bypasses the orphan-grace window so the sweep reaps
-/// just-orphaned blobs in the same call. Without this, a blob orphaned
-/// less than `GC_ORPHAN_GRACE_SECS` (1 h) ago survives the sweep — the
-/// grace exists so a concurrent uploader pinning a just-orphaned chunk
-/// can't race the row-delete → file-unlink gap. Integration tests
-/// don't have concurrent uploaders, so the test runner sets
-/// `force=true` to make the sweep deterministic within a test's
-/// runtime.
-#[derive(Debug, serde::Deserialize, Default)]
-pub struct InternalTriggerGcQuery {
+/// `force=true` requests acceleration semantics from handlers that
+/// support it (dedup_gc → grace = 0, grant_cleanup → grace = 0).
+/// Silently ignored by handlers that don't (trash_cleanup,
+/// storage_reconcile).
+#[derive(serde::Deserialize)]
+pub struct TriggerJobQuery {
     #[serde(default)]
     pub force: bool,
 }
 
-/// `POST /api/admin/internal/trigger-gc` — run the blob garbage
-/// collector synchronously.
+/// `POST /api/admin/jobs/{name}/trigger` — dispatch one run off-schedule.
 ///
-/// Test-only. Drops `file_blobs` rows with `ref_count = 0` (subject
-/// to the orphan-grace window) and their on-disk content. Same call
-/// as the inline post-purge GC and the periodic blob-GC sweep — just
-/// exposed under an admin route so Hurl can wait for it
-/// deterministically. Add `?force=true` to bypass the grace window —
-/// see [`InternalTriggerGcQuery`].
+/// Returns the job's `JobOutcome` inline. Idempotent under exclusivity:
+/// if the previous run is still in flight, the handler returns
+/// `Ok { count: 0, extra: { "skipped": "already_running" } }` rather
+/// than spawning a parallel dispatch.
+///
+/// Emits an audit line before dispatch — bulk-mutation side effects on
+/// operator command belong on the audit stream.
 #[utoipa::path(
     post,
-    path = "/api/admin/internal/trigger-gc",
-    params(("force" = Option<bool>, Query, description = "Bypass the orphan-grace window (test-only)")),
+    path = "/api/admin/jobs/{name}/trigger",
+    params(("name" = String, Path, description = "Registered job name")),
     responses(
-        (status = 200, description = "GC ran"),
+        (status = 200, description = "Dispatched; outcome inline"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required"),
-        (status = 404, description = "Endpoint disabled (set OXICLOUD_ENABLE_ADMIN_INTERNAL_ENDPOINTS=true)"),
+        (status = 404, description = "Job not registered"),
     ),
     security(("bearerAuth" = [])),
     tag = "admin"
 )]
-pub async fn internal_trigger_gc(
+pub async fn trigger_job(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<InternalTriggerGcQuery>,
-) -> axum::response::Response {
-    use axum::response::IntoResponse;
-    if !state.core.config.features.enable_admin_internal_endpoints {
-        return internal_endpoints_disabled();
-    }
-    let result = if query.force {
-        state.core.dedup_service.garbage_collect_force().await
-    } else {
-        state.core.dedup_service.garbage_collect().await
-    };
-    match result {
-        Ok((blobs_deleted, bytes_freed)) => (
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<TriggerJobQuery>,
+) -> impl IntoResponse {
+    use crate::infrastructure::scheduler::JobRunArgs;
+    // Audit line BEFORE dispatch so an operator triggering something
+    // that then hangs still leaves a trail.
+    tracing::info!(
+        target: "audit",
+        event = "job.trigger",
+        job = %name,
+        force = query.force,
+        "👮🏻‍♂️ Admin triggered job {} (force={})",
+        name,
+        query.force,
+    );
+    let args = JobRunArgs { force: query.force };
+    match state.core.job_registry.trigger(&name, &args).await {
+        Some(outcome) => (
             StatusCode::OK,
+            Json(serde_json::json!({ "ok": true, "outcome": outcome })),
+        )
+            .into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
             Json(serde_json::json!({
-                "ok": true,
-                "blobs_deleted": blobs_deleted,
-                "bytes_freed": bytes_freed,
-                "forced": query.force,
+                "error": "job not registered",
+                "name": name,
             })),
         )
             .into_response(),
-        Err(e) => AppError::internal_error(format!("gc failed: {e}")).into_response(),
     }
-}
-
-/// Query parameters for `POST /api/admin/internal/trigger-grant-cleanup`.
-///
-/// `force=true` sets the grace window to `0` for this call — deletes
-/// every row whose `expires_at` is in the past, right now. Enables
-/// Hurl regressions to plant a past-dated grant and immediately
-/// observe it purged, without waiting the configured
-/// `OXICLOUD_GRANT_CLEANUP_GRACE_DAYS` out.
-///
-/// Without `force`, the daemon's configured grace applies — the same
-/// SQL the daily loop runs.
-#[derive(Debug, serde::Deserialize, Default)]
-pub struct InternalTriggerGrantCleanupQuery {
-    #[serde(default)]
-    pub force: bool,
-}
-
-/// `POST /api/admin/internal/trigger-grant-cleanup` — run the expired-
-/// grant purge synchronously.
-///
-/// Test-only. Deletes rows from `storage.role_grants` whose
-/// `expires_at` is more than `grace_days` in the past (or immediately,
-/// with `?force=true`). Same SQL as the periodic `GrantCleanupService`
-/// daemon — exposed under an admin route so Hurl can wait for it
-/// deterministically.
-///
-/// Response fields:
-///   `grants_deleted` — count of rows removed by this invocation
-///   `grace_days`    — the grace window that was applied (0 when
-///                     `?force=true`, otherwise the config value)
-///   `forced`        — echoes the query param
-#[utoipa::path(
-    post,
-    path = "/api/admin/internal/trigger-grant-cleanup",
-    params(("force" = Option<bool>, Query, description = "Force grace = 0 for this run (test-only)")),
-    responses(
-        (status = 200, description = "Purge ran"),
-        (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Admin required"),
-        (status = 404, description = "Endpoint disabled (set OXICLOUD_ENABLE_ADMIN_INTERNAL_ENDPOINTS=true)"),
-        (status = 503, description = "Grant-cleanup daemon disabled (OXICLOUD_GRANT_CLEANUP_ENABLED=false)"),
-    ),
-    security(("bearerAuth" = [])),
-    tag = "admin"
-)]
-pub async fn internal_trigger_grant_cleanup(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<InternalTriggerGrantCleanupQuery>,
-) -> axum::response::Response {
-    use axum::response::IntoResponse;
-    if !state.core.config.features.enable_admin_internal_endpoints {
-        return internal_endpoints_disabled();
-    }
-    // Daemon may be disabled by config even when the internal-endpoint
-    // gate is on. Return 503 (rather than 404 or 500) so integration
-    // tests can distinguish "surface not exposed" from "surface
-    // exposed but backing service off".
-    let svc = match state.grant_cleanup_service.as_ref() {
-        Some(s) => s,
-        None => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({
-                    "error": "grant_cleanup_service not available (disabled by OXICLOUD_GRANT_CLEANUP_ENABLED=false)",
-                })),
-            )
-                .into_response();
-        }
-    };
-    // `force=true` collapses the grace window to zero for this run
-    // only — the daemon's configured grace is untouched. Mirrors the
-    // `trigger-gc?force=true` shape.
-    let grace_override = if query.force { Some(0) } else { None };
-    let grants_deleted = svc.purge(grace_override).await;
-    let grace_days = grace_override.unwrap_or_else(|| svc.grace_days());
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "ok": true,
-            "grants_deleted": grants_deleted,
-            "grace_days": grace_days,
-            "forced": query.force,
-        })),
-    )
-        .into_response()
 }

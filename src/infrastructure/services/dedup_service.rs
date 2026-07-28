@@ -2471,15 +2471,15 @@ impl DedupService {
             .await
     }
 
-    /// Test-only variant that bypasses the orphan grace window — used by
-    /// `POST /api/admin/internal/trigger-gc?force=true` so the
+    /// Test-only variant that bypasses the orphan grace window — used
+    /// by `POST /api/admin/jobs/dedup_gc/trigger?force=true` (via the
+    /// `JobRunArgs.force` dispatch in `JobHandler::run`) so the
     /// integration suite can reap just-orphaned blobs synchronously
     /// (waiting out the production 1 h grace inside a test run is a
     /// non-starter). Drops the same rows the regular sweep would, just
     /// without the time floor. Unsafe under concurrent uploads because
     /// it reopens the TOCTOU window the grace closes — only the
-    /// admin-internal route, itself gated by
-    /// `OXICLOUD_ENABLE_ADMIN_INTERNAL_ENDPOINTS`, may reach here.
+    /// admin-triggered `?force=true` path reaches here.
     pub async fn garbage_collect_force(&self) -> Result<(u64, u64), DomainError> {
         self.garbage_collect_with_grace(0).await
     }
@@ -3117,6 +3117,61 @@ impl DedupPort for DedupService {
 
     async fn verify_integrity(&self) -> Result<Vec<String>, DomainError> {
         self.verify_integrity().await
+    }
+}
+
+// ─── JobRegistry integration ────────────────────────────────────────────────
+
+/// Registered name for the dedup GC job. Stable identifier used in
+/// log lines, `admin.background_runs.job_name` (when Part 2 lands),
+/// and admin URLs (`POST /api/admin/jobs/dedup_gc/trigger`).
+pub const DEDUP_GC_JOB_NAME: &str = "dedup_gc";
+
+#[async_trait::async_trait]
+impl crate::infrastructure::scheduler::JobHandler for DedupService {
+    fn name(&self) -> &str {
+        DEDUP_GC_JOB_NAME
+    }
+
+    /// Runs one `garbage_collect` sweep — the same reclamation that
+    /// `TrashCleanupService` invokes inline as its tail step, exposed
+    /// through the scheduler so operators can trigger it uniformly via
+    /// `POST /api/admin/jobs/dedup_gc/trigger`.
+    ///
+    /// Registered with `interval = None` (on-demand only): the periodic
+    /// tick belongs to trash cleanup, whose sweep already runs GC as
+    /// its final phase. Registering a redundant periodic tick here
+    /// would double the reclamation work with no benefit; the admin
+    /// trigger is what the registered entry buys us — uniform log lines,
+    /// panic containment, exclusivity vs. any concurrent trigger.
+    ///
+    /// `count` reports blobs reclaimed; `extra.bytes_reclaimed` reports
+    /// the freed disk. GC returning `(0, 0)` is normal — it means trash
+    /// cleanup already reaped everything.
+    ///
+    /// `args.force = true` skips the orphan grace window
+    /// (`garbage_collect_force` — grace_secs = 0). Same semantic as
+    /// `POST /api/admin/jobs/dedup_gc/trigger?force=true`. Unsafe
+    /// under concurrent uploads: only reachable through the admin
+    /// endpoint and only intentionally used by tests + operator
+    /// diagnostic sessions.
+    async fn run(
+        &self,
+        args: &crate::infrastructure::scheduler::JobRunArgs,
+    ) -> crate::infrastructure::scheduler::JobOutcome {
+        use crate::infrastructure::scheduler::JobOutcome;
+        let result = if args.force {
+            self.garbage_collect_force().await
+        } else {
+            self.garbage_collect().await
+        };
+        match result {
+            Ok((items, bytes)) => JobOutcome::ok_with(
+                items,
+                serde_json::json!({ "bytes_reclaimed": bytes, "forced": args.force }),
+            ),
+            Err(e) => JobOutcome::err(format!("dedup GC failed: {e}")),
+        }
     }
 }
 

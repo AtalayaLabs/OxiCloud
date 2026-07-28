@@ -420,8 +420,13 @@ pub trait StorageUsagePort: Send + Sync + 'static {
         username: &str,
     ) -> Result<i64, DomainError>;
 
-    /// Updates storage usage statistics for all users
-    async fn update_all_users_storage_usage(&self) -> Result<(), DomainError>;
+    /// Reconcile every user's cached `storage_used_bytes` against the
+    /// authoritative `SUM(drives.used_bytes)` over their personal
+    /// drives. Returns the number of user rows the sweep actually
+    /// corrected (`rows_affected` from the `UPDATE … IS DISTINCT
+    /// FROM …`) — used by the periodic-scheduler `JobHandler` to
+    /// populate `JobOutcome::Ok.count`.
+    async fn update_all_users_storage_usage(&self) -> Result<u64, DomainError>;
 
     /// Checks if a user has enough quota for an additional upload.
     /// Returns Ok(()) if the upload is allowed, or Err(QuotaExceeded) with a
@@ -455,7 +460,10 @@ pub trait StorageUsagePort: Send + Sync + 'static {
     /// `GROUP BY drive_id` aggregate, with an `IS DISTINCT FROM`
     /// guard so idle drives don't churn dead tuples. Runs from the
     /// same reconciliation ticker.
-    async fn update_all_drives_storage_usage(&self) -> Result<(), DomainError>;
+    ///
+    /// Returns the number of drive rows actually corrected — used by
+    /// the periodic-scheduler `JobHandler` to populate `JobOutcome::Ok.count`.
+    async fn update_all_drives_storage_usage(&self) -> Result<u64, DomainError>;
 
     /// Pre-upload quota check on a single drive.
     ///

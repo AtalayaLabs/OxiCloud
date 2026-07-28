@@ -39,6 +39,7 @@ use crate::infrastructure::repositories::pg::{
     FileBlobReadRepository, FileBlobWriteRepository, FileMetadataRepository, FolderDbRepository,
     TrashDbRepository,
 };
+use crate::infrastructure::scheduler::{JobRegistry, SchedulerEngine};
 use crate::infrastructure::services::file_content_cache::{
     FileContentCache, FileContentCacheConfig,
 };
@@ -429,6 +430,12 @@ impl AppServiceFactory {
         }
         let file_lifecycle = Arc::new(fls);
 
+        // Empty periodic-job registry; services register themselves
+        // downstream during their own creation. `SchedulerEngine::start`
+        // fires at the end of `build_app_state` once all registrations
+        // have landed.
+        let job_registry = Arc::new(JobRegistry::new());
+
         Ok(CoreServices {
             path_service,
             file_content_cache,
@@ -441,6 +448,7 @@ impl AppServiceFactory {
             dedup_service,
             zip_service: None, // Placeholder - replaced after app services init
             config: self.config.clone(),
+            job_registry,
         })
     }
 
@@ -865,14 +873,32 @@ impl AppServiceFactory {
         // Initialize cleanup service (bulk-deletes expired items in 2 SQL
         // queries, then GCs zero-reference blobs — including chunks orphaned
         // by aborted streaming uploads).
-        let cleanup_service = TrashCleanupService::new(
+        //
+        // Registers with the periodic-job scheduler
+        // (`docs/plan/job-registry.md` Part 1) instead of spawning its own
+        // tokio interval loop. `SchedulerEngine::start` fires the actual
+        // supervisor task at the end of `build_app_state`.
+        let cleanup_service = Arc::new(TrashCleanupService::new(
             trash_repo.clone(),
             core.dedup_service.clone(),
             24, // Run cleanup every 24 hours
-        );
-
-        cleanup_service.start_cleanup_job().await;
-        tracing::info!("Trash service initialized with daily cleanup schedule");
+        ));
+        let interval = cleanup_service.interval();
+        if let Err(e) = core
+            .job_registry
+            .register(cleanup_service.clone(), Some(interval), None)
+            .await
+        {
+            // Duplicate registration is the only failure mode today and
+            // shouldn't happen in the normal DI flow. Log + continue so
+            // trash service still lands even if scheduling didn't.
+            tracing::error!("Failed to register trash_cleanup job with scheduler: {e}");
+        } else {
+            tracing::info!(
+                "Trash cleanup registered with scheduler (interval {} h)",
+                interval.as_secs() / 3600
+            );
+        }
 
         Some(service as Arc<TrashService>)
     }
@@ -1078,12 +1104,16 @@ impl AppServiceFactory {
     ///
     /// Uses the `maintenance_pool` for batch operations
     /// (`update_all_users_storage_usage`) to avoid starving user requests.
-    pub fn create_storage_usage_service(
+    ///
+    /// Note: this is `async` (unlike the pre-migration version) because
+    /// registration with `core.job_registry` requires an `await`.
+    pub async fn create_storage_usage_service(
         &self,
         _repos: &RepositoryServices,
         db_pool: &Arc<PgPool>,
         maintenance_pool: &Arc<PgPool>,
         drive_repo: Arc<crate::infrastructure::repositories::pg::DrivePgRepository>,
+        core: &CoreServices,
     ) -> Arc<StorageUsageService> {
         let user_repository = Arc::new(
             crate::infrastructure::repositories::pg::UserPgRepository::new(db_pool.clone()),
@@ -1105,11 +1135,26 @@ impl AppServiceFactory {
                     as Arc<dyn crate::domain::repositories::drive_repository::DriveRepository>,
             ),
         );
-        // Keep cached storage usage fresh off the request path: GET /api/auth/me
-        // no longer recomputes the O(N) SUM per call; a periodic sweep does it
-        // instead (on the maintenance pool).
-        service.start_reconciliation_job(self.config.storage.usage_reconcile_secs);
-        tracing::info!("Storage usage service initialized");
+        // Keep cached storage usage fresh off the request path: GET
+        // /api/auth/me no longer recomputes the O(N) SUM per call; a
+        // periodic sweep does it instead (on the maintenance pool).
+        // Registered with the periodic-job scheduler
+        // (`docs/plan/job-registry.md` Part 1); the retired
+        // `start_reconciliation_job` used to spawn its own interval loop.
+        let interval =
+            StorageUsageService::reconciliation_interval(self.config.storage.usage_reconcile_secs);
+        if let Err(e) = core
+            .job_registry
+            .register(service.clone(), Some(interval), None)
+            .await
+        {
+            tracing::error!("Failed to register storage_reconcile job: {e}");
+        } else {
+            tracing::info!(
+                "Storage-usage reconciliation registered with scheduler (interval {}s)",
+                interval.as_secs()
+            );
+        }
         service
     }
 
@@ -1231,6 +1276,26 @@ impl AppServiceFactory {
         // 1. Core services (PgPool needed for DedupService index)
         let core = self.create_core_services(&pool, &maintenance_pool).await?;
 
+        // Register on-demand-only jobs whose owning service lives on
+        // CoreServices. Dedup GC has NO periodic tick — trash cleanup's
+        // sweep already runs GC as its tail step, so a periodic dedup
+        // schedule would double the work. Registering with `interval =
+        // None` keeps it admin-triggerable through the uniform scheduler
+        // surface (`POST /api/admin/jobs/dedup_gc/trigger`).
+        if let Err(e) = core
+            .job_registry
+            .register(
+                core.dedup_service.clone() as Arc<dyn crate::infrastructure::scheduler::JobHandler>,
+                None, // on-demand only
+                None, // no timeout
+            )
+            .await
+        {
+            tracing::error!("Failed to register dedup_gc job with scheduler: {e}");
+        } else {
+            tracing::info!("Dedup GC registered with scheduler (on-demand only)");
+        }
+
         // 2. Repository services (requires PgPool for all metadata)
         let repos = self.create_repository_services(&core, &pool);
 
@@ -1289,8 +1354,15 @@ impl AppServiceFactory {
         // 3c. Storage usage / quota service (needed by the instant-upload
         // path inside the application services, and re-exposed on AppState
         // for the handler-side quota checks of the byte-upload paths).
-        let storage_usage =
-            self.create_storage_usage_service(&repos, &pool, &maintenance_pool, drive_repo.clone());
+        let storage_usage = self
+            .create_storage_usage_service(
+                &repos,
+                &pool,
+                &maintenance_pool,
+                drive_repo.clone(),
+                &core,
+            )
+            .await;
 
         // 3d. Content index (embedded Tantivy) — opened before application
         // services so SearchService can hold the query port; the feeding
@@ -1419,9 +1491,25 @@ impl AppServiceFactory {
                         core.config.features.grant_cleanup.interval_hours,
                     ),
                 );
-                // First tick fires immediately inside start_cleanup_job —
-                // matches the trash/storage-usage daemon shape.
-                svc.clone().start_cleanup_job().await;
+                // Registered with the periodic-job scheduler
+                // (`docs/plan/job-registry.md` Part 1); the retired
+                // `start_cleanup_job` used to spawn its own interval loop.
+                // Admin `?force=true` trigger still calls `svc.purge(Some(0))`
+                // directly — grace override doesn't fit the JobHandler shape.
+                let interval = svc.interval();
+                if let Err(e) = core
+                    .job_registry
+                    .register(svc.clone(), Some(interval), None)
+                    .await
+                {
+                    tracing::error!("Failed to register grant_cleanup job: {e}");
+                } else {
+                    tracing::info!(
+                        "Grant cleanup registered with scheduler (every {}h, grace = {}d)",
+                        interval.as_secs() / 3600,
+                        core.config.features.grant_cleanup.grace_days,
+                    );
+                }
                 Some(svc)
             } else {
                 tracing::info!(
@@ -1805,6 +1893,11 @@ impl AppServiceFactory {
                     50_000,
                 ),
             ),
+            // Populated below once every service has finished registering
+            // with `core.job_registry`. Starting the engine before all
+            // registrations land would race the first tick against
+            // late-registered jobs.
+            scheduler_engine: None,
         };
         let email_bundle = build_email_sender(&self.config.smtp);
         app_state.email_sender = email_bundle.sender;
@@ -2079,6 +2172,21 @@ impl AppServiceFactory {
             }
         }
 
+        // Start the periodic-job scheduler AFTER every native service has
+        // finished registering its jobs on `core.job_registry`. Starting
+        // it earlier would race the first tick against late registrations.
+        // See `docs/plan/job-registry.md` Part 1.
+        let registered = app_state.core.job_registry.len().await;
+        let engine = SchedulerEngine::start(app_state.core.job_registry.clone());
+        app_state.scheduler_engine = Some(Arc::new(engine));
+        tracing::info!(
+            target: "oxicloud::scheduler",
+            event = "scheduler.ready",
+            registered = registered,
+            "periodic scheduler ready ({} job(s) registered)",
+            registered
+        );
+
         Ok(app_state)
     }
 }
@@ -2099,6 +2207,11 @@ pub struct CoreServices {
     pub dedup_service: Arc<DedupService>,
     pub zip_service: Option<Arc<ZipService>>,
     pub config: AppConfig,
+    /// Periodic-job scheduler registry. Services that satisfy the
+    /// migration criterion (`docs/plan/job-registry.md`) `register()`
+    /// themselves here during their creation; `SchedulerEngine::start`
+    /// spins up the supervisor loop at the end of `build_app_state`.
+    pub job_registry: Arc<JobRegistry>,
 }
 
 /// Container for repository services
@@ -2196,11 +2309,12 @@ pub struct AppState {
     pub places_service: Option<Arc<PlacesService>>,
     pub people_service: Option<Arc<PeopleService>>,
     pub storage_usage_service: Option<Arc<StorageUsageService>>,
-    /// Handle to the background daemon that purges expired
-    /// `storage.role_grants` rows. `None` when the daemon is disabled
-    /// via `OXICLOUD_GRANT_CLEANUP_ENABLED=false`. The admin
-    /// `POST /api/admin/internal/trigger-grant-cleanup` handler uses
-    /// this to invoke the purge on demand (test-only).
+    /// Handle to the service that purges expired `storage.role_grants`
+    /// rows. Registered with the periodic-job scheduler on the
+    /// configured cadence; `None` when disabled via
+    /// `OXICLOUD_GRANT_CLEANUP_ENABLED=false`. Exposed on `AppState`
+    /// so the admin trigger endpoint can invoke `purge(Some(0))` for
+    /// the `?force=true` grace-override path.
     pub grant_cleanup_service: Option<
         Arc<crate::infrastructure::services::grant_cleanup_service::GrantCleanupService>,
     >,
@@ -2305,6 +2419,14 @@ pub struct AppState {
     /// Authenticated callers bypass this limit.
     pub magic_link_send_per_ip_rate_limiter:
         Arc<crate::interfaces::middleware::rate_limit::RateLimiter>,
+    /// Handle to the periodic-job scheduler's supervisor task, spawned
+    /// at the end of `build_app_state` after every native service has
+    /// registered its jobs on `core.job_registry`. `Option` because
+    /// tests that assemble a partial `AppState` (no full DI) skip the
+    /// scheduler; production always populates it. Held here purely so
+    /// the tokio task isn't dropped — the supervisor loop runs off its
+    /// internal `JoinHandle`, not off this reference.
+    pub scheduler_engine: Option<Arc<SchedulerEngine>>,
 }
 
 // All AppState construction is done via struct literal in build_app_state().
