@@ -6,7 +6,7 @@ use tracing::{debug, error, info, instrument};
 use crate::common::errors::Result;
 use crate::domain::repositories::trash_repository::TrashRepository;
 use crate::infrastructure::repositories::pg::trash_db_repository::TrashDbRepository;
-use crate::infrastructure::scheduler::{JobHandler, JobOutcome, JobRunArgs};
+use crate::infrastructure::scheduler::{JobHandler, JobOutcome, JobRegistry, JobRunArgs};
 use crate::infrastructure::services::dedup_service::DedupService;
 use async_trait::async_trait;
 
@@ -43,10 +43,29 @@ impl TrashCleanupService {
         }
     }
 
-    /// Registered interval as a `Duration` — helper for DI wiring so
-    /// the composition root doesn't reinvent the `hours × 3600` cast.
+    /// Registered interval as a `Duration`. Internal helper used by
+    /// [`Self::register`]; kept `pub` in case a test wants to assert
+    /// the clamped value.
     pub fn interval(&self) -> Duration {
         Duration::from_secs(self.cleanup_interval_hours * 3600)
+    }
+
+    /// Register self with the periodic-job scheduler and return the
+    /// same `Arc<Self>` for DI-style method chaining:
+    ///
+    /// ```ignore
+    /// let svc = Arc::new(TrashCleanupService::new(...))
+    ///     .register(&core.job_registry)
+    ///     .await;
+    /// ```
+    ///
+    /// Scheduled tenant — interval reads from
+    /// `self.cleanup_interval_hours`, no timeout. See
+    /// `docs/plan/job-registry.md` Part 1 §Contract.
+    pub async fn register(self: Arc<Self>, registry: &JobRegistry) -> Arc<Self> {
+        let interval = self.interval();
+        registry.register(self.clone(), Some(interval), None).await;
+        self
     }
 
     /// Starts the periodic cleanup job

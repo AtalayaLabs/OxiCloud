@@ -3127,6 +3127,29 @@ impl DedupPort for DedupService {
 /// and admin URLs (`POST /api/admin/jobs/dedup_gc/trigger`).
 pub const DEDUP_GC_JOB_NAME: &str = "dedup_gc";
 
+impl DedupService {
+    /// Register self with the periodic-job scheduler and return the
+    /// same `Arc<Self>` for DI-style chaining. **On-demand only** —
+    /// registered with `interval = None`. The periodic GC role
+    /// belongs to trash cleanup (which invokes `garbage_collect()`
+    /// inline as its tail step); a duplicate scheduled tick here
+    /// would double the reclamation work. Registration exists solely
+    /// to expose the admin trigger uniformly.
+    pub async fn register(
+        self: std::sync::Arc<Self>,
+        registry: &crate::infrastructure::scheduler::JobRegistry,
+    ) -> std::sync::Arc<Self> {
+        registry
+            .register(
+                self.clone() as std::sync::Arc<dyn crate::infrastructure::scheduler::JobHandler>,
+                None, // on-demand
+                None, // no timeout
+            )
+            .await;
+        self
+    }
+}
+
 #[async_trait::async_trait]
 impl crate::infrastructure::scheduler::JobHandler for DedupService {
     fn name(&self) -> &str {

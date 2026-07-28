@@ -878,27 +878,18 @@ impl AppServiceFactory {
         // (`docs/plan/job-registry.md` Part 1) instead of spawning its own
         // tokio interval loop. `SchedulerEngine::start` fires the actual
         // supervisor task at the end of `build_app_state`.
-        let cleanup_service = Arc::new(TrashCleanupService::new(
+        // Self-registering constructor chain — TrashCleanupService owns
+        // its interval + timeout shape; DI only supplies deps.
+        // `.register(&reg)` fires the uniform `job.registered` log line
+        // and panics on wiring error (duplicate name = boot must fail
+        // loud). See `docs/plan/job-registry.md` Part 1.
+        let _ = Arc::new(TrashCleanupService::new(
             trash_repo.clone(),
             core.dedup_service.clone(),
             24, // Run cleanup every 24 hours
-        ));
-        let interval = cleanup_service.interval();
-        if let Err(e) = core
-            .job_registry
-            .register(cleanup_service.clone(), Some(interval), None)
-            .await
-        {
-            // Duplicate registration is the only failure mode today and
-            // shouldn't happen in the normal DI flow. Log + continue so
-            // trash service still lands even if scheduling didn't.
-            tracing::error!("Failed to register trash_cleanup job with scheduler: {e}");
-        } else {
-            tracing::info!(
-                "Trash cleanup registered with scheduler (interval {} h)",
-                interval.as_secs() / 3600
-            );
-        }
+        ))
+        .register(&core.job_registry)
+        .await;
 
         Some(service as Arc<TrashService>)
     }
@@ -1125,7 +1116,12 @@ impl AppServiceFactory {
         // and invalidation would be a no-op observed by nobody —
         // this is the trap that regressed the used_bytes freshness
         // after perf commit `12dc648c`.
-        let service = Arc::new(
+        // Keep cached storage usage fresh off the request path: GET
+        // /api/auth/me no longer recomputes the O(N) SUM per call; a
+        // periodic sweep does it instead (on the maintenance pool).
+        // Self-registering constructor chain — StorageUsageService owns
+        // its interval-clamping via `Self::reconciliation_interval`.
+        Arc::new(
             crate::application::services::storage_usage_service::StorageUsageService::new(
                 maintenance_pool.clone(),
                 user_repository,
@@ -1134,28 +1130,9 @@ impl AppServiceFactory {
                 drive_repo
                     as Arc<dyn crate::domain::repositories::drive_repository::DriveRepository>,
             ),
-        );
-        // Keep cached storage usage fresh off the request path: GET
-        // /api/auth/me no longer recomputes the O(N) SUM per call; a
-        // periodic sweep does it instead (on the maintenance pool).
-        // Registered with the periodic-job scheduler
-        // (`docs/plan/job-registry.md` Part 1); the retired
-        // `start_reconciliation_job` used to spawn its own interval loop.
-        let interval =
-            StorageUsageService::reconciliation_interval(self.config.storage.usage_reconcile_secs);
-        if let Err(e) = core
-            .job_registry
-            .register(service.clone(), Some(interval), None)
-            .await
-        {
-            tracing::error!("Failed to register storage_reconcile job: {e}");
-        } else {
-            tracing::info!(
-                "Storage-usage reconciliation registered with scheduler (interval {}s)",
-                interval.as_secs()
-            );
-        }
-        service
+        )
+        .register(&core.job_registry, self.config.storage.usage_reconcile_secs)
+        .await
     }
 
     /// Starts the tree-ETag flush job (requires database).
@@ -1279,22 +1256,13 @@ impl AppServiceFactory {
         // Register on-demand-only jobs whose owning service lives on
         // CoreServices. Dedup GC has NO periodic tick — trash cleanup's
         // sweep already runs GC as its tail step, so a periodic dedup
-        // schedule would double the work. Registering with `interval =
-        // None` keeps it admin-triggerable through the uniform scheduler
-        // surface (`POST /api/admin/jobs/dedup_gc/trigger`).
-        if let Err(e) = core
-            .job_registry
-            .register(
-                core.dedup_service.clone() as Arc<dyn crate::infrastructure::scheduler::JobHandler>,
-                None, // on-demand only
-                None, // no timeout
-            )
-            .await
-        {
-            tracing::error!("Failed to register dedup_gc job with scheduler: {e}");
-        } else {
-            tracing::info!("Dedup GC registered with scheduler (on-demand only)");
-        }
+        // schedule would double the work. The `register()` method
+        // encapsulates the on-demand shape.
+        let _ = core
+            .dedup_service
+            .clone()
+            .register(&core.job_registry)
+            .await;
 
         // 2. Repository services (requires PgPool for all metadata)
         let repos = self.create_repository_services(&core, &pool);
@@ -1484,32 +1452,18 @@ impl AppServiceFactory {
             self.start_content_index_job(&maintenance_pool, &core, content_index);
 
             grant_cleanup_service = if core.config.features.grant_cleanup.enabled {
+                // Self-registering constructor chain. Grant-cleanup owns
+                // its interval + on `?force=true` handling; DI only decides
+                // whether to instantiate at all (feature-gated).
                 let svc = Arc::new(
                     crate::infrastructure::services::grant_cleanup_service::GrantCleanupService::new(
                         authorization.clone(),
                         core.config.features.grant_cleanup.grace_days,
                         core.config.features.grant_cleanup.interval_hours,
                     ),
-                );
-                // Registered with the periodic-job scheduler
-                // (`docs/plan/job-registry.md` Part 1); the retired
-                // `start_cleanup_job` used to spawn its own interval loop.
-                // Admin `?force=true` trigger still calls `svc.purge(Some(0))`
-                // directly — grace override doesn't fit the JobHandler shape.
-                let interval = svc.interval();
-                if let Err(e) = core
-                    .job_registry
-                    .register(svc.clone(), Some(interval), None)
-                    .await
-                {
-                    tracing::error!("Failed to register grant_cleanup job: {e}");
-                } else {
-                    tracing::info!(
-                        "Grant cleanup registered with scheduler (every {}h, grace = {}d)",
-                        interval.as_secs() / 3600,
-                        core.config.features.grant_cleanup.grace_days,
-                    );
-                }
+                )
+                .register(&core.job_registry)
+                .await;
                 Some(svc)
             } else {
                 tracing::info!(

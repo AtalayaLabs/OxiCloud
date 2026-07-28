@@ -792,24 +792,24 @@ the old fields needs updating.
 
 ### Config surface — env vars
 
-Canonical form for every job (Part 1 or Part 2 alike, AND for core
-workers even though they don't register with the scheduler):
+**No new convention.** Each service keeps its natural per-service
+prefix (`OXICLOUD_GRANT_CLEANUP_*`, `OXICLOUD_STORAGE_USAGE_*`, …).
+The `GET /api/admin/jobs` endpoint already gives operators a runtime
+view of every registered job's interval, so grepping env-var prefixes
+is no longer the primary discovery path.
 
-```
-OXICLOUD_JOB_<NAME>_ENABLED
-OXICLOUD_JOB_<NAME>_INTERVAL_HOURS   # or _INTERVAL_SECS for sub-hour cadences
-OXICLOUD_JOB_<NAME>_<CUSTOM>...      # e.g. _GRACE_HOURS, _BATCH_SIZE
-```
+Earlier drafts proposed a uniform `OXICLOUD_JOB_<NAME>_INTERVAL_*`
+convention, with legacy names as warned aliases. Killed 2026-07-28
+(Ed): normalising only the interval knob while leaving domain-specific
+tunables (`GRACE_DAYS`, `BATCH_SIZE`, …) at the natural prefix creates
+*intra-service* prefix drift — worse than the *cross-service* drift it
+was meant to solve. A service either goes fully to `OXICLOUD_JOB_*`
+(disruptive rename of every knob) or fully stays at its native prefix
+(no rename). We stay.
 
-Core workers reuse this naming purely for uniform operator ergonomics
-(e.g. `OXICLOUD_JOB_TREE_ETAG_FLUSH_INTERVAL_MS`) — the convention is
-what operators grep for; whether the loop is scheduler-driven or a
-dedicated `tokio::spawn` is an implementation detail they don't see.
-
-Existing per-service env vars keep working as **aliases** during
-migration — `OXICLOUD_GRANT_CLEANUP_INTERVAL_HOURS` reads first, falls
-back to `OXICLOUD_JOB_GRANT_CLEANUP_INTERVAL_HOURS`. Deprecated aliases
-warn once on startup and stay recognised through one minor version.
+The one real gap is **trash_cleanup has no env var today** (hardcoded
+24h in DI). Adding `OXICLOUD_TRASH_CLEANUP_INTERVAL_HOURS` when we
+need it uses the natural prefix — no new convention needed.
 
 ### Logging schema
 

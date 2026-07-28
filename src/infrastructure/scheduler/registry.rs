@@ -69,10 +69,7 @@ impl JobRegistry {
         }
     }
 
-    /// Register a job. Returns an error if a job with the same name
-    /// is already registered — names are the primary identifier
-    /// everywhere (logs, admin URLs, env vars) and collisions would
-    /// hide bugs.
+    /// Register a job — production wiring path.
     ///
     /// - `interval = Some(dur)` → **scheduled**. The supervisor fires
     ///   the job every `dur`, starting `now + dur`. Registration does
@@ -83,7 +80,57 @@ impl JobRegistry {
     ///   fires this job. Admin endpoint (or programmatic callers) can
     ///   still invoke it via [`JobRegistry::trigger`] — the dispatch
     ///   goes through the same panic/timeout/exclusivity gates.
+    ///
+    /// **Panics on error.** Registration failure (duplicate name today)
+    /// is a DI-wiring bug — the server must not start with a mis-wired
+    /// scheduler. Emits a uniform `job.registered` log line on success
+    /// so callers don't reinvent the log message at every site.
+    ///
+    /// For unit tests that need to assert the error path use
+    /// [`Self::try_register`] instead.
     pub async fn register(
+        &self,
+        handler: Arc<dyn JobHandler>,
+        interval: Option<Duration>,
+        timeout: Option<Duration>,
+    ) {
+        let name = handler.name().to_string();
+        match self.try_register(handler, interval, timeout).await {
+            Ok(()) => {
+                let cadence = match interval {
+                    Some(dur) => {
+                        let secs = dur.as_secs();
+                        if secs % 3600 == 0 {
+                            format!("every {} h", secs / 3600)
+                        } else if secs % 60 == 0 {
+                            format!("every {} min", secs / 60)
+                        } else {
+                            format!("every {} s", secs)
+                        }
+                    }
+                    None => "on-demand".to_string(),
+                };
+                tracing::info!(
+                    target: "oxicloud::scheduler",
+                    event = "job.registered",
+                    job = %name,
+                    cadence = %cadence,
+                    "job {} registered ({})",
+                    name,
+                    cadence,
+                );
+            }
+            Err(e) => panic!(
+                "JobRegistry::register({name}) failed — DI wiring bug: {e}"
+            ),
+        }
+    }
+
+    /// Fallible sibling of [`Self::register`]. Returns `Err` on
+    /// duplicate-name instead of panicking, and does NOT emit the
+    /// `job.registered` log line — for unit tests that need to
+    /// assert failure without triggering the boot panic path.
+    pub async fn try_register(
         &self,
         handler: Arc<dyn JobHandler>,
         interval: Option<Duration>,
@@ -286,11 +333,9 @@ mod tests {
     async fn register_and_pick_next() {
         let reg = JobRegistry::new();
         reg.register(handler("job_a"), Some(Duration::from_secs(60)), None)
-            .await
-            .unwrap();
+            .await;
         reg.register(handler("job_b"), Some(Duration::from_secs(10)), None)
-            .await
-            .unwrap();
+            .await;
 
         let (next_name, _) = reg.pick_next().await.expect("expected a due job");
         // job_b has the shorter interval → earlier next_run_at.
@@ -300,14 +345,28 @@ mod tests {
     #[tokio::test]
     async fn duplicate_registration_rejected() {
         let reg = JobRegistry::new();
-        reg.register(handler("job_x"), Some(Duration::from_secs(60)), None)
+        // Use the fallible `try_register` here so we can assert the
+        // Err path without triggering `register`'s boot-time panic.
+        reg.try_register(handler("job_x"), Some(Duration::from_secs(60)), None)
             .await
             .unwrap();
         let err = reg
-            .register(handler("job_x"), Some(Duration::from_secs(60)), None)
+            .try_register(handler("job_x"), Some(Duration::from_secs(60)), None)
             .await
             .expect_err("duplicate name must be rejected");
         assert!(matches!(err, RegisterError::DuplicateName(_)));
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "DI wiring bug")]
+    async fn register_panics_on_duplicate() {
+        let reg = JobRegistry::new();
+        reg.register(handler("job_dup"), Some(Duration::from_secs(60)), None)
+            .await;
+        // Second register with same name — boot panic. Anything doing
+        // this outside a #[should_panic] test is a mis-wired DI.
+        reg.register(handler("job_dup"), Some(Duration::from_secs(60)), None)
+            .await;
     }
 
     #[tokio::test]
@@ -320,11 +379,9 @@ mod tests {
     async fn snapshot_all_returns_every_entry() {
         let reg = JobRegistry::new();
         reg.register(handler("a"), Some(Duration::from_secs(1)), None)
-            .await
-            .unwrap();
+            .await;
         reg.register(handler("b"), Some(Duration::from_secs(1)), None)
-            .await
-            .unwrap();
+            .await;
         let all = reg.snapshot_all().await;
         assert_eq!(all.len(), 2);
     }
@@ -334,12 +391,9 @@ mod tests {
         let reg = JobRegistry::new();
         // Scheduled job with a long interval.
         reg.register(handler("scheduled"), Some(Duration::from_secs(3600)), None)
-            .await
-            .unwrap();
+            .await;
         // On-demand job — supervisor must never pick it.
-        reg.register(handler("on_demand"), None, None)
-            .await
-            .unwrap();
+        reg.register(handler("on_demand"), None, None).await;
 
         let (next_name, _) = reg.pick_next().await.expect("scheduled job due");
         assert_eq!(
@@ -351,7 +405,7 @@ mod tests {
     #[tokio::test]
     async fn trigger_dispatches_on_demand_job() {
         let reg = Arc::new(JobRegistry::new());
-        reg.register(handler("gc"), None, None).await.unwrap();
+        reg.register(handler("gc"), None, None).await;
 
         let outcome = reg
             .trigger("gc", &JobRunArgs::default())
