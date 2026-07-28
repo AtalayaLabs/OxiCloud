@@ -172,6 +172,7 @@ export default defineConfig({
             { text: "User lifecycle", link: "/architecture/user-lifecycle" },
             { text: "Authentication model", link: "/architecture/auth-model" },
             { text: "Magic-link auth", link: "/architecture/magic-link-auth" },
+            { text: "Background jobs", link: "/architecture/jobs" },
           ],
         },
         { text: "FAQ", link: "/faq" },
