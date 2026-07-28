@@ -5,6 +5,7 @@ pub mod chunked_upload_service;
 pub mod compression_service;
 pub mod db_pool_monitor;
 pub mod dedup_service;
+pub mod drives_consistency_service;
 pub mod encrypted_blob_backend;
 pub mod exif_service;
 pub mod face_geometry;

@@ -1274,6 +1274,21 @@ impl AppServiceFactory {
             .register(&core.job_registry)
             .await;
 
+        // First recoverable-run tenant (`docs/plan/job-registry.md`
+        // Part 2). Iterates `storage.drives` and reports each drive
+        // whose cached `used_bytes` differs from `SUM(files.size)`.
+        // On-demand only — read-only diagnostic, not periodic.
+        // Runs on the maintenance pool alongside the other sweeps.
+        let job_store_provider_dyn: Arc<dyn crate::infrastructure::scheduler::JobStoreProvider> =
+            core.job_store_provider.clone();
+        let _ = Arc::new(
+            crate::infrastructure::services::drives_consistency_service::DrivesConsistencyCheck::new(
+                maintenance_pool.clone(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
         // 2. Repository services (requires PgPool for all metadata)
         let repos = self.create_repository_services(&core, &pool);
 

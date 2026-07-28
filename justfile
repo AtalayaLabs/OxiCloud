@@ -71,14 +71,14 @@ coverage-integration filter='mount':
 # of this file would otherwise leak in) cannot point the tests at the
 # real dev DB. The test pool helpers also refuse non-`oxicloud_test`
 # URLs as defence in depth.
-test-integration:
+test-integration filter='':
     bash tests/common/spawn-db.sh
     PGHOST=localhost PGPORT=5433 PGUSER=oxicloud_test PGPASSWORD=oxicloud_test \
       PGDATABASE=oxicloud_test \
       bash tests/common/init-test-schema.sh
     DATABASE_URL='postgres://oxicloud_test:oxicloud_test@localhost:5433/oxicloud_test' \
       RUSTFLAGS='--cfg integration_tests' \
-      cargo test --workspace --tests
+      cargo test --workspace --tests {{filter}}
     bash tests/common/stop-db.sh
 
 test-one name:

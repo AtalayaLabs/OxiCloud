@@ -462,12 +462,23 @@ impl PgJobStoreProvider {
                 // second INSERT; on conflict we retry.
                 let run_id = Uuid::new_v4();
                 let now = Utc::now();
+                // ON CONFLICT here infers the partial unique index by
+                // matching `(job_name)` + the WHERE predicate that
+                // matches `one_active_run_per_job`. We cannot use
+                // `ON CONFLICT ON CONSTRAINT one_active_run_per_job`
+                // because `CREATE UNIQUE INDEX` produces an index, not
+                // a named constraint from PG's perspective; that
+                // syntax is reserved for `ALTER TABLE ... ADD CONSTRAINT
+                // UNIQUE`. Inference form is equivalent and works with
+                // partial indexes.
                 let result = sqlx::query(
                     r#"
                     INSERT INTO jobs.recoverable_runs
                         (id, job_name, status, started_at, last_progress_at)
                     VALUES ($1, $2, 'Running', $3, $3)
-                    ON CONFLICT ON CONSTRAINT one_active_run_per_job DO NOTHING
+                    ON CONFLICT (job_name)
+                        WHERE status IN ('Running', 'Paused', 'CancelRequested')
+                        DO NOTHING
                     "#,
                 )
                 .bind(run_id)

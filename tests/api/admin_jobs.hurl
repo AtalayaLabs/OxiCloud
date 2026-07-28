@@ -89,7 +89,12 @@ jsonpath "$..interval_ms" contains 600000
 jsonpath "$..interval_ms" count == 3
 
 # Every entry carries a `running` bool — same aggregate primitive.
-jsonpath "$..running" count == 4
+# Count matches the registered-tenant count: 4 Part 1 periodics
+# (trash_cleanup, storage_reconcile, dedup_gc, grant_cleanup) + 1
+# Part 2 recoverable (drives_consistency, wrapped by RecoverableAdapter
+# so it appears here alongside the periodics). Bump when a new
+# tenant registers.
+jsonpath "$..running" count == 5
 
 
 # ─────────────────────────────────────────────────────────────

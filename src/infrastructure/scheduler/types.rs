@@ -25,9 +25,19 @@ use serde::{Deserialize, Serialize};
 /// - `dedup_gc` — skip the orphan grace window (grace = 0).
 /// - `grant_cleanup` — grace = 0.
 /// - Others (trash_cleanup, storage_reconcile, …) — ignored.
+///
+/// Semantics of `deep`, per job:
+/// - `consistency_batch` — propagate to sub-jobs; only `storage_consistency`
+///   currently respects it. Wraps the "run all consistency checks
+///   including the slow ones" case behind the same job_name lock as
+///   the normal batch (Ed's Option B, 2026-07-29).
+/// - `storage_consistency` (future) — enables per-blob re-BLAKE3 (bitrot
+///   detection) + mime sniff alongside the fast orphan check.
+/// - Others — ignored.
 #[derive(Debug, Clone, Default)]
 pub struct JobRunArgs {
     pub force: bool,
+    pub deep: bool,
 }
 
 /// Uniform outcome the supervisor logs and stores for every job dispatch.

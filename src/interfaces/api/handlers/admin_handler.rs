@@ -2095,10 +2095,16 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
 /// support it (dedup_gc → grace = 0, grant_cleanup → grace = 0).
 /// Silently ignored by handlers that don't (trash_cleanup,
 /// storage_reconcile).
+///
+/// `deep=true` opts into slow variants — `consistency_batch` fans it
+/// out to sub-jobs; `storage_consistency` (when implemented) will
+/// re-BLAKE3 each blob for bitrot detection. See `JobRunArgs.deep`.
 #[derive(serde::Deserialize)]
 pub struct TriggerJobQuery {
     #[serde(default)]
     pub force: bool,
+    #[serde(default)]
+    pub deep: bool,
 }
 
 /// `POST /api/admin/jobs/{name}/trigger` — dispatch one run off-schedule.
@@ -2136,11 +2142,16 @@ pub async fn trigger_job(
         event = "job.trigger",
         job = %name,
         force = query.force,
-        "👮🏻‍♂️ Admin triggered job {} (force={})",
+        deep = query.deep,
+        "👮🏻‍♂️ Admin triggered job {} (force={}, deep={})",
         name,
         query.force,
+        query.deep,
     );
-    let args = JobRunArgs { force: query.force };
+    let args = JobRunArgs {
+        force: query.force,
+        deep: query.deep,
+    };
     match state.core.job_registry.trigger(&name, &args).await {
         Some(outcome) => (
             StatusCode::OK,
