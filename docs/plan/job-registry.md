@@ -712,7 +712,7 @@ rationale + the merges/separations that fall out of the rule.
 | Tenant | Iterates | Cursor | v1 checks | Notes |
 |---|---|---|---|---|
 | `drives_consistency` | `storage.drives` | drive UUID | `used_bytes` drift (drive + user envelope) | Shipped Slice 3. |
-| `folders_consistency` | `storage.folders` | folder UUID | parent alive, `path` matches parent chain, `ltree` matches parent chain | |
+| `folders_consistency` | `storage.folders` | folder UUID | `parent_trashed_mismatch` (live folder under trashed parent), `path_mismatch`, `lpath_mismatch` — both materialised columns compared to parent-chain reconstruction | Shipped Slice 4. Room to grow: `drive_id_parent_mismatch`, `orphan_root` (self-join already loads the fields). |
 | `files_consistency` | `storage.files` | file UUID | parent folder alive, `path` correct, `blob_hash` present in `storage.blobs` | Missing-side of the old bidirectional blob check. |
 | `storage_consistency` | Storage backend (fs / S3) | object key / path | Each blob has a `storage.blobs` row (orphan detection) | `?deep=true` adds re-BLAKE3 + mime sniff. Orphan-side of the old bidirectional blob check + former `blob_integrity` + former `thumbnail_consistency`. |
 | `grants_consistency` (future) | `storage.role_grants` | grant UUID | subject/resource/granted_by exist | |

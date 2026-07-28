@@ -90,11 +90,13 @@ jsonpath "$..interval_ms" count == 3
 
 # Every entry carries a `running` bool — same aggregate primitive.
 # Count matches the registered-tenant count: 4 Part 1 periodics
-# (trash_cleanup, storage_reconcile, dedup_gc, grant_cleanup) + 1
-# Part 2 recoverable (drives_consistency, wrapped by RecoverableAdapter
-# so it appears here alongside the periodics). Bump when a new
-# tenant registers.
-jsonpath "$..running" count == 5
+# (trash_cleanup, storage_reconcile, dedup_gc, grant_cleanup) + 2
+# Part 2 recoverables (drives_consistency, folders_consistency —
+# wrapped by RecoverableAdapter so they appear here alongside the
+# periodics). Bump when a new tenant registers.
+jsonpath "$..running" count == 6
+jsonpath "$[*].name" contains "drives_consistency"
+jsonpath "$[*].name" contains "folders_consistency"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -129,6 +131,24 @@ Authorization: Bearer {{admin_token}}
 HTTP 200
 [Asserts]
 jsonpath "$..last_outcome.outcome" contains "ok"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 4b — Trigger `folders_consistency`. Second Part 2
+#           recoverable tenant. Goes through the same
+#           RecoverableAdapter → PgJobStoreProvider path as
+#           drives_consistency (opens a run row, walks the
+#           `storage.folders` cursor, marks Completed). Success
+#           envelope shape identical.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/admin/jobs/folders_consistency/trigger
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.ok" == true
+jsonpath "$.outcome.outcome" == "ok"
+jsonpath "$.outcome.count" exists
 
 
 # ─────────────────────────────────────────────────────────────

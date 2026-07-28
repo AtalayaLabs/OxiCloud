@@ -1289,6 +1289,21 @@ impl AppServiceFactory {
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
         .await;
 
+        // Second recoverable-run tenant. Iterates `storage.folders`
+        // and reports each row whose materialised path/lpath or
+        // parent-trashed state has drifted from the parent-chain
+        // reconstruction — same subject-iteration pattern as drives.
+        // On-demand only; findings surface via the
+        // `oxicloud::consistency` tracing target until the
+        // `jobs.run_findings` table lands.
+        let _ = Arc::new(
+            crate::infrastructure::services::folders_consistency_service::FoldersConsistencyCheck::new(
+                maintenance_pool.clone(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
         // 2. Repository services (requires PgPool for all metadata)
         let repos = self.create_repository_services(&core, &pool);
 
