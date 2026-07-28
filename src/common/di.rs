@@ -2145,7 +2145,12 @@ impl AppServiceFactory {
         // periodic-triggered recoverable job's first tick sees a clean
         // slate. See `docs/plan/job-registry.md` Part 2.
         use crate::infrastructure::scheduler::JobStoreProvider as _;
-        match app_state.core.job_store_provider.boot_recovery_sweep().await {
+        match app_state
+            .core
+            .job_store_provider
+            .boot_recovery_sweep()
+            .await
+        {
             Ok(0) => tracing::debug!(
                 target: "oxicloud::scheduler",
                 event = "recoverable.boot_recovery",
@@ -2212,8 +2217,7 @@ pub struct CoreServices {
     /// `svc.register_recoverable_job(&registry, &job_store_provider).await`.
     /// Boot-time crash-recovery sweep is run in `build_app_state` right
     /// after this provider is created.
-    pub job_store_provider:
-        Arc<crate::infrastructure::scheduler::PgJobStoreProvider>,
+    pub job_store_provider: Arc<crate::infrastructure::scheduler::PgJobStoreProvider>,
 }
 
 /// Container for repository services

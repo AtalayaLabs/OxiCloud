@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::common::errors::DomainError;
 
-use super::recoverable::{JobStore, JobStoreProvider, OpenedRun, RunStatus};
+use super::recoverable::{JobStore, JobStoreProvider, OpenedRun, RunStatus, RunSummary};
 
 // ─── PgJobStore — bound to one run ──────────────────────────────────────────
 
@@ -239,7 +239,131 @@ impl JobStoreProvider for PgJobStoreProvider {
         .map_err(|e| map_sqlx_err("boot_recovery_sweep", e))?;
         Ok(result.rows_affected())
     }
+
+    async fn list_runs(&self, job_name: &str, limit: u32) -> Result<Vec<RunSummary>, DomainError> {
+        // Cap the limit at 100 defensively — the API layer should
+        // also clamp, but a broken caller shouldn't tank the DB.
+        let capped = limit.min(100) as i64;
+        let rows: Vec<RunSummaryRow> = sqlx::query_as(RUN_SUMMARY_SELECT_LIST)
+            .bind(job_name)
+            .bind(capped)
+            .fetch_all(self.pool.as_ref())
+            .await
+            .map_err(|e| map_sqlx_err("list_runs", e))?;
+        rows.into_iter().map(row_to_summary).collect()
+    }
+
+    async fn get_run_by_id(&self, run_id: Uuid) -> Result<Option<RunSummary>, DomainError> {
+        let row: Option<RunSummaryRow> = sqlx::query_as(RUN_SUMMARY_SELECT_BY_ID)
+            .bind(run_id)
+            .fetch_optional(self.pool.as_ref())
+            .await
+            .map_err(|e| map_sqlx_err("get_run_by_id", e))?;
+        row.map(row_to_summary).transpose()
+    }
+
+    async fn request_cancel(&self, job_name: &str) -> Result<Option<Uuid>, DomainError> {
+        // Only Running → CancelRequested flips. `Paused` can be
+        // cancelled by not resuming — no need for a state change.
+        // `CancelRequested` already is what it is.
+        // Multiple Running rows shouldn't exist (partial unique index),
+        // but LIMIT 1 is defensive.
+        let flipped: Option<(Uuid,)> = sqlx::query_as(
+            r#"
+            UPDATE jobs.recoverable_runs
+               SET status           = 'CancelRequested',
+                   last_progress_at = NOW()
+             WHERE id = (
+                    SELECT id FROM jobs.recoverable_runs
+                     WHERE job_name = $1
+                       AND status = 'Running'
+                     ORDER BY started_at DESC
+                     LIMIT 1
+                   )
+            RETURNING id
+            "#,
+        )
+        .bind(job_name)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| map_sqlx_err("request_cancel", e))?;
+        Ok(flipped.map(|(id,)| id))
+    }
 }
+
+// ─── Shared row → RunSummary decoder ────────────────────────────────────────
+
+/// Row shape returned by the run-summary SELECTs. Kept as a distinct
+/// type so both `list_runs` and `get_run_by_id` share the projection
+/// (SQL column list + decoder). Order matches the SELECT below.
+type RunSummaryRow = (
+    Uuid,                  // id
+    String,                // job_name
+    String,                // status
+    DateTime<Utc>,         // started_at
+    DateTime<Utc>,         // last_progress_at
+    Option<DateTime<Utc>>, // completed_at
+    Option<Vec<u8>>,       // cursor
+    serde_json::Value,     // stats
+    serde_json::Value,     // params
+    Option<String>,        // error_message
+);
+
+const RUN_SUMMARY_COLUMNS: &str = "id, job_name, status, started_at, last_progress_at, completed_at, cursor, stats, params, error_message";
+
+// `format!` isn't const, but `concat!` gives us a &'static str at compile
+// time — worth it so the SELECT strings show up in tracing / SQL logs
+// as one contiguous line instead of a runtime string build.
+const RUN_SUMMARY_SELECT_LIST: &str = concat!(
+    "SELECT id, job_name, status, started_at, last_progress_at, completed_at, cursor, stats, params, error_message ",
+    "FROM jobs.recoverable_runs ",
+    "WHERE job_name = $1 ",
+    "ORDER BY started_at DESC ",
+    "LIMIT $2"
+);
+
+const RUN_SUMMARY_SELECT_BY_ID: &str = concat!(
+    "SELECT id, job_name, status, started_at, last_progress_at, completed_at, cursor, stats, params, error_message ",
+    "FROM jobs.recoverable_runs ",
+    "WHERE id = $1"
+);
+
+fn row_to_summary(row: RunSummaryRow) -> Result<RunSummary, DomainError> {
+    let (
+        id,
+        job_name,
+        status_str,
+        started_at,
+        last_progress_at,
+        completed_at,
+        cursor,
+        stats,
+        params,
+        error_message,
+    ) = row;
+    let status = RunStatus::parse(&status_str).ok_or_else(|| {
+        DomainError::internal_error("JobStore", format!("unknown status: {status_str}"))
+    })?;
+    Ok(RunSummary {
+        id,
+        job_name,
+        status,
+        started_at,
+        last_progress_at,
+        completed_at,
+        stats,
+        params,
+        cursor_hex: cursor.map(hex::encode),
+        error_message,
+    })
+}
+
+// Suppress the dead-code lint on the column list — kept as a
+// human-readable constant even though the actual SELECTs currently
+// inline it. Future rewrites of the SELECTs (e.g. adding stats
+// projection) will use it.
+#[allow(dead_code)]
+const _RUN_SUMMARY_COLUMNS_UNUSED: &str = RUN_SUMMARY_COLUMNS;
 
 /// Row shape returned by `open_or_start`'s SELECT — factored out
 /// so clippy's `type_complexity` lint doesn't yell at the query.
@@ -283,10 +407,7 @@ impl PgJobStoreProvider {
                 })?;
                 match status {
                     RunStatus::Running | RunStatus::CancelRequested => {
-                        Ok(OpenedRun::AlreadyActive {
-                            run_id: id,
-                            status,
-                        })
+                        Ok(OpenedRun::AlreadyActive { run_id: id, status })
                     }
                     RunStatus::Paused => {
                         // Flip to Running and hand back the cursor.
@@ -313,20 +434,15 @@ impl PgJobStoreProvider {
                         .bind(id)
                         .fetch_optional(self.pool.as_ref())
                         .await
-                        .map_err(|e| {
-                            OpenErr::Fatal(map_sqlx_err("open_or_start.resume", e))
-                        })?;
+                        .map_err(|e| OpenErr::Fatal(map_sqlx_err("open_or_start.resume", e)))?;
                         let (started_at, cursor_bytes) = row.ok_or_else(|| {
                             OpenErr::Fatal(DomainError::internal_error(
                                 "JobStore",
                                 format!("run vanished during resume: {id}"),
                             ))
                         })?;
-                        let store: Arc<dyn JobStore> = Arc::new(PgJobStore::new(
-                            self.pool.clone(),
-                            id,
-                            started_at,
-                        ));
+                        let store: Arc<dyn JobStore> =
+                            Arc::new(PgJobStore::new(self.pool.clone(), id, started_at));
                         Ok(OpenedRun::Resumed {
                             store,
                             cursor: cursor_bytes.unwrap_or_default(),

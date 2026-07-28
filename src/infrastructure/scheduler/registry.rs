@@ -120,9 +120,7 @@ impl JobRegistry {
                     cadence,
                 );
             }
-            Err(e) => panic!(
-                "JobRegistry::register({name}) failed — DI wiring bug: {e}"
-            ),
+            Err(e) => panic!("JobRegistry::register({name}) failed — DI wiring bug: {e}"),
         }
     }
 

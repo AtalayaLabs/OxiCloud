@@ -256,6 +256,54 @@ pub trait JobStoreProvider: Send + Sync {
     /// via `POST /api/admin/jobs/{name}/trigger`, which calls
     /// `open_or_start` and picks up the Paused cursor.
     async fn boot_recovery_sweep(&self) -> Result<u64, DomainError>;
+
+    /// Latest N runs for `job_name`, newest first, terminal + non-terminal
+    /// both included. Powers `GET /api/admin/jobs/{name}/runs`. `limit`
+    /// caps the return size; the API layer clamps it too.
+    async fn list_runs(&self, job_name: &str, limit: u32) -> Result<Vec<RunSummary>, DomainError>;
+
+    /// Fetch one run by id. Powers `GET /api/admin/jobs/{name}/runs/{id}`.
+    /// Returns `None` when the id doesn't exist (unknown or pruned).
+    async fn get_run_by_id(&self, run_id: Uuid) -> Result<Option<RunSummary>, DomainError>;
+
+    /// Request cancellation of the CURRENT active run for `job_name`
+    /// by flipping its status from `Running` → `CancelRequested`.
+    /// Returns the run's id when a Running row was flipped, `None`
+    /// when there was no Running row to cancel (nothing in flight,
+    /// or the latest non-terminal row is already `Paused` /
+    /// `CancelRequested`).
+    ///
+    /// Cooperative — the handler still needs to poll `store.status()`
+    /// and return `RunOutcome::Paused` at the next safe boundary. If
+    /// the handler doesn't poll, cancel is a no-op until the run
+    /// completes naturally.
+    async fn request_cancel(&self, job_name: &str) -> Result<Option<Uuid>, DomainError>;
+}
+
+/// Serialisable snapshot of one `jobs.recoverable_runs` row, returned
+/// by the admin listing + get-run endpoints.
+#[derive(Debug, Clone, Serialize)]
+pub struct RunSummary {
+    pub id: Uuid,
+    pub job_name: String,
+    pub status: RunStatus,
+    pub started_at: DateTime<Utc>,
+    pub last_progress_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<DateTime<Utc>>,
+    /// `stats` JSONB dump — job-specific counters (scanned_count,
+    /// migrated_blobs, findings_this_run, …).
+    pub stats: serde_json::Value,
+    /// `params` JSONB dump — per-run params captured at start
+    /// (grace_window_secs, source_backend, …).
+    pub params: serde_json::Value,
+    /// Cursor as hex — omitted when null. Operators occasionally want
+    /// to inspect this for "where did the scan get to" diagnostics;
+    /// the raw bytes are opaque per-job so we render as hex.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor_hex: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
 }
 
 /// Result of [`JobStoreProvider::open_or_start`].
@@ -324,11 +372,7 @@ pub async fn run_or_resume(
         }
         RunOutcome::Paused { cursor } => {
             let cursor_hex = hex::encode(&cursor);
-            log_terminal_write_err(
-                "mark_paused",
-                run_id,
-                store.mark_paused(Some(cursor)).await,
-            );
+            log_terminal_write_err("mark_paused", run_id, store.mark_paused(Some(cursor)).await);
             JobOutcome::ok_with(
                 0,
                 serde_json::json!({
@@ -339,11 +383,7 @@ pub async fn run_or_resume(
             )
         }
         RunOutcome::Failed { message } => {
-            log_terminal_write_err(
-                "mark_failed",
-                run_id,
-                store.mark_failed(&message).await,
-            );
+            log_terminal_write_err("mark_failed", run_id, store.mark_failed(&message).await);
             JobOutcome::err(format!("{message} (run_id={run_id})"))
         }
     }
@@ -461,11 +501,7 @@ mod tests {
         async fn status(&self) -> Result<RunStatus, DomainError> {
             Ok(self.state.lock().unwrap().status)
         }
-        async fn checkpoint(
-            &self,
-            cursor: Vec<u8>,
-            delta_count: u64,
-        ) -> Result<(), DomainError> {
+        async fn checkpoint(&self, cursor: Vec<u8>, delta_count: u64) -> Result<(), DomainError> {
             let mut s = self.state.lock().unwrap();
             s.cursor = Some(cursor);
             s.scanned_count += delta_count;
@@ -530,15 +566,15 @@ mod tests {
         /// assertions.
         fn last_status(&self) -> Option<RunStatus> {
             let stores = self.stores.lock().unwrap();
-            stores
-                .last()
-                .map(|s| s.state.lock().unwrap().status)
+            stores.last().map(|s| s.state.lock().unwrap().status)
         }
 
         /// Test-only read — last-created run's cursor.
         fn last_cursor(&self) -> Option<Vec<u8>> {
             let stores = self.stores.lock().unwrap();
-            stores.last().and_then(|s| s.state.lock().unwrap().cursor.clone())
+            stores
+                .last()
+                .and_then(|s| s.state.lock().unwrap().cursor.clone())
         }
     }
 
@@ -595,6 +631,68 @@ mod tests {
                 }
             }
             Ok(n)
+        }
+
+        async fn list_runs(
+            &self,
+            job_name: &str,
+            limit: u32,
+        ) -> Result<Vec<RunSummary>, DomainError> {
+            let stores = self.stores.lock().unwrap();
+            let now = Utc::now();
+            let out: Vec<RunSummary> = stores
+                .iter()
+                .rev() // newest first — MemProvider stores in insertion order
+                .take(limit as usize)
+                .map(|s| {
+                    let state = s.state.lock().unwrap();
+                    RunSummary {
+                        id: s.run_id,
+                        job_name: job_name.to_string(),
+                        status: state.status,
+                        started_at: s.started_at,
+                        last_progress_at: now,
+                        completed_at: None,
+                        stats: serde_json::json!({ "scanned_count": state.scanned_count }),
+                        params: serde_json::json!({}),
+                        cursor_hex: state.cursor.as_ref().map(hex::encode),
+                        error_message: state.error_message.clone(),
+                    }
+                })
+                .collect();
+            Ok(out)
+        }
+
+        async fn get_run_by_id(&self, run_id: Uuid) -> Result<Option<RunSummary>, DomainError> {
+            let stores = self.stores.lock().unwrap();
+            let now = Utc::now();
+            Ok(stores.iter().find(|s| s.run_id == run_id).map(|s| {
+                let state = s.state.lock().unwrap();
+                RunSummary {
+                    id: s.run_id,
+                    job_name: "mem".to_string(),
+                    status: state.status,
+                    started_at: s.started_at,
+                    last_progress_at: now,
+                    completed_at: None,
+                    stats: serde_json::json!({ "scanned_count": state.scanned_count }),
+                    params: serde_json::json!({}),
+                    cursor_hex: state.cursor.as_ref().map(hex::encode),
+                    error_message: state.error_message.clone(),
+                }
+            }))
+        }
+
+        async fn request_cancel(&self, _job_name: &str) -> Result<Option<Uuid>, DomainError> {
+            let stores = self.stores.lock().unwrap();
+            if let Some(s) = stores.last() {
+                let mut state = s.state.lock().unwrap();
+                if state.status == RunStatus::Running {
+                    state.status = RunStatus::CancelRequested;
+                    return Ok(Some(s.run_id));
+                }
+            }
+            Ok(None)
         }
     }
 

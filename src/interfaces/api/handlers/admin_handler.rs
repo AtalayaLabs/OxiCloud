@@ -147,8 +147,19 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         // audit-logged. See `docs/plan/job-registry.md` §Cross-cutting.
         // Retired the `/internal/trigger-sweep|gc|grant-cleanup` shims
         // that used to sit here (Stage 2 of the job-registry rollout).
+        //
+        // `/jobs` + `/jobs/{name}/trigger` cover every registered
+        // JobHandler (periodic + recoverable — recoverable ones slot
+        // in through `RecoverableAdapter`). The `/cancel` + `/runs`
+        // + `/runs/{id}` triplet is recoverable-only — hitting them
+        // on a stateless job silently gets an empty list / no-op
+        // cancel, since no rows in `jobs.recoverable_runs` match.
+        // See `docs/plan/job-registry.md` Part 2.
         .route("/jobs", get(list_jobs))
         .route("/jobs/{name}/trigger", post(trigger_job))
+        .route("/jobs/{name}/cancel", post(cancel_job))
+        .route("/jobs/{name}/runs", get(list_job_runs))
+        .route("/jobs/{name}/runs/{id}", get(get_job_run))
         // Drives — admin-wide view (distinct from `/api/drives` which
         // is filtered to the caller's role grants).
         .route("/drives", get(list_all_drives))
@@ -2144,5 +2155,150 @@ pub async fn trigger_job(
             })),
         )
             .into_response(),
+    }
+}
+
+/// `POST /api/admin/jobs/{name}/cancel` — cooperative cancel of the
+/// currently-running recoverable run for `{name}`.
+///
+/// Flips the row's `status` from `Running` → `CancelRequested`. The
+/// handler is responsible for polling `store.status()` between batches
+/// and returning `RunOutcome::Paused` at the next safe boundary; if it
+/// doesn't, the cancel is a no-op until the run completes naturally.
+///
+/// Returns 200 with the run_id when a Running row was flipped, 200 with
+/// `cancelled: false` when nothing was running (either no runs exist,
+/// or the latest is Paused / Completed / Failed / already CancelRequested).
+/// Never 404 on "no active run" — the job name is registered and the
+/// endpoint just reports the truth.
+#[utoipa::path(
+    post,
+    path = "/api/admin/jobs/{name}/cancel",
+    params(("name" = String, Path, description = "Registered job name")),
+    responses(
+        (status = 200, description = "Cancel signalled (or no-op if nothing was running)"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+        (status = 500, description = "DB error"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn cancel_job(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    use crate::infrastructure::scheduler::JobStoreProvider as _;
+    tracing::info!(
+        target: "audit",
+        event = "job.cancel_requested",
+        job = %name,
+        "👮🏻‍♂️ Admin requested cancel for job {}",
+        name,
+    );
+    match state.core.job_store_provider.request_cancel(&name).await {
+        Ok(Some(run_id)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "cancelled": true,
+                "run_id": run_id.to_string(),
+                "status": "CancelRequested",
+            })),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "cancelled": false,
+                "reason": "no running run for this job",
+            })),
+        )
+            .into_response(),
+        Err(e) => AppError::internal_error(format!("cancel failed: {e}")).into_response(),
+    }
+}
+
+/// Query parameters for `GET /api/admin/jobs/{name}/runs`.
+#[derive(serde::Deserialize)]
+pub struct ListRunsQuery {
+    /// Cap on returned rows. Server-side clamps to 100 defensively.
+    #[serde(default = "default_runs_limit")]
+    pub limit: u32,
+}
+
+fn default_runs_limit() -> u32 {
+    20
+}
+
+/// `GET /api/admin/jobs/{name}/runs?limit=N` — history of recoverable
+/// runs for a registered job, newest first. Includes terminal +
+/// non-terminal rows.
+///
+/// Read-only, no audit line — standard admin-middleware auth is enough.
+#[utoipa::path(
+    get,
+    path = "/api/admin/jobs/{name}/runs",
+    params(
+        ("name" = String, Path, description = "Registered job name"),
+        ("limit" = Option<u32>, Query, description = "Max rows to return (default 20, capped at 100)"),
+    ),
+    responses(
+        (status = 200, description = "Runs listed (may be empty)"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+        (status = 500, description = "DB error"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn list_job_runs(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<ListRunsQuery>,
+) -> impl IntoResponse {
+    use crate::infrastructure::scheduler::JobStoreProvider as _;
+    let limit = query.limit.clamp(1, 100);
+    match state.core.job_store_provider.list_runs(&name, limit).await {
+        Ok(runs) => (StatusCode::OK, Json(runs)).into_response(),
+        Err(e) => AppError::internal_error(format!("list_runs failed: {e}")).into_response(),
+    }
+}
+
+/// `GET /api/admin/jobs/{name}/runs/{id}` — single-run detail.
+///
+/// Returns 404 when the id doesn't exist. `{name}` is not validated
+/// against the run's `job_name` — the id is globally unique — but
+/// keeping the name in the URL path lets operators build stable
+/// per-job history links without knowing individual run ids upfront.
+#[utoipa::path(
+    get,
+    path = "/api/admin/jobs/{name}/runs/{id}",
+    params(
+        ("name" = String, Path, description = "Registered job name"),
+        ("id" = String, Path, description = "Run UUID"),
+    ),
+    responses(
+        (status = 200, description = "Run detail"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+        (status = 404, description = "Run not found"),
+        (status = 500, description = "DB error"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn get_job_run(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path((_name, id)): axum::extract::Path<(String, uuid::Uuid)>,
+) -> impl IntoResponse {
+    use crate::infrastructure::scheduler::JobStoreProvider as _;
+    match state.core.job_store_provider.get_run_by_id(id).await {
+        Ok(Some(run)) => (StatusCode::OK, Json(run)).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "run not found", "id": id.to_string() })),
+        )
+            .into_response(),
+        Err(e) => AppError::internal_error(format!("get_run failed: {e}")).into_response(),
     }
 }
