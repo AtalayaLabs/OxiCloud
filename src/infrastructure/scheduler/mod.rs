@@ -24,10 +24,17 @@
 
 mod engine;
 mod handler;
+mod pg_job_store;
+mod recoverable;
 mod registry;
 mod types;
 
 pub use engine::SchedulerEngine;
 pub use handler::JobHandler;
+pub use pg_job_store::{PgJobStore, PgJobStoreProvider};
+pub use recoverable::{
+    JobStore, JobStoreProvider, OpenedRun, RecoverableAdapter, RecoverableJobHandler, RunOutcome,
+    RunStatus, run_or_resume,
+};
 pub use registry::{JobEntry, JobRegistry, JobSummary, RegisterError};
 pub use types::{ErrCause, JobOutcome, JobRunArgs};

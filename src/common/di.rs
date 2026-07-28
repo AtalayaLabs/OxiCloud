@@ -436,6 +436,15 @@ impl AppServiceFactory {
         // have landed.
         let job_registry = Arc::new(JobRegistry::new());
 
+        // Recoverable-run engine's PG provider (`jobs.recoverable_runs`).
+        // Runs on the maintenance pool so a long-running scan's cursor
+        // updates never contend with the request-path pool. Boot-time
+        // crash-recovery sweep fires in `build_app_state` after the
+        // provider is placed on `AppState`.
+        let job_store_provider = Arc::new(
+            crate::infrastructure::scheduler::PgJobStoreProvider::new(maintenance_pool.clone()),
+        );
+
         Ok(CoreServices {
             path_service,
             file_content_cache,
@@ -449,6 +458,7 @@ impl AppServiceFactory {
             zip_service: None, // Placeholder - replaced after app services init
             config: self.config.clone(),
             job_registry,
+            job_store_provider,
         })
     }
 
@@ -2126,6 +2136,36 @@ impl AppServiceFactory {
             }
         }
 
+        // Recoverable-run engine crash recovery. Any row still marked
+        // Running or CancelRequested when the previous process died gets
+        // flipped to Paused with `error_message = 'server restart mid-run'`.
+        // We do NOT auto-resume — operators explicitly re-trigger via
+        // `POST /api/admin/jobs/{name}/trigger`, which resumes from the
+        // persisted cursor. Runs BEFORE the scheduler starts so a
+        // periodic-triggered recoverable job's first tick sees a clean
+        // slate. See `docs/plan/job-registry.md` Part 2.
+        use crate::infrastructure::scheduler::JobStoreProvider as _;
+        match app_state.core.job_store_provider.boot_recovery_sweep().await {
+            Ok(0) => tracing::debug!(
+                target: "oxicloud::scheduler",
+                event = "recoverable.boot_recovery",
+                flipped = 0,
+                "no orphaned recoverable runs found at boot"
+            ),
+            Ok(n) => tracing::warn!(
+                target: "oxicloud::scheduler",
+                event = "recoverable.boot_recovery",
+                flipped = n,
+                "flipped {n} orphaned recoverable run(s) Running/CancelRequested → Paused (previous process died mid-run)"
+            ),
+            Err(e) => tracing::error!(
+                target: "oxicloud::scheduler",
+                event = "recoverable.boot_recovery.failed",
+                error = %e,
+                "boot recovery sweep failed — orphaned runs may remain in Running state"
+            ),
+        }
+
         // Start the periodic-job scheduler AFTER every native service has
         // finished registering its jobs on `core.job_registry`. Starting
         // it earlier would race the first tick against late registrations.
@@ -2166,6 +2206,14 @@ pub struct CoreServices {
     /// themselves here during their creation; `SchedulerEngine::start`
     /// spins up the supervisor loop at the end of `build_app_state`.
     pub job_registry: Arc<JobRegistry>,
+    /// PG-backed provider for `jobs.recoverable_runs`. Recoverable
+    /// tenants (storage migration, reextract, consistency checks —
+    /// Part 2 of `docs/plan/job-registry.md`) plug into this via
+    /// `svc.register_recoverable_job(&registry, &job_store_provider).await`.
+    /// Boot-time crash-recovery sweep is run in `build_app_state` right
+    /// after this provider is created.
+    pub job_store_provider:
+        Arc<crate::infrastructure::scheduler::PgJobStoreProvider>,
 }
 
 /// Container for repository services
