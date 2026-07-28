@@ -703,18 +703,28 @@ GET  /api/admin/jobs/{name}/runs/{id}
 
 ### Native tenants (Part 2)
 
-- **Blob storage backend migration.** `migration_job.rs` becomes a
-  `RecoverableJobHandler` impl. Cursor = last processed blob hash. Retires
-  the `Arc<RwLock<MigrationState>>` in-memory struct.
-- **Reextract audio metadata.** Currently synchronous inside the
-  admin HTTP request. Becomes a `RecoverableJobHandler` iterating audio
-  files by `file_id`.
-- **Reextract image/video capture dates.** Same as above.
-- **Consistency-check runs.** Every `ConsistencyCheck` impl gets
-  wrapped by a `RecoverableJobHandler` adapter; the wrapper writes to
-  `jobs.recoverable_runs` via `JobStore`, and separately writes
-  findings to `jobs.run_findings` via a check-specific
-  extension trait. See `docs/plan/consistency-check.md`.
+Consistency checks are organized **by the subject they iterate**, not
+by the concern they check. Cursor = row PK of that subject. Adding a
+new check = adding a per-row branch inside the job that walks that
+subject. See memory `project_consistency_jobs_landscape` for the full
+rationale + the merges/separations that fall out of the rule.
+
+| Tenant | Iterates | Cursor | v1 checks | Notes |
+|---|---|---|---|---|
+| `drives_consistency` | `storage.drives` | drive UUID | `used_bytes` drift (drive + user envelope) | Shipped Slice 3. |
+| `folders_consistency` | `storage.folders` | folder UUID | parent alive, `path` matches parent chain, `ltree` matches parent chain | |
+| `files_consistency` | `storage.files` | file UUID | parent folder alive, `path` correct, `blob_hash` present in `storage.blobs` | Missing-side of the old bidirectional blob check. |
+| `storage_consistency` | Storage backend (fs / S3) | object key / path | Each blob has a `storage.blobs` row (orphan detection) | `?deep=true` adds re-BLAKE3 + mime sniff. Orphan-side of the old bidirectional blob check + former `blob_integrity` + former `thumbnail_consistency`. |
+| `grants_consistency` (future) | `storage.role_grants` | grant UUID | subject/resource/granted_by exist | |
+| `storage_migration` | `storage.blobs` (source) → target backend | blob hash | Copy bytes; failures → `stats.failed_blobs` (and eventually `jobs.run_findings`) | Retires `Arc<RwLock<MigrationState>>` in `migration_job.rs`. |
+| `reextract_audio` | `storage.files` where audio | file UUID | Re-run audio-tag parser, upsert `audio_metadata` | Retires synchronous admin-request execution. |
+| `reextract_image` | `storage.files` where image/video | file UUID | Re-run EXIF/container date parser, upsert capture date | Same shape as reextract_audio. |
+| `consistency_batch` (wrapper) | Iterates registered `*_consistency` jobs | — (JobHandler, not RecoverableJobHandler) | Sequentially triggers each sub-job; `?deep=true` propagates | One-click "run all" without per-job clicks; exclusivity via `job_name` prevents concurrent batches from stepping on each other. |
+
+**Not consistency**: `POST /api/admin/dedup/recalculate` is aggregate-
+stats-only (`unique_blobs`, `total_references`, `bytes_saved`) — one
+SELECT + one UPDATE. Kept as its own admin endpoint; do NOT fold into
+`storage_consistency` (different semantic — recompute vs verify).
 
 ### Verification (Part 2)
 
@@ -789,6 +799,125 @@ Response shape also changed: the old endpoints returned custom fields
 endpoint returns a uniform `{ ok, outcome: JobOutcome }` envelope with
 job-specific fields under `outcome.extra`. Any external caller reading
 the old fields needs updating.
+
+### Admin UI — /admin/jobs page (frontend, future slice)
+
+Operators shouldn't have to `curl` these endpoints in production —
+they need a UI. Ships as a SvelteKit route once the backend surface is
+complete. Rough shape:
+
+**Route:** `/admin/jobs` (SvelteKit page under `frontend/src/routes/admin/jobs/`).
+**Access:** admin-only; same guard as the rest of `/admin/*`.
+
+**Page layout — one table, one drawer:**
+
+```
+┌── Jobs ─────────────────────────────────────────────────────────────┐
+│ Name                Cadence     Last run          Status   Actions │
+│ ───────────────────────────────────────────────────────────────────│
+│ trash_cleanup       every 24 h  3h ago            ok       [Run]   │
+│ storage_reconcile   every 10 m  4m ago            ok       [Run]   │
+│ dedup_gc            on-demand   1d ago            ok       [Run]   │
+│ grant_cleanup       every 24 h  never             —        [Run]   │
+│ drives_consistency  on-demand   never             —        [Run]   │
+│ consistency_batch   on-demand   never             —        [Run] [Run deep] │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+Row click opens a right-side drawer with:
+- Full JSON of the last outcome (`extra` fields explained per-job).
+- For recoverable jobs: run history table (`GET /jobs/{name}/runs`),
+  each row expandable to full `RunSummary` (cursor, stats, params,
+  error_message).
+- Per-run actions: `Cancel` (for Running rows only), `Trigger resume`
+  (for Paused rows — same trigger endpoint, `run_or_resume` picks
+  up the cursor).
+
+**Data flow:**
+- `GET /api/admin/jobs` — populates the main table. Polled every 5 s
+  when the page is visible (`document.visibilityState`).
+- `POST /api/admin/jobs/{name}/trigger` — the "Run" button. `deep=true`
+  query for the "Run deep" variant (currently only shown on
+  `consistency_batch`).
+- `POST /api/admin/jobs/{name}/cancel` — Cancel button on a Running
+  recoverable run.
+- `GET /api/admin/jobs/{name}/runs` — populates the history table when
+  the drawer opens.
+- `GET /api/admin/jobs/{name}/runs/{id}` — populates the per-run
+  detail expander.
+
+**No new backend endpoints required** — every screen is driven by
+what already exists.
+
+**Visual conventions:**
+- Status colour: `ok` = green, `err` = red, `Running` = blue-pulse,
+  `Paused` = amber, `CancelRequested` = amber-flash, `Completed` =
+  neutral grey, `Failed` = red.
+- Findings surfacing waits for `jobs.run_findings` — until then the
+  drawer's "Findings" tab is disabled with a tooltip explaining
+  drift shows up in the `oxicloud::consistency` log stream today.
+
+**Slice ordering:** frontend page is a follow-up PR, not blocking any
+backend slice. Order of appearance:
+1. Backend Part 2 slices (engine, admin surface, first tenant) — done.
+2. `jobs.run_findings` table + `store.record_finding` API.
+3. `consistency_batch` + more tenants.
+4. Frontend `/admin/jobs` page — takes the completed backend surface
+   as-is; no backend changes required by the UI landing.
+
+### Notifications & alerting
+
+Silent failure is the enemy — a consistency check that finds a
+data-loss finding at 3 AM Sunday should reach an operator, not sit in
+the log stream unread. When SMTP is wired, the supervisor emits an
+alert email on the following:
+
+- **Any job dispatch returns `JobOutcome::Err`.** Applies to both
+  Part 1 handler errors and Part 2 recoverable `RunOutcome::Failed`
+  (which translates to `Err` via `run_or_resume`'s bridge). Subject
+  line: `[OxiCloud] Job <name> failed`. Body includes: job name,
+  cause (`handler|timeout|panicked`), error message, run_id (Part 2
+  only), elapsed_ms, log-timestamp for grep, link to
+  `/admin/jobs?highlight=<name>` when the UI lands.
+- **Consistency check surfaces one or more findings** (deferred to
+  the `jobs.run_findings` migration). Applies only to `*_consistency`
+  tenants. Body includes: run_id, findings count grouped by
+  `(kind, severity)`, worst-severity example, link to
+  `/admin/jobs/{name}/runs/{id}` when the UI lands.
+
+**Delivery conditions:**
+- Silent no-op when `email_sender` on `AppState` is `None` (SMTP not
+  configured). No error, no log spam — the mechanism is opt-in
+  through SMTP presence.
+- Recipient: every user with `role = 'admin'`. Not a hardcoded
+  address — same rule as any admin-scoped notification the codebase
+  already sends.
+- Rate limit: **at most 1 email per (job_name, kind) per 6 hours**,
+  keyed off an in-memory dedup table on `AppState`. Prevents a
+  flapping job (fails, retries, fails, ...) from mailbombing.
+  6 h chosen to match the operator-attention interval — a real
+  ongoing failure gets 4 alerts/day, enough to be noticed, not
+  enough to be filtered.
+- Configurable OFF per job via env: `OXICLOUD_JOB_<NAME>_ALERT_ON_FAIL=false`
+  (default `true`). Same shape as the existing enable/disable knobs.
+
+**Implementation notes** (for whichever slice picks this up):
+- Reuses `EmailSender` port + `MagicLinkInviteService`-style templating
+  under `askama`. New template files:
+  `templates/emails/job_failed.{html,txt}` and
+  `templates/emails/consistency_findings.{html,txt}`.
+- Dedup table lives on `AppState.job_alert_dedup:
+  Arc<Mutex<HashMap<(String, String), Instant>>>`. Cleaned lazily on
+  insert.
+- Called from `SchedulerEngine::log_outcome` (Part 1 path) and from
+  `run_or_resume`'s terminal-write branch (Part 2 path). Both already
+  see the `JobOutcome`; adding a fire-and-forget email dispatch is
+  ~10 lines each.
+
+**Scope-out:** no Slack / webhook / PagerDuty integration in v1.
+Email is the ONE alert channel until an operator concretely asks for
+another. Layering webhooks on top later is trivial — same
+"terminal outcome → notification" hook, different sink.
 
 ### Config surface — env vars
 

@@ -1,5 +1,25 @@
 # Plan — Resumable consistency checks + `StatefulAdapter` contract
 
+> ⚠️ **PARTIALLY SUPERSEDED (Ed 2026-07-28).** The current shipping
+> design organises consistency checks **by the subject they iterate**
+> (drives / folders / files / storage), NOT by concern (blob / thumbnail
+> / used_bytes). Each `*_consistency` job is a direct
+> `RecoverableJobHandler` impl on the Part 2 engine — no
+> `ConsistencyCheck` trait, no `StatefulAdapter` supertrait, no per-
+> subsystem check registry. Cursor = row PK of the iterated subject.
+>
+> **See instead:**
+> - Memory: `project_consistency_jobs_landscape` — the current taxonomy.
+> - `docs/plan/job-registry.md` Part 2 §Native tenants — updated table.
+> - `docs/architecture/jobs.md` — implementor guide.
+>
+> Sections below discuss `BlobConsistencyCheck`, `ThumbnailConsistencyCheck`,
+> `UsedBytesConsistencyCheck` etc. as separate impls of a
+> `ConsistencyCheck` trait. That IS retired. Read those sections for
+> the invariants (grace-window trap, cursor discipline, findings
+> idempotency) — they still apply. Ignore the trait shapes /
+> registration wiring — the Part 2 engine covers those uniformly.
+
 ## Context
 
 OxiCloud persists state in several independent subsystems: content-addressable
