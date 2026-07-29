@@ -111,9 +111,7 @@ impl JobHandler for ConsistencyBatch {
             .snapshot()
             .await
             .into_iter()
-            .filter(|s| {
-                s.name.ends_with("_consistency") && s.name != CONSISTENCY_BATCH_JOB_NAME
-            })
+            .filter(|s| s.name.ends_with("_consistency") && s.name != CONSISTENCY_BATCH_JOB_NAME)
             .map(|s| s.name)
             .collect();
 

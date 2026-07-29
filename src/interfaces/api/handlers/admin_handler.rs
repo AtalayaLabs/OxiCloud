@@ -160,7 +160,10 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         .route("/jobs/{name}/cancel", post(cancel_job))
         .route("/jobs/{name}/runs", get(list_job_runs))
         .route("/jobs/{name}/runs/{id}", get(get_job_run))
-        .route("/jobs/{name}/runs/{id}/findings", get(list_job_run_findings))
+        .route(
+            "/jobs/{name}/runs/{id}/findings",
+            get(list_job_run_findings),
+        )
         // Drives — admin-wide view (distinct from `/api/drives` which
         // is filtered to the caller's role grants).
         .route("/drives", get(list_all_drives))

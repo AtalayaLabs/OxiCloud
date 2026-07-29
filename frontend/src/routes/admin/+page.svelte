@@ -76,6 +76,7 @@
 		DrivePoliciesPartial,
 		User
 	} from '$lib/api/types';
+	import AdminJobsPanel from '$lib/components/AdminJobsPanel.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import OwnerAvatarStack from '$lib/components/OwnerAvatarStack.svelte';
@@ -172,7 +173,16 @@
 		}
 	}
 
-	type Tab = 'dashboard' | 'users' | 'drives' | 'mounts' | 'plugins' | 'oidc' | 'storage' | 'smtp';
+	type Tab =
+		| 'dashboard'
+		| 'users'
+		| 'drives'
+		| 'mounts'
+		| 'plugins'
+		| 'oidc'
+		| 'storage'
+		| 'smtp'
+		| 'jobs';
 	let tab = $state<Tab>('dashboard');
 
 	// Dashboard
@@ -1462,7 +1472,8 @@
 		plugins: false,
 		oidc: false,
 		storage: false,
-		smtp: false
+		smtp: false,
+		jobs: false
 	});
 
 	$effect(() => {
@@ -1578,6 +1589,15 @@
 		>
 			<Icon name="layer-group" />
 			{t('admin.plugins', 'Plugins')}
+		</button>
+		<button
+			role="tab"
+			data-testid="admin-jobs-tab"
+			aria-selected={tab === 'jobs'}
+			onclick={() => (tab = 'jobs')}
+		>
+			<Icon name="cogs" />
+			{t('admin.jobs.tab', 'Jobs')}
 		</button>
 	</div>
 
@@ -2787,6 +2807,8 @@
 				</tbody>
 			</table>
 		{/if}
+	{:else if tab === 'jobs'}
+		<AdminJobsPanel />
 	{:else if !pluginsAvailable}
 		<p class="status">{t('admin.plugins_disabled', 'The plugin subsystem is disabled.')}</p>
 	{:else if pluginsError}
