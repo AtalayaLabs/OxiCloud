@@ -1,12 +1,46 @@
 import { it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
 
-const { session, ui } = vi.hoisted(() => ({
+const { session, ui, pageState } = vi.hoisted(() => ({
 	session: { user: { id: '1', username: 'admin', role: 'admin' } },
-	ui: { notify: vi.fn() }
+	ui: { notify: vi.fn() },
+	// Mock of SvelteKit's `$app/state` `page` — post-URL-routing
+	// the admin page reads `page.params.tab` to derive which
+	// section to render. Tests set the tab via `setTab(...)`
+	// BEFORE `render(AdminPage)`; the derived picks it up on
+	// initial mount. Previously the tab was chosen by clicking a
+	// horizontal-tab button that no longer exists.
+	pageState: {
+		page: {
+			url: new URL('http://localhost/admin'),
+			params: {} as Record<string, string | undefined>,
+			route: { id: '/admin/[[tab]]' },
+			status: 200,
+			error: null,
+			data: {},
+			form: null,
+			state: {}
+		}
+	}
 }));
 vi.mock('$lib/stores/session.svelte', () => ({ session }));
 vi.mock('$lib/stores/ui.svelte', () => ({ ui }));
+vi.mock('$app/state', () => pageState);
+vi.mock('$app/navigation', () => ({ goto: vi.fn() }));
+vi.mock('$app/paths', () => ({ base: '', resolve: (r: string) => r }));
+
+/**
+ * Set the current tab BEFORE calling `render(AdminPage)`. The
+ * admin page reads the URL-derived tab in a `$derived`, which
+ * captures the value at first render — mutating this mock later
+ * doesn't retrigger. Tests that exercise multiple tabs render
+ * once per tab (each in a fresh `render` call — @testing-library
+ * unmounts between tests via its `beforeEach` cleanup).
+ */
+function setTab(tab: string | undefined) {
+	pageState.page.params = tab ? { tab } : {};
+	pageState.page.url = new URL(`http://localhost/admin${tab ? '/' + tab : ''}`);
+}
 vi.mock('$lib/api/endpoints/admin', () => ({
 	clearPluginLogs: vi.fn(),
 	createExternalMount: vi.fn(),
@@ -87,6 +121,10 @@ const mount = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	// Reset the tab mock so a test that sets `setTab('users')`
+	// doesn't leak into the next test (default = /admin →
+	// dashboard).
+	setTab(undefined);
 	m(admin.getDashboard).mockResolvedValue(dashboard);
 	m(admin.listUsers).mockResolvedValue({ total: 1, users: [user] });
 	m(admin.listPlugins).mockResolvedValue({ available: true, enabled: true, plugins: [] });
@@ -136,8 +174,8 @@ it('toggles registration from the dashboard', async () => {
 
 it('loads users when the users tab is opened and creates a user', async () => {
 	m(admin.createUser).mockResolvedValue(undefined);
+	setTab('users');
 	render(AdminPage);
-	await fireEvent.click(await screen.findByTestId('admin-users-tab'));
 	await waitFor(() => expect(admin.listUsers).toHaveBeenCalled());
 	await fireEvent.click(await screen.findByTestId('admin-users-create-btn'));
 	await fireEvent.input(await screen.findByTestId('admin-create-user-username-input'), {
@@ -151,33 +189,33 @@ it('loads users when the users tab is opened and creates a user', async () => {
 });
 
 it('loads OIDC settings when the OIDC tab is opened', async () => {
+	setTab('oidc');
 	render(AdminPage);
-	await fireEvent.click(await screen.findByTestId('admin-oidc-tab'));
 	await waitFor(() => expect(admin.getOidcSettings).toHaveBeenCalled());
 });
 
 it('loads storage + migration when the storage tab is opened', async () => {
+	setTab('storage');
 	render(AdminPage);
-	await fireEvent.click(await screen.findByTestId('admin-storage-tab'));
 	await waitFor(() => expect(admin.getStorageSettings).toHaveBeenCalled());
 	await waitFor(() => expect(admin.getMigration).toHaveBeenCalled());
 });
 
 it('loads SMTP info when the SMTP tab is opened', async () => {
+	setTab('smtp');
 	render(AdminPage);
-	await fireEvent.click(await screen.findByTestId('admin-smtp-tab'));
 	await waitFor(() => expect(admin.getSmtpInfo).toHaveBeenCalled());
 });
 
 it('loads plugins when the plugins tab is opened', async () => {
+	setTab('plugins');
 	render(AdminPage);
-	await fireEvent.click(await screen.findByTestId('admin-plugins-tab'));
 	await waitFor(() => expect(admin.listPlugins).toHaveBeenCalled());
 });
 
 it('loads external mounts when the mounts tab is opened and lists them', async () => {
+	setTab('mounts');
 	render(AdminPage);
-	await fireEvent.click(await screen.findByTestId('admin-mounts-tab'));
 	await waitFor(() => expect(admin.listExternalMounts).toHaveBeenCalled());
 	// The configured mount is rendered in the table.
 	expect(await screen.findByText('Media')).toBeTruthy();
@@ -194,8 +232,8 @@ it('creates a mount from the mounts form', async () => {
 		mount_path: 'Personal/Photos',
 		config: { path: '/srv/photos', read_only: false }
 	});
+	setTab('mounts');
 	render(AdminPage);
-	await fireEvent.click(await screen.findByTestId('admin-mounts-tab'));
 	await fireEvent.input(await screen.findByTestId('mount-name'), {
 		target: { value: 'Photos' }
 	});
@@ -212,8 +250,8 @@ it('creates a mount from the mounts form', async () => {
 
 it('deletes a mount through the confirm modal', async () => {
 	m(admin.deleteExternalMount).mockResolvedValue(undefined);
+	setTab('mounts');
 	render(AdminPage);
-	await fireEvent.click(await screen.findByTestId('admin-mounts-tab'));
 	await fireEvent.click(await screen.findByTestId('mount-delete'));
 	// deleteMount() gates on the styled confirm modal.
 	await fireEvent.click(await screen.findByTestId('admin-confirm-ok-btn'));
@@ -222,8 +260,8 @@ it('deletes a mount through the confirm modal', async () => {
 
 it("toggles a user's role through the confirm modal", async () => {
 	m(admin.setUserRole).mockResolvedValue(undefined);
+	setTab('users');
 	render(AdminPage);
-	await fireEvent.click(await screen.findByTestId('admin-users-tab'));
 	await fireEvent.click(await screen.findByTestId('admin-user-toggle-role-u1'));
 	await fireEvent.click(await screen.findByTestId('admin-confirm-ok-btn'));
 	await waitFor(() => expect(admin.setUserRole).toHaveBeenCalledWith('u1', 'admin'));
@@ -231,8 +269,8 @@ it("toggles a user's role through the confirm modal", async () => {
 
 it('deactivates a user through the confirm modal', async () => {
 	m(admin.setUserActive).mockResolvedValue(undefined);
+	setTab('users');
 	render(AdminPage);
-	await fireEvent.click(await screen.findByTestId('admin-users-tab'));
 	await fireEvent.click(await screen.findByTestId('admin-user-toggle-active-u1'));
 	await fireEvent.click(await screen.findByTestId('admin-confirm-ok-btn'));
 	await waitFor(() => expect(admin.setUserActive).toHaveBeenCalledWith('u1', false));
@@ -240,8 +278,8 @@ it('deactivates a user through the confirm modal', async () => {
 
 it('saves OIDC settings from the OIDC form', async () => {
 	m(admin.saveOidc).mockResolvedValue(undefined);
+	setTab('oidc');
 	render(AdminPage);
-	await fireEvent.click(await screen.findByTestId('admin-oidc-tab'));
 	await fireEvent.input(await screen.findByTestId('admin-oidc-issuer-input'), {
 		target: { value: 'https://idp.test' }
 	});
@@ -251,8 +289,8 @@ it('saves OIDC settings from the OIDC form', async () => {
 
 it('sends an SMTP test email', async () => {
 	m(admin.sendSmtpTest).mockResolvedValue({ ok: true } as never);
+	setTab('smtp');
 	render(AdminPage);
-	await fireEvent.click(await screen.findByTestId('admin-smtp-tab'));
 	await fireEvent.input(await screen.findByTestId('admin-smtp-to-input'), {
 		target: { value: 'to@x.test' }
 	});
@@ -263,8 +301,8 @@ it('sends an SMTP test email', async () => {
 it('saves storage settings and starts a migration', async () => {
 	m(admin.saveStorage).mockResolvedValue(undefined);
 	m(admin.migrationAction).mockResolvedValue(undefined);
+	setTab('storage');
 	render(AdminPage);
-	await fireEvent.click(await screen.findByTestId('admin-storage-tab'));
 	await fireEvent.submit(await screen.findByTestId('admin-storage-form'));
 	await waitFor(() => expect(admin.saveStorage).toHaveBeenCalled());
 	await fireEvent.click(await screen.findByTestId('admin-migration-start-btn'));

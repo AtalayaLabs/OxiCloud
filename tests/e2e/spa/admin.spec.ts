@@ -15,44 +15,47 @@ test.beforeEach(async ({ page }) => {
 
 test('walk every admin tab', async ({ page }) => {
   await page.goto('/admin');
-  await expect(page.getByTestId('admin-dashboard-tab')).toBeVisible({ timeout: 15_000 });
-  // Dashboard is the default tab.
+  // Dashboard is the default section on `/admin` (bare path).
+  // Assert on the sidebar entry (now the source of admin navigation)
+  // and on content that only renders when Dashboard is active.
+  await expect(page.getByTestId('appshell-nav-admin-dashboard-link')).toBeVisible({
+    timeout: 15_000
+  });
   await expect(page.getByTestId('admin-dashboard-registration-checkbox')).toBeVisible();
 
-  await page.getByTestId('admin-users-tab').click();
+  await page.goto('/admin/users');
   await expect(page.getByTestId('admin-users-create-btn')).toBeVisible();
 
-  await page.getByTestId('admin-oidc-tab').click();
+  await page.goto('/admin/oidc');
   await expect(page.getByTestId('admin-oidc-form')).toBeVisible();
 
-  await page.getByTestId('admin-storage-tab').click();
+  await page.goto('/admin/storage');
   await expect(page.getByTestId('admin-storage-form')).toBeVisible();
 
-  await page.getByTestId('admin-smtp-tab').click();
+  await page.goto('/admin/smtp');
   await expect(page.getByTestId('admin-smtp-send-btn')).toBeVisible();
 
-  await page.getByTestId('admin-plugins-tab').click();
-  // Plugins panel content is conditional; assert the tab became active.
-  await expect(page.getByTestId('admin-plugins-tab')).toHaveAttribute('aria-selected', 'true');
+  await page.goto('/admin/plugins');
+  // Plugins panel content is conditional; assert the URL landed
+  // on the plugins section (proves routing worked; no content
+  // guarantee).
+  await expect(page).toHaveURL(/\/admin\/plugins$/);
 });
 
 test('open the create-user form', async ({ page }) => {
-  await page.goto('/admin');
-  await page.getByTestId('admin-users-tab').click();
+  await page.goto('/admin/users');
   await page.getByTestId('admin-users-create-btn').click();
   await expect(page.getByTestId('admin-create-user-form')).toBeVisible({ timeout: 15_000 });
 });
 
 test('storage tab: change backend select', async ({ page }) => {
-  await page.goto('/admin');
-  await page.getByTestId('admin-storage-tab').click();
+  await page.goto('/admin/storage');
   await expect(page.getByTestId('admin-storage-form')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('admin-storage-backend-select').selectOption({ index: 1 }).catch(() => {});
 });
 
 test('storage tab: save the local backend settings', async ({ page }) => {
-  await page.goto('/admin');
-  await page.getByTestId('admin-storage-tab').click();
+  await page.goto('/admin/storage');
   await expect(page.getByTestId('admin-storage-form')).toBeVisible({ timeout: 15_000 });
   // Keep the (safe) local backend and save — exercises the save handler without
   // reconfiguring storage to a remote backend.
@@ -62,8 +65,7 @@ test('storage tab: save the local backend settings', async ({ page }) => {
 });
 
 test('oidc tab: toggle enabled and fill issuer', async ({ page }) => {
-  await page.goto('/admin');
-  await page.getByTestId('admin-oidc-tab').click();
+  await page.goto('/admin/oidc');
   await expect(page.getByTestId('admin-oidc-form')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('admin-oidc-enabled-checkbox').check().catch(() => {});
   await page
@@ -84,8 +86,7 @@ async function createUserRow(
   page: import('@playwright/test').Page,
   uname: string,
 ): Promise<ReturnType<import('@playwright/test').Page['locator']>> {
-  await page.goto('/admin');
-  await page.getByTestId('admin-users-tab').click();
+  await page.goto('/admin/users');
   await page.getByTestId('admin-users-create-btn').click();
   await expect(page.getByTestId('admin-create-user-form')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('admin-create-user-username-input').fill(uname);
@@ -165,8 +166,7 @@ test('save a user quota and deactivate the user', async ({ page }) => {
 });
 
 test('save oidc settings', async ({ page }) => {
-  await page.goto('/admin');
-  await page.getByTestId('admin-oidc-tab').click();
+  await page.goto('/admin/oidc');
   await expect(page.getByTestId('admin-oidc-form')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('admin-oidc-issuer-input').fill('https://example.test/issuer').catch(() => {});
   await page.getByTestId('admin-oidc-client-id-input').fill('client-123').catch(() => {});
@@ -175,9 +175,8 @@ test('save oidc settings', async ({ page }) => {
 });
 
 test('install, toggle, and delete a plugin', async ({ page }) => {
-  await page.goto('/admin');
-  await page.getByTestId('admin-plugins-tab').click();
-  await expect(page.getByTestId('admin-plugins-tab')).toHaveAttribute('aria-selected', 'true');
+  await page.goto('/admin/plugins');
+  await expect(page).toHaveURL(/\/admin\/plugins$/);
 
   // Install the example hello plugin (plugins are enabled in the coverage env).
   await page.getByTestId('admin-plugins-install-input').setInputFiles(PLUGIN_ZIP);
@@ -200,8 +199,7 @@ test('install, toggle, and delete a plugin', async ({ page }) => {
 });
 
 test('view plugin logs and details', async ({ page }) => {
-  await page.goto('/admin');
-  await page.getByTestId('admin-plugins-tab').click();
+  await page.goto('/admin/plugins');
   await page.getByTestId('admin-plugins-install-input').setInputFiles(PLUGIN_ZIP);
   await expect(page.locator('[data-testid^="admin-plugin-details-"]').first()).toBeVisible({
     timeout: 20_000,
@@ -223,9 +221,8 @@ test('view plugin logs and details', async ({ page }) => {
 });
 
 test('plugins tab: save retention settings', async ({ page }) => {
-  await page.goto('/admin');
-  await page.getByTestId('admin-plugins-tab').click();
-  await expect(page.getByTestId('admin-plugins-tab')).toHaveAttribute('aria-selected', 'true');
+  await page.goto('/admin/plugins');
+  await expect(page).toHaveURL(/\/admin\/plugins$/);
   // The retention form is conditional; fill + save it when present.
   const retention = page.getByTestId('admin-plugin-retention-form');
   if (await retention.isVisible().catch(() => false)) {
@@ -243,8 +240,7 @@ test('toggle the dashboard registration setting', async ({ page }) => {
 });
 
 test('send a test email from the smtp tab', async ({ page }) => {
-  await page.goto('/admin');
-  await page.getByTestId('admin-smtp-tab').click();
+  await page.goto('/admin/smtp');
   await expect(page.getByTestId('admin-smtp-to-input')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('admin-smtp-to-input').fill('test@example.test');
   await page.getByTestId('admin-smtp-send-btn').click();
@@ -252,8 +248,7 @@ test('send a test email from the smtp tab', async ({ page }) => {
 });
 
 test('storage tab: fill the S3 backend fields', async ({ page }) => {
-  await page.goto('/admin');
-  await page.getByTestId('admin-storage-tab').click();
+  await page.goto('/admin/storage');
   await expect(page.getByTestId('admin-storage-form')).toBeVisible({ timeout: 15_000 });
 
   // Switch to S3 to reveal + fill the conditional fields (no save — that would
@@ -270,8 +265,7 @@ test('storage tab: fill the S3 backend fields', async ({ page }) => {
 });
 
 test('oidc tab: run discovery against a bogus issuer', async ({ page }) => {
-  await page.goto('/admin');
-  await page.getByTestId('admin-oidc-tab').click();
+  await page.goto('/admin/oidc');
   await expect(page.getByTestId('admin-oidc-form')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('admin-oidc-issuer-input').fill('https://idp.example.test').catch(() => {});
   // Discovery fails (no real IdP) — exercises the discover + error path.
@@ -286,8 +280,7 @@ test('users tab: paginate the user list', async ({ page }) => {
   for (let i = 0; i < 26; i++) {
     await apiAdminCreateUser(page, `pageu${Date.now()}${i}`);
   }
-  await page.goto('/admin');
-  await page.getByTestId('admin-users-tab').click();
+  await page.goto('/admin/users');
   await expect(page.getByTestId('admin-users-pager-next-btn')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('admin-users-pager-next-btn').click();
   await page.waitForTimeout(400);
@@ -295,8 +288,7 @@ test('users tab: paginate the user list', async ({ page }) => {
 });
 
 test('plugins tab: install then save retention settings', async ({ page }) => {
-  await page.goto('/admin');
-  await page.getByTestId('admin-plugins-tab').click();
+  await page.goto('/admin/plugins');
   await page.getByTestId('admin-plugins-install-input').setInputFiles(PLUGIN_ZIP);
   await expect(page.locator('[data-testid^="admin-plugin-delete-"]').first()).toBeVisible({
     timeout: 20_000,

@@ -410,12 +410,24 @@ mod integration_tests {
         // 5. Set the artificially-wrong cached used_bytes. LAST, so
         //    no INSERT-side trigger overwrites our fake (there is no
         //    such trigger today, but ordering is cheap insurance).
-        sqlx::query("UPDATE storage.drives SET used_bytes = $1 WHERE id = $2")
-            .bind(cached)
-            .bind(drive_id)
-            .execute(pool)
-            .await
-            .expect("set fake used_bytes");
+        //    Also backdate `created_at` past the tenant's 1-hour
+        //    grace window (`created_at < NOW() - INTERVAL '1 hour'`
+        //    in the SQL) — freshly-seeded fixtures are by definition
+        //    younger than that window and would otherwise be
+        //    silently skipped by the scan, leaving `scanned_count`
+        //    at 0 and the drift-detection assertions with nothing
+        //    to compare against.
+        sqlx::query(
+            "UPDATE storage.drives \
+               SET used_bytes = $1, \
+                   created_at = NOW() - INTERVAL '2 hours' \
+             WHERE id = $2",
+        )
+        .bind(cached)
+        .bind(drive_id)
+        .execute(pool)
+        .await
+        .expect("set fake used_bytes + backdate");
 
         drive_id
     }
