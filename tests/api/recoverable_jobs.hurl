@@ -125,10 +125,15 @@ HTTP 200
 jsonpath "$.id"       == "{{run_id}}"
 jsonpath "$.job_name" == "drives_consistency"
 jsonpath "$.status"   == "Completed"
-# scanned_count is bumped by the handler's checkpoint call — at
-# least 0 (empty drives table) but ordinarily > 0 for any real
-# fixture data. Present-ness of the field is what we pin.
-jsonpath "$.stats.scanned_count" isNumber
+# `stats` is always present (JSONB NOT NULL DEFAULT '{}'); its
+# per-key shape is job-specific. `scanned_count` is bumped by the
+# handler's `checkpoint()` call, but the drives handler only
+# checkpoints when it processes a batch — a run that finds zero
+# rows in the first batch (e.g. all fixture drives sit inside the
+# 1h grace window on `storage.drives.created_at`) completes
+# without ever calling checkpoint, so `scanned_count` may be
+# absent. Pin `stats` existence; leave the counter unpinned.
+jsonpath "$.stats" exists
 
 
 # ─────────────────────────────────────────────────────────────

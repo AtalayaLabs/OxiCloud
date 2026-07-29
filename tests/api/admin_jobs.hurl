@@ -90,13 +90,14 @@ jsonpath "$..interval_ms" count == 3
 
 # Every entry carries a `running` bool — same aggregate primitive.
 # Count matches the registered-tenant count: 4 Part 1 periodics
-# (trash_cleanup, storage_reconcile, dedup_gc, grant_cleanup) + 3
+# (trash_cleanup, storage_reconcile, dedup_gc, grant_cleanup) + 5
 # Part 2 recoverables (drives_consistency, folders_consistency,
-# files_consistency — wrapped by RecoverableAdapter so they appear
-# here alongside the periodics) + 1 coordinator (consistency_batch
-# — a plain JobHandler that dispatches every registered
-# `*_consistency`). Bump when a new tenant registers.
-jsonpath "$..running" count == 8
+# files_consistency, blobs_consistency, backend_consistency —
+# wrapped by RecoverableAdapter so they appear here alongside the
+# periodics) + 1 coordinator (consistency_batch — a plain
+# JobHandler that dispatches every registered `*_consistency`).
+# Bump when a new tenant registers.
+jsonpath "$..running" count == 10
 jsonpath "$[*].name" contains "drives_consistency"
 jsonpath "$[*].name" contains "folders_consistency"
 jsonpath "$[*].name" contains "files_consistency"
@@ -214,11 +215,12 @@ jsonpath "$.outcome.count" exists
 # Step 4c — Trigger `consistency_batch`. Coordinator (plain
 #           JobHandler) — snapshots the registry, filters names
 #           ending `_consistency`, sequentially triggers each.
-#           `outcome.count` = number of children dispatched (3 as
-#           of Slice 6: drives + folders + files). `extra.per_check`
-#           carries a per-child outcome map. Batch itself always
-#           returns ok — child failures live inside per_check.
-#           `?deep=true` propagates as `extra.deep`.
+#           `outcome.count` = number of children dispatched (5 as
+#           of Slice 10: drives + folders + files + blobs +
+#           backend). `extra.per_check` carries a per-child outcome
+#           map. Batch itself always returns ok — child failures
+#           live inside per_check. `?deep=true` propagates as
+#           `extra.deep`.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/admin/jobs/consistency_batch/trigger?deep=true
 Authorization: Bearer {{admin_token}}
@@ -227,14 +229,16 @@ HTTP 200
 [Asserts]
 jsonpath "$.ok" == true
 jsonpath "$.outcome.outcome" == "ok"
-jsonpath "$.outcome.count" == 3
+jsonpath "$.outcome.count" == 5
 jsonpath "$.outcome.extra.deep" == true
-jsonpath "$.outcome.extra.ok" == 3
+jsonpath "$.outcome.extra.ok" == 5
 jsonpath "$.outcome.extra.err" == 0
 # per_check is keyed by child job name.
 jsonpath "$.outcome.extra.per_check.drives_consistency.outcome"  == "ok"
 jsonpath "$.outcome.extra.per_check.folders_consistency.outcome" == "ok"
 jsonpath "$.outcome.extra.per_check.files_consistency.outcome"   == "ok"
+jsonpath "$.outcome.extra.per_check.blobs_consistency.outcome"   == "ok"
+jsonpath "$.outcome.extra.per_check.backend_consistency.outcome" == "ok"
 
 
 # ─────────────────────────────────────────────────────────────
