@@ -409,6 +409,28 @@ impl JobStoreProvider for PgJobStoreProvider {
             .collect())
     }
 
+    async fn finding_severity_counts(
+        &self,
+        run_id: Uuid,
+    ) -> Result<Vec<(String, u64)>, DomainError> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            r#"
+            SELECT severity, COUNT(*)::bigint
+              FROM jobs.run_findings
+             WHERE run_id = $1
+             GROUP BY severity
+            "#,
+        )
+        .bind(run_id)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| map_sqlx_err("finding_severity_counts", e))?;
+        Ok(rows
+            .into_iter()
+            .map(|(sev, count)| (sev, count.max(0) as u64))
+            .collect())
+    }
+
     async fn request_cancel(&self, job_name: &str) -> Result<Option<Uuid>, DomainError> {
         // Only Running → CancelRequested flips. `Paused` can be
         // cancelled by not resuming — no need for a state change.

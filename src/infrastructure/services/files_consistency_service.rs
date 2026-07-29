@@ -435,6 +435,36 @@ impl RecoverableJobHandler for FilesConsistencyCheck {
                     )
                     .await;
                 }
+
+                // (4) legacy_uncdc_file: informational — this file
+                // is served via the pre-CDC whole-file blob fallback,
+                // not the modern chunk-manifest path. Not broken;
+                // just misses out on sub-file dedup benefits + never
+                // shares chunks with newer uploads. Severity
+                // `anomaly` (surprising state, no known impact) so
+                // the UI renders it as a notice, not a warning.
+                // Fires when the blob registry has a whole-file row
+                // for this hash but there is no manifest. Recovery
+                // path: `ReingestLegacy` (deferred, see
+                // `docs/plan/recovery.md`).
+                if row.blob_size.is_some() && row.manifest_size.is_none() {
+                    finding_count += 1;
+                    record_or_log(
+                        store,
+                        FILES_CONSISTENCY_JOB_NAME,
+                        "legacy_uncdc_file",
+                        "anomaly",
+                        Some(row.id),
+                        serde_json::json!({
+                            "name":      row.name,
+                            "path":      path,
+                            "blob_hash": row.blob_hash,
+                            "size":      row.size,
+                            "note":      "pre-CDC whole-file blob; re-ingest for sub-file dedup",
+                        }),
+                    )
+                    .await;
+                }
             }
 
             // Advance cursor + checkpoint. `batch_len` feeds

@@ -374,10 +374,7 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
             let last_hash = rows.last().map(|r| r.hash.clone()).expect("non-empty rows");
             cursor = Some(last_hash.clone());
             let batch_len = rows.len() as u64;
-            if let Err(e) = store
-                .checkpoint(last_hash.into_bytes(), batch_len)
-                .await
-            {
+            if let Err(e) = store.checkpoint(last_hash.into_bytes(), batch_len).await {
                 return RunOutcome::Failed {
                     message: format!("checkpoint: {e}"),
                 };

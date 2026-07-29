@@ -231,26 +231,71 @@
 	}
 
 	/**
-	 * Number of findings the last completed run surfaced, from
-	 * `last_outcome.extra.finding_count` (populated by `run_or_resume`
-	 * on Completed/Paused). Returns 0 for jobs without a recoverable
-	 * shape, jobs that haven't run yet, or runs pre-dating the field.
+	 * Per-severity finding counts from `last_outcome.extra.severity_counts`
+	 * (a JSON object populated by `run_or_resume`). Missing / older
+	 * runs return an empty record — callers should tolerate absent keys.
+	 * The three severity values are the ones consistency tenants emit
+	 * today: `data_loss`, `inconsistent`, `anomaly`.
 	 */
-	function lastFindingCount(job: JobSummary): number {
-		if (!job.last_outcome || job.last_outcome.outcome !== 'ok') return 0;
-		const extra = job.last_outcome.extra as { finding_count?: number } | undefined;
-		return extra?.finding_count ?? 0;
+	function lastSeverityCounts(job: JobSummary): Record<string, number> {
+		if (!job.last_outcome || job.last_outcome.outcome !== 'ok') return {};
+		const extra = job.last_outcome.extra as
+			| { severity_counts?: Record<string, number> }
+			| undefined;
+		return extra?.severity_counts ?? {};
+	}
+
+	/**
+	 * Actionable findings = `data_loss + inconsistent`. Those are what
+	 * turn the outer outcome pill amber ("issues") and get the red
+	 * badge on the outer job row. `anomaly` findings are informational
+	 * and render as a blue notice instead — they don't count here.
+	 */
+	function actionableFindingCount(job: JobSummary): number {
+		const s = lastSeverityCounts(job);
+		return (s.data_loss ?? 0) + (s.inconsistent ?? 0);
+	}
+
+	function anomalyFindingCount(job: JobSummary): number {
+		return lastSeverityCounts(job).anomaly ?? 0;
+	}
+
+	/**
+	 * Pill CSS modifier for a finding's severity — extracted so the
+	 * findings-table cell and any future summary render share one
+	 * source of truth.
+	 *  - `data_loss` → red (`err`)
+	 *  - `inconsistent` → amber (`paused`)
+	 *  - `anomaly` → blue (`notice`)
+	 *  - unknown → neutral grey
+	 */
+	function severityPillModifier(severity: string): string {
+		switch (severity) {
+			case 'data_loss':
+				return 'err';
+			case 'inconsistent':
+				return 'paused';
+			case 'anomaly':
+				return 'notice';
+			default:
+				return 'neutral';
+		}
 	}
 
 	function outcomeLabel(job: JobSummary): string {
 		if (!job.last_outcome) return t('admin.jobs.never', 'never');
 		if (job.last_outcome.outcome === 'ok') {
-			// `ok` on the wire = dispatch completed. But if findings
-			// were surfaced, "ok" reads as "all good" to the operator,
-			// which is misleading — flip the label + colour to warn.
-			return lastFindingCount(job) > 0
-				? t('admin.jobs.outcome_issues', 'issues')
-				: t('admin.jobs.outcome_ok', 'ok');
+			// `ok` on the wire = dispatch completed. If any actionable
+			// findings surfaced, we flip to "issues" (amber). If only
+			// anomalies (informational), we flip to "notices" (blue).
+			// Clean run stays green.
+			if (actionableFindingCount(job) > 0) {
+				return t('admin.jobs.outcome_issues', 'issues');
+			}
+			if (anomalyFindingCount(job) > 0) {
+				return t('admin.jobs.outcome_notices', 'notices');
+			}
+			return t('admin.jobs.outcome_ok', 'ok');
 		}
 		return t('admin.jobs.outcome_err', 'err');
 	}
@@ -260,9 +305,13 @@
 		if (job.last_outcome.outcome !== 'ok') {
 			return 'jobs-panel__pill jobs-panel__pill--err';
 		}
-		return lastFindingCount(job) > 0
-			? 'jobs-panel__pill jobs-panel__pill--paused'
-			: 'jobs-panel__pill jobs-panel__pill--ok';
+		if (actionableFindingCount(job) > 0) {
+			return 'jobs-panel__pill jobs-panel__pill--paused';
+		}
+		if (anomalyFindingCount(job) > 0) {
+			return 'jobs-panel__pill jobs-panel__pill--notice';
+		}
+		return 'jobs-panel__pill jobs-panel__pill--ok';
 	}
 
 	function statusClass(status: RunStatus): string {
@@ -435,8 +484,8 @@
 						<td>
 							<div class="jobs-panel__outcome-cell">
 								<span class={outcomeClass(job)}>{outcomeLabel(job)}</span>
-								{#if lastFindingCount(job) > 0}
-									{@const findings = lastFindingCount(job)}
+								{#if actionableFindingCount(job) > 0}
+									{@const findings = actionableFindingCount(job)}
 									<span
 										class="jobs-panel__pill jobs-panel__pill--err"
 										title={t(
@@ -445,6 +494,18 @@
 										)}
 									>
 										{t('admin.jobs.n_findings', { n: findings }, '{{n}} findings')}
+									</span>
+								{/if}
+								{#if anomalyFindingCount(job) > 0}
+									{@const notices = anomalyFindingCount(job)}
+									<span
+										class="jobs-panel__pill jobs-panel__pill--notice"
+										title={t(
+											'admin.jobs.notices_present_tooltip',
+											'Informational findings — no action required. Expand for detail.'
+										)}
+									>
+										{t('admin.jobs.n_notices', { n: notices }, '{{n}} notices')}
 									</span>
 								{/if}
 							</div>
@@ -727,10 +788,9 @@
 																							<td><code>{f.kind}</code></td>
 																							<td>
 																								<span
-																									class="jobs-panel__pill jobs-panel__pill--{f.severity ===
-																									'data_loss'
-																										? 'err'
-																										: 'paused'}"
+																									class="jobs-panel__pill jobs-panel__pill--{severityPillModifier(
+																										f.severity
+																									)}"
 																								>
 																									{f.severity}
 																								</span>
@@ -959,6 +1019,11 @@
 	.jobs-panel__pill--paused {
 		background: var(--color-warning-bg);
 		color: var(--color-warning-text);
+	}
+
+	.jobs-panel__pill--notice {
+		background: var(--color-info-bg);
+		color: var(--color-info-text);
 	}
 
 	.jobs-panel__pill--neutral {

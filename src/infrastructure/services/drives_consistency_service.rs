@@ -150,19 +150,27 @@ impl RecoverableJobHandler for DrivesConsistencyCheck {
             // the `files` row is already visible — that would false-
             // positive as `stale_used_bytes`. 1h matches the window
             // `blobs_consistency` uses; same rationale (writes-in-flight).
+            // NOTE: `storage.drives` has no `name` column. The drive's
+            // display name lives on its root folder (see the schema
+            // comment on `drives.root_folder_id` — "The display name
+            // lives here"). LEFT JOIN storage.folders ON id =
+            // drive.root_folder_id and read `folders.name` as the
+            // drive's human identifier. `COALESCE` handles the
+            // (bug-only) case where root_folder_id is NULL.
             let rows: Vec<(Uuid, String, i64, i64)> = match sqlx::query_as(
                 r#"
                 SELECT
-                    d.id,
-                    d.name,
-                    d.used_bytes,
+                    d.id                          AS id,
+                    COALESCE(rf.name, '?')        AS name,
+                    d.used_bytes                  AS used_bytes,
                     COALESCE((
                         SELECT SUM(size)::bigint
                           FROM storage.files
                          WHERE drive_id = d.id
                            AND NOT is_trashed
-                    ), 0) AS actual_bytes
+                    ), 0)                          AS actual_bytes
                   FROM storage.drives d
+                  LEFT JOIN storage.folders rf ON rf.id = d.root_folder_id
                  WHERE ($1::uuid IS NULL OR d.id > $1)
                    AND d.created_at < NOW() - INTERVAL '1 hour'
                  ORDER BY d.id

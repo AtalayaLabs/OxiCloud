@@ -358,6 +358,19 @@ pub trait JobStoreProvider: Send + Sync {
         limit: u32,
         offset: u32,
     ) -> Result<Vec<Finding>, DomainError>;
+
+    /// Aggregate finding count grouped by severity for a specific
+    /// run. Used by [`run_or_resume`] to fold per-severity counts
+    /// into the outer `JobOutcome::extra` so the admin UI can
+    /// distinguish `data_loss`/`inconsistent` findings (which turn
+    /// the outer outcome pill amber/red — actionable) from
+    /// `anomaly` findings (which render as a neutral notice —
+    /// informational). Runs one grouped SQL query; O(number of
+    /// distinct severities on the run) rows returned.
+    async fn finding_severity_counts(
+        &self,
+        run_id: Uuid,
+    ) -> Result<Vec<(String, u64)>, DomainError>;
 }
 
 /// How a `RunProgress` fraction was derived. Lets the UI communicate
@@ -573,18 +586,19 @@ pub async fn run_or_resume(
     // as "has findings" without also fetching the run history.
     // Called AFTER the handler returns but BEFORE the terminal write,
     // so stats are the ones accumulated during the run.
-    let (finding_count, scanned_count) = fetch_outcome_stats(&*provider, run_id).await;
+    let stats = fetch_outcome_stats(&*provider, run_id).await;
 
     match outcome {
         RunOutcome::Completed => {
             log_terminal_write_err("mark_completed", run_id, store.mark_completed().await);
             JobOutcome::ok_with(
-                finding_count,
+                stats.finding_count,
                 serde_json::json!({
-                    "completed": true,
-                    "run_id": run_id.to_string(),
-                    "finding_count": finding_count,
-                    "scanned_count": scanned_count,
+                    "completed":         true,
+                    "run_id":            run_id.to_string(),
+                    "finding_count":     stats.finding_count,
+                    "scanned_count":     stats.scanned_count,
+                    "severity_counts":   stats.by_severity,
                 }),
             )
         }
@@ -592,13 +606,14 @@ pub async fn run_or_resume(
             let cursor_hex = hex::encode(&cursor);
             log_terminal_write_err("mark_paused", run_id, store.mark_paused(Some(cursor)).await);
             JobOutcome::ok_with(
-                finding_count,
+                stats.finding_count,
                 serde_json::json!({
-                    "paused": true,
-                    "run_id": run_id.to_string(),
-                    "cursor_hex": cursor_hex,
-                    "finding_count": finding_count,
-                    "scanned_count": scanned_count,
+                    "paused":            true,
+                    "run_id":            run_id.to_string(),
+                    "cursor_hex":        cursor_hex,
+                    "finding_count":     stats.finding_count,
+                    "scanned_count":     stats.scanned_count,
+                    "severity_counts":   stats.by_severity,
                 }),
             )
         }
@@ -609,25 +624,58 @@ pub async fn run_or_resume(
     }
 }
 
-/// Read `finding_count` + `scanned_count` from the just-completed
-/// run's `stats`. Missing/failed → `(0, 0)` — the outer outcome
-/// simply won't badge findings, which is the right fallback.
-async fn fetch_outcome_stats(provider: &dyn JobStoreProvider, run_id: Uuid) -> (u64, u64) {
-    match provider.get_run_by_id(run_id).await {
-        Ok(Some(summary)) => {
-            let finding_count = summary
+/// Aggregate summary of a just-completed run, folded into the
+/// outer `JobOutcome::extra`. Missing / failed queries default to
+/// zeros so the outer outcome stays quiet instead of erroring.
+struct OutcomeStats {
+    finding_count: u64,
+    scanned_count: u64,
+    /// Per-severity counts as a JSON map (`{"data_loss": N,
+    /// "inconsistent": M, "anomaly": K}`). The frontend uses this
+    /// to render the outer outcome pill: amber/red when
+    /// `data_loss + inconsistent > 0` (actionable), neutral notice
+    /// when only `anomaly > 0` (informational).
+    by_severity: serde_json::Value,
+}
+
+async fn fetch_outcome_stats(provider: &dyn JobStoreProvider, run_id: Uuid) -> OutcomeStats {
+    let (finding_count, scanned_count) = match provider.get_run_by_id(run_id).await {
+        Ok(Some(summary)) => (
+            summary
                 .stats
                 .get("finding_count")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let scanned_count = summary
+                .unwrap_or(0),
+            summary
                 .stats
                 .get("scanned_count")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            (finding_count, scanned_count)
-        }
+                .unwrap_or(0),
+        ),
         _ => (0, 0),
+    };
+
+    // Per-severity breakdown. Only queried when there are findings
+    // to break down — a clean run doesn't need the extra round-trip.
+    let by_severity = if finding_count > 0 {
+        match provider.finding_severity_counts(run_id).await {
+            Ok(rows) => {
+                let mut map = serde_json::Map::new();
+                for (severity, count) in rows {
+                    map.insert(severity, serde_json::Value::Number(count.into()));
+                }
+                serde_json::Value::Object(map)
+            }
+            Err(_) => serde_json::Value::Object(Default::default()),
+        }
+    } else {
+        serde_json::Value::Object(Default::default())
+    };
+
+    OutcomeStats {
+        finding_count,
+        scanned_count,
+        by_severity,
     }
 }
 
@@ -1027,6 +1075,23 @@ mod tests {
                 .take(limit as usize)
                 .cloned()
                 .collect())
+        }
+
+        async fn finding_severity_counts(
+            &self,
+            run_id: Uuid,
+        ) -> Result<Vec<(String, u64)>, DomainError> {
+            let stores = self.stores.lock().unwrap();
+            let Some(store) = stores.iter().find(|s| s.run_id == run_id) else {
+                return Ok(Vec::new());
+            };
+            let state = store.state.lock().unwrap();
+            let mut counts: std::collections::HashMap<String, u64> =
+                std::collections::HashMap::new();
+            for f in state.findings.iter() {
+                *counts.entry(f.severity.clone()).or_default() += 1;
+            }
+            Ok(counts.into_iter().collect())
         }
 
         async fn request_cancel(&self, _job_name: &str) -> Result<Option<Uuid>, DomainError> {
