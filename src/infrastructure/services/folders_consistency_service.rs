@@ -117,6 +117,29 @@ impl RecoverableJobHandler for FoldersConsistencyCheck {
         FOLDERS_CONSISTENCY_JOB_NAME
     }
 
+    /// Definitive count — one row per folder. Larger table than drives
+    /// but the COUNT(*) is still index-only on PG. On multi-million-row
+    /// deployments this is ~100ms at run start; acceptable given the
+    /// progress bar is only rendered when the operator is watching.
+    async fn count_total(&self) -> Option<u64> {
+        let row: Result<(i64,), sqlx::Error> =
+            sqlx::query_as("SELECT COUNT(*) FROM storage.folders")
+                .fetch_one(self.pool.as_ref())
+                .await;
+        match row {
+            Ok((n,)) => Some(n.max(0) as u64),
+            Err(e) => {
+                tracing::debug!(
+                    target: "oxicloud::consistency",
+                    event = "folders_consistency.count_total_failed",
+                    error = %e,
+                    "count_total failed — run will not surface a progress bar"
+                );
+                None
+            }
+        }
+    }
+
     async fn run_resumable(
         &self,
         store: &dyn JobStore,

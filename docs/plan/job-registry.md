@@ -865,8 +865,14 @@ backend slice. Order of appearance:
 3. `consistency_batch` + more tenants — done (Slices 5–6: drives + folders + files, plus batch).
 4. Frontend `/admin/jobs` page — takes the completed backend surface
    as-is; no backend changes required by the UI landing.
-5. **Deferred, post-UI:** progress estimation (`fraction`, `kind` on
-   `RunSummary`). See memory `project_job_progress_estimation`.
+5. Progress estimation on `RunSummary.progress` (`fraction`, `kind`,
+   `scanned`, `total`) — **done (Slice 9)**. Tenants that CAN count
+   their subject override `RecoverableJobHandler::count_total()`;
+   `run_or_resume` seeds `params.total_rows` + `params.progress_kind`
+   on fresh runs; `row_to_summary` derives the `progress` block at
+   serialisation time. UI renders a bar; `kind = "approximate"` runs
+   get a striped fill so operators recognise proxy-derived
+   estimates. See memory `project_job_progress_estimation`.
 
 ### Notifications & alerting
 

@@ -33,8 +33,9 @@ pub use engine::SchedulerEngine;
 pub use handler::JobHandler;
 pub use pg_job_store::{PgJobStore, PgJobStoreProvider};
 pub use recoverable::{
-    Finding, JobStore, JobStoreProvider, OpenedRun, RecoverableAdapter, RecoverableJobHandler,
-    RunOutcome, RunStatus, RunSummary, record_or_log, run_or_resume,
+    Finding, JobStore, JobStoreProvider, OpenedRun, ProgressKind, RecoverableAdapter,
+    RecoverableJobHandler, RunOutcome, RunProgress, RunStatus, RunSummary, derive_progress,
+    record_or_log, run_or_resume,
 };
 pub use registry::{JobEntry, JobRegistry, JobSummary, RegisterError};
 pub use types::{ErrCause, JobOutcome, JobRunArgs};

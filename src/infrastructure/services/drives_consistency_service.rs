@@ -69,6 +69,28 @@ impl RecoverableJobHandler for DrivesConsistencyCheck {
         DRIVES_CONSISTENCY_JOB_NAME
     }
 
+    /// Definitive count — one row per drive, table is tiny (dozens per
+    /// install), COUNT(*) is trivially fast. Enables progress bar on
+    /// the admin UI.
+    async fn count_total(&self) -> Option<u64> {
+        let row: Result<(i64,), sqlx::Error> =
+            sqlx::query_as("SELECT COUNT(*) FROM storage.drives")
+                .fetch_one(self.pool.as_ref())
+                .await;
+        match row {
+            Ok((n,)) => Some(n.max(0) as u64),
+            Err(e) => {
+                tracing::debug!(
+                    target: "oxicloud::consistency",
+                    event = "drives_consistency.count_total_failed",
+                    error = %e,
+                    "count_total failed — run will not surface a progress bar"
+                );
+                None
+            }
+        }
+    }
+
     async fn run_resumable(
         &self,
         store: &dyn JobStore,

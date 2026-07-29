@@ -16,7 +16,10 @@ use uuid::Uuid;
 
 use crate::common::errors::DomainError;
 
-use super::recoverable::{Finding, JobStore, JobStoreProvider, OpenedRun, RunStatus, RunSummary};
+use super::recoverable::{
+    Finding, JobStore, JobStoreProvider, OpenedRun, ProgressKind, RunStatus, RunSummary,
+    derive_progress,
+};
 
 // ─── PgJobStore — bound to one run ──────────────────────────────────────────
 
@@ -158,6 +161,40 @@ impl JobStore for PgJobStore {
                 "record_finding: parent run row missing during counter bump"
             );
         }
+        Ok(())
+    }
+
+    async fn seed_progress_params(
+        &self,
+        total: u64,
+        kind: ProgressKind,
+    ) -> Result<(), DomainError> {
+        // Stamp `params.total_rows` + `params.progress_kind` in one
+        // UPDATE. Two `jsonb_set` calls compose left-to-right so both
+        // keys land atomically. `bigint` cast handles the (theoretical)
+        // > 2^31 subject-row case.
+        let total_i64 = total as i64;
+        sqlx::query(
+            r#"
+            UPDATE jobs.recoverable_runs
+               SET params = jsonb_set(
+                                jsonb_set(
+                                    params,
+                                    '{total_rows}',
+                                    to_jsonb($2::bigint)
+                                ),
+                                '{progress_kind}',
+                                to_jsonb($3::text)
+                            )
+             WHERE id = $1
+            "#,
+        )
+        .bind(self.run_id)
+        .bind(total_i64)
+        .bind(kind.as_str())
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| map_sqlx_err("seed_progress_params", e))?;
         Ok(())
     }
 
@@ -454,6 +491,23 @@ fn row_to_summary(row: RunSummaryRow) -> Result<RunSummary, DomainError> {
     let status = RunStatus::parse(&status_str).ok_or_else(|| {
         DomainError::internal_error("JobStore", format!("unknown status: {status_str}"))
     })?;
+
+    // Derive progress from stats.scanned_count + params.total_rows +
+    // params.progress_kind. All three are optional — if the tenant
+    // didn't seed a total (no count_total override) the block is None
+    // and the UI hides the bar. `derive_progress` also guards against
+    // total = 0 (empty-subject run — bar would be meaningless).
+    let scanned = stats
+        .get("scanned_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let total = params.get("total_rows").and_then(|v| v.as_u64());
+    let kind = params
+        .get("progress_kind")
+        .and_then(|v| v.as_str())
+        .and_then(ProgressKind::parse);
+    let progress = derive_progress(scanned, total, kind);
+
     Ok(RunSummary {
         id,
         job_name,
@@ -465,6 +519,7 @@ fn row_to_summary(row: RunSummaryRow) -> Result<RunSummary, DomainError> {
         params,
         cursor_hex: cursor.map(hex::encode),
         error_message,
+        progress,
     })
 }
 

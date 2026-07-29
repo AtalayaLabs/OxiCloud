@@ -179,6 +179,34 @@ pub trait RecoverableJobHandler: Send + Sync {
         args: &JobRunArgs,
         resume_cursor: Option<Vec<u8>>,
     ) -> RunOutcome;
+
+    /// **Optional** — override to enable progress estimation on the
+    /// admin UI. Called ONCE at fresh-run start by [`run_or_resume`];
+    /// the returned count is stashed in `params.total_rows` and paired
+    /// with `stats.scanned_count` at serialisation time to produce a
+    /// `RunProgress` fraction on `RunSummary`.
+    ///
+    /// Return `None` (the default) when the tenant cannot count its
+    /// subject — an external crawler, a streaming source, or any
+    /// unbounded workload. The UI then hides the bar and falls back
+    /// to raw `scanned_count`.
+    ///
+    /// **Not called on resume.** A Paused run keeps the `total_rows`
+    /// stamped at its original start — mid-scan re-counts would make
+    /// the fraction jump around every time the operator resumed.
+    async fn count_total(&self) -> Option<u64> {
+        None
+    }
+
+    /// Confidence level of the count returned by [`count_total`].
+    /// Default is [`ProgressKind::Count`] — assume the count is
+    /// authoritative unless the tenant overrides. Tenants whose
+    /// `count_total` is a proxy (backend enumeration counting DB
+    /// blobs instead of backend objects) return
+    /// [`ProgressKind::Approximate`].
+    fn progress_kind(&self) -> ProgressKind {
+        ProgressKind::Count
+    }
 }
 
 /// Bound-to-a-run handle. The handler polls status + writes
@@ -208,6 +236,15 @@ pub trait JobStore: Send + Sync {
     /// `stats.scanned_count`, bump `last_progress_at`. Called between
     /// batches — the run's heartbeat.
     async fn checkpoint(&self, cursor: Vec<u8>, delta_count: u64) -> Result<(), DomainError>;
+
+    /// **Engine-only.** Called by [`run_or_resume`] on a Fresh run
+    /// after the tenant's [`RecoverableJobHandler::count_total`]
+    /// reports a countable subject. Stamps `params.total_rows` +
+    /// `params.progress_kind` on the row so subsequent `RunSummary`
+    /// projections can derive `progress` without asking the tenant
+    /// again. Handler code MUST NOT call this.
+    async fn seed_progress_params(&self, total: u64, kind: ProgressKind)
+    -> Result<(), DomainError>;
 
     /// Persist one finding to `jobs.run_findings` and bump
     /// `stats.finding_count` on the parent run. Consistency handlers
@@ -323,6 +360,91 @@ pub trait JobStoreProvider: Send + Sync {
     ) -> Result<Vec<Finding>, DomainError>;
 }
 
+/// How a `RunProgress` fraction was derived. Lets the UI communicate
+/// confidence to the operator — a `count`-derived 47% is authoritative,
+/// an `approximate`-derived 47% is a proxy (e.g. `storage_consistency`
+/// using DB blob count as a stand-in for backend object count).
+///
+/// A future `cursor` variant will cover UUID-cursor-position-derived
+/// fractions (`cursor_position / 2^128`) — useful when `COUNT(*)` on
+/// the subject table is too expensive to run at start. Not implemented
+/// yet; all shipped tenants override [`RecoverableJobHandler::count_total`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProgressKind {
+    /// `scanned_count / total_rows` where `total_rows` came from a
+    /// definitive `COUNT(*)` on the tenant's subject table.
+    Count,
+    /// `scanned_count / total_rows` where `total_rows` is a proxy
+    /// (e.g. DB blob count for a backend enumeration). The fraction
+    /// deviating from 1.0 at run end IS informative — it quantifies
+    /// the drift the check is looking for.
+    Approximate,
+}
+
+impl ProgressKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProgressKind::Count => "count",
+            ProgressKind::Approximate => "approximate",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "count" => Some(ProgressKind::Count),
+            "approximate" => Some(ProgressKind::Approximate),
+            _ => None,
+        }
+    }
+}
+
+/// Progress estimate on a recoverable run. Populated on `RunSummary`
+/// only when the tenant's [`RecoverableJobHandler::count_total`]
+/// returned `Some(n)` at run start — a tenant that cannot count its
+/// subject (external crawler, streaming source) leaves this `None` and
+/// the UI hides the progress bar.
+///
+/// `fraction` CAN exceed 1.0 at the end of an
+/// [`ProgressKind::Approximate`] run — the deviation IS the finding.
+/// The UI should clamp for the bar width but surface the raw fraction
+/// in the tooltip.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct RunProgress {
+    pub fraction: f32,
+    pub kind: ProgressKind,
+    /// Included so the UI can render "347 / 1200" alongside the bar
+    /// without recomputing from `stats.scanned_count`.
+    pub scanned: u64,
+    pub total: u64,
+}
+
+/// Build a `RunProgress` from the persisted scanned / total / kind.
+/// `None` when `total` is absent (tenant didn't count) OR zero (avoid
+/// dividing by zero and rendering a bar for an empty-subject run).
+pub fn derive_progress(
+    scanned: u64,
+    total: Option<u64>,
+    kind: Option<ProgressKind>,
+) -> Option<RunProgress> {
+    let total = total?;
+    if total == 0 {
+        return None;
+    }
+    let kind = kind.unwrap_or(ProgressKind::Count);
+    // We deliberately DON'T clamp — an approximate-kind run can
+    // legitimately exceed 1.0 (backend has orphans), and that
+    // deviation is informative signal. The UI clamps for bar width
+    // but shows raw fraction in the tooltip.
+    let fraction = scanned as f32 / total as f32;
+    Some(RunProgress {
+        fraction,
+        kind,
+        scanned,
+        total,
+    })
+}
+
 /// Serialisable snapshot of one `jobs.run_findings` row, returned by
 /// `GET /api/admin/jobs/{name}/runs/{id}/findings`. Consumers key off
 /// `kind` to know the shape of `detail`.
@@ -362,6 +484,12 @@ pub struct RunSummary {
     pub cursor_hex: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
+    /// Present when the tenant reported a countable subject at run
+    /// start (see [`RecoverableJobHandler::count_total`]). `None`
+    /// tells the UI "hide the progress bar, show scanned_count as a
+    /// raw number instead."
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<RunProgress>,
 }
 
 /// Result of [`JobStoreProvider::open_or_start`].
@@ -398,7 +526,7 @@ pub async fn run_or_resume(
         Ok(o) => o,
         Err(e) => return JobOutcome::err(format!("open_or_start failed: {e}")),
     };
-    let (store, resume_cursor) = match opened {
+    let (store, resume_cursor, is_fresh) = match opened {
         OpenedRun::AlreadyActive { run_id, status } => {
             return JobOutcome::ok_with(
                 0,
@@ -409,10 +537,29 @@ pub async fn run_or_resume(
                 }),
             );
         }
-        OpenedRun::Fresh { store } => (store, None),
-        OpenedRun::Resumed { store, cursor } => (store, Some(cursor)),
+        OpenedRun::Fresh { store } => (store, None, true),
+        OpenedRun::Resumed { store, cursor } => (store, Some(cursor), false),
     };
     let run_id = store.run_id();
+
+    // Seed progress params on a Fresh run only — a resumed run keeps
+    // the total_rows stamped when it originally started, otherwise
+    // the fraction would jump every time the operator resumed. A
+    // failed count is not fatal; the progress block just stays None
+    // on the summary (UI falls back to raw scanned_count).
+    if is_fresh && let Some(total) = job.count_total().await {
+        let kind = job.progress_kind();
+        if let Err(e) = store.seed_progress_params(total, kind).await {
+            tracing::warn!(
+                target: "oxicloud::scheduler",
+                event = "recoverable.seed_progress_failed",
+                job = job.name(),
+                run_id = %run_id,
+                error = %e,
+                "failed to seed progress params; run continues without a bar"
+            );
+        }
+    }
 
     // Dispatch. Terminal writes to `jobs.recoverable_runs` happen
     // here (NOT in the handler) so the row always ends in a state
@@ -581,6 +728,8 @@ mod tests {
         scanned_count: u64,
         error_message: Option<String>,
         findings: Vec<Finding>,
+        progress_total: Option<u64>,
+        progress_kind: Option<ProgressKind>,
     }
 
     #[async_trait]
@@ -617,6 +766,16 @@ mod tests {
                 detail,
                 created_at: Utc::now(),
             });
+            Ok(())
+        }
+        async fn seed_progress_params(
+            &self,
+            total: u64,
+            kind: ProgressKind,
+        ) -> Result<(), DomainError> {
+            let mut s = self.state.lock().unwrap();
+            s.progress_total = Some(total);
+            s.progress_kind = Some(kind);
             Ok(())
         }
         async fn mark_completed(&self) -> Result<(), DomainError> {
@@ -668,6 +827,8 @@ mod tests {
                     scanned_count: 0,
                     error_message: None,
                     findings: Vec::new(),
+                    progress_total: None,
+                    progress_kind: None,
                 }),
             });
             let id = store.run_id;
@@ -724,6 +885,8 @@ mod tests {
                     scanned_count: 0,
                     error_message: None,
                     findings: Vec::new(),
+                    progress_total: None,
+                    progress_kind: None,
                 }),
             });
             stores.push(store.clone());
@@ -760,6 +923,11 @@ mod tests {
                 .take(limit as usize)
                 .map(|s| {
                     let state = s.state.lock().unwrap();
+                    let progress = derive_progress(
+                        state.scanned_count,
+                        state.progress_total,
+                        state.progress_kind,
+                    );
                     RunSummary {
                         id: s.run_id,
                         job_name: job_name.to_string(),
@@ -771,6 +939,7 @@ mod tests {
                         params: serde_json::json!({}),
                         cursor_hex: state.cursor.as_ref().map(hex::encode),
                         error_message: state.error_message.clone(),
+                        progress,
                     }
                 })
                 .collect();
@@ -782,6 +951,11 @@ mod tests {
             let now = Utc::now();
             Ok(stores.iter().find(|s| s.run_id == run_id).map(|s| {
                 let state = s.state.lock().unwrap();
+                let progress = derive_progress(
+                    state.scanned_count,
+                    state.progress_total,
+                    state.progress_kind,
+                );
                 RunSummary {
                     id: s.run_id,
                     job_name: "mem".to_string(),
@@ -793,6 +967,7 @@ mod tests {
                     params: serde_json::json!({}),
                     cursor_hex: state.cursor.as_ref().map(hex::encode),
                     error_message: state.error_message.clone(),
+                    progress,
                 }
             }))
         }

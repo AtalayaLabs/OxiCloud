@@ -483,7 +483,9 @@
 													<th>{t('admin.jobs.col_started_at', 'Started')}</th>
 													<th>{t('admin.jobs.col_status', 'Status')}</th>
 													<th>{t('admin.jobs.col_duration', 'Duration')}</th>
-													<th>{t('admin.jobs.col_scanned', 'Scanned')}</th>
+													<th class="jobs-panel__col-progress">
+														{t('admin.jobs.col_progress', 'Progress')}
+													</th>
 													<th>{t('admin.jobs.col_findings', 'Findings')}</th>
 													<th class="jobs-panel__col-error">
 														{t('admin.jobs.col_error', 'Error')}
@@ -517,8 +519,52 @@
 														<td class="jobs-panel__muted">
 															{runDurationLabel(run)}
 														</td>
-														<td class="jobs-panel__num">
-															{scanned ?? '—'}
+														<td>
+															{#if run.progress}
+																{@const barPct = Math.min(
+																	100,
+																	Math.max(0, run.progress.fraction * 100)
+																)}
+																{@const pctLabel = (run.progress.fraction * 100).toFixed(1) + '%'}
+																<div
+																	class="jobs-panel__progress"
+																	title={run.progress.kind === 'approximate'
+																		? t(
+																				'admin.jobs.progress_approx_tooltip',
+																				{
+																					pct: pctLabel,
+																					scanned: run.progress.scanned,
+																					total: run.progress.total
+																				},
+																				'{{pct}} ({{scanned}} / {{total}} — approximate, backend proxy)'
+																			)
+																		: t(
+																				'admin.jobs.progress_exact_tooltip',
+																				{
+																					pct: pctLabel,
+																					scanned: run.progress.scanned,
+																					total: run.progress.total
+																				},
+																				'{{pct}} ({{scanned}} / {{total}})'
+																			)}
+																>
+																	<div
+																		class="jobs-panel__progress-bar"
+																		class:jobs-panel__progress-bar--approx={run.progress.kind ===
+																			'approximate'}
+																	>
+																		<div
+																			class="jobs-panel__progress-fill"
+																			style:width="{barPct}%"
+																		></div>
+																	</div>
+																	<span class="jobs-panel__progress-label">
+																		{run.progress.scanned}/{run.progress.total}
+																	</span>
+																</div>
+															{:else}
+																<span class="jobs-panel__num">{scanned ?? '—'}</span>
+															{/if}
 														</td>
 														<td class="jobs-panel__num">
 															{findingCount ?? 0}
@@ -940,5 +986,46 @@
 	.jobs-panel__link:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
+	}
+
+	.jobs-panel__col-progress {
+		min-width: 12rem;
+	}
+
+	.jobs-panel__progress {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+
+	.jobs-panel__progress-bar {
+		flex: 1;
+		height: 0.5rem;
+		background: var(--color-bg-subtle);
+		border-radius: 999px;
+		overflow: hidden;
+	}
+
+	.jobs-panel__progress-fill {
+		height: 100%;
+		background: var(--color-accent);
+		transition: width 0.25s ease-out;
+	}
+
+	.jobs-panel__progress-bar--approx .jobs-panel__progress-fill {
+		background: repeating-linear-gradient(
+			45deg,
+			var(--color-accent),
+			var(--color-accent) 6px,
+			var(--color-accent-hover) 6px,
+			var(--color-accent-hover) 12px
+		);
+	}
+
+	.jobs-panel__progress-label {
+		font-variant-numeric: tabular-nums;
+		font-size: 0.8rem;
+		color: var(--color-text-muted);
+		white-space: nowrap;
 	}
 </style>

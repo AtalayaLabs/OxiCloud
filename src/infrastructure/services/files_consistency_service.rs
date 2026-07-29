@@ -113,6 +113,30 @@ impl RecoverableJobHandler for FilesConsistencyCheck {
         FILES_CONSISTENCY_JOB_NAME
     }
 
+    /// Definitive count — one row per file. This is the largest table
+    /// of the trio (millions on big installs); COUNT(*) is still an
+    /// index-only scan but can take ~seconds. The tradeoff is worth
+    /// it — an operator staring at a running files_consistency scan
+    /// wants a bar, and a seconds-scale one-off at run start is
+    /// invisible compared to the multi-minute scan that follows.
+    async fn count_total(&self) -> Option<u64> {
+        let row: Result<(i64,), sqlx::Error> = sqlx::query_as("SELECT COUNT(*) FROM storage.files")
+            .fetch_one(self.pool.as_ref())
+            .await;
+        match row {
+            Ok((n,)) => Some(n.max(0) as u64),
+            Err(e) => {
+                tracing::debug!(
+                    target: "oxicloud::consistency",
+                    event = "files_consistency.count_total_failed",
+                    error = %e,
+                    "count_total failed — run will not surface a progress bar"
+                );
+                None
+            }
+        }
+    }
+
     async fn run_resumable(
         &self,
         store: &dyn JobStore,

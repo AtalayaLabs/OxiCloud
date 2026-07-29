@@ -578,6 +578,31 @@ export interface RunSummary {
 	params: Record<string, unknown>;
 	cursor_hex?: string;
 	error_message?: string;
+	/** Populated when the tenant reported a countable subject at run
+	 *  start (`RecoverableJobHandler::count_total`). Absent when the
+	 *  tenant can't count — the UI hides the progress bar and falls
+	 *  back to raw `scanned_count`. */
+	progress?: RunProgress;
+}
+
+/**
+ * Confidence level of a `RunProgress` fraction. Wire lowercase per
+ * the `#[serde(rename_all = "lowercase")]` on the Rust enum.
+ *
+ * - `count` — `scanned_count / total_rows` where `total_rows` came
+ *   from a definitive `COUNT(*)` on the subject table.
+ * - `approximate` — proxy-derived total (e.g. `storage_consistency`
+ *   using DB blob count as a stand-in for backend object count).
+ *   Fraction can legitimately exceed 1.0 at run end — the deviation
+ *   quantifies the drift the check is looking for.
+ */
+export type ProgressKind = 'count' | 'approximate';
+
+export interface RunProgress {
+	fraction: number;
+	kind: ProgressKind;
+	scanned: number;
+	total: number;
 }
 
 /**
