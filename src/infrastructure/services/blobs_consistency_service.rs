@@ -357,10 +357,21 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                 // (3) blob_corrupted — DEEP MODE only. Read the
                 // whole blob, recompute BLAKE3, compare to the hash
                 // it's indexed under. Any mismatch = silent bit-rot.
+                //
+                // Finding fields:
+                //   * `hash` — expected hash (the key the blob is
+                //     indexed under in `storage.blobs`).
+                //   * `computed_hash` — what BLAKE3 of the current
+                //     bytes actually produces. Diagnostic: a
+                //     one-bit flip vs a truncation vs a whole-file
+                //     swap all leave distinctive signatures.
+                //   `expected_hash` was NOT reused as a name to
+                //   avoid mistaking it for "the hash we expect to
+                //   see on disk (i.e. what will fix this)".
                 if args.deep {
-                    match verify_hash(self.backend.as_ref(), &row.hash).await {
-                        Ok(true) => {}
-                        Ok(false) => {
+                    match recompute_hash(self.backend.as_ref(), &row.hash).await {
+                        Ok(computed_hash) if computed_hash == row.hash => {}
+                        Ok(computed_hash) => {
                             finding_count += 1;
                             let affected = affected_files(self.pool.as_ref(), &row.hash).await;
                             record_or_log(
@@ -371,6 +382,7 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                                 None,
                                 serde_json::json!({
                                     "hash":            row.hash,
+                                    "computed_hash":   computed_hash,
                                     "size":            row.size,
                                     "ref_count":       row.ref_count,
                                     "affected_files":  affected,
@@ -381,11 +393,11 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                         Err(e) => {
                             tracing::warn!(
                                 target: "oxicloud::consistency",
-                                event = "blobs_consistency.verify_hash_error",
+                                event = "blobs_consistency.recompute_hash_error",
                                 run_id = %store.run_id(),
                                 hash = %row.hash,
                                 error = %e,
-                                "verify_hash failed; not a corruption signal on its own"
+                                "recompute_hash failed; not a corruption signal on its own"
                             );
                         }
                     }
@@ -452,10 +464,19 @@ async fn affected_files(pool: &PgPool, hash: &str) -> Vec<String> {
 /// (bit-rot), `Err(_)` on any backend-side error (network blip,
 /// permission issue) — callers log-and-skip errors since a transient
 /// failure isn't a corruption signal.
-async fn verify_hash(
+/// Deep-mode helper — read the blob from the backend and recompute
+/// its BLAKE3 hash. Returns the recomputed hex string; callers
+/// compare against the expected hash themselves. Returning the
+/// actual hash (not just a bool) lets the finding surface WHAT the
+/// bytes now hash to, which is diagnostic gold: a specific one-bit
+/// flip has a very different signature from a chunk-boundary
+/// corruption or a truncated read. `Err(_)` on backend-side error
+/// (network blip, permission issue) — callers log-and-skip since
+/// transient failure isn't a corruption signal.
+async fn recompute_hash(
     backend: &dyn BlobStorageBackend,
     expected_hash: &str,
-) -> Result<bool, crate::common::errors::DomainError> {
+) -> Result<String, crate::common::errors::DomainError> {
     use crate::common::errors::DomainError;
     use futures::StreamExt;
 
@@ -469,6 +490,5 @@ async fn verify_hash(
         hasher.update(&bytes);
     }
 
-    let actual = hasher.finalize().to_hex().to_string();
-    Ok(actual == expected_hash)
+    Ok(hasher.finalize().to_hex().to_string())
 }

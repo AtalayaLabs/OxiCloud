@@ -393,11 +393,16 @@
 		return null;
 	}
 
-	// The `consistency_batch` coordinator gets a "Run deep" variant —
-	// the only job that respects `?deep=true` today (via propagation to
-	// `storage_consistency` once it lands).
+	// Jobs that respect `?deep=true`:
+	//   * `consistency_batch` — propagates deep to every child that
+	//     understands it
+	//   * `blobs_consistency` — deep mode re-reads + re-hashes every
+	//     blob for silent bit-rot detection (severity `data_loss`).
+	//     Full read of storage; can take hours on big installs — the
+	//     "Run" (normal) button on the same row does the cheap
+	//     existence probes only.
 	function supportsDeep(name: string): boolean {
-		return name === 'consistency_batch';
+		return name === 'consistency_batch' || name === 'blobs_consistency';
 	}
 
 	function isRunning(job: JobSummary): boolean {
