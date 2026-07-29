@@ -80,6 +80,8 @@
     "trash": "Trash",
     "groups": "Groups",
     "primary": "Primary",
+    "admin_sections": "Admin sections",
+    "back_to_app": "Back to OxiCloud",
     "profile": "Profile",
     "shared_with_me": "Shared with me",
     "toggle": "Toggle navigation menu"
