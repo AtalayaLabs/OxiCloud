@@ -322,6 +322,13 @@ impl AppServiceFactory {
         let blob_lifecycle =
             Arc::new(BlobLifecycleService::new().with_hook(thumbnail_service.clone()));
 
+        // Hold a clone of the fully-decorated blob backend for use by
+        // `blobs_consistency` (physical-existence + bit-rot probes)
+        // further down the DI chain. Must be captured BEFORE the
+        // `dedup_service` construction below because that call moves
+        // `blob_backend` into DedupService.
+        let blob_backend_for_consistency = blob_backend.clone();
+
         // Deduplication service — PRIMARY blob storage engine (PostgreSQL-backed index)
         let dedup_service = Arc::new(
             crate::infrastructure::services::dedup_service::DedupService::new(
@@ -459,6 +466,7 @@ impl AppServiceFactory {
             config: self.config.clone(),
             job_registry,
             job_store_provider,
+            blob_backend: blob_backend_for_consistency,
         })
     }
 
@@ -1314,6 +1322,27 @@ impl AppServiceFactory {
         let _ = Arc::new(
             crate::infrastructure::services::files_consistency_service::FilesConsistencyCheck::new(
                 maintenance_pool.clone(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
+        // Fourth recoverable-run tenant. Iterates `storage.blobs`
+        // and verifies each row against the physical backend AND
+        // against the reference-counting invariants that `dedup_gc`
+        // relies on. Three per-row checks (subject-iteration in
+        // action): `blob_missing_from_backend` (data_loss, bytes
+        // gone from disk), `refcount_mismatch` (inconsistent,
+        // dedup counter drift), and `blob_corrupted` (data_loss,
+        // deep mode only — bit-rot). Complements
+        // `files_consistency` without doubling work: probing
+        // per-unique-blob preserves dedup savings vs probing
+        // per-file-chunk. See memory
+        // `project_cdc_dual_storage_registries` for the rationale.
+        let _ = Arc::new(
+            crate::infrastructure::services::blobs_consistency_service::BlobsConsistencyCheck::new(
+                maintenance_pool.clone(),
+                core.blob_backend.clone(),
             ),
         )
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
@@ -2278,6 +2307,12 @@ pub struct CoreServices {
     /// Boot-time crash-recovery sweep is run in `build_app_state` right
     /// after this provider is created.
     pub job_store_provider: Arc<crate::infrastructure::scheduler::PgJobStoreProvider>,
+    /// Fully-decorated blob backend (retry → encryption → cache
+    /// stack applied). Exposed here so tenants outside
+    /// `create_core_services` — notably `blobs_consistency` in
+    /// `build_app_state` — can probe `blob_exists()` / re-hash bytes
+    /// through the same stack DedupService uses.
+    pub blob_backend: Arc<dyn BlobStorageBackend>,
 }
 
 /// Container for repository services

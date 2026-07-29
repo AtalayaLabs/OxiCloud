@@ -1,5 +1,6 @@
 pub mod audio_metadata_service;
 pub mod azure_blob_backend;
+pub mod blobs_consistency_service;
 pub mod cached_blob_backend;
 pub mod chunked_upload_service;
 pub mod compression_service;
