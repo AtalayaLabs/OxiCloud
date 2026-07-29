@@ -222,6 +222,13 @@ impl RecoverableJobHandler for FoldersConsistencyCheck {
                   FROM storage.folders f
                   LEFT JOIN storage.folders parent ON parent.id = f.parent_id
                  WHERE ($1::uuid IS NULL OR f.id > $1)
+                   -- Grace: skip folders < 1h old. The
+                   -- `trg_folders_cascade_path` trigger runs on the
+                   -- writer's transaction, so a folder created RIGHT
+                   -- NOW could momentarily show a `path_mismatch`
+                   -- window before the cascade lands. Same grace
+                   -- shape as `blobs_consistency`.
+                   AND f.created_at < NOW() - INTERVAL '1 hour'
                  ORDER BY f.id
                  LIMIT $2
                 "#,

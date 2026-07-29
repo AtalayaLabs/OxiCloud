@@ -144,6 +144,12 @@ impl RecoverableJobHandler for DrivesConsistencyCheck {
             // query. LEFT JOIN via correlated subquery gets us both
             // sides in one round-trip; the storage_reconcile sweep
             // uses the same shape.
+            // Grace window: skip drives created within the last hour.
+            // A drive being created RIGHT NOW may still have its first
+            // upload's `used_bytes` counter not-yet-incremented while
+            // the `files` row is already visible — that would false-
+            // positive as `stale_used_bytes`. 1h matches the window
+            // `blobs_consistency` uses; same rationale (writes-in-flight).
             let rows: Vec<(Uuid, String, i64, i64)> = match sqlx::query_as(
                 r#"
                 SELECT
@@ -158,6 +164,7 @@ impl RecoverableJobHandler for DrivesConsistencyCheck {
                     ), 0) AS actual_bytes
                   FROM storage.drives d
                  WHERE ($1::uuid IS NULL OR d.id > $1)
+                   AND d.created_at < NOW() - INTERVAL '1 hour'
                  ORDER BY d.id
                  LIMIT $2
                 "#,

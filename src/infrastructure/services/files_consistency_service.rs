@@ -278,6 +278,14 @@ impl RecoverableJobHandler for FilesConsistencyCheck {
                   LEFT JOIN storage.blobs            b      ON b.hash      = f.blob_hash
                   LEFT JOIN storage.chunk_manifests  m      ON m.file_hash = f.blob_hash
                  WHERE ($1::uuid IS NULL OR f.id > $1)
+                   -- Grace: skip files < 1h old. Delta-upload inserts
+                   -- chunks with ref_count=0 BEFORE the commit that
+                   -- inserts the file row + manifest, so the normal
+                   -- path is race-free — but replace/overwrite flows
+                   -- have narrow windows where a mid-transaction scan
+                   -- could see `missing_blob` or `chunk_missing`.
+                   -- Same grace shape as `blobs_consistency`.
+                   AND f.created_at < NOW() - INTERVAL '1 hour'
                  ORDER BY f.id
                  LIMIT $2
                 "#,
