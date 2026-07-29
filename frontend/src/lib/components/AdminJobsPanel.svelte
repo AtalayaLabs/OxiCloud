@@ -65,9 +65,32 @@
 
 	// ─── Loading + polling ─────────────────────────────────────────────
 
+	/**
+	 * Stable render order for the jobs table. The backend snapshot
+	 * iterates a HashMap so its order is non-deterministic —
+	 * refreshing shuffles rows and hurts orientation.
+	 *
+	 * Two-tier sort: consistency tenants (including the
+	 * `consistency_batch` coordinator) group first, other tenants
+	 * follow. Alphabetical within each group. Keeps the consistency
+	 * story visually together so an operator investigating
+	 * corruption doesn't have to scan the full list to find the
+	 * related tenants.
+	 */
+	function sortKey(name: string): [number, string] {
+		const isConsistency = name.endsWith('_consistency') || name === 'consistency_batch';
+		return [isConsistency ? 0 : 1, name];
+	}
+
 	async function loadJobs() {
 		try {
-			jobs = await listJobs();
+			const fetched = await listJobs();
+			jobs = fetched.slice().sort((a, b) => {
+				const [ga, na] = sortKey(a.name);
+				const [gb, nb] = sortKey(b.name);
+				if (ga !== gb) return ga - gb;
+				return na.localeCompare(nb);
+			});
 			loadError = null;
 		} catch (e) {
 			loadError = errorMessage(e);

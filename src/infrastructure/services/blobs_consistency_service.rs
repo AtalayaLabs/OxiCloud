@@ -213,6 +213,24 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
             // GIN index on `chunk_hashes` (migration
             // 20260628000000_delta_upload_gin_index) makes the
             // `= ANY(chunk_hashes)` probe cheap.
+            // `storage.blobs.ref_count` semantics — what the invariant
+            // dedup_service maintains actually is:
+            //
+            //   ref_count = (number of chunk_manifests whose
+            //                chunk_hashes[] contains this hash)
+            //             + (number of files.blob_hash pointing at
+            //                this hash on the LEGACY whole-file path
+            //                — i.e. files with NO manifest for their
+            //                blob_hash)
+            //
+            // Naively `COUNT(files) + COUNT(manifests referring)`
+            // double-counts single-chunk CDC files: for a file whose
+            // whole-file hash == its single chunk's hash (any file
+            // small enough to fit in one CDC chunk — under ~256 KB
+            // average), the file appears BOTH in `files.blob_hash`
+            // AND in the manifest's `chunk_hashes[]`. The `NOT
+            // EXISTS` clause below excludes CDC-path files from the
+            // legacy count so the two terms don't overlap.
             let rows: Vec<BlobRow> = match sqlx::query_as(
                 r#"
                 SELECT
@@ -222,7 +240,11 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                     b.created_at                                       AS created_at,
                     (
                         (SELECT COUNT(*) FROM storage.files f
-                          WHERE f.blob_hash = b.hash)
+                          WHERE f.blob_hash = b.hash
+                            AND NOT EXISTS (
+                                SELECT 1 FROM storage.chunk_manifests m
+                                 WHERE m.file_hash = f.blob_hash
+                            ))
                       + (SELECT COUNT(*) FROM storage.chunk_manifests m
                           WHERE b.hash = ANY(m.chunk_hashes))
                     )::bigint                                          AS actual_ref_count
