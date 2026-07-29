@@ -564,14 +564,27 @@ pub async fn run_or_resume(
     // Dispatch. Terminal writes to `jobs.recoverable_runs` happen
     // here (NOT in the handler) so the row always ends in a state
     // that matches what the handler returned.
-    match job.run_resumable(&*store, args, resume_cursor).await {
+    let outcome = job.run_resumable(&*store, args, resume_cursor).await;
+
+    // Fetch the terminal run summary so we can surface aggregate
+    // stats (finding_count, scanned_count) on the outer JobOutcome
+    // extras. The outer admin listing (`GET /api/admin/jobs`) reads
+    // `last_outcome.extra` — without this the UI can't badge a job
+    // as "has findings" without also fetching the run history.
+    // Called AFTER the handler returns but BEFORE the terminal write,
+    // so stats are the ones accumulated during the run.
+    let (finding_count, scanned_count) = fetch_outcome_stats(&*provider, run_id).await;
+
+    match outcome {
         RunOutcome::Completed => {
             log_terminal_write_err("mark_completed", run_id, store.mark_completed().await);
             JobOutcome::ok_with(
-                0,
+                finding_count,
                 serde_json::json!({
                     "completed": true,
                     "run_id": run_id.to_string(),
+                    "finding_count": finding_count,
+                    "scanned_count": scanned_count,
                 }),
             )
         }
@@ -579,11 +592,13 @@ pub async fn run_or_resume(
             let cursor_hex = hex::encode(&cursor);
             log_terminal_write_err("mark_paused", run_id, store.mark_paused(Some(cursor)).await);
             JobOutcome::ok_with(
-                0,
+                finding_count,
                 serde_json::json!({
                     "paused": true,
                     "run_id": run_id.to_string(),
                     "cursor_hex": cursor_hex,
+                    "finding_count": finding_count,
+                    "scanned_count": scanned_count,
                 }),
             )
         }
@@ -591,6 +606,28 @@ pub async fn run_or_resume(
             log_terminal_write_err("mark_failed", run_id, store.mark_failed(&message).await);
             JobOutcome::err(format!("{message} (run_id={run_id})"))
         }
+    }
+}
+
+/// Read `finding_count` + `scanned_count` from the just-completed
+/// run's `stats`. Missing/failed → `(0, 0)` — the outer outcome
+/// simply won't badge findings, which is the right fallback.
+async fn fetch_outcome_stats(provider: &dyn JobStoreProvider, run_id: Uuid) -> (u64, u64) {
+    match provider.get_run_by_id(run_id).await {
+        Ok(Some(summary)) => {
+            let finding_count = summary
+                .stats
+                .get("finding_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let scanned_count = summary
+                .stats
+                .get("scanned_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            (finding_count, scanned_count)
+        }
+        _ => (0, 0),
     }
 }
 

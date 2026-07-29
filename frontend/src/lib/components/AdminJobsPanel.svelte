@@ -230,19 +230,39 @@
 		return t('admin.jobs.every_sec', { n: secs }, 'every {{n}} s');
 	}
 
+	/**
+	 * Number of findings the last completed run surfaced, from
+	 * `last_outcome.extra.finding_count` (populated by `run_or_resume`
+	 * on Completed/Paused). Returns 0 for jobs without a recoverable
+	 * shape, jobs that haven't run yet, or runs pre-dating the field.
+	 */
+	function lastFindingCount(job: JobSummary): number {
+		if (!job.last_outcome || job.last_outcome.outcome !== 'ok') return 0;
+		const extra = job.last_outcome.extra as { finding_count?: number } | undefined;
+		return extra?.finding_count ?? 0;
+	}
+
 	function outcomeLabel(job: JobSummary): string {
 		if (!job.last_outcome) return t('admin.jobs.never', 'never');
 		if (job.last_outcome.outcome === 'ok') {
-			return t('admin.jobs.outcome_ok', 'ok');
+			// `ok` on the wire = dispatch completed. But if findings
+			// were surfaced, "ok" reads as "all good" to the operator,
+			// which is misleading — flip the label + colour to warn.
+			return lastFindingCount(job) > 0
+				? t('admin.jobs.outcome_issues', 'issues')
+				: t('admin.jobs.outcome_ok', 'ok');
 		}
 		return t('admin.jobs.outcome_err', 'err');
 	}
 
 	function outcomeClass(job: JobSummary): string {
 		if (!job.last_outcome) return 'jobs-panel__pill jobs-panel__pill--neutral';
-		return job.last_outcome.outcome === 'ok'
-			? 'jobs-panel__pill jobs-panel__pill--ok'
-			: 'jobs-panel__pill jobs-panel__pill--err';
+		if (job.last_outcome.outcome !== 'ok') {
+			return 'jobs-panel__pill jobs-panel__pill--err';
+		}
+		return lastFindingCount(job) > 0
+			? 'jobs-panel__pill jobs-panel__pill--paused'
+			: 'jobs-panel__pill jobs-panel__pill--ok';
 	}
 
 	function statusClass(status: RunStatus): string {
@@ -412,7 +432,23 @@
 						</td>
 						<td class="jobs-panel__muted">{cadenceLabel(job)}</td>
 						<td class="jobs-panel__muted">{timeAgo(job.last_run_at)}</td>
-						<td><span class={outcomeClass(job)}>{outcomeLabel(job)}</span></td>
+						<td>
+							<div class="jobs-panel__outcome-cell">
+								<span class={outcomeClass(job)}>{outcomeLabel(job)}</span>
+								{#if lastFindingCount(job) > 0}
+									{@const findings = lastFindingCount(job)}
+									<span
+										class="jobs-panel__pill jobs-panel__pill--err"
+										title={t(
+											'admin.jobs.findings_present_tooltip',
+											'Expand this run to see per-finding detail.'
+										)}
+									>
+										{t('admin.jobs.n_findings', { n: findings }, '{{n}} findings')}
+									</span>
+								{/if}
+							</div>
+						</td>
 						<td>
 							{#if isRunning(job)}
 								<span class="jobs-panel__pill jobs-panel__pill--running">
@@ -562,12 +598,38 @@
 																		{run.progress.scanned}/{run.progress.total}
 																	</span>
 																</div>
+															{:else if scanned != null}
+																<span
+																	class="jobs-panel__muted"
+																	title={t(
+																		'admin.jobs.progress_scanned_only_tooltip',
+																		'No total available for this run (pre-progress-bar deploy or the tenant does not report a countable subject).'
+																	)}
+																>
+																	{t(
+																		'admin.jobs.progress_scanned_only',
+																		{ n: scanned },
+																		'{{n}} scanned'
+																	)}
+																</span>
 															{:else}
-																<span class="jobs-panel__num">{scanned ?? '—'}</span>
+																<span class="jobs-panel__muted">—</span>
 															{/if}
 														</td>
 														<td class="jobs-panel__num">
-															{findingCount ?? 0}
+															{#if findingCount && findingCount > 0}
+																<span
+																	class="jobs-panel__pill jobs-panel__pill--err"
+																	title={t(
+																		'admin.jobs.findings_present_tooltip',
+																		'Expand this run to see per-finding detail.'
+																	)}
+																>
+																	{findingCount}
+																</span>
+															{:else}
+																<span class="jobs-panel__muted">0</span>
+															{/if}
 														</td>
 														<td class="jobs-panel__err-cell">
 															{#if run.error_message}
@@ -653,6 +715,14 @@
 																				</thead>
 																				<tbody>
 																					{#each findings as f (f.id)}
+																						{@const detail = (f.detail ?? {}) as Record<
+																							string,
+																							unknown
+																						>}
+																						{@const label =
+																							(detail.path as string | undefined) ??
+																							(detail.name as string | undefined) ??
+																							null}
 																						<tr>
 																							<td><code>{f.kind}</code></td>
 																							<td>
@@ -665,8 +735,23 @@
 																									{f.severity}
 																								</span>
 																							</td>
-																							<td class="jobs-panel__muted">
-																								{f.resource_id ?? '—'}
+																							<td>
+																								{#if label}
+																									<div class="jobs-panel__resource">
+																										<code class="jobs-panel__resource-name"
+																											>{label}</code
+																										>
+																										{#if f.resource_id}
+																											<code class="jobs-panel__resource-uuid"
+																												>{f.resource_id}</code
+																											>
+																										{/if}
+																									</div>
+																								{:else}
+																									<code class="jobs-panel__muted"
+																										>{f.resource_id ?? '—'}</code
+																									>
+																								{/if}
 																							</td>
 																							<td>
 																								<code class="jobs-panel__detail"
@@ -968,6 +1053,31 @@
 	.jobs-panel__detail {
 		font-size: 0.75rem;
 		word-break: break-all;
+	}
+
+	.jobs-panel__resource {
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+	}
+
+	.jobs-panel__resource-name {
+		font-size: 0.85rem;
+		color: var(--color-text);
+		word-break: break-all;
+	}
+
+	.jobs-panel__resource-uuid {
+		font-size: 0.7rem;
+		color: var(--color-text-muted);
+		word-break: break-all;
+	}
+
+	.jobs-panel__outcome-cell {
+		display: flex;
+		gap: 0.4rem;
+		align-items: center;
+		flex-wrap: wrap;
 	}
 
 	.jobs-panel__link {

@@ -144,10 +144,11 @@ impl RecoverableJobHandler for DrivesConsistencyCheck {
             // query. LEFT JOIN via correlated subquery gets us both
             // sides in one round-trip; the storage_reconcile sweep
             // uses the same shape.
-            let rows: Vec<(Uuid, i64, i64)> = match sqlx::query_as(
+            let rows: Vec<(Uuid, String, i64, i64)> = match sqlx::query_as(
                 r#"
                 SELECT
                     d.id,
+                    d.name,
                     d.used_bytes,
                     COALESCE((
                         SELECT SUM(size)::bigint
@@ -189,7 +190,7 @@ impl RecoverableJobHandler for DrivesConsistencyCheck {
             // Per-row check: cached vs actual. This is the ONE check
             // in v1 — more per-row branches (quota inversion, kind vs
             // default_for_user, …) slot in here.
-            for (drive_id, cached, actual) in &rows {
+            for (drive_id, drive_name, cached, actual) in &rows {
                 if *cached != *actual {
                     drift_count += 1;
                     // Persisted finding via the shared helper.
@@ -203,9 +204,10 @@ impl RecoverableJobHandler for DrivesConsistencyCheck {
                         "inconsistent",
                         Some(*drive_id),
                         serde_json::json!({
+                            "name":   drive_name,
                             "cached": cached,
                             "actual": actual,
-                            "delta": cached - actual,
+                            "delta":  cached - actual,
                         }),
                     )
                     .await;
@@ -213,7 +215,10 @@ impl RecoverableJobHandler for DrivesConsistencyCheck {
             }
 
             // Advance cursor to the last row's id + checkpoint.
-            let last_id = rows.last().map(|(id, _, _)| *id).expect("non-empty rows");
+            let last_id = rows
+                .last()
+                .map(|(id, _, _, _)| *id)
+                .expect("non-empty rows");
             cursor = Some(last_id);
             let batch_len = rows.len() as u64;
             if let Err(e) = store

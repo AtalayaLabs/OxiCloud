@@ -100,6 +100,9 @@ impl FoldersConsistencyCheck {
 #[derive(Debug, sqlx::FromRow)]
 struct FolderRow {
     id: Uuid,
+    /// Folder basename — surfaced in finding `detail` so operators
+    /// see a human identifier next to the UUID.
+    name: String,
     parent_id: Option<Uuid>,
     is_trashed: bool,
     path: String,
@@ -200,6 +203,7 @@ impl RecoverableJobHandler for FoldersConsistencyCheck {
                 r#"
                 SELECT
                     f.id                                                        AS id,
+                    f.name                                                      AS name,
                     f.parent_id                                                 AS parent_id,
                     f.is_trashed                                                AS is_trashed,
                     f.path                                                      AS path,
@@ -263,6 +267,8 @@ impl RecoverableJobHandler for FoldersConsistencyCheck {
                         "inconsistent",
                         Some(row.id),
                         serde_json::json!({
+                            "name":      row.name,
+                            "path":      row.path,
                             "parent_id": row.parent_id,
                         }),
                     )
@@ -280,6 +286,7 @@ impl RecoverableJobHandler for FoldersConsistencyCheck {
                         "inconsistent",
                         Some(row.id),
                         serde_json::json!({
+                            "name":        row.name,
                             "stored":      row.path,
                             "expected":    row.expected_path,
                             "parent_path": row.parent_path,
@@ -301,6 +308,8 @@ impl RecoverableJobHandler for FoldersConsistencyCheck {
                         "inconsistent",
                         Some(row.id),
                         serde_json::json!({
+                            "name":         row.name,
+                            "path":         row.path,
                             "stored":       row.lpath_text,
                             "expected":     row.expected_lpath_text,
                             "parent_lpath": row.parent_lpath_text,
