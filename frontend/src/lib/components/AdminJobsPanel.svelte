@@ -70,27 +70,42 @@
 	 * iterates a HashMap so its order is non-deterministic —
 	 * refreshing shuffles rows and hurts orientation.
 	 *
-	 * Two-tier sort: consistency tenants (including the
-	 * `consistency_batch` coordinator) group first, other tenants
-	 * follow. Alphabetical within each group. Keeps the consistency
-	 * story visually together so an operator investigating
-	 * corruption doesn't have to scan the full list to find the
-	 * related tenants.
+	 * Two-tier sort:
+	 *   0. `*_consistency` tenants — alphabetical.
+	 *   1. All other jobs — alphabetical.
+	 *
+	 * The `consistency_batch` coordinator is DELIBERATELY excluded
+	 * from the table (see the filter in `loadJobs`). The top-bar
+	 * "Run all consistency checks" + "Run deep" buttons already
+	 * dispatch it — showing it as a table row too was pure
+	 * duplication.
 	 */
 	function sortKey(name: string): [number, string] {
-		const isConsistency = name.endsWith('_consistency') || name === 'consistency_batch';
-		return [isConsistency ? 0 : 1, name];
+		if (name.endsWith('_consistency')) return [0, name];
+		return [1, name];
 	}
 
 	async function loadJobs() {
 		try {
 			const fetched = await listJobs();
-			jobs = fetched.slice().sort((a, b) => {
-				const [ga, na] = sortKey(a.name);
-				const [gb, nb] = sortKey(b.name);
-				if (ga !== gb) return ga - gb;
-				return na.localeCompare(nb);
-			});
+			jobs = fetched
+				.slice()
+				// `consistency_batch` is served by the top-bar
+				// action buttons; hiding it here removes the
+				// duplicate table row. `hasBatch` still checks the
+				// full fetched list so the top buttons only render
+				// when the coordinator is actually registered.
+				.filter((j) => j.name !== 'consistency_batch')
+				.sort((a, b) => {
+					const [ga, na] = sortKey(a.name);
+					const [gb, nb] = sortKey(b.name);
+					if (ga !== gb) return ga - gb;
+					return na.localeCompare(nb);
+				});
+			// Track whether the coordinator is registered so the
+			// top-bar buttons can gate on it without checking `jobs`
+			// (which now filters it out).
+			hasBatch = fetched.some((j) => j.name === 'consistency_batch');
 			loadError = null;
 		} catch (e) {
 			loadError = errorMessage(e);
@@ -426,7 +441,11 @@
 	// coordinator is registered (should always be true post-Slice 5,
 	// but check defensively so the button doesn't appear on an old
 	// deployment before this component is upgraded).
-	const hasBatch = $derived(jobs?.some((j) => j.name === 'consistency_batch') ?? false);
+	// Coordinator registration flag — set imperatively in
+	// `loadJobs` because `jobs` no longer contains the
+	// `consistency_batch` row (filtered out to avoid duplicating the
+	// top-bar action buttons).
+	let hasBatch = $state(false);
 </script>
 
 <section class="jobs-panel">
@@ -459,7 +478,7 @@
 					)}
 					onclick={() => onTrigger('consistency_batch', { deep: true })}
 				>
-					<Icon name="search" />
+					<Icon name="play" />
 					{t('admin.jobs.run_deep', 'Run deep')}
 				</button>
 			</div>
