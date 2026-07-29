@@ -164,6 +164,9 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
             "/jobs/{name}/runs/{id}/findings",
             get(list_job_run_findings),
         )
+        // Retention cleanup — operator-triggered, not periodic.
+        // See `purge_job_runs` docstring for the semantics.
+        .route("/jobs/runs/purge", post(purge_job_runs))
         // Drives — admin-wide view (distinct from `/api/drives` which
         // is filtered to the caller's role grants).
         .route("/drives", get(list_all_drives))
@@ -2390,5 +2393,76 @@ pub async fn list_job_run_findings(
     {
         Ok(findings) => (StatusCode::OK, Json(findings)).into_response(),
         Err(e) => AppError::internal_error(format!("list_findings failed: {e}")).into_response(),
+    }
+}
+
+/// Query parameters for `POST /api/admin/jobs/runs/purge`.
+///
+/// `days` — retention window. Terminal runs (`Completed`, `Failed`)
+/// with `completed_at` older than this many days ago are deleted
+/// (with their findings via CASCADE). Default 30. Minimum enforced
+/// at 1 by the provider — zero would eat runs completed seconds
+/// ago. Non-terminal runs are ALWAYS preserved regardless of age.
+#[derive(serde::Deserialize)]
+pub struct PurgeJobRunsQuery {
+    #[serde(default = "default_purge_days")]
+    pub days: i32,
+}
+
+fn default_purge_days() -> i32 {
+    30
+}
+
+/// `POST /api/admin/jobs/runs/purge?days=N` — operator-triggered
+/// cleanup of old terminal runs + their findings. Not periodic;
+/// admins fire this when they want to reclaim `jobs.*` history
+/// space. Delegates entirely to
+/// `JobStoreProvider::purge_terminal_runs` — no SQL in the handler
+/// (see `AGENTS.md` § handler thinness).
+#[utoipa::path(
+    post,
+    path = "/api/admin/jobs/runs/purge",
+    params(
+        ("days" = Option<i32>, Query, description = "Retention window in days (default 30, minimum 1). Terminal runs older than this are deleted with their findings; non-terminal runs are always preserved."),
+    ),
+    responses(
+        (status = 200, description = "Purge complete"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+        (status = 500, description = "DB error"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn purge_job_runs(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<PurgeJobRunsQuery>,
+) -> impl IntoResponse {
+    use crate::infrastructure::scheduler::JobStoreProvider as _;
+    let retention_days = query.days.max(1);
+    match state
+        .core
+        .job_store_provider
+        .purge_terminal_runs(retention_days)
+        .await
+    {
+        Ok(purged) => {
+            tracing::info!(
+                target: "audit",
+                event = "jobs.runs_purged",
+                purged = purged,
+                retention_days = retention_days,
+                "👮🏻‍♂️ admin purged {purged} terminal recoverable-run row(s) past {retention_days} day retention (findings cascaded)",
+            );
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "purged":         purged,
+                    "retention_days": retention_days,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => AppError::internal_error(format!("purge failed: {e}")).into_response(),
     }
 }

@@ -371,6 +371,29 @@ pub trait JobStoreProvider: Send + Sync {
         &self,
         run_id: Uuid,
     ) -> Result<Vec<(String, u64)>, DomainError>;
+
+    /// Operator-triggered retention cleanup. DELETEs every
+    /// TERMINAL run (`Completed`, `Failed`) whose `completed_at`
+    /// is older than `retention_days` days ago. Findings drop
+    /// alongside via the `ON DELETE CASCADE` FK on
+    /// `jobs.run_findings.run_id`.
+    ///
+    /// Non-terminal rows (`Running`, `Paused`, `CancelRequested`)
+    /// are ALWAYS preserved regardless of age — an in-flight or
+    /// paused run must not be reaped by retention.
+    ///
+    /// `retention_days` is treated as `max(1, retention_days)` at
+    /// the impl layer to defend against a zero/negative value
+    /// eating just-completed runs.
+    ///
+    /// Returns the number of run rows deleted (which equals
+    /// the number of finding rows deleted *transitively* via
+    /// CASCADE; callers wanting the finding count separately
+    /// should query it BEFORE calling this).
+    ///
+    /// Powers `POST /api/admin/jobs/runs/purge`. Not periodic — the
+    /// operator decides when to reclaim space.
+    async fn purge_terminal_runs(&self, retention_days: i32) -> Result<u64, DomainError>;
 }
 
 /// How a `RunProgress` fraction was derived. Lets the UI communicate
@@ -1092,6 +1115,25 @@ mod tests {
                 *counts.entry(f.severity.clone()).or_default() += 1;
             }
             Ok(counts.into_iter().collect())
+        }
+
+        async fn purge_terminal_runs(&self, retention_days: i32) -> Result<u64, DomainError> {
+            // Test-double: no `completed_at` to compare against, so
+            // just drop every terminal-state store when
+            // `retention_days` > 0. Sufficient for the trait
+            // contract check; PG impl exercises the real
+            // `completed_at < NOW() - days` filter.
+            let days = retention_days.max(1);
+            if days == 0 {
+                return Ok(0);
+            }
+            let mut stores = self.stores.lock().unwrap();
+            let before = stores.len();
+            stores.retain(|s| {
+                let state = s.state.lock().unwrap();
+                !matches!(state.status, RunStatus::Completed | RunStatus::Failed)
+            });
+            Ok((before - stores.len()) as u64)
         }
 
         async fn request_cancel(&self, _job_name: &str) -> Result<Option<Uuid>, DomainError> {

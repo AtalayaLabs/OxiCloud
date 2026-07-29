@@ -431,6 +431,30 @@ impl JobStoreProvider for PgJobStoreProvider {
             .collect())
     }
 
+    async fn purge_terminal_runs(&self, retention_days: i32) -> Result<u64, DomainError> {
+        // Defensive floor — zero would eat just-completed runs;
+        // negative would eat the whole terminal history.
+        let days = retention_days.max(1);
+        // `ON DELETE CASCADE` on jobs.run_findings.run_id
+        // (migration 20260930000001) drops findings with their
+        // parent run. Non-terminal statuses (Running / Paused /
+        // CancelRequested) explicitly excluded to protect
+        // in-flight work.
+        let result = sqlx::query(
+            r#"
+            DELETE FROM jobs.recoverable_runs
+             WHERE status IN ('Completed', 'Failed')
+               AND completed_at IS NOT NULL
+               AND completed_at < NOW() - ($1 || ' days')::interval
+            "#,
+        )
+        .bind(days.to_string())
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| map_sqlx_err("purge_terminal_runs", e))?;
+        Ok(result.rows_affected())
+    }
+
     async fn request_cancel(&self, job_name: &str) -> Result<Option<Uuid>, DomainError> {
         // Only Running → CancelRequested flips. `Paused` can be
         // cancelled by not resuming — no need for a state change.

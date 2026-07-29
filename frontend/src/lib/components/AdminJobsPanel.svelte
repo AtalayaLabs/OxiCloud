@@ -20,6 +20,7 @@
 <script lang="ts">
 	import { SvelteSet } from 'svelte/reactivity';
 	import Icon from '$lib/icons/Icon.svelte';
+	import Modal from '$lib/components/Modal.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 	import { errorMessage } from '$lib/utils/errors';
 	import { ui } from '$lib/stores/ui.svelte';
@@ -28,7 +29,8 @@
 		listRuns,
 		listFindings,
 		triggerJob,
-		cancelJob
+		cancelJob,
+		purgeJobRuns
 	} from '$lib/api/endpoints/adminJobs';
 	import type { Finding, JobSummary, RunSummary, RunStatus } from '$lib/api/types';
 
@@ -61,6 +63,40 @@
 	function markBusy(key: string, on: boolean) {
 		if (on) busyKeys.add(key);
 		else busyKeys.delete(key);
+	}
+
+	// Purge-modal state. Null = closed; otherwise carries the
+	// draft retention days the operator's picking. Kept separate
+	// from the top-bar action state so mouse-away doesn't lose
+	// the value.
+	let purgeModal = $state<{ days: number } | null>(null);
+	function openPurge() {
+		purgeModal = { days: 30 };
+	}
+	function closePurge() {
+		purgeModal = null;
+	}
+	async function confirmPurge() {
+		if (!purgeModal) return;
+		const days = Math.max(1, Math.floor(purgeModal.days));
+		markBusy('purge', true);
+		try {
+			const res = await purgeJobRuns(days);
+			ui.notify(
+				t(
+					'admin.jobs.purge_done',
+					{ n: res.purged, days: res.retention_days },
+					'{{n}} old run(s) purged (retention {{days}} days)'
+				),
+				'success'
+			);
+			purgeModal = null;
+			await loadJobs();
+		} catch (e) {
+			ui.notify(errorMessage(e), 'error');
+		} finally {
+			markBusy('purge', false);
+		}
 	}
 
 	// ─── Loading + polling ─────────────────────────────────────────────
@@ -459,8 +495,8 @@
 				)}
 			</p>
 		</div>
-		{#if hasBatch}
-			<div class="jobs-panel__header-actions">
+		<div class="jobs-panel__header-actions">
+			{#if hasBatch}
 				<button
 					class="jobs-panel__btn jobs-panel__btn--primary"
 					disabled={busyKeys.has('trigger:consistency_batch')}
@@ -481,8 +517,25 @@
 					<Icon name="play" />
 					{t('admin.jobs.run_deep', 'Run deep')}
 				</button>
-			</div>
-		{/if}
+			{/if}
+			<!-- Purge is orthogonal to consistency — it works even
+			     when the batch coordinator isn't registered, so it
+			     lives outside the {#if hasBatch}. Opens a modal so
+			     the operator picks a retention window with intent
+			     (no accidental delete-all). -->
+			<button
+				class="jobs-panel__btn"
+				title={t(
+					'admin.jobs.purge_hint',
+					'Delete completed and failed run history older than the chosen retention window. Findings drop with their parent runs. Non-terminal runs are always preserved.'
+				)}
+				onclick={openPurge}
+				disabled={busyKeys.has('purge')}
+			>
+				<Icon name="trash-alt" />
+				{t('admin.jobs.purge', 'Purge old runs')}
+			</button>
+		</div>
 	</header>
 
 	{#if loadError}
@@ -889,6 +942,58 @@
 	{/if}
 </section>
 
+<!-- Purge modal — pick a retention window, then confirm. -->
+<Modal
+	open={purgeModal !== null}
+	title={t('admin.jobs.purge_title', 'Purge old job history')}
+	onclose={closePurge}
+>
+	{#if purgeModal}
+		<form
+			class="jobs-panel__purge-form"
+			onsubmit={(e) => {
+				e.preventDefault();
+				void confirmPurge();
+			}}
+		>
+			<p>
+				{t(
+					'admin.jobs.purge_body',
+					'Delete completed and failed run history older than the chosen number of days. Findings drop with their parent runs. Non-terminal runs (running, paused, cancel-requested) are always preserved.'
+				)}
+			</p>
+			<label>
+				<span>{t('admin.jobs.purge_days_label', 'Retention (days)')}</span>
+				<input
+					type="number"
+					min="1"
+					step="1"
+					bind:value={purgeModal.days}
+					disabled={busyKeys.has('purge')}
+				/>
+			</label>
+			<div class="jobs-panel__purge-actions">
+				<button
+					type="button"
+					class="jobs-panel__btn"
+					onclick={closePurge}
+					disabled={busyKeys.has('purge')}
+				>
+					{t('common.cancel', 'Cancel')}
+				</button>
+				<button
+					type="submit"
+					class="jobs-panel__btn jobs-panel__btn--danger"
+					disabled={busyKeys.has('purge')}
+				>
+					<Icon name="trash-alt" />
+					{t('admin.jobs.purge_confirm', 'Purge')}
+				</button>
+			</div>
+		</form>
+	{/if}
+</Modal>
+
 <style>
 	.jobs-panel {
 		display: flex;
@@ -1190,6 +1295,28 @@
 		gap: 0.4rem;
 		align-items: center;
 		flex-wrap: wrap;
+	}
+
+	.jobs-panel__purge-form {
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+	}
+
+	.jobs-panel__purge-form label {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+
+	.jobs-panel__purge-form input {
+		max-width: 8rem;
+	}
+
+	.jobs-panel__purge-actions {
+		display: flex;
+		gap: 0.5rem;
+		justify-content: flex-end;
 	}
 
 	.jobs-panel__link {

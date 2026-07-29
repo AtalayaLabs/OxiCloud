@@ -114,6 +114,43 @@ export function listRuns(name: string, limit = 20): Promise<RunSummary[]> {
 	});
 }
 
+/** Envelope from `POST /api/admin/jobs/runs/purge`. `purged` is
+ *  the count of terminal-run rows deleted (findings cascade with
+ *  their parent run via the FK, no separate counter). */
+export interface PurgeResponse {
+	purged: number;
+	retention_days: number;
+}
+
+/**
+ * `POST /api/admin/jobs/runs/purge?days=N` — operator-triggered
+ * retention cleanup. Deletes terminal runs (`Completed`, `Failed`)
+ * with `completed_at` older than `days` days ago; associated
+ * `jobs.run_findings` rows drop with them via CASCADE. Non-terminal
+ * runs (`Running`, `Paused`, `CancelRequested`) are ALWAYS
+ * preserved regardless of age.
+ *
+ * Backend enforces a minimum of 1 day defensively.
+ */
+export async function purgeJobRuns(days = 30): Promise<PurgeResponse> {
+	const res = await apiFetch(`/api/admin/jobs/runs/purge?days=${days}`, {
+		method: 'POST',
+		credentials: 'same-origin',
+		headers: { ...JSON_HEADERS, ...getCsrfHeaders() }
+	});
+	if (!res.ok) {
+		let msg = `purge failed: ${res.status}`;
+		try {
+			const body = (await res.json()) as { error?: string; message?: string };
+			msg = body.error ?? body.message ?? msg;
+		} catch {
+			/* no JSON body */
+		}
+		throw new Error(msg);
+	}
+	return (await res.json()) as PurgeResponse;
+}
+
 /**
  * `GET /api/admin/jobs/{name}/runs/{id}/findings?limit=N&offset=M` —
  * paginated findings for a specific run. Empty list = clean run,
