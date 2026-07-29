@@ -229,4 +229,45 @@ impl BlobStorageBackend for MigrationBlobBackend {
             .local_blob_path(hash)
             .or_else(|| self.source.local_blob_path(hash))
     }
+
+    /// Enumeration during migration is intentionally REFUSED. Both
+    /// source and target legitimately hold bytes concurrently
+    /// mid-migration: a blob copied to target but not yet deleted
+    /// from source would be reported "twice"; a blob in-flight from
+    /// source to target could be flagged as orphan on whichever
+    /// side the consistency scan doesn't walk. There's no single
+    /// authoritative "what's on the backend" answer while a
+    /// migration is running.
+    ///
+    /// Operators wanting to run `backend_consistency` during a
+    /// migration should either wait for the migration to complete
+    /// (target becomes authoritative) or cancel it. The
+    /// `operation_not_supported` error is surfaced by the tenant as
+    /// a single run-level `backend_unenumerable` finding — no
+    /// per-blob probes attempted.
+    fn list_blob_hashes(
+        &self,
+        _cursor: Option<String>,
+        _limit: usize,
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        crate::application::ports::blob_storage_ports::BlobListPage,
+                        DomainError,
+                    >,
+                > + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async {
+            Err(DomainError::operation_not_supported(
+                "list_blob_hashes",
+                "backend_consistency cannot enumerate while a storage \
+                 migration is in progress — source and target hold bytes \
+                 concurrently; wait for migration completion or cancel it \
+                 before running the scan",
+            ))
+        })
+    }
 }

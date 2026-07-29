@@ -421,4 +421,97 @@ impl BlobStorageBackend for S3BlobBackend {
     fn local_blob_path(&self, _hash: &str) -> Option<PathBuf> {
         None // Remote backend — no local path
     }
+
+    /// Enumerate blobs via S3 `ListObjectsV2`. Cursor is the S3
+    /// continuation token verbatim (opaque). Filter: keys must
+    /// match `<xx>/<64-hex>.blob` — matches how `blob_key` writes
+    /// them — so any future non-blob namespace living in the same
+    /// bucket (e.g. `thumbnails/<hash>.jpg`) is skipped
+    /// automatically. No prefix passed to S3 so we get everything
+    /// in one paginated scan; the client-side filter enforces
+    /// correctness.
+    fn list_blob_hashes(
+        &self,
+        cursor: Option<String>,
+        limit: usize,
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        crate::application::ports::blob_storage_ports::BlobListPage,
+                        DomainError,
+                    >,
+                > + Send
+                + '_,
+        >,
+    > {
+        use crate::application::ports::blob_storage_ports::{
+            BackendBlobEntry, BackendUnknownEntry, BlobListPage,
+        };
+
+        Box::pin(async move {
+            let mut req = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .max_keys(limit.min(1000) as i32);
+            if let Some(c) = cursor {
+                req = req.continuation_token(c);
+            }
+
+            let resp = req.send().await.map_err(|e| {
+                DomainError::new(
+                    ErrorKind::InternalError,
+                    "Blob",
+                    format!("S3 ListObjectsV2 failed: {e}"),
+                )
+            })?;
+
+            let objects = resp.contents.unwrap_or_default();
+            let mut blobs: Vec<BackendBlobEntry> = Vec::with_capacity(objects.len());
+            let mut unknowns: Vec<BackendUnknownEntry> = Vec::new();
+
+            for obj in objects {
+                let Some(key) = obj.key else { continue };
+                let mtime = obj.last_modified.and_then(|ts| {
+                    let secs = ts.secs();
+                    let nsecs = ts.subsec_nanos();
+                    chrono::DateTime::<chrono::Utc>::from_timestamp(secs, nsecs)
+                });
+
+                // Canonical S3 key shape: `<xx>/<64-hex>.blob`.
+                // Anything else is a sidecar or foreign namespace
+                // (e.g. future `thumbnails/<hash>.jpg` if Ed adds
+                // that) — surface as an unknown so operators know
+                // it's there. Recovery framework can decide per-
+                // pattern how to act.
+                let is_canonical = key.split_once('/').and_then(|(prefix, rest)| {
+                    if prefix.len() != 2 || !prefix.chars().all(|c| c.is_ascii_hexdigit()) {
+                        return None;
+                    }
+                    rest.strip_suffix(".blob")
+                        .filter(|stem| {
+                            stem.len() == 64 && stem.chars().all(|c| c.is_ascii_hexdigit())
+                        })
+                        .map(|s| s.to_string())
+                });
+
+                match is_canonical {
+                    Some(hash) => blobs.push(BackendBlobEntry { hash, mtime }),
+                    None => unknowns.push(BackendUnknownEntry { path: key, mtime }),
+                }
+            }
+
+            let next_cursor = if resp.is_truncated.unwrap_or(false) {
+                resp.next_continuation_token
+            } else {
+                None
+            };
+            Ok(BlobListPage {
+                blobs,
+                unknowns,
+                next_cursor,
+            })
+        })
+    }
 }

@@ -10,6 +10,7 @@ use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio_util::io::ReaderStream;
 
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 
 use crate::application::ports::blob_storage_ports::{
     BlobStorageBackend, BlobStream, StorageHealthStatus,
@@ -606,6 +607,165 @@ impl BlobStorageBackend for LocalBlobBackend {
     /// `OXICLOUD_LOCAL_READ_PREFETCH`). See [`DEFAULT_LOCAL_READ_PREFETCH`].
     fn read_prefetch(&self) -> usize {
         self.read_prefetch
+    }
+
+    /// Enumerate `.blob` files under `.blobs/<xx>/`. Cursor format:
+    ///
+    /// * `None` — start from the first shard (`00`) at file offset 0
+    /// * `Some("<shard>/<hash>")` — resume: skip shards `< shard`
+    ///   entirely, and within `shard` skip files whose hash `≤ hash`.
+    ///
+    /// Ordering: shards ascending (00–ff), files within a shard
+    /// ascending by hash. Stable across calls given the sorting.
+    ///
+    /// Filter: basename must be exactly 64 hex chars + `.blob`. This
+    /// excludes `.tmp` staging files, `.orig`/`.lost`/`.corrupt`
+    /// sidecars from manual admin work, and any other non-canonical
+    /// artefacts. Backend consistency scans the DB-registered
+    /// content-addressable set only.
+    fn list_blob_hashes(
+        &self,
+        cursor: Option<String>,
+        limit: usize,
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        crate::application::ports::blob_storage_ports::BlobListPage,
+                        DomainError,
+                    >,
+                > + Send
+                + '_,
+        >,
+    > {
+        use crate::application::ports::blob_storage_ports::{
+            BackendBlobEntry, BackendUnknownEntry, BlobListPage,
+        };
+
+        let blob_root = self.blob_root.clone();
+        Box::pin(async move {
+            let (start_shard, start_after_hash): (String, Option<String>) = match cursor {
+                None => (String::from("00"), None),
+                Some(c) => match c.split_once('/') {
+                    Some((sh, h)) => (sh.to_string(), Some(h.to_string())),
+                    None => (c, None),
+                },
+            };
+
+            let mut blobs: Vec<BackendBlobEntry> = Vec::with_capacity(limit);
+            let mut unknowns: Vec<BackendUnknownEntry> = Vec::new();
+            let mut next_cursor: Option<String> = None;
+
+            for prefix in &HEX_PREFIXES {
+                let prefix = *prefix;
+                if prefix < start_shard.as_str() {
+                    continue;
+                }
+                let shard_dir = blob_root.join(prefix);
+                let mut entries = match fs::read_dir(&shard_dir).await {
+                    Ok(e) => e,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(e) => {
+                        return Err(DomainError::new(
+                            ErrorKind::InternalError,
+                            "Blob",
+                            format!("read shard {prefix}: {e}"),
+                        ));
+                    }
+                };
+
+                // Collect canonical blobs + unknowns for this shard.
+                // The distinction is filename shape: `<64-hex>.blob`
+                // → canonical blob; anything else → unknown sidecar.
+                // Unknowns are captured with their full basename so
+                // the tenant can surface them to operators as
+                // informational notices (severity `anomaly`).
+                let mut shard_blobs: Vec<(String, Option<DateTime<Utc>>)> = Vec::new();
+                let mut shard_unknowns: Vec<(String, Option<DateTime<Utc>>)> = Vec::new();
+                while let Some(dirent) = entries.next_entry().await.map_err(|e| {
+                    DomainError::new(
+                        ErrorKind::InternalError,
+                        "Blob",
+                        format!("read shard {prefix} entry: {e}"),
+                    )
+                })? {
+                    let name = dirent.file_name();
+                    let name_str = match name.to_str() {
+                        Some(s) => s,
+                        None => continue, // non-UTF8 filename — skip entirely
+                    };
+                    // Skip directories — the shard dir itself
+                    // shouldn't contain any, but defensively.
+                    if dirent
+                        .file_type()
+                        .await
+                        .map(|t| t.is_dir())
+                        .unwrap_or(false)
+                    {
+                        continue;
+                    }
+                    let mtime = dirent
+                        .metadata()
+                        .await
+                        .ok()
+                        .and_then(|m| m.modified().ok())
+                        .map(DateTime::<Utc>::from);
+
+                    // Canonical shape check: `<64-hex>.blob`.
+                    let canonical = name_str
+                        .strip_suffix(".blob")
+                        .filter(|stem| {
+                            stem.len() == 64 && stem.chars().all(|c| c.is_ascii_hexdigit())
+                        })
+                        .map(|s| s.to_string());
+
+                    match canonical {
+                        Some(hash) => shard_blobs.push((hash, mtime)),
+                        None => shard_unknowns.push((name_str.to_string(), mtime)),
+                    }
+                }
+                shard_blobs.sort_by(|a, b| a.0.cmp(&b.0));
+
+                // Unknowns don't need cursor-precise ordering — they
+                // ride alongside the blobs batch. Sort just for
+                // stable operator-facing output.
+                shard_unknowns.sort_by(|a, b| a.0.cmp(&b.0));
+                for (name, mtime) in shard_unknowns {
+                    unknowns.push(BackendUnknownEntry {
+                        path: format!("{prefix}/{name}"),
+                        mtime,
+                    });
+                }
+
+                for (hash, mtime) in shard_blobs {
+                    if prefix == start_shard.as_str()
+                        && let Some(ref after) = start_after_hash
+                        && hash.as_str() <= after.as_str()
+                    {
+                        continue;
+                    }
+                    if blobs.len() >= limit {
+                        next_cursor = Some(format!(
+                            "{}/{}",
+                            prefix,
+                            blobs.last().map(|e| e.hash.as_str()).unwrap_or("")
+                        ));
+                        return Ok(BlobListPage {
+                            blobs,
+                            unknowns,
+                            next_cursor,
+                        });
+                    }
+                    blobs.push(BackendBlobEntry { hash, mtime });
+                }
+            }
+
+            Ok(BlobListPage {
+                blobs,
+                unknowns,
+                next_cursor,
+            })
+        })
     }
 }
 

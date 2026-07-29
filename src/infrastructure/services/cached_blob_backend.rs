@@ -412,6 +412,29 @@ impl BlobStorageBackend for CachedBlobBackend {
         let path = self.cached_path(hash);
         if path.exists() { Some(path) } else { None }
     }
+
+    /// Enumeration MUST delegate to the primary (inner) backend, not
+    /// the local cache. The cache is by definition a subset (only
+    /// recently-accessed blobs); walking the cache would look like
+    /// "most of my blobs are orphans" from the tenant's perspective.
+    /// The inner backend is the authoritative "what exists" source.
+    fn list_blob_hashes(
+        &self,
+        cursor: Option<String>,
+        limit: usize,
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        crate::application::ports::blob_storage_ports::BlobListPage,
+                        DomainError,
+                    >,
+                > + Send
+                + '_,
+        >,
+    > {
+        self.inner.list_blob_hashes(cursor, limit)
+    }
 }
 
 // ── Cache internals (miss path + population) ───────────────────────

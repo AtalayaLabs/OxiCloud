@@ -10,6 +10,7 @@
 //! and PostgreSQL index logic in `DedupService` itself.
 
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use futures::Stream;
 use serde::Serialize;
 use std::future::Future;
@@ -17,6 +18,53 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 use crate::domain::errors::DomainError;
+
+/// One row returned by [`BlobStorageBackend::list_blob_hashes`] — the
+/// hash of a blob physically present on the backend, plus its
+/// last-modified timestamp when the backend can supply one. `mtime`
+/// is used by `backend_consistency` to skip freshly-created files
+/// still within the write grace window (avoids false-positive
+/// orphans during the durability-before-visibility window that
+/// `dedup_service` opens).
+#[derive(Debug, Clone)]
+pub struct BackendBlobEntry {
+    pub hash: String,
+    /// `None` when the backend doesn't track mtime — the consistency
+    /// scan then falls back to treating the entry as "old enough" and
+    /// will emit an orphan finding without a grace check.
+    pub mtime: Option<DateTime<Utc>>,
+}
+
+/// A file present in the blob-storage namespace but NOT matching the
+/// canonical `<64-hex>.blob` shape. Sidecars (`.blob.orig`,
+/// `.blob.lost`, `.blob.tmp`), wrong extensions, non-hex names —
+/// anything the enumeration filter skips for the blob list. Surfaced
+/// so `backend_consistency` can emit them as `anomaly` notices
+/// (informational only — they don't hurt anything but the operator
+/// should know they're there).
+#[derive(Debug, Clone)]
+pub struct BackendUnknownEntry {
+    /// Backend-relative path (`04/04f48c...blob.orig` on local FS or
+    /// as an S3 key). Included in the finding detail so operators
+    /// can locate it.
+    pub path: String,
+    pub mtime: Option<DateTime<Utc>>,
+}
+
+/// Return type of [`BlobStorageBackend::list_blob_hashes`] — one
+/// batch of the enumeration. Struct (not tuple) so adding future
+/// per-batch metadata (e.g. `truncated: bool`) doesn't break every
+/// backend impl. `next_cursor = None` signals end of enumeration.
+///
+/// Backends that don't track sidecar/unknown files leave `unknowns`
+/// empty; the tenant just doesn't emit any `unknown_backend_file`
+/// notices from that batch.
+#[derive(Debug, Clone)]
+pub struct BlobListPage {
+    pub blobs: Vec<BackendBlobEntry>,
+    pub unknowns: Vec<BackendUnknownEntry>,
+    pub next_cursor: Option<String>,
+}
 
 /// Boxed future alias used by [`BlobStorageBackend`] to keep the trait dyn-compatible.
 type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -144,5 +192,41 @@ pub trait BlobStorageBackend: Send + Sync + 'static {
     /// Wrapping backends delegate to the backend that actually serves the bytes.
     fn read_prefetch(&self) -> usize {
         1
+    }
+
+    /// Enumerate blob entries physically present on this backend, in
+    /// implementation-defined order — cursor-based paging.
+    ///
+    /// * `cursor` — opaque continuation token from a prior call, or
+    ///   `None` to start from the beginning. Format is per-backend
+    ///   (local = last path visited; S3 = continuation token; Azure
+    ///   = list marker); callers treat it as opaque.
+    /// * `limit` — soft cap on batch size; backends may return
+    ///   fewer (e.g. end of a shard directory).
+    ///
+    /// Returns `(entries, next_cursor)`. `next_cursor = None` means
+    /// enumeration is complete. Each `BackendBlobEntry` carries the
+    /// hash + optional mtime for grace-window filtering.
+    ///
+    /// The trait default returns
+    /// [`DomainError::NotSupported`](DomainError::not_supported)
+    /// — future backends that genuinely can't enumerate (some
+    /// write-only queue, some read-only mirror) can inherit it. All
+    /// currently-shipped backends (local, S3, Azure) override.
+    ///
+    /// Filtering out non-blob artifacts (temp files, `.corrupt` /
+    /// `.lost` sidecars, encryption metadata) is the backend's
+    /// responsibility — the tenant walks whatever this returns.
+    fn list_blob_hashes(
+        &self,
+        _cursor: Option<String>,
+        _limit: usize,
+    ) -> BoxFut<'_, Result<BlobListPage, DomainError>> {
+        Box::pin(async {
+            Err(DomainError::operation_not_supported(
+                "list_blob_hashes",
+                "this backend does not implement enumeration",
+            ))
+        })
     }
 }

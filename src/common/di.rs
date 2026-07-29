@@ -1348,6 +1348,24 @@ impl AppServiceFactory {
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
         .await;
 
+        // Fifth recoverable-run tenant. Iterates the storage
+        // backend (via `BlobStorageBackend::list_blob_hashes`) and
+        // reports every physical blob that has no matching row in
+        // `storage.blobs`. Closes the reference graph together with
+        // `blobs_consistency`: this tenant walks backend→DB, that
+        // one walks DB→backend. Enumeration is backend-specific but
+        // the tenant is fully backend-agnostic — each backend owns
+        // its own layout knowledge (local walks `.blobs/`, S3 uses
+        // ListObjectsV2, migration wrapper refuses mid-migration).
+        let _ = Arc::new(
+            crate::infrastructure::services::backend_consistency_service::BackendConsistencyCheck::new(
+                maintenance_pool.clone(),
+                core.blob_backend.clone(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
         // "Run all consistency checks" coordinator. Plain JobHandler
         // (not RecoverableJobHandler) — it dispatches, doesn't scan.
         // MUST register AFTER every `*_consistency` tenant so the
