@@ -225,7 +225,6 @@ use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
         handlers::admin_handler::start_migration,
         handlers::admin_handler::pause_migration,
         handlers::admin_handler::resume_migration,
-        handlers::admin_handler::complete_migration,
         handlers::admin_handler::verify_migration,
         handlers::admin_handler::generate_encryption_key,
         // JobRegistry admin surface — production, always-on,

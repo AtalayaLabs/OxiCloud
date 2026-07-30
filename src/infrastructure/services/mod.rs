@@ -25,8 +25,6 @@ pub mod local_blob_backend;
 pub mod local_fs_mount_provider;
 pub mod login_lockout_service;
 pub mod media_metadata_service;
-pub mod migration_blob_backend;
-pub mod migration_job;
 pub mod mock_email_sender;
 pub mod mount_provider_factory;
 pub mod nextcloud_chunked_upload_service;
@@ -46,6 +44,7 @@ pub mod s3_blob_backend;
 pub mod search_index;
 pub mod share_unlock_cookie;
 pub mod smtp_email_sender;
+pub mod storage_migration_service;
 pub mod thumbnail_service;
 #[cfg(test)]
 mod thumbnail_service_test;

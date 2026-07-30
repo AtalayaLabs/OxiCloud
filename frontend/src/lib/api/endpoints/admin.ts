@@ -384,13 +384,28 @@ export interface SmtpTestResult {
 	error?: string;
 }
 
-/** Result of POST .../settings/storage/test — the S3 connection probe. */
+/**
+ * Result of POST .../settings/storage/test. Combines reachability
+ * (`connected` — HEAD bucket / statfs) with a full read/write round-
+ * trip (`roundtrip_passed` — PUT + GET + verify + DELETE). Overall
+ * pass = both true. Round-trip fields are absent when the round-trip
+ * wasn't attempted (typically because reachability already failed).
+ * `phase_reached` names the last successful round-trip step:
+ * `initialize` | `put_ok` | `exists_ok` | `get_ok` | `verify_ok` |
+ * `cleanup_ok`.
+ */
 export interface StorageTestResult {
 	connected?: boolean;
 	success?: boolean;
 	backend_type?: string;
 	available_bytes?: number | null;
 	message?: string;
+	roundtrip_passed?: boolean;
+	phase_reached?: string;
+	bytes_written?: number;
+	bytes_read?: number;
+	roundtrip_elapsed_ms?: number;
+	cleanup_ok?: boolean;
 }
 
 export async function sendSmtpTest(to: string): Promise<SmtpTestResult> {
@@ -497,7 +512,12 @@ export function getMigration(): Promise<MigrationStatus> {
 	return apiJson<MigrationStatus>('/api/admin/storage/migration', { credentials: 'same-origin' });
 }
 
-export function migrationAction(action: 'start' | 'pause' | 'resume' | 'complete'): Promise<void> {
+export function migrationAction(action: 'start' | 'pause' | 'resume'): Promise<void> {
+	// `complete` was retired when the migration became a recoverable
+	// job — Completed is the terminal `RunSummary.status`; there's
+	// nothing left to acknowledge. Post-migration cutover now happens
+	// via .env + restart, prompted by an inline hint on the admin
+	// storage tab (see `cutoverPending` in +page.svelte).
 	const body = action === 'start' ? { concurrency: 4 } : {};
 	return mutate(`/api/admin/storage/migration/${action}`, 'POST', body);
 }

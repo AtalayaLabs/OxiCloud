@@ -191,13 +191,50 @@ pub struct TestStorageConnectionDto {
     pub s3_force_path_style: Option<bool>,
 }
 
-/// Result of a storage connection test
+/// Result of a storage connection + round-trip test.
+///
+/// `connected` is TRUE when the backend was reachable (health-check
+/// passed — HEAD bucket / statfs). `roundtrip_passed` is TRUE when
+/// the subsequent PUT → GET → verify → DELETE cycle succeeded — it
+/// validates the exact permissions the migration job needs
+/// (`s3:PutObject` + `s3:GetObject` + `s3:DeleteObject` on S3, disk
+/// write permission on Local). All round-trip fields are `None` when
+/// reachability failed (we don't attempt the round-trip if we can't
+/// even HEAD the bucket).
+///
+/// `phase_reached` names the last step that succeeded — on
+/// `roundtrip_passed = false` it pinpoints where the failure hit
+/// (`put_ok` → wrote but couldn't confirm; `exists_ok` → wrote +
+/// confirmed but GET failed; etc.). `cleanup_ok = false` means the
+/// backend was readable + writable but the test object may be
+/// orphaned on it (~100 B, content-addressed — harmless, admin can
+/// reap by hash).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StorageTestResultDto {
     pub connected: bool,
     pub message: String,
     pub backend_type: String,
     pub available_bytes: Option<u64>,
+    /// Set only when reachability passed AND a round-trip was
+    /// attempted. `Some(true)` = full write + read + verify success;
+    /// `Some(false)` = reachability OK, round-trip failed at
+    /// `phase_reached`; `None` = round-trip not attempted (typically
+    /// because reachability failed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roundtrip_passed: Option<bool>,
+    /// Last round-trip phase completed successfully — one of
+    /// `initialize`, `put_ok`, `exists_ok`, `get_ok`, `verify_ok`,
+    /// `cleanup_ok`. `None` when round-trip wasn't attempted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase_reached: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes_written: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes_read: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roundtrip_elapsed_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cleanup_ok: Option<bool>,
 }
 
 // ============================================================================

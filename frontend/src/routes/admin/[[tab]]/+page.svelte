@@ -466,18 +466,29 @@
 		storageMsg = null;
 		try {
 			const r: StorageTestResult = await testStorage(storageBody());
+			// Backend now performs BOTH reachability (health-check)
+			// and a full read/write round-trip. `connected` gets
+			// flipped to false by the service if the round-trip
+			// itself fails, so a single boolean covers the whole
+			// pass/fail signal. `roundtrip_passed` distinguishes the
+			// two flavours of failure for the operator.
 			const ok = r.connected ?? r.success ?? false;
 			if (ok) {
-				let text = t('admin.storage_test_success', 'Connection successful');
+				let text = t('admin.storage_test_success', 'Connection + read/write OK');
 				if (r.backend_type) text += ` (${r.backend_type})`;
+				if (r.roundtrip_elapsed_ms != null) text += ` — round-trip ${r.roundtrip_elapsed_ms} ms`;
 				if (r.available_bytes != null)
-					text += ` — ${formatBytes(r.available_bytes)} ${t('admin.available', 'available')}`;
+					text += ` · ${formatBytes(r.available_bytes)} ${t('admin.available', 'available')}`;
+				if (r.cleanup_ok === false)
+					text += ` · ⚠ cleanup DELETE failed — orphan test blob left on backend`;
 				storageMsg = { text, ok: true };
 			} else {
-				storageMsg = {
-					text: `${t('admin.storage_test_failure', 'Connection failed')}: ${r.message ?? ''}`,
-					ok: false
-				};
+				const phase = r.phase_reached ? ` [phase: ${r.phase_reached}]` : '';
+				const label =
+					r.roundtrip_passed === false
+						? t('admin.storage_test_failure', 'Read/write test failed')
+						: t('admin.storage_test_failure', 'Connection failed');
+				storageMsg = { text: `${label}${phase}: ${r.message ?? ''}`, ok: false };
 			}
 		} catch (e) {
 			storageMsg = { text: errorMessage(e), ok: false };
@@ -508,12 +519,79 @@
 			stopMigrationPoll();
 		}
 	}
-	async function doMigration(action: 'start' | 'pause' | 'resume' | 'complete') {
+	async function doMigration(action: 'start' | 'pause' | 'resume') {
 		try {
 			await migrationAction(action);
 			await loadMigration();
 		} catch (e) {
 			reportError(e);
+		}
+	}
+
+	// ── Post-migration .env cutover hint ─────────────────────────────
+	//
+	// Migration copies blobs to the target backend, but boot-time
+	// backend selection reads env vars only — never the DB config the
+	// admin filled in. So the app keeps running on the SOURCE backend
+	// even after the copy completes. To actually cut over, the
+	// operator has to add the equivalent env vars to `.env` and
+	// restart. This hint block spells out those lines with a
+	// copy-to-clipboard button.
+	//
+	// Shown only when:
+	//   - a migration has completed successfully, AND
+	//   - the live backend still differs from the configured target
+	//     (so we're actually pending cutover), AND
+	//   - the backend env var isn't ALREADY overriding (which would
+	//     mean the admin already updated .env or the platform sets it).
+	const cutoverPending = $derived(
+		migration?.status === 'completed' &&
+			!!storage &&
+			storage.current_backend != null &&
+			storage.current_backend !== storage.backend &&
+			!(storage.env_overrides ?? []).includes('backend')
+	);
+
+	// Env-var lines the admin needs to paste. Credentials are NEVER
+	// echoed — the storage-settings DTO only returns `_set` booleans
+	// for access/secret keys (not the values), so we render a
+	// placeholder line the admin fills in from their own records.
+	// Local backend still gets a line for completeness, but a Local
+	// deployment typically has no reason to explicitly set the var
+	// (default is Local).
+	const cutoverEnvLines = $derived.by((): string[] => {
+		if (!storage) return [];
+		const lines: string[] = [];
+		switch (storage.backend) {
+			case 's3':
+				lines.push('OXICLOUD_STORAGE_BACKEND=s3');
+				if (storage.s3_endpoint_url)
+					lines.push(`OXICLOUD_S3_ENDPOINT_URL=${storage.s3_endpoint_url}`);
+				if (storage.s3_bucket) lines.push(`OXICLOUD_S3_BUCKET=${storage.s3_bucket}`);
+				if (storage.s3_region) lines.push(`OXICLOUD_S3_REGION=${storage.s3_region}`);
+				if (storage.s3_access_key_set)
+					lines.push('OXICLOUD_S3_ACCESS_KEY=<paste the access key you saved above>');
+				if (storage.s3_secret_key_set)
+					lines.push('OXICLOUD_S3_SECRET_KEY=<paste the secret key you saved above>');
+				if (storage.s3_force_path_style) lines.push('OXICLOUD_S3_FORCE_PATH_STYLE=true');
+				break;
+			case 'local':
+				lines.push('OXICLOUD_STORAGE_BACKEND=local');
+				break;
+			// Azure not yet exposed in the admin form; add here when it is.
+		}
+		return lines;
+	});
+
+	let cutoverCopied = $state(false);
+	async function copyCutoverEnv() {
+		try {
+			await navigator.clipboard.writeText(cutoverEnvLines.join('\n'));
+			cutoverCopied = true;
+			setTimeout(() => (cutoverCopied = false), 2000);
+		} catch {
+			// Clipboard permission denied — silent; the block is
+			// selectable so the operator can copy manually.
 		}
 	}
 
@@ -2036,17 +2114,20 @@
 							data-testid="admin-storage-save-btn"
 							disabled={storageBusy}>{t('common.save', 'Save')}</button
 						>
-						{#if sForm.backend === 's3'}
-							<button
-								type="button"
-								class="btn btn-secondary"
-								data-testid="admin-storage-test-btn"
-								disabled={storageBusy}
-								onclick={doTestStorage}
-							>
-								{t('admin.storage_test', 'Test connection')}
-							</button>
-						{/if}
+						<!-- Round-trip test: writes + reads + deletes a
+						     ~100 B blob against the selected backend.
+						     Now meaningful for Local too (validates disk
+						     write permission on the mount), so no longer
+						     gated on `backend === 's3'`. -->
+						<button
+							type="button"
+							class="btn btn-secondary"
+							data-testid="admin-storage-test-btn"
+							disabled={storageBusy}
+							onclick={doTestStorage}
+						>
+							{t('admin.storage_test', 'Test read/write')}
+						</button>
 					</div>
 				</form>
 				<dl class="kv">
@@ -2120,7 +2201,10 @@
 							onclick={() => doMigration('resume')}>{t('admin.mig_resume', 'Resume')}</button
 						>
 					{/if}
-					<!-- Verify + Finalize: only once the copy phase has completed. -->
+					<!-- Verify: only once the copy phase has completed.
+					     Finalize was retired — a Completed row is its own
+					     acknowledgement, and cutover now happens via the
+					     .env hint block below (see `cutoverPending`). -->
 					{#if migration.status === 'completed'}
 						<button
 							class="btn btn-secondary"
@@ -2133,13 +2217,54 @@
 								? t('admin.mig_verifying', 'Verifying…')
 								: t('admin.mig_verify', 'Verify integrity')}
 						</button>
-						<button
-							class="btn btn-secondary"
-							data-testid="admin-migration-complete-btn"
-							onclick={() => doMigration('complete')}>{t('admin.mig_complete', 'Finalize')}</button
-						>
 					{/if}
 				</div>
+
+				{#if cutoverPending}
+					<!-- Post-migration cutover hint. Boot-time backend
+					     selection reads env vars only, so DB settings
+					     alone don't switch the live backend after
+					     migration. This block spells out the .env lines
+					     to add. Credentials are never echoed — the DTO
+					     returns `_set` booleans only, so the lines carry
+					     placeholders the admin fills in from their own
+					     records. -->
+					<div class="cutover-hint" data-testid="admin-migration-cutover-hint">
+						<h3>
+							<Icon name="key" />
+							{t('admin.mig_cutover_title', 'Cutover pending — update .env and restart')}
+						</h3>
+						<p class="muted">
+							{t(
+								'admin.mig_cutover_body',
+								{ target: storage?.backend ?? '?', live: storage?.current_backend ?? '?' },
+								'Blobs are now on {{target}} but the server is still running on {{live}}. To switch, add these lines to your .env and restart the server.'
+							)}
+						</p>
+						<pre class="cutover-hint__lines" data-testid="admin-migration-cutover-env"><code
+								>{cutoverEnvLines.join('\n')}</code
+							></pre>
+						<div class="cutover-hint__actions">
+							<button
+								type="button"
+								class="btn btn-secondary"
+								data-testid="admin-migration-cutover-copy-btn"
+								onclick={copyCutoverEnv}
+							>
+								<Icon name="copy" />
+								{cutoverCopied
+									? t('admin.mig_cutover_copied', 'Copied')
+									: t('admin.mig_cutover_copy', 'Copy')}
+							</button>
+							<p class="muted cutover-hint__note">
+								{t(
+									'admin.mig_cutover_secret_note',
+									'The access key and secret key are placeholders — paste the values you entered when saving these settings. Credentials are never displayed here.'
+								)}
+							</p>
+						</div>
+					</div>
+				{/if}
 
 				{#if verifyError}
 					<div class="discovery-result discovery-result--fail">
@@ -4068,6 +4193,43 @@
 		font-size: var(--text-xs, 0.75rem);
 		white-space: pre-wrap;
 		word-break: break-all;
+	}
+
+	.cutover-hint {
+		margin-top: var(--space-3);
+		padding: var(--space-3);
+		border: 1px solid var(--color-warning-border, var(--color-border));
+		border-radius: var(--radius-md);
+		background: var(--color-warning-bg, var(--color-bg-muted));
+	}
+
+	.cutover-hint h3 {
+		margin: 0 0 var(--space-2) 0;
+		font-size: var(--text-base, 1rem);
+	}
+
+	.cutover-hint__lines {
+		margin: var(--space-2) 0;
+		padding: var(--space-2) var(--space-3);
+		background: var(--color-bg);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		font-size: var(--text-xs, 0.75rem);
+		white-space: pre;
+		overflow-x: auto;
+	}
+
+	.cutover-hint__actions {
+		display: flex;
+		align-items: flex-start;
+		gap: var(--space-3);
+		flex-wrap: wrap;
+	}
+
+	.cutover-hint__note {
+		flex: 1;
+		min-width: 12rem;
+		margin: 0;
 	}
 
 	.smtp-test {

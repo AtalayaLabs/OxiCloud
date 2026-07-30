@@ -13,7 +13,6 @@ use crate::infrastructure::db::DbPools;
 use crate::application::services::admin_settings_service::AdminSettingsService;
 use crate::application::services::auth_application_service::AuthApplicationService;
 use crate::application::services::storage_settings_service::StorageSettingsService;
-use crate::infrastructure::services::migration_blob_backend::MigrationState;
 
 use crate::application::ports::file_ports::FileUseCaseFactory;
 use crate::application::services::favorites_service::FavoritesService;
@@ -1862,7 +1861,6 @@ impl AppServiceFactory {
             admin_settings_service: None,
             storage_settings_service: None,
             plugin_management,
-            migration_state: Arc::new(tokio::sync::RwLock::new(MigrationState::default())),
             trash_service,
             share_service,
             share_browse_service,
@@ -2082,8 +2080,32 @@ impl AppServiceFactory {
                 self.config.storage.clone(),
                 app_state.core.dedup_service.clone(),
             ));
-            app_state.storage_settings_service = Some(storage_settings_svc);
+            app_state.storage_settings_service = Some(storage_settings_svc.clone());
             tracing::info!("Storage settings service initialized");
+
+            // 9b-1c. Register the storage-backend migration tenant on
+            // the recoverable-run engine. Must run AFTER the storage
+            // settings service is built — the tenant resolves the
+            // *target* backend at each run start by asking the settings
+            // service for the currently-effective config. Source is
+            // whatever `dedup_service` booted with; both live on
+            // `AppState.core`. On-demand only (no periodic tick — an
+            // operator triggers a copy after switching backend config).
+            let job_store_provider_dyn: Arc<
+                dyn crate::infrastructure::scheduler::JobStoreProvider,
+            > = app_state.core.job_store_provider.clone();
+            let _ = Arc::new(
+                crate::infrastructure::services::storage_migration_service::StorageMigrationService::new(
+                    app_state
+                        .maintenance_pool
+                        .clone()
+                        .expect("maintenance_pool set above"),
+                    app_state.core.blob_backend.clone(),
+                    storage_settings_svc,
+                ),
+            )
+            .register_recoverable_job(&app_state.core.job_registry, &job_store_provider_dyn)
+            .await;
 
             // 9b-2. Log whether system needs first-time admin setup
             if !admin_svc.is_system_initialized().await {
@@ -2419,7 +2441,6 @@ pub struct AppState {
     pub plugin_management:
         Option<Arc<dyn crate::application::ports::plugin_ports::PluginManagementPort>>,
     pub storage_settings_service: Option<Arc<StorageSettingsService>>,
-    pub migration_state: Arc<tokio::sync::RwLock<MigrationState>>,
     pub trash_service: Option<Arc<TrashService>>,
     pub share_service: Option<Arc<ShareService>>,
     pub share_browse_service: Option<Arc<ShareBrowseService>>,
