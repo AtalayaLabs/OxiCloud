@@ -25,6 +25,7 @@ jobs:
       backend: ${{ steps.filter.outputs.backend }}
       wasm: ${{ steps.filter.outputs.wasm }}
       plugins: ${{ steps.filter.outputs.plugins }}
+      migrations: ${{ steps.filter.outputs.migrations }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -49,6 +50,8 @@ jobs:
               - 'src/application/ports/plugin_ports.rs'
               - 'src/application/adapters/plugin_lifecycle_hook.rs'
               - 'src/application/adapters/plugin_user_lifecycle_hook.rs'
+            migrations:
+              - 'migrations/**'
 
   frontend-check:
     name: Frontend — svelte-check, ESLint, Stylelint, Prettier
@@ -76,6 +79,59 @@ jobs:
 
       - name: Unit tests
         run: npm run test:unit
+
+  # Fails the PR if a new sqlx migration file has a timestamp NOT strictly
+  # greater than every migration already on the target branch. Guards
+  # against the "two branches in flight, whoever merges second breaks
+  # every deployment" case: sqlx's default strict mode rejects an
+  # `_sqlx_migrations` row inserted with a timestamp older than one
+  # already applied. Same logic as `just check-migrations`.
+  migration-ordering:
+    name: Migration ordering (new migrations postdate target branch)
+    needs: changes
+    if: needs.changes.outputs.migrations == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch target branch
+        run: git fetch --quiet origin "$BASE_REF"
+        env:
+          BASE_REF: ${{ github.base_ref }}
+      - name: Verify ordering
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          base_max=$(git ls-tree -r "origin/${BASE_REF}" --name-only -- migrations/ \
+            | grep -oE 'migrations/[0-9]{14}_' \
+            | sed 's|migrations/||; s|_$||' \
+            | sort | tail -1)
+          if [[ -z "$base_max" ]]; then
+            echo "No migrations on origin/${BASE_REF} — skipping ordering check."
+            exit 0
+          fi
+          new=$(git diff --name-only --diff-filter=A "origin/${BASE_REF}...HEAD" -- migrations/ \
+            | grep -E 'migrations/[0-9]{14}_' || true)
+          if [[ -z "$new" ]]; then
+            echo "No new migrations on this branch — nothing to check."
+            exit 0
+          fi
+          fail=0
+          for m in $new; do
+            ts=$(basename "$m" | grep -oE '^[0-9]{14}')
+            if [[ "$ts" -le "$base_max" ]]; then
+              # `::error` surfaces on the file in the PR diff view.
+              echo "::error file=$m::Migration timestamp $ts is not strictly > origin/${BASE_REF}'s latest ($base_max). Rename to > $base_max to avoid sqlx strict-mode errors on deploy."
+              fail=1
+            fi
+          done
+          if [[ $fail == 0 ]]; then
+            echo "OK — all new migrations post-date origin/${BASE_REF}'s latest ($base_max)."
+          fi
+          exit $fail
 
   rust-fmt:
     name: Rustfmt

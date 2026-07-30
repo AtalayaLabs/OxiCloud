@@ -98,6 +98,52 @@ check:
     cargo clippy --all-features --all-targets -- -D warnings
 
 
+# Verify every new sqlx migration this branch introduces has a
+# timestamp STRICTLY greater than any migration already on the target
+# branch (default: main). Guards against the "PR is fine at creation
+# but got overtaken by a later-timestamped migration merging first"
+# case that would trip sqlx strict-mode on deploy — and the local case
+# where you rebased and now your migration file is out-of-order vs.
+# what your dev DB already applied.
+#
+# Usage:
+#   just check-migrations            # compares against origin/main
+#   just check-migrations dev        # compares against origin/dev
+#
+# Same logic runs in `.github/workflows/migrations.yml` on every PR.
+check-migrations base='main':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    git fetch --quiet origin {{base}}
+    base_max=$(git ls-tree -r "origin/{{base}}" --name-only -- migrations/ \
+        | grep -oE 'migrations/[0-9]{14}_' \
+        | sed 's|migrations/||; s|_$||' \
+        | sort | tail -1)
+    if [[ -z "$base_max" ]]; then
+        echo "No migrations on origin/{{base}} — skipping ordering check."
+        exit 0
+    fi
+    new=$(git diff --name-only --diff-filter=A "origin/{{base}}...HEAD" -- migrations/ \
+        | grep -E 'migrations/[0-9]{14}_' || true)
+    if [[ -z "$new" ]]; then
+        echo "No new migrations on this branch — nothing to check."
+        exit 0
+    fi
+    fail=0
+    for m in $new; do
+        ts=$(basename "$m" | grep -oE '^[0-9]{14}')
+        if [[ "$ts" -le "$base_max" ]]; then
+            echo "ERROR: $m has timestamp $ts, not strictly > origin/{{base}}'s latest ($base_max)."
+            echo "       Rename to a timestamp > $base_max to avoid sqlx strict-mode errors on deploy."
+            fail=1
+        fi
+    done
+    if [[ $fail == 0 ]]; then
+        echo "OK — all new migrations post-date origin/{{base}}'s latest ($base_max)."
+    fi
+    exit $fail
+
+
 wasm-check:
     cd wasm/oxicloud-hash; cargo fmt --all
     cd wasm/oxicloud-hash; cargo clippy --all-features --release -- -D warnings
