@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { page } from '$app/state';
 	import { errorMessage, errorToast } from '$lib/utils/errors';
 	import { dateTimeFormatFor } from '$lib/utils/display';
 	import {
@@ -76,6 +77,7 @@
 		DrivePoliciesPartial,
 		User
 	} from '$lib/api/types';
+	import AdminJobsPanel from '$lib/components/AdminJobsPanel.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import OwnerAvatarStack from '$lib/components/OwnerAvatarStack.svelte';
@@ -172,8 +174,69 @@
 		}
 	}
 
-	type Tab = 'dashboard' | 'users' | 'drives' | 'mounts' | 'plugins' | 'oidc' | 'storage' | 'smtp';
-	let tab = $state<Tab>('dashboard');
+	type Tab =
+		| 'dashboard'
+		| 'users'
+		| 'drives'
+		| 'mounts'
+		| 'plugins'
+		| 'oidc'
+		| 'storage'
+		| 'smtp'
+		| 'jobs';
+
+	const VALID_TABS: readonly Tab[] = [
+		'dashboard',
+		'users',
+		'drives',
+		'mounts',
+		'plugins',
+		'oidc',
+		'storage',
+		'smtp',
+		'jobs'
+	];
+
+	function parseTab(raw: string | undefined): Tab {
+		return VALID_TABS.includes(raw as Tab) ? (raw as Tab) : 'dashboard';
+	}
+
+	// URL is the source of truth for the current tab. Navigation
+	// is via the AppShell sidebar (see `ADMIN_LINKS` there);
+	// this page just reads `page.params.tab` and renders the
+	// matching content block. Unidirectional URL→state means no
+	// `$effect` loop is even possible.
+	const tab = $derived<Tab>(parseTab(page.params.tab));
+
+	/**
+	 * Human-readable label for the current section — feeds the
+	 * page title (`Admin › Jobs · OxiCloud`) and the h1. Kept in
+	 * sync with the `ADMIN_LINKS` labels in AppShell manually
+	 * (small list, unlikely to drift). Extracting to a shared
+	 * module would be over-engineering for 9 strings.
+	 */
+	const tabLabel = $derived.by<string>(() => {
+		switch (tab) {
+			case 'dashboard':
+				return t('admin.dashboard', 'Dashboard');
+			case 'users':
+				return t('admin.users', 'Users');
+			case 'drives':
+				return t('admin.drives', 'Drives');
+			case 'mounts':
+				return t('admin.mounts', 'External Mounts');
+			case 'plugins':
+				return t('admin.plugins', 'Plugins');
+			case 'oidc':
+				return t('admin.oidc', 'OIDC / SSO');
+			case 'storage':
+				return t('admin.storage_tab', 'Storage');
+			case 'smtp':
+				return t('admin.smtp', 'Email (SMTP)');
+			case 'jobs':
+				return t('admin.jobs.tab', 'Jobs');
+		}
+	});
 
 	// Dashboard
 	let dashboard = $state<AdminDashboard | null>(null);
@@ -1462,7 +1525,8 @@
 		plugins: false,
 		oidc: false,
 		storage: false,
-		smtp: false
+		smtp: false,
+		jobs: false
 	});
 
 	$effect(() => {
@@ -1493,7 +1557,9 @@
 	});
 </script>
 
-<svelte:head><title>{t('admin.title', 'Admin')} · OxiCloud</title></svelte:head>
+<svelte:head>
+	<title>{t('admin.title', 'Admin')} › {tabLabel} · OxiCloud</title>
+</svelte:head>
 
 {#snippet envBadge(on: boolean)}
 	{#if on}
@@ -1503,83 +1569,20 @@
 	{/if}
 {/snippet}
 
+<!--
+  The horizontal tab-bar that used to live here was displaced into
+  the shared AppShell sidebar (context-aware — swaps to admin
+  sections when the URL is under /admin/*). This page now renders
+  ONLY the tab content; navigation is via the sidebar + URL. See
+  `lib/components/AppShell.svelte` (ADMIN_LINKS).
+-->
 <main class="admin">
-	<h1>{t('admin.title', 'Admin')}</h1>
-
-	<div class="tabs" role="tablist">
-		<button
-			role="tab"
-			data-testid="admin-dashboard-tab"
-			aria-selected={tab === 'dashboard'}
-			onclick={() => (tab = 'dashboard')}
-		>
-			<Icon name="chart-pie" />
-			{t('admin.dashboard', 'Dashboard')}
-		</button>
-		<button
-			role="tab"
-			data-testid="admin-users-tab"
-			aria-selected={tab === 'users'}
-			onclick={() => (tab = 'users')}
-		>
-			<Icon name="users" />
-			{t('admin.users', 'Users')}
-		</button>
-		<button
-			role="tab"
-			data-testid="admin-drives-tab"
-			aria-selected={tab === 'drives'}
-			onclick={() => (tab = 'drives')}
-		>
-			<Icon name="folder" />
-			{t('admin.drives', 'Drives')}
-		</button>
-		<button
-			role="tab"
-			data-testid="admin-mounts-tab"
-			aria-selected={tab === 'mounts'}
-			onclick={() => (tab = 'mounts')}
-		>
-			<Icon name="folder" />
-			{t('admin.mounts', 'External Mounts')}
-		</button>
-		<button
-			role="tab"
-			data-testid="admin-oidc-tab"
-			aria-selected={tab === 'oidc'}
-			onclick={() => (tab = 'oidc')}
-		>
-			<Icon name="key" />
-			{t('admin.oidc', 'OIDC / SSO')}
-		</button>
-		<button
-			role="tab"
-			data-testid="admin-storage-tab"
-			aria-selected={tab === 'storage'}
-			onclick={() => (tab = 'storage')}
-		>
-			<Icon name="database" />
-			{t('admin.storage_tab', 'Storage')}
-		</button>
-		<button
-			role="tab"
-			data-testid="admin-smtp-tab"
-			aria-selected={tab === 'smtp'}
-			onclick={() => (tab = 'smtp')}
-		>
-			<Icon name="envelope" />
-			{t('admin.smtp', 'Email (SMTP)')}
-		</button>
-		<button
-			role="tab"
-			data-testid="admin-plugins-tab"
-			aria-selected={tab === 'plugins'}
-			onclick={() => (tab = 'plugins')}
-		>
-			<Icon name="layer-group" />
-			{t('admin.plugins', 'Plugins')}
-		</button>
-	</div>
+	<!--
+	  H1 shows the current section since the sidebar is what
+	  communicates which admin area we're in — the plain "Admin"
+	  h1 was informationless once the tab bar moved out.
+	-->
+	<h1>{tabLabel}</h1>
 
 	{#if tab === 'dashboard'}
 		{#if dashboardError}
@@ -2787,6 +2790,8 @@
 				</tbody>
 			</table>
 		{/if}
+	{:else if tab === 'jobs'}
+		<AdminJobsPanel />
 	{:else if !pluginsAvailable}
 		<p class="status">{t('admin.plugins_disabled', 'The plugin subsystem is disabled.')}</p>
 	{:else if pluginsError}
@@ -4090,26 +4095,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: 1rem;
-	}
-
-	.tabs {
-		display: flex;
-		gap: 0.25rem;
-		border-bottom: 1px solid var(--color-border);
-	}
-
-	.tabs button {
-		padding: 0.5rem 1rem;
-		border: none;
-		background: none;
-		color: var(--color-text-muted);
-		cursor: pointer;
-		border-bottom: 2px solid transparent;
-	}
-
-	.tabs button[aria-selected='true'] {
-		color: var(--color-text);
-		border-bottom-color: var(--color-primary);
 	}
 
 	.bar {

@@ -32,15 +32,12 @@
 	const palette = lazyComponent(() => import('$lib/components/CommandPalette.svelte'));
 
 	interface NavLink {
-		href:
-			| '/files'
-			| '/shared'
-			| '/shared-with-me'
-			| '/recent'
-			| '/favorites'
-			| '/photos'
-			| '/music'
-			| '/trash';
+		/**
+		 * String rather than a literal union so admin links (which
+		 * include a dynamic path segment) can share the same shape.
+		 * `resolve()` accepts any string, so no type-level cost.
+		 */
+		href: string;
 		label: string;
 		icon: string;
 		/** Stable key driving the per-section icon colour (see sidebar.css). */
@@ -69,10 +66,101 @@
 		{ href: '/trash', label: t('nav.trash', 'Trash'), icon: 'trash', section: 'trash' }
 	];
 
+	// Admin sidebar — populated when the URL is under /admin. The
+	// admin +page.svelte used to render its own horizontal tab
+	// strip; that was displaced here so the section navigation
+	// scales past ~7 items and matches deep-link URLs from the
+	// address bar.
+	const ADMIN_LINKS: NavLink[] = [
+		{
+			href: '/admin',
+			label: t('admin.dashboard', 'Dashboard'),
+			icon: 'chart-pie',
+			section: 'admin-dashboard'
+		},
+		{
+			href: '/admin/users',
+			label: t('admin.users', 'Users'),
+			icon: 'users',
+			section: 'admin-users'
+		},
+		{
+			href: '/admin/drives',
+			label: t('admin.drives', 'Drives'),
+			icon: 'folder',
+			section: 'admin-drives'
+		},
+		{
+			href: '/admin/mounts',
+			label: t('admin.mounts', 'External Mounts'),
+			icon: 'folder',
+			section: 'admin-mounts'
+		},
+		{
+			href: '/admin/oidc',
+			label: t('admin.oidc', 'OIDC / SSO'),
+			icon: 'key',
+			section: 'admin-oidc'
+		},
+		{
+			href: '/admin/storage',
+			label: t('admin.storage_tab', 'Storage'),
+			icon: 'database',
+			section: 'admin-storage'
+		},
+		{
+			href: '/admin/smtp',
+			label: t('admin.smtp', 'Email (SMTP)'),
+			icon: 'envelope',
+			section: 'admin-smtp'
+		},
+		{
+			href: '/admin/plugins',
+			label: t('admin.plugins', 'Plugins'),
+			icon: 'layer-group',
+			section: 'admin-plugins'
+		},
+		{
+			href: '/admin/jobs',
+			label: t('admin.jobs.tab', 'Jobs'),
+			icon: 'cogs',
+			section: 'admin-jobs'
+		}
+	];
+
 	const isAdmin = $derived(session.user?.role === 'admin');
+
+	// Any URL under /admin swaps the sidebar to admin mode. Uses
+	// startsWith so a trailing slash / query params / hash don't
+	// desync. Root `/admin` counts too (dashboard).
+	const isAdminSection = $derived(page.url.pathname.startsWith('/admin'));
+	const currentLinks = $derived(isAdminSection ? ADMIN_LINKS : LINKS);
 
 	function active(href: string): boolean {
 		return page.url.pathname === href || page.url.pathname.startsWith(`${href}/`);
+	}
+
+	// Sidebar-item active check. Non-admin links use `active()`
+	// (matches href + any subpath). Admin links need a stricter
+	// rule for `/admin` itself — a plain `startsWith('/admin/')`
+	// would light up the Dashboard item on `/admin/drives` too.
+	// So `/admin` matches ONLY the exact path; every other admin
+	// item uses the same startsWith rule as before.
+	function activeLink(href: string): boolean {
+		if (href === '/admin') return page.url.pathname === '/admin';
+		return active(href);
+	}
+
+	/**
+	 * Data-driven sidebar links (`LINKS`, `ADMIN_LINKS`) hold
+	 * runtime strings, not compile-time route keys. SvelteKit's
+	 * typed `resolve()` refuses them; we know they're valid
+	 * routes at runtime. Cast at the callsite, one place, so
+	 * the template stays clean.
+	 */
+	function navHref(href: string): string {
+		// @ts-expect-error runtime-known route string, not a literal typed key
+		return resolve(href);
 	}
 
 	// ── Sidebar drop targets ─────────────────────────────────────────────────
@@ -467,16 +555,50 @@
 		<div class="app-name">OxiCloud</div>
 	</a>
 
-	<nav class="nav-menu" aria-label={t('nav.primary', 'Primary')}>
-		{#each LINKS as link (link.href)}
-			{@const isDropTarget = link.href === '/favorites' || link.href === '/trash'}
+	<nav
+		class="nav-menu"
+		class:nav-menu--admin={isAdminSection}
+		aria-label={isAdminSection
+			? t('nav.admin_sections', 'Admin sections')
+			: t('nav.primary', 'Primary')}
+	>
+		{#if isAdminSection}
+			<!--
+			  "Back to app" escape hatch — the sidebar swaps to
+			  admin mode when the URL is under /admin/*, so the
+			  usual Files/Shared links disappear. A dedicated back
+			  entry gives the operator a one-click way out without
+			  having to hunt through the user menu.
+			-->
+			<a
+				class="nav-item nav-item--back"
+				href={resolve('/files')}
+				data-testid="appshell-nav-admin-back-link"
+				onclick={() => (sidebarOpen = false)}
+			>
+				<Icon name="arrow-left" />
+				<span>{t('nav.back_to_app', 'Back to OxiCloud')}</span>
+			</a>
+		{/if}
+		<!--
+		  Sidebar links come from data-driven arrays (LINKS,
+		  ADMIN_LINKS), so hrefs are runtime strings rather than
+		  compile-time-known route keys. `navHref()` internally
+		  routes them through `resolve()`, but ESLint's static
+		  check can't see through the wrapper. Disabling the
+		  rule here rather than sprinkling per-line directives.
+		-->
+		<!-- eslint-disable svelte/no-navigation-without-resolve -->
+		{#each currentLinks as link (link.href)}
+			{@const isDropTarget =
+				!isAdminSection && (link.href === '/favorites' || link.href === '/trash')}
 			<a
 				class="nav-item"
-				class:active={active(link.href)}
+				class:active={activeLink(link.href)}
 				class:nav-item--drop-target={isDropTarget && sidebarDropHref === link.href}
-				href={resolve(link.href)}
+				href={navHref(link.href)}
 				data-section={link.section}
-				data-testid={`appshell-nav-${link.href.replace(/^\//, '')}-link`}
+				data-testid={`appshell-nav-${link.section}-link`}
 				onclick={() => (sidebarOpen = false)}
 				ondragover={isDropTarget ? (e) => sidebarOnDragOver(e, link.href) : undefined}
 				ondragleave={isDropTarget ? () => sidebarOnDragLeave(link.href) : undefined}
@@ -485,10 +607,11 @@
 				<Icon name={link.icon} />
 				<span>{link.label}</span>
 			</a>
-			{#if link.href === '/files' && !session.isExternalUser}
+			{#if !isAdminSection && link.href === '/files' && !session.isExternalUser}
 				<DrivePicker onnavigate={() => (sidebarOpen = false)} />
 			{/if}
 		{/each}
+		<!-- eslint-enable svelte/no-navigation-without-resolve -->
 	</nav>
 
 	{#if session.user}

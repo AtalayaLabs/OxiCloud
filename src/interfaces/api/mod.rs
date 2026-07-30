@@ -234,6 +234,9 @@ use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
         // (docs/plan/job-registry.md §Cross-cutting).
         handlers::admin_handler::list_jobs,
         handlers::admin_handler::trigger_job,
+        handlers::admin_handler::cancel_job,
+        handlers::admin_handler::list_job_runs,
+        handlers::admin_handler::get_job_run,
         // Grant / ReBAC handlers (free functions)
         handlers::grant_handler::create_grant,
         handlers::grant_handler::revoke_grant,

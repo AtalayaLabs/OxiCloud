@@ -23,7 +23,7 @@ use tracing::{error, info};
 
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::common::errors::DomainError;
-use crate::infrastructure::scheduler::{JobHandler, JobOutcome, JobRunArgs};
+use crate::infrastructure::scheduler::{JobHandler, JobOutcome, JobRegistry, JobRunArgs};
 use crate::infrastructure::services::pg_acl_engine::PgAclEngine;
 use async_trait::async_trait;
 
@@ -57,10 +57,20 @@ impl GrantCleanupService {
         self.grace_days
     }
 
-    /// Cadence exposed as `Duration` so DI passes a sanitised value
-    /// (post-`.max(1)`) to `JobRegistry::register`.
+    /// Cadence exposed as `Duration`. Internal helper used by
+    /// [`Self::register`]; kept `pub` for tests.
     pub fn interval(&self) -> Duration {
         Duration::from_secs(self.interval_hours * 3600)
+    }
+
+    /// Register self with the periodic-job scheduler and return the
+    /// same `Arc<Self>` for DI-style chaining. Scheduled tenant with
+    /// interval = `self.interval()`, no timeout. See
+    /// `docs/plan/job-registry.md` Part 1.
+    pub async fn register(self: Arc<Self>, registry: &JobRegistry) -> Arc<Self> {
+        let interval = self.interval();
+        registry.register(self.clone(), Some(interval), None).await;
+        self
     }
 
     /// Run one purge pass.

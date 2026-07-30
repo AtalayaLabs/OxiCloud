@@ -89,7 +89,19 @@ jsonpath "$..interval_ms" contains 600000
 jsonpath "$..interval_ms" count == 3
 
 # Every entry carries a `running` bool — same aggregate primitive.
-jsonpath "$..running" count == 4
+# Count matches the registered-tenant count: 4 Part 1 periodics
+# (trash_cleanup, storage_reconcile, dedup_gc, grant_cleanup) + 5
+# Part 2 recoverables (drives_consistency, folders_consistency,
+# files_consistency, blobs_consistency, backend_consistency —
+# wrapped by RecoverableAdapter so they appear here alongside the
+# periodics) + 1 coordinator (consistency_batch — a plain
+# JobHandler that dispatches every registered `*_consistency`).
+# Bump when a new tenant registers.
+jsonpath "$..running" count == 10
+jsonpath "$[*].name" contains "drives_consistency"
+jsonpath "$[*].name" contains "folders_consistency"
+jsonpath "$[*].name" contains "files_consistency"
+jsonpath "$[*].name" contains "consistency_batch"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -124,6 +136,109 @@ Authorization: Bearer {{admin_token}}
 HTTP 200
 [Asserts]
 jsonpath "$..last_outcome.outcome" contains "ok"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 4b — Trigger `folders_consistency`. Second Part 2
+#           recoverable tenant. Goes through the same
+#           RecoverableAdapter → PgJobStoreProvider path as
+#           drives_consistency (opens a run row, walks the
+#           `storage.folders` cursor, marks Completed). Success
+#           envelope shape identical.
+#
+#           Captures the run_id so Step 4b-findings can pin the
+#           `GET /runs/{id}/findings` endpoint.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/admin/jobs/folders_consistency/trigger
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+[Captures]
+folders_run_id: jsonpath "$.outcome.extra.run_id"
+[Asserts]
+jsonpath "$.ok" == true
+jsonpath "$.outcome.outcome" == "ok"
+jsonpath "$.outcome.count" exists
+jsonpath "$.outcome.extra.completed" == true
+jsonpath "$.outcome.extra.run_id" exists
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 4b-findings — List findings for the run we just kicked.
+# The response body is a JSON array (possibly empty on a clean
+# test DB — the fresh Hurl DB has no folder-tree drift). Assert:
+#   * 200 on a real run_id.
+#   * response is an array (isCollection covers both empty + non-
+#     empty). Structural shape of individual finding rows is pinned
+#     by the drives_consistency_service integration test which seeds
+#     drift and asserts kind/severity/detail — not repeated here.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/admin/jobs/folders_consistency/runs/{{folders_run_id}}/findings
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$" isCollection
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 4b-findings-404 — Findings for a run_id that doesn't
+# exist. Endpoint returns 404, not 200 [] — otherwise a broken
+# link from the admin UI would look like "no findings" instead
+# of "run missing".
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/admin/jobs/folders_consistency/runs/00000000-0000-0000-0000-000000000000/findings
+Authorization: Bearer {{admin_token}}
+
+HTTP 404
+[Asserts]
+jsonpath "$.error" == "run not found"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 4b2 — Trigger `files_consistency`. Third Part 2 recoverable
+#            tenant. Iterates `storage.files` and self-joins folder
+#            + blob. Same envelope shape as the earlier consistency
+#            tenants.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/admin/jobs/files_consistency/trigger
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.ok" == true
+jsonpath "$.outcome.outcome" == "ok"
+jsonpath "$.outcome.count" exists
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 4c — Trigger `consistency_batch`. Coordinator (plain
+#           JobHandler) — snapshots the registry, filters names
+#           ending `_consistency`, sequentially triggers each.
+#           `outcome.count` = number of children dispatched (5 as
+#           of Slice 10: drives + folders + files + blobs +
+#           backend). `extra.per_check` carries a per-child outcome
+#           map. Batch itself always returns ok — child failures
+#           live inside per_check. `?deep=true` propagates as
+#           `extra.deep`.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/admin/jobs/consistency_batch/trigger?deep=true
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.ok" == true
+jsonpath "$.outcome.outcome" == "ok"
+jsonpath "$.outcome.count" == 5
+jsonpath "$.outcome.extra.deep" == true
+jsonpath "$.outcome.extra.ok" == 5
+jsonpath "$.outcome.extra.err" == 0
+# per_check is keyed by child job name.
+jsonpath "$.outcome.extra.per_check.drives_consistency.outcome"  == "ok"
+jsonpath "$.outcome.extra.per_check.folders_consistency.outcome" == "ok"
+jsonpath "$.outcome.extra.per_check.files_consistency.outcome"   == "ok"
+jsonpath "$.outcome.extra.per_check.blobs_consistency.outcome"   == "ok"
+jsonpath "$.outcome.extra.per_check.backend_consistency.outcome" == "ok"
 
 
 # ─────────────────────────────────────────────────────────────

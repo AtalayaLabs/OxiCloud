@@ -147,8 +147,26 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         // audit-logged. See `docs/plan/job-registry.md` §Cross-cutting.
         // Retired the `/internal/trigger-sweep|gc|grant-cleanup` shims
         // that used to sit here (Stage 2 of the job-registry rollout).
+        //
+        // `/jobs` + `/jobs/{name}/trigger` cover every registered
+        // JobHandler (periodic + recoverable — recoverable ones slot
+        // in through `RecoverableAdapter`). The `/cancel` + `/runs`
+        // + `/runs/{id}` triplet is recoverable-only — hitting them
+        // on a stateless job silently gets an empty list / no-op
+        // cancel, since no rows in `jobs.recoverable_runs` match.
+        // See `docs/plan/job-registry.md` Part 2.
         .route("/jobs", get(list_jobs))
         .route("/jobs/{name}/trigger", post(trigger_job))
+        .route("/jobs/{name}/cancel", post(cancel_job))
+        .route("/jobs/{name}/runs", get(list_job_runs))
+        .route("/jobs/{name}/runs/{id}", get(get_job_run))
+        .route(
+            "/jobs/{name}/runs/{id}/findings",
+            get(list_job_run_findings),
+        )
+        // Retention cleanup — operator-triggered, not periodic.
+        // See `purge_job_runs` docstring for the semantics.
+        .route("/jobs/runs/purge", post(purge_job_runs))
         // Drives — admin-wide view (distinct from `/api/drives` which
         // is filtered to the caller's role grants).
         .route("/drives", get(list_all_drives))
@@ -2084,10 +2102,16 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
 /// support it (dedup_gc → grace = 0, grant_cleanup → grace = 0).
 /// Silently ignored by handlers that don't (trash_cleanup,
 /// storage_reconcile).
+///
+/// `deep=true` opts into slow variants — `consistency_batch` fans it
+/// out to sub-jobs; `storage_consistency` (when implemented) will
+/// re-BLAKE3 each blob for bitrot detection. See `JobRunArgs.deep`.
 #[derive(serde::Deserialize)]
 pub struct TriggerJobQuery {
     #[serde(default)]
     pub force: bool,
+    #[serde(default)]
+    pub deep: bool,
 }
 
 /// `POST /api/admin/jobs/{name}/trigger` — dispatch one run off-schedule.
@@ -2125,11 +2149,16 @@ pub async fn trigger_job(
         event = "job.trigger",
         job = %name,
         force = query.force,
-        "👮🏻‍♂️ Admin triggered job {} (force={})",
+        deep = query.deep,
+        "👮🏻‍♂️ Admin triggered job {} (force={}, deep={})",
         name,
         query.force,
+        query.deep,
     );
-    let args = JobRunArgs { force: query.force };
+    let args = JobRunArgs {
+        force: query.force,
+        deep: query.deep,
+    };
     match state.core.job_registry.trigger(&name, &args).await {
         Some(outcome) => (
             StatusCode::OK,
@@ -2144,5 +2173,296 @@ pub async fn trigger_job(
             })),
         )
             .into_response(),
+    }
+}
+
+/// `POST /api/admin/jobs/{name}/cancel` — cooperative cancel of the
+/// currently-running recoverable run for `{name}`.
+///
+/// Flips the row's `status` from `Running` → `CancelRequested`. The
+/// handler is responsible for polling `store.status()` between batches
+/// and returning `RunOutcome::Paused` at the next safe boundary; if it
+/// doesn't, the cancel is a no-op until the run completes naturally.
+///
+/// Returns 200 with the run_id when a Running row was flipped, 200 with
+/// `cancelled: false` when nothing was running (either no runs exist,
+/// or the latest is Paused / Completed / Failed / already CancelRequested).
+/// Never 404 on "no active run" — the job name is registered and the
+/// endpoint just reports the truth.
+#[utoipa::path(
+    post,
+    path = "/api/admin/jobs/{name}/cancel",
+    params(("name" = String, Path, description = "Registered job name")),
+    responses(
+        (status = 200, description = "Cancel signalled (or no-op if nothing was running)"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+        (status = 500, description = "DB error"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn cancel_job(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    use crate::infrastructure::scheduler::JobStoreProvider as _;
+    tracing::info!(
+        target: "audit",
+        event = "job.cancel_requested",
+        job = %name,
+        "👮🏻‍♂️ Admin requested cancel for job {}",
+        name,
+    );
+    match state.core.job_store_provider.request_cancel(&name).await {
+        Ok(Some(run_id)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "cancelled": true,
+                "run_id": run_id.to_string(),
+                "status": "CancelRequested",
+            })),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "cancelled": false,
+                "reason": "no running run for this job",
+            })),
+        )
+            .into_response(),
+        Err(e) => AppError::internal_error(format!("cancel failed: {e}")).into_response(),
+    }
+}
+
+/// Query parameters for `GET /api/admin/jobs/{name}/runs`.
+#[derive(serde::Deserialize)]
+pub struct ListRunsQuery {
+    /// Cap on returned rows. Server-side clamps to 100 defensively.
+    #[serde(default = "default_runs_limit")]
+    pub limit: u32,
+}
+
+fn default_runs_limit() -> u32 {
+    20
+}
+
+/// `GET /api/admin/jobs/{name}/runs?limit=N` — history of recoverable
+/// runs for a registered job, newest first. Includes terminal +
+/// non-terminal rows.
+///
+/// Read-only, no audit line — standard admin-middleware auth is enough.
+#[utoipa::path(
+    get,
+    path = "/api/admin/jobs/{name}/runs",
+    params(
+        ("name" = String, Path, description = "Registered job name"),
+        ("limit" = Option<u32>, Query, description = "Max rows to return (default 20, capped at 100)"),
+    ),
+    responses(
+        (status = 200, description = "Runs listed (may be empty)"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+        (status = 500, description = "DB error"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn list_job_runs(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<ListRunsQuery>,
+) -> impl IntoResponse {
+    use crate::infrastructure::scheduler::JobStoreProvider as _;
+    let limit = query.limit.clamp(1, 100);
+    match state.core.job_store_provider.list_runs(&name, limit).await {
+        Ok(runs) => (StatusCode::OK, Json(runs)).into_response(),
+        Err(e) => AppError::internal_error(format!("list_runs failed: {e}")).into_response(),
+    }
+}
+
+/// `GET /api/admin/jobs/{name}/runs/{id}` — single-run detail.
+///
+/// Returns 404 when the id doesn't exist. `{name}` is not validated
+/// against the run's `job_name` — the id is globally unique — but
+/// keeping the name in the URL path lets operators build stable
+/// per-job history links without knowing individual run ids upfront.
+#[utoipa::path(
+    get,
+    path = "/api/admin/jobs/{name}/runs/{id}",
+    params(
+        ("name" = String, Path, description = "Registered job name"),
+        ("id" = String, Path, description = "Run UUID"),
+    ),
+    responses(
+        (status = 200, description = "Run detail"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+        (status = 404, description = "Run not found"),
+        (status = 500, description = "DB error"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn get_job_run(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path((_name, id)): axum::extract::Path<(String, uuid::Uuid)>,
+) -> impl IntoResponse {
+    use crate::infrastructure::scheduler::JobStoreProvider as _;
+    match state.core.job_store_provider.get_run_by_id(id).await {
+        Ok(Some(run)) => (StatusCode::OK, Json(run)).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "run not found", "id": id.to_string() })),
+        )
+            .into_response(),
+        Err(e) => AppError::internal_error(format!("get_run failed: {e}")).into_response(),
+    }
+}
+
+/// Query parameters for `GET /api/admin/jobs/{name}/runs/{id}/findings`.
+#[derive(serde::Deserialize)]
+pub struct ListFindingsQuery {
+    /// Page size — server clamps to 500 defensively.
+    #[serde(default = "default_findings_limit")]
+    pub limit: u32,
+    #[serde(default)]
+    pub offset: u32,
+}
+
+fn default_findings_limit() -> u32 {
+    100
+}
+
+/// `GET /api/admin/jobs/{name}/runs/{id}/findings?limit=N&offset=M` —
+/// paginated findings emitted by a specific run of a recoverable job.
+///
+/// 404 when the run id doesn't exist (anti-enum: caller knew the id
+/// somehow; we don't leak whether it was pruned vs never-existed).
+/// Read-only, no audit — standard admin-middleware auth is enough.
+///
+/// `{name}` is not validated against the run's `job_name` (the id is
+/// globally unique) but keeps the URL path consistent with the other
+/// per-run endpoints for stable per-job history links.
+#[utoipa::path(
+    get,
+    path = "/api/admin/jobs/{name}/runs/{id}/findings",
+    params(
+        ("name" = String, Path, description = "Registered job name"),
+        ("id" = String, Path, description = "Run UUID"),
+        ("limit" = Option<u32>, Query, description = "Max rows (default 100, capped at 500)"),
+        ("offset" = Option<u32>, Query, description = "Rows to skip (default 0)"),
+    ),
+    responses(
+        (status = 200, description = "Findings listed (may be empty)"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+        (status = 404, description = "Run not found"),
+        (status = 500, description = "DB error"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn list_job_run_findings(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path((_name, id)): axum::extract::Path<(String, uuid::Uuid)>,
+    axum::extract::Query(query): axum::extract::Query<ListFindingsQuery>,
+) -> impl IntoResponse {
+    use crate::infrastructure::scheduler::JobStoreProvider as _;
+    // Existence check first — otherwise a paged listing of a
+    // nonexistent run returns 200 [] which is indistinguishable from
+    // "run exists, no findings" and breaks operator drill-down.
+    match state.core.job_store_provider.get_run_by_id(id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "run not found", "id": id.to_string() })),
+            )
+                .into_response();
+        }
+        Err(e) => return AppError::internal_error(format!("get_run failed: {e}")).into_response(),
+    }
+    let limit = query.limit.clamp(1, 500);
+    match state
+        .core
+        .job_store_provider
+        .list_findings(id, limit, query.offset)
+        .await
+    {
+        Ok(findings) => (StatusCode::OK, Json(findings)).into_response(),
+        Err(e) => AppError::internal_error(format!("list_findings failed: {e}")).into_response(),
+    }
+}
+
+/// Query parameters for `POST /api/admin/jobs/runs/purge`.
+///
+/// `days` — retention window. Terminal runs (`Completed`, `Failed`)
+/// with `completed_at` older than this many days ago are deleted
+/// (with their findings via CASCADE). Default 30. Minimum enforced
+/// at 1 by the provider — zero would eat runs completed seconds
+/// ago. Non-terminal runs are ALWAYS preserved regardless of age.
+#[derive(serde::Deserialize)]
+pub struct PurgeJobRunsQuery {
+    #[serde(default = "default_purge_days")]
+    pub days: i32,
+}
+
+fn default_purge_days() -> i32 {
+    30
+}
+
+/// `POST /api/admin/jobs/runs/purge?days=N` — operator-triggered
+/// cleanup of old terminal runs + their findings. Not periodic;
+/// admins fire this when they want to reclaim `jobs.*` history
+/// space. Delegates entirely to
+/// `JobStoreProvider::purge_terminal_runs` — no SQL in the handler
+/// (see `AGENTS.md` § handler thinness).
+#[utoipa::path(
+    post,
+    path = "/api/admin/jobs/runs/purge",
+    params(
+        ("days" = Option<i32>, Query, description = "Retention window in days (default 30, minimum 1). Terminal runs older than this are deleted with their findings; non-terminal runs are always preserved."),
+    ),
+    responses(
+        (status = 200, description = "Purge complete"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+        (status = 500, description = "DB error"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn purge_job_runs(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<PurgeJobRunsQuery>,
+) -> impl IntoResponse {
+    use crate::infrastructure::scheduler::JobStoreProvider as _;
+    let retention_days = query.days.max(1);
+    match state
+        .core
+        .job_store_provider
+        .purge_terminal_runs(retention_days)
+        .await
+    {
+        Ok(purged) => {
+            tracing::info!(
+                target: "audit",
+                event = "jobs.runs_purged",
+                purged = purged,
+                retention_days = retention_days,
+                "👮🏻‍♂️ admin purged {purged} terminal recoverable-run row(s) past {retention_days} day retention (findings cascaded)",
+            );
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "purged":         purged,
+                    "retention_days": retention_days,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => AppError::internal_error(format!("purge failed: {e}")).into_response(),
     }
 }

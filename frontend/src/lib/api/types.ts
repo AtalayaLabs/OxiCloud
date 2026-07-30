@@ -522,3 +522,102 @@ export interface FolderAncestorsResponse {
 	ancestors: FolderAncestor[];
 	access_source: AccessSource;
 }
+
+// ─── Job registry (Part 1 + Part 2) ────────────────────────────────────────
+//
+// Maps `src/infrastructure/scheduler/*` DTOs 1:1. See
+// `docs/plan/job-registry.md` for the backend contract; the shapes below
+// are what the `/api/admin/jobs*` endpoints emit.
+
+/**
+ * `JobOutcome` — the uniform outcome the scheduler logs and stores for
+ * every job dispatch. Serialised with `#[serde(tag = "outcome")]` so the
+ * discriminant is the `outcome` field, not the object key.
+ */
+export type JobOutcome =
+	| { outcome: 'ok'; count: number; extra?: unknown }
+	| { outcome: 'err'; message: string };
+
+/**
+ * `JobSummary` — one row per registered job in `GET /api/admin/jobs`.
+ * Cadence + last-run bookkeeping. `interval_ms` / `next_run_at` are
+ * `undefined` on on-demand jobs (serde skips `Option::None`).
+ */
+export interface JobSummary {
+	name: string;
+	interval_ms?: number;
+	next_run_at?: string;
+	last_run_at?: string;
+	last_outcome?: JobOutcome;
+	running: boolean;
+}
+
+/**
+ * `RunStatus` values allowed in `jobs.recoverable_runs.status`. The
+ * non-terminal set (Running / Paused / CancelRequested) is what the
+ * DB's `one_active_run_per_job` partial unique index scopes.
+ */
+export type RunStatus = 'Running' | 'Paused' | 'CancelRequested' | 'Completed' | 'Failed';
+
+/**
+ * `RunSummary` — one row per recoverable-job run from
+ * `GET /api/admin/jobs/{name}/runs`. Terminal + non-terminal rows both
+ * appear. `stats` / `params` are opaque JSON — job-specific shape;
+ * consumers should key off `job_name` to decide what to render.
+ * `cursor_hex` is present only when the run has advanced past the
+ * initial state (paused mid-scan is the typical case).
+ */
+export interface RunSummary {
+	id: string;
+	job_name: string;
+	status: RunStatus;
+	started_at: string;
+	last_progress_at: string;
+	completed_at?: string;
+	stats: Record<string, unknown>;
+	params: Record<string, unknown>;
+	cursor_hex?: string;
+	error_message?: string;
+	/** Populated when the tenant reported a countable subject at run
+	 *  start (`RecoverableJobHandler::count_total`). Absent when the
+	 *  tenant can't count — the UI hides the progress bar and falls
+	 *  back to raw `scanned_count`. */
+	progress?: RunProgress;
+}
+
+/**
+ * Confidence level of a `RunProgress` fraction. Wire lowercase per
+ * the `#[serde(rename_all = "lowercase")]` on the Rust enum.
+ *
+ * - `count` — `scanned_count / total_rows` where `total_rows` came
+ *   from a definitive `COUNT(*)` on the subject table.
+ * - `approximate` — proxy-derived total (e.g. `storage_consistency`
+ *   using DB blob count as a stand-in for backend object count).
+ *   Fraction can legitimately exceed 1.0 at run end — the deviation
+ *   quantifies the drift the check is looking for.
+ */
+export type ProgressKind = 'count' | 'approximate';
+
+export interface RunProgress {
+	fraction: number;
+	kind: ProgressKind;
+	scanned: number;
+	total: number;
+}
+
+/**
+ * `Finding` — one row from `GET /api/admin/jobs/{name}/runs/{id}/findings`.
+ * Persisted by consistency tenants via `store.record_finding()`. Consumers
+ * key off `kind` to know the shape of `detail` (per-tenant JSON — e.g.
+ * `stale_used_bytes` carries `{cached, actual, delta}`; `missing_blob`
+ * carries `{blob_hash}`; …).
+ */
+export interface Finding {
+	id: string;
+	run_id: string;
+	kind: string;
+	severity: string;
+	resource_id?: string;
+	detail: Record<string, unknown>;
+	created_at: string;
+}

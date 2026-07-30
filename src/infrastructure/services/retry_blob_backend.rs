@@ -355,4 +355,26 @@ impl BlobStorageBackend for RetryBlobBackend {
     fn local_blob_path(&self, hash: &str) -> Option<PathBuf> {
         self.inner.local_blob_path(hash)
     }
+
+    /// Enumeration delegates to inner. Retry semantics apply per
+    /// call, not per batch — a single list call that fails after
+    /// exhausting retries surfaces the error to the tenant, which
+    /// treats it as a transient backend issue and skips the batch.
+    fn list_blob_hashes(
+        &self,
+        cursor: Option<String>,
+        limit: usize,
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        crate::application::ports::blob_storage_ports::BlobListPage,
+                        DomainError,
+                    >,
+                > + Send
+                + '_,
+        >,
+    > {
+        self.inner.list_blob_hashes(cursor, limit)
+    }
 }

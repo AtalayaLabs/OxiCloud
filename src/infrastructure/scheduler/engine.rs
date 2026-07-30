@@ -264,6 +264,10 @@ fn translate_join(
 /// Distinct Ok/Err branches so the tracing macros pick up the fields at
 /// compile time — `tracing` doesn't expand conditional field lists.
 fn log_outcome(name: &str, outcome: &JobOutcome, cause: Option<ErrCause>, elapsed_ms: u128) {
+    // Also render elapsed inline in the human-readable message so
+    // `tail -f` operators see the duration without waiting on a
+    // structured log renderer to project the `elapsed_ms` field.
+    let elapsed = format_elapsed(elapsed_ms);
     match outcome {
         JobOutcome::Ok { count, extra } => {
             tracing::info!(
@@ -274,8 +278,10 @@ fn log_outcome(name: &str, outcome: &JobOutcome, cause: Option<ErrCause>, elapse
                 count = *count,
                 elapsed_ms = elapsed_ms,
                 extra = %extra,
-                "job {} ran",
+                "job {} ran in {} — count={}",
                 name,
+                elapsed,
+                count,
             );
         }
         JobOutcome::Err { message: msg } => {
@@ -287,10 +293,28 @@ fn log_outcome(name: &str, outcome: &JobOutcome, cause: Option<ErrCause>, elapse
                 cause = %cause.unwrap_or(ErrCause::Handler),
                 elapsed_ms = elapsed_ms,
                 error = %msg,
-                "job {} failed",
+                "job {} failed after {} — {}",
                 name,
+                elapsed,
+                msg,
             );
         }
+    }
+}
+
+/// Human-friendly elapsed rendering — `12ms` / `340ms` / `1.4s` /
+/// `12.3s` / `4m30s`. The structured `elapsed_ms` field still carries
+/// the raw millisecond number for log aggregators.
+fn format_elapsed(ms: u128) -> String {
+    if ms < 1000 {
+        format!("{}ms", ms)
+    } else if ms < 60_000 {
+        format!("{:.1}s", (ms as f64) / 1000.0)
+    } else {
+        let secs = ms / 1000;
+        let m = secs / 60;
+        let s = secs % 60;
+        format!("{}m{}s", m, s)
     }
 }
 
@@ -361,8 +385,7 @@ mod tests {
         let registry = Arc::new(JobRegistry::new());
         registry
             .register(handler, Some(Duration::from_millis(100)), None)
-            .await
-            .unwrap();
+            .await;
         let entry = registry.get("overrun").await.unwrap();
 
         // Kick off dispatch 1 in the background — it holds the permit
@@ -402,8 +425,7 @@ mod tests {
                 Some(Duration::from_millis(100)),
                 Some(Duration::from_millis(50)),
             )
-            .await
-            .unwrap();
+            .await;
         let entry = registry.get("slow").await.unwrap();
 
         dispatch("slow", entry.clone(), &JobRunArgs::default()).await;

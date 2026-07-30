@@ -389,4 +389,14 @@ impl BlobStorageBackend for AzureBlobBackend {
     fn local_blob_path(&self, _hash: &str) -> Option<PathBuf> {
         None
     }
+
+    // TODO: implement `list_blob_hashes` via
+    // `container_client.list_blobs()` (`azure_storage_blobs`
+    // paginator). Same filter as local + S3 impls:
+    // `<xx>/<64-hex>.blob` naming. Currently inherits the trait
+    // default which returns `operation_not_supported` — the
+    // `backend_consistency` tenant handles that by emitting a
+    // single run-level `backend_unenumerable` finding and
+    // completing without per-blob probes. Ship as a follow-up once
+    // there's an Azure test environment to validate against.
 }

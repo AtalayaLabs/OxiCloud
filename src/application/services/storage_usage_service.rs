@@ -578,8 +578,24 @@ impl StorageUsageService {
 
 pub const STORAGE_RECONCILE_JOB_NAME: &str = "storage_reconcile";
 
-use crate::infrastructure::scheduler::{JobHandler, JobOutcome, JobRunArgs};
+use crate::infrastructure::scheduler::{JobHandler, JobOutcome, JobRegistry, JobRunArgs};
 use async_trait::async_trait;
+
+impl StorageUsageService {
+    /// Register self with the periodic-job scheduler and return the
+    /// same `Arc<Self>` for DI-style chaining. Scheduled tenant with
+    /// interval = `max(30s, interval_secs)`. See
+    /// `docs/plan/job-registry.md` Part 1.
+    pub async fn register(
+        self: Arc<Self>,
+        registry: &JobRegistry,
+        interval_secs: u64,
+    ) -> Arc<Self> {
+        let interval = Self::reconciliation_interval(interval_secs);
+        registry.register(self.clone(), Some(interval), None).await;
+        self
+    }
+}
 
 #[async_trait]
 impl JobHandler for StorageUsageService {

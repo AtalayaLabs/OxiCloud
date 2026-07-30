@@ -351,6 +351,29 @@ impl BlobStorageBackend for EncryptedBlobBackend {
         // Encrypted blobs cannot be served directly from disk
         None
     }
+
+    /// Enumeration = plaintext hashes, same as the inner backend.
+    /// Encryption operates on payload bytes, not on the hash key:
+    /// blob objects on the inner backend are stored under the
+    /// PLAINTEXT hash so dedup works. Delegating list to the inner
+    /// backend therefore returns exactly the right identifiers.
+    fn list_blob_hashes(
+        &self,
+        cursor: Option<String>,
+        limit: usize,
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        crate::application::ports::blob_storage_ports::BlobListPage,
+                        DomainError,
+                    >,
+                > + Send
+                + '_,
+        >,
+    > {
+        self.inner.list_blob_hashes(cursor, limit)
+    }
 }
 
 /// Collect a byte stream into a single `Vec<u8>`.

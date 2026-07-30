@@ -322,6 +322,13 @@ impl AppServiceFactory {
         let blob_lifecycle =
             Arc::new(BlobLifecycleService::new().with_hook(thumbnail_service.clone()));
 
+        // Hold a clone of the fully-decorated blob backend for use by
+        // `blobs_consistency` (physical-existence + bit-rot probes)
+        // further down the DI chain. Must be captured BEFORE the
+        // `dedup_service` construction below because that call moves
+        // `blob_backend` into DedupService.
+        let blob_backend_for_consistency = blob_backend.clone();
+
         // Deduplication service — PRIMARY blob storage engine (PostgreSQL-backed index)
         let dedup_service = Arc::new(
             crate::infrastructure::services::dedup_service::DedupService::new(
@@ -436,6 +443,15 @@ impl AppServiceFactory {
         // have landed.
         let job_registry = Arc::new(JobRegistry::new());
 
+        // Recoverable-run engine's PG provider (`jobs.recoverable_runs`).
+        // Runs on the maintenance pool so a long-running scan's cursor
+        // updates never contend with the request-path pool. Boot-time
+        // crash-recovery sweep fires in `build_app_state` after the
+        // provider is placed on `AppState`.
+        let job_store_provider = Arc::new(
+            crate::infrastructure::scheduler::PgJobStoreProvider::new(maintenance_pool.clone()),
+        );
+
         Ok(CoreServices {
             path_service,
             file_content_cache,
@@ -449,6 +465,8 @@ impl AppServiceFactory {
             zip_service: None, // Placeholder - replaced after app services init
             config: self.config.clone(),
             job_registry,
+            job_store_provider,
+            blob_backend: blob_backend_for_consistency,
         })
     }
 
@@ -878,27 +896,18 @@ impl AppServiceFactory {
         // (`docs/plan/job-registry.md` Part 1) instead of spawning its own
         // tokio interval loop. `SchedulerEngine::start` fires the actual
         // supervisor task at the end of `build_app_state`.
-        let cleanup_service = Arc::new(TrashCleanupService::new(
+        // Self-registering constructor chain — TrashCleanupService owns
+        // its interval + timeout shape; DI only supplies deps.
+        // `.register(&reg)` fires the uniform `job.registered` log line
+        // and panics on wiring error (duplicate name = boot must fail
+        // loud). See `docs/plan/job-registry.md` Part 1.
+        let _ = Arc::new(TrashCleanupService::new(
             trash_repo.clone(),
             core.dedup_service.clone(),
             24, // Run cleanup every 24 hours
-        ));
-        let interval = cleanup_service.interval();
-        if let Err(e) = core
-            .job_registry
-            .register(cleanup_service.clone(), Some(interval), None)
-            .await
-        {
-            // Duplicate registration is the only failure mode today and
-            // shouldn't happen in the normal DI flow. Log + continue so
-            // trash service still lands even if scheduling didn't.
-            tracing::error!("Failed to register trash_cleanup job with scheduler: {e}");
-        } else {
-            tracing::info!(
-                "Trash cleanup registered with scheduler (interval {} h)",
-                interval.as_secs() / 3600
-            );
-        }
+        ))
+        .register(&core.job_registry)
+        .await;
 
         Some(service as Arc<TrashService>)
     }
@@ -1125,7 +1134,12 @@ impl AppServiceFactory {
         // and invalidation would be a no-op observed by nobody —
         // this is the trap that regressed the used_bytes freshness
         // after perf commit `12dc648c`.
-        let service = Arc::new(
+        // Keep cached storage usage fresh off the request path: GET
+        // /api/auth/me no longer recomputes the O(N) SUM per call; a
+        // periodic sweep does it instead (on the maintenance pool).
+        // Self-registering constructor chain — StorageUsageService owns
+        // its interval-clamping via `Self::reconciliation_interval`.
+        Arc::new(
             crate::application::services::storage_usage_service::StorageUsageService::new(
                 maintenance_pool.clone(),
                 user_repository,
@@ -1134,28 +1148,9 @@ impl AppServiceFactory {
                 drive_repo
                     as Arc<dyn crate::domain::repositories::drive_repository::DriveRepository>,
             ),
-        );
-        // Keep cached storage usage fresh off the request path: GET
-        // /api/auth/me no longer recomputes the O(N) SUM per call; a
-        // periodic sweep does it instead (on the maintenance pool).
-        // Registered with the periodic-job scheduler
-        // (`docs/plan/job-registry.md` Part 1); the retired
-        // `start_reconciliation_job` used to spawn its own interval loop.
-        let interval =
-            StorageUsageService::reconciliation_interval(self.config.storage.usage_reconcile_secs);
-        if let Err(e) = core
-            .job_registry
-            .register(service.clone(), Some(interval), None)
-            .await
-        {
-            tracing::error!("Failed to register storage_reconcile job: {e}");
-        } else {
-            tracing::info!(
-                "Storage-usage reconciliation registered with scheduler (interval {}s)",
-                interval.as_secs()
-            );
-        }
-        service
+        )
+        .register(&core.job_registry, self.config.storage.usage_reconcile_secs)
+        .await
     }
 
     /// Starts the tree-ETag flush job (requires database).
@@ -1279,22 +1274,112 @@ impl AppServiceFactory {
         // Register on-demand-only jobs whose owning service lives on
         // CoreServices. Dedup GC has NO periodic tick — trash cleanup's
         // sweep already runs GC as its tail step, so a periodic dedup
-        // schedule would double the work. Registering with `interval =
-        // None` keeps it admin-triggerable through the uniform scheduler
-        // surface (`POST /api/admin/jobs/dedup_gc/trigger`).
-        if let Err(e) = core
-            .job_registry
-            .register(
-                core.dedup_service.clone() as Arc<dyn crate::infrastructure::scheduler::JobHandler>,
-                None, // on-demand only
-                None, // no timeout
-            )
-            .await
-        {
-            tracing::error!("Failed to register dedup_gc job with scheduler: {e}");
-        } else {
-            tracing::info!("Dedup GC registered with scheduler (on-demand only)");
-        }
+        // schedule would double the work. The `register()` method
+        // encapsulates the on-demand shape.
+        let _ = core
+            .dedup_service
+            .clone()
+            .register(&core.job_registry)
+            .await;
+
+        // First recoverable-run tenant (`docs/plan/job-registry.md`
+        // Part 2). Iterates `storage.drives` and reports each drive
+        // whose cached `used_bytes` differs from `SUM(files.size)`.
+        // On-demand only — read-only diagnostic, not periodic.
+        // Runs on the maintenance pool alongside the other sweeps.
+        let job_store_provider_dyn: Arc<dyn crate::infrastructure::scheduler::JobStoreProvider> =
+            core.job_store_provider.clone();
+        let _ = Arc::new(
+            crate::infrastructure::services::drives_consistency_service::DrivesConsistencyCheck::new(
+                maintenance_pool.clone(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
+        // Second recoverable-run tenant. Iterates `storage.folders`
+        // and reports each row whose materialised path/lpath or
+        // parent-trashed state has drifted from the parent-chain
+        // reconstruction — same subject-iteration pattern as drives.
+        // On-demand only; findings surface via the
+        // `oxicloud::consistency` tracing target until the
+        // `jobs.run_findings` table lands.
+        let _ = Arc::new(
+            crate::infrastructure::services::folders_consistency_service::FoldersConsistencyCheck::new(
+                maintenance_pool.clone(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
+        // Third recoverable-run tenant. Iterates `storage.files`
+        // and reports parent-folder-trashed cascade misses,
+        // `missing_blob` (data-loss indicator — file references
+        // absent blob row), and `blob_size_mismatch` (denormalised
+        // size drift). One SQL round-trip loads folder + blob via
+        // two LEFT JOINs; per-row branches key off the join
+        // results.
+        let _ = Arc::new(
+            crate::infrastructure::services::files_consistency_service::FilesConsistencyCheck::new(
+                maintenance_pool.clone(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
+        // Fourth recoverable-run tenant. Iterates `storage.blobs`
+        // and verifies each row against the physical backend AND
+        // against the reference-counting invariants that `dedup_gc`
+        // relies on. Three per-row checks (subject-iteration in
+        // action): `blob_missing_from_backend` (data_loss, bytes
+        // gone from disk), `refcount_mismatch` (inconsistent,
+        // dedup counter drift), and `blob_corrupted` (data_loss,
+        // deep mode only — bit-rot). Complements
+        // `files_consistency` without doubling work: probing
+        // per-unique-blob preserves dedup savings vs probing
+        // per-file-chunk. See memory
+        // `project_cdc_dual_storage_registries` for the rationale.
+        let _ = Arc::new(
+            crate::infrastructure::services::blobs_consistency_service::BlobsConsistencyCheck::new(
+                maintenance_pool.clone(),
+                core.blob_backend.clone(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
+        // Fifth recoverable-run tenant. Iterates the storage
+        // backend (via `BlobStorageBackend::list_blob_hashes`) and
+        // reports every physical blob that has no matching row in
+        // `storage.blobs`. Closes the reference graph together with
+        // `blobs_consistency`: this tenant walks backend→DB, that
+        // one walks DB→backend. Enumeration is backend-specific but
+        // the tenant is fully backend-agnostic — each backend owns
+        // its own layout knowledge (local walks `.blobs/`, S3 uses
+        // ListObjectsV2, migration wrapper refuses mid-migration).
+        let _ = Arc::new(
+            crate::infrastructure::services::backend_consistency_service::BackendConsistencyCheck::new(
+                maintenance_pool.clone(),
+                core.blob_backend.clone(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
+        // "Run all consistency checks" coordinator. Plain JobHandler
+        // (not RecoverableJobHandler) — it dispatches, doesn't scan.
+        // MUST register AFTER every `*_consistency` tenant so the
+        // snapshot ordering in `GET /api/admin/jobs` shows children
+        // then wrapper; snapshot filtering happens at run time so
+        // late registration is fine. Weak<JobRegistry> internally
+        // breaks the Arc cycle.
+        let _ = Arc::new(
+            crate::infrastructure::services::consistency_batch_service::ConsistencyBatch::new(
+                &core.job_registry,
+            ),
+        )
+        .register_job(&core.job_registry)
+        .await;
 
         // 2. Repository services (requires PgPool for all metadata)
         let repos = self.create_repository_services(&core, &pool);
@@ -1484,32 +1569,18 @@ impl AppServiceFactory {
             self.start_content_index_job(&maintenance_pool, &core, content_index);
 
             grant_cleanup_service = if core.config.features.grant_cleanup.enabled {
+                // Self-registering constructor chain. Grant-cleanup owns
+                // its interval + on `?force=true` handling; DI only decides
+                // whether to instantiate at all (feature-gated).
                 let svc = Arc::new(
                     crate::infrastructure::services::grant_cleanup_service::GrantCleanupService::new(
                         authorization.clone(),
                         core.config.features.grant_cleanup.grace_days,
                         core.config.features.grant_cleanup.interval_hours,
                     ),
-                );
-                // Registered with the periodic-job scheduler
-                // (`docs/plan/job-registry.md` Part 1); the retired
-                // `start_cleanup_job` used to spawn its own interval loop.
-                // Admin `?force=true` trigger still calls `svc.purge(Some(0))`
-                // directly — grace override doesn't fit the JobHandler shape.
-                let interval = svc.interval();
-                if let Err(e) = core
-                    .job_registry
-                    .register(svc.clone(), Some(interval), None)
-                    .await
-                {
-                    tracing::error!("Failed to register grant_cleanup job: {e}");
-                } else {
-                    tracing::info!(
-                        "Grant cleanup registered with scheduler (every {}h, grace = {}d)",
-                        interval.as_secs() / 3600,
-                        core.config.features.grant_cleanup.grace_days,
-                    );
-                }
+                )
+                .register(&core.job_registry)
+                .await;
                 Some(svc)
             } else {
                 tracing::info!(
@@ -2172,6 +2243,41 @@ impl AppServiceFactory {
             }
         }
 
+        // Recoverable-run engine crash recovery. Any row still marked
+        // Running or CancelRequested when the previous process died gets
+        // flipped to Paused with `error_message = 'server restart mid-run'`.
+        // We do NOT auto-resume — operators explicitly re-trigger via
+        // `POST /api/admin/jobs/{name}/trigger`, which resumes from the
+        // persisted cursor. Runs BEFORE the scheduler starts so a
+        // periodic-triggered recoverable job's first tick sees a clean
+        // slate. See `docs/plan/job-registry.md` Part 2.
+        use crate::infrastructure::scheduler::JobStoreProvider as _;
+        match app_state
+            .core
+            .job_store_provider
+            .boot_recovery_sweep()
+            .await
+        {
+            Ok(0) => tracing::debug!(
+                target: "oxicloud::scheduler",
+                event = "recoverable.boot_recovery",
+                flipped = 0,
+                "no orphaned recoverable runs found at boot"
+            ),
+            Ok(n) => tracing::warn!(
+                target: "oxicloud::scheduler",
+                event = "recoverable.boot_recovery",
+                flipped = n,
+                "flipped {n} orphaned recoverable run(s) Running/CancelRequested → Paused (previous process died mid-run)"
+            ),
+            Err(e) => tracing::error!(
+                target: "oxicloud::scheduler",
+                event = "recoverable.boot_recovery.failed",
+                error = %e,
+                "boot recovery sweep failed — orphaned runs may remain in Running state"
+            ),
+        }
+
         // Start the periodic-job scheduler AFTER every native service has
         // finished registering its jobs on `core.job_registry`. Starting
         // it earlier would race the first tick against late registrations.
@@ -2212,6 +2318,19 @@ pub struct CoreServices {
     /// themselves here during their creation; `SchedulerEngine::start`
     /// spins up the supervisor loop at the end of `build_app_state`.
     pub job_registry: Arc<JobRegistry>,
+    /// PG-backed provider for `jobs.recoverable_runs`. Recoverable
+    /// tenants (storage migration, reextract, consistency checks —
+    /// Part 2 of `docs/plan/job-registry.md`) plug into this via
+    /// `svc.register_recoverable_job(&registry, &job_store_provider).await`.
+    /// Boot-time crash-recovery sweep is run in `build_app_state` right
+    /// after this provider is created.
+    pub job_store_provider: Arc<crate::infrastructure::scheduler::PgJobStoreProvider>,
+    /// Fully-decorated blob backend (retry → encryption → cache
+    /// stack applied). Exposed here so tenants outside
+    /// `create_core_services` — notably `blobs_consistency` in
+    /// `build_app_state` — can probe `blob_exists()` / re-hash bytes
+    /// through the same stack DedupService uses.
+    pub blob_backend: Arc<dyn BlobStorageBackend>,
 }
 
 /// Container for repository services

@@ -806,7 +806,7 @@
 
 <style>
 	/* Filter cluster lives inside ResourceList's action-bar snippet now,
-	   but the actual DOM is scoped to THIS component's <style> block —
+	   but the actual DOM is scoped to THIS component's \3c style> block —
 	   Svelte's scoped selectors still apply because these are declared
 	   with the elements they style below.
 
