@@ -2773,20 +2773,22 @@ impl AuthApplicationService {
         };
 
         let provider_name = oidc.provider_name().to_string();
-        // Check email_verified - only if email is present in claims
-        if let Some(email) = &claims.email {
-            let verified = claims.email_verified.unwrap_or(false);
-            if !verified {
-                tracing::warn!(
-                    "OIDC login rejected: email not verified (provider: {}, email: {})",
-                    provider_name,
-                    email
-                );
-                return Err(DomainError::new(
-                    ErrorKind::AccessDenied,
-                    "OIDC",
-                    "Email verification required. Please verify your email at the identity provider.",
-                ));
+        // Check email_verified - only if email is present in claims, and email verification is required.
+        if self.require_verified_email() {
+            if let Some(email) = &claims.email {
+                let verified = claims.email_verified.unwrap_or(false);
+                if !verified {
+                    tracing::warn!(
+                        "OIDC login rejected: email not verified (provider: {}, email: {})",
+                        provider_name,
+                        email
+                    );
+                    return Err(DomainError::new(
+                        ErrorKind::AccessDenied,
+                        "OIDC",
+                        "Email verification required. Please verify your email at the identity provider.",
+                    ));
+                }
             }
         }
 
