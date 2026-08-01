@@ -180,6 +180,13 @@ pub struct AuthApplicationService {
     /// `email_verified_at IS NULL`. Mirrors
     /// `AuthConfig::require_verified_email`.
     require_verified_email: bool,
+    /// OPAQUE envelope repo — populated when the OPAQUE substrate is
+    /// wired (`OXICLOUD_OPAQUE_MODE != off`). `login()` consults it to
+    /// enforce the Phase 4 gate: once a user has completed at least
+    /// one successful OPAQUE handshake (`opaque_migrated_at IS NOT
+    /// NULL`), legacy `POST /api/auth/login` is refused for that
+    /// account. `None` = substrate off, no gate applies.
+    opaque_repo: Option<Arc<dyn crate::application::ports::opaque_ports::OpaqueRepositoryPort>>,
 }
 
 /// TTL for [`AuthApplicationService::user_flags_cache`]. Upper bound on how
@@ -233,6 +240,7 @@ impl AuthApplicationService {
             allowed_auth_methods: vec![AuthMethod::Password, AuthMethod::MagicLink],
             auth_policies: Vec::new(),
             require_verified_email: false,
+            opaque_repo: None,
         }
     }
 
@@ -355,6 +363,17 @@ impl AuthApplicationService {
     /// before attempting to redeem a token; `false` → return 503.
     pub fn magic_link_enabled(&self) -> bool {
         self.magic_link_repo.is_some()
+    }
+
+    /// Wire the OPAQUE envelope repo. Called by the DI factory when the
+    /// OPAQUE substrate is configured (`OXICLOUD_OPAQUE_MODE != off`).
+    /// Enables the Phase 4 legacy-login gate — see the field docstring.
+    pub fn with_opaque_repo(
+        mut self,
+        repo: Arc<dyn crate::application::ports::opaque_ports::OpaqueRepositoryPort>,
+    ) -> Self {
+        self.opaque_repo = Some(repo);
+        self
     }
 
     /// Returns the default quota for the given role, capped to the available
@@ -786,6 +805,59 @@ impl AuthApplicationService {
                 "Auth",
                 "Invalid credentials",
             ));
+        }
+
+        // Phase 4 gate: legacy password login is refused for users who
+        // have completed at least one OPAQUE handshake
+        // (`opaque_migrated_at IS NOT NULL`). A stale client or a
+        // downgrade attacker with a stolen password blob is the only
+        // caller who lands here — the SPA already probes
+        // `POST /api/auth/opaque/login/lookup` and takes the OPAQUE
+        // branch when an envelope exists. Admin password reset
+        // atomically NULLs `opaque_migrated_at` (see
+        // `opaque_pg_repository.rs::clear_registration`), so the
+        // state is coherent — no `force_password_change`
+        // carve-out is needed here.
+        //
+        // Checked AFTER password verify so an attacker without the
+        // password learns nothing new about a user's OPAQUE status:
+        // only a caller who supplied the right password gets the
+        // distinguishing "use OPAQUE" signal, and that caller was
+        // going to be redirected anyway.
+        //
+        // Fails OPEN on repo error — a transient DB blip must not
+        // lock every migrated user out; the same login path will
+        // succeed on the next attempt when the repo recovers, and
+        // an operator reading the audit log sees the failure clearly.
+        if let Some(opaque) = self.opaque_repo.as_ref() {
+            match opaque.is_migrated(user.id()).await {
+                Ok(true) => {
+                    tracing::info!(
+                        target: "audit",
+                        event = "auth.login_rejected",
+                        reason = "opaque_migrated_use_opaque",
+                        user_id = %user.id(),
+                        username = %user.display_for_audit(),
+                        "🔐 legacy login refused: user is OPAQUE-migrated ('{}')",
+                        user.display_for_audit(),
+                    );
+                    return Err(DomainError::new(
+                        ErrorKind::AccessDenied,
+                        "Auth",
+                        "Password login refused: this account has migrated to OPAQUE",
+                    ));
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        target: "audit",
+                        event = "auth.opaque_migration_check_failed",
+                        user_id = %user.id(),
+                        error = %e,
+                        "OPAQUE migration check failed — allowing legacy login as fallback"
+                    );
+                }
+            }
         }
 
         // Gate: `OXICLOUD_REQUIRE_VERIFIED_EMAIL`. Checked AFTER password

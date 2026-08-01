@@ -18,6 +18,7 @@ pub async fn create_auth_services(
     config: &AppConfig,
     pool: Arc<PgPool>,
     user_lifecycle: Arc<UserLifecycleService>,
+    opaque_repo: Option<Arc<dyn crate::application::ports::opaque_ports::OpaqueRepositoryPort>>,
 ) -> Result<AuthServices> {
     // Create JWT token service (TokenServicePort implementation)
     let token_service: Arc<JwtTokenService> = Arc::new(JwtTokenService::new(
@@ -70,6 +71,17 @@ pub async fn create_auth_services(
     let magic_link_repo: Arc<dyn MagicLinkTokenRepository> =
         Arc::new(MagicLinkTokenPgRepository::new(pool.clone()));
     auth_app_service = auth_app_service.with_magic_link_repo(magic_link_repo);
+
+    // Wire the OPAQUE repo when the substrate is active. Enables the
+    // Phase 4 legacy-login gate — `AuthApplicationService::login`
+    // refuses `POST /api/auth/login` for users with
+    // `opaque_migrated_at IS NOT NULL` (see the field doc for the
+    // safety analysis). When the OPAQUE mode is `off` at the config
+    // layer this is None and the gate never fires — legacy stays open
+    // for every user regardless of any historical migration state.
+    if let Some(repo) = opaque_repo {
+        auth_app_service = auth_app_service.with_opaque_repo(repo);
+    }
 
     // Configure OIDC service if enabled
     if config.oidc.enabled {

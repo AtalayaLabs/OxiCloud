@@ -1878,10 +1878,32 @@ impl AppServiceFactory {
             // PersonalDriveLifecycleHook, which already holds an Arc to the
             // folder service via the user_lifecycle dispatcher.
             if self.config.features.enable_auth {
+                // OPAQUE repo built here (pre-`create_auth_services`) so
+                // the AuthApplicationService gets the Phase 4 gate wired
+                // at construction time — before Arc-wrapping locks the
+                // shape. Gate fires only when `effective_mode != Off`;
+                // an OPAQUE-off deployment gets `None` and legacy login
+                // stays open for every user (including anyone with a
+                // stale `opaque_migrated_at` from a previous rollout).
+                let opaque_repo_for_auth: Option<
+                    Arc<dyn crate::application::ports::opaque_ports::OpaqueRepositoryPort>,
+                > = {
+                    use crate::infrastructure::services::opaque_service::OpaqueMode;
+                    if self.config.opaque.effective_mode(&self.config.auth) != OpaqueMode::Off {
+                        Some(Arc::new(
+                            crate::infrastructure::repositories::pg::OpaquePgRepository::new(
+                                pool.clone(),
+                            ),
+                        ))
+                    } else {
+                        None
+                    }
+                };
                 let services = crate::infrastructure::auth_factory::create_auth_services(
                     &self.config,
                     pool.clone(),
                     user_lifecycle.clone(),
+                    opaque_repo_for_auth,
                 )
                 .await
                 .map_err(|e| {

@@ -102,4 +102,18 @@ pub trait OpaqueRepositoryPort: Send + Sync + 'static {
     /// Idempotent (COALESCE preserves the first-migration timestamp
     /// so a later login doesn't rewrite the operational signal).
     async fn mark_migrated(&self, user_id: Uuid) -> Result<()>;
+
+    /// True iff `user_id` has completed at least one successful
+    /// OPAQUE login (i.e. `opaque_migrated_at IS NOT NULL`). Read
+    /// by the legacy login gate in Phase 4 to refuse password
+    /// authentication for users who've already proven OPAQUE
+    /// capability — the admin-reset path re-opens legacy by
+    /// NULL-ing this column via [`clear_registration`], so the
+    /// state is coherent without a separate carve-out.
+    ///
+    /// Returns `false` for missing users (anti-enum: the legacy
+    /// gate must not distinguish "user gone" from "user not
+    /// migrated" — the wrong-password branch already covered the
+    /// user-lookup miss upstream).
+    async fn is_migrated(&self, user_id: Uuid) -> Result<bool>;
 }

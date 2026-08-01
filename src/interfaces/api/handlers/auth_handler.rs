@@ -466,6 +466,22 @@ pub async fn login(
             // AFTER the password check specifically so an attacker
             // without the password can't discover an account's
             // verification state from the response shape.
+            // Phase 4: the service refuses legacy login for
+            // OPAQUE-migrated users with this exact message. Remap to a
+            // stable `error_type` the SPA can branch on — a legit
+            // caller reaching this branch would already have taken the
+            // OPAQUE path (the SPA's login form calls
+            // `/api/auth/opaque/login/lookup` first), so this response
+            // primarily serves legacy clients and downgrade-attack
+            // detection. 403 keeps the shape consistent with the other
+            // policy refusals (PasswordLoginDisabled, EmailNotVerified).
+            if err.message == "Password login refused: this account has migrated to OPAQUE" {
+                return Err(AppError::new(
+                    StatusCode::FORBIDDEN,
+                    "Password login is no longer available for this account. Please sign in via the OPAQUE flow.",
+                    "OpaqueLoginRequired",
+                ));
+            }
             if err.message == "Email not verified" {
                 // Best-effort auto-send. We swallow any error and still
                 // return the same EmailNotVerified response — the

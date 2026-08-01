@@ -149,6 +149,27 @@ impl OpaqueRepositoryPort for OpaquePgRepository {
         Ok(())
     }
 
+    async fn is_migrated(&self, user_id: Uuid) -> Result<bool> {
+        // Cheap presence check on the partial index
+        // `idx_users_opaque_migrated`. `fetch_optional` returning `None`
+        // covers both "no such user" and "user exists but not migrated";
+        // Phase 4's gate collapses both to `false` (anti-enum — the
+        // wrong-password branch upstream has already covered the
+        // user-lookup miss).
+        let row: Option<(Option<chrono::DateTime<chrono::Utc>>,)> = sqlx::query_as(
+            r#"
+            SELECT opaque_migrated_at
+              FROM auth.users
+             WHERE id = $1
+            "#,
+        )
+        .bind(user_id)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(|e| DomainError::internal_error("OpaquePg", format!("is_migrated: {e}")))?;
+        Ok(row.and_then(|(t,)| t).is_some())
+    }
+
     async fn clear_registration(&self, user_id: Uuid) -> Result<()> {
         // One UPDATE writes both the envelope invalidation AND the
         // force-change flag — matches the atomicity we promise in the
@@ -507,6 +528,60 @@ mod integration_tests {
             second.0.unwrap(),
             first_ts,
             "second mark_migrated preserves the first timestamp (COALESCE)"
+        );
+    }
+
+    /// `is_migrated` returns false until `mark_migrated` stamps
+    /// `opaque_migrated_at`, then flips to true. `clear_registration`
+    /// re-opens the fallback by NULL-ing the column. This is the
+    /// exact state machine the Phase 4 legacy-login gate reads.
+    #[tokio::test]
+    async fn is_migrated_tracks_mark_and_clear_state_transitions() {
+        let repo = test_repo().await;
+        let user = seed_user(
+            &repo,
+            &format!("opaque-ism-{}@example.invalid", Uuid::new_v4()),
+        )
+        .await;
+
+        // Fresh user: no envelope, no migration mark.
+        assert!(
+            !repo.is_migrated(user).await.unwrap(),
+            "fresh user must not be marked migrated"
+        );
+
+        // Mark migrated — should flip the read to true. The service-
+        // level gate refuses legacy login from this point onward.
+        repo.mark_migrated(user).await.expect("mark migrated");
+        assert!(
+            repo.is_migrated(user).await.unwrap(),
+            "user must be marked migrated after mark_migrated"
+        );
+
+        // Admin password reset (clear_registration) MUST re-open the
+        // legacy fallback by NULL-ing opaque_migrated_at — otherwise
+        // an admin-reset user would be locked out of their own account
+        // (no envelope, but Phase 4 gate still refuses legacy).
+        repo.clear_registration(user)
+            .await
+            .expect("clear registration");
+        assert!(
+            !repo.is_migrated(user).await.unwrap(),
+            "clear_registration must NULL opaque_migrated_at to re-open the legacy fallback"
+        );
+    }
+
+    /// Missing user reads as `false` (anti-enum). The service-layer
+    /// gate must not distinguish "user gone" from "user not migrated"
+    /// — the upstream user lookup + password check already covered
+    /// the "unknown identifier" branch.
+    #[tokio::test]
+    async fn is_migrated_returns_false_for_missing_user() {
+        let repo = test_repo().await;
+        let ghost = Uuid::new_v4();
+        assert!(
+            !repo.is_migrated(ghost).await.unwrap(),
+            "missing user must read as not-migrated (anti-enum)"
         );
     }
 
