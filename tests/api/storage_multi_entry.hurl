@@ -87,7 +87,13 @@ Content-Type: application/json
 HTTP 200
 [Asserts]
 jsonpath "$.connected" == true
-jsonpath "$.backend_type" == "local"
+# Post-K2 (storage-key-rotation): every entry is wrapped in the v1
+# blob-format decorator, so `backend_type` reports the WRAPPER's kind
+# in `"<wrapper>(<inner>)"` form. `local_main` is unencrypted → wrapper
+# is `v1-plaintext`. Match on the inner name via `contains` so the
+# assertion survives future wrapper renames.
+jsonpath "$.backend_type" contains "local"
+jsonpath "$.backend_type" contains "v1-plaintext"
 jsonpath "$.roundtrip_passed" == true
 jsonpath "$.phase_reached" == "cleanup_ok"
 

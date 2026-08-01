@@ -85,6 +85,14 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         .route("/storage/migration/start", post(start_migration))
         .route("/storage/migration/pause", post(pause_migration))
         .route("/storage/migration/resume", post(resume_migration))
+        // K3 (storage-key-rotation): per-entry rotate trigger.
+        // Normalises every blob on the named entry to its head-pair
+        // format (legacy → v1, plaintext ↔ encrypted, old-key →
+        // new-key). No readonly mode; safe under normal traffic.
+        .route(
+            "/storage/entries/{name}/rotate",
+            post(trigger_storage_rotate),
+        )
         // NOTE: /storage/migration/verify retired in slice 7 (see the
         // comment near where `verify_migration` used to live). Use
         // `POST /api/admin/jobs/blobs_consistency/trigger?storage=<name>`.
@@ -615,6 +623,118 @@ async fn trigger_storage_migration(
         StatusCode::ACCEPTED,
         Json(serde_json::json!({
             "message": "Migration dispatched — poll GET /api/admin/storage/migration for status",
+            "detached": true,
+        })),
+    )
+        .into_response())
+}
+
+/// POST /api/admin/storage/entries/{name}/rotate — trigger the
+/// `storage_rotate` recoverable job on a specific entry.
+///
+/// Normalises every blob on `<name>` to the entry's head-pair
+/// format: legacy → v1, plaintext ↔ encrypted, old-key → new-key.
+/// See `docs/plan/storage-key-rotation.md` §"The rotation job".
+///
+/// Unlike migration, rotation does NOT engage read-only mode —
+/// rewrites happen in place under normal traffic. Concurrent user
+/// writes coexist safely.
+///
+/// The handler validates the entry name synchronously (400 on
+/// unknown entry); the actual walk detaches into a
+/// `tokio::spawn` so the HTTP call returns immediately.
+#[utoipa::path(
+    post,
+    path = "/api/admin/storage/entries/{name}/rotate",
+    responses(
+        (status = 202, description = "Rotation dispatched"),
+        (status = 400, description = "Unknown entry"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    params(
+        ("name" = String, Path, description = "Storage entry name to rotate")
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn trigger_storage_rotate(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::infrastructure::scheduler::JobRunArgs;
+    use crate::infrastructure::services::storage_migration_service::STORAGE_MIGRATION_JOB_NAME;
+    use crate::infrastructure::services::storage_rotate_service::STORAGE_ROTATE_JOB_NAME;
+
+    // Synchronous entry-existence check — a bad name would fail the
+    // run anyway, but returning 400 here spares the operator an
+    // audit-log round-trip.
+    let entries = &state.core.config.storage_entries;
+    if entries.iter().all(|e| e.name != name) {
+        let available = if entries.is_empty() {
+            "(none)".to_string()
+        } else {
+            entries
+                .iter()
+                .map(|e| e.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        return Err(AppError::bad_request(format!(
+            "unknown storage entry `{name}`. Available: [{available}]"
+        )));
+    }
+
+    // Concurrency guard per plan: at most one encryption-touching
+    // recoverable run at a time across the whole app. Rotation
+    // rewrites blobs in place; migration copies + swaps; running
+    // both simultaneously could interleave writes on the same
+    // hash. Cheap check — `list_runs` limit 1 with the status
+    // filter is an index scan.
+    let provider = state.core.job_store_provider.clone();
+    for job_name in [STORAGE_ROTATE_JOB_NAME, STORAGE_MIGRATION_JOB_NAME] {
+        let in_flight = provider
+            .list_runs(job_name, 5)
+            .await
+            .map_err(AppError::from)?
+            .into_iter()
+            .any(|r| {
+                matches!(
+                    r.status,
+                    crate::infrastructure::scheduler::RunStatus::Running
+                        | crate::infrastructure::scheduler::RunStatus::Paused
+                        | crate::infrastructure::scheduler::RunStatus::CancelRequested
+                )
+            });
+        if in_flight {
+            return Err(AppError::bad_request(format!(
+                "cannot start storage_rotate on `{name}` — `{job_name}` is already Running / \
+                 Paused / CancelRequested. Wait for it to finish (or cancel via \
+                 `POST /api/admin/jobs/{job_name}/cancel`)."
+            )));
+        }
+    }
+
+    tracing::info!(
+        target: "audit",
+        event = "storage_rotate.trigger_requested",
+        target_name = %name,
+        "👮🏻‍♂️ Admin triggered storage_rotate on `{name}`"
+    );
+
+    let registry = state.core.job_registry.clone();
+    let args = JobRunArgs {
+        storage: Some(name.clone()),
+        ..JobRunArgs::default()
+    };
+    tokio::spawn(async move {
+        registry.trigger(STORAGE_ROTATE_JOB_NAME, &args).await;
+    });
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({
+            "message": format!("Rotation dispatched on `{name}` — poll GET /api/admin/jobs/{STORAGE_ROTATE_JOB_NAME} for progress"),
             "detached": true,
         })),
     )

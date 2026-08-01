@@ -46,6 +46,7 @@ pub mod search_index;
 pub mod share_unlock_cookie;
 pub mod smtp_email_sender;
 pub mod storage_migration_service;
+pub mod storage_rotate_service;
 pub mod swappable_blob_backend;
 pub mod thumbnail_service;
 #[cfg(test)]

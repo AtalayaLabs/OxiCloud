@@ -96,15 +96,17 @@ jsonpath "$..interval_ms" count == 3
 # wrapped by RecoverableAdapter so they appear here alongside the
 # periodics) + 1 coordinator (consistency_batch — a plain
 # JobHandler that dispatches every registered `*_consistency`) +
-# 1 on-demand admin op (storage_migration — recoverable, no
-# periodic tick, triggered by the admin panel's backend cutover).
+# 2 on-demand admin ops (storage_migration — the readonly-mode +
+# cutover backend swap; storage_rotate — K3, in-place per-blob
+# format normalisation, no readonly).
 # Bump when a new tenant registers.
-jsonpath "$..running" count == 11
+jsonpath "$..running" count == 12
 jsonpath "$[*].name" contains "drives_consistency"
 jsonpath "$[*].name" contains "folders_consistency"
 jsonpath "$[*].name" contains "files_consistency"
 jsonpath "$[*].name" contains "consistency_batch"
 jsonpath "$[*].name" contains "storage_migration"
+jsonpath "$[*].name" contains "storage_rotate"
 
 
 # ─────────────────────────────────────────────────────────────

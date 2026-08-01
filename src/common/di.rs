@@ -2029,6 +2029,7 @@ impl AppServiceFactory {
             authorization: authorization.clone(),
             migration_readonly: migration_readonly.clone(),
             migration_progress: Arc::new(std::sync::RwLock::new(None)),
+            rotation_progress: Arc::new(std::sync::RwLock::new(None)),
             drive_repo: drive_repo.clone(),
             drive_management_service: Arc::new(
                 crate::application::services::drive_management_service::DriveManagementService::new(
@@ -2256,6 +2257,25 @@ impl AppServiceFactory {
                     app_state.migration_readonly.clone(),
                     app_state.core.blob_backend_hot_swap.clone(),
                     app_state.migration_progress.clone(),
+                ),
+            )
+            .register_recoverable_job(&app_state.core.job_registry, &job_store_provider_dyn)
+            .await;
+
+            // K3: `storage_rotate` recoverable-job tenant. Same
+            // pattern as `storage_migration` but without the
+            // cutover/readonly plumbing — rotation writes in place on
+            // whichever entry the trigger endpoint names. Target name
+            // comes from `params.target_name` per run.
+            let _ = Arc::new(
+                crate::infrastructure::services::storage_rotate_service::StorageRotateService::new(
+                    app_state
+                        .maintenance_pool
+                        .clone()
+                        .expect("maintenance_pool set above"),
+                    app_state.core.config.storage_entries.clone(),
+                    self.storage_path.clone(),
+                    app_state.rotation_progress.clone(),
                 ),
             )
             .register_recoverable_job(&app_state.core.job_registry, &job_store_provider_dyn)
@@ -2795,6 +2815,15 @@ pub struct AppState {
     /// user's session banner about maintenance progress without
     /// polling. See `MigrationProgress` for the field shape.
     pub migration_progress: Arc<std::sync::RwLock<Option<crate::common::migration_progress::MigrationProgress>>>,
+    /// Live progress snapshot for the storage-rotate handler
+    /// (`storage_rotate` — K3 of the storage-key-rotation plan).
+    /// `Some(_)` while a rotation is running; `None` otherwise.
+    /// Held separately from `migration_progress` so the
+    /// server-status header can broadcast the two states
+    /// independently: migration engages readonly mode, rotation
+    /// does not. Same `MigrationProgress` type — both are "walk
+    /// progress" fundamentally.
+    pub rotation_progress: Arc<std::sync::RwLock<Option<crate::common::migration_progress::MigrationProgress>>>,
     /// Drive entity repository — `GET /api/drives`, the personal-drive
     /// lifecycle hook, and (post-D2) shared-drive creation flow all read
     /// through this. Backing table is `storage.drives`; membership is

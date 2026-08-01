@@ -194,11 +194,47 @@ pub async fn resolve_active_entry<'a>(
 ///
 /// Both are boot-fatal and indicate a code (not config) bug, so
 /// panic is the honest response.
-pub fn build_entry_backend(
+/// Typed variant of [`build_entry_backend`] — returns the concrete
+/// [`EncryptedBlobBackend`] wrapper so callers that need K3's
+/// introspection API (`read_and_classify`, `head_format`, …) can hit
+/// it directly without a downcast.
+///
+/// Same construction path as `build_entry_backend`; the trait-object
+/// version delegates through this. Preferred for job handlers
+/// (`storage_rotate`) that need typed access. The trait-object
+/// version stays for the DI hot-path where the caller only needs
+/// the generic `BlobStorageBackend` contract.
+pub fn build_entry_backend_typed(
+    entry: &NamedStorageEntry,
+    local_storage_path_fallback: &Path,
+) -> Arc<crate::infrastructure::services::encrypted_blob_backend::EncryptedBlobBackend> {
+    let base = build_base_backend(entry, local_storage_path_fallback);
+    let pairs = entry.encryption.clone().unwrap_or_default();
+    let mode = match entry.head_cipher() {
+        Some(crate::common::config::CipherKind::AesGcm256) => "encrypted-v1",
+        _ => "plaintext-v1",
+    };
+    tracing::info!(
+        "Storage entry `{}` — {} wrapper (pairs: {})",
+        entry.name,
+        mode,
+        pairs.len()
+    );
+    Arc::new(
+        crate::infrastructure::services::encrypted_blob_backend::EncryptedBlobBackend::new(
+            base, pairs,
+        ),
+    )
+}
+
+/// Construct just the raw backend for the entry (no wrapper). Split
+/// out of [`build_entry_backend`] so the typed variant can share the
+/// switch on backend type without duplicating panic messages.
+fn build_base_backend(
     entry: &NamedStorageEntry,
     local_storage_path_fallback: &Path,
 ) -> Arc<dyn BlobStorageBackend> {
-    let base: Arc<dyn BlobStorageBackend> = match entry.backend {
+    match entry.backend {
         StorageBackendType::Local => {
             let path = entry
                 .root_dir
@@ -227,27 +263,12 @@ pub fn build_entry_backend(
             });
             Arc::new(crate::infrastructure::services::azure_blob_backend::AzureBlobBackend::new(az))
         }
-    };
+    }
+}
 
-    // v1 wrapper (Choice 1/B: always wrap). Every entry gets the
-    // header-aware read/write path — even entries with no
-    // `_ENCRYPTION_KEY` at all. This normalises the on-disk format
-    // going forward: all new writes carry the OXCPT v1 header, all
-    // reads magic-byte-dispatch (with legacy fallback for
-    // header-less pre-K2 blobs). Not backwards-compatible with
-    // pre-K2 code trying to read new writes — but Ed's called it:
-    // uniform format is worth the one-way door.
-    use crate::infrastructure::services::encrypted_blob_backend::EncryptedBlobBackend;
-    let pairs = entry.encryption.clone().unwrap_or_default();
-    let mode = match entry.head_cipher() {
-        Some(crate::common::config::CipherKind::AesGcm256) => "encrypted-v1",
-        _ => "plaintext-v1",
-    };
-    tracing::info!(
-        "Storage entry `{}` — {} wrapper (pairs: {})",
-        entry.name,
-        mode,
-        pairs.len()
-    );
-    Arc::new(EncryptedBlobBackend::new(base, pairs))
+pub fn build_entry_backend(
+    entry: &NamedStorageEntry,
+    local_storage_path_fallback: &Path,
+) -> Arc<dyn BlobStorageBackend> {
+    build_entry_backend_typed(entry, local_storage_path_fallback)
 }

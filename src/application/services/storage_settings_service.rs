@@ -400,14 +400,23 @@ impl StorageSettingsService {
                 entry,
                 std::path::Path::new(&self.env_storage_config.root_dir),
             );
-            let backend_kind = backend.backend_type().to_string();
+            // Post-K2 (always-wrap): `backend.backend_type()` returns
+            // the outer wrapper's kind ("v1-plaintext" / "encrypted"),
+            // NOT the underlying storage backend. `health_check()`
+            // formats the wrapper-inner combo as
+            // `"<wrapper>(<inner>)"` — that's the more informative
+            // string for the admin panel's Test-connection result.
+            // We use the wrapper-only string as a fallback for the
+            // health-check-failed branch, where there's no formatted
+            // status to draw from.
+            let fallback_backend_kind = backend.backend_type().to_string();
             let status = match backend.health_check().await {
                 Ok(s) => s,
                 Err(e) => {
                     return Ok(StorageTestResultDto {
                         connected: false,
                         message: format!("health-check failed: {e}"),
-                        backend_type: backend_kind,
+                        backend_type: fallback_backend_kind,
                         available_bytes: None,
                         roundtrip_passed: None,
                         phase_reached: None,
@@ -421,7 +430,7 @@ impl StorageSettingsService {
             let mut out = StorageTestResultDto {
                 connected: status.connected,
                 message: status.message,
-                backend_type: backend_kind,
+                backend_type: status.backend_type,
                 available_bytes: status.available_bytes,
                 roundtrip_passed: None,
                 phase_reached: None,

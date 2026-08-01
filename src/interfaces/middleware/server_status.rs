@@ -9,23 +9,22 @@
 //!
 //! ## Cost model
 //!
-//! On the *hot path* (no migration running — the ~100% case in normal
-//! operation) this middleware does:
+//! On the *hot path* (no migration AND no rotation running — the
+//! ~100% case in normal operation) this middleware does:
 //!   1. one `AtomicBool::load(Relaxed)` — sub-nanosecond;
-//!   2. an early return when `false`.
+//!   2. one `RwLock::read` on `rotation_progress` — uncontended;
+//!   3. an early return when both are inactive.
 //!
-//! No allocation, no lock, no formatting. Adds no measurable latency
-//! at any user count.
+//! No allocation, no formatting on the hot path. The rotation-check
+//! `RwLock::read` is cheap because writers only fire on batch
+//! checkpoints (~every 100 blobs); worst-case contention is
+//! sub-microsecond.
 //!
-//! On the *cold path* (migration in progress) this middleware does:
-//!   1. the atomic load above;
-//!   2. one `RwLock::read` (uncontended — writers are the migration
-//!      handler, one per batch every ~100 blobs);
-//!   3. one small `serde_json::to_string` call on a 4-field struct
-//!      (a few dozen bytes);
-//!   4. one header insertion.
+//! On the *cold path* (migration OR rotation in progress) the
+//! payload builder pulls the progress snapshot(s), formats a small
+//! JSON struct (~a few dozen bytes) and inserts the header.
 //!
-//! Total per-request work in this branch: microseconds.
+//! Total per-request work on cold path: microseconds.
 
 use axum::extract::Request;
 use axum::extract::State;
@@ -53,11 +52,20 @@ pub const SERVER_STATUS_HEADER: &str = "x-server-status";
 struct HeaderPayload {
     readonly: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    migration: Option<MigrationHeader>,
+    migration: Option<ProgressHeader>,
+    /// K3: independent of `readonly` — rotation does NOT engage the
+    /// app-wide read-only flag, so the frontend needs a distinct
+    /// signal to know "rotation is running, show the rotation
+    /// banner instead of migration banner".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rotation: Option<ProgressHeader>,
 }
 
+/// Shared progress shape used by both `migration` and `rotation`
+/// header fields — same struct name, same JSON field names. Frontend
+/// treats them identically at the render layer.
 #[derive(serde::Serialize)]
-struct MigrationHeader {
+struct ProgressHeader {
     // `target` is owned here — the RwLock guard is released before
     // serialisation, so a borrowed slice wouldn't survive. Names
     // are small (`[a-z0-9_-]{1,32}`) so the copy is trivial.
@@ -67,49 +75,76 @@ struct MigrationHeader {
     percent: u8,
 }
 
+impl ProgressHeader {
+    fn from_snapshot(p: &crate::common::migration_progress::MigrationProgress) -> Self {
+        Self {
+            target: p.target_name.clone(),
+            migrated: p.migrated_blobs,
+            total: p.total_blobs,
+            percent: p.percent,
+        }
+    }
+}
+
 pub async fn server_status_middleware(
     State(state): State<Arc<AppState>>,
     request: Request,
     next: Next,
 ) -> Response {
-    // Hot-path fast return. When no migration is running the flag is
-    // false and there's nothing to emit — a bare atomic load and out.
     let readonly = state.migration_readonly.load(Ordering::Relaxed);
+
+    // Rotation snapshot check — cheap uncontended `read`; if `None`
+    // and readonly is also false, hot-path returns without a header.
+    let rotation_active = state
+        .rotation_progress
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .is_some();
+
     let mut response = next.run(request).await;
-    if !readonly {
+    if !readonly && !rotation_active {
         return response;
     }
 
-    // Cold path — build the payload from the shared progress
-    // snapshot. If the snapshot is absent (readonly is true but the
-    // handler hasn't seeded progress yet, or a restart-during-
-    // migration scenario) we still emit `readonly: true` so the
-    // banner shows — the frontend renders a "maintenance in progress"
-    // message even when specific numbers aren't available.
+    // Cold path — build the payload from whichever snapshots are
+    // active. `readonly:true` fires the migration banner even if
+    // the migration handler hasn't seeded its progress yet
+    // (restart-mid-migration scenario). `rotation` is populated
+    // independently.
     let payload = {
-        let guard = state
-            .migration_progress
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let migration = if readonly {
+            state
+                .migration_progress
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .map(ProgressHeader::from_snapshot)
+        } else {
+            None
+        };
+        let rotation = if rotation_active {
+            state
+                .rotation_progress
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .map(ProgressHeader::from_snapshot)
+        } else {
+            None
+        };
         HeaderPayload {
-            readonly: true,
-            migration: guard.as_ref().map(|p| MigrationHeader {
-                target: p.target_name.clone(),
-                migrated: p.migrated_blobs,
-                total: p.total_blobs,
-                percent: p.percent,
-            }),
+            readonly,
+            migration,
+            rotation,
         }
     };
 
-    // `serde_json::to_string` on this 4-field struct is a few
-    // dozen-byte allocation — negligible against the response body.
-    // A serialize failure here would be a programming bug (all
-    // fields are trivially serializable), so we degrade to a
-    // minimal `readonly: true` string rather than skipping the
-    // header entirely.
+    // `serde_json::to_string` on this struct is a few dozen-byte
+    // allocation — negligible against the response body. A
+    // serialize failure here would be a programming bug, so we
+    // degrade to a minimal string rather than skipping the header.
     let value =
-        serde_json::to_string(&payload).unwrap_or_else(|_| r#"{"readonly":true}"#.to_string());
+        serde_json::to_string(&payload).unwrap_or_else(|_| r#"{"readonly":false}"#.to_string());
     if let Ok(header_value) = HeaderValue::from_str(&value) {
         response
             .headers_mut()
