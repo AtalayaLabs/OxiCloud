@@ -34,6 +34,7 @@
 		setUserRole,
 		testOidc,
 		testStorage,
+		rotateStorageEntry,
 		createExternalMount,
 		deleteExternalMount,
 		listExternalMounts,
@@ -424,6 +425,27 @@
 		}
 	}
 
+	// K4: `backend_consistency` — the mirror of `blobs_consistency`.
+	// Walks the entry's backend and reports blobs physically present
+	// on it that have no matching row in `storage.blobs` (orphans on
+	// disk/S3). Meaningful for ANY entry, not just the active one —
+	// useful for spotting leftover data on a deprecated backend.
+	async function doStorageConsistency(name: string) {
+		try {
+			await triggerJob('backend_consistency', { storage: name });
+			storageMsg = {
+				text: t(
+					'admin.storage_backend_audit_triggered',
+					{ name },
+					'backend_consistency triggered for `{{name}}` — watch it on the Jobs tab.'
+				),
+				ok: true
+			};
+		} catch (e) {
+			storageMsg = { text: errorMessage(e), ok: false };
+		}
+	}
+
 	async function doMigrateActivate(name: string) {
 		if (
 			!confirm(
@@ -436,6 +458,36 @@
 		)
 			return;
 		await doMigration('start', name);
+	}
+
+	// K4 storage-key-rotation: normalise every blob on `<name>` to
+	// that entry's head-pair format. Unlike migration, rotation does
+	// NOT engage read-only mode — uploads/reads keep working
+	// throughout. Fire-and-forget; the Jobs tab surfaces progress.
+	async function doRotateEntry(name: string) {
+		if (
+			!confirm(
+				t(
+					'admin.storage_rotate_confirm',
+					{ name },
+					'Start a background rotation on `{{name}}`? Every existing blob is rewritten under the entry’s head pair (v1 header + head key). All operations continue normally during rotation — no read-only mode. Progress shows in the top banner and on the Jobs tab.'
+				)
+			)
+		)
+			return;
+		try {
+			await rotateStorageEntry(name);
+			storageMsg = {
+				text: t(
+					'admin.storage_rotate_triggered',
+					{ name },
+					'Rotation started on `{{name}}` — watch it on the Jobs tab (`storage_rotate`).'
+				),
+				ok: true
+			};
+		} catch (e) {
+			storageMsg = { text: errorMessage(e), ok: false };
+		}
 	}
 
 	// Migration
@@ -2062,6 +2114,20 @@
 										<Icon name="check-double" />
 										{t('admin.storage_audit', 'Blob consistency')}
 									</button>
+									<!-- Storage-side consistency (K4): the mirror of Blob
+									     consistency. `blobs_consistency` walks the DB and
+									     checks the backend has each blob; `backend_consistency`
+									     walks the backend and checks the DB has each hash.
+									     Together they close the reference graph. -->
+									<button
+										type="button"
+										class="btn btn-sm btn-secondary entry-card__action-btn"
+										data-testid={`admin-storage-backend-audit-${entry.name}`}
+										onclick={() => doStorageConsistency(entry.name)}
+									>
+										<Icon name="database" />
+										{t('admin.storage_backend_audit', 'Storage consistency')}
+									</button>
 									{#if !entry.is_active && !migrationInFlight}
 										<button
 											type="button"
@@ -2080,6 +2146,47 @@
 											disabled
 										>
 											{t('admin.storage_migrate_activate', 'Migrate & activate')}
+										</button>
+									{/if}
+									<!-- Rotate encryption key (K4 storage-key-rotation).
+									     ACTIVE ENTRY ONLY — `storage.blobs` describes the
+									     active backend; rotating a non-active entry would
+									     produce a `rotation_failed` finding per blob that
+									     isn't there (backend refuses this with a 400 too).
+									     Placeholder slot on non-active cards keeps the
+									     three-button row aligned across the grid. Also
+									     disabled while any migration is in flight — backend
+									     refuses concurrent encryption-touching jobs. -->
+									{#if entry.is_active}
+										<button
+											type="button"
+											class="btn btn-sm btn-secondary entry-card__action-btn"
+											disabled={migrationInFlight}
+											data-testid={`admin-storage-rotate-${entry.name}`}
+											onclick={() => doRotateEntry(entry.name)}
+											title={migrationInFlight
+												? t(
+														'admin.storage_rotate_disabled_migration',
+														'Cannot rotate while a migration is in flight.'
+													)
+												: t(
+														'admin.storage_rotate_tooltip',
+														'Normalise every blob on this entry to the head pair’s format (upgrade legacy blobs, re-encrypt under a new key, etc.).'
+													)}
+										>
+											<Icon name="key" />
+											{t('admin.storage_rotate', 'Rotate key')}
+										</button>
+									{:else}
+										<button
+											type="button"
+											class="btn btn-sm btn-secondary entry-card__action-btn entry-card__action-btn--placeholder"
+											aria-hidden="true"
+											tabindex={-1}
+											disabled
+										>
+											<Icon name="key" />
+											{t('admin.storage_rotate', 'Rotate key')}
 										</button>
 									{/if}
 								</div>

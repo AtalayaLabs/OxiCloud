@@ -76,4 +76,20 @@ pub trait JobHandler: Send + Sync {
     ///
     /// See trait-level docs for guidance on when to return Ok vs Err.
     async fn run(&self, args: &JobRunArgs) -> JobOutcome;
+
+    /// `true` iff this handler persists per-run rows to
+    /// `jobs.recoverable_runs` (cursor + findings + resume). Surfaced
+    /// on [`crate::infrastructure::scheduler::registry::JobSummary`]
+    /// so the admin UI can decide whether the row is expandable to
+    /// show a run history + findings drawer, without hardcoding a
+    /// name-based allowlist.
+    ///
+    /// Default is `false` — Part 1 periodic handlers (`TrashCleanup`,
+    /// `StorageReconcile`, `GrantCleanup`, `DedupGc`) don't have runs
+    /// or findings. `RecoverableAdapter` overrides to `true` so every
+    /// tenant registered via `register_recoverable_job` flips the flag
+    /// automatically at registration time.
+    fn is_recoverable(&self) -> bool {
+        false
+    }
 }

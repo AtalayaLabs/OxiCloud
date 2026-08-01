@@ -802,6 +802,14 @@ impl JobHandler for RecoverableAdapter {
     async fn run(&self, args: &JobRunArgs) -> JobOutcome {
         run_or_resume(self.inner.clone(), self.provider.clone(), args).await
     }
+    fn is_recoverable(&self) -> bool {
+        // Every tenant registered through `register_recoverable_job` is
+        // wrapped by this adapter, so this flag flips true for exactly
+        // the set of jobs whose runs + findings the admin UI should
+        // let operators drill into. No name-based allowlists needed
+        // downstream.
+        true
+    }
 }
 
 // ─── Ergonomics: JobRegistry extension for recoverable jobs ─────────────────

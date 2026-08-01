@@ -1041,6 +1041,13 @@
 		     different copy. -->
 		{#if serverStatus().readonly}
 			<ReadOnlyBanner variant="maintenance" progress={serverStatus().migration} />
+		{:else if serverStatus().rotation}
+			<!-- K4 storage-key-rotation: rotation is running but
+			     `readonly` is false — writes continue as normal.
+			     Distinct banner variant so the copy reads
+			     "background maintenance" rather than "server
+			     frozen". -->
+			<ReadOnlyBanner variant="rotating" progress={serverStatus().rotation} />
 		{/if}
 		{@render children()}
 	</div>

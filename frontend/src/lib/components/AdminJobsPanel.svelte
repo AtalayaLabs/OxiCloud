@@ -470,7 +470,13 @@
 		return name_is_recoverable(job.name);
 	}
 	function name_is_recoverable(name: string): boolean {
-		return name.endsWith('_consistency') || name === 'storage_migration';
+		// K3 storage-key-rotation adds `storage_rotate` to the recoverable
+		// tenant set. Same shape as `storage_migration` — walks blobs,
+		// records findings, supports resume from cursor — so it needs the
+		// same expand/runs/findings surface.
+		return (
+			name.endsWith('_consistency') || name === 'storage_migration' || name === 'storage_rotate'
+		);
 	}
 
 	// Consistency batch shortcut — top button. Only shown when the

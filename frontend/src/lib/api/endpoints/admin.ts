@@ -538,6 +538,22 @@ export function migrationAction(
 	return mutate(`/api/admin/storage/migration/${action}`, 'POST', body);
 }
 
+/**
+ * K4 (storage-key-rotation): trigger `storage_rotate` on a specific
+ * storage entry. Normalises every blob on `<name>` to that entry's
+ * head-pair format: legacy → v1, plaintext ↔ encrypted, old-key →
+ * new-key. Fire-and-forget — poll `GET /api/admin/jobs/storage_rotate`
+ * for status.
+ *
+ * Backend: `POST /api/admin/storage/entries/{name}/rotate`
+ * (`admin_handler::trigger_storage_rotate`). Refuses (400) on unknown
+ * entry name or when a `storage_rotate` / `storage_migration` run is
+ * already in flight.
+ */
+export function rotateStorageEntry(name: string): Promise<void> {
+	return mutate(`/api/admin/storage/entries/${encodeURIComponent(name)}/rotate`, 'POST', undefined);
+}
+
 // verifyMigration + MigrationVerifyResult retired in slice 7 of
 // docs/plan/storage-multi-entry.md — the corresponding backend
 // endpoint's sample-based check is superseded by

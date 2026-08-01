@@ -225,6 +225,7 @@ impl JobRegistry {
                     last_run_at,
                     last_outcome,
                     running: state.current_run_start.is_some(),
+                    recoverable: entry.handler.is_recoverable(),
                 }
             })
             .collect()
@@ -288,6 +289,10 @@ pub enum RegisterError {
 /// - `running` — true iff the in-flight permit is currently held
 ///   (either the supervisor tick is in progress or an admin trigger
 ///   raced in).
+/// - `recoverable` — true iff the job persists runs + findings to
+///   `jobs.recoverable_runs`. Consumed by the admin UI to decide
+///   whether the row is expandable (drawer with run history +
+///   findings) and to gate the retention/purge action.
 #[derive(Debug, Clone, Serialize)]
 pub struct JobSummary {
     pub name: String,
@@ -300,6 +305,7 @@ pub struct JobSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_outcome: Option<JobOutcome>,
     pub running: bool,
+    pub recoverable: bool,
 }
 
 #[cfg(test)]

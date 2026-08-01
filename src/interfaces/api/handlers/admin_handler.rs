@@ -685,6 +685,27 @@ pub async fn trigger_storage_rotate(
         )));
     }
 
+    // Refuse on non-active entry. `storage.blobs` describes what's on
+    // the ACTIVE backend; walking it against a stale target produces a
+    // `rotation_failed` finding per missing blob (pure noise) and can't
+    // actually normalise anything the app reads. The right recipe for
+    // "normalise a different backend" is: migrate to it (blobs land in
+    // the head-pair's format on arrival — no rotation needed).
+    let active = state
+        .core
+        .active_backend_name
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if name != active {
+        return Err(AppError::bad_request(format!(
+            "storage_rotate refuses non-active entry `{name}` — the DB blob registry \
+             describes the active entry (`{active}`), so walking it against a stale \
+             target produces spurious `rotation_failed` findings. Activate `{name}` \
+             first via `Migrate & activate`, then rotate."
+        )));
+    }
+
     // Concurrency guard per plan: at most one encryption-touching
     // recoverable run at a time across the whole app. Rotation
     // rewrites blobs in place; migration copies + swaps; running

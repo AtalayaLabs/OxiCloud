@@ -15,17 +15,34 @@
  */
 
 /**
- * JSON shape emitted in the `x-server-status` header. Optional
- * `migration` field is present only while a migration is running.
+ * Progress snapshot shared by both migration and rotation fields.
+ * Server-side struct is `ProgressHeader` — see
+ * `middleware::server_status`.
+ */
+export interface ProgressStatus {
+	target: string;
+	migrated: number;
+	total: number;
+	percent: number;
+}
+
+/**
+ * JSON shape emitted in the `x-server-status` header.
+ *
+ * * `migration` — present only during a `storage_migration` run;
+ *   engages `readonly = true` (all writes are refused).
+ * * `rotation` — present only during a `storage_rotate` run (K4
+ *   storage-key-rotation); `readonly` stays false, uploads and
+ *   reads continue normally throughout.
+ *
+ * Both can be `undefined` on the same response — that's the steady-
+ * state "nothing running" case and the header may be omitted
+ * entirely.
  */
 export interface ServerStatus {
 	readonly: boolean;
-	migration?: {
-		target: string;
-		migrated: number;
-		total: number;
-		percent: number;
-	};
+	migration?: ProgressStatus;
+	rotation?: ProgressStatus;
 }
 
 const DEFAULT: ServerStatus = { readonly: false };
@@ -48,10 +65,10 @@ export function serverStatus(): ServerStatus {
  */
 export function updateFromHeader(rawHeader: string | null): void {
 	if (rawHeader == null) {
-		// No header on this response = server not in maintenance
-		// mode = reset the store to the default so any lingering
-		// banner disappears. Cheap idempotent write.
-		if (current.readonly || current.migration) current = DEFAULT;
+		// No header on this response = nothing running server-side
+		// = reset the store to the default so any lingering banner
+		// disappears. Cheap idempotent write.
+		if (current.readonly || current.migration || current.rotation) current = DEFAULT;
 		return;
 	}
 	try {
