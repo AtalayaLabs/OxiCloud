@@ -64,6 +64,34 @@ export async function tryRefresh(): Promise<boolean> {
 }
 
 export async function login(emailOrUsername: string, password: string): Promise<AuthResponse> {
+	// ── OPAQUE lookup (Phase 3) ────────────────────────────────────────
+	// Ask the server whether this identifier already has an OPAQUE
+	// envelope on file. If yes → use OPAQUE login (KE1/KE3). If no →
+	// fall back to legacy `POST /api/auth/login`, which then silently
+	// mints the envelope via the Phase 2 hook.
+	//
+	// Both paths return the SAME `AuthResponse` shape, so downstream
+	// callers don't need to know which branch fired. Dynamic import
+	// keeps the ~200 KiB `@serenity-kit/opaque` WASM bundle out of
+	// pre-login bundles — the module loads only when a login is
+	// actually attempted.
+	//
+	// `checkOpaqueAvailable` and `opaqueLogin` both fall back
+	// gracefully: any wire failure inside the OPAQUE branch (503,
+	// timeout, malformed response) either short-circuits to `false`
+	// (lookup) or throws with an `InvalidCredentials` shape (login).
+	// The lookup fallback lands here as `false` → legacy branch
+	// takes over; a mid-login OPAQUE failure surfaces as a login
+	// error to the user, same shape as a legacy failure — no silent
+	// legacy fallback there because it would mask a wrong passphrase
+	// as a network hiccup.
+	const { checkOpaqueAvailable, opaqueLogin, syncOpaqueEnvelope } =
+		await import('$lib/api/endpoints/opaque');
+	if (await checkOpaqueAvailable(emailOrUsername)) {
+		return await opaqueLogin(emailOrUsername, password, await opaqueKsfForClient());
+	}
+
+	// ── Legacy login (fallback for users without an envelope yet) ─────
 	const res = await apiFetch('/api/auth/login', {
 		method: 'POST',
 		credentials: 'same-origin',
@@ -81,11 +109,8 @@ export async function login(emailOrUsername: string, password: string): Promise<
 
 	// ── OPAQUE silent migration (Phase 2) ──────────────────────────────
 	// After a successful legacy password login, transparently mint an
-	// OPAQUE envelope for the same passphrase. Users pick up the new
-	// auth path over time, one login at a time, with zero UX change —
-	// by the time Phase 3 flips the SPA to OPAQUE-first and Phase 4
-	// refuses legacy for migrated users, most active accounts already
-	// have an envelope on file.
+	// OPAQUE envelope for the same passphrase. The NEXT login for this
+	// account will take the OPAQUE branch above.
 	//
 	// The freshly-issued session cookie is already active in the
 	// browser at this point (Set-Cookie from the POST response), so
@@ -94,14 +119,25 @@ export async function login(emailOrUsername: string, password: string): Promise<
 	// disabled server-side (mode=off) and swallows any error — a
 	// failure here just leaves the envelope stale, and the NEXT
 	// legacy login retries the same hook.
-	//
-	// Dynamic import keeps the ~200 KiB `@serenity-kit/opaque` WASM
-	// bundle out of pre-login-page bundles — it loads only for users
-	// who actually reach a successful login.
-	const { syncOpaqueEnvelope } = await import('$lib/api/endpoints/opaque');
 	await syncOpaqueEnvelope(password);
 
 	return auth;
+}
+
+/**
+ * Fetch the server's OPAQUE KSF config to pass to `opaqueLogin`.
+ * Extracted so `login()` reads more linearly and the module keeps
+ * one `fetchOpaqueParams` call site regardless of which branch
+ * (lookup / login / silent-migration) reaches it first.
+ */
+async function opaqueKsfForClient(): Promise<{
+	memoryKib: number;
+	iterations: number;
+	parallelism: number;
+}> {
+	const { fetchOpaqueParams } = await import('$lib/api/endpoints/opaque');
+	const params = await fetchOpaqueParams();
+	return params.ksf;
 }
 
 export interface OidcProviders {

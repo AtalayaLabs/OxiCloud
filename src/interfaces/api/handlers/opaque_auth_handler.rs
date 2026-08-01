@@ -104,8 +104,15 @@ pub fn opaque_register_routes() -> Router<Arc<AppState>> {
 /// layer used on legacy `/api/auth/login` so an attacker can't
 /// halve the per-identity budget by spraying both endpoints. See
 /// [`opaque_register_routes`] on why the prefix must be distinct.
+///
+/// `lookup` lives here (not on the params mount) so it shares the
+/// login rate limiter — without that, an attacker could use it as a
+/// cheaper user-existence probe than legacy login. Anti-enum on the
+/// response shape closes the primary information leak; the rate
+/// limit closes the secondary "how fast can I ask" leak.
 pub fn opaque_login_routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/lookup", post(login_lookup))
         .route("/ke1", post(login_ke1))
         .route("/ke3", post(login_ke3))
 }
@@ -300,6 +307,84 @@ pub async fn register_finish(
     );
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ── Login: lookup (Phase 3) ──────────────────────────────────────────
+
+/// Client → server on lookup. Same identifier shape as
+/// [`OpaqueLoginKe1Dto::user_identifier`] and legacy
+/// `/api/auth/login`'s `username` field: `@` in the input dispatches
+/// to email lookup, absence → username lookup.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct OpaqueLookupDto {
+    #[serde(rename = "userIdentifier")]
+    pub user_identifier: String,
+}
+
+/// Server → client on lookup. The SPA reads `hasOpaque` to decide
+/// whether to run OPAQUE login (KE1/KE3) or fall back to legacy
+/// `/api/auth/login` (which then silently registers via the Phase 2
+/// hook).
+///
+/// **Anti-enum invariant** — this shape MUST be identical whether
+/// the user exists or not:
+///
+///   * unknown user           → `hasOpaque: false`
+///   * user, no envelope      → `hasOpaque: false`
+///   * user with envelope     → `hasOpaque: true`
+///
+/// A probing attacker cannot distinguish "unknown" from "known but
+/// unregistered" from the response body. The only signal an
+/// attacker gets is "known with envelope" vs "everything else,"
+/// which reveals adoption progress but NOT identity existence.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpaqueLookupResponse {
+    #[serde(rename = "hasOpaque")]
+    pub has_opaque: bool,
+}
+
+/// Resolve `userIdentifier` → envelope-existence check. Used by the
+/// SPA login form to branch between OPAQUE and legacy on submit.
+///
+/// Rate-limited via the shared `login_limiter` (mount layer in
+/// `main.rs`), so lookup can't be used as a cheap enumeration probe.
+#[utoipa::path(
+    post,
+    path = "/api/auth/opaque/login/lookup",
+    request_body = OpaqueLookupDto,
+    responses(
+        (status = 200, description = "Whether the identifier resolves to a user with an OPAQUE envelope", body = OpaqueLookupResponse),
+        (status = 400, description = "Malformed request body"),
+        (status = 503, description = "OPAQUE service not configured"),
+    ),
+    tag = "auth"
+)]
+pub async fn login_lookup(
+    State(state): State<Arc<AppState>>,
+    Json(dto): Json<OpaqueLookupDto>,
+) -> Result<impl IntoResponse, AppError> {
+    let _svc = require_opaque_service(&state)?;
+    let repo = require_opaque_repo(&state)?;
+    let auth = require_auth_application_service(&state)?;
+
+    let identifier = dto.user_identifier.trim();
+    if identifier.is_empty() {
+        return Err(malformed("userIdentifier is empty"));
+    }
+
+    // Resolve the identifier → user_id → envelope presence. Any miss
+    // (unknown user, user without envelope, DB blip) collapses to
+    // `hasOpaque: false` — the anti-enum contract on the wire shape.
+    // No audit event here: a successful lookup isn't a login attempt,
+    // and logging every miss would flood the channel without adding
+    // signal (rate limiter already caps volume; enumeration attempts
+    // show up in the login-lockout / rate-limit metrics).
+    let has_opaque = match auth.lookup_user_for_login(identifier).await {
+        Ok(user) => matches!(repo.read_registration(user.id()).await, Ok(Some(_))),
+        Err(_) => false,
+    };
+
+    Ok(Json(OpaqueLookupResponse { has_opaque }))
 }
 
 // ── Login: KE1 + KE3 ─────────────────────────────────────────────────

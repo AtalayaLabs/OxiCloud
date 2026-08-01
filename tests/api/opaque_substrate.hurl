@@ -209,3 +209,70 @@ jsonpath "$.ciphersuiteVersion" == 1
 jsonpath "$.ksf.memoryKib" == 8
 jsonpath "$.ksf.iterations" == 1
 jsonpath "$.ksf.parallelism" == 1
+
+
+# =============================================================
+# Phase 3 — Login lookup (SPA branch selector)
+# =============================================================
+# `POST /api/auth/opaque/login/lookup` is what the SPA hits on
+# submit to decide between OPAQUE (KE1/KE3) and legacy
+# `/api/auth/login`. It's public (no auth required), rate-limited
+# via the shared login limiter, and its response body is anti-enum:
+# `hasOpaque: false` covers both "user unknown" and "user known but
+# unregistered" so an attacker can't use it as a cheaper user-
+# existence probe than legacy login.
+#
+# The seed admin logged in above (line 93) does NOT have an OPAQUE
+# envelope yet at this point in the suite — the register cases below
+# it sent malformed payloads that were rejected before persistence,
+# so no envelope was ever written. Both "seed admin" and "unknown
+# user" therefore return the SAME `hasOpaque: false` shape here.
+# =============================================================
+
+# ─────────────────────────────────────────────────────────────
+# Case 10 — Lookup for a KNOWN user with NO envelope → 200
+#            with `hasOpaque: false`. Proves the endpoint is
+#            reachable public, resolves the identifier, and
+#            reports absence honestly.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/auth/opaque/login/lookup
+Content-Type: application/json
+{ "userIdentifier": "{{username}}" }
+
+HTTP 200
+[Asserts]
+jsonpath "$.hasOpaque" == false
+
+
+# ─────────────────────────────────────────────────────────────
+# Case 11 — Lookup for an UNKNOWN user → same 200 +
+#            `hasOpaque: false` shape. Anti-enum: an attacker
+#            probing the endpoint cannot tell "user doesn't
+#            exist" from "user exists but no envelope yet" from
+#            this response body.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/auth/opaque/login/lookup
+Content-Type: application/json
+{ "userIdentifier": "definitely-not-a-user-000@example.test" }
+
+HTTP 200
+[Asserts]
+jsonpath "$.hasOpaque" == false
+
+
+# ─────────────────────────────────────────────────────────────
+# Case 12 — Lookup with an empty `userIdentifier` → 400
+#            `OpaqueMalformedRequest`. The empty-input guard
+#            fires before user resolution so we don't waste a
+#            DB round-trip on a payload that can't identify
+#            anyone. Response shape reuses the same error_type
+#            as garbage-base64 above (Case 7) so the SPA has
+#            one uniform malformed-body error to render.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/auth/opaque/login/lookup
+Content-Type: application/json
+{ "userIdentifier": "" }
+
+HTTP 400
+[Asserts]
+jsonpath "$.error_type" == "OpaqueMalformedRequest"

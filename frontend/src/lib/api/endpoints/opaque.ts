@@ -113,6 +113,45 @@ export function fetchOpaqueParams(): Promise<OpaqueServerParams> {
 }
 
 /**
+ * Ask the server whether `userIdentifier` resolves to a user with an
+ * OPAQUE envelope on file. The SPA login form calls this before
+ * submit to decide between OPAQUE (KE1/KE3) and legacy password
+ * login. The two paths converge to the same session shape, so the
+ * user never notices the branch.
+ *
+ * Returns `false` on any error — network hiccup, disabled substrate,
+ * malformed response — so callers fall back to legacy login rather
+ * than blocking on the OPAQUE probe. The Phase 2 silent-migration
+ * hook will still run after the legacy login and mint the envelope,
+ * so this transient "false" just delays adoption by one login cycle.
+ *
+ * The server-side shape is anti-enum: same `hasOpaque: false` for
+ * both "unknown user" and "user without envelope." Callers must
+ * never assume `hasOpaque: false` implies the user exists.
+ */
+export async function checkOpaqueAvailable(userIdentifier: string): Promise<boolean> {
+	// Cheap short-circuit: if the substrate isn't enabled server-side,
+	// the endpoint would return 503 anyway. `syncOpaqueEnvelope`
+	// primed the cache after any prior login in this session; this
+	// call reuses it.
+	const params = await fetchOpaqueParams();
+	if (!params.enabled) return false;
+	try {
+		const res = await apiFetch('/api/auth/opaque/login/lookup', {
+			method: 'POST',
+			credentials: 'same-origin',
+			headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
+			body: JSON.stringify({ userIdentifier })
+		});
+		if (!res.ok) return false;
+		const body = (await res.json()) as { hasOpaque?: boolean };
+		return body.hasOpaque === true;
+	} catch {
+		return false;
+	}
+}
+
+/**
  * Silent OPAQUE registration after a passphrase-touching action
  * (signup completion, change-password, silent migration on legacy
  * login). Fetches params on demand, runs the two-round OPAQUE
