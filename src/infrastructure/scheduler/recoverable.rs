@@ -246,6 +246,24 @@ pub trait JobStore: Send + Sync {
     async fn seed_progress_params(&self, total: u64, kind: ProgressKind)
     -> Result<(), DomainError>;
 
+    /// Set an arbitrary string field on `params` (JSONB). Used by
+    /// handlers on a Fresh run to persist per-run configuration that
+    /// must survive a mid-run restart — e.g. `storage_migration`
+    /// stamping `params.target_name` at run start so a resume can
+    /// pick up the same target without the admin re-specifying it.
+    ///
+    /// Handler-callable (unlike `seed_progress_params`, which is
+    /// engine-only). Idempotent: re-writing the same value is a
+    /// no-op UPDATE.
+    async fn set_string_param(&self, key: &str, value: &str) -> Result<(), DomainError>;
+
+    /// Read a string field from `params` (JSONB). Returns `None` when
+    /// the key is absent or its value isn't a JSON string. Paired
+    /// with [`Self::set_string_param`] — handlers on a Resumed run
+    /// use this to recover per-run config that a prior Fresh open
+    /// stamped.
+    async fn get_string_param(&self, key: &str) -> Result<Option<String>, DomainError>;
+
     /// Persist one finding to `jobs.run_findings` and bump
     /// `stats.finding_count` on the parent run. Consistency handlers
     /// call this in place of the transitional
@@ -838,6 +856,7 @@ mod tests {
         findings: Vec<Finding>,
         progress_total: Option<u64>,
         progress_kind: Option<ProgressKind>,
+        string_params: std::collections::HashMap<String, String>,
     }
 
     #[async_trait]
@@ -885,6 +904,17 @@ mod tests {
             s.progress_total = Some(total);
             s.progress_kind = Some(kind);
             Ok(())
+        }
+        async fn set_string_param(&self, key: &str, value: &str) -> Result<(), DomainError> {
+            self.state
+                .lock()
+                .unwrap()
+                .string_params
+                .insert(key.to_string(), value.to_string());
+            Ok(())
+        }
+        async fn get_string_param(&self, key: &str) -> Result<Option<String>, DomainError> {
+            Ok(self.state.lock().unwrap().string_params.get(key).cloned())
         }
         async fn mark_completed(&self) -> Result<(), DomainError> {
             self.state.lock().unwrap().status = RunStatus::Completed;
@@ -937,6 +967,7 @@ mod tests {
                     findings: Vec::new(),
                     progress_total: None,
                     progress_kind: None,
+                    string_params: std::collections::HashMap::new(),
                 }),
             });
             let id = store.run_id;
@@ -995,6 +1026,7 @@ mod tests {
                     findings: Vec::new(),
                     progress_total: None,
                     progress_kind: None,
+                    string_params: std::collections::HashMap::new(),
                 }),
             });
             stores.push(store.clone());

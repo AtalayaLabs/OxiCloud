@@ -454,9 +454,36 @@ pub async fn get_migration_status(
 )]
 pub async fn start_migration(
     State(state): State<Arc<AppState>>,
-    Json(_dto): Json<StartMigrationDto>,
+    Json(dto): Json<StartMigrationDto>,
 ) -> Result<impl IntoResponse, AppError> {
-    trigger_storage_migration(state).await
+    // Validate at the HTTP layer (before spawning) so unknown / no-op
+    // targets get a synchronous 400 response instead of burning a
+    // failed run row. The handler's own checks are second-line
+    // defence for the resume path where args aren't repeated.
+    let entries = &state.core.config.storage_entries;
+    let active = &state.core.active_backend_name;
+    if entries.iter().all(|e| e.name != dto.target_name) {
+        let available = if entries.is_empty() {
+            "(none)".to_string()
+        } else {
+            entries
+                .iter()
+                .map(|e| e.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        return Err(AppError::bad_request(format!(
+            "unknown target entry `{}`. Available: [{available}]",
+            dto.target_name
+        )));
+    }
+    if dto.target_name == *active {
+        return Err(AppError::bad_request(format!(
+            "target `{}` is the currently-active entry — pick a different entry to migrate to",
+            dto.target_name
+        )));
+    }
+    trigger_storage_migration(state, Some(dto.target_name)).await
 }
 
 /// POST /api/admin/storage/migration/pause — pause a running migration.
@@ -528,7 +555,11 @@ pub async fn pause_migration(
 pub async fn resume_migration(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, AppError> {
-    trigger_storage_migration(state).await
+    // Resume path — no target_name in the body. The handler reads
+    // it from `params.target_name` stamped on the original Fresh
+    // open. Refuses gracefully via RunOutcome::Failed if there is
+    // no Paused row to resume.
+    trigger_storage_migration(state, None).await
 }
 
 /// POST /api/admin/storage/migration/verify — post-migration integrity check.
@@ -590,6 +621,7 @@ pub async fn verify_migration(
 /// itself is fire-and-forget.
 async fn trigger_storage_migration(
     state: Arc<AppState>,
+    target_name: Option<String>,
 ) -> Result<axum::response::Response, AppError> {
     use crate::infrastructure::scheduler::JobRunArgs;
     use crate::infrastructure::services::storage_migration_service::STORAGE_MIGRATION_JOB_NAME;
@@ -597,14 +629,17 @@ async fn trigger_storage_migration(
     tracing::info!(
         target: "audit",
         event = "storage_migration.trigger_requested",
+        target_name = target_name.as_deref().unwrap_or("<resume>"),
         "👮🏻‍♂️ Admin triggered storage_migration"
     );
 
     let registry = state.core.job_registry.clone();
+    let args = JobRunArgs {
+        storage: target_name,
+        ..JobRunArgs::default()
+    };
     tokio::spawn(async move {
-        registry
-            .trigger(STORAGE_MIGRATION_JOB_NAME, &JobRunArgs::default())
-            .await;
+        registry.trigger(STORAGE_MIGRATION_JOB_NAME, &args).await;
     });
 
     Ok((
@@ -2203,6 +2238,16 @@ pub struct TriggerJobQuery {
     pub force: bool,
     #[serde(default)]
     pub deep: bool,
+    /// Optional named storage entry to scope the run against — used by
+    /// tenants that respect `JobRunArgs.storage` (currently
+    /// `storage_migration` for its target; `blobs_consistency` /
+    /// `backend_consistency` will pick this up in slice 7 to probe a
+    /// non-active entry). Ignored by tenants that don't declare a
+    /// semantic for it. Unknown-name validation is per-tenant — the
+    /// generic trigger endpoint doesn't cross-check against
+    /// `AppConfig.storage_entries`.
+    #[serde(default)]
+    pub storage: Option<String>,
 }
 
 /// `POST /api/admin/jobs/{name}/trigger` — dispatch one run off-schedule.
@@ -2249,6 +2294,7 @@ pub async fn trigger_job(
     let args = JobRunArgs {
         force: query.force,
         deep: query.deep,
+        storage: query.storage.clone(),
     };
 
     // Jobs that can run for hours (storage_migration, future

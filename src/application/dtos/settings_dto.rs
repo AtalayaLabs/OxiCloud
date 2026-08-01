@@ -257,9 +257,26 @@ pub struct MigrationStateDto {
 }
 
 /// Request body for `POST /api/admin/storage/migration/start`.
+///
+/// **Multi-entry contract** (see `docs/plan/storage-multi-entry.md`):
+/// `target_name` is REQUIRED — it names the storage entry the copy
+/// job will move blobs INTO. The admin picks it from the entries
+/// declared in `OXICLOUD_STORAGE_ENTRIES`. The trigger endpoint
+/// rejects the request when the name doesn't exist or equals the
+/// currently-active entry (no-op guard).
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct StartMigrationDto {
+    /// Name of the storage entry to migrate blobs INTO. Must be
+    /// present in `OXICLOUD_STORAGE_ENTRIES` and must differ from
+    /// the currently-active entry.
+    pub target_name: String,
     /// How many blobs to copy in parallel (default: 4).
+    ///
+    /// **Currently ignored** — the recoverable copy loop is
+    /// sequential (one blob at a time within the batch). Kept in
+    /// the DTO for wire-compat with the admin UI form; will be
+    /// honoured once per-batch fan-out lands (dual-write /
+    /// concurrent-copy future slice).
     pub concurrency: Option<usize>,
 }
 

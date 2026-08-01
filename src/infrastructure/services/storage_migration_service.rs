@@ -46,7 +46,7 @@
 //!   cancel + cursor discipline; the batch loop is I/O-bound anyway.
 //!   Add concurrency later if a real throughput need appears.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -54,14 +54,23 @@ use futures::StreamExt;
 use sqlx::PgPool;
 
 use crate::application::ports::blob_storage_ports::BlobStorageBackend;
-use crate::application::services::storage_settings_service::StorageSettingsService;
+use crate::common::config::NamedStorageEntry;
 use crate::common::errors::DomainError;
 use crate::infrastructure::scheduler::{
     JobRegistry, JobRunArgs, JobStore, JobStoreProvider, RecoverableJobHandler, RunOutcome,
     RunStatus, record_or_log,
 };
+use crate::infrastructure::services::entry_backend::build_entry_backend;
 
 pub const STORAGE_MIGRATION_JOB_NAME: &str = "storage_migration";
+
+/// The `params` JSONB key under which the run's target entry name is
+/// stashed at Fresh-open time via `JobStore::set_string_param`.
+/// Handlers re-read it on Resume so a paused run survives a restart
+/// without the admin re-specifying the target. Exposed publicly so
+/// the trigger endpoint's audit lines and the admin UI's run-detail
+/// projections read the same constant.
+pub const TARGET_NAME_PARAM: &str = "target_name";
 
 /// Rows per batch. Copies are I/O-bound (source read + target write);
 /// larger batches amortise fewer SQL round-trips but the checkpoint
@@ -72,20 +81,39 @@ const BATCH_SIZE: i64 = 100;
 
 pub struct StorageMigrationService {
     pool: Arc<PgPool>,
+    /// Backend the running app is bound to — the migration COPIES
+    /// FROM this. Set once at boot and never changes for the
+    /// process's lifetime (cutover requires a restart, per plan).
     source: Arc<dyn BlobStorageBackend>,
-    storage_settings: Arc<StorageSettingsService>,
+    /// Name of the currently-active entry (i.e. the one `source`
+    /// corresponds to). Used to refuse a same-name target at run
+    /// start. Same reasoning as `source` — locked at boot.
+    active_backend_name: String,
+    /// All entries declared in env, held as a snapshot for name
+    /// lookup during migration. Immutable per-deploy — matches
+    /// `AppConfig.storage_entries`.
+    storage_entries: Vec<NamedStorageEntry>,
+    /// Ambient `AppConfig.storage_path` used as the `root_dir`
+    /// fallback for a Local target entry that doesn't declare its
+    /// own `_ROOT_DIR`. Same fallback rule as boot
+    /// (`build_entry_backend`).
+    storage_path_fallback: PathBuf,
 }
 
 impl StorageMigrationService {
     pub fn new(
         pool: Arc<PgPool>,
         source: Arc<dyn BlobStorageBackend>,
-        storage_settings: Arc<StorageSettingsService>,
+        active_backend_name: String,
+        storage_entries: Vec<NamedStorageEntry>,
+        storage_path_fallback: PathBuf,
     ) -> Self {
         Self {
             pool,
             source,
-            storage_settings,
+            active_backend_name,
+            storage_entries,
+            storage_path_fallback,
         }
     }
 
@@ -133,47 +161,152 @@ impl RecoverableJobHandler for StorageMigrationService {
     async fn run_resumable(
         &self,
         store: &dyn JobStore,
-        _args: &JobRunArgs,
+        args: &JobRunArgs,
         resume_cursor: Option<Vec<u8>>,
     ) -> RunOutcome {
-        // No-op guard — refuse when the effective (target) config
-        // points at the same physical storage as the source (boot
-        // config). Without this, a misclick on an S3 deployment
-        // issues one HEAD per blob for zero useful work — cheap on
-        // local, expensive on remote. Same-type-different-location
-        // migrations (local dir change, S3 bucket change) pass this
-        // check and proceed normally.
-        match self.storage_settings.is_source_target_identical().await {
-            Ok(true) => {
-                tracing::warn!(
-                    target: "audit",
-                    event = "storage_migration.refused_noop",
-                    run_id = %store.run_id(),
-                    "storage_migration refused: source and target point at the same storage"
-                );
+        // Resolve the target entry NAME. Two paths:
+        //
+        // * Fresh run — `args.storage` MUST be Some (the trigger
+        //   endpoint enforces this at the HTTP layer). Handler
+        //   stamps it into `params.target_name` so a mid-run restart
+        //   can resume without re-input.
+        // * Resumed run — `args.storage` is typically None (admin
+        //   just clicked Run on a Paused row). Handler reads the
+        //   target from `params.target_name` written on the
+        //   original Fresh open.
+        //
+        // A Fresh run without `args.storage` is a client bug — refuse
+        // rather than default to something and quietly copy blobs
+        // into the wrong entry.
+        let is_fresh = resume_cursor.is_none();
+        let target_name = if is_fresh {
+            let Some(name) = args.storage.clone() else {
                 return RunOutcome::Failed {
                     message:
-                        "target equals source; change storage settings before triggering a migration"
+                        "storage_migration requires `target_name` on a fresh run — trigger via \
+                         POST /api/admin/storage/migration/start with `{\"target_name\": \"<entry>\"}`."
                             .to_string(),
                 };
-            }
-            Ok(false) => {}
-            Err(e) => {
+            };
+            if let Err(e) = store.set_string_param(TARGET_NAME_PARAM, &name).await {
                 return RunOutcome::Failed {
-                    message: format!("identity check: {e}"),
+                    message: format!("failed to persist target_name to params: {e}"),
                 };
             }
+            name
+        } else {
+            match store.get_string_param(TARGET_NAME_PARAM).await {
+                Ok(Some(name)) => name,
+                Ok(None) => {
+                    return RunOutcome::Failed {
+                        message: format!(
+                            "resumed run has no {TARGET_NAME_PARAM} in params — cannot infer \
+                             target. Likely a Paused row from before the multi-entry migration \
+                             refactor; cancel + trigger fresh."
+                        ),
+                    };
+                }
+                Err(e) => {
+                    return RunOutcome::Failed {
+                        message: format!("read {TARGET_NAME_PARAM} from params: {e}"),
+                    };
+                }
+            }
+        };
+
+        // First-line guard: target name equals the currently-active
+        // entry. Silent no-op if we let it through — the app would
+        // walk every blob and skip because `target.blob_exists` is
+        // trivially true (target = live source). Even on the same
+        // local disk that's a lot of syscalls for no reason; on S3
+        // it costs one HEAD per blob for zero copies.
+        if target_name == self.active_backend_name {
+            tracing::warn!(
+                target: "audit",
+                event = "storage_migration.refused_noop",
+                run_id = %store.run_id(),
+                target_name = %target_name,
+                active = %self.active_backend_name,
+                "storage_migration refused: target equals the currently-active entry"
+            );
+            return RunOutcome::Failed {
+                message: format!(
+                    "target entry `{target_name}` is the currently-active entry — nothing to \
+                     migrate. Pick a different target."
+                ),
+            };
         }
 
-        // Resolve target at run start.
-        let target = match self.storage_settings.build_effective_backend().await {
-            Ok(t) => t,
-            Err(e) => {
+        // Look up the target entry by name.
+        let target_entry = match self.storage_entries.iter().find(|e| e.name == target_name) {
+            Some(e) => e,
+            None => {
+                let available = if self.storage_entries.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    self.storage_entries
+                        .iter()
+                        .map(|e| e.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
                 return RunOutcome::Failed {
-                    message: format!("resolve target backend: {e}"),
+                    message: format!(
+                        "target entry `{target_name}` not found in OXICLOUD_STORAGE_ENTRIES. \
+                         Available: [{available}]. If the entry was removed from .env since this \
+                         run started, restore it or cancel this run."
+                    ),
                 };
             }
         };
+        let source_entry = self
+            .storage_entries
+            .iter()
+            .find(|e| e.name == self.active_backend_name);
+
+        // Second-line guard: physical-identity check for the
+        // encryption-differs case. Two entries with different names
+        // can still point at the same physical bucket (only their
+        // encryption key differs). That's the "in-place encryption
+        // rotation" case — refused because reads during migration
+        // would fail (LIVE backend uses K1, storage is being
+        // overwritten with K2). See plan §Encryption "Proper
+        // in-place rotation" for the deferred fix. The compare uses
+        // `entry_identity` (backend + physical location, EXCLUDING
+        // encryption key).
+        if let Some(source) = source_entry
+            && entry_identity(source) == entry_identity(target_entry)
+        {
+            let key_differs = source.encryption_key_base64 != target_entry.encryption_key_base64;
+            let hint = if key_differs {
+                " (encryption key differs → this looks like an in-place key rotation; \
+                 create a new entry pointing at a DIFFERENT bucket / dir, migrate to it, \
+                 then move back if desired)"
+            } else {
+                ""
+            };
+            tracing::warn!(
+                target: "audit",
+                event = "storage_migration.refused_same_physical_storage",
+                run_id = %store.run_id(),
+                target_name = %target_name,
+                source_name = %self.active_backend_name,
+                encryption_differs = key_differs,
+                "storage_migration refused: named target differs from source but physical storage matches"
+            );
+            return RunOutcome::Failed {
+                message: format!(
+                    "target entry `{target_name}` names a different entry than the active \
+                     `{}`, but they point at the same physical storage{hint}.",
+                    self.active_backend_name,
+                ),
+            };
+        }
+
+        // Build target backend via the shared factory — same code
+        // path boot uses, so the encryption decorator wrapping is
+        // uniform.
+        let target = build_entry_backend(target_entry, &self.storage_path_fallback);
         if let Err(e) = target.initialize().await {
             return RunOutcome::Failed {
                 message: format!("target backend init: {e}"),
@@ -186,10 +319,13 @@ impl RecoverableJobHandler for StorageMigrationService {
             target: "audit",
             event = "storage_migration.run_started",
             run_id = %store.run_id(),
-            source = source_kind,
-            target = target_kind,
-            resuming = resume_cursor.is_some(),
-            "storage_migration starting {source_kind} → {target_kind}"
+            source_name = %self.active_backend_name,
+            target_name = %target_name,
+            source_kind = source_kind,
+            target_kind = target_kind,
+            resuming = !is_fresh,
+            "storage_migration starting {} ({source_kind}) → {target_name} ({target_kind})",
+            self.active_backend_name,
         );
 
         // Cursor = the last-visited blob hash, UTF-8-encoded. On resume
@@ -421,6 +557,48 @@ impl RecoverableJobHandler for StorageMigrationService {
                 return RunOutcome::Completed;
             }
         }
+    }
+}
+
+/// Physical-storage identity string for a `NamedStorageEntry`. Two
+/// entries with the same identity point at the same physical
+/// location (same disk dir, same S3 bucket, same Azure container)
+/// regardless of encryption key or credentials. Used by the second-
+/// line refusal in `run_resumable` to catch in-place encryption
+/// rotation attempts (same physical storage, K1 → K2 → reads-during-
+/// migration break). See `docs/plan/storage-multi-entry.md` §Encryption.
+///
+/// Deliberately excludes:
+/// - Encryption key — otherwise same-bucket-different-key would look
+///   like a legit migration, hiding the corruption.
+/// - Credentials — two entries with different access keys pointing
+///   at the same bucket ARE the same physical storage.
+/// - Region for S3 — the bucket URI is the primary key; region is a
+///   routing hint (though endpoint_url is included since it changes
+///   the actual host bytes land on).
+fn entry_identity(entry: &NamedStorageEntry) -> String {
+    use crate::common::config::StorageBackendType;
+    match entry.backend {
+        StorageBackendType::Local => {
+            format!("local:{}", entry.root_dir.as_deref().unwrap_or(""))
+        }
+        StorageBackendType::S3 => match entry.s3.as_ref() {
+            Some(s3) => format!(
+                "s3:{}/{}:path_style={}",
+                s3.endpoint_url.as_deref().unwrap_or("aws"),
+                s3.bucket,
+                s3.force_path_style,
+            ),
+            None => "s3:<missing-config>".to_string(),
+        },
+        StorageBackendType::Azure => match entry.azure.as_ref() {
+            Some(az) => format!(
+                "azure:{}/{}",
+                az.account_name.as_str(),
+                az.container.as_str()
+            ),
+            None => "azure:<missing-config>".to_string(),
+        },
     }
 }
 

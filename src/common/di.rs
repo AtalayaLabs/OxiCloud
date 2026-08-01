@@ -237,8 +237,16 @@ impl AppServiceFactory {
         //   working. Encryption never applies here (legacy synthesis
         //   would have created an entry if any legacy var was set).
         let active_backend_kind: StorageBackendType;
+        // Track which named entry the LIVE backend was built from so
+        // the migration handler can name-compare `target != active`
+        // without re-reading the DB. `"legacy"` sentinel for the
+        // no-entries branch — the migration handler refuses that
+        // target name anyway (no entry exists), which is the correct
+        // behaviour for the zero-config path.
+        let active_backend_name: String;
         let base_backend: Arc<dyn BlobStorageBackend> = if self.config.storage_entries.is_empty() {
             active_backend_kind = self.config.storage.backend.clone();
+            active_backend_name = "legacy".to_string();
             tracing::info!(
                 "Storage: no OXICLOUD_STORAGE_ENTRIES declared and no legacy vars — using \
                  framework default (backend={:?}, path={:?})",
@@ -312,6 +320,7 @@ impl AppServiceFactory {
                 }
             };
             active_backend_kind = entry.backend.clone();
+            active_backend_name = entry.name.clone();
             build_entry_backend(entry, &self.storage_path)
         };
 
@@ -549,6 +558,7 @@ impl AppServiceFactory {
             job_registry,
             job_store_provider,
             blob_backend: blob_backend_for_consistency,
+            active_backend_name,
         })
     }
 
@@ -2167,13 +2177,11 @@ impl AppServiceFactory {
             tracing::info!("Storage settings service initialized");
 
             // 9b-1c. Register the storage-backend migration tenant on
-            // the recoverable-run engine. Must run AFTER the storage
-            // settings service is built — the tenant resolves the
-            // *target* backend at each run start by asking the settings
-            // service for the currently-effective config. Source is
-            // whatever `dedup_service` booted with; both live on
-            // `AppState.core`. On-demand only (no periodic tick — an
-            // operator triggers a copy after switching backend config).
+            // the recoverable-run engine. Target is resolved by NAME
+            // from `params.target_name` on each run — plumbed from
+            // the trigger endpoint. Constructor takes the ambient
+            // entries snapshot + active-name + storage_path fallback
+            // so no DB read is needed per run for target lookup.
             let job_store_provider_dyn: Arc<
                 dyn crate::infrastructure::scheduler::JobStoreProvider,
             > = app_state.core.job_store_provider.clone();
@@ -2184,7 +2192,9 @@ impl AppServiceFactory {
                         .clone()
                         .expect("maintenance_pool set above"),
                     app_state.core.blob_backend.clone(),
-                    storage_settings_svc,
+                    app_state.core.active_backend_name.clone(),
+                    app_state.core.config.storage_entries.clone(),
+                    self.storage_path.clone(),
                 ),
             )
             .register_recoverable_job(&app_state.core.job_registry, &job_store_provider_dyn)
@@ -2436,6 +2446,16 @@ pub struct CoreServices {
     /// `build_app_state` — can probe `blob_exists()` / re-hash bytes
     /// through the same stack DedupService uses.
     pub blob_backend: Arc<dyn BlobStorageBackend>,
+    /// Name of the storage entry the LIVE `blob_backend` was built
+    /// from. Populated at boot: either from
+    /// `admin_settings.storage.active_backend_name` when set, or the
+    /// first entry in `OXICLOUD_STORAGE_ENTRIES` when unset. For the
+    /// no-entries legacy path this is `"default"` (the synthesized
+    /// name) or `"legacy"` (framework-defaults case with zero storage
+    /// config at all). Migration handler consumes this to enforce the
+    /// "target != active" no-op guard by name; without needing to
+    /// re-read DB on every trigger.
+    pub active_backend_name: String,
 }
 
 /// Container for repository services

@@ -198,6 +198,37 @@ impl JobStore for PgJobStore {
         Ok(())
     }
 
+    async fn set_string_param(&self, key: &str, value: &str) -> Result<(), DomainError> {
+        sqlx::query(
+            r#"
+            UPDATE jobs.recoverable_runs
+               SET params = jsonb_set(params, ARRAY[$2], to_jsonb($3::text))
+             WHERE id = $1
+            "#,
+        )
+        .bind(self.run_id)
+        .bind(key)
+        .bind(value)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| map_sqlx_err("set_string_param", e))?;
+        Ok(())
+    }
+
+    async fn get_string_param(&self, key: &str) -> Result<Option<String>, DomainError> {
+        // `params -> $2` returns JSONB; `->>` returns text (null when
+        // key absent OR value isn't a string). Handler treats absence
+        // and null-value identically — either way it's "not set."
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT params ->> $2 FROM jobs.recoverable_runs WHERE id = $1")
+                .bind(self.run_id)
+                .bind(key)
+                .fetch_optional(self.pool.as_ref())
+                .await
+                .map_err(|e| map_sqlx_err("get_string_param", e))?;
+        Ok(row.and_then(|(v,)| v))
+    }
+
     async fn mark_completed(&self) -> Result<(), DomainError> {
         sqlx::query(
             r#"
