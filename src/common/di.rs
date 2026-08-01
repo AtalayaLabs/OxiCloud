@@ -387,7 +387,7 @@ impl AppServiceFactory {
             let key: [u8; 32] = key_bytes.try_into().expect(
                 "OXICLOUD_STORAGE_ENCRYPTION_KEY must be exactly 32 bytes (base64 of 32 bytes)",
             );
-            blob_backend = Arc::new(EncryptedBlobBackend::new(blob_backend, &key));
+            blob_backend = Arc::new(EncryptedBlobBackend::new_single_aes(blob_backend, &key));
             tracing::info!("Blob storage encryption decorator enabled (AES-256-GCM) — legacy path");
         }
 

@@ -229,24 +229,25 @@ pub fn build_entry_backend(
         }
     };
 
-    // Encryption decorator — presence-implies-enabled, per plan
-    // §Encryption. K1 preserves single-head-pair behaviour: writes and
-    // reads use the head pair's material. K2 replaces the decorator
-    // with a header-aware read/write path that consults the full pair
-    // list; this call site becomes a wrapper construction rather than
-    // a single-key handoff at that point.
-    let Some(key) = entry.head_key_material() else {
-        // No pair list at all, OR head pair is `CipherKind::None`
-        // (mid-decrypt-migration state). Both cases mean "writes go
-        // straight to the raw backend today"; older encrypted pairs
-        // in the list stay unreachable until K2 wires the read
-        // fallback.
-        return base;
-    };
+    // v1 wrapper (Choice 1/B: always wrap). Every entry gets the
+    // header-aware read/write path — even entries with no
+    // `_ENCRYPTION_KEY` at all. This normalises the on-disk format
+    // going forward: all new writes carry the OXCPT v1 header, all
+    // reads magic-byte-dispatch (with legacy fallback for
+    // header-less pre-K2 blobs). Not backwards-compatible with
+    // pre-K2 code trying to read new writes — but Ed's called it:
+    // uniform format is worth the one-way door.
     use crate::infrastructure::services::encrypted_blob_backend::EncryptedBlobBackend;
+    let pairs = entry.encryption.clone().unwrap_or_default();
+    let mode = match entry.head_cipher() {
+        Some(crate::common::config::CipherKind::AesGcm256) => "encrypted-v1",
+        _ => "plaintext-v1",
+    };
     tracing::info!(
-        "Storage entry `{}` encrypted with AES-256-GCM (head pair from env)",
-        entry.name
+        "Storage entry `{}` — {} wrapper (pairs: {})",
+        entry.name,
+        mode,
+        pairs.len()
     );
-    Arc::new(EncryptedBlobBackend::new(base, key))
+    Arc::new(EncryptedBlobBackend::new(base, pairs))
 }

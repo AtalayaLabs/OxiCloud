@@ -3672,7 +3672,7 @@ mod rechunk_integration_tests {
         let inner = Arc::new(LocalBlobBackend::new(&dir.path().join("blobs")));
         inner.initialize().await.expect("init backend");
         let key = EncryptedBlobBackend::generate_key();
-        let backend = Arc::new(EncryptedBlobBackend::new(inner, &key));
+        let backend = Arc::new(EncryptedBlobBackend::new_single_aes(inner, &key));
         DedupService::new(backend, pool.clone(), pool.clone())
     }
 

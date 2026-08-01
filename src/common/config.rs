@@ -483,6 +483,30 @@ pub struct KeyPair {
 }
 
 impl KeyPair {
+    /// Construct a real-cipher pair with pre-decoded key material.
+    /// Convenience for tests + the pre-multi-entry legacy synthesis
+    /// path where the base64-decoded key is already in hand. New
+    /// production code paths get their pairs from
+    /// [`parse_encryption_pair_list`] which produces the same
+    /// shape.
+    pub fn new_aes_gcm(key: [u8; 32]) -> Self {
+        Self {
+            cipher: CipherKind::AesGcm256,
+            key_material: Some(key),
+        }
+    }
+
+    /// Construct a `none:` sentinel pair. Used by `entry_backend.rs`
+    /// under the always-wrap rule to synthesise a 1-pair list for
+    /// entries with no `_ENCRYPTION_KEY` declared, so those writes
+    /// still get v1 headers (plaintext-v1 flavor).
+    pub fn new_none() -> Self {
+        Self {
+            cipher: CipherKind::None,
+            key_material: None,
+        }
+    }
+
     /// Truncated SHA-256 fingerprint of the key material — 12 hex
     /// chars (6 bytes of SHA output). Used at boot for the audit-
     /// line dump so operators can eyeball which key is at each
@@ -500,6 +524,41 @@ impl KeyPair {
         let mat = self.key_material.as_ref()?;
         let full = Sha256::digest(mat);
         Some(hex::encode(&full[..6]))
+    }
+
+    /// 8-byte SHA-256 truncation used as the v1 header's `<key_fp>`
+    /// field on every encrypted blob. Read dispatch looks up the
+    /// matching [`KeyPair`] in the pair list by this value in O(1),
+    /// so a blob written under any pair in the list can be decrypted
+    /// without falling through candidate keys.
+    ///
+    /// Semantic contract with the on-disk format:
+    ///
+    /// * `CipherKind::AesGcm256` pair → 8 bytes of `sha256(key)[..8]`.
+    ///   Effectively unique per configured pair (2⁻⁶⁴ collision on
+    ///   random keys — never in practice on the ~1-3 pairs a real
+    ///   deployment has).
+    /// * `CipherKind::None` pair → all-zero. This is what marks a
+    ///   plaintext-v1 blob so the read path can dispatch "return
+    ///   post-header raw bytes" without consulting a key. Real
+    ///   ciphers cannot collide with all-zero: an
+    ///   `sha256(key)[..8] == 0` real key is 2⁻⁶⁴ improbable AND
+    ///   the parser wouldn't accept two pairs with the same fp
+    ///   (uniqueness check on raw key material — same key = same
+    ///   fp).
+    ///
+    /// Distinct truncation from [`Self::fingerprint_short`] on
+    /// purpose: this is a raw byte string embedded in every
+    /// encrypted blob (compactness matters), while the boot log
+    /// wants a legible short-hex string.
+    pub fn key_fp(&self) -> [u8; 8] {
+        use sha2::{Digest, Sha256};
+        let mut fp = [0u8; 8];
+        if let Some(mat) = self.key_material.as_ref() {
+            let full = Sha256::digest(mat);
+            fp.copy_from_slice(&full[..8]);
+        }
+        fp
     }
 }
 
@@ -3859,6 +3918,56 @@ mod tests {
             )
             .unwrap();
             assert_ne!(pairs[0].fingerprint_short(), pairs[1].fingerprint_short());
+        }
+
+        // ── key_fp (8-byte header field) tests ────────────────────
+
+        #[test]
+        fn key_fp_is_eight_bytes() {
+            let pairs = parse_encryption_pair_list("t", K1_B64).unwrap();
+            let fp = pairs[0].key_fp();
+            assert_eq!(fp.len(), 8);
+            // At least one byte non-zero (K1 = 0x00..0x1F sha256 has
+            // ample entropy; if this ever asserts we've got a truly
+            // improbable collision).
+            assert!(fp.iter().any(|b| *b != 0), "fp = {fp:?}");
+        }
+
+        #[test]
+        fn key_fp_zero_for_none_cipher() {
+            let pairs = parse_encryption_pair_list("t", "none:").unwrap();
+            assert_eq!(pairs[0].key_fp(), [0u8; 8]);
+        }
+
+        #[test]
+        fn key_fp_stable_across_calls() {
+            let pairs_a = parse_encryption_pair_list("t", K1_B64).unwrap();
+            let pairs_b = parse_encryption_pair_list("t", K1_B64).unwrap();
+            assert_eq!(pairs_a[0].key_fp(), pairs_b[0].key_fp());
+        }
+
+        #[test]
+        fn key_fp_differs_between_different_keys() {
+            let pairs = parse_encryption_pair_list(
+                "t",
+                &format!("aes-256-gcm:{K1_B64},aes-256-gcm:{K2_B64}"),
+            )
+            .unwrap();
+            assert_ne!(pairs[0].key_fp(), pairs[1].key_fp());
+        }
+
+        #[test]
+        fn key_fp_and_fingerprint_short_share_prefix() {
+            // Both derive from the same sha256(key); the on-blob fp is
+            // 8 raw bytes, the log fp is hex of the first 6. Pinning
+            // this alignment protects against a future refactor that
+            // accidentally switches one to a different hash / offset.
+            let pairs = parse_encryption_pair_list("t", K1_B64).unwrap();
+            let hex_fp = pairs[0].fingerprint_short().unwrap();
+            let raw_fp = pairs[0].key_fp();
+            // First 12 hex chars of the log fp = hex of the first 6
+            // bytes of the raw fp.
+            assert_eq!(&hex_fp[..12], &hex::encode(&raw_fp[..6]));
         }
     }
 }
