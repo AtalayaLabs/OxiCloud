@@ -448,21 +448,70 @@
 			migrationTimer = null;
 		}
 	}
+	// Polling model for the migration flow:
+	//   1. `lastMigrationStatus` — last observed status. Storage
+	//      state is refreshed on any transition so the readonly
+	//      banner + active-entry indicators track the server without
+	//      the admin having to reload the tab.
+	//   2. `sawActive` — flips true the first time we observe
+	//      `running` or `paused` after a user action. We only STOP
+	//      polling on `idle` / `completed` / `failed` AFTER
+	//      `sawActive` is true — otherwise a trigger endpoint's
+	//      instant-202 response (the run row hasn't landed in the
+	//      DB yet) would kill the poll loop before the migration
+	//      even started, and the banner + active-entry update
+	//      would never show up until the admin manually refreshed.
+	//   3. `pendingSince` — timestamp of the last user action.
+	//      Bounds how long we keep polling on `idle` while waiting
+	//      for the run row to appear. If the run never opens within
+	//      the grace window (60 s — dispatch spawn + DB insert
+	//      normally takes < 100 ms), we give up.
+	let lastMigrationStatus: string | undefined;
+	let sawActive = false;
+	let pendingSince: number | undefined;
+	const PENDING_GRACE_MS = 60_000;
 	async function loadMigration() {
 		try {
 			migration = await getMigration();
-			if (migration.status === 'running') {
+			const status = migration.status;
+			const active = status === 'running' || status === 'paused';
+			if (active) sawActive = true;
+
+			// Refresh storage on any status change so the readonly
+			// banner + active-entry indicators reflect current
+			// server state.
+			if (status !== lastMigrationStatus) {
+				lastMigrationStatus = status;
+				void loadStorage();
+			}
+
+			// Keep polling while the migration is active OR while
+			// we're within the grace window waiting for a
+			// user-triggered run to appear.
+			const withinGrace =
+				!sawActive && pendingSince != null && performance.now() - pendingSince < PENDING_GRACE_MS;
+			if (active || withinGrace) {
 				if (!migrationTimer) migrationTimer = setInterval(loadMigration, 5000);
 			} else {
+				// Not active and (either we've already seen it run OR
+				// the grace window ran out) → stop polling.
 				stopMigrationPoll();
+				pendingSince = undefined;
 			}
 		} catch {
 			stopMigrationPoll();
+			pendingSince = undefined;
 		}
 	}
 	async function doMigration(action: 'start' | 'pause' | 'resume', targetName?: string) {
 		try {
 			await migrationAction(action, targetName);
+			// Reset the status memo so the very next `loadMigration`
+			// tick unconditionally reloads storage (an admin-triggered
+			// action is exactly when the readonly flag flips).
+			lastMigrationStatus = undefined;
+			sawActive = false;
+			pendingSince = performance.now();
 			await loadMigration();
 		} catch (e) {
 			reportError(e);
@@ -1934,10 +1983,10 @@
 							<Icon name="lock" />
 							{t('admin.mig_readonly_title', 'Server in migration read-only mode')}
 						</h3>
-						<p class="muted">
+						<p class="cutover-hint__readonly-body">
 							{t(
 								'admin.mig_readonly_body',
-								'All writes (upload, rename, delete, share) are refused by AuthZ until the migration completes and you restart the server. Reads (browse, download) are unaffected.'
+								'All writes (upload, rename, delete, share) are refused until the migration completes. Reads (browse, download) are unaffected. When the copy finishes the server switches to the new backend automatically — no restart needed.'
 							)}
 						</p>
 					</div>
@@ -4048,6 +4097,17 @@
 	.cutover-hint--readonly {
 		border-color: var(--color-danger-border, var(--color-border));
 		background: var(--color-danger-bg, var(--color-bg-muted));
+	}
+
+	/* On the readonly banner the danger-tinted background swallows
+	   `.muted` (which is a light grey). Use the strong text color
+	   instead so the body message stays legible in both themes.
+	   `color-danger-text` if the design system publishes one, else
+	   fall back to the regular text color which still meets WCAG
+	   contrast against the muted-red/pink bg tokens. */
+	.cutover-hint__readonly-body {
+		margin: 0;
+		color: var(--color-danger-text, var(--color-text));
 	}
 
 	.entries-list {

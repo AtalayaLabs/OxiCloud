@@ -421,10 +421,7 @@ impl BlobStorageBackend for S3BlobBackend {
                     Ok(StorageHealthStatus {
                         connected: false,
                         backend_type: "s3".to_string(),
-                        message: format!(
-                            "S3 bucket '{}' is not accessible: {detail}",
-                            self.bucket
-                        ),
+                        message: format!("S3 bucket '{}' is not accessible: {detail}", self.bucket),
                         available_bytes: None,
                     })
                 }
@@ -595,7 +592,10 @@ where
         }
         SdkError::TimeoutError(_) => "timeout".to_string(),
         SdkError::ResponseError(r) => {
-            format!("malformed response (HTTP {}): {r:?}", r.raw().status().as_u16())
+            format!(
+                "malformed response (HTTP {}): {r:?}",
+                r.raw().status().as_u16()
+            )
         }
         SdkError::ConstructionFailure(c) => format!("request construction failed: {c:?}"),
         _ => format!("unknown SDK error: {err:?}"),

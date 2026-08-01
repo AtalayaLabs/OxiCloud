@@ -11,7 +11,6 @@ pub mod dedup_service;
 pub mod drives_consistency_service;
 pub mod encrypted_blob_backend;
 pub mod entry_backend;
-pub mod swappable_blob_backend;
 pub mod exif_service;
 pub mod face_geometry;
 pub mod face_indexing_service;
@@ -47,6 +46,7 @@ pub mod search_index;
 pub mod share_unlock_cookie;
 pub mod smtp_email_sender;
 pub mod storage_migration_service;
+pub mod swappable_blob_backend;
 pub mod thumbnail_service;
 #[cfg(test)]
 mod thumbnail_service_test;

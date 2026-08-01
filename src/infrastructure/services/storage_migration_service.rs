@@ -119,9 +119,8 @@ pub struct StorageMigrationService {
     /// restart. Shared with `CoreServices.blob_backend_hot_swap` —
     /// same instance the coerced `blob_backend: Arc<dyn ...>`
     /// delegates through.
-    blob_backend_hot_swap: Arc<
-        crate::infrastructure::services::swappable_blob_backend::SwappableBlobBackend,
-    >,
+    blob_backend_hot_swap:
+        Arc<crate::infrastructure::services::swappable_blob_backend::SwappableBlobBackend>,
 }
 
 impl StorageMigrationService {
@@ -700,8 +699,9 @@ impl StorageMigrationService {
         // 4. Drop read-only. In this order (after swap) so no write
         // slips through against the OLD backend between "readonly
         // off" and "backend swapped".
-        let readonly_persisted =
-            persist_migration_readonly(self.pool.as_ref(), false).await.is_ok();
+        let readonly_persisted = persist_migration_readonly(self.pool.as_ref(), false)
+            .await
+            .is_ok();
         self.migration_readonly.store(false, Ordering::Relaxed);
 
         if !readonly_persisted {

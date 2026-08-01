@@ -126,11 +126,7 @@ impl BlobStorageBackend for SwappableBlobBackend {
         Box::pin(async move { inner.put_blob(&hash, &source_path).await })
     }
 
-    fn put_blob_from_bytes(
-        &self,
-        hash: &str,
-        data: Bytes,
-    ) -> BoxFut<'_, Result<u64, DomainError>> {
+    fn put_blob_from_bytes(&self, hash: &str, data: Bytes) -> BoxFut<'_, Result<u64, DomainError>> {
         let inner = self.current();
         let hash = hash.to_owned();
         Box::pin(async move { inner.put_blob_from_bytes(&hash, data).await })
@@ -222,4 +218,3 @@ impl BlobStorageBackend for SwappableBlobBackend {
         Box::pin(async move { inner.list_blob_hashes(cursor, limit).await })
     }
 }
-
