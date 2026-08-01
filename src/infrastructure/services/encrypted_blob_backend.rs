@@ -556,6 +556,26 @@ impl BlobStorageBackend for EncryptedBlobBackend {
         })
     }
 
+    /// Frame the plaintext with the head pair's format (encrypted-v1
+    /// or plaintext-v1), then delegate the atomic replace to the
+    /// inner backend. Used by `storage_rotate` to actually change the
+    /// on-disk bytes — `put_blob_from_bytes` would silently no-op on
+    /// `LocalBlobBackend` when the object key already exists.
+    fn put_blob_from_bytes_replace(
+        &self,
+        hash: &str,
+        data: Bytes,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<u64, DomainError>> + Send + '_>> {
+        let inner = self.inner.clone();
+        let hash = hash.to_string();
+        let head_cipher = self.head_cipher.clone();
+        let head_key_fp = self.head_key_fp;
+        Box::pin(async move {
+            let out = frame_write(head_cipher, head_key_fp, data.to_vec()).await?;
+            inner.put_blob_from_bytes_replace(&hash, out).await
+        })
+    }
+
     fn sync_blobs(
         &self,
         hashes: &[String],

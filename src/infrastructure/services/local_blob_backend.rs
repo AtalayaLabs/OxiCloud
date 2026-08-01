@@ -422,6 +422,96 @@ impl BlobStorageBackend for LocalBlobBackend {
         })
     }
 
+    /// **Atomic replace**: write to a same-directory tempfile, fsync,
+    /// then `rename(2)` over the target. `write_blob_bytes`'s
+    /// `O_CREAT|O_EXCL` idempotent-skip (the right choice for uploads)
+    /// silently no-ops when the target already exists — wrong for
+    /// callers like `storage_rotate` that need the bytes to change.
+    /// See the trait doc for the full picture.
+    ///
+    /// Tempfile lives beside the target under the same shard directory
+    /// so `rename` is a cheap same-filesystem operation (never an
+    /// EXDEV cross-device copy fallback). The tempfile name embeds
+    /// the process pid + a monotonic counter so parallel replaces on
+    /// the same hash from different tasks don't clobber each other.
+    fn put_blob_from_bytes_replace(
+        &self,
+        hash: &str,
+        data: Bytes,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<u64, DomainError>> + Send + '_>> {
+        let hash = hash.to_owned();
+        Box::pin(async move {
+            let blob_path = self.blob_path(&hash);
+            let size = data.len() as u64;
+
+            // Tempfile in the SAME directory as the target → rename is
+            // cheap same-filesystem, never EXDEV. Counter ensures
+            // uniqueness under parallel replaces (rare — rotate is
+            // sequential per-blob today, but future concurrency won't
+            // corrupt).
+            static REPLACE_COUNTER: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(0);
+            let counter = REPLACE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let tmp_path = blob_path.with_file_name(format!(
+                "{}.replace.{}.{}.tmp",
+                hash,
+                std::process::id(),
+                counter
+            ));
+
+            // Create + write + fsync the tempfile. `create_new(true)`
+            // stays here to catch the astronomically-unlikely case of
+            // two tasks colliding on the same counter value (belt-and-
+            // braces; the pid+counter naming already prevents it).
+            {
+                let mut tmp = fs::File::options()
+                    .write(true)
+                    .create_new(true)
+                    .open(&tmp_path)
+                    .await
+                    .map_err(|e| {
+                        DomainError::internal_error(
+                            "Blob",
+                            format!("Failed to create replace-tmp: {}", e),
+                        )
+                    })?;
+                if let Err(e) = tmp.write_all(&data).await {
+                    let _ = fs::remove_file(&tmp_path).await;
+                    return Err(DomainError::internal_error(
+                        "Blob",
+                        format!("Failed to write replace-tmp: {}", e),
+                    ));
+                }
+                if let Err(e) = tmp.sync_all().await {
+                    let _ = fs::remove_file(&tmp_path).await;
+                    return Err(DomainError::internal_error(
+                        "Blob",
+                        format!("Failed to fsync replace-tmp: {}", e),
+                    ));
+                }
+            }
+
+            // Atomic replace. On POSIX `rename(2)` is atomic within a
+            // filesystem — a concurrent reader sees either the old or
+            // new bytes, never a truncated view. Older bytes drop out
+            // as soon as no reader holds an open fd.
+            if let Err(e) = fs::rename(&tmp_path, &blob_path).await {
+                let _ = fs::remove_file(&tmp_path).await;
+                return Err(DomainError::internal_error(
+                    "Blob",
+                    format!("Failed to atomically replace blob: {}", e),
+                ));
+            }
+
+            // fsync the parent directory so the dirent change (i.e. the
+            // rename result) survives a power loss, same discipline as
+            // the create path in `put_blob_from_bytes`.
+            fsync_parent_dir(&blob_path).await;
+
+            Ok(size)
+        })
+    }
+
     fn sync_blobs(
         &self,
         hashes: &[String],

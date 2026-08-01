@@ -376,13 +376,21 @@ impl RecoverableJobHandler for StorageRotateService {
                     continue;
                 }
 
-                // Rewrite via the standard write path — atomic
-                // replace at the same object key. `put_blob_from_bytes`
-                // frames the plaintext with the head pair's format
-                // (encrypted-v1 or plaintext-v1) and hands the
-                // resulting bytes to the inner backend.
+                // Rewrite via the atomic-replace write path.
+                //
+                // **NOT** `put_blob_from_bytes`: that variant is
+                // idempotent-skip (`O_CREAT|O_EXCL` on
+                // `LocalBlobBackend`) — correct for uploads (same
+                // plaintext ↔ any ciphertext at hash decrypts back)
+                // but a silent no-op for us. Rotate NEEDS the on-disk
+                // bytes to change (legacy → v1 header, old key → new
+                // key, plaintext ↔ encrypted). Ed hit this on
+                // 2026-08-02: rotation reported success in 9s but
+                // every blob on disk still had the legacy shape.
+                // `put_blob_from_bytes_replace` writes to a tempfile
+                // + atomic `rename(2)`s over the existing object key.
                 if let Err(e) = wrapper
-                    .put_blob_from_bytes(hash, Bytes::from(plaintext.to_vec()))
+                    .put_blob_from_bytes_replace(hash, Bytes::from(plaintext.to_vec()))
                     .await
                 {
                     failed_count += 1;
