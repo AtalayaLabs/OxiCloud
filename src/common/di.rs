@@ -323,6 +323,11 @@ impl AppServiceFactory {
             active_backend_name = entry.name.clone();
             build_entry_backend(entry, &self.storage_path)
         };
+        // Shared mutable handle to the active-entry name. Wrapped
+        // here rather than at the field type so the two String
+        // literal writes above stay simple; wrapping happens once
+        // just before the struct init.
+        let active_backend_name = Arc::new(std::sync::RwLock::new(active_backend_name));
 
         // Stack decorators: retry → encryption → cache (inner-to-outer).
         //
@@ -406,6 +411,21 @@ impl AppServiceFactory {
             blob_backend = Arc::new(CachedBlobBackend::new(blob_backend, &cfg));
             tracing::info!("Blob storage LRU disk cache enabled");
         }
+
+        // Wrap the fully-decorated stack in the hot-swap wrapper.
+        // Every downstream consumer holds `Arc<dyn BlobStorageBackend>`
+        // as before; the wrapper is transparent from their point of
+        // view. The `Arc<SwappableBlobBackend>` reference we retain
+        // here (stored on `AppState.blob_backend_hot_swap`) is what
+        // the migration handler calls `.swap()` on when cutover
+        // completes — no restart needed. See
+        // `swappable_blob_backend.rs` for the delegation contract.
+        let blob_backend_hot_swap = Arc::new(
+            crate::infrastructure::services::swappable_blob_backend::SwappableBlobBackend::new(
+                blob_backend,
+            ),
+        );
+        let blob_backend: Arc<dyn BlobStorageBackend> = blob_backend_hot_swap.clone();
 
         // Blob lifecycle — thumbnail disk-file cleanup when blob ref_count hits zero.
         // ThumbnailService (not ThumbnailRefreshHook) is used here to avoid a circular
@@ -558,6 +578,7 @@ impl AppServiceFactory {
             job_registry,
             job_store_provider,
             blob_backend: blob_backend_for_consistency,
+            blob_backend_hot_swap,
             active_backend_name,
         })
     }
@@ -2232,6 +2253,7 @@ impl AppServiceFactory {
                     app_state.core.config.storage_entries.clone(),
                     self.storage_path.clone(),
                     app_state.migration_readonly.clone(),
+                    app_state.core.blob_backend_hot_swap.clone(),
                 ),
             )
             .register_recoverable_job(&app_state.core.job_registry, &job_store_provider_dyn)
@@ -2483,12 +2505,18 @@ impl AppServiceFactory {
             // active_backend_name. Absence (Unset) is treated as "no
             // mismatch to complain about" — the boot fallback already
             // picked the first entry.
+            let booted_active = app_state
+                .core
+                .active_backend_name
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             let db_active_matches = {
                 use crate::infrastructure::services::entry_backend::{
                     ActiveEntry, resolve_active_entry,
                 };
                 match resolve_active_entry(&pool, &app_state.core.config.storage_entries).await {
-                    Ok(ActiveEntry::Explicit(e)) => e.name == app_state.core.active_backend_name,
+                    Ok(ActiveEntry::Explicit(e)) => e.name == booted_active,
                     Ok(ActiveEntry::Unset) => true,
                     Err(_) => false,
                 }
@@ -2504,7 +2532,7 @@ impl AppServiceFactory {
                         tracing::info!(
                             target: "audit",
                             event = "storage.migration_readonly.cleared_at_boot",
-                            active = %app_state.core.active_backend_name,
+                            active = %booted_active,
                             "🧊 migration_readonly cleared at boot: no in-flight migration + \
                              active_backend_name matches booted entry (cutover complete on prior boot)"
                         );
@@ -2581,7 +2609,22 @@ pub struct CoreServices {
     /// `create_core_services` — notably `blobs_consistency` in
     /// `build_app_state` — can probe `blob_exists()` / re-hash bytes
     /// through the same stack DedupService uses.
+    ///
+    /// Concretely this is the hot-swap wrapper coerced to
+    /// `Arc<dyn ...>`; a migration cutover replaces the inner
+    /// backend via [`Self::blob_backend_hot_swap`] and every future
+    /// call through this `blob_backend` sees the new inner.
     pub blob_backend: Arc<dyn BlobStorageBackend>,
+    /// Typed handle to the hot-swap wrapper. Distinct from
+    /// [`Self::blob_backend`] only in its declared type: the raw
+    /// wrapper struct instead of `dyn BlobStorageBackend`. Same
+    /// underlying instance, so a call to `.swap(new)` here is
+    /// immediately visible through the trait-object handle above.
+    /// The migration handler is the only intended caller — it flips
+    /// the pointer on `RunOutcome::Completed`, so restart is no
+    /// longer required for cutover.
+    pub blob_backend_hot_swap:
+        Arc<crate::infrastructure::services::swappable_blob_backend::SwappableBlobBackend>,
     /// Name of the storage entry the LIVE `blob_backend` was built
     /// from. Populated at boot: either from
     /// `admin_settings.storage.active_backend_name` when set, or the
@@ -2591,7 +2634,14 @@ pub struct CoreServices {
     /// config at all). Migration handler consumes this to enforce the
     /// "target != active" no-op guard by name; without needing to
     /// re-read DB on every trigger.
-    pub active_backend_name: String,
+    ///
+    /// Wrapped in `Arc<RwLock<String>>` so the migration handler can
+    /// update it on hot-swap — subsequent name-based guards (a
+    /// second migration triggered by the admin after the first cut
+    /// over) see the new active without a restart. Read pattern:
+    /// acquire the read lock, clone the inner String, release the
+    /// lock, use the clone across await points.
+    pub active_backend_name: Arc<std::sync::RwLock<String>>,
 }
 
 /// Container for repository services

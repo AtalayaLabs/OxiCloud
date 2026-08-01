@@ -84,14 +84,19 @@ const BATCH_SIZE: i64 = 100;
 
 pub struct StorageMigrationService {
     pool: Arc<PgPool>,
-    /// Backend the running app is bound to — the migration COPIES
-    /// FROM this. Set once at boot and never changes for the
-    /// process's lifetime (cutover requires a restart, per plan).
+    /// Backend the running app is bound to at handler-construction
+    /// time. Refers to the hot-swap wrapper when multi-entry is
+    /// active, so this read stays live across cutovers even if
+    /// stored as `Arc<dyn>`. Only used to identify the source
+    /// entry's `backend_type()` for audit lines; the actual copy
+    /// path reads from `self.pool` and writes to the target
+    /// backend built via `build_entry_backend`.
     source: Arc<dyn BlobStorageBackend>,
-    /// Name of the currently-active entry (i.e. the one `source`
-    /// corresponds to). Used to refuse a same-name target at run
-    /// start. Same reasoning as `source` — locked at boot.
-    active_backend_name: String,
+    /// Name of the currently-active entry. Shared `Arc<RwLock<String>>`
+    /// with `CoreServices.active_backend_name` — a hot-swap-mutation
+    /// on cutover is visible here without reconstructing the handler.
+    /// Read via `.read().clone()` at the top of each run.
+    active_backend_name: Arc<std::sync::RwLock<String>>,
     /// All entries declared in env, held as a snapshot for name
     /// lookup during migration. Immutable per-deploy — matches
     /// `AppConfig.storage_entries`.
@@ -104,12 +109,19 @@ pub struct StorageMigrationService {
     /// Shared `AppState.migration_readonly` handle. Handler flips
     /// this atomic (and persists to DB) at run start once all
     /// guards pass, so writes across the whole app get refused by
-    /// the AuthZ short-circuit for the duration of the copy. Kept
-    /// ON when Completed — the boot-clear rule (slice 4) resets it
-    /// on the next restart after cutover, so operators can't
-    /// accidentally re-enable writes on the OLD backend while the
-    /// pointer already says the NEW one is active.
+    /// the AuthZ short-circuit for the duration of the copy. On
+    /// `RunOutcome::Completed`, the handler hot-swaps the runtime
+    /// backend + clears this flag in one step — no restart.
     migration_readonly: Arc<AtomicBool>,
+    /// Typed handle to the runtime blob-backend wrapper. The
+    /// migration handler calls `.swap()` on this at cutover so
+    /// subsequent user writes go to the target entry without a
+    /// restart. Shared with `CoreServices.blob_backend_hot_swap` —
+    /// same instance the coerced `blob_backend: Arc<dyn ...>`
+    /// delegates through.
+    blob_backend_hot_swap: Arc<
+        crate::infrastructure::services::swappable_blob_backend::SwappableBlobBackend,
+    >,
 }
 
 impl StorageMigrationService {
@@ -117,10 +129,13 @@ impl StorageMigrationService {
     pub fn new(
         pool: Arc<PgPool>,
         source: Arc<dyn BlobStorageBackend>,
-        active_backend_name: String,
+        active_backend_name: Arc<std::sync::RwLock<String>>,
         storage_entries: Vec<NamedStorageEntry>,
         storage_path_fallback: PathBuf,
         migration_readonly: Arc<AtomicBool>,
+        blob_backend_hot_swap: Arc<
+            crate::infrastructure::services::swappable_blob_backend::SwappableBlobBackend,
+        >,
     ) -> Self {
         Self {
             pool,
@@ -129,6 +144,7 @@ impl StorageMigrationService {
             storage_entries,
             storage_path_fallback,
             migration_readonly,
+            blob_backend_hot_swap,
         }
     }
 
@@ -229,19 +245,30 @@ impl RecoverableJobHandler for StorageMigrationService {
             }
         };
 
+        // Snapshot the current active name for the rest of this
+        // run. The lock is held only for the clone; every subsequent
+        // reference reads from this local. A hot-swap that fires
+        // mid-run (e.g., a second migration starting after this one
+        // completes) doesn't reshape our decisions from underneath.
+        let active_backend_name = self
+            .active_backend_name
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+
         // First-line guard: target name equals the currently-active
         // entry. Silent no-op if we let it through — the app would
         // walk every blob and skip because `target.blob_exists` is
         // trivially true (target = live source). Even on the same
         // local disk that's a lot of syscalls for no reason; on S3
         // it costs one HEAD per blob for zero copies.
-        if target_name == self.active_backend_name {
+        if target_name == active_backend_name {
             tracing::warn!(
                 target: "audit",
                 event = "storage_migration.refused_noop",
                 run_id = %store.run_id(),
                 target_name = %target_name,
-                active = %self.active_backend_name,
+                active = %active_backend_name,
                 "storage_migration refused: target equals the currently-active entry"
             );
             return RunOutcome::Failed {
@@ -277,7 +304,7 @@ impl RecoverableJobHandler for StorageMigrationService {
         let source_entry = self
             .storage_entries
             .iter()
-            .find(|e| e.name == self.active_backend_name);
+            .find(|e| e.name == active_backend_name);
 
         // Second-line guard: physical-identity check for the
         // encryption-differs case. Two entries with different names
@@ -305,15 +332,14 @@ impl RecoverableJobHandler for StorageMigrationService {
                 event = "storage_migration.refused_same_physical_storage",
                 run_id = %store.run_id(),
                 target_name = %target_name,
-                source_name = %self.active_backend_name,
+                source_name = %active_backend_name,
                 encryption_differs = key_differs,
                 "storage_migration refused: named target differs from source but physical storage matches"
             );
             return RunOutcome::Failed {
                 message: format!(
                     "target entry `{target_name}` names a different entry than the active \
-                     `{}`, but they point at the same physical storage{hint}.",
-                    self.active_backend_name,
+                     `{active_backend_name}`, but they point at the same physical storage{hint}."
                 ),
             };
         }
@@ -356,7 +382,7 @@ impl RecoverableJobHandler for StorageMigrationService {
             run_id = %store.run_id(),
             target_name = %target_name,
             "🚧 migration_readonly engaged: writes across the whole app are refused until \
-             cutover completes and the operator restarts"
+             cutover hot-swap completes"
         );
 
         let source_kind = self.source.backend_type();
@@ -365,13 +391,12 @@ impl RecoverableJobHandler for StorageMigrationService {
             target: "audit",
             event = "storage_migration.run_started",
             run_id = %store.run_id(),
-            source_name = %self.active_backend_name,
+            source_name = %active_backend_name,
             target_name = %target_name,
             source_kind = source_kind,
             target_kind = target_kind,
             resuming = !is_fresh,
-            "storage_migration starting {} ({source_kind}) → {target_name} ({target_kind})",
-            self.active_backend_name,
+            "storage_migration starting {active_backend_name} ({source_kind}) → {target_name} ({target_kind})"
         );
 
         // Cursor = the last-visited blob hash, UTF-8-encoded. On resume
@@ -453,6 +478,8 @@ impl RecoverableJobHandler for StorageMigrationService {
                     .finish_completed(
                         store,
                         &target_name,
+                        &active_backend_name,
+                        target.clone(),
                         copied_count,
                         skipped_count,
                         failed_count,
@@ -593,6 +620,8 @@ impl RecoverableJobHandler for StorageMigrationService {
                     .finish_completed(
                         store,
                         &target_name,
+                        &active_backend_name,
+                        target.clone(),
                         copied_count,
                         skipped_count,
                         failed_count,
@@ -606,30 +635,45 @@ impl RecoverableJobHandler for StorageMigrationService {
 
 impl StorageMigrationService {
     /// Terminal successful path — reached from both Completed sites
-    /// in the batch loop (empty-first-batch and short-batch). Flips
-    /// the runtime `active_backend_name` pointer to the target entry
-    /// so the NEXT boot picks it up. Leaves `migration_readonly` ON
-    /// — the boot-clear rule (slice 4) drops it after the operator
-    /// restart when no in-flight run remains AND the DB pointer
-    /// matches the entry the app booted onto.
+    /// in the batch loop (empty-first-batch and short-batch).
     ///
-    /// Pointer-write failure is FATAL to the outcome. Reporting
-    /// `Completed` while the DB still says the old entry is active
-    /// would strand the migrated bytes: the next boot would come up
-    /// on the OLD backend (writes to old!), while the operator
-    /// thinks cutover is done. `Failed` keeps the situation legible:
-    /// admin sees the error, can retry the pointer write, then
-    /// restart.
+    /// Four things happen here, in order, and each has a fail
+    /// posture:
+    ///
+    /// 1. Persist `active_backend_name = target_name` to
+    ///    `admin_settings`. Fatal on error — reporting `Completed`
+    ///    while the DB still says the old entry is active would
+    ///    strand the migrated bytes (next boot would come up on the
+    ///    OLD backend). Operator retries — the walk short-circuits
+    ///    on already-present blobs, so the retry is cheap.
+    /// 2. **Hot-swap** the runtime blob backend to the target. The
+    ///    already-initialized `target` backend is passed in from
+    ///    `run_resumable` (built via `build_entry_backend`, so
+    ///    encryption + config are set up); `SwappableBlobBackend`'s
+    ///    `swap` is a `RwLock::write` — instantaneous. In-flight
+    ///    reads holding the old inner `Arc` finish against the old
+    ///    backend; new operations see the new one.
+    /// 3. Update `active_backend_name` in the shared `RwLock` so a
+    ///    second migration triggered right after (target != active)
+    ///    sees the new active name without a restart.
+    /// 4. Persist + clear `migration_readonly` — writes resume,
+    ///    against the new backend. If DB persist fails at this step,
+    ///    log a warning and clear the in-memory flag anyway: the
+    ///    next boot's clear rule will fix the DB row on restart if
+    ///    it's still stale.
     #[allow(clippy::too_many_arguments)]
     async fn finish_completed(
         &self,
         store: &dyn JobStore,
         target_name: &str,
+        previous_active: &str,
+        target_backend: Arc<dyn BlobStorageBackend>,
         copied: u64,
         skipped: u64,
         failed: u64,
         source_missing: u64,
     ) -> RunOutcome {
+        // 1. DB pointer.
         if let Err(e) = persist_active_backend_name(self.pool.as_ref(), target_name).await {
             return RunOutcome::Failed {
                 message: format!(
@@ -640,18 +684,49 @@ impl StorageMigrationService {
                 ),
             };
         }
+
+        // 2. Runtime hot-swap.
+        self.blob_backend_hot_swap.swap(target_backend);
+
+        // 3. In-memory active-name mirror.
+        {
+            let mut guard = self
+                .active_backend_name
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *guard = target_name.to_string();
+        }
+
+        // 4. Drop read-only. In this order (after swap) so no write
+        // slips through against the OLD backend between "readonly
+        // off" and "backend swapped".
+        let readonly_persisted =
+            persist_migration_readonly(self.pool.as_ref(), false).await.is_ok();
+        self.migration_readonly.store(false, Ordering::Relaxed);
+
+        if !readonly_persisted {
+            tracing::warn!(
+                target: "oxicloud::migration",
+                event = "storage_migration.readonly_clear_persist_failed",
+                run_id = %store.run_id(),
+                "cleared migration_readonly in memory (writes allowed) but the DB persist \
+                 failed. If the server crashes before next boot, boot will re-seed the flag \
+                 to true; boot-clear rule then flips it since active-matches and no in-flight."
+            );
+        }
+
         tracing::info!(
             target: "audit",
             event = "storage_migration.completed",
             run_id = %store.run_id(),
             active_backend_name = target_name,
-            previous_active = %self.active_backend_name,
+            previous_active = previous_active,
             copied = copied,
             skipped = skipped,
             failed = failed,
             source_missing = source_missing,
-            "✅ storage_migration completed — active_backend_name = `{target_name}`. Restart the \
-             server to switch the live backend (migration_readonly stays ON until then)."
+            "✅ storage_migration completed — hot-swapped runtime backend to `{target_name}`, \
+             writes resumed. No restart required."
         );
         RunOutcome::Completed
     }

@@ -32,10 +32,11 @@ pub struct StorageSettingsService {
     /// restart, per `docs/plan/storage-multi-entry.md`). Empty when
     /// running in the pre-multi-entry legacy path.
     storage_entries: Vec<NamedStorageEntry>,
-    /// Name of the entry the LIVE backend is bound to (matches
-    /// `CoreServices.active_backend_name`). Empty string / "legacy"
-    /// for the zero-entries path.
-    active_entry_name: String,
+    /// Shared handle to `CoreServices.active_backend_name`. Reads
+    /// snapshot the current value on each admin GET so a hot-swap
+    /// cutover is immediately visible in the UI without waiting for
+    /// a refresh. Empty string / "legacy" for the zero-entries path.
+    active_entry_name: Arc<std::sync::RwLock<String>>,
     /// Shared readonly flag — read into the admin DTO so the UI can
     /// render a "server in migration read-only mode" banner. Same
     /// atomic as `AppState.migration_readonly`; changes made by the
@@ -50,7 +51,7 @@ impl StorageSettingsService {
         env_storage_config: StorageConfig,
         dedup_service: Arc<DedupService>,
         storage_entries: Vec<NamedStorageEntry>,
-        active_entry_name: String,
+        active_entry_name: Arc<std::sync::RwLock<String>>,
         migration_readonly: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -253,6 +254,14 @@ impl StorageSettingsService {
         // exactly one entry when we're in multi-entry mode; matches
         // nothing when running the zero-entries legacy path, which
         // is expected — the frontend hides the entries table then).
+        // Snapshot the active name once; every entry below uses it
+        // for the is_active flag AND we echo it on the top-level
+        // DTO. RwLock is held only for the clone.
+        let active_entry_name = self
+            .active_entry_name
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let entries: Vec<StorageEntrySummaryDto> = self
             .storage_entries
             .iter()
@@ -263,7 +272,7 @@ impl StorageSettingsService {
                     StorageBackendType::S3 => "s3".to_string(),
                     StorageBackendType::Azure => "azure".to_string(),
                 },
-                is_active: e.name == self.active_entry_name,
+                is_active: e.name == active_entry_name,
                 encryption_enabled: e.encryption_key_base64.is_some(),
                 location_hint: entry_location_hint(e),
             })
@@ -275,7 +284,7 @@ impl StorageSettingsService {
             total_bytes_stored: stats.total_bytes_stored,
             dedup_ratio: stats.dedup_ratio,
             entries,
-            active_entry_name: self.active_entry_name.clone(),
+            active_entry_name,
             migration_readonly: self.migration_readonly.load(Ordering::Relaxed),
         })
     }

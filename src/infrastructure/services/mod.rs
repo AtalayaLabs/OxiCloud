@@ -11,6 +11,7 @@ pub mod dedup_service;
 pub mod drives_consistency_service;
 pub mod encrypted_blob_backend;
 pub mod entry_backend;
+pub mod swappable_blob_backend;
 pub mod exif_service;
 pub mod face_geometry;
 pub mod face_indexing_service;

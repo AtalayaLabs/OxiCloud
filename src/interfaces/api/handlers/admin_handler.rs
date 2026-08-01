@@ -463,7 +463,14 @@ pub async fn start_migration(
     // failed run row. The handler's own checks are second-line
     // defence for the resume path where args aren't repeated.
     let entries = &state.core.config.storage_entries;
-    let active = &state.core.active_backend_name;
+    // Snapshot the active-name for the guard. Read lock held only
+    // for the clone.
+    let active = state
+        .core
+        .active_backend_name
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     if entries.iter().all(|e| e.name != dto.target_name) {
         let available = if entries.is_empty() {
             "(none)".to_string()
@@ -479,7 +486,7 @@ pub async fn start_migration(
             dto.target_name
         )));
     }
-    if dto.target_name == *active {
+    if dto.target_name == active {
         return Err(AppError::bad_request(format!(
             "target `{}` is the currently-active entry — pick a different entry to migrate to",
             dto.target_name

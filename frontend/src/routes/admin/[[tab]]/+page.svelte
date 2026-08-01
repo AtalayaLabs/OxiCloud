@@ -430,7 +430,7 @@
 				t(
 					'admin.storage_migrate_confirm',
 					{ name },
-					'Migrate all blobs to `{{name}}` and set it as the active entry? The server enters read-only mode during the copy; restart is required to finish cutover.'
+					'Migrate all blobs to `{{name}}` and set it as the active entry? The server enters read-only mode during the copy; the live backend swaps automatically on completion (no restart needed).'
 				)
 			)
 		)
@@ -1891,6 +1891,12 @@
 		     ══════════════════════════════════════════════════════════ -->
 		<div class="card">
 			<h2>{t('admin.storage_tab', 'Storage entries')}</h2>
+			<p class="muted">
+				{t(
+					'admin.storage_move_hint',
+					'To move to another backend storage: declare a new entry in your `.env` (keep the current one), restart the server so it picks it up, then trigger a migration from this page. Cutover happens automatically when the copy completes — no second restart needed.'
+				)}
+			</p>
 			{#if !storage}
 				<p class="status">{t('common.loading', 'Loading…')}</p>
 			{:else if !storage.entries || storage.entries.length === 0}
@@ -2136,27 +2142,12 @@
 					{/if}
 				</div>
 
-				{#if migration?.status === 'completed' && storage.migration_readonly}
-					<!-- Cutover hint — multi-entry version. After a
-					     successful migration, the server has already
-					     flipped `active_backend_name` in the DB;
-					     migration_readonly stays ON until the operator
-					     restarts (per slice-5 state machine). Restart is
-					     the last step. -->
-					<div class="cutover-hint" data-testid="admin-migration-cutover-hint">
-						<h3>
-							<Icon name="check-circle" />
-							{t('admin.mig_cutover_done_title', 'Migration complete — restart to switch')}
-						</h3>
-						<p class="muted">
-							{t(
-								'admin.mig_cutover_done_body',
-								{ active: storage.active_entry_name ?? '?' },
-								'The DB pointer now names `{{active}}` as the active backend, but the running process is still bound to the previous entry. Restart the server to complete the cutover; boot picks up the new active entry and clears read-only mode automatically.'
-							)}
-						</p>
-					</div>
-				{/if}
+				<!-- Post-Completed "restart to switch" hint retired in
+				     the hot-swap slice. Cutover is now automatic — the
+				     migration handler swaps the runtime backend and
+				     drops read-only in the same step, so there's
+				     nothing left for the operator to do after
+				     Completed. -->
 			{/if}
 			{#if storageMsg}
 				<p class={storageMsg.ok ? 'status--ok' : 'status--error'}>{storageMsg.text}</p>
