@@ -198,9 +198,7 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                 && let Err(e) = store.set_string_param(PROBED_STORAGE_PARAM, n).await
             {
                 return RunOutcome::Failed {
-                    message: format!(
-                        "persist {PROBED_STORAGE_PARAM} to params: {e}"
-                    ),
+                    message: format!("persist {PROBED_STORAGE_PARAM} to params: {e}"),
                 };
             }
             name
