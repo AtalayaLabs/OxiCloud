@@ -181,6 +181,40 @@ async fn write_blob_bytes(blob_path: &Path, data: &Bytes) -> Result<Option<File>
     Ok(Some(file))
 }
 
+/// Delete every `*.replace.*.tmp` file in `dir` (best-effort).
+///
+/// Companion to `put_blob_from_bytes_replace`: those tempfiles are
+/// created under `<hash>.replace.<pid>.<counter>.tmp` immediately
+/// before the atomic `rename(2)` over the target. A crash between
+/// `write_all + sync_all` and `rename` leaves the tempfile behind
+/// with no owner (writer process gone). Since no other job cleans
+/// them (`dedup_gc` and `backend_consistency` operate on canonical
+/// `<hash>.blob` names), reap at boot in `initialize()`.
+///
+/// Silent on errors: a shard we can't read has bigger problems than
+/// leaked tmp files, and the boot flow's own `create_dir_all` will
+/// surface the underlying I/O error separately.
+async fn reap_replace_tmpfiles_in(dir: &Path) {
+    let mut entries = match fs::read_dir(dir).await {
+        Ok(rd) => rd,
+        Err(_) => return,
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name();
+        let name_str = match name.to_str() {
+            Some(s) => s,
+            None => continue,
+        };
+        // Match `<hash>.replace.<pid>.<counter>.tmp` — precise-enough
+        // to avoid nuking anything a future feature might drop next
+        // to blobs. Requires the `.replace.` marker AND the `.tmp`
+        // suffix; a plain `<hash>.blob` never matches.
+        if name_str.contains(".replace.") && name_str.ends_with(".tmp") {
+            let _ = fs::remove_file(entry.path()).await;
+        }
+    }
+}
+
 /// Bench-only public wrapper (feature = "bench") over the private chunk
 /// writer so `examples/bench_storage_micro.rs` can A/B the open strategy.
 #[cfg(feature = "bench")]
@@ -290,11 +324,21 @@ impl BlobStorageBackend for LocalBlobBackend {
                 .await
                 .map_err(DomainError::from)?;
 
-            // Create the 256 hash-prefix directories (00-ff)
+            // Create the 256 hash-prefix directories (00-ff), and while
+            // we're iterating them, reap any `*.replace.*.tmp` files
+            // that a previous run's `put_blob_from_bytes_replace` may
+            // have leaked (crashed between write + fsync + rename). No
+            // existing job GCs these — `dedup_gc` operates on blob
+            // hashes, `backend_consistency` reports orphans as
+            // findings but doesn't delete. Reaping at boot is cheap
+            // (one `read_dir` per shard, ~256 fast enumerations) and
+            // guarantees a clean slate.
             for prefix in &HEX_PREFIXES {
-                fs::create_dir_all(self.blob_root.join(prefix))
+                let shard = self.blob_root.join(prefix);
+                fs::create_dir_all(&shard)
                     .await
                     .map_err(DomainError::from)?;
+                reap_replace_tmpfiles_in(&shard).await;
             }
             Ok(())
         })
