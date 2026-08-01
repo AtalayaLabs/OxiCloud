@@ -321,7 +321,7 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                             backend = backend.backend_type(),
                             "backend refused enumeration (typical during migration or on backends without list support)"
                         );
-                        return RunOutcome::Completed;
+                        return RunOutcome::completed();
                     }
                     return RunOutcome::Failed {
                         message: format!("backend list failed mid-scan: {e}"),
@@ -373,7 +373,7 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                     "backend_consistency completed with {} finding(s)",
                     finding_count
                 );
-                return RunOutcome::Completed;
+                return RunOutcome::completed();
             }
 
             // Batch DB probe: which of these hashes have a
@@ -451,7 +451,7 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                     "backend_consistency completed with {} finding(s)",
                     finding_count
                 );
-                return RunOutcome::Completed;
+                return RunOutcome::completed();
             }
         }
     }

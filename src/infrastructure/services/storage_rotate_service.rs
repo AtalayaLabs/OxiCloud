@@ -232,9 +232,13 @@ impl RecoverableJobHandler for StorageRotateService {
             event = "storage_rotate.run_started",
             run_id = %store.run_id(),
             target_name = %target_name,
-            head_format = ?head_format,
+            // `%` (Display) → SSH-style `encrypted-v1 key_fp=83:96:...`
+            // instead of the raw `[131, 150, 255, ...]` byte-array
+            // shape Debug produces. Matches how `xxd` renders the
+            // header bytes on disk.
+            head_format = %head_format,
             resuming = !is_fresh,
-            "storage_rotate started on `{target_name}` (head_format = {head_format:?})"
+            "storage_rotate started on `{target_name}` (head_format = {head_format})"
         );
 
         // Seed the progress snapshot. Total = count_total's estimate;
@@ -411,8 +415,8 @@ impl RecoverableJobHandler for StorageRotateService {
                         serde_json::json!({
                             "hash":  hash,
                             "phase": "write",
-                            "from":  format!("{current_format:?}"),
-                            "to":    format!("{head_format:?}"),
+                            "from":  format!("{current_format}"),
+                            "to":    format!("{head_format}"),
                             "error": e.to_string(),
                         }),
                     )
@@ -484,7 +488,16 @@ impl StorageRotateService {
             failed = failed,
             "storage_rotate completed on `{target_name}` — {rewritten} rewritten, {skipped} skipped, {failed} failed"
         );
-        RunOutcome::Completed
+        // Surface the per-run summary counters as extras merged into
+        // the run row's `stats` JSONB. Frontend renders whatever keys
+        // are present, so no wire-format bumping is needed — the
+        // admin UI's run drawer just picks these up alongside the
+        // engine-owned `finding_count` + `scanned_count`.
+        RunOutcome::completed_with(serde_json::json!({
+            "rewritten": rewritten,
+            "skipped":   skipped,
+            "failed":    failed,
+        }))
     }
 
     fn clear_progress(&self) {

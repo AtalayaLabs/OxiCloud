@@ -119,9 +119,65 @@ impl RunStatus {
 ///   writes `status = Failed` with the message.
 #[derive(Debug, Clone)]
 pub enum RunOutcome {
-    Completed,
-    Paused { cursor: Vec<u8> },
-    Failed { message: String },
+    /// The run walked the whole subject space.
+    ///
+    /// `extra_stats` is merged into the run row's `stats` JSONB
+    /// alongside the engine-owned `scanned_count` + `finding_count`
+    /// / `severity_counts`. Handlers use it to surface per-run
+    /// summary counters (e.g. `storage_rotate` reports
+    /// `{"rewritten": N, "skipped": M, "failed": K}`) — the outcome
+    /// message in `JobOutcome.extra` and every downstream reader
+    /// of `RunSummary.stats` see the merged fields.
+    ///
+    /// Empty map = "no tenant-specific extras" — same shape as the
+    /// pre-K3 bare `Completed` variant. Handlers that don't
+    /// summarise their work call [`Self::completed`].
+    Completed {
+        extra_stats: serde_json::Map<String, serde_json::Value>,
+    },
+    Paused {
+        cursor: Vec<u8>,
+    },
+    Failed {
+        message: String,
+    },
+}
+
+impl RunOutcome {
+    /// Convenience for the common case: handler has nothing to add
+    /// to `stats` beyond what the engine already tracks (finding /
+    /// scanned counters). Equivalent to
+    /// `Completed { extra_stats: Map::new() }`.
+    pub fn completed() -> Self {
+        RunOutcome::Completed {
+            extra_stats: serde_json::Map::new(),
+        }
+    }
+
+    /// Convenience for handlers that want to surface per-run
+    /// summary counters. Takes any JSON object literal produced by
+    /// `serde_json::json!({...})`; panics if the top-level value
+    /// isn't an Object (programmer bug — the contract is
+    /// object-shaped).
+    ///
+    /// Example — a rotate handler at run-complete:
+    ///
+    /// ```ignore
+    /// return RunOutcome::completed_with(serde_json::json!({
+    ///     "rewritten": rewritten_count,
+    ///     "skipped":   skipped_count,
+    ///     "failed":    failed_count,
+    /// }));
+    /// ```
+    pub fn completed_with(extras: serde_json::Value) -> Self {
+        match extras {
+            serde_json::Value::Object(map) => RunOutcome::Completed { extra_stats: map },
+            other => panic!(
+                "RunOutcome::completed_with expected a JSON object, got {}",
+                other
+            ),
+        }
+    }
 }
 
 // ─── Traits — implementor + port ────────────────────────────────────────────
@@ -293,6 +349,24 @@ pub trait JobStore: Send + Sync {
         severity: &str,
         resource_id: Option<Uuid>,
         detail: serde_json::Value,
+    ) -> Result<(), DomainError>;
+
+    /// **Engine-only.** Merge `extras` into the run row's `stats`
+    /// JSONB (SQL `stats = stats || $1`). Called by [`run_or_resume`]
+    /// on [`RunOutcome::Completed`] to persist the handler's
+    /// per-run summary counters alongside the engine-owned
+    /// `scanned_count` / `finding_count`. Handler code MUST NOT
+    /// call this directly — return an `extra_stats` map on
+    /// `Completed` and the engine handles the write.
+    ///
+    /// Idempotent: merging the same map twice yields the same row.
+    /// A stats key that already exists is OVERWRITTEN by the
+    /// merge (last-write-wins) — a handler that emits e.g.
+    /// `"rewritten": 300` at run end always displaces any prior
+    /// per-batch write of the same key.
+    async fn merge_stats(
+        &self,
+        extras: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<(), DomainError>;
 
     // ─── Terminal writes — engine-only. Do not call from handler code.
@@ -630,8 +704,22 @@ pub async fn run_or_resume(
     let stats = fetch_outcome_stats(&*provider, run_id).await;
 
     match outcome {
-        RunOutcome::Completed => {
+        RunOutcome::Completed { extra_stats } => {
+            // Merge tenant-supplied extras into the run's stats
+            // JSONB BEFORE the terminal mark, so downstream readers
+            // see the merged view atomically. `fetch_outcome_stats`
+            // (a few lines up) already ran and reflects the state
+            // WITHOUT the merge — re-fetch so the outer JobOutcome
+            // includes the tenant counters too.
+            if !extra_stats.is_empty() {
+                log_terminal_write_err(
+                    "merge_stats",
+                    run_id,
+                    store.merge_stats(&extra_stats).await,
+                );
+            }
             log_terminal_write_err("mark_completed", run_id, store.mark_completed().await);
+            let stats = fetch_outcome_stats(&*provider, run_id).await;
             JobOutcome::ok_with(
                 stats.finding_count,
                 serde_json::json!({
@@ -640,6 +728,7 @@ pub async fn run_or_resume(
                     "finding_count":     stats.finding_count,
                     "scanned_count":     stats.scanned_count,
                     "severity_counts":   stats.by_severity,
+                    "extra_stats":       serde_json::Value::Object(extra_stats),
                 }),
             )
         }
@@ -865,6 +954,10 @@ mod tests {
         progress_total: Option<u64>,
         progress_kind: Option<ProgressKind>,
         string_params: std::collections::HashMap<String, String>,
+        /// K3+: extras merged into the run's stats JSONB via
+        /// `merge_stats` at Completed time. Tests observe the merged
+        /// view by reading this map alongside `scanned_count`.
+        extra_stats: serde_json::Map<String, serde_json::Value>,
     }
 
     #[async_trait]
@@ -924,6 +1017,16 @@ mod tests {
         async fn get_string_param(&self, key: &str) -> Result<Option<String>, DomainError> {
             Ok(self.state.lock().unwrap().string_params.get(key).cloned())
         }
+        async fn merge_stats(
+            &self,
+            extras: &serde_json::Map<String, serde_json::Value>,
+        ) -> Result<(), DomainError> {
+            let mut s = self.state.lock().unwrap();
+            for (k, v) in extras {
+                s.extra_stats.insert(k.clone(), v.clone());
+            }
+            Ok(())
+        }
         async fn mark_completed(&self) -> Result<(), DomainError> {
             self.state.lock().unwrap().status = RunStatus::Completed;
             Ok(())
@@ -976,6 +1079,7 @@ mod tests {
                     progress_total: None,
                     progress_kind: None,
                     string_params: std::collections::HashMap::new(),
+                    extra_stats: serde_json::Map::new(),
                 }),
             });
             let id = store.run_id;
@@ -1035,6 +1139,7 @@ mod tests {
                     progress_total: None,
                     progress_kind: None,
                     string_params: std::collections::HashMap::new(),
+                    extra_stats: serde_json::Map::new(),
                 }),
             });
             stores.push(store.clone());
@@ -1204,7 +1309,7 @@ mod tests {
             _resume_cursor: Option<Vec<u8>>,
         ) -> RunOutcome {
             store.checkpoint(vec![1, 2, 3], 5).await.unwrap();
-            RunOutcome::Completed
+            RunOutcome::completed()
         }
     }
 
@@ -1259,7 +1364,7 @@ mod tests {
             resume_cursor: Option<Vec<u8>>,
         ) -> RunOutcome {
             *self.saw_cursor.lock().unwrap() = resume_cursor;
-            RunOutcome::Completed
+            RunOutcome::completed()
         }
     }
 

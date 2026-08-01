@@ -229,6 +229,35 @@ impl JobStore for PgJobStore {
         Ok(row.and_then(|(v,)| v))
     }
 
+    async fn merge_stats(
+        &self,
+        extras: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), DomainError> {
+        if extras.is_empty() {
+            return Ok(());
+        }
+        // JSONB concat (`||`) is a shallow merge — right side wins on
+        // key conflict, which matches the "last-write-wins" semantic
+        // in the trait doc. Existing keys from the engine's own
+        // `scanned_count` / `finding_count` (written via `checkpoint`
+        // / `record_finding`) are preserved because handlers never
+        // emit those keys in their extras map.
+        sqlx::query(
+            r#"
+            UPDATE jobs.recoverable_runs
+               SET stats            = COALESCE(stats, '{}'::jsonb) || $1::jsonb,
+                   last_progress_at = NOW()
+             WHERE id = $2
+            "#,
+        )
+        .bind(serde_json::Value::Object(extras.clone()))
+        .bind(self.run_id)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| map_sqlx_err("merge_stats", e))?;
+        Ok(())
+    }
+
     async fn mark_completed(&self) -> Result<(), DomainError> {
         sqlx::query(
             r#"

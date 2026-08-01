@@ -799,7 +799,15 @@ impl StorageMigrationService {
             "✅ storage_migration completed — hot-swapped runtime backend to `{target_name}`, \
              writes resumed. No restart required."
         );
-        RunOutcome::Completed
+        // Per-run summary counters merged into `stats` for the admin
+        // UI drawer. Same shape as `storage_rotate`'s extras + one
+        // extra `source_missing` counter unique to migration.
+        RunOutcome::completed_with(serde_json::json!({
+            "copied":         copied,
+            "skipped":        skipped,
+            "failed":         failed,
+            "source_missing": source_missing,
+        }))
     }
 }
 

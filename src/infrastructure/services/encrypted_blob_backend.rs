@@ -313,6 +313,35 @@ impl BlobFormat {
     }
 }
 
+impl std::fmt::Display for BlobFormat {
+    /// Human-friendly format for audit logs + finding details.
+    /// Renders `key_fp` as SSH-style colon-hex (e.g.
+    /// `83:96:ff:90:94:d7:ef:de`) instead of the raw byte-array Debug
+    /// shape (`[131, 150, 255, ...]`). Same spelling `xxd` produces
+    /// when you inspect a blob's on-disk header, so operators can
+    /// cross-check without a mental conversion.
+    ///
+    /// Handlers that render this in tracing macros should use `%`
+    /// (Display) — `?` (Debug) still gives the raw byte-array shape
+    /// for programmer-consumers who need the exact bytes.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BlobFormat::Legacy => write!(f, "legacy"),
+            BlobFormat::PlaintextV1 => write!(f, "plaintext-v1"),
+            BlobFormat::EncryptedV1 { key_fp } => {
+                write!(f, "encrypted-v1 key_fp=")?;
+                for (i, byte) in key_fp.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ":")?;
+                    }
+                    write!(f, "{byte:02x}")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 /// Assemble an encrypted-v1 blob:
 /// `OXCPT | v1 | key_fp | nonce | ciphertext | tag`.
 ///

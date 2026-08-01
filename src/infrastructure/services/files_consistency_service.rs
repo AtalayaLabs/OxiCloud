@@ -312,7 +312,7 @@ impl RecoverableJobHandler for FilesConsistencyCheck {
                     "files_consistency completed with {} finding(s)",
                     finding_count
                 );
-                return RunOutcome::Completed;
+                return RunOutcome::completed();
             }
 
             for row in &rows {
@@ -490,7 +490,7 @@ impl RecoverableJobHandler for FilesConsistencyCheck {
                     "files_consistency completed with {} finding(s)",
                     finding_count
                 );
-                return RunOutcome::Completed;
+                return RunOutcome::completed();
             }
         }
     }

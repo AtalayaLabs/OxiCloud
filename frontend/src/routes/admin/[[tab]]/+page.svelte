@@ -2101,6 +2101,7 @@
 										data-testid={`admin-storage-test-${entry.name}`}
 										onclick={() => doTestEntry(entry.name)}
 									>
+										<Icon name="vial" />
 										{test?.busy
 											? t('admin.storage_testing', 'Testing…')
 											: t('admin.storage_test', 'Test')}
@@ -2135,6 +2136,7 @@
 											data-testid={`admin-storage-migrate-${entry.name}`}
 											onclick={() => doMigrateActivate(entry.name)}
 										>
+											<Icon name="crown" />
 											{t('admin.storage_migrate_activate', 'Migrate & activate')}
 										</button>
 									{:else}
@@ -2145,6 +2147,7 @@
 											tabindex={-1}
 											disabled
 										>
+											<Icon name="crown" />
 											{t('admin.storage_migrate_activate', 'Migrate & activate')}
 										</button>
 									{/if}

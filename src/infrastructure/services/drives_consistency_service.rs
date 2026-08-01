@@ -199,7 +199,7 @@ impl RecoverableJobHandler for DrivesConsistencyCheck {
                     "drives_consistency completed with {} drift finding(s)",
                     drift_count
                 );
-                return RunOutcome::Completed;
+                return RunOutcome::completed();
             }
 
             // Per-row check: cached vs actual. This is the ONE check
@@ -255,7 +255,7 @@ impl RecoverableJobHandler for DrivesConsistencyCheck {
                     "drives_consistency completed with {} drift finding(s)",
                     drift_count
                 );
-                return RunOutcome::Completed;
+                return RunOutcome::completed();
             }
         }
     }

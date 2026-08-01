@@ -381,7 +381,7 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                     "blobs_consistency completed with {} finding(s)",
                     finding_count
                 );
-                return RunOutcome::Completed;
+                return RunOutcome::completed();
             }
 
             let grace_cutoff = Utc::now() - CREATE_GRACE;
@@ -528,7 +528,7 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                     "blobs_consistency completed with {} finding(s)",
                     finding_count
                 );
-                return RunOutcome::Completed;
+                return RunOutcome::completed();
             }
         }
     }
