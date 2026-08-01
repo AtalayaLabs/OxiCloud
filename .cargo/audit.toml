@@ -40,6 +40,24 @@ ignore = [
     "RUSTSEC-2026-0195",
     "RUSTSEC-2026-0194",
 
+    # wasmtime 43.0.2 — "Stores can mix up type indices between engines"
+    # (GHSA-hgjw-h833-99q9). Transitive via extism 1.30.0 (latest published;
+    # extism `main` still pins wasmtime 43, no upgrade path). The advisory
+    # has no patched 43.x — fix requires wasmtime >=46.0.2 or >=47.0.3, and
+    # forcing that via [patch.crates-io] would break extism (three major
+    # wasmtime API bumps between 43 and 46). Real fix waits on extism
+    # upstream to migrate.
+    #
+    # Runtime exposure is zero in default deployments:
+    #   - `plugins` is an OPT-IN build feature; default builds and the CI
+    #     release binary don't link wasmtime at all.
+    #   - Runtime activation additionally requires OXICLOUD_ENABLE_PLUGINS=true.
+    #   - Plugin binaries are ADMIN-SUPPLIED, not attacker input.
+    #   - The advisory's attack pattern is multi-Engine Store-sharing;
+    #     OxiCloud's plugin runtime creates one fresh Plugin per invocation
+    #     with its own Store (see infrastructure/services/plugins/runtime.rs).
+    "RUSTSEC-2026-0222",
+
     # astral-tokio-tar 0.5.6 — tar extraction advisories, transitive via
     # testcontainers → testcontainers-modules, a DEV-dependency used only by
     # the `--cfg integration_tests` harness to spin up throwaway Postgres
