@@ -461,22 +461,13 @@
 	}
 
 	function isRecoverable(job: JobSummary): boolean {
-		// Heuristic: recoverable jobs are the ones that publish runs via
-		// `jobs.recoverable_runs`. There's no direct flag on JobSummary
-		// (Part 1 handlers and Part 2 adapters share the same summary
-		// shape by design). Name-based recognition is fine for now — the
-		// admin panel is the only consumer; broader use would call for
-		// a `recoverable: bool` field in JobSummary.
-		return name_is_recoverable(job.name);
-	}
-	function name_is_recoverable(name: string): boolean {
-		// K3 storage-key-rotation adds `storage_rotate` to the recoverable
-		// tenant set. Same shape as `storage_migration` — walks blobs,
-		// records findings, supports resume from cursor — so it needs the
-		// same expand/runs/findings surface.
-		return (
-			name.endsWith('_consistency') || name === 'storage_migration' || name === 'storage_rotate'
-		);
+		// Backend authoritative source: the `recoverable` flag on
+		// `JobSummary` is set at registration time by
+		// `RecoverableAdapter::is_recoverable() -> true`. Every tenant
+		// registered via `register_recoverable_job` flips it
+		// automatically. No name-based allowlists — a new recoverable
+		// tenant is expandable in the UI as soon as it's registered.
+		return job.recoverable;
 	}
 
 	// Consistency batch shortcut — top button. Only shown when the

@@ -1205,7 +1205,7 @@
     "jobs": {
       "tab": "Jobs",
       "title": "Jobs",
-      "hint": "Fires periodic + on-demand jobs. Consistency checks are safe to run at any time — they are read-only.",
+      "hint": "This section concerns internal jobs: periodic + on-demand jobs. Consistency checks are safe to run at any time — they are read-only.",
       "run_all_consistency": "Run all consistency checks",
       "run_deep": "Run deep",
       "run_deep_hint": "Also runs slow variants (blob re-hash, bitrot detection).",

@@ -550,6 +550,16 @@ export interface JobSummary {
 	last_run_at?: string;
 	last_outcome?: JobOutcome;
 	running: boolean;
+	/**
+	 * `true` iff the job persists runs + findings to
+	 * `jobs.recoverable_runs`. Consumed by the admin panel to decide
+	 * whether the row is expandable (drawer with run history +
+	 * findings) and to gate the retention/purge action — replaces
+	 * the pre-K3 name-based allowlist that missed newly-added
+	 * recoverable tenants (`storage_rotate` shipped first without a
+	 * row-expand until this flag was added).
+	 */
+	recoverable: boolean;
 }
 
 /**
