@@ -121,6 +121,12 @@ pub struct StorageMigrationService {
     /// delegates through.
     blob_backend_hot_swap:
         Arc<crate::infrastructure::services::swappable_blob_backend::SwappableBlobBackend>,
+    /// Shared in-memory progress snapshot. `Some(_)` during a
+    /// running/paused migration, `None` otherwise. Read by the
+    /// server-status header middleware to broadcast maintenance
+    /// state to every user's session without polling.
+    migration_progress:
+        Arc<std::sync::RwLock<Option<crate::common::migration_progress::MigrationProgress>>>,
 }
 
 impl StorageMigrationService {
@@ -135,6 +141,9 @@ impl StorageMigrationService {
         blob_backend_hot_swap: Arc<
             crate::infrastructure::services::swappable_blob_backend::SwappableBlobBackend,
         >,
+        migration_progress: Arc<
+            std::sync::RwLock<Option<crate::common::migration_progress::MigrationProgress>>,
+        >,
     ) -> Self {
         Self {
             pool,
@@ -144,6 +153,7 @@ impl StorageMigrationService {
             storage_path_fallback,
             migration_readonly,
             blob_backend_hot_swap,
+            migration_progress,
         }
     }
 
@@ -384,6 +394,27 @@ impl RecoverableJobHandler for StorageMigrationService {
              cutover hot-swap completes"
         );
 
+        // Seed the shared progress snapshot for the header
+        // middleware. Total blob count is a one-shot SELECT COUNT(*)
+        // — best-effort; if it fails we still push a snapshot with
+        // total=0 so the banner at least shows *something* is
+        // happening.
+        let total_blobs: u64 = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM storage.blobs")
+            .fetch_one(self.pool.as_ref())
+            .await
+            .map(|n| n.max(0) as u64)
+            .unwrap_or(0);
+        {
+            let mut guard = self
+                .migration_progress
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *guard = Some(crate::common::migration_progress::MigrationProgress::new(
+                target_name.clone(),
+                total_blobs,
+            ));
+        }
+
         let source_kind = self.source.backend_type();
         let target_kind = target.backend_type();
         tracing::info!(
@@ -613,6 +644,19 @@ impl RecoverableJobHandler for StorageMigrationService {
                     message: format!("checkpoint: {e}"),
                 };
             }
+            // Bump the shared progress snapshot so the server-status
+            // header middleware surfaces fresh numbers on every
+            // user's next API call. Guard is held only for a struct
+            // update — microseconds.
+            {
+                let mut guard = self
+                    .migration_progress
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(progress) = guard.as_mut() {
+                    progress.bump(batch_len);
+                }
+            }
 
             if (rows.len() as i64) < BATCH_SIZE {
                 return self
@@ -703,6 +747,16 @@ impl StorageMigrationService {
             .await
             .is_ok();
         self.migration_readonly.store(false, Ordering::Relaxed);
+        // Clear the shared progress snapshot so the server-status
+        // header stops emitting on subsequent requests. Guard held
+        // only for the assignment.
+        {
+            let mut guard = self
+                .migration_progress
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *guard = None;
+        }
 
         if !readonly_persisted {
             tracing::warn!(

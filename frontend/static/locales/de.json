@@ -38,6 +38,12 @@
       }
     }
   },
+  "server_status": {
+    "readonly_banner_aria": "Serverwartung läuft",
+    "readonly_title": "Serverwartung läuft",
+    "readonly_progress": "Speicher wird auf `{{target}}` migriert — {{percent}} % ({{migrated}} / {{total}} Blöcke). Uploads, Umbenennungen, Löschungen und Freigaben werden abgelehnt; Lesen und Herunterladen funktionieren normal.",
+    "readonly_body": "Uploads, Umbenennungen, Löschungen und Freigaben werden vorübergehend abgelehnt. Lesen und Herunterladen funktionieren normal."
+  },
   "app": {
     "title": "OxiCloud",
     "description": "Minimalistisches Cloud-Speichersystem"

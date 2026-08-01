@@ -38,6 +38,12 @@
       }
     }
   },
+  "server_status": {
+    "readonly_banner_aria": "서버 유지 관리 진행 중",
+    "readonly_title": "서버 유지 관리 진행 중",
+    "readonly_progress": "저장소를 `{{target}}`(으)로 마이그레이션 중 — {{percent}}% ({{migrated}} / {{total}} 블롭). 업로드, 이름 변경, 삭제 및 공유가 거부됩니다. 읽기 및 다운로드는 정상적으로 작동합니다.",
+    "readonly_body": "업로드, 이름 변경, 삭제 및 공유가 일시적으로 거부됩니다. 읽기 및 다운로드는 정상적으로 작동합니다."
+  },
   "app": {
     "title": "OxiCloud",
     "description": "미니멀리스트 클라우드 스토리지 시스템"

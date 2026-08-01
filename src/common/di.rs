@@ -2028,6 +2028,7 @@ impl AppServiceFactory {
                 crate::infrastructure::services::webdav_dead_property_store::create_dead_property_store(pool.clone()),
             authorization: authorization.clone(),
             migration_readonly: migration_readonly.clone(),
+            migration_progress: Arc::new(std::sync::RwLock::new(None)),
             drive_repo: drive_repo.clone(),
             drive_management_service: Arc::new(
                 crate::application::services::drive_management_service::DriveManagementService::new(
@@ -2254,6 +2255,7 @@ impl AppServiceFactory {
                     self.storage_path.clone(),
                     app_state.migration_readonly.clone(),
                     app_state.core.blob_backend_hot_swap.clone(),
+                    app_state.migration_progress.clone(),
                 ),
             )
             .register_recoverable_job(&app_state.core.job_registry, &job_store_provider_dyn)
@@ -2785,6 +2787,14 @@ pub struct AppState {
     /// memory in sync. See `docs/plan/storage-multi-entry.md`
     /// §"Read-only mode".
     pub migration_readonly: Arc<std::sync::atomic::AtomicBool>,
+    /// Live progress snapshot for the storage-migration handler.
+    /// `Some(_)` while a migration is running; `None` otherwise.
+    /// Updated by the handler on every batch checkpoint (cheap
+    /// in-memory write, no DB read on the request path). The
+    /// server-status header middleware reads it to inform every
+    /// user's session banner about maintenance progress without
+    /// polling. See `MigrationProgress` for the field shape.
+    pub migration_progress: Arc<std::sync::RwLock<Option<crate::common::migration_progress::MigrationProgress>>>,
     /// Drive entity repository — `GET /api/drives`, the personal-drive
     /// lifecycle hook, and (post-D2) shared-drive creation flow all read
     /// through this. Backing table is `storage.drives`; membership is

@@ -18,6 +18,15 @@
  */
 
 import { getCsrfHeaders } from './csrf';
+import { updateFromHeader } from '$lib/stores/serverStatus.svelte';
+
+/**
+ * Name of the response header the server stamps while a
+ * maintenance event is live. Case-insensitive on the wire — the
+ * Fetch API's `Headers.get` matches irrespective of case, so this
+ * constant matches whatever axum emits.
+ */
+const SERVER_STATUS_HEADER = 'x-server-status';
 
 const REFRESH_ENDPOINT = '/api/auth/refresh';
 
@@ -93,6 +102,18 @@ export function createApiFetch(deps: ApiClientDeps): FetchFn {
 	const apiFetch: FetchFn = async (input, init) => {
 		const origin = deps.origin ?? globalThis.location?.origin ?? 'http://localhost';
 		const response = await rawFetch(input, init);
+		// Server-status header piggyback — the server stamps
+		// `x-server-status` on every response while a maintenance
+		// event is in progress (see middleware::server_status). Read
+		// it and update the reactive store; the AppShell banner
+		// subscribes and shows/hides itself. Absent header = nothing
+		// happening; the update fn resets the store to default in
+		// that case so a lingering banner disappears.
+		//
+		// Runs on EVERY response including a 401 (below) so a session
+		// refresh doesn't accidentally clear a live banner.
+		updateFromHeader(response.headers.get(SERVER_STATUS_HEADER));
+
 		if (response.status !== 401) return response;
 
 		const urlStr = urlString(input as RequestInfo | URL);
@@ -104,7 +125,9 @@ export function createApiFetch(deps: ApiClientDeps): FetchFn {
 			onSessionExpired();
 			throw new Error('Session expired');
 		}
-		return rawFetch(input, init);
+		const retryResponse = await rawFetch(input, init);
+		updateFromHeader(retryResponse.headers.get(SERVER_STATUS_HEADER));
+		return retryResponse;
 	};
 
 	return apiFetch;

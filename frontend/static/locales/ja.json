@@ -38,6 +38,12 @@
       }
     }
   },
+  "server_status": {
+    "readonly_banner_aria": "サーバーメンテナンス中",
+    "readonly_title": "サーバーメンテナンス中",
+    "readonly_progress": "ストレージを `{{target}}` に移行中 — {{percent}}%（{{migrated}} / {{total}} ブロブ）。アップロード、名前変更、削除、共有は拒否されます。読み取りとダウンロードは通常どおり動作します。",
+    "readonly_body": "アップロード、名前変更、削除、共有は一時的に拒否されます。読み取りとダウンロードは通常どおり動作します。"
+  },
   "app": {
     "title": "OxiCloud",
     "description": "ミニマリストクラウドストレージシステム"

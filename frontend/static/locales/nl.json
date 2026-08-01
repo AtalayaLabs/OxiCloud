@@ -38,6 +38,12 @@
       }
     }
   },
+  "server_status": {
+    "readonly_banner_aria": "Serveronderhoud bezig",
+    "readonly_title": "Serveronderhoud bezig",
+    "readonly_progress": "Opslag wordt gemigreerd naar `{{target}}` — {{percent}}% ({{migrated}} / {{total}} blobs). Uploads, hernoemingen, verwijderingen en delen worden geweigerd; lezen en downloaden werken normaal.",
+    "readonly_body": "Uploads, hernoemingen, verwijderingen en delen worden tijdelijk geweigerd. Lezen en downloaden werken normaal."
+  },
   "app": {
     "title": "OxiCloud",
     "description": "Minimalistisch cloudopslagsysteem"

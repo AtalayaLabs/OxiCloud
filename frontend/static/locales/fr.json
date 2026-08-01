@@ -38,6 +38,12 @@
       }
     }
   },
+  "server_status": {
+    "readonly_banner_aria": "Maintenance du serveur en cours",
+    "readonly_title": "Maintenance du serveur en cours",
+    "readonly_progress": "Migration du stockage vers `{{target}}` — {{percent}} % ({{migrated}} / {{total}} blocs). Les téléversements, renommages, suppressions et partages sont refusés ; la lecture et le téléchargement continuent normalement.",
+    "readonly_body": "Les téléversements, renommages, suppressions et partages sont temporairement refusés. La lecture et le téléchargement fonctionnent normalement."
+  },
   "app": {
     "title": "OxiCloud",
     "description": "Système de stockage cloud minimaliste"

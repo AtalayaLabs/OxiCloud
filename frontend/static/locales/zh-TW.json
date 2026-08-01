@@ -38,6 +38,12 @@
       }
     }
   },
+  "server_status": {
+    "readonly_banner_aria": "伺服器維護進行中",
+    "readonly_title": "伺服器維護進行中",
+    "readonly_progress": "正在將儲存遷移至 `{{target}}` — {{percent}}%（{{migrated}} / {{total}} 個 blob）。上傳、重新命名、刪除和分享會被拒絕；讀取和下載正常運作。",
+    "readonly_body": "上傳、重新命名、刪除和分享暫時被拒絕。讀取和下載正常運作。"
+  },
   "app": {
     "title": "OxiCloud",
     "description": "極簡雲端儲存系統"
