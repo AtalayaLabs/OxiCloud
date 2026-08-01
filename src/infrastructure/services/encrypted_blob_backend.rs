@@ -216,6 +216,101 @@ impl EncryptedBlobBackend {
         OsRng.fill_bytes(&mut key);
         key
     }
+
+    /// The format `storage_rotate` should normalise every blob TO —
+    /// derived from the wrapper's head pair. When
+    /// `head_cipher.is_some()` we're writing encrypted-v1 with the
+    /// head pair's `key_fp`; when it's `None` we're writing
+    /// plaintext-v1 (all-zero `key_fp`).
+    ///
+    /// K3 uses this as the "target format" that a per-blob decision
+    /// tree compares against `BlobFormat::classify(bytes)` — any
+    /// mismatch means the blob needs rewriting.
+    pub fn head_format(&self) -> BlobFormat {
+        if self.head_cipher.is_some() {
+            BlobFormat::EncryptedV1 {
+                key_fp: self.head_key_fp,
+            }
+        } else {
+            BlobFormat::PlaintextV1
+        }
+    }
+
+    /// Fetch, classify, and decrypt a blob in one round-trip. Used by
+    /// K3's `storage_rotate` per-blob step: it needs both the
+    /// plaintext (to re-encrypt under the head pair) AND the current
+    /// on-disk format (to decide whether a rewrite is needed at all).
+    ///
+    /// The inner backend is read once; the raw bytes are inspected
+    /// for their format before being consumed by `read_dispatch`. No
+    /// duplicated I/O.
+    ///
+    /// Returned tuple: `(plaintext, current_format)`. Rotate compares
+    /// `current_format` against [`Self::head_format`]; equal → skip,
+    /// different → rewrite via the standard write path.
+    pub async fn read_and_classify(&self, hash: &str) -> Result<(Bytes, BlobFormat), DomainError> {
+        let enc_stream = self.inner.get_blob_stream(hash).await?;
+        let raw = collect_stream(enc_stream).await?;
+        let format = BlobFormat::classify(&raw);
+        let fp_ciphers = self.fp_ciphers.clone();
+        let head_cipher = self.head_cipher.clone();
+        let len = raw.len();
+        let plaintext = offload_crypto(len, move || {
+            read_dispatch(&fp_ciphers, head_cipher.as_deref(), raw)
+        })
+        .await?;
+        Ok((plaintext, format))
+    }
+}
+
+/// Classification of a raw blob's on-disk format. Exposed for K3's
+/// `storage_rotate` decision tree; not used on the hot request path.
+///
+/// PartialEq is derived so `current == head_format` collapses the
+/// plan's six-case decision tree into a single equality check:
+///
+/// * `Legacy != anything v1`     → always rewrite.
+/// * `EncryptedV1{fp_a} != EncryptedV1{fp_b}` when fps differ → rewrite (key rotation).
+/// * `PlaintextV1 != EncryptedV1` and vice-versa → rewrite (encrypt / decrypt in place).
+/// * Match cases → skip (already normalised).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlobFormat {
+    /// No `OXCPT` magic. Pre-K2 shape — either raw plaintext or raw
+    /// `nonce | ct | tag` AES-GCM output; the wrapper's legacy read
+    /// path handles both.
+    Legacy,
+    /// v1 with a `none:`-style all-zero `key_fp`. Post-header bytes
+    /// are raw plaintext.
+    PlaintextV1,
+    /// v1 with a real cipher pair. `key_fp` identifies which pair
+    /// (matches [`KeyPair::key_fp`]).
+    EncryptedV1 { key_fp: [u8; KEY_FP_SIZE] },
+}
+
+impl BlobFormat {
+    /// Inspect the first `HEADER_SIZE` bytes and classify the blob.
+    /// O(1), no allocation. Used by [`EncryptedBlobBackend::read_and_classify`]
+    /// but also useful in isolation for offline tools.
+    pub fn classify(bytes: &[u8]) -> Self {
+        if bytes.len() < 5 || &bytes[..5] != OXCPT_MAGIC {
+            return BlobFormat::Legacy;
+        }
+        // Magic OK. If the rest of the header isn't present the blob
+        // is malformed — treat as Legacy so the decision tree marks
+        // it for rewrite (and the actual read will surface the error
+        // to the finding stream).
+        if bytes.len() < HEADER_SIZE {
+            return BlobFormat::Legacy;
+        }
+        // v1 magic + at least a full header. `key_fp` == 0 → plaintext.
+        let mut key_fp = [0u8; KEY_FP_SIZE];
+        key_fp.copy_from_slice(&bytes[7..HEADER_SIZE]);
+        if key_fp == [0u8; KEY_FP_SIZE] {
+            BlobFormat::PlaintextV1
+        } else {
+            BlobFormat::EncryptedV1 { key_fp }
+        }
+    }
 }
 
 /// Assemble an encrypted-v1 blob:
@@ -1054,5 +1149,121 @@ mod tests {
             msg.contains("unsupported v1 blob version"),
             "expected UnsupportedBlobVersion error, got: {msg}"
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // K3 tests — BlobFormat classifier + head_format + read_and_classify.
+    //
+    // These pin the format-inspection contract that `storage_rotate`
+    // depends on. The rotate job's per-blob decision tree collapses
+    // to `current != head_format ? rewrite : skip`, so any drift in
+    // either helper would silently change rotation semantics.
+    // ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn classify_recognises_encrypted_v1() {
+        let mut blob = Vec::from(*OXCPT_MAGIC);
+        blob.extend_from_slice(&V1_VERSION_BYTES);
+        let key_fp = [0x11u8; KEY_FP_SIZE];
+        blob.extend_from_slice(&key_fp);
+        blob.extend_from_slice(b"nonce_ct_tag_bytes_would_go_here");
+        assert_eq!(
+            BlobFormat::classify(&blob),
+            BlobFormat::EncryptedV1 { key_fp }
+        );
+    }
+
+    #[test]
+    fn classify_recognises_plaintext_v1() {
+        let mut blob = Vec::from(*OXCPT_MAGIC);
+        blob.extend_from_slice(&V1_VERSION_BYTES);
+        blob.extend_from_slice(&[0u8; KEY_FP_SIZE]);
+        blob.extend_from_slice(b"raw payload after header");
+        assert_eq!(BlobFormat::classify(&blob), BlobFormat::PlaintextV1);
+    }
+
+    #[test]
+    fn classify_recognises_legacy_no_magic() {
+        // Random bytes with no OXCPT prefix.
+        let raw = b"some legacy bytes not starting with the magic";
+        assert_eq!(BlobFormat::classify(raw), BlobFormat::Legacy);
+    }
+
+    #[test]
+    fn classify_treats_short_magic_only_blob_as_legacy() {
+        // 5 bytes = magic only, no room for version+key_fp. Malformed
+        // v1; treated as Legacy so the decision tree flags it for
+        // rewrite instead of pretending it's a real v1 blob.
+        let raw = Vec::from(*OXCPT_MAGIC);
+        assert_eq!(BlobFormat::classify(&raw), BlobFormat::Legacy);
+    }
+
+    #[test]
+    fn classify_empty_is_legacy() {
+        assert_eq!(BlobFormat::classify(&[]), BlobFormat::Legacy);
+    }
+
+    #[tokio::test]
+    async fn head_format_matches_encrypted_head_pair_fp() {
+        let tmp = TempDir::new().unwrap();
+        let local = Arc::new(LocalBlobBackend::new(&tmp.path().join("blobs")));
+        local.initialize().await.unwrap();
+
+        let key = [0x77u8; 32];
+        let backend = EncryptedBlobBackend::new_single_aes(local, &key);
+        match backend.head_format() {
+            BlobFormat::EncryptedV1 { key_fp } => {
+                assert_eq!(key_fp, KeyPair::new_aes_gcm(key).key_fp());
+            }
+            other => panic!("expected EncryptedV1, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn head_format_is_plaintext_v1_for_none_head() {
+        let tmp = TempDir::new().unwrap();
+        let local = Arc::new(LocalBlobBackend::new(&tmp.path().join("blobs")));
+        local.initialize().await.unwrap();
+
+        // Empty pair list → wrapper synthesises a single `none:` pair.
+        let backend = EncryptedBlobBackend::new(local, vec![]);
+        assert_eq!(backend.head_format(), BlobFormat::PlaintextV1);
+    }
+
+    #[tokio::test]
+    async fn read_and_classify_returns_plaintext_and_current_format() {
+        let tmp = TempDir::new().unwrap();
+        let local = Arc::new(LocalBlobBackend::new(&tmp.path().join("blobs")));
+        local.initialize().await.unwrap();
+
+        let k_old = [0xAAu8; 32];
+        let k_new = [0xBBu8; 32];
+        let hash = "7777777777777777777777777777777777777777777777777777777777777777";
+
+        // Write under the OLD key.
+        let writer = EncryptedBlobBackend::new_single_aes(local.clone(), &k_old);
+        writer
+            .put_blob_from_bytes(hash, Bytes::from_static(b"secret payload"))
+            .await
+            .unwrap();
+
+        // Reader has BOTH keys, k_new at head. Rotate scenario:
+        // classifier should report EncryptedV1{k_old_fp}, decrypt
+        // succeeds via key_fp lookup, plaintext round-trips.
+        let reader = EncryptedBlobBackend::new(
+            local,
+            vec![KeyPair::new_aes_gcm(k_old), KeyPair::new_aes_gcm(k_new)],
+        );
+        let (plaintext, current) = reader.read_and_classify(hash).await.unwrap();
+        assert_eq!(plaintext, b"secret payload".as_slice());
+        match current {
+            BlobFormat::EncryptedV1 { key_fp } => {
+                assert_eq!(key_fp, KeyPair::new_aes_gcm(k_old).key_fp());
+            }
+            other => panic!("expected EncryptedV1 with old fp, got {other:?}"),
+        }
+        // Confirms the rotate decision: current != head_format →
+        // rewrite (key rotation case).
+        assert_ne!(current, reader.head_format());
     }
 }
