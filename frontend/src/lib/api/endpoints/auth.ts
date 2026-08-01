@@ -77,7 +77,31 @@ export async function login(emailOrUsername: string, password: string): Promise<
 		const { errorType, message } = await parseErrorBody(res);
 		throw new ApiError(res.status, res.statusText, '/api/auth/login', errorType, message);
 	}
-	return (await res.json()) as AuthResponse;
+	const auth = (await res.json()) as AuthResponse;
+
+	// ── OPAQUE silent migration (Phase 2) ──────────────────────────────
+	// After a successful legacy password login, transparently mint an
+	// OPAQUE envelope for the same passphrase. Users pick up the new
+	// auth path over time, one login at a time, with zero UX change —
+	// by the time Phase 3 flips the SPA to OPAQUE-first and Phase 4
+	// refuses legacy for migrated users, most active accounts already
+	// have an envelope on file.
+	//
+	// The freshly-issued session cookie is already active in the
+	// browser at this point (Set-Cookie from the POST response), so
+	// the session-authenticated register endpoints are reachable
+	// straight away. `syncOpaqueEnvelope` no-ops when OPAQUE is
+	// disabled server-side (mode=off) and swallows any error — a
+	// failure here just leaves the envelope stale, and the NEXT
+	// legacy login retries the same hook.
+	//
+	// Dynamic import keeps the ~200 KiB `@serenity-kit/opaque` WASM
+	// bundle out of pre-login-page bundles — it loads only for users
+	// who actually reach a successful login.
+	const { syncOpaqueEnvelope } = await import('$lib/api/endpoints/opaque');
+	await syncOpaqueEnvelope(password);
+
+	return auth;
 }
 
 export interface OidcProviders {
