@@ -399,12 +399,35 @@ impl BlobStorageBackend for S3BlobBackend {
                     message: format!("S3 bucket '{}' is accessible", self.bucket),
                     available_bytes: None,
                 }),
-                Err(e) => Ok(StorageHealthStatus {
-                    connected: false,
-                    backend_type: "s3".to_string(),
-                    message: format!("S3 bucket '{}' is not accessible: {}", self.bucket, e),
-                    available_bytes: None,
-                }),
+                Err(e) => {
+                    // The AWS SDK's `Display` impl on `SdkError` says
+                    // just "service error" for anything the service
+                    // returned. The real cause — signature mismatch,
+                    // 301 redirect (wrong region), 403 (missing IAM),
+                    // hostname unresolvable — lives on the wrapped
+                    // `ServiceError` / `DispatchFailure` / raw response.
+                    // Peel it apart so the admin UI + audit stream see
+                    // the actionable message, not the tautology.
+                    let detail = format_s3_error(&e);
+                    tracing::warn!(
+                        target: "audit",
+                        event = "storage.s3.health_check_failed",
+                        bucket = %self.bucket,
+                        error = %detail,
+                        error_debug = ?e,
+                        "S3 health check on `{}` failed",
+                        self.bucket,
+                    );
+                    Ok(StorageHealthStatus {
+                        connected: false,
+                        backend_type: "s3".to_string(),
+                        message: format!(
+                            "S3 bucket '{}' is not accessible: {detail}",
+                            self.bucket
+                        ),
+                        available_bytes: None,
+                    })
+                }
             }
         })
     }
@@ -513,5 +536,68 @@ impl BlobStorageBackend for S3BlobBackend {
                 next_cursor,
             })
         })
+    }
+}
+
+/// Extract an actionable error string from an aws-sdk-s3 error.
+///
+/// `SdkError::Display` renders literally `"service error"` when the
+/// service returned a structured error, which is worse than useless
+/// in the admin UI. This helper walks the error chain and produces:
+///
+/// - `NotFound` — bucket doesn't exist (or the credentials can't see it).
+/// - `<code>: <message>` — the S3-specific error code + message the
+///   service returned (e.g. `InvalidAccessKeyId: The AWS Access Key
+///   Id you provided does not exist`, `SignatureDoesNotMatch: The
+///   request signature we calculated does not match the signature`,
+///   `PermanentRedirect: The bucket you are attempting to access must
+///   be addressed using the specified endpoint`).
+/// - `network error: <cause>` — DNS / TLS / TCP dispatch failure.
+/// - `timeout` — request timed out.
+/// - `unknown SDK error: <debug>` — anything else, with the full
+///   `Debug` output so the operator + audit stream see the real cause
+///   instead of `"service error"`.
+fn format_s3_error<E>(err: &aws_sdk_s3::error::SdkError<E>) -> String
+where
+    E: aws_sdk_s3::error::ProvideErrorMetadata + std::fmt::Debug,
+{
+    use aws_sdk_s3::error::SdkError;
+
+    match err {
+        SdkError::ServiceError(svc) => {
+            let inner = svc.err();
+            let meta = inner.meta();
+            let code = meta.code().unwrap_or("<no-code>");
+            let msg = meta.message().unwrap_or("");
+            // A 404 for HeadBucket surfaces as `NotFound` on the
+            // typed error — normalise the string so callers filter
+            // on it easily.
+            if code.eq_ignore_ascii_case("NotFound") || code == "404" {
+                return "NotFound (bucket doesn't exist or no permission to see it)".to_string();
+            }
+            if msg.is_empty() {
+                format!("{code} (HTTP {})", svc.raw().status().as_u16())
+            } else {
+                format!("{code}: {msg}")
+            }
+        }
+        SdkError::DispatchFailure(d) => {
+            // DNS / TLS / connection refused / TCP reset land here.
+            if d.is_io() {
+                format!("network I/O error: {:?}", d.as_connector_error())
+            } else if d.is_timeout() {
+                "network timeout during dispatch".to_string()
+            } else if d.is_user() {
+                format!("client-side dispatch failure: {d:?}")
+            } else {
+                format!("dispatch failure: {d:?}")
+            }
+        }
+        SdkError::TimeoutError(_) => "timeout".to_string(),
+        SdkError::ResponseError(r) => {
+            format!("malformed response (HTTP {}): {r:?}", r.raw().status().as_u16())
+        }
+        SdkError::ConstructionFailure(c) => format!("request construction failed: {c:?}"),
+        _ => format!("unknown SDK error: {err:?}"),
     }
 }

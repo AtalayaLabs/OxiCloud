@@ -63,26 +63,6 @@ impl StorageSettingsService {
         }
     }
 
-    /// Detect which storage fields are overridden by environment variables.
-    fn get_env_overrides(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        let vars = [
-            ("OXICLOUD_STORAGE_BACKEND", "backend"),
-            ("OXICLOUD_S3_ENDPOINT_URL", "s3_endpoint_url"),
-            ("OXICLOUD_S3_BUCKET", "s3_bucket"),
-            ("OXICLOUD_S3_REGION", "s3_region"),
-            ("OXICLOUD_S3_ACCESS_KEY", "s3_access_key"),
-            ("OXICLOUD_S3_SECRET_KEY", "s3_secret_key"),
-            ("OXICLOUD_S3_FORCE_PATH_STYLE", "s3_force_path_style"),
-        ];
-        for (env_key, field_name) in &vars {
-            if std::env::var(env_key).is_ok() {
-                out.push(field_name.to_string());
-            }
-        }
-        out
-    }
-
     /// Apply environment variable overrides on top of a config.
     fn apply_env_overrides(&self, config: &mut StorageConfig) {
         let e = &self.env_storage_config;
@@ -258,35 +238,15 @@ impl StorageSettingsService {
         Ok(config)
     }
 
-    /// Get storage settings for display in admin UI (secrets masked).
+    /// Get storage settings for display in admin UI.
+    ///
+    /// Post-slice-6 the response is the multi-entry view + live stats
+    /// only. The legacy `backend` / `s3_*` / `env_overrides` fields
+    /// were retired — they duplicated `entries[]` and leaked stale
+    /// admin_settings rows saved by the retired admin-panel form.
     pub async fn get_storage_settings(&self) -> Result<StorageSettingsDto, DomainError> {
-        let db: HashMap<String, String> = self.settings_repo.get_by_category("storage").await?;
-
-        let has_access_key = db
-            .get("storage.s3.access_key")
-            .map(|s| !s.is_empty())
-            .unwrap_or(false)
-            || std::env::var("OXICLOUD_S3_ACCESS_KEY")
-                .map(|s| !s.is_empty())
-                .unwrap_or(false);
-
-        let has_secret_key = db
-            .get("storage.s3.secret_key")
-            .map(|s| !s.is_empty())
-            .unwrap_or(false)
-            || std::env::var("OXICLOUD_S3_SECRET_KEY")
-                .map(|s| !s.is_empty())
-                .unwrap_or(false);
-
-        let effective = self.load_effective_storage_config().await?;
         let stats = self.dedup_service.get_stats().await;
         let current_backend = self.dedup_service.backend().backend_type().to_string();
-
-        let backend_str = match effective.backend {
-            crate::common::config::StorageBackendType::Local => "local",
-            crate::common::config::StorageBackendType::S3 => "s3",
-            crate::common::config::StorageBackendType::Azure => "azure",
-        };
 
         // Project the multi-entry view. `is_active` is name-compared
         // against the boot-selected `active_entry_name` (matches
@@ -310,14 +270,6 @@ impl StorageSettingsService {
             .collect();
 
         Ok(StorageSettingsDto {
-            backend: backend_str.to_string(),
-            s3_endpoint_url: effective.s3.as_ref().and_then(|s| s.endpoint_url.clone()),
-            s3_bucket: effective.s3.as_ref().map(|s| s.bucket.clone()),
-            s3_region: effective.s3.as_ref().map(|s| s.region.clone()),
-            s3_access_key_set: has_access_key,
-            s3_secret_key_set: has_secret_key,
-            s3_force_path_style: effective.s3.as_ref().is_some_and(|s| s.force_path_style),
-            env_overrides: self.get_env_overrides(),
             current_backend,
             total_blobs: stats.total_blobs,
             total_bytes_stored: stats.total_bytes_stored,
@@ -399,6 +351,86 @@ impl StorageSettingsService {
         &self,
         dto: TestStorageConnectionDto,
     ) -> Result<StorageTestResultDto, DomainError> {
+        // Multi-entry mode: `entry_name` present → look up the entry,
+        // build via the shared factory, health-check + round-trip. The
+        // legacy DTO fields (backend / s3_*) are ignored. Unknown
+        // names return a `connected: false` result with a clear
+        // message, mirroring the shape of the legacy path (no
+        // exceptions for the client to catch — errors are inline).
+        if let Some(name) = dto.entry_name.as_deref() {
+            let entry = match self.storage_entries.iter().find(|e| e.name == name) {
+                Some(e) => e,
+                None => {
+                    let available = if self.storage_entries.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        self.storage_entries
+                            .iter()
+                            .map(|e| e.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    };
+                    return Ok(StorageTestResultDto {
+                        connected: false,
+                        message: format!(
+                            "entry `{name}` not declared in OXICLOUD_STORAGE_ENTRIES. \
+                             Available: [{available}]"
+                        ),
+                        backend_type: "unknown".to_string(),
+                        available_bytes: None,
+                        roundtrip_passed: None,
+                        phase_reached: None,
+                        bytes_written: None,
+                        bytes_read: None,
+                        roundtrip_elapsed_ms: None,
+                        cleanup_ok: None,
+                    });
+                }
+            };
+            let backend = crate::infrastructure::services::entry_backend::build_entry_backend(
+                entry,
+                std::path::Path::new(&self.env_storage_config.root_dir),
+            );
+            let backend_kind = backend.backend_type().to_string();
+            let status = match backend.health_check().await {
+                Ok(s) => s,
+                Err(e) => {
+                    return Ok(StorageTestResultDto {
+                        connected: false,
+                        message: format!("health-check failed: {e}"),
+                        backend_type: backend_kind,
+                        available_bytes: None,
+                        roundtrip_passed: None,
+                        phase_reached: None,
+                        bytes_written: None,
+                        bytes_read: None,
+                        roundtrip_elapsed_ms: None,
+                        cleanup_ok: None,
+                    });
+                }
+            };
+            let mut out = StorageTestResultDto {
+                connected: status.connected,
+                message: status.message,
+                backend_type: backend_kind,
+                available_bytes: status.available_bytes,
+                roundtrip_passed: None,
+                phase_reached: None,
+                bytes_written: None,
+                bytes_read: None,
+                roundtrip_elapsed_ms: None,
+                cleanup_ok: None,
+            };
+            if out.connected {
+                attach_roundtrip(&mut out, backend.as_ref()).await;
+            }
+            return Ok(out);
+        }
+
+        // Legacy path — DTO carries backend + s3 fields directly.
+        // Retained for pre-multi-entry deployments (zero declared
+        // entries) and for the admin form's on-form-values Test
+        // button. Deprecated for new integrations.
         match dto.backend.as_str() {
             "local" => {
                 // Local: no per-DTO override for the root_dir (the
@@ -727,7 +759,35 @@ async fn run_backend_roundtrip(
 fn entry_location_hint(entry: &NamedStorageEntry) -> Option<String> {
     match entry.backend {
         StorageBackendType::Local => entry.root_dir.clone(),
-        StorageBackendType::S3 => entry.s3.as_ref().map(|s3| s3.bucket.clone()),
-        StorageBackendType::Azure => entry.azure.as_ref().map(|az| az.container.clone()),
+        // S3: show `<endpoint>/<bucket>` — bucket alone can collide
+        // across providers (a "my-bucket" on AWS vs the same name on
+        // MinIO / R2 look identical without the endpoint). `aws` is
+        // the visual stand-in when no custom endpoint is configured
+        // (i.e. talking to real AWS S3).
+        StorageBackendType::S3 => entry.s3.as_ref().map(|s3| {
+            // Trim trailing `/` so an env value of `https://host/`
+            // doesn't render as `https://host//bucket`. Both shapes
+            // are legitimate env inputs (some providers publish the
+            // trailing slash in their docs).
+            let endpoint = s3
+                .endpoint_url
+                .as_deref()
+                .unwrap_or("aws")
+                .trim_end_matches('/');
+            format!("{endpoint}/{}", s3.bucket)
+        }),
+        // Azure: show `<endpoint_or_account>/<container>`. The
+        // endpoint-URL override is uncommon on Azure (Azurite
+        // emulator, private stamps), so fall back to the account
+        // name when unset — matches what a reader would look for in
+        // the portal. Same trailing-slash trim as S3.
+        StorageBackendType::Azure => entry.azure.as_ref().map(|az| {
+            let host = az
+                .endpoint_url
+                .as_deref()
+                .unwrap_or(az.account_name.as_str())
+                .trim_end_matches('/');
+            format!("{host}/{}", az.container)
+        }),
     }
 }

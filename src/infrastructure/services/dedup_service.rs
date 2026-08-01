@@ -2155,12 +2155,11 @@ impl DedupService {
         // is NULL, COALESCE inlines the literal integer `0`, the row
         // decodes fine, and the bug never surfaces during dev — hence
         // it lasted so long.
-        let (total_blobs, total_bytes_stored): (i64, i64) = sqlx::query_as(
-            "SELECT COUNT(*), COALESCE(SUM(size), 0)::bigint FROM storage.blobs",
-        )
-        .fetch_one(self.pool.as_ref())
-        .await
-        .unwrap_or((0, 0));
+        let (total_blobs, total_bytes_stored): (i64, i64) =
+            sqlx::query_as("SELECT COUNT(*), COALESCE(SUM(size), 0)::bigint FROM storage.blobs")
+                .fetch_one(self.pool.as_ref())
+                .await
+                .unwrap_or((0, 0));
 
         // Referenced bytes from CDC manifests. Same `numeric`-vs-`bigint`
         // gotcha: `SUM(numeric)` → `numeric`; wrap the whole sum in

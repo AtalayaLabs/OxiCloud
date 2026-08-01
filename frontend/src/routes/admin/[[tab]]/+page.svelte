@@ -26,7 +26,6 @@
 		resetUserPassword,
 		saveOidc,
 		savePluginRetention,
-		saveStorage,
 		sendSmtpTest,
 		setPluginEnabled,
 		setRegistrationEnabled,
@@ -75,6 +74,7 @@
 		DrivePoliciesPartial,
 		User
 	} from '$lib/api/types';
+	import { triggerJob } from '$lib/api/endpoints/adminJobs';
 	import AdminJobsPanel from '$lib/components/AdminJobsPanel.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
 	import Modal from '$lib/components/Modal.svelte';
@@ -370,129 +370,72 @@
 		}
 	}
 
-	// Storage
-	const STORAGE_PRESETS: Record<string, { endpoint: string; region: string; pathStyle: boolean }> =
-		{
-			custom: { endpoint: '', region: '', pathStyle: false },
-			aws: { endpoint: '', region: 'us-east-1', pathStyle: false },
-			backblaze: {
-				endpoint: 'https://s3.{region}.backblazeb2.com',
-				region: 'us-west-004',
-				pathStyle: false
-			},
-			'cloudflare-r2': {
-				endpoint: 'https://{accountId}.r2.cloudflarestorage.com',
-				region: 'auto',
-				pathStyle: true
-			},
-			minio: { endpoint: 'http://localhost:9000', region: 'us-east-1', pathStyle: true },
-			digitalocean: {
-				endpoint: 'https://{region}.digitaloceanspaces.com',
-				region: 'nyc3',
-				pathStyle: false
-			},
-			wasabi: {
-				endpoint: 'https://s3.{region}.wasabisys.com',
-				region: 'us-east-1',
-				pathStyle: false
-			}
-		};
+	// Storage — multi-entry read-only view.
+	//
+	// Post `docs/plan/storage-multi-entry.md`, the .env is the SOLE
+	// place to declare backends. The admin storage tab is now:
+	//   - a read-only list of the entries the server booted with,
+	//   - a per-entry test button (round-trip against that entry),
+	//   - a per-entry audit action (triggers blobs_consistency?storage=<name>),
+	//   - a per-non-active migrate+activate button,
+	//   - the migration status line + cutover hint.
+	// No form. No save. The retired save endpoint / DTO are still on
+	// the backend during the deprecation window but the UI never
+	// hits them.
 	let storage = $state<StorageSettings | null>(null);
-	let sForm = $state({
-		backend: 'local',
-		preset: 'custom',
-		endpoint: '',
-		bucket: '',
-		region: '',
-		accessKey: '',
-		secretKey: '',
-		pathStyle: false
-	});
 	let storageMsg = $state<{ text: string; ok: boolean } | null>(null);
-	let storageBusy = $state(false);
+	// Per-entry test state — keyed by entry name so the buttons don't
+	// step on each other and the last result stays visible per row.
+	let entryTest = $state<
+		Record<string, { busy: boolean; result?: StorageTestResult; error?: string }>
+	>({});
 
 	async function loadStorage() {
 		try {
 			storage = await getStorageSettings();
-			sForm = {
-				backend: storage.backend ?? 'local',
-				preset: 'custom',
-				endpoint: storage.s3_endpoint_url ?? '',
-				bucket: storage.s3_bucket ?? '',
-				region: storage.s3_region ?? '',
-				accessKey: '',
-				secretKey: '',
-				pathStyle: storage.s3_force_path_style ?? false
+		} catch (e) {
+			storageMsg = { text: errorMessage(e), ok: false };
+		}
+	}
+
+	async function doTestEntry(name: string) {
+		entryTest = { ...entryTest, [name]: { busy: true } };
+		try {
+			const r: StorageTestResult = await testStorage({ entry_name: name });
+			entryTest = { ...entryTest, [name]: { busy: false, result: r } };
+		} catch (e) {
+			entryTest = { ...entryTest, [name]: { busy: false, error: errorMessage(e) } };
+		}
+	}
+
+	async function doAuditEntry(name: string) {
+		try {
+			await triggerJob('blobs_consistency', { storage: name });
+			storageMsg = {
+				text: t(
+					'admin.storage_audit_triggered',
+					{ name },
+					'blobs_consistency triggered for `{{name}}` — watch it on the Jobs tab.'
+				),
+				ok: true
 			};
 		} catch (e) {
 			storageMsg = { text: errorMessage(e), ok: false };
 		}
 	}
-	function applyPreset() {
-		const p = STORAGE_PRESETS[sForm.preset];
-		if (!p) return;
-		if (p.endpoint) sForm.endpoint = p.endpoint;
-		if (p.region) sForm.region = p.region;
-		sForm.pathStyle = p.pathStyle;
-	}
-	function storageBody() {
-		return {
-			backend: sForm.backend,
-			s3_endpoint_url: sForm.endpoint.trim() || null,
-			s3_bucket: sForm.bucket.trim() || null,
-			s3_region: sForm.region.trim() || null,
-			s3_access_key: sForm.accessKey || null,
-			s3_secret_key: sForm.secretKey || null,
-			s3_force_path_style: sForm.pathStyle
-		};
-	}
-	async function doSaveStorage() {
-		storageBusy = true;
-		storageMsg = null;
-		try {
-			await saveStorage(storageBody());
-			storageMsg = { text: t('admin.storage_saved', 'Storage settings saved.'), ok: true };
-			await loadStorage();
-		} catch (e) {
-			storageMsg = { text: errorMessage(e), ok: false };
-		} finally {
-			storageBusy = false;
-		}
-	}
-	async function doTestStorage() {
-		storageBusy = true;
-		storageMsg = null;
-		try {
-			const r: StorageTestResult = await testStorage(storageBody());
-			// Backend now performs BOTH reachability (health-check)
-			// and a full read/write round-trip. `connected` gets
-			// flipped to false by the service if the round-trip
-			// itself fails, so a single boolean covers the whole
-			// pass/fail signal. `roundtrip_passed` distinguishes the
-			// two flavours of failure for the operator.
-			const ok = r.connected ?? r.success ?? false;
-			if (ok) {
-				let text = t('admin.storage_test_success', 'Connection + read/write OK');
-				if (r.backend_type) text += ` (${r.backend_type})`;
-				if (r.roundtrip_elapsed_ms != null) text += ` — round-trip ${r.roundtrip_elapsed_ms} ms`;
-				if (r.available_bytes != null)
-					text += ` · ${formatBytes(r.available_bytes)} ${t('admin.available', 'available')}`;
-				if (r.cleanup_ok === false)
-					text += ` · ⚠ cleanup DELETE failed — orphan test blob left on backend`;
-				storageMsg = { text, ok: true };
-			} else {
-				const phase = r.phase_reached ? ` [phase: ${r.phase_reached}]` : '';
-				const label =
-					r.roundtrip_passed === false
-						? t('admin.storage_test_failure', 'Read/write test failed')
-						: t('admin.storage_test_failure', 'Connection failed');
-				storageMsg = { text: `${label}${phase}: ${r.message ?? ''}`, ok: false };
-			}
-		} catch (e) {
-			storageMsg = { text: errorMessage(e), ok: false };
-		} finally {
-			storageBusy = false;
-		}
+
+	async function doMigrateActivate(name: string) {
+		if (
+			!confirm(
+				t(
+					'admin.storage_migrate_confirm',
+					{ name },
+					'Migrate all blobs to `{{name}}` and set it as the active entry? The server enters read-only mode during the copy; restart is required to finish cutover.'
+				)
+			)
+		)
+			return;
+		await doMigration('start', name);
 	}
 
 	// Migration
@@ -526,96 +469,18 @@
 		}
 	}
 
-	// ── Multi-entry migration target picker (slice 6) ────────────────
-	//
-	// Multi-entry mode requires the admin to name the target entry
-	// before starting a migration. Backend rejects an unnamed start
-	// with 400. Dropdown shows every non-active entry; picking one
-	// enables the Start button.
-	let migrationTarget = $state<string>('');
-	const availableTargets = $derived(
-		(storage?.entries ?? []).filter((e) => !e.is_active).map((e) => e.name)
-	);
-	// Sync target when the entries list first appears — pick the first
-	// non-active entry by default so the operator can just click Start
-	// on a simple two-entry setup.
-	$effect(() => {
-		if (!migrationTarget && availableTargets.length > 0) {
-			migrationTarget = availableTargets[0];
-		}
-		// Also unset when the previously-chosen target became active
-		// (cutover completed under our feet).
-		if (migrationTarget && !availableTargets.includes(migrationTarget)) {
-			migrationTarget = availableTargets[0] ?? '';
-		}
-	});
+	// The old target-name picker state was retired — the entries
+	// table now has per-row "Migrate & activate" buttons on
+	// non-active entries. Simpler mental model; no picker to sync.
 
-	// ── Post-migration .env cutover hint ─────────────────────────────
-	//
-	// Migration copies blobs to the target backend, but boot-time
-	// backend selection reads env vars only — never the DB config the
-	// admin filled in. So the app keeps running on the SOURCE backend
-	// even after the copy completes. To actually cut over, the
-	// operator has to add the equivalent env vars to `.env` and
-	// restart. This hint block spells out those lines with a
-	// copy-to-clipboard button.
-	//
-	// Shown only when:
-	//   - a migration has completed successfully, AND
-	//   - the live backend still differs from the configured target
-	//     (so we're actually pending cutover), AND
-	//   - the backend env var isn't ALREADY overriding (which would
-	//     mean the admin already updated .env or the platform sets it).
-	const cutoverPending = $derived(
-		migration?.status === 'completed' &&
-			!!storage &&
-			storage.current_backend != null &&
-			storage.current_backend !== storage.backend &&
-			!(storage.env_overrides ?? []).includes('backend')
-	);
-
-	// Env-var lines the admin needs to paste. Credentials are NEVER
-	// echoed — the storage-settings DTO only returns `_set` booleans
-	// for access/secret keys (not the values), so we render a
-	// placeholder line the admin fills in from their own records.
-	// Local backend still gets a line for completeness, but a Local
-	// deployment typically has no reason to explicitly set the var
-	// (default is Local).
-	const cutoverEnvLines = $derived.by((): string[] => {
-		if (!storage) return [];
-		const lines: string[] = [];
-		switch (storage.backend) {
-			case 's3':
-				lines.push('OXICLOUD_STORAGE_BACKEND=s3');
-				if (storage.s3_endpoint_url)
-					lines.push(`OXICLOUD_S3_ENDPOINT_URL=${storage.s3_endpoint_url}`);
-				if (storage.s3_bucket) lines.push(`OXICLOUD_S3_BUCKET=${storage.s3_bucket}`);
-				if (storage.s3_region) lines.push(`OXICLOUD_S3_REGION=${storage.s3_region}`);
-				if (storage.s3_access_key_set)
-					lines.push('OXICLOUD_S3_ACCESS_KEY=<paste the access key you saved above>');
-				if (storage.s3_secret_key_set)
-					lines.push('OXICLOUD_S3_SECRET_KEY=<paste the secret key you saved above>');
-				if (storage.s3_force_path_style) lines.push('OXICLOUD_S3_FORCE_PATH_STYLE=true');
-				break;
-			case 'local':
-				lines.push('OXICLOUD_STORAGE_BACKEND=local');
-				break;
-			// Azure not yet exposed in the admin form; add here when it is.
-		}
-		return lines;
-	});
-
-	let cutoverCopied = $state(false);
-	async function copyCutoverEnv() {
-		try {
-			await navigator.clipboard.writeText(cutoverEnvLines.join('\n'));
-			cutoverCopied = true;
-			setTimeout(() => (cutoverCopied = false), 2000);
-		} catch {
-			// Clipboard permission denied — silent; the block is
-			// selectable so the operator can copy manually.
-		}
-	}
+	// Retired: the .env cutover-hint state (cutoverPending +
+	// cutoverEnvLines + cutoverCopied + copyCutoverEnv). It served
+	// the pre-multi-entry flow that made admins paste env vars
+	// into .env after migration. Post-multi-entry, the server
+	// writes `active_backend_name` to the DB automatically on
+	// migration completion; the operator just restarts. The new
+	// short "restart to switch" hint is rendered inline in the
+	// entries card template, no derived state needed.
 
 	// Migration integrity verification retired in slice 7 — the
 	// sample-based /storage/migration/verify endpoint is replaced by
@@ -2011,136 +1876,36 @@
 			{/if}
 		</div>
 	{:else if tab === 'storage'}
+		<!-- ══════════════════════════════════════════════════════════════
+		     STORAGE TAB — rewritten for the multi-entry model
+		     (see docs/plan/storage-multi-entry.md).
+
+		     Design: no save form. .env is the only place backends are
+		     declared. This tab is a read-only view of what booted plus
+		     the per-entry actions an admin actually needs — test,
+		     audit via blobs_consistency, and migrate+activate to a
+		     non-active entry.
+
+		     The legacy form + related handlers/state live in git
+		     history; deleted here in one sweep.
+		     ══════════════════════════════════════════════════════════ -->
 		<div class="card">
-			<h2>{t('admin.storage_tab', 'Storage')}</h2>
+			<h2>{t('admin.storage_tab', 'Storage entries')}</h2>
 			{#if !storage}
 				<p class="status">{t('common.loading', 'Loading…')}</p>
-			{:else}
-				<form
-					class="form"
-					data-testid="admin-storage-form"
-					onsubmit={(e) => (e.preventDefault(), doSaveStorage())}
-				>
-					<label
-						><span>{t('admin.storage_backend', 'Backend')}</span>
-						<select bind:value={sForm.backend} data-testid="admin-storage-backend-select">
-							<option value="local">local</option>
-							<option value="s3">S3</option>
-						</select></label
-					>
-					{#if sForm.backend === 's3'}
-						<label
-							><span>{t('admin.storage_preset', 'Preset')}</span>
-							<select
-								bind:value={sForm.preset}
-								data-testid="admin-storage-preset-select"
-								onchange={applyPreset}
-							>
-								{#each Object.keys(STORAGE_PRESETS) as p (p)}<option value={p}>{p}</option>{/each}
-							</select></label
-						>
-						<label
-							><span
-								>{t('admin.storage_endpoint', 'Endpoint URL')}{@render envBadge(
-									isEnvLocked(storage.env_overrides, 's3_endpoint_url')
-								)}</span
-							>
-							<input
-								bind:value={sForm.endpoint}
-								data-testid="admin-storage-endpoint-input"
-								disabled={isEnvLocked(storage.env_overrides, 's3_endpoint_url')}
-							/></label
-						>
-						<label
-							><span
-								>{t('admin.storage_bucket', 'Bucket')}{@render envBadge(
-									isEnvLocked(storage.env_overrides, 's3_bucket')
-								)}</span
-							>
-							<input
-								bind:value={sForm.bucket}
-								data-testid="admin-storage-bucket-input"
-								disabled={isEnvLocked(storage.env_overrides, 's3_bucket')}
-							/></label
-						>
-						<label
-							><span
-								>{t('admin.storage_region', 'Region')}{@render envBadge(
-									isEnvLocked(storage.env_overrides, 's3_region')
-								)}</span
-							>
-							<input
-								bind:value={sForm.region}
-								data-testid="admin-storage-region-input"
-								disabled={isEnvLocked(storage.env_overrides, 's3_region')}
-							/></label
-						>
-						<label
-							><span
-								>{t('admin.storage_access_key', 'Access key')}{@render envBadge(
-									isEnvLocked(storage.env_overrides, 's3_access_key')
-								)}</span
-							>
-							<input
-								bind:value={sForm.accessKey}
-								data-testid="admin-storage-access-key-input"
-								disabled={isEnvLocked(storage.env_overrides, 's3_access_key')}
-								placeholder={storage.s3_access_key_set
-									? t('admin.unchanged', 'Leave blank to keep current')
-									: ''}
-							/></label
-						>
-						<label
-							><span
-								>{t('admin.storage_secret_key', 'Secret key')}{@render envBadge(
-									isEnvLocked(storage.env_overrides, 's3_secret_key')
-								)}</span
-							>
-							<input
-								type="password"
-								data-testid="admin-storage-secret-key-input"
-								bind:value={sForm.secretKey}
-								disabled={isEnvLocked(storage.env_overrides, 's3_secret_key')}
-								placeholder={storage.s3_secret_key_set
-									? t('admin.unchanged', 'Leave blank to keep current')
-									: ''}
-							/></label
-						>
-						<label class="checkbox">
-							<input
-								type="checkbox"
-								data-testid="admin-storage-path-style-checkbox"
-								bind:checked={sForm.pathStyle}
-							/>
-							<span>{t('admin.storage_path_style', 'Force path-style URLs')}</span>
-						</label>
-					{/if}
-					{#if storageMsg}<p class={storageMsg.ok ? 'status--ok' : 'status--error'}>
-							{storageMsg.text}
-						</p>{/if}
-					<div class="smtp-test">
-						<button
-							class="btn btn-primary"
-							type="submit"
-							data-testid="admin-storage-save-btn"
-							disabled={storageBusy}>{t('common.save', 'Save')}</button
-						>
-						<!-- Round-trip test: writes + reads + deletes a
-						     ~100 B blob against the selected backend.
-						     Now meaningful for Local too (validates disk
-						     write permission on the mount), so no longer
-						     gated on `backend === 's3'`. -->
-						<button
-							type="button"
-							class="btn btn-secondary"
-							data-testid="admin-storage-test-btn"
-							disabled={storageBusy}
-							onclick={doTestStorage}
-						>
-							{t('admin.storage_test', 'Test read/write')}
-						</button>
-					</div>
-				</form>
+			{:else if !storage.entries || storage.entries.length === 0}
+				<!-- Legacy zero-entries path — the parser synthesises a
+				     single `default` entry from flat vars and emits a
+				     deprecation warning. Show the same warning here so
+				     admins with old .env files see it in the UI too. -->
+				<p class="alert alert--warn">
+					<Icon name="exclamation-triangle" />
+					{t(
+						'admin.storage_no_entries',
+						{ backend: storage.current_backend ?? '?' },
+						'No OXICLOUD_STORAGE_ENTRIES declared. Running on the legacy single-backend fallback ({{backend}}). Migrate to the multi-entry model — see docs/config/env.md.'
+					)}
+				</p>
 				<dl class="kv">
 					<dt>{t('admin.storage_current', 'Current backend')}</dt>
 					<dd>{storage.current_backend ?? '—'}</dd>
@@ -2153,15 +1918,7 @@
 					<dt>{t('admin.storage_dedup', 'Dedup ratio')}</dt>
 					<dd>{storage.dedup_ratio != null ? `${storage.dedup_ratio.toFixed(2)}x` : '—'}</dd>
 				</dl>
-			{/if}
-		</div>
-
-		<div class="card">
-			<h2>{t('admin.migration', 'Storage migration')}</h2>
-			<!-- Entries table + readonly banner — multi-entry only.
-			     Hidden entirely on the legacy zero-entries path so admins
-			     without OXICLOUD_STORAGE_ENTRIES still see the old UI. -->
-			{#if storage?.entries && storage.entries.length > 0}
+			{:else}
 				{#if storage.migration_readonly}
 					<div
 						class="cutover-hint cutover-hint--readonly"
@@ -2179,180 +1936,230 @@
 						</p>
 					</div>
 				{/if}
-				<table class="entries-table" data-testid="admin-storage-entries-table">
-					<thead>
-						<tr>
-							<th>{t('admin.entry_name', 'Entry')}</th>
-							<th>{t('admin.entry_backend', 'Backend')}</th>
-							<th>{t('admin.entry_location', 'Location')}</th>
-							<th>{t('admin.entry_encryption', 'Encryption')}</th>
-							<th>{t('admin.entry_status', 'Status')}</th>
-						</tr>
-					</thead>
-					<tbody>
-						{#each storage.entries as entry (entry.name)}
-							<tr class:entry-active={entry.is_active}>
-								<td><code>{entry.name}</code></td>
-								<td>{entry.backend}</td>
-								<td class="muted">{entry.location_hint ?? '—'}</td>
-								<td>
-									{#if entry.encryption_enabled}
-										<Icon name="lock" /> AES-256
-									{:else}
-										<span class="muted">—</span>
-									{/if}
-								</td>
-								<td>
+
+				<!-- Card-per-entry layout — most installs have 1 backend
+				     (occasionally 2 during a migration), so a rich card
+				     reads better than a wide table. Active entry gets
+				     the sub-stats + a highlight ring. Migrate & activate
+				     is per-card and only shown on non-active cards when
+				     no other migration is in flight. -->
+				{@const migrationInFlight =
+					migration != null && (migration.status === 'running' || migration.status === 'paused')}
+				<div class="entries-list" data-testid="admin-storage-entries-list">
+					{#each storage.entries as entry (entry.name)}
+						{@const test = entryTest[entry.name]}
+						<article
+							class="entry-card"
+							class:entry-card--active={entry.is_active}
+							data-testid={`admin-storage-entry-${entry.name}`}
+						>
+							<header class="entry-card__header">
+								<div class="entry-card__title">
+									<code class="entry-card__name">{entry.name}</code>
 									{#if entry.is_active}
-										<strong>{t('admin.entry_active', 'active')}</strong>
+										<span class="entry-card__badge entry-card__badge--active">
+											<Icon name="check-circle" />
+											{t('admin.entry_active', 'active')}
+										</span>
 									{:else}
-										<span class="muted">{t('admin.entry_inactive', 'available')}</span>
+										<span class="entry-card__badge">
+											{t('admin.entry_inactive', 'available')}
+										</span>
 									{/if}
-								</td>
-							</tr>
-						{/each}
-					</tbody>
-				</table>
-			{/if}
-			{#if !migration}
-				<p class="status">{t('common.loading', 'Loading…')}</p>
-			{:else}
-				<p class="muted">{t('admin.status', 'Status')}: <strong>{migration.status}</strong></p>
-				{#if migration.total_blobs > 0}
-					<div class="ds-bar">
-						<div class="ds-fill" style:width="{migrationPct}%"></div>
-					</div>
-					<p class="muted">
-						{migration.migrated_blobs} / {migration.total_blobs} ({migrationPct}%) ·
-						{formatBytes(migration.migrated_bytes)}
-						{#if migration.throughput_bytes_per_sec && migration.status === 'running'}
-							· {formatBytes(Math.round(migration.throughput_bytes_per_sec))}/s
-						{/if}
-						{#if migrationEtaMin != null}
-							· {t('admin.mig_eta', { min: migrationEtaMin }, `~${migrationEtaMin} min remaining`)}
-						{/if}
-					</p>
-				{/if}
-				{#if migration.failed_blobs && migration.failed_blobs.length > 0}
-					<details class="mig-failed">
-						<summary>
-							{t(
-								'admin.mig_failed',
-								{ n: migration.failed_blobs.length },
-								`${migration.failed_blobs.length} failed blobs`
-							)}
-						</summary>
-						<pre class="mig-failed__list">{migration.failed_blobs.join('\n')}</pre>
-					</details>
-				{/if}
-				<div class="smtp-test">
-					<!-- Start: only when no migration is active (running/paused) or completed.
-					     Multi-entry mode requires a target picker before Start becomes clickable.
-					     Legacy zero-entries path keeps the old single-button behaviour so
-					     nothing regresses for admins who haven't opted into multi-entry yet. -->
-					{#if migration.status !== 'running' && migration.status !== 'paused' && migration.status !== 'completed'}
-						{#if storage?.entries && storage.entries.length > 0}
-							<label class="migration-target-picker">
-								<span>{t('admin.mig_target', 'Migrate to')}</span>
-								<select
-									bind:value={migrationTarget}
-									disabled={availableTargets.length === 0}
-									data-testid="admin-migration-target-select"
-								>
-									{#each availableTargets as name (name)}
-										<option value={name}>{name}</option>
-									{/each}
-									{#if availableTargets.length === 0}
-										<option value="" disabled selected>
-											{t(
-												'admin.mig_no_targets',
-												'no other entries — add one to OXICLOUD_STORAGE_ENTRIES'
-											)}
-										</option>
+									{#if entry.encryption_enabled}
+										<span
+											class="entry-card__badge entry-card__badge--encrypted"
+											title="AES-256-GCM"
+										>
+											<Icon name="lock" /> AES-256
+										</span>
 									{/if}
-								</select>
-							</label>
-							<button
-								class="btn btn-primary"
-								data-testid="admin-migration-start-btn"
-								disabled={!migrationTarget || availableTargets.length === 0}
-								onclick={() => doMigration('start', migrationTarget)}
-								>{t('admin.mig_start', 'Start')}</button
-							>
-						{:else}
-							<button
-								class="btn btn-primary"
-								data-testid="admin-migration-start-btn"
-								onclick={() => doMigration('start')}>{t('admin.mig_start', 'Start')}</button
-							>
-						{/if}
-					{/if}
-					{#if migration.status === 'running'}
-						<button
-							class="btn btn-secondary"
-							data-testid="admin-migration-pause-btn"
-							onclick={() => doMigration('pause')}>{t('admin.mig_pause', 'Pause')}</button
-						>
-					{/if}
-					{#if migration.status === 'paused'}
-						<button
-							class="btn btn-primary"
-							data-testid="admin-migration-resume-btn"
-							onclick={() => doMigration('resume')}>{t('admin.mig_resume', 'Resume')}</button
-						>
-					{/if}
-					<!-- Verify / Finalize retired in slice 7. The
-					     sample-based "Verify integrity" button is superseded
-					     by `blobs_consistency?storage=<target_name>` —
-					     trigger it from the Jobs tab for a full walk with
-					     structured findings. -->
+								</div>
+								<!-- Fixed three-slot action row so buttons line up
+								     vertically across cards regardless of which
+								     slots are active. The Migrate slot is
+								     rendered but visibility-hidden on the
+								     currently-active entry (no sense
+								     migrating to yourself) and while another
+								     migration is in flight (the handler would
+								     refuse anyway). `visibility: hidden`
+								     keeps the layout box; `aria-hidden` +
+								     `tabindex=-1` remove it from
+								     keyboard/screen-reader navigation. -->
+								<div class="entry-card__actions">
+									<button
+										type="button"
+										class="btn btn-sm btn-secondary entry-card__action-btn"
+										disabled={test?.busy ?? false}
+										data-testid={`admin-storage-test-${entry.name}`}
+										onclick={() => doTestEntry(entry.name)}
+									>
+										{test?.busy
+											? t('admin.storage_testing', 'Testing…')
+											: t('admin.storage_test', 'Test')}
+									</button>
+									<button
+										type="button"
+										class="btn btn-sm btn-secondary entry-card__action-btn"
+										data-testid={`admin-storage-audit-${entry.name}`}
+										onclick={() => doAuditEntry(entry.name)}
+									>
+										<Icon name="check-double" />
+										{t('admin.storage_audit', 'Blob consistency')}
+									</button>
+									{#if !entry.is_active && !migrationInFlight}
+										<button
+											type="button"
+											class="btn btn-sm btn-primary entry-card__action-btn"
+											data-testid={`admin-storage-migrate-${entry.name}`}
+											onclick={() => doMigrateActivate(entry.name)}
+										>
+											{t('admin.storage_migrate_activate', 'Migrate & activate')}
+										</button>
+									{:else}
+										<button
+											type="button"
+											class="btn btn-sm btn-primary entry-card__action-btn entry-card__action-btn--placeholder"
+											aria-hidden="true"
+											tabindex={-1}
+											disabled
+										>
+											{t('admin.storage_migrate_activate', 'Migrate & activate')}
+										</button>
+									{/if}
+								</div>
+							</header>
+							<dl class="entry-card__grid">
+								<dt>{t('admin.entry_backend', 'Backend')}</dt>
+								<dd>{entry.backend}</dd>
+								<dt>{t('admin.entry_location', 'Location')}</dt>
+								<dd class="entry-card__mono">{entry.location_hint ?? '—'}</dd>
+								{#if entry.is_active}
+									<dt>{t('admin.storage_blobs', 'Blobs')}</dt>
+									<dd>{storage.total_blobs ?? '—'}</dd>
+									<dt>{t('admin.storage_size', 'Stored')}</dt>
+									<dd>
+										{storage.total_bytes_stored != null
+											? formatBytes(storage.total_bytes_stored)
+											: '—'}
+									</dd>
+									<dt>{t('admin.storage_dedup', 'Dedup ratio')}</dt>
+									<dd>
+										{storage.dedup_ratio != null ? `${storage.dedup_ratio.toFixed(2)}x` : '—'}
+									</dd>
+								{/if}
+							</dl>
+							{#if test?.result != null || test?.error != null}
+								<footer class="entry-card__test-result">
+									{#if test.error}
+										<span class="status--error"><Icon name="times-circle" /> {test.error}</span>
+									{:else if test.result}
+										{@const ok = test.result.connected ?? false}
+										{@const rt = test.result.roundtrip_elapsed_ms}
+										{@const cleanup = test.result.cleanup_ok}
+										<span class={ok ? 'status--ok' : 'status--error'}>
+											<Icon name={ok ? 'check-circle' : 'times-circle'} />
+											{ok
+												? t('admin.storage_test_success', 'Read/write OK')
+												: t('admin.storage_test_failure', 'Test failed')}
+											{#if rt != null}
+												· {t('admin.storage_test_elapsed', { ms: rt }, '{{ms}} ms')}
+											{/if}
+											{#if cleanup === false}
+												· ⚠ {t('admin.storage_test_cleanup_warn', 'cleanup DELETE failed')}
+											{/if}
+											{#if !ok}
+												— {test.result.message}
+											{/if}
+										</span>
+									{/if}
+								</footer>
+							{/if}
+						</article>
+					{/each}
 				</div>
 
-				{#if cutoverPending}
-					<!-- Post-migration cutover hint. Boot-time backend
-					     selection reads env vars only, so DB settings
-					     alone don't switch the live backend after
-					     migration. This block spells out the .env lines
-					     to add. Credentials are never echoed — the DTO
-					     returns `_set` booleans only, so the lines carry
-					     placeholders the admin fills in from their own
-					     records. -->
+				<!-- Migration status line + inline pause/resume. Start is
+				     per-row (Migrate & activate button) so no separate
+				     Start control here. -->
+				<div class="mig-status">
+					<p class="muted">
+						{t('admin.mig_status', 'Migration status')}:
+						<strong>{migration?.status ?? '—'}</strong>
+						{#if migration?.status === 'running'}
+							<button
+								type="button"
+								class="btn btn-sm btn-secondary"
+								data-testid="admin-migration-pause-btn"
+								onclick={() => doMigration('pause')}
+							>
+								{t('admin.mig_pause', 'Pause')}
+							</button>
+						{/if}
+						{#if migration?.status === 'paused'}
+							<button
+								type="button"
+								class="btn btn-sm btn-primary"
+								data-testid="admin-migration-resume-btn"
+								onclick={() => doMigration('resume')}
+							>
+								{t('admin.mig_resume', 'Resume')}
+							</button>
+						{/if}
+					</p>
+					{#if migration && migration.total_blobs > 0}
+						<div class="ds-bar">
+							<div class="ds-fill" style:width="{migrationPct}%"></div>
+						</div>
+						<p class="muted">
+							{migration.migrated_blobs} / {migration.total_blobs} ({migrationPct}%)
+							{#if migrationEtaMin != null}
+								· {t(
+									'admin.mig_eta',
+									{ min: migrationEtaMin },
+									`~${migrationEtaMin} min remaining`
+								)}
+							{/if}
+						</p>
+					{/if}
+					{#if migration?.failed_blobs && migration.failed_blobs.length > 0}
+						<details class="mig-failed">
+							<summary>
+								{t(
+									'admin.mig_failed',
+									{ n: migration.failed_blobs.length },
+									`${migration.failed_blobs.length} failed blobs`
+								)}
+							</summary>
+							<pre class="mig-failed__list">{migration.failed_blobs.join('\n')}</pre>
+						</details>
+					{/if}
+				</div>
+
+				{#if migration?.status === 'completed' && storage.migration_readonly}
+					<!-- Cutover hint — multi-entry version. After a
+					     successful migration, the server has already
+					     flipped `active_backend_name` in the DB;
+					     migration_readonly stays ON until the operator
+					     restarts (per slice-5 state machine). Restart is
+					     the last step. -->
 					<div class="cutover-hint" data-testid="admin-migration-cutover-hint">
 						<h3>
-							<Icon name="key" />
-							{t('admin.mig_cutover_title', 'Cutover pending — update .env and restart')}
+							<Icon name="check-circle" />
+							{t('admin.mig_cutover_done_title', 'Migration complete — restart to switch')}
 						</h3>
 						<p class="muted">
 							{t(
-								'admin.mig_cutover_body',
-								{ target: storage?.backend ?? '?', live: storage?.current_backend ?? '?' },
-								'Blobs are now on {{target}} but the server is still running on {{live}}. To switch, add these lines to your .env and restart the server.'
+								'admin.mig_cutover_done_body',
+								{ active: storage.active_entry_name ?? '?' },
+								'The DB pointer now names `{{active}}` as the active backend, but the running process is still bound to the previous entry. Restart the server to complete the cutover; boot picks up the new active entry and clears read-only mode automatically.'
 							)}
 						</p>
-						<pre class="cutover-hint__lines" data-testid="admin-migration-cutover-env"><code
-								>{cutoverEnvLines.join('\n')}</code
-							></pre>
-						<div class="cutover-hint__actions">
-							<button
-								type="button"
-								class="btn btn-secondary"
-								data-testid="admin-migration-cutover-copy-btn"
-								onclick={copyCutoverEnv}
-							>
-								<Icon name="copy" />
-								{cutoverCopied
-									? t('admin.mig_cutover_copied', 'Copied')
-									: t('admin.mig_cutover_copy', 'Copy')}
-							</button>
-							<p class="muted cutover-hint__note">
-								{t(
-									'admin.mig_cutover_secret_note',
-									'The access key and secret key are placeholders — paste the values you entered when saving these settings. Credentials are never displayed here.'
-								)}
-							</p>
-						</div>
 					</div>
 				{/if}
+			{/if}
+			{#if storageMsg}
+				<p class={storageMsg.ok ? 'status--ok' : 'status--error'}>{storageMsg.text}</p>
 			{/if}
 		</div>
 
@@ -2361,7 +2168,7 @@
 			<p class="muted">
 				{t(
 					'admin.encryption_hint',
-					'Generate an AES-256 key for at-rest blob encryption, then set it as OXICLOUD_STORAGE_ENCRYPTION_KEY in your server environment.'
+					'Generate an AES-256 key for at-rest blob encryption. Set it as OXICLOUD_STORAGE_<name>_ENCRYPTION_KEY under an entry declared in OXICLOUD_STORAGE_ENTRIES — presence of the key implies encryption is enabled on that entry (no separate flag).'
 				)}
 			</p>
 			<button class="btn btn-secondary" disabled={keyBusy} onclick={runGenerateKey}>
@@ -4247,71 +4054,128 @@
 		font-size: var(--text-base, 1rem);
 	}
 
-	.cutover-hint__lines {
-		margin: var(--space-2) 0;
-		padding: var(--space-2) var(--space-3);
-		background: var(--color-bg);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-sm);
-		font-size: var(--text-xs, 0.75rem);
-		white-space: pre;
-		overflow-x: auto;
-	}
-
-	.cutover-hint__actions {
-		display: flex;
-		align-items: flex-start;
-		gap: var(--space-3);
-		flex-wrap: wrap;
-	}
-
 	.cutover-hint--readonly {
 		border-color: var(--color-danger-border, var(--color-border));
 		background: var(--color-danger-bg, var(--color-bg-muted));
 	}
 
-	.entries-table {
-		width: 100%;
+	.entries-list {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-3);
 		margin-bottom: var(--space-3);
-		border-collapse: collapse;
-		font-size: var(--text-sm, 0.875rem);
 	}
 
-	.entries-table th,
-	.entries-table td {
-		padding: var(--space-2) var(--space-3);
-		border-bottom: 1px solid var(--color-border);
-		text-align: left;
+	.entry-card {
+		padding: var(--space-3);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		background: var(--color-bg);
 	}
 
-	.entries-table th {
+	.entry-card--active {
+		border-color: var(--color-accent, var(--color-border));
+		box-shadow: 0 0 0 1px var(--color-accent, transparent) inset;
+	}
+
+	.entry-card__header {
+		display: flex;
+		justify-content: space-between;
+		align-items: flex-start;
+		gap: var(--space-3);
+		flex-wrap: wrap;
+		margin-bottom: var(--space-3);
+	}
+
+	.entry-card__title {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		flex-wrap: wrap;
+	}
+
+	.entry-card__name {
+		font-size: var(--text-base, 1rem);
 		font-weight: 600;
-		color: var(--color-text-muted);
 	}
 
-	.entries-table tr.entry-active {
+	.entry-card__badge {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1);
+		padding: 0 var(--space-2);
+		border-radius: var(--radius-sm);
+		font-size: var(--text-xs, 0.75rem);
+		color: var(--color-text-muted);
 		background: var(--color-bg-muted);
 	}
 
-	.migration-target-picker {
-		display: inline-flex;
-		align-items: center;
+	.entry-card__badge--active {
+		color: var(--color-success-text, var(--color-text));
+		background: var(--color-success-bg, var(--color-bg-muted));
+	}
+
+	.entry-card__badge--encrypted {
+		color: var(--color-text-muted);
+	}
+
+	.entry-card__actions {
+		display: flex;
 		gap: var(--space-2);
-		margin-right: var(--space-2);
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: flex-end;
 	}
 
-	.migration-target-picker select {
-		padding: var(--space-1) var(--space-2);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-sm);
-		background: var(--color-bg);
-		color: var(--color-text);
+	/* Each button occupies a fixed min-width so the same slot on
+	   the next card lines up vertically. `max-content` on the label
+	   prevents the button from stretching taller than needed.
+	   Placeholders keep their layout box but the pixels are gone
+	   and the button is unclickable. */
+	.entry-card__action-btn {
+		min-width: 10rem;
+		justify-content: center;
 	}
 
-	.cutover-hint__note {
-		flex: 1;
-		min-width: 12rem;
+	.entry-card__action-btn--placeholder {
+		visibility: hidden;
+		pointer-events: none;
+	}
+
+	.entry-card__grid {
+		display: grid;
+		grid-template-columns: max-content 1fr;
+		gap: var(--space-1) var(--space-3);
 		margin: 0;
+		font-size: var(--text-sm, 0.875rem);
+	}
+
+	.entry-card__grid dt {
+		color: var(--color-text-muted);
+	}
+
+	.entry-card__grid dd {
+		margin: 0;
+	}
+
+	.entry-card__mono {
+		font-family: var(--font-mono, monospace);
+		font-size: var(--text-xs, 0.75rem);
+		word-break: break-all;
+	}
+
+	.entry-card__test-result {
+		margin-top: var(--space-3);
+		padding-top: var(--space-2);
+		border-top: 1px solid var(--color-border);
+	}
+
+	.mig-status {
+		margin: var(--space-3) 0;
+	}
+
+	.mig-status button {
+		margin-left: var(--space-2);
 	}
 
 	.smtp-test {

@@ -476,14 +476,7 @@ export interface StorageEntrySummary {
 }
 
 export interface StorageSettings {
-	backend: string;
-	s3_endpoint_url?: string | null;
-	s3_bucket?: string | null;
-	s3_region?: string | null;
-	s3_access_key_set?: boolean;
-	s3_secret_key_set?: boolean;
-	s3_force_path_style?: boolean;
-	env_overrides?: string[];
+	// Live stats — what the running process reports.
 	current_backend?: string;
 	total_blobs?: number;
 	total_bytes_stored?: number;

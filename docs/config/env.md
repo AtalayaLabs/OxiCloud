@@ -78,7 +78,59 @@ Most runtime variables use the `OXICLOUD_` prefix. A few build-time or allocator
 | `OXICLOUD_GRANT_CLEANUP_INTERVAL_HOURS` | `24` | How often the grant-cleanup daemon fires. Clamped to a minimum of 1 hour. Adjusting this doesn't change what gets deleted — only how promptly. Daily is fine for any realistic grant volume. |
 | `OXICLOUD_WEBDAV_DRIVE_LISTING_PREFIX` | `@drive` | Native WebDAV URL segment that renders the caller's drive list. Sanitized by trimming leading/trailing `/`. Three shapes: (1) default `@drive` — `/webdav/…` addresses the caller's default personal drive (back-compat), `/webdav/@drive/` returns the drive listing, `/webdav/@drive/<uuid\|name>/…` targets a specific drive. (2) empty string `""` — `/webdav/` IS the drive listing, `/webdav/<uuid\|name>/…` targets a specific drive, no default-drive shortcut. (3) any other string (e.g. `drives`) — same shape as `@drive` with that segment substituted. Only drives the caller has Read on via `role_grants` resolve. |
 
-## Storage Backend
+## Storage Entries (multi-entry, recommended)
+
+Declare one or more **named** storage backends. The one the app runs on is picked from the DB (`admin_settings.storage.active_backend_name`); the admin panel's storage tab flips the pointer, and cross-backend migration is a recoverable job that copies blobs between two entries with a read-only safety window. See [Admin Settings — Storage & Migration](/config/admin-settings) for the operator flow and the [multi-entry design doc](https://github.com/oxicloud/oxicloud/blob/main/docs/plan/storage-multi-entry.md) for the full model.
+
+| Variable | Default | Description |
+|---|---|---|
+| `OXICLOUD_STORAGE_ENTRIES` | — | Comma-separated allowlist of entry names. Names must match `[a-z0-9_-]{1,32}` and be unique. Order is preserved (the first entry is the fallback when the DB pointer is unset — fresh install). |
+
+Each declared name `<N>` then reads its own set of per-entry variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `OXICLOUD_STORAGE_<N>_BACKEND` | — | Backend type for entry `<N>`: `local` \| `s3` \| `azure` (required per entry) |
+| `OXICLOUD_STORAGE_<N>_ROOT_DIR` | `OXICLOUD_STORAGE_PATH` | Local-only: root directory for this entry's `.blobs/`. Falls back to the ambient `OXICLOUD_STORAGE_PATH` when unset. |
+| `OXICLOUD_STORAGE_<N>_S3_BUCKET` | — | S3-only: bucket name (required when backend=s3) |
+| `OXICLOUD_STORAGE_<N>_S3_REGION` | `us-east-1` | S3-only: AWS region |
+| `OXICLOUD_STORAGE_<N>_S3_ENDPOINT_URL` | — | S3-only: custom endpoint for non-AWS providers |
+| `OXICLOUD_STORAGE_<N>_S3_ACCESS_KEY` | — | S3-only: access key ID |
+| `OXICLOUD_STORAGE_<N>_S3_SECRET_KEY` | — | S3-only: secret access key |
+| `OXICLOUD_STORAGE_<N>_S3_FORCE_PATH_STYLE` | `false` | S3-only: path-style URLs (required for MinIO, R2) |
+| `OXICLOUD_STORAGE_<N>_AZURE_ACCOUNT_NAME` | — | Azure-only: storage account name |
+| `OXICLOUD_STORAGE_<N>_AZURE_ACCOUNT_KEY` | — | Azure-only: storage account key |
+| `OXICLOUD_STORAGE_<N>_AZURE_CONTAINER` | — | Azure-only: blob container name (required when backend=azure) |
+| `OXICLOUD_STORAGE_<N>_AZURE_SAS_TOKEN` | — | Azure-only: SAS token (alternative to account key) |
+| `OXICLOUD_STORAGE_<N>_AZURE_ENDPOINT_URL` | — | Azure-only: custom endpoint (Azurite, private deployments) |
+| `OXICLOUD_STORAGE_<N>_ENCRYPTION_KEY` | — | Base64-encoded 32-byte AES-256 key. **Presence implies encryption is enabled** on this entry — no separate enable flag. Bad base64 / wrong length aborts boot. |
+| `OXICLOUD_STORAGE_<N>_ENCRYPTION_CIPHER` | `aes-256-gcm` when `_ENCRYPTION_KEY` is set | Cipher choice for this entry. Only `aes-256-gcm` is accepted today (future-proofing knob — the enum is ready for a second cipher, the implementation still hardcodes AES-256-GCM). Setting the cipher without a key aborts boot. |
+
+**Fail-fast rules** (boot aborts with actionable message):
+
+- A declared name whose required per-entry fields are missing (`_BACKEND` never set, S3 with no `_S3_BUCKET`, Azure with no `_AZURE_CONTAINER`).
+- Setting `OXICLOUD_STORAGE_ENTRIES` alongside any of the legacy flat vars below (`OXICLOUD_STORAGE_BACKEND`, `OXICLOUD_S3_*`, `OXICLOUD_AZURE_*`, `OXICLOUD_STORAGE_ENCRYPTION_*`). Pick one mode; the error lists every conflicting var to remove.
+- A DB pointer (`admin_settings.storage.active_backend_name`) that names an entry not in the current `_ENTRIES`. The error points at the repair flag `oxicloud --select-storage <name>` — verify + UPDATE DB + exit.
+
+**Example** — two entries, local disk plus an S3 target for planned migration:
+
+```
+OXICLOUD_STORAGE_ENTRIES=local_main,s3_prod
+
+OXICLOUD_STORAGE_local_main_BACKEND=local
+OXICLOUD_STORAGE_local_main_ROOT_DIR=/srv/oxicloud
+
+OXICLOUD_STORAGE_s3_prod_BACKEND=s3
+OXICLOUD_STORAGE_s3_prod_S3_BUCKET=my-oxicloud-bucket
+OXICLOUD_STORAGE_s3_prod_S3_REGION=us-east-1
+OXICLOUD_STORAGE_s3_prod_S3_ACCESS_KEY=…
+OXICLOUD_STORAGE_s3_prod_S3_SECRET_KEY=…
+OXICLOUD_STORAGE_s3_prod_ENCRYPTION_KEY=…  # openssl rand -base64 32
+```
+
+## Storage Backend (DEPRECATED — legacy single-backend)
+
+> ⚠️ **Deprecated.** Use [Storage Entries](#storage-entries-multi-entry-recommended) above for new deployments. These flat variables still work when `OXICLOUD_STORAGE_ENTRIES` is **unset** — the parser then synthesises one entry named `default` from them, keeping pre-multi-entry `.env` files booting unchanged. Booting via this path emits a `storage.legacy_flat_vars_deprecated` warning so operators see it in logs. Removal target: not yet fixed; migrate at your convenience by moving each variable below into `OXICLOUD_STORAGE_<NAME>_*` form under an entry declared in `OXICLOUD_STORAGE_ENTRIES`. **Setting any variable from this section alongside `OXICLOUD_STORAGE_ENTRIES` is a fail-fast boot error** — pick one mode.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -118,9 +170,11 @@ A least-recently-used disk cache that can speed up repeated reads from S3 or Azu
 | `OXICLOUD_STORAGE_CACHE_MAX_SIZE` | `53687091200` | Max cache size in bytes (50 GB) |
 | `OXICLOUD_STORAGE_CACHE_PATH` | `{STORAGE_PATH}/.blob-cache` | Cache directory |
 
-### Client-Side Encryption
+### Client-Side Encryption (DEPRECATED — per-entry key is the new home)
 
 AES-256-GCM encryption applied to blobs before they are written to any backend.
+
+> ⚠️ **Deprecated.** Prefer per-entry `OXICLOUD_STORAGE_<NAME>_ENCRYPTION_KEY` under an entry declared in `OXICLOUD_STORAGE_ENTRIES` — presence of the key implies encryption is enabled on that entry (no separate flag), and multi-entry enables cross-key rotation via migration to a new entry. The flat vars below still work in zero-entries mode and get folded into the synthesised `default` entry, alongside the same deprecation warning at boot.
 
 | Variable | Default | Description |
 |---|---|---|

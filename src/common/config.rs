@@ -383,6 +383,45 @@ impl Default for RetryConfig {
     }
 }
 
+/// AES-GCM / AEAD cipher choice for a `NamedStorageEntry`.
+///
+/// Today the only shipping variant is `Aes256Gcm` — the same cipher
+/// `EncryptedBlobBackend` has always hardcoded. The enum is
+/// future-proofing so `OXICLOUD_STORAGE_<N>_ENCRYPTION_CIPHER` is
+/// already an accepted knob when a second cipher lands
+/// (chacha20-poly1305, aes-256-siv, …). Absent + `_ENCRYPTION_KEY`
+/// present → defaults to `Aes256Gcm` for back-compat with entries
+/// declared before this field existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncryptionCipher {
+    /// AES-256 in Galois/Counter Mode. 96-bit nonce + 128-bit tag,
+    /// random nonce per blob. Layout on disk / S3:
+    /// `[12-byte nonce] [ciphertext] [16-byte GCM tag]`.
+    Aes256Gcm,
+}
+
+impl EncryptionCipher {
+    /// Stable env-var value → variant. Case-insensitive. Extend with
+    /// new variants as new ciphers land; the surface is one match
+    /// arm here + one branch in `EncryptedBlobBackend::new_for_cipher`
+    /// (when that gets added).
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.to_ascii_lowercase().as_str() {
+            "aes-256-gcm" | "aes256gcm" => Some(EncryptionCipher::Aes256Gcm),
+            _ => None,
+        }
+    }
+
+    /// Stable env-var-friendly name — the exact string
+    /// `OXICLOUD_STORAGE_<N>_ENCRYPTION_CIPHER` accepts, and what
+    /// admin surfaces render back to operators.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EncryptionCipher::Aes256Gcm => "aes-256-gcm",
+        }
+    }
+}
+
 /// One named storage entry declared in `.env`.
 ///
 /// See `docs/plan/storage-multi-entry.md`. Each entry is a fully-realised
@@ -417,6 +456,17 @@ pub struct NamedStorageEntry {
     /// separate `_ENCRYPTION_ENABLED` toggle. Absence = raw backend.
     /// Validated at parse time; boot aborts on invalid key.
     pub encryption_key_base64: Option<String>,
+    /// Cipher choice for this entry. `Some(Aes256Gcm)` today when
+    /// `_ENCRYPTION_KEY` is set (whether or not the operator
+    /// declared `_ENCRYPTION_CIPHER=aes-256-gcm` explicitly, since
+    /// that's currently the only supported variant).
+    /// `None` when no encryption key is set. When new ciphers land,
+    /// the parser reads `_ENCRYPTION_CIPHER` to distinguish; today
+    /// the field is effectively a boolean because there's exactly
+    /// one variant. Kept as an enum on the type so downstream code
+    /// pattern-matches the concept explicitly and we don't lose the
+    /// intent when a second cipher is added.
+    pub encryption_cipher: Option<EncryptionCipher>,
 }
 
 /// Validation for a `NamedStorageEntry.name`. Restricts to a safe subset
@@ -499,6 +549,25 @@ pub fn parse_storage_entries() -> Result<Vec<NamedStorageEntry>, String> {
         // for `storage.backend` / `storage.s3` / `storage.azure` /
         // `storage.encryption`; centralised here so the new entry
         // model and the legacy path stay bit-identical.
+        //
+        // Emit a deprecation warning naming every legacy var we saw
+        // so operators see the exact cleanup list in boot logs. Also
+        // logs to `target: "audit"` so it lands on the operational
+        // stream that gets watched by monitoring, not just the debug
+        // channel. Removal target isn't fixed yet — legacy still
+        // works — but the earlier operators start migrating, the
+        // less churn when we do pull the plug.
+        let names: Vec<&str> = legacy_present.iter().map(|v| **v).collect();
+        tracing::warn!(
+            target: "audit",
+            event = "storage.legacy_flat_vars_deprecated",
+            vars = ?names,
+            "⚠️  DEPRECATED: booted with legacy flat storage vars ({vars:?}). \
+             Migrate each var into `OXICLOUD_STORAGE_<NAME>_*` under an entry \
+             declared in `OXICLOUD_STORAGE_ENTRIES`. See \
+             docs/plan/storage-multi-entry.md §'Legacy flat-var interaction'.",
+            vars = names,
+        );
         return Ok(vec![synthesize_default_from_legacy_vars()?]);
     }
 
@@ -657,6 +726,38 @@ fn parse_named_entry(name: &str) -> Result<NamedStorageEntry, String> {
         _ => None,
     };
 
+    // Cipher — future-proofing knob. Only `aes-256-gcm` today.
+    // Explicit value → parse (unknown = fail-fast so a typo isn't
+    // silently defaulted). Absent + key set → default to
+    // `Aes256Gcm`. Absent + no key → `None` (no encryption at all).
+    let encryption_cipher = match env::var(format!("OXICLOUD_STORAGE_{name}_ENCRYPTION_CIPHER")) {
+        Ok(raw) if !raw.is_empty() => match EncryptionCipher::parse(&raw) {
+            Some(c) => Some(c),
+            None => {
+                return Err(format!(
+                    "OXICLOUD_STORAGE_{name}_ENCRYPTION_CIPHER=`{raw}` is not a known cipher — \
+                     supported: `aes-256-gcm`."
+                ));
+            }
+        },
+        _ => {
+            if encryption_key_base64.is_some() {
+                Some(EncryptionCipher::Aes256Gcm)
+            } else {
+                None
+            }
+        }
+    };
+
+    // Nonsense combo — cipher declared without a key. Refuse rather
+    // than silently ignore the operator's declared intent.
+    if encryption_cipher.is_some() && encryption_key_base64.is_none() {
+        return Err(format!(
+            "OXICLOUD_STORAGE_{name}_ENCRYPTION_CIPHER is set but \
+             OXICLOUD_STORAGE_{name}_ENCRYPTION_KEY is not — set the key too, or remove the cipher."
+        ));
+    }
+
     Ok(NamedStorageEntry {
         name: name.to_string(),
         backend,
@@ -664,6 +765,7 @@ fn parse_named_entry(name: &str) -> Result<NamedStorageEntry, String> {
         s3,
         azure,
         encryption_key_base64,
+        encryption_cipher,
     })
 }
 
@@ -736,6 +838,13 @@ fn synthesize_default_from_legacy_vars() -> Result<NamedStorageEntry, String> {
         }
         _ => None,
     };
+    // Legacy synthesis: no `OXICLOUD_STORAGE_ENCRYPTION_CIPHER` env
+    // var exists in the legacy flat surface — always default to
+    // AES-256-GCM when a legacy key is set (matches the hardcoded
+    // pre-multi-entry behaviour).
+    let encryption_cipher = encryption_key_base64
+        .as_ref()
+        .map(|_| EncryptionCipher::Aes256Gcm);
 
     Ok(NamedStorageEntry {
         name: "default".to_string(),
@@ -744,6 +853,7 @@ fn synthesize_default_from_legacy_vars() -> Result<NamedStorageEntry, String> {
         s3,
         azure,
         encryption_key_base64,
+        encryption_cipher,
     })
 }
 

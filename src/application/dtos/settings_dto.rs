@@ -143,31 +143,29 @@ pub struct DashboardStatsDto {
 // Storage Settings DTOs (Admin Panel)
 // ============================================================================
 
-/// Current storage settings returned to admin UI (secrets masked).
+/// Current storage settings returned to admin UI.
 ///
-/// Post-multi-entry (`docs/plan/storage-multi-entry.md`) this carries
-/// two shapes side-by-side: the legacy flat storage-config fields
-/// (for the pre-multi-entry admin UI, until slice 6 completes the
-/// form retirement), plus the new `entries` / `active_entry_name` /
-/// `migration_readonly` view the multi-entry UI drives its entries-list,
-/// migration-target-dropdown, and readonly-banner from.
+/// Post-multi-entry (`docs/plan/storage-multi-entry.md`) this exposes:
+/// - the entries declared in `.env` (safe: `location_hint` shows
+///   provider+bucket, credential-related fields never appear),
+/// - the name of the active entry (backend selection is admin-observable),
+/// - the read-only flag (drives the UI banner during migration),
+/// - the currently-live backend type + dedup stats (informational).
+///
+/// The pre-multi-entry `s3_*` / `backend` / `env_overrides` fields
+/// used to also appear here — they duplicated `entries[]` and leaked
+/// stale legacy admin_settings rows, so slice-6 dropped them. Consumers
+/// wanting per-provider details read them off `entries[i].backend` and
+/// `entries[i].location_hint` instead.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StorageSettingsDto {
-    /// Active backend type: "local" or "s3". Legacy flat-config field
-    /// — mirrors `entries[i where is_active].backend` for the active
-    /// entry when multi-entry is in use.
-    pub backend: String,
-    pub s3_endpoint_url: Option<String>,
-    pub s3_bucket: Option<String>,
-    pub s3_region: Option<String>,
-    /// True if an access key is configured (never reveals the actual value)
-    pub s3_access_key_set: bool,
-    /// True if a secret key is configured (never reveals the actual value)
-    pub s3_secret_key_set: bool,
-    pub s3_force_path_style: bool,
-    /// Field names overridden by environment variables (read-only in UI)
-    pub env_overrides: Vec<String>,
-    // ── Current stats ──
+    // ── Current stats — pertain to the running process ──
+    /// Backend type currently in use (`"local"` / `"s3"` / `"azure"`) —
+    /// what the LIVE `blob_backend` is bound to, from
+    /// `dedup_service.backend().backend_type()`. Redundant with
+    /// `entries[i where is_active].backend` in multi-entry mode; kept
+    /// because pre-boot / mid-migration inspection may still find it
+    /// useful.
     pub current_backend: String,
     pub total_blobs: u64,
     pub total_bytes_stored: u64,
@@ -229,9 +227,25 @@ pub struct SaveStorageSettingsDto {
     pub s3_force_path_style: Option<bool>,
 }
 
-/// Request body for testing a storage connection
-#[derive(Debug, Serialize, Deserialize)]
+/// Request body for testing a storage connection.
+///
+/// Two shapes are accepted:
+///
+/// - Multi-entry test — set `entry_name` to the name of a declared entry
+///   (from `OXICLOUD_STORAGE_ENTRIES`). Server looks it up, builds a fresh
+///   backend via the shared factory, runs health-check + round-trip against
+///   it. `backend` and the S3 fields are ignored in this mode.
+/// - Legacy DTO test — leave `entry_name` unset and populate `backend` +
+///   the S3 fields. Server builds a temporary backend from those values
+///   (pre-multi-entry behaviour). Still supported for zero-entries
+///   deployments; deprecated for new integrations.
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct TestStorageConnectionDto {
+    /// If set, all other fields are ignored — server resolves this
+    /// name against `OXICLOUD_STORAGE_ENTRIES` and tests that entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_name: Option<String>,
+    #[serde(default)]
     pub backend: String,
     pub s3_endpoint_url: Option<String>,
     pub s3_bucket: Option<String>,
@@ -240,6 +254,10 @@ pub struct TestStorageConnectionDto {
     pub s3_secret_key: Option<String>,
     pub s3_force_path_style: Option<bool>,
 }
+
+// Default is derived — every field is either an Option (defaults to
+// None) or `backend: String` (empty via `#[serde(default)]`). The
+// hand-rolled impl was flagged by clippy::derivable_impls.
 
 /// Result of a storage connection + round-trip test.
 ///

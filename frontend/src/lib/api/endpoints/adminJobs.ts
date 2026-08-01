@@ -53,11 +53,16 @@ export function listJobs(): Promise<JobSummary[]> {
  */
 export async function triggerJob(
 	name: string,
-	opts: { force?: boolean; deep?: boolean } = {}
+	opts: { force?: boolean; deep?: boolean; storage?: string } = {}
 ): Promise<TriggerResponse> {
 	const params = new URLSearchParams();
 	if (opts.force) params.set('force', 'true');
 	if (opts.deep) params.set('deep', 'true');
+	// `storage` scopes tenants that respect JobRunArgs.storage —
+	// currently blobs_consistency / backend_consistency (probes the
+	// named entry instead of the live backend). See
+	// `docs/plan/storage-multi-entry.md` slice 7.
+	if (opts.storage) params.set('storage', opts.storage);
 	const q = params.toString();
 	const url = `/api/admin/jobs/${encodeURIComponent(name)}/trigger${q ? `?${q}` : ''}`;
 	const res = await apiFetch(url, {

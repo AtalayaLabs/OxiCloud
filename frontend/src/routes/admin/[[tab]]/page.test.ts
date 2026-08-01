@@ -141,7 +141,7 @@ beforeEach(() => {
 		client_secret_set: false,
 		env_overrides: []
 	});
-	m(admin.getStorageSettings).mockResolvedValue({ backend: 'filesystem', env_overrides: [] });
+	m(admin.getStorageSettings).mockResolvedValue({});
 	m(admin.getMigration).mockResolvedValue({
 		status: 'idle',
 		total_blobs: 0,
@@ -298,13 +298,37 @@ it('sends an SMTP test email', async () => {
 	await waitFor(() => expect(admin.sendSmtpTest).toHaveBeenCalledWith('to@x.test'));
 });
 
-it('saves storage settings and starts a migration', async () => {
-	m(admin.saveStorage).mockResolvedValue(undefined);
+it('starts a migration from the per-entry Migrate & activate button', async () => {
+	// Multi-entry: no save form (retired). The storage tab lists
+	// entries from GET /admin/settings/storage; each non-active row
+	// has a Migrate & activate button that calls migrationAction
+	// with the entry name as target.
+	m(admin.getStorageSettings).mockResolvedValue({
+		current_backend: 'local',
+		entries: [
+			{
+				name: 'local_main',
+				backend: 'local',
+				is_active: true,
+				encryption_enabled: false,
+				location_hint: '/data'
+			},
+			{
+				name: 's3_prod',
+				backend: 's3',
+				is_active: false,
+				encryption_enabled: true,
+				location_hint: 'my-bucket'
+			}
+		],
+		active_entry_name: 'local_main',
+		migration_readonly: false
+	});
 	m(admin.migrationAction).mockResolvedValue(undefined);
+	// confirm() gates doMigrateActivate — auto-accept for the test.
+	vi.spyOn(window, 'confirm').mockReturnValue(true);
 	setTab('storage');
 	render(AdminPage);
-	await fireEvent.submit(await screen.findByTestId('admin-storage-form'));
-	await waitFor(() => expect(admin.saveStorage).toHaveBeenCalled());
-	await fireEvent.click(await screen.findByTestId('admin-migration-start-btn'));
-	await waitFor(() => expect(admin.migrationAction).toHaveBeenCalledWith('start'));
+	await fireEvent.click(await screen.findByTestId('admin-storage-migrate-s3_prod'));
+	await waitFor(() => expect(admin.migrationAction).toHaveBeenCalledWith('start', 's3_prod'));
 });
