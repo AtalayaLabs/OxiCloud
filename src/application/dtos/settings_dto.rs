@@ -143,26 +143,74 @@ pub struct DashboardStatsDto {
 // Storage Settings DTOs (Admin Panel)
 // ============================================================================
 
-/// Current storage settings returned to admin UI (secrets masked)
+/// Current storage settings returned to admin UI.
+///
+/// Post-multi-entry (`docs/plan/storage-multi-entry.md`) this exposes:
+/// - the entries declared in `.env` (safe: `location_hint` shows
+///   provider+bucket, credential-related fields never appear),
+/// - the name of the active entry (backend selection is admin-observable),
+/// - the read-only flag (drives the UI banner during migration),
+/// - the currently-live backend type + dedup stats (informational).
+///
+/// The pre-multi-entry `s3_*` / `backend` / `env_overrides` fields
+/// used to also appear here — they duplicated `entries[]` and leaked
+/// stale legacy admin_settings rows, so slice-6 dropped them. Consumers
+/// wanting per-provider details read them off `entries[i].backend` and
+/// `entries[i].location_hint` instead.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StorageSettingsDto {
-    /// Active backend type: "local" or "s3"
-    pub backend: String,
-    pub s3_endpoint_url: Option<String>,
-    pub s3_bucket: Option<String>,
-    pub s3_region: Option<String>,
-    /// True if an access key is configured (never reveals the actual value)
-    pub s3_access_key_set: bool,
-    /// True if a secret key is configured (never reveals the actual value)
-    pub s3_secret_key_set: bool,
-    pub s3_force_path_style: bool,
-    /// Field names overridden by environment variables (read-only in UI)
-    pub env_overrides: Vec<String>,
-    // ── Current stats ──
+    // ── Current stats — pertain to the running process ──
+    /// Backend type currently in use (`"local"` / `"s3"` / `"azure"`) —
+    /// what the LIVE `blob_backend` is bound to, from
+    /// `dedup_service.backend().backend_type()`. Redundant with
+    /// `entries[i where is_active].backend` in multi-entry mode; kept
+    /// because pre-boot / mid-migration inspection may still find it
+    /// useful.
     pub current_backend: String,
     pub total_blobs: u64,
     pub total_bytes_stored: u64,
     pub dedup_ratio: f64,
+    // ── Multi-entry view (slice 6) ──
+    /// All named storage entries declared in env. Empty when running
+    /// in legacy single-backend mode (`OXICLOUD_STORAGE_ENTRIES`
+    /// unset AND no legacy synthesis happened). Order matches
+    /// `_ENTRIES`.
+    pub entries: Vec<StorageEntrySummaryDto>,
+    /// Name of the entry the LIVE backend is currently bound to.
+    /// Populated as the boot-selected name (per
+    /// `CoreServices.active_backend_name`). Empty string for the
+    /// zero-entries legacy path (`"legacy"` sentinel).
+    pub active_entry_name: String,
+    /// Global read-only flag — when true, all write-adjacent
+    /// AuthZ checks refuse. Set by the migration handler at run
+    /// start; cleared by the boot-clear rule after operator
+    /// restart. Frontend renders a banner on the storage tab when
+    /// true.
+    pub migration_readonly: bool,
+}
+
+/// Per-entry summary emitted in `StorageSettingsDto.entries`. Never
+/// carries credentials — those live in env vars only. `is_active`
+/// marks which entry the LIVE backend uses right now (matches
+/// `active_entry_name` on the parent DTO).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StorageEntrySummaryDto {
+    pub name: String,
+    /// Backend type — "local" / "s3" / "azure".
+    pub backend: String,
+    /// True for exactly one entry (the entry the LIVE backend is on).
+    /// Frontend uses this to badge the active row and to exclude it
+    /// from the migration-target dropdown.
+    pub is_active: bool,
+    /// True when the entry has a per-entry encryption key. UI shows
+    /// a lock icon. Presence-only — the key bytes never leave the
+    /// server.
+    pub encryption_enabled: bool,
+    /// Human-readable physical location hint, if the backend surfaces
+    /// one (`root_dir` for Local, `bucket` for S3, `container` for
+    /// Azure). Cosmetic — helps the admin distinguish two Local
+    /// entries pointing at different disks.
+    pub location_hint: Option<String>,
 }
 
 /// Request body for saving storage settings from the admin panel
@@ -179,9 +227,25 @@ pub struct SaveStorageSettingsDto {
     pub s3_force_path_style: Option<bool>,
 }
 
-/// Request body for testing a storage connection
-#[derive(Debug, Serialize, Deserialize)]
+/// Request body for testing a storage connection.
+///
+/// Two shapes are accepted:
+///
+/// - Multi-entry test — set `entry_name` to the name of a declared entry
+///   (from `OXICLOUD_STORAGE_ENTRIES`). Server looks it up, builds a fresh
+///   backend via the shared factory, runs health-check + round-trip against
+///   it. `backend` and the S3 fields are ignored in this mode.
+/// - Legacy DTO test — leave `entry_name` unset and populate `backend` +
+///   the S3 fields. Server builds a temporary backend from those values
+///   (pre-multi-entry behaviour). Still supported for zero-entries
+///   deployments; deprecated for new integrations.
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct TestStorageConnectionDto {
+    /// If set, all other fields are ignored — server resolves this
+    /// name against `OXICLOUD_STORAGE_ENTRIES` and tests that entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_name: Option<String>,
+    #[serde(default)]
     pub backend: String,
     pub s3_endpoint_url: Option<String>,
     pub s3_bucket: Option<String>,
@@ -191,13 +255,54 @@ pub struct TestStorageConnectionDto {
     pub s3_force_path_style: Option<bool>,
 }
 
-/// Result of a storage connection test
+// Default is derived — every field is either an Option (defaults to
+// None) or `backend: String` (empty via `#[serde(default)]`). The
+// hand-rolled impl was flagged by clippy::derivable_impls.
+
+/// Result of a storage connection + round-trip test.
+///
+/// `connected` is TRUE when the backend was reachable (health-check
+/// passed — HEAD bucket / statfs). `roundtrip_passed` is TRUE when
+/// the subsequent PUT → GET → verify → DELETE cycle succeeded — it
+/// validates the exact permissions the migration job needs
+/// (`s3:PutObject` + `s3:GetObject` + `s3:DeleteObject` on S3, disk
+/// write permission on Local). All round-trip fields are `None` when
+/// reachability failed (we don't attempt the round-trip if we can't
+/// even HEAD the bucket).
+///
+/// `phase_reached` names the last step that succeeded — on
+/// `roundtrip_passed = false` it pinpoints where the failure hit
+/// (`put_ok` → wrote but couldn't confirm; `exists_ok` → wrote +
+/// confirmed but GET failed; etc.). `cleanup_ok = false` means the
+/// backend was readable + writable but the test object may be
+/// orphaned on it (~100 B, content-addressed — harmless, admin can
+/// reap by hash).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StorageTestResultDto {
     pub connected: bool,
     pub message: String,
     pub backend_type: String,
     pub available_bytes: Option<u64>,
+    /// Set only when reachability passed AND a round-trip was
+    /// attempted. `Some(true)` = full write + read + verify success;
+    /// `Some(false)` = reachability OK, round-trip failed at
+    /// `phase_reached`; `None` = round-trip not attempted (typically
+    /// because reachability failed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roundtrip_passed: Option<bool>,
+    /// Last round-trip phase completed successfully — one of
+    /// `initialize`, `put_ok`, `exists_ok`, `get_ok`, `verify_ok`,
+    /// `cleanup_ok`. `None` when round-trip wasn't attempted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase_reached: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes_written: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes_read: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roundtrip_elapsed_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cleanup_ok: Option<bool>,
 }
 
 // ============================================================================
@@ -220,18 +325,34 @@ pub struct MigrationStateDto {
 }
 
 /// Request body for `POST /api/admin/storage/migration/start`.
+///
+/// **Multi-entry contract** (see `docs/plan/storage-multi-entry.md`):
+/// `target_name` is REQUIRED — it names the storage entry the copy
+/// job will move blobs INTO. The admin picks it from the entries
+/// declared in `OXICLOUD_STORAGE_ENTRIES`. The trigger endpoint
+/// rejects the request when the name doesn't exist or equals the
+/// currently-active entry (no-op guard).
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct StartMigrationDto {
+    /// Name of the storage entry to migrate blobs INTO. Must be
+    /// present in `OXICLOUD_STORAGE_ENTRIES` and must differ from
+    /// the currently-active entry.
+    pub target_name: String,
     /// How many blobs to copy in parallel (default: 4).
+    ///
+    /// **Currently ignored** — the recoverable copy loop is
+    /// sequential (one blob at a time within the batch). Kept in
+    /// the DTO for wire-compat with the admin UI form; will be
+    /// honoured once per-batch fan-out lands (dual-write /
+    /// concurrent-copy future slice).
     pub concurrency: Option<usize>,
 }
 
-/// Request body (empty) for `POST /api/admin/storage/migration/verify`.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct VerifyMigrationDto {
-    /// Number of random blobs to sample-check (default: 100).
-    pub sample_size: Option<usize>,
-}
+// VerifyMigrationDto retired in slice 7 of
+// docs/plan/storage-multi-entry.md — the corresponding endpoint's
+// sample-based check is superseded by
+// `blobs_consistency?storage=<name>`, a full walk that emits
+// structured findings per mismatch.
 
 // ============================================================================
 // SMTP Settings DTOs (Admin Panel)

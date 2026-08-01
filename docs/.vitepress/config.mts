@@ -154,6 +154,7 @@ export default defineConfig({
             { text: "Trash & Recycle Bin", link: "/guide/trash" },
             { text: "ZIP & Compression", link: "/guide/zip-and-compression" },
             { text: "Internationalization", link: "/guide/i18n" },
+            { text: "Backend Storage", link: "/guide/backend-storage" },
           ],
         },
         {

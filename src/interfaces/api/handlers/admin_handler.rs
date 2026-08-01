@@ -19,14 +19,18 @@ use crate::application::dtos::settings_dto::{
     AdminCreateUserDto, AdminResetPasswordDto, DashboardStatsDto, ListUsersQueryDto,
     MigrationStateDto, SaveOidcSettingsDto, SaveStorageSettingsDto, SendSmtpTestDto, SmtpInfoDto,
     SmtpTestResultDto, StartMigrationDto, TestOidcConnectionDto, TestStorageConnectionDto,
-    UpdateUserActiveDto, UpdateUserQuotaDto, UpdateUserRoleDto, VerifyMigrationDto,
+    UpdateUserActiveDto, UpdateUserQuotaDto, UpdateUserRoleDto,
 };
 use crate::application::dtos::user_dto::{AdminUserSummaryDto, UserDto};
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::plugin_ports::{LogQuery, PluginManagementPort, PluginMgmtError};
+// JobStoreProvider is used only by the storage-migration shims below,
+// but the compiler needs the trait in scope for method resolution on
+// the concrete `PgJobStoreProvider` that lives on `AppState`.
 use crate::common::di::AppState;
 use crate::domain::repositories::drive_repository::DriveRepository;
 use crate::domain::services::authorization::{Resource, Subject};
+use crate::infrastructure::scheduler::JobStoreProvider;
 use crate::interfaces::api::handlers::dedup_handler::{get_stats, recalculate_stats};
 use crate::interfaces::api::handlers::search_handler::clear_search_cache;
 use crate::interfaces::errors::AppError;
@@ -70,13 +74,20 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         .route("/settings/storage", get(get_storage_settings))
         .route("/settings/storage", put(save_storage_settings))
         .route("/settings/storage/test", post(test_storage_connection))
-        // Storage migration
+        // Storage migration — thin shims over the recoverable-run
+        // engine (job_name = "storage_migration"). Retained under
+        // /storage/migration/* until the admin UI is rewired to
+        // /api/admin/jobs/storage_migration/*; both paths route to
+        // the same underlying JobRegistry dispatch. The old /complete
+        // endpoint is retired — a finished run is a Completed row,
+        // there's nothing to acknowledge.
         .route("/storage/migration", get(get_migration_status))
         .route("/storage/migration/start", post(start_migration))
         .route("/storage/migration/pause", post(pause_migration))
         .route("/storage/migration/resume", post(resume_migration))
-        .route("/storage/migration/complete", post(complete_migration))
-        .route("/storage/migration/verify", post(verify_migration))
+        // NOTE: /storage/migration/verify retired in slice 7 (see the
+        // comment near where `verify_migration` used to live). Use
+        // `POST /api/admin/jobs/blobs_consistency/trigger?storage=<name>`.
         // Encryption key generation
         .route(
             "/settings/storage/generate-key",
@@ -361,7 +372,15 @@ async fn test_storage_connection(
 // Storage migration handlers
 // ─────────────────────────────────────────────────────
 
-/// GET /api/admin/storage/migration — current migration progress
+/// GET /api/admin/storage/migration — current migration progress.
+///
+/// Shim over the recoverable-run engine: reads the latest
+/// `storage_migration` run from `jobs.recoverable_runs` (via the
+/// `JobStoreProvider`) and projects it into the legacy
+/// `MigrationStateDto` shape the admin storage tab expects. When no
+/// run has ever been triggered the response is an empty "idle" DTO —
+/// same behaviour the old in-memory `MigrationState::default()`
+/// produced.
 #[utoipa::path(
     get,
     path = "/api/admin/storage/migration",
@@ -376,17 +395,59 @@ async fn test_storage_connection(
 pub async fn get_migration_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, AppError> {
-    let s = state.migration_state.read().await;
-    Ok(Json(migration_state_to_dto(&s)))
+    use crate::infrastructure::services::storage_migration_service::STORAGE_MIGRATION_JOB_NAME;
+
+    let provider = state.core.job_store_provider.clone();
+    let latest = provider
+        .list_runs(STORAGE_MIGRATION_JOB_NAME, 1)
+        .await
+        .map_err(AppError::from)?
+        .into_iter()
+        .next();
+
+    let Some(run) = latest else {
+        return Ok(Json(idle_migration_dto()));
+    };
+
+    // Failed blobs are stored as findings, kind = "migration_failed".
+    // Pull up to a reasonable ceiling — the DTO ships the full list,
+    // and the admin UI truncates its own display.
+    let findings = provider
+        .list_findings(run.id, 500, 0)
+        .await
+        .map_err(AppError::from)?;
+    let failed_blobs: Vec<String> = findings
+        .into_iter()
+        .filter(|f| f.kind == "migration_failed")
+        .filter_map(|f| {
+            f.detail
+                .get("hash")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
+        .collect();
+
+    Ok(Json(run_to_migration_dto(&run, failed_blobs)))
 }
 
-/// POST /api/admin/storage/migration/start — begin background migration
+/// POST /api/admin/storage/migration/start — begin background migration.
+///
+/// Shim that forwards to `JobRegistry::trigger("storage_migration",
+/// ...)`. `run_or_resume` (the RecoverableAdapter's inner dispatch)
+/// resumes a Paused run or starts a fresh one — one endpoint covers
+/// both. Exclusivity is enforced at the DB layer (the partial unique
+/// index on `jobs.recoverable_runs`), so a second concurrent trigger
+/// is a no-op that returns the existing run.
+///
+/// `StartMigrationDto.concurrency` is currently ignored — the
+/// recoverable copy loop runs sequentially. Kept in the DTO for
+/// wire-compat with the admin UI; will be honoured if a concurrency
+/// knob is added later.
 #[utoipa::path(
     post,
     path = "/api/admin/storage/migration/start",
     responses(
         (status = 200, description = "Migration started"),
-        (status = 400, description = "Migration already running"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required")
     ),
@@ -397,71 +458,55 @@ pub async fn start_migration(
     State(state): State<Arc<AppState>>,
     Json(dto): Json<StartMigrationDto>,
 ) -> Result<impl IntoResponse, AppError> {
-    use crate::infrastructure::services::migration_blob_backend::MigrationStatus;
-
-    // Check not already running.
-    {
-        let s = state.migration_state.read().await;
-        if s.status == MigrationStatus::Running {
-            return Err(AppError::bad_request("A migration is already running"));
-        }
+    // Validate at the HTTP layer (before spawning) so unknown / no-op
+    // targets get a synchronous 400 response instead of burning a
+    // failed run row. The handler's own checks are second-line
+    // defence for the resume path where args aren't repeated.
+    let entries = &state.core.config.storage_entries;
+    // Snapshot the active-name for the guard. Read lock held only
+    // for the clone.
+    let active = state
+        .core
+        .active_backend_name
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if entries.iter().all(|e| e.name != dto.target_name) {
+        let available = if entries.is_empty() {
+            "(none)".to_string()
+        } else {
+            entries
+                .iter()
+                .map(|e| e.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        return Err(AppError::bad_request(format!(
+            "unknown target entry `{}`. Available: [{available}]",
+            dto.target_name
+        )));
     }
-
-    let pool = state
-        .db_pool
-        .clone()
-        .ok_or_else(|| AppError::internal_error("Database not available"))?;
-
-    let source = state.core.dedup_service.backend().clone();
-    let svc = state
-        .storage_settings_service
-        .as_ref()
-        .ok_or_else(|| AppError::internal_error("Storage settings service not available"))?;
-
-    // Build target backend from saved settings.
-    let effective = svc
-        .load_effective_storage_config()
-        .await
-        .map_err(|e| AppError::internal_error(format!("Failed to load storage config: {}", e)))?;
-
-    let target = build_backend_from_config(&effective)
-        .map_err(|e| AppError::internal_error(format!("Failed to build target backend: {}", e)))?;
-    target
-        .initialize()
-        .await
-        .map_err(|e| AppError::internal_error(format!("Target backend init failed: {}", e)))?;
-
-    let concurrency = dto.concurrency.unwrap_or(4).clamp(1, 16);
-    let migration_state = state.migration_state.clone();
-
-    // Spawn the background migration job.
-    tokio::spawn(async move {
-        if let Err(e) = crate::infrastructure::services::migration_job::run_migration(
-            source,
-            target,
-            pool,
-            migration_state,
-            concurrency,
-        )
-        .await
-        {
-            tracing::error!("Migration job error: {}", e);
-        }
-    });
-
-    Ok((
-        StatusCode::OK,
-        Json(serde_json::json!({ "message": "Migration started" })),
-    ))
+    if dto.target_name == active {
+        return Err(AppError::bad_request(format!(
+            "target `{}` is the currently-active entry — pick a different entry to migrate to",
+            dto.target_name
+        )));
+    }
+    trigger_storage_migration(state, Some(dto.target_name)).await
 }
 
-/// POST /api/admin/storage/migration/pause — pause running migration
+/// POST /api/admin/storage/migration/pause — pause a running migration.
+///
+/// Shim over cooperative cancel: flips the run row's status to
+/// `CancelRequested`; the recoverable handler polls between batches
+/// and returns `Paused` at the next boundary. If nothing is running,
+/// returns 200 with `paused: false` — matches the "no-op is fine"
+/// contract of `/api/admin/jobs/{name}/cancel`.
 #[utoipa::path(
     post,
     path = "/api/admin/storage/migration/pause",
     responses(
-        (status = 200, description = "Migration paused"),
-        (status = 400, description = "No running migration"),
+        (status = 200, description = "Pause signalled (or no-op)"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required")
     ),
@@ -471,26 +516,45 @@ pub async fn start_migration(
 pub async fn pause_migration(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, AppError> {
-    use crate::infrastructure::services::migration_blob_backend::MigrationStatus;
+    use crate::infrastructure::services::storage_migration_service::STORAGE_MIGRATION_JOB_NAME;
 
-    let mut s = state.migration_state.write().await;
-    if s.status != MigrationStatus::Running {
-        return Err(AppError::bad_request("No running migration to pause"));
-    }
-    s.status = MigrationStatus::Paused;
+    tracing::info!(
+        target: "audit",
+        event = "storage_migration.pause_requested",
+        "👮🏻‍♂️ Admin requested storage_migration pause"
+    );
+
+    let flipped = state
+        .core
+        .job_store_provider
+        .request_cancel(STORAGE_MIGRATION_JOB_NAME)
+        .await
+        .map_err(AppError::from)?;
+
     Ok((
         StatusCode::OK,
-        Json(serde_json::json!({ "message": "Migration paused" })),
+        Json(serde_json::json!({
+            "paused":  flipped.is_some(),
+            "run_id":  flipped,
+            "message": if flipped.is_some() {
+                "Pause requested — handler will yield at the next batch boundary"
+            } else {
+                "No running migration to pause"
+            },
+        })),
     ))
 }
 
-/// POST /api/admin/storage/migration/resume — resume paused migration
+/// POST /api/admin/storage/migration/resume — resume a paused migration.
+///
+/// Same underlying trigger as `/start`: `run_or_resume` inspects the
+/// latest row and picks Fresh / Resume / AlreadyActive at dispatch
+/// time. Kept as a distinct endpoint for wire-compat.
 #[utoipa::path(
     post,
     path = "/api/admin/storage/migration/resume",
     responses(
-        (status = 200, description = "Migration resumed"),
-        (status = 400, description = "No paused migration"),
+        (status = 200, description = "Migration resumed (or already running)"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required")
     ),
@@ -500,131 +564,123 @@ pub async fn pause_migration(
 pub async fn resume_migration(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, AppError> {
-    use crate::infrastructure::services::migration_blob_backend::MigrationStatus;
+    // Resume path — no target_name in the body. The handler reads
+    // it from `params.target_name` stamped on the original Fresh
+    // open. Refuses gracefully via RunOutcome::Failed if there is
+    // no Paused row to resume.
+    trigger_storage_migration(state, None).await
+}
 
-    // Set status back to Running — the background task checks on each blob.
-    let mut s = state.migration_state.write().await;
-    if s.status != MigrationStatus::Paused {
-        return Err(AppError::bad_request("No paused migration to resume"));
-    }
-    s.status = MigrationStatus::Running;
+// verify_migration endpoint retired (slice 7 of
+// docs/plan/storage-multi-entry.md). It was a sample-based sanity
+// check against the currently-effective target backend; superseded
+// by `POST /api/admin/jobs/blobs_consistency/trigger?storage=<name>`
+// which does a full walk against ANY named entry (not just the
+// migration target), records structured findings per mismatch, and
+// integrates with the standard runs / cancel / findings admin
+// surface. Frontend "Verify integrity" button removed in the same
+// slice.
+
+/// Shared body for `start` / `resume` — both funnel through
+/// `run_or_resume` via `JobRegistry::trigger`. Detaches into a
+/// `tokio::spawn` so the HTTP response returns immediately — same
+/// rationale as `trigger_job` above (browser timeout mid-await would
+/// desync `current_run_start` from the actually-running task). The
+/// admin UI polls `GET /storage/migration` for progress; the trigger
+/// itself is fire-and-forget.
+async fn trigger_storage_migration(
+    state: Arc<AppState>,
+    target_name: Option<String>,
+) -> Result<axum::response::Response, AppError> {
+    use crate::infrastructure::scheduler::JobRunArgs;
+    use crate::infrastructure::services::storage_migration_service::STORAGE_MIGRATION_JOB_NAME;
+
+    tracing::info!(
+        target: "audit",
+        event = "storage_migration.trigger_requested",
+        target_name = target_name.as_deref().unwrap_or("<resume>"),
+        "👮🏻‍♂️ Admin triggered storage_migration"
+    );
+
+    let registry = state.core.job_registry.clone();
+    let args = JobRunArgs {
+        storage: target_name,
+        ..JobRunArgs::default()
+    };
+    tokio::spawn(async move {
+        registry.trigger(STORAGE_MIGRATION_JOB_NAME, &args).await;
+    });
+
     Ok((
-        StatusCode::OK,
-        Json(serde_json::json!({ "message": "Migration resumed" })),
-    ))
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({
+            "message": "Migration dispatched — poll GET /api/admin/storage/migration for status",
+            "detached": true,
+        })),
+    )
+        .into_response())
 }
 
-/// POST /api/admin/storage/migration/complete — finalize migration
-#[utoipa::path(
-    post,
-    path = "/api/admin/storage/migration/complete",
-    responses(
-        (status = 200, description = "Migration finalized"),
-        (status = 400, description = "Migration not completed"),
-        (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Admin required")
-    ),
-    security(("bearerAuth" = [])),
-    tag = "admin"
-)]
-pub async fn complete_migration(
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, AppError> {
-    use crate::infrastructure::services::migration_blob_backend::MigrationStatus;
-
-    let s = state.migration_state.read().await;
-    if s.status != MigrationStatus::Completed {
-        return Err(AppError::bad_request(
-            "Migration must be completed (100%) before finalizing",
-        ));
+/// Idle-state DTO — no run has been triggered yet.
+fn idle_migration_dto() -> MigrationStateDto {
+    MigrationStateDto {
+        status: "idle".to_string(),
+        total_blobs: 0,
+        migrated_blobs: 0,
+        // `migrated_bytes` and `throughput_bytes_per_sec` are no
+        // longer tracked — the recoverable engine bumps
+        // `stats.scanned_count` (a blob-count aggregator), not a
+        // bytes counter. The admin UI keeps these fields for
+        // wire-compat; they read 0 / null.
+        migrated_bytes: 0,
+        failed_blobs: Vec::new(),
+        started_at: None,
+        completed_at: None,
+        throughput_bytes_per_sec: None,
     }
-    drop(s);
-
-    // Mark as idle — the admin has acknowledged completion.
-    let mut s = state.migration_state.write().await;
-    s.status = MigrationStatus::Idle;
-
-    Ok((
-        StatusCode::OK,
-        Json(
-            serde_json::json!({ "message": "Migration finalized. Restart the server to use the new backend." }),
-        ),
-    ))
 }
 
-/// POST /api/admin/storage/migration/verify — run integrity check
-#[utoipa::path(
-    post,
-    path = "/api/admin/storage/migration/verify",
-    responses(
-        (status = 200, description = "Verification result"),
-        (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Admin required"),
-        (status = 500, description = "Verification failed")
-    ),
-    security(("bearerAuth" = [])),
-    tag = "admin"
-)]
-pub async fn verify_migration(
-    State(state): State<Arc<AppState>>,
-    Json(dto): Json<VerifyMigrationDto>,
-) -> Result<impl IntoResponse, AppError> {
-    let pool = state
-        .db_pool
-        .clone()
-        .ok_or_else(|| AppError::internal_error("Database not available"))?;
-
-    let svc = state
-        .storage_settings_service
-        .as_ref()
-        .ok_or_else(|| AppError::internal_error("Storage settings service not available"))?;
-
-    let effective = svc
-        .load_effective_storage_config()
-        .await
-        .map_err(|e| AppError::internal_error(format!("Failed to load storage config: {}", e)))?;
-
-    let target = build_backend_from_config(&effective)
-        .map_err(|e| AppError::internal_error(format!("Failed to build target backend: {}", e)))?;
-    target
-        .initialize()
-        .await
-        .map_err(|e| AppError::internal_error(format!("Target backend init failed: {}", e)))?;
-
-    let sample_size = dto.sample_size.unwrap_or(100).clamp(1, 1000);
-
-    let result =
-        crate::infrastructure::services::migration_job::verify_migration(target, pool, sample_size)
-            .await
-            .map_err(|e| AppError::internal_error(format!("Verification failed: {}", e)))?;
-
-    Ok(Json(result))
-}
-
-/// Helper: convert MigrationState to DTO for JSON serialization.
-fn migration_state_to_dto(
-    s: &crate::infrastructure::services::migration_blob_backend::MigrationState,
+/// Project a recoverable `RunSummary` into the admin UI's
+/// `MigrationStateDto`. Byte-counter fields are always 0 / None —
+/// see `idle_migration_dto`'s comment.
+fn run_to_migration_dto(
+    run: &crate::infrastructure::scheduler::RunSummary,
+    failed_blobs: Vec<String>,
 ) -> MigrationStateDto {
-    let throughput = match (s.started_at, s.migrated_bytes) {
-        (Some(start), bytes) if bytes > 0 => {
-            let elapsed = chrono::Utc::now()
-                .signed_duration_since(start)
-                .num_seconds()
-                .max(1) as f64;
-            Some(bytes as f64 / elapsed)
-        }
-        _ => None,
+    use crate::infrastructure::scheduler::RunStatus;
+
+    // Fold CancelRequested into "paused" — from the admin UI's
+    // point of view a cancel-in-flight is the "waiting for the
+    // handler to yield" state. Same visual affordance as Paused.
+    let status = match run.status {
+        RunStatus::Running => "running",
+        RunStatus::Paused => "paused",
+        RunStatus::CancelRequested => "paused",
+        RunStatus::Completed => "completed",
+        RunStatus::Failed => "failed",
+    }
+    .to_string();
+
+    let (total_blobs, migrated_blobs) = match run.progress.as_ref() {
+        Some(p) => (p.total, p.scanned),
+        None => (
+            0,
+            run.stats
+                .get("scanned_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+        ),
     };
 
     MigrationStateDto {
-        status: format!("{:?}", s.status).to_lowercase(),
-        total_blobs: s.total_blobs,
-        migrated_blobs: s.migrated_blobs,
-        migrated_bytes: s.migrated_bytes,
-        failed_blobs: s.failed_blobs.clone(),
-        started_at: s.started_at.map(|d| d.to_rfc3339()),
-        completed_at: s.completed_at.map(|d| d.to_rfc3339()),
-        throughput_bytes_per_sec: throughput,
+        status,
+        total_blobs,
+        migrated_blobs,
+        migrated_bytes: 0,
+        failed_blobs,
+        started_at: Some(run.started_at.to_rfc3339()),
+        completed_at: run.completed_at.map(|d| d.to_rfc3339()),
+        throughput_bytes_per_sec: None,
     }
 }
 
@@ -650,34 +706,6 @@ pub async fn generate_encryption_key() -> Result<impl IntoResponse, AppError> {
         "key": key_b64,
         "warning": "Store this key securely. If lost, encrypted data is IRRECOVERABLY LOST."
     })))
-}
-
-/// Helper: build a BlobStorageBackend from StorageConfig.
-fn build_backend_from_config(
-    config: &crate::common::config::StorageConfig,
-) -> Result<
-    std::sync::Arc<dyn crate::application::ports::blob_storage_ports::BlobStorageBackend>,
-    String,
-> {
-    match config.backend {
-        crate::common::config::StorageBackendType::Local => Ok(std::sync::Arc::new(
-            crate::infrastructure::services::local_blob_backend::LocalBlobBackend::new(
-                std::path::Path::new(&config.root_dir),
-            ),
-        )),
-        crate::common::config::StorageBackendType::S3 => {
-            let s3 = config.s3.as_ref().ok_or("S3 config missing")?;
-            Ok(std::sync::Arc::new(
-                crate::infrastructure::services::s3_blob_backend::S3BlobBackend::new(s3),
-            ))
-        }
-        crate::common::config::StorageBackendType::Azure => {
-            let az = config.azure.as_ref().ok_or("Azure config missing")?;
-            Ok(std::sync::Arc::new(
-                crate::infrastructure::services::azure_blob_backend::AzureBlobBackend::new(az),
-            ))
-        }
-    }
 }
 
 // ============================================================================
@@ -2112,6 +2140,16 @@ pub struct TriggerJobQuery {
     pub force: bool,
     #[serde(default)]
     pub deep: bool,
+    /// Optional named storage entry to scope the run against — used by
+    /// tenants that respect `JobRunArgs.storage` (currently
+    /// `storage_migration` for its target; `blobs_consistency` /
+    /// `backend_consistency` will pick this up in slice 7 to probe a
+    /// non-active entry). Ignored by tenants that don't declare a
+    /// semantic for it. Unknown-name validation is per-tenant — the
+    /// generic trigger endpoint doesn't cross-check against
+    /// `AppConfig.storage_entries`.
+    #[serde(default)]
+    pub storage: Option<String>,
 }
 
 /// `POST /api/admin/jobs/{name}/trigger` — dispatch one run off-schedule.
@@ -2158,7 +2196,42 @@ pub async fn trigger_job(
     let args = JobRunArgs {
         force: query.force,
         deep: query.deep,
+        storage: query.storage.clone(),
     };
+
+    // Jobs that can run for hours (storage_migration, future
+    // reextract_*) are detached: `tokio::spawn` the trigger so the
+    // HTTP request returns immediately. Without this, browser HTTP
+    // timeouts drop the request future mid-await → the SemaphorePermit
+    // gets released while the spawned handler task keeps running →
+    // `current_run_start` goes stale → a second click enters the
+    // "already_running" short-circuit and CLEARS the in-memory state
+    // even though the original task is still copying blobs → the
+    // Cancel button hides because `job.running = false`. Detaching
+    // keeps the permit + `current_run_start` scoped to the actual
+    // handler-task lifetime.
+    //
+    // Fast-completing jobs (consistency checks, batch coordinator)
+    // stay inline so the operator sees the outcome envelope.
+    if is_detached_job(&name) {
+        let name_clone = name.clone();
+        let registry = state.core.job_registry.clone();
+        tokio::spawn(async move {
+            registry.trigger(&name_clone, &args).await;
+        });
+        return (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({
+                "ok": true,
+                "dispatched": true,
+                "detached": true,
+                "name": name,
+                "message": "Dispatched — poll /runs for status",
+            })),
+        )
+            .into_response();
+    }
+
     match state.core.job_registry.trigger(&name, &args).await {
         Some(outcome) => (
             StatusCode::OK,
@@ -2174,6 +2247,15 @@ pub async fn trigger_job(
         )
             .into_response(),
     }
+}
+
+/// Jobs that MUST be dispatched with `tokio::spawn` because they run
+/// long enough to outlast an HTTP request timeout. Kept as a small
+/// hardcoded allowlist (rather than a flag on `JobEntry`) until
+/// there's a second long-running tenant that justifies the plumbing.
+/// See the comment in `trigger_job` for why detach matters.
+fn is_detached_job(name: &str) -> bool {
+    matches!(name, "storage_migration")
 }
 
 /// `POST /api/admin/jobs/{name}/cancel` — cooperative cancel of the

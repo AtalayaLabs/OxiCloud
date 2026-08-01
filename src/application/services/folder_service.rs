@@ -1810,6 +1810,7 @@ mod mount_authz_integration {
             Arc::new(FolderDbRepository::new(pool.clone())),
             Arc::new(FileBlobReadRepository::new_stub()),
             Arc::new(SubjectGroupPgRepository::new(pool.clone())),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
         ))
     }
 
@@ -2377,7 +2378,13 @@ mod cascade_hook_integration_tests {
             folder_repo.clone(),
         ));
         let group_repo = Arc::new(SubjectGroupPgRepository::new(pool.clone()));
-        Arc::new(PgAclEngine::new(pool, folder_repo, file_repo, group_repo))
+        Arc::new(PgAclEngine::new(
+            pool,
+            folder_repo,
+            file_repo,
+            group_repo,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        ))
     }
 
     /// Seed a file row under `folder_id`. `blob_hash` is just a string —

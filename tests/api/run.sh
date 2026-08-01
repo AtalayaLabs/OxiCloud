@@ -168,6 +168,7 @@ hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test 
   "$API_DIR/dedup_admin_gate.hurl" \
   "$API_DIR/admin_jobs.hurl" \
   "$API_DIR/recoverable_jobs.hurl" \
+  "$API_DIR/storage_multi_entry.hurl" \
   "$API_DIR/default_caldav_carddav.hurl" \
   "$API_DIR/dav_error_mapping.hurl" \
   "$API_DIR/carddav_vcard_properties.hurl" \

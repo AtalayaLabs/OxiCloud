@@ -877,7 +877,21 @@ strip = true
 
 [profile.dev]
 opt-level = 1
-debug = true
+# `line-tables-only` keeps file:line in panic backtraces (what you
+# actually need on a long-running server) while dropping the rest of
+# DWARF, which is worthless without a debugger. On this crate that
+# takes target/debug/deps from ~58 GB to ~15-20 GB. Combined with
+# `split-debuginfo = "unpacked"` (macOS-friendly: what little debug
+# info remains lands in external .dSYM bundles that the linker
+# doesn't embed in every .rlib), a full rebuild fits comfortably.
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+# Incremental compilation caches per-function IR fingerprints so a
+# small edit only recompiles what changed. On a single-crate rebuild
+# (oxicloud is one crate) the savings are modest — worth < the ~7 GB
+# incremental/ cache costs on disk. Rust-analyzer uses `cargo check`,
+# which has its own cache, so LSP responsiveness is unaffected.
+incremental = false
 
 [profile.bench]
 lto = "fat"

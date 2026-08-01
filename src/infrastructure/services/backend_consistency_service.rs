@@ -57,6 +57,12 @@ use crate::infrastructure::scheduler::{
 
 pub const BACKEND_CONSISTENCY_JOB_NAME: &str = "backend_consistency";
 
+/// Same `params` JSONB key `blobs_consistency` uses — kept identical
+/// so operators grepping run rows see the same convention across
+/// both storage-audit tenants.
+pub const PROBED_STORAGE_PARAM: &str =
+    crate::infrastructure::services::blobs_consistency_service::PROBED_STORAGE_PARAM;
+
 /// Batch size for backend enumeration + DB probe. 500 is enough to
 /// amortise the DB round-trip while keeping the cancel-poll cadence
 /// sub-second (each batch = one backend list + one DB probe + Rust
@@ -78,12 +84,32 @@ const _MAX_EXAMPLES: usize = 5;
 
 pub struct BackendConsistencyCheck {
     pool: Arc<PgPool>,
+    /// Default backend to enumerate when `args.storage` is `None` —
+    /// the live LIVE backend, injected at DI. `?storage=<name>`
+    /// swaps in a fresh backend for the named entry (via
+    /// [`build_entry_backend`]).
     backend: Arc<dyn BlobStorageBackend>,
+    /// Snapshot of `AppConfig.storage_entries` for `?storage=<name>`
+    /// resolution. Same rule blobs_consistency uses.
+    storage_entries: Vec<crate::common::config::NamedStorageEntry>,
+    /// `OXICLOUD_STORAGE_PATH` fallback for Local entries with no
+    /// `_ROOT_DIR`. Same fallback rule as boot.
+    storage_path_fallback: std::path::PathBuf,
 }
 
 impl BackendConsistencyCheck {
-    pub fn new(pool: Arc<PgPool>, backend: Arc<dyn BlobStorageBackend>) -> Self {
-        Self { pool, backend }
+    pub fn new(
+        pool: Arc<PgPool>,
+        backend: Arc<dyn BlobStorageBackend>,
+        storage_entries: Vec<crate::common::config::NamedStorageEntry>,
+        storage_path_fallback: std::path::PathBuf,
+    ) -> Self {
+        Self {
+            pool,
+            backend,
+            storage_entries,
+            storage_path_fallback,
+        }
     }
 
     pub async fn register_recoverable_job(
@@ -138,9 +164,76 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
     async fn run_resumable(
         &self,
         store: &dyn JobStore,
-        _args: &JobRunArgs,
+        args: &JobRunArgs,
         resume_cursor: Option<Vec<u8>>,
     ) -> RunOutcome {
+        // Resolve the backend to probe. Mirrors the shape
+        // `blobs_consistency` uses — Fresh + args.storage=Some stamps
+        // probed_storage into params; Resumed reads it back so a
+        // mid-audit restart re-uses the same target.
+        let is_fresh = resume_cursor.is_none();
+        let probed_storage: Option<String> = if is_fresh {
+            let name = args.storage.clone();
+            if let Some(n) = &name
+                && let Err(e) = store.set_string_param(PROBED_STORAGE_PARAM, n).await
+            {
+                return RunOutcome::Failed {
+                    message: format!("persist {PROBED_STORAGE_PARAM} to params: {e}"),
+                };
+            }
+            name
+        } else {
+            match store.get_string_param(PROBED_STORAGE_PARAM).await {
+                Ok(v) => v,
+                Err(e) => {
+                    return RunOutcome::Failed {
+                        message: format!("read {PROBED_STORAGE_PARAM} from params: {e}"),
+                    };
+                }
+            }
+        };
+        let backend: Arc<dyn BlobStorageBackend> = match &probed_storage {
+            None => self.backend.clone(),
+            Some(name) => match self.storage_entries.iter().find(|e| &e.name == name) {
+                Some(entry) => crate::infrastructure::services::entry_backend::build_entry_backend(
+                    entry,
+                    &self.storage_path_fallback,
+                ),
+                None => {
+                    let available = if self.storage_entries.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        self.storage_entries
+                            .iter()
+                            .map(|e| e.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    };
+                    return RunOutcome::Failed {
+                        message: format!(
+                            "storage entry `{name}` not found in OXICLOUD_STORAGE_ENTRIES. \
+                             Available: [{available}]"
+                        ),
+                    };
+                }
+            },
+        };
+        if let Err(e) = backend.initialize().await {
+            return RunOutcome::Failed {
+                message: format!("probed backend init: {e}"),
+            };
+        }
+        if let Some(name) = &probed_storage {
+            tracing::info!(
+                target: "audit",
+                event = "backend_consistency.probe_scoped",
+                run_id = %store.run_id(),
+                probed_storage = %name,
+                "backend_consistency enumerating entry `{name}` (via ?storage=<name>) instead \
+                 of live backend"
+            );
+        }
+
         // Cursor = opaque backend continuation token, UTF-8-encoded.
         // Each backend defines its own format (local = shard/hash,
         // S3 = ListObjectsV2 continuation token, Azure = list
@@ -190,11 +283,7 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
             // splits canonical blobs (checked for orphan) from
             // "unknown" entries (sidecar files, foreign namespaces —
             // emitted as informational notices).
-            let page = match self
-                .backend
-                .list_blob_hashes(cursor.clone(), BATCH_SIZE)
-                .await
-            {
+            let page = match backend.list_blob_hashes(cursor.clone(), BATCH_SIZE).await {
                 Ok(v) => v,
                 Err(e) => {
                     // Backend refuses / can't enumerate. First-batch
@@ -219,7 +308,7 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                             "anomaly",
                             None,
                             serde_json::json!({
-                                "backend": self.backend.backend_type(),
+                                "backend": backend.backend_type(),
                                 "error":   format!("{e}"),
                                 "note":    "backend refused enumeration; no per-blob orphan probes attempted",
                             }),
@@ -229,7 +318,7 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                             target: "oxicloud::consistency",
                             event = "backend_consistency.unenumerable",
                             run_id = %store.run_id(),
-                            backend = self.backend.backend_type(),
+                            backend = backend.backend_type(),
                             "backend refused enumeration (typical during migration or on backends without list support)"
                         );
                         return RunOutcome::Completed;
@@ -265,7 +354,7 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                     serde_json::json!({
                         "path":    unknown.path,
                         "mtime":   unknown.mtime.map(|t| t.to_rfc3339()),
-                        "backend": self.backend.backend_type(),
+                        "backend": backend.backend_type(),
                         "note":    "non-canonical file in blob namespace (sidecar / wrong extension); not managed by dedup",
                     }),
                 )
@@ -331,7 +420,7 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                     serde_json::json!({
                         "hash":    entry.hash,
                         "mtime":   entry.mtime.map(|t| t.to_rfc3339()),
-                        "backend": self.backend.backend_type(),
+                        "backend": backend.backend_type(),
                     }),
                 )
                 .await;

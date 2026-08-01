@@ -11,10 +11,12 @@
 	import type { FileItem, FolderItem, ItemType } from '$lib/api/types';
 	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
 	import DrivePicker from '$lib/components/DrivePicker.svelte';
+	import ReadOnlyBanner from '$lib/components/ReadOnlyBanner.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
 	import { dateTimeFormatFor, iconNameFromClass } from '$lib/utils/display';
 	import { userInitials, avatarColorIndex } from '$lib/utils/avatar';
 	import { i18n, LANGUAGES, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
+	import { serverStatus } from '$lib/stores/serverStatus.svelte';
 	import { apiFetch } from '$lib/api/client';
 	import { dialogs } from '$lib/stores/dialogs.svelte';
 	import { files as filesStore } from '$lib/stores/files.svelte';
@@ -1025,6 +1027,21 @@
 	</div>
 
 	<div class="content-area">
+		<!-- Server-wide maintenance banner. Fed by the
+		     `x-server-status` header read on every API response by
+		     `apiFetch` — no polling. Shows for every logged-in user
+		     while a storage migration is running so they know why
+		     writes are being refused, with live progress if
+		     available. Disappears automatically on the next API
+		     round-trip after the server clears the flag.
+
+		     Reuses `ReadOnlyBanner` (same component that renders a
+		     drive-frozen notice) with `variant="maintenance"` so the
+		     two banners are visually indistinguishable — just
+		     different copy. -->
+		{#if serverStatus().readonly}
+			<ReadOnlyBanner variant="maintenance" progress={serverStatus().migration} />
+		{/if}
 		{@render children()}
 	</div>
 </div>

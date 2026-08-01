@@ -127,14 +127,22 @@ fn make_socket(addr: &SocketAddr, reuse_port: bool) -> std::io::Result<Socket> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Minimal CLI:
-    //   --version            Print version + branch + commit hash and exit.
-    //   --config <path>      Load env from this file. When given, the default
-    //                        `./.env` probe is INTENTIONALLY skipped — tests
-    //                        use this to isolate from a developer's repo-root
-    //                        `.env`, and operators get a reproducible "this
-    //                        file and nothing else" boot.
+    //   --version                   Print version + branch + commit hash and exit.
+    //   --config <path>             Load env from this file. When given, the default
+    //                               `./.env` probe is INTENTIONALLY skipped — tests
+    //                               use this to isolate from a developer's repo-root
+    //                               `.env`, and operators get a reproducible "this
+    //                               file and nothing else" boot.
+    //   --select-storage <name>     One-shot repair: verify the named entry exists
+    //                               in the current .env, UPDATE
+    //                               admin_settings.storage.active_backend_name in
+    //                               the DB, and exit. Does NOT boot the server.
+    //                               Use to recover from the "boot fails on missing
+    //                               entry" case — see
+    //                               `docs/plan/storage-multi-entry.md` §Fallback.
     let mut args = std::env::args().skip(1);
     let mut config_path: Option<String> = None;
+    let mut select_storage: Option<String> = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--version" | "-V" => {
@@ -153,11 +161,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 config_path = Some(p);
             }
+            "--select-storage" => {
+                let Some(name) = args.next() else {
+                    eprintln!("--select-storage requires an entry name");
+                    std::process::exit(2);
+                };
+                select_storage = Some(name);
+            }
             "--help" | "-h" => {
-                println!(
-                    "OxiCloud v{}\n\nUSAGE:\n  oxicloud [--config <path>]\n  oxicloud --version\n  oxicloud --help\n",
-                    env!("CARGO_PKG_VERSION"),
-                );
+                print_help();
                 return Ok(());
             }
             other => {
@@ -195,11 +207,155 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Build the Tokio runtime explicitly (not via `#[tokio::main]`) so the
-    // worker + blocking pools are sized from the cgroup CPU quota and bounded
-    // — with the `.env` loaded above already in scope. See `build_runtime`.
+    // Build the Tokio runtime — needed either way (the repair flag also
+    // needs async DB access). Sized from cgroup CPU quota — see
+    // `build_runtime`.
     let runtime = build_runtime()?;
+
+    // Repair-flag short-circuit. `--select-storage` runs the small
+    // "verify entry + UPDATE pointer + exit" path and NEVER falls
+    // through to booting the server — the operator restarts normally
+    // after this exits.
+    if let Some(name) = select_storage {
+        return runtime.block_on(run_select_storage(&name));
+    }
+
     runtime.block_on(run())
+}
+
+/// Print the `--help` output. Kept as a fn (not an inline string) so
+/// the layout is easy to eyeball + doesn't clutter the argv match arm.
+///
+/// One `println!` per output line — source layout matches what the
+/// user sees. Longer than one big raw string but grep-friendly (a
+/// specific flag description shows up as its own hit) and diffs stay
+/// line-local.
+///
+/// Sections: USAGE (invocation shapes) → OPTIONS (per-flag
+/// explanations) → ENVIRONMENT (the small set of env vars an operator
+/// checks at first boot). Everything else lives in `example.env` —
+/// listing all 80+ env knobs here would rot every release.
+fn print_help() {
+    println!(
+        "OxiCloud v{} (branch={} commit={})",
+        env!("CARGO_PKG_VERSION"),
+        env!("GIT_BRANCH"),
+        env!("GIT_HASH"),
+    );
+    println!();
+    println!("USAGE:");
+    println!("  oxicloud [--config <path>]              Boot the server. This is the normal");
+    println!("                                          invocation for a docker/systemd unit.");
+    println!();
+    println!("  oxicloud --select-storage <name>        One-shot repair — set the active");
+    println!("                                          storage entry in the DB and exit.");
+    println!();
+    println!("  oxicloud --version                      Print version + commit and exit.");
+    println!();
+    println!("  oxicloud --help                         Print this help and exit.");
+    println!();
+    println!();
+    println!("OPTIONS:");
+    println!("  --config <path>");
+    println!("      Load environment variables from <path> instead of the default `./.env`.");
+    println!("      When set, the file WINS over any pre-existing shell exports (the");
+    println!("      overriding variant of dotenvy). Use for reproducible CI / systemd");
+    println!("      unit boots where a leaked shell export must not silently corrupt");
+    println!("      config. Without this flag, the default `./.env` probe is");
+    println!("      non-overriding — shell exports win — matching dev convenience.");
+    println!();
+    println!("  --select-storage <name>");
+    println!("      Verify <name> is declared in `OXICLOUD_STORAGE_ENTRIES`, then set");
+    println!("      `admin_settings.storage.active_backend_name = <name>` in the DB and");
+    println!("      exit. Does NOT boot the server. Use to unblock boot after renaming");
+    println!("      or removing a storage entry in `.env` while the DB still points at");
+    println!("      the old name (the server aborts boot with a pointer to this flag");
+    println!("      when that happens). See `docs/plan/storage-multi-entry.md`");
+    println!("      §Fallback for the full recovery flow.");
+    println!();
+    println!("  --version, -V");
+    println!("      Print the version, git branch, and commit hash. Exits 0.");
+    println!();
+    println!("  --help, -h");
+    println!("      Print this help. Exits 0.");
+    println!();
+    println!();
+    println!("ENVIRONMENT:");
+    println!("  DATABASE_URL          PostgreSQL connection string (required for boot and");
+    println!("                        for --select-storage).");
+    println!();
+    println!("  OXICLOUD_SERVER_HOST  Bind host (default: 127.0.0.1).");
+    println!("  OXICLOUD_SERVER_PORT  Bind port (default: 8086).");
+    println!();
+    println!("  OXICLOUD_STORAGE_ENTRIES=<n1>,<n2>,...");
+    println!("                        Comma-separated list of named storage entries. Each");
+    println!("                        entry N declared here reads its config from");
+    println!("                        `OXICLOUD_STORAGE_<N>_BACKEND`,");
+    println!("                        `OXICLOUD_STORAGE_<N>_S3_BUCKET`, etc. See");
+    println!("                        `docs/plan/storage-multi-entry.md` for the full");
+    println!("                        contract. When unset (with legacy flat storage");
+    println!("                        vars present) one entry named `default` is");
+    println!("                        synthesised.");
+    println!();
+    println!("The full env-var surface is documented in `example.env` at the repo root.");
+}
+
+/// Repair-flag body. Loads env config, parses entries, verifies the
+/// requested name is declared, connects to PG, upserts
+/// `admin_settings.storage.active_backend_name`. Never touches the
+/// server — the operator restarts after this exits.
+///
+/// Exit codes:
+/// - `0` on success.
+/// - Non-zero via `std::process::exit` on every failure path (name
+///   not declared, DB unreachable, upsert failed). Printed to stderr.
+async fn run_select_storage(name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use common::config::AppConfig;
+    use infrastructure::services::entry_backend::persist_active_backend_name;
+
+    // Parse entries + validate `name` is declared. Loading AppConfig
+    // here re-runs the same env-parse the server does at boot, so a
+    // successful --select-storage guarantees a subsequent normal
+    // boot will find the entry (no drift between the two code paths).
+    let config = AppConfig::from_env();
+    if config.storage_entries.is_empty() {
+        eprintln!(
+            "OXICLOUD_STORAGE_ENTRIES is not set (or synthesised — legacy path). \
+             `--select-storage` needs at least one named entry to switch to."
+        );
+        std::process::exit(2);
+    }
+    if !config.storage_entries.iter().any(|e| e.name == name) {
+        let available = config
+            .storage_entries
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!(
+            "entry `{name}` is not declared in OXICLOUD_STORAGE_ENTRIES. Available: [{available}]"
+        );
+        std::process::exit(2);
+    }
+
+    // Connect to PG using the same DATABASE_URL the server uses.
+    let db_url = std::env::var("DATABASE_URL").map_err(
+        |_| "DATABASE_URL not set — `--select-storage` needs the same DB the server would boot on",
+    )?;
+    let pool = sqlx::PgPool::connect(&db_url)
+        .await
+        .map_err(|e| format!("failed to connect to DATABASE_URL: {e}"))?;
+
+    persist_active_backend_name(&pool, name)
+        .await
+        .map_err(|e| {
+            format!("failed to write admin_settings.storage.active_backend_name = `{name}`: {e}")
+        })?;
+
+    println!(
+        "active_backend_name = `{name}` written to admin_settings. Restart the server to switch."
+    );
+    Ok(())
 }
 
 /// Construct the multi-threaded Tokio runtime with explicit, CFS-quota-aware

@@ -34,10 +34,22 @@ use serde::{Deserialize, Serialize};
 /// - `storage_consistency` (future) — enables per-blob re-BLAKE3 (bitrot
 ///   detection) + mime sniff alongside the fast orphan check.
 /// - Others — ignored.
+///
+/// Semantics of `storage`, per job (added for the multi-entry storage
+/// design — see `docs/plan/storage-multi-entry.md`):
+/// - `storage_migration` — the NAME of the target storage entry to
+///   copy blobs INTO. Required on a Fresh run (handler refuses
+///   without it); ignored on a Resumed run (target read from the
+///   persisted `params.target_name`).
+/// - `blobs_consistency` / `backend_consistency` (slice 7) — the NAME
+///   of the entry to probe instead of the currently-active backend.
+///   `None` falls through to the live backend (today's behaviour).
+/// - Others — ignored.
 #[derive(Debug, Clone, Default)]
 pub struct JobRunArgs {
     pub force: bool,
     pub deep: bool,
+    pub storage: Option<String>,
 }
 
 /// Uniform outcome the supervisor logs and stores for every job dispatch.

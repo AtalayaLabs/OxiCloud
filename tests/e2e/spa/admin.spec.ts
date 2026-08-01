@@ -30,7 +30,12 @@ test('walk every admin tab', async ({ page }) => {
   await expect(page.getByTestId('admin-oidc-form')).toBeVisible();
 
   await page.goto('/admin/storage');
-  await expect(page.getByTestId('admin-storage-form')).toBeVisible();
+  // Storage panel is now a card-per-entry list (multi-entry config
+  // landed with `feat(storage): add multi entry in config`). The old
+  // single `admin-storage-form` was retired along with the in-UI save
+  // flow — backend is env-configured per entry, and the panel exposes
+  // Test / Blob-consistency / Migrate actions per card.
+  await expect(page.getByTestId('admin-storage-entries-list')).toBeVisible();
 
   await page.goto('/admin/smtp');
   await expect(page.getByTestId('admin-smtp-send-btn')).toBeVisible();
@@ -48,20 +53,17 @@ test('open the create-user form', async ({ page }) => {
   await expect(page.getByTestId('admin-create-user-form')).toBeVisible({ timeout: 15_000 });
 });
 
-test('storage tab: change backend select', async ({ page }) => {
+test('storage tab: test button probes the active entry', async ({ page }) => {
   await page.goto('/admin/storage');
-  await expect(page.getByTestId('admin-storage-form')).toBeVisible({ timeout: 15_000 });
-  await page.getByTestId('admin-storage-backend-select').selectOption({ index: 1 }).catch(() => {});
-});
-
-test('storage tab: save the local backend settings', async ({ page }) => {
-  await page.goto('/admin/storage');
-  await expect(page.getByTestId('admin-storage-form')).toBeVisible({ timeout: 15_000 });
-  // Keep the (safe) local backend and save — exercises the save handler without
-  // reconfiguring storage to a remote backend.
-  await page.getByTestId('admin-storage-backend-select').selectOption('local').catch(() => {});
-  await page.getByTestId('admin-storage-save-btn').click().catch(() => {});
-  await expect(page.getByTestId('admin-storage-form')).toBeVisible();
+  await expect(page.getByTestId('admin-storage-entries-list')).toBeVisible({ timeout: 15_000 });
+  // Test button is safe — the handler does a read/write/delete probe on the
+  // backend without mutating any user data. There's always at least one entry
+  // in the E2E env (the default `local` storage entry seeded from example.env).
+  const testBtn = page.locator('[data-testid^="admin-storage-test-"]').first();
+  await testBtn.click();
+  // Result footer renders (either status--ok or status--error) once the probe
+  // completes; either outcome exercises the endpoint + render path.
+  await expect(page.locator('.entry-card__test-result').first()).toBeVisible({ timeout: 10_000 });
 });
 
 test('oidc tab: toggle enabled and fill issuer', async ({ page }) => {
@@ -245,23 +247,6 @@ test('send a test email from the smtp tab', async ({ page }) => {
   await page.getByTestId('admin-smtp-to-input').fill('test@example.test');
   await page.getByTestId('admin-smtp-send-btn').click();
   await expect(page.getByTestId('admin-smtp-send-btn')).toBeVisible();
-});
-
-test('storage tab: fill the S3 backend fields', async ({ page }) => {
-  await page.goto('/admin/storage');
-  await expect(page.getByTestId('admin-storage-form')).toBeVisible({ timeout: 15_000 });
-
-  // Switch to S3 to reveal + fill the conditional fields (no save — that would
-  // reconfigure storage to an unreachable backend).
-  await page.getByTestId('admin-storage-backend-select').selectOption('s3').catch(() => {});
-  await page.getByTestId('admin-storage-endpoint-input').fill('https://s3.example.test', { timeout: 2_000 }).catch(() => {});
-  await page.getByTestId('admin-storage-bucket-input').fill('e2e-bucket', { timeout: 2_000 }).catch(() => {});
-  await page.getByTestId('admin-storage-region-input').fill('us-east-1', { timeout: 2_000 }).catch(() => {});
-  await page.getByTestId('admin-storage-access-key-input').fill('AKIA', { timeout: 2_000 }).catch(() => {});
-  await page.getByTestId('admin-storage-secret-key-input').fill('secret', { timeout: 2_000 }).catch(() => {});
-  await page.getByTestId('admin-storage-path-style-checkbox').click({ timeout: 2_000 }).catch(() => {});
-  // Switch back to the safe local backend.
-  await page.getByTestId('admin-storage-backend-select').selectOption('local').catch(() => {});
 });
 
 test('oidc tab: run discovery against a bogus issuer', async ({ page }) => {

@@ -2142,16 +2142,30 @@ impl DedupService {
 
     /// Get deduplication statistics (CDC + legacy).
     pub async fn get_stats(&self) -> DedupStatsDto {
-        // Physical storage (all blobs = chunks + legacy)
+        // Physical storage (all blobs = chunks + legacy).
+        //
+        // The `::bigint` casts on the SUM columns are load-bearing:
+        // Postgres's `SUM(bigint)` returns `numeric` (not bigint), and
+        // sqlx has no default decode from `numeric` into Rust's `i64`.
+        // Without the cast, this `query_as` FAILS on a non-empty
+        // `storage.blobs` table — decode error → the outer
+        // `unwrap_or((0, 0))` silently swallows it and every operator
+        // sees `total_blobs = 0, total_bytes_stored = 0` in the admin
+        // UI while their disk holds gigabytes. On an EMPTY table SUM
+        // is NULL, COALESCE inlines the literal integer `0`, the row
+        // decodes fine, and the bug never surfaces during dev — hence
+        // it lasted so long.
         let (total_blobs, total_bytes_stored): (i64, i64) =
-            sqlx::query_as("SELECT COUNT(*), COALESCE(SUM(size), 0) FROM storage.blobs")
+            sqlx::query_as("SELECT COUNT(*), COALESCE(SUM(size), 0)::bigint FROM storage.blobs")
                 .fetch_one(self.pool.as_ref())
                 .await
                 .unwrap_or((0, 0));
 
-        // Referenced bytes from CDC manifests
+        // Referenced bytes from CDC manifests. Same `numeric`-vs-`bigint`
+        // gotcha: `SUM(numeric)` → `numeric`; wrap the whole sum in
+        // `::bigint` so `query_scalar::<_, i64>` decodes cleanly.
         let manifest_referenced: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(total_size::BIGINT * ref_count), 0) FROM storage.chunk_manifests",
+            "SELECT COALESCE(SUM(total_size::BIGINT * ref_count), 0)::bigint FROM storage.chunk_manifests",
         )
         .fetch_one(self.pool.as_ref())
         .await
@@ -2161,7 +2175,7 @@ impl DedupService {
         // A legacy blob has its hash directly in storage.files.blob_hash.
         // We approximate by subtracting manifest-attributed storage.
         let all_blob_referenced: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(size::BIGINT * ref_count), 0) FROM storage.blobs",
+            "SELECT COALESCE(SUM(size::BIGINT * ref_count), 0)::bigint FROM storage.blobs",
         )
         .fetch_one(self.pool.as_ref())
         .await

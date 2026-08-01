@@ -27,6 +27,7 @@ NextCloud was too slow on a home server. So OxiCloud was built to run on minimal
 
 ### Storage & Files
 - [Drives](/guide/drives) — Personal + Shared spaces with per-drive quota, members, and policies
+- [Backend Storage](/guide/backend-storage) — Local disk, S3, Azure; multiple backends side-by-side; live migration between them
 - Drag-and-drop upload, multi-file, grid & list views
 - Chunked uploads (TUS-like, parallel, resumable, MD5 integrity)
 - BLAKE3 content-addressable file deduplication with ref-counting

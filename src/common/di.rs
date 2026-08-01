@@ -13,7 +13,6 @@ use crate::infrastructure::db::DbPools;
 use crate::application::services::admin_settings_service::AdminSettingsService;
 use crate::application::services::auth_application_service::AuthApplicationService;
 use crate::application::services::storage_settings_service::StorageSettingsService;
-use crate::infrastructure::services::migration_blob_backend::MigrationState;
 
 use crate::application::ports::file_ports::FileUseCaseFactory;
 use crate::application::services::favorites_service::FavoritesService;
@@ -216,46 +215,136 @@ impl AppServiceFactory {
         );
         image_transcode_service.initialize().await?;
 
-        // Build blob storage backend based on configuration
-        let base_backend: Arc<dyn BlobStorageBackend> = match self.config.storage.backend {
-            StorageBackendType::S3 => {
-                let s3_config = self
-                    .config
-                    .storage
-                    .s3
-                    .as_ref()
-                    .expect("S3 config required when OXICLOUD_STORAGE_BACKEND=s3");
-                Arc::new(
-                    crate::infrastructure::services::s3_blob_backend::S3BlobBackend::new(s3_config),
-                )
-            }
-            StorageBackendType::Azure => {
-                let az_config = self
-                    .config
-                    .storage
-                    .azure
-                    .as_ref()
-                    .expect("Azure config required when OXICLOUD_STORAGE_BACKEND=azure");
-                Arc::new(
-                    crate::infrastructure::services::azure_blob_backend::AzureBlobBackend::new(
-                        az_config,
+        // Build blob storage backend.
+        //
+        // Two paths, chosen by whether `_ENTRIES` (or the legacy
+        // synthesis) populated `storage_entries` at parse time:
+        //
+        // * `storage_entries` non-empty — multi-entry mode
+        //   (`docs/plan/storage-multi-entry.md`). Look up the active
+        //   entry name in `auth.admin_settings.storage.active_backend_name`,
+        //   fall back to the first entry when unset (fresh install,
+        //   no admin has picked one yet), fail-fast when the DB
+        //   points at a name that isn't declared. Build via the
+        //   shared `entry_backend::build_entry_backend` factory so
+        //   the encryption decorator is applied uniformly here and
+        //   in the migration handler (slice 3).
+        //
+        // * `storage_entries` empty — no explicit storage config at
+        //   all (fresh install without env vars). Use the framework
+        //   defaults captured on `config.storage` — matches today's
+        //   behaviour so a bare `cargo run` in a dev workspace keeps
+        //   working. Encryption never applies here (legacy synthesis
+        //   would have created an entry if any legacy var was set).
+        let active_backend_kind: StorageBackendType;
+        // Track which named entry the LIVE backend was built from so
+        // the migration handler can name-compare `target != active`
+        // without re-reading the DB. `"legacy"` sentinel for the
+        // no-entries branch — the migration handler refuses that
+        // target name anyway (no entry exists), which is the correct
+        // behaviour for the zero-config path.
+        let active_backend_name: String;
+        let base_backend: Arc<dyn BlobStorageBackend> = if self.config.storage_entries.is_empty() {
+            active_backend_kind = self.config.storage.backend.clone();
+            active_backend_name = "legacy".to_string();
+            tracing::info!(
+                "Storage: no OXICLOUD_STORAGE_ENTRIES declared and no legacy vars — using \
+                 framework default (backend={:?}, path={:?})",
+                active_backend_kind,
+                self.storage_path,
+            );
+            match active_backend_kind {
+                StorageBackendType::S3 => {
+                    let s3_config = self
+                        .config
+                        .storage
+                        .s3
+                        .as_ref()
+                        .expect("S3 config required when OXICLOUD_STORAGE_BACKEND=s3");
+                    Arc::new(
+                        crate::infrastructure::services::s3_blob_backend::S3BlobBackend::new(
+                            s3_config,
+                        ),
+                    )
+                }
+                StorageBackendType::Azure => {
+                    let az_config = self
+                        .config
+                        .storage
+                        .azure
+                        .as_ref()
+                        .expect("Azure config required when OXICLOUD_STORAGE_BACKEND=azure");
+                    Arc::new(
+                        crate::infrastructure::services::azure_blob_backend::AzureBlobBackend::new(
+                            az_config,
+                        ),
+                    )
+                }
+                StorageBackendType::Local => Arc::new(
+                    crate::infrastructure::services::local_blob_backend::LocalBlobBackend::new(
+                        &self.storage_path,
                     ),
-                )
-            }
-            StorageBackendType::Local => Arc::new(
-                crate::infrastructure::services::local_blob_backend::LocalBlobBackend::new(
-                    &self.storage_path,
                 ),
-            ),
+            }
+        } else {
+            use crate::infrastructure::services::entry_backend::{
+                ActiveEntry, build_entry_backend, resolve_active_entry,
+            };
+            let active = resolve_active_entry(db_pool, &self.config.storage_entries)
+                .await
+                .unwrap_or_else(|e| {
+                    panic!("Storage boot failed: {e}");
+                });
+            let entry = match active {
+                ActiveEntry::Explicit(e) => {
+                    tracing::info!(
+                        "Storage: booting on entry `{}` (from auth.admin_settings.storage.active_backend_name)",
+                        e.name,
+                    );
+                    e
+                }
+                ActiveEntry::Unset => {
+                    // No admin pick yet. Fall back to the first entry
+                    // in `_ENTRIES` order. `storage_entries` is
+                    // guaranteed non-empty in this branch, so [0] is
+                    // safe. Loud info-level log so operators see
+                    // which entry was chosen for them.
+                    let first = &self.config.storage_entries[0];
+                    tracing::info!(
+                        "Storage: no active_backend_name set in DB — defaulting to first entry \
+                         `{}` (declared first in OXICLOUD_STORAGE_ENTRIES). Set explicitly via \
+                         the admin storage tab or `oxicloud --select-storage <name>` to pin.",
+                        first.name,
+                    );
+                    first
+                }
+            };
+            active_backend_kind = entry.backend.clone();
+            active_backend_name = entry.name.clone();
+            build_entry_backend(entry, &self.storage_path)
         };
+        // Shared mutable handle to the active-entry name. Wrapped
+        // here rather than at the field type so the two String
+        // literal writes above stay simple; wrapping happens once
+        // just before the struct init.
+        let active_backend_name = Arc::new(std::sync::RwLock::new(active_backend_name));
 
-        // Stack decorators: retry → encryption → cache (inner-to-outer)
+        // Stack decorators: retry → encryption → cache (inner-to-outer).
+        //
+        // Encryption is applied INSIDE build_entry_backend (per-entry
+        // key), so it's already on the base returned above when the
+        // entry declared one. The legacy-vars-no-entries branch skips
+        // encryption (that path exists only for zero-storage-config
+        // installs); if legacy synthesis fired it produced an entry
+        // and we're on the entry branch instead.
+        //
+        // Retry + cache are app-level (config.storage.retry/cache), not
+        // per-entry, so they still apply here. `active_backend_kind`
+        // gates the "remote-only" decorators the same as before.
         let mut blob_backend: Arc<dyn BlobStorageBackend> = base_backend;
 
         // Retry decorator (for remote backends)
-        if self.config.storage.retry.enabled
-            && self.config.storage.backend != StorageBackendType::Local
-        {
+        if self.config.storage.retry.enabled && active_backend_kind != StorageBackendType::Local {
             use crate::infrastructure::services::retry_blob_backend::{
                 RetryBlobBackend, RetryPolicy,
             };
@@ -273,8 +362,17 @@ impl AppServiceFactory {
             tracing::info!("Blob storage retry decorator enabled");
         }
 
-        // Encryption decorator
-        if self.config.storage.encryption.enabled {
+        // Encryption decorator — legacy path only.
+        //
+        // When `storage_entries` is non-empty, encryption is already
+        // applied inside `build_entry_backend` from the entry's own
+        // `encryption_key_base64` (per-entry key). This block is the
+        // pre-multi-entry fallback that reads the flat
+        // `OXICLOUD_STORAGE_ENCRYPTION_*` vars — reachable only for
+        // fresh installs with no explicit storage config at all
+        // (legacy synthesis would have created an entry if any legacy
+        // var, including the encryption ones, was present).
+        if self.config.storage_entries.is_empty() && self.config.storage.encryption.enabled {
             use crate::infrastructure::services::encrypted_blob_backend::EncryptedBlobBackend;
             let key_b64 = self
                 .config
@@ -290,13 +388,11 @@ impl AppServiceFactory {
                 "OXICLOUD_STORAGE_ENCRYPTION_KEY must be exactly 32 bytes (base64 of 32 bytes)",
             );
             blob_backend = Arc::new(EncryptedBlobBackend::new(blob_backend, &key));
-            tracing::info!("Blob storage encryption decorator enabled (AES-256-GCM)");
+            tracing::info!("Blob storage encryption decorator enabled (AES-256-GCM) — legacy path");
         }
 
         // Cache decorator (for remote backends only)
-        if self.config.storage.cache.enabled
-            && self.config.storage.backend != StorageBackendType::Local
-        {
+        if self.config.storage.cache.enabled && active_backend_kind != StorageBackendType::Local {
             use crate::infrastructure::services::cached_blob_backend::{
                 BlobCacheConfig as CacheCfg, CachedBlobBackend,
             };
@@ -315,6 +411,21 @@ impl AppServiceFactory {
             blob_backend = Arc::new(CachedBlobBackend::new(blob_backend, &cfg));
             tracing::info!("Blob storage LRU disk cache enabled");
         }
+
+        // Wrap the fully-decorated stack in the hot-swap wrapper.
+        // Every downstream consumer holds `Arc<dyn BlobStorageBackend>`
+        // as before; the wrapper is transparent from their point of
+        // view. The `Arc<SwappableBlobBackend>` reference we retain
+        // here (stored on `AppState.blob_backend_hot_swap`) is what
+        // the migration handler calls `.swap()` on when cutover
+        // completes — no restart needed. See
+        // `swappable_blob_backend.rs` for the delegation contract.
+        let blob_backend_hot_swap = Arc::new(
+            crate::infrastructure::services::swappable_blob_backend::SwappableBlobBackend::new(
+                blob_backend,
+            ),
+        );
+        let blob_backend: Arc<dyn BlobStorageBackend> = blob_backend_hot_swap.clone();
 
         // Blob lifecycle — thumbnail disk-file cleanup when blob ref_count hits zero.
         // ThumbnailService (not ThumbnailRefreshHook) is used here to avoid a circular
@@ -467,6 +578,8 @@ impl AppServiceFactory {
             job_registry,
             job_store_provider,
             blob_backend: blob_backend_for_consistency,
+            blob_backend_hot_swap,
+            active_backend_name,
         })
     }
 
@@ -1343,6 +1456,8 @@ impl AppServiceFactory {
             crate::infrastructure::services::blobs_consistency_service::BlobsConsistencyCheck::new(
                 maintenance_pool.clone(),
                 core.blob_backend.clone(),
+                core.config.storage_entries.clone(),
+                self.storage_path.clone(),
             ),
         )
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
@@ -1361,6 +1476,8 @@ impl AppServiceFactory {
             crate::infrastructure::services::backend_consistency_service::BackendConsistencyCheck::new(
                 maintenance_pool.clone(),
                 core.blob_backend.clone(),
+                core.config.storage_entries.clone(),
+                self.storage_path.clone(),
             ),
         )
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
@@ -1395,11 +1512,34 @@ impl AppServiceFactory {
         let subject_group_repo = Arc::new(
             crate::infrastructure::repositories::pg::SubjectGroupPgRepository::new(pool.clone()),
         );
+        // Migration-readonly atomic. Seeded from
+        // `admin_settings.storage.migration_readonly` so the flag
+        // survives restart (an operator won't see writes accidentally
+        // re-enabled between a crash mid-migration and the retrigger).
+        // Shared with the AuthZ engine so it can short-circuit write
+        // permissions without a per-check DB round-trip. The boot
+        // clear rule (§Read-only mode) runs after this seeding, after
+        // the boot recovery sweep — enough for the runtime state
+        // machine to decide whether to keep or clear.
+        let migration_readonly = Arc::new(std::sync::atomic::AtomicBool::new(
+            crate::infrastructure::services::entry_backend::load_migration_readonly(&pool).await,
+        ));
+        if migration_readonly.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!(
+                target: "oxicloud::scheduler",
+                event = "storage.migration_readonly.loaded_true_at_boot",
+                "Server booted with migration_readonly=true — writes will be refused by AuthZ \
+                 until the flag is cleared (either by the boot-clear rule or via the admin \
+                 storage tab)."
+            );
+        }
+
         let authorization = build_authorization_engine(
             pool.clone(),
             repos.folder_repository.clone(),
             repos.file_read_repository.clone(),
             subject_group_repo.clone(),
+            migration_readonly.clone(),
         );
 
         // Recent service + recording hook are built up-front so the
@@ -1862,7 +2002,6 @@ impl AppServiceFactory {
             admin_settings_service: None,
             storage_settings_service: None,
             plugin_management,
-            migration_state: Arc::new(tokio::sync::RwLock::new(MigrationState::default())),
             trash_service,
             share_service,
             share_browse_service,
@@ -1888,6 +2027,8 @@ impl AppServiceFactory {
             webdav_dead_props:
                 crate::infrastructure::services::webdav_dead_property_store::create_dead_property_store(pool.clone()),
             authorization: authorization.clone(),
+            migration_readonly: migration_readonly.clone(),
+            migration_progress: Arc::new(std::sync::RwLock::new(None)),
             drive_repo: drive_repo.clone(),
             drive_management_service: Arc::new(
                 crate::application::services::drive_management_service::DriveManagementService::new(
@@ -2076,14 +2217,49 @@ impl AppServiceFactory {
 
             app_state.admin_settings_service = Some(admin_svc.clone());
 
-            // 9b-1b. Wire storage settings service (reuses same settings_repo)
+            // 9b-1b. Wire storage settings service (reuses same settings_repo).
+            // Multi-entry view fields (entries + active_entry_name +
+            // migration_readonly) are populated from the same sources
+            // the migration handler and AuthZ engine read from — one
+            // snapshot at DI, shared atomic for the readonly flag so
+            // changes are visible without a DB round-trip.
             let storage_settings_svc = Arc::new(StorageSettingsService::new(
                 settings_repo.clone(),
                 self.config.storage.clone(),
                 app_state.core.dedup_service.clone(),
+                app_state.core.config.storage_entries.clone(),
+                app_state.core.active_backend_name.clone(),
+                app_state.migration_readonly.clone(),
             ));
-            app_state.storage_settings_service = Some(storage_settings_svc);
+            app_state.storage_settings_service = Some(storage_settings_svc.clone());
             tracing::info!("Storage settings service initialized");
+
+            // 9b-1c. Register the storage-backend migration tenant on
+            // the recoverable-run engine. Target is resolved by NAME
+            // from `params.target_name` on each run — plumbed from
+            // the trigger endpoint. Constructor takes the ambient
+            // entries snapshot + active-name + storage_path fallback
+            // so no DB read is needed per run for target lookup.
+            let job_store_provider_dyn: Arc<
+                dyn crate::infrastructure::scheduler::JobStoreProvider,
+            > = app_state.core.job_store_provider.clone();
+            let _ = Arc::new(
+                crate::infrastructure::services::storage_migration_service::StorageMigrationService::new(
+                    app_state
+                        .maintenance_pool
+                        .clone()
+                        .expect("maintenance_pool set above"),
+                    app_state.core.blob_backend.clone(),
+                    app_state.core.active_backend_name.clone(),
+                    app_state.core.config.storage_entries.clone(),
+                    self.storage_path.clone(),
+                    app_state.migration_readonly.clone(),
+                    app_state.core.blob_backend_hot_swap.clone(),
+                    app_state.migration_progress.clone(),
+                ),
+            )
+            .register_recoverable_job(&app_state.core.job_registry, &job_store_provider_dyn)
+            .await;
 
             // 9b-2. Log whether system needs first-time admin setup
             if !admin_svc.is_system_initialized().await {
@@ -2278,6 +2454,111 @@ impl AppServiceFactory {
             ),
         }
 
+        // Migration-readonly boot-clear rule. See
+        // `docs/plan/storage-multi-entry.md` §"Read-only mode".
+        //
+        // If the flag was set true at boot AND no storage_migration
+        // run is currently non-terminal AND active_backend_name
+        // matches the entry the app actually booted onto — that means
+        // the cutover completed on a prior boot (the run reached
+        // Completed, the pointer flipped, the operator restarted).
+        // Safe to clear now: no in-flight migration means no one
+        // still needs writes-off, and matching active_backend_name
+        // means we're already on the target the run was pointing at.
+        //
+        // If ANY of those conditions fails (flag was false at boot;
+        // there's still a Paused/Running/CancelRequested run in the
+        // way; active doesn't match booted — mismatch means someone
+        // manually edited the pointer while readonly was on) we
+        // leave the flag alone. Operator has to decide.
+        if app_state
+            .migration_readonly
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            use crate::infrastructure::services::storage_migration_service::STORAGE_MIGRATION_JOB_NAME;
+            let has_in_flight = match app_state
+                .core
+                .job_store_provider
+                .list_runs(STORAGE_MIGRATION_JOB_NAME, 5)
+                .await
+            {
+                Ok(runs) => runs.iter().any(|r| {
+                    matches!(
+                        r.status,
+                        crate::infrastructure::scheduler::RunStatus::Running
+                            | crate::infrastructure::scheduler::RunStatus::Paused
+                            | crate::infrastructure::scheduler::RunStatus::CancelRequested
+                    )
+                }),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "oxicloud::scheduler",
+                        event = "storage.migration_readonly.clear_check_failed",
+                        error = %e,
+                        "failed to list storage_migration runs during readonly-clear check; \
+                         leaving migration_readonly flag as-is"
+                    );
+                    // Play it safe: assume in-flight to avoid clearing prematurely.
+                    true
+                }
+            };
+
+            // Look up the DB pointer to compare against the booted
+            // active_backend_name. Absence (Unset) is treated as "no
+            // mismatch to complain about" — the boot fallback already
+            // picked the first entry.
+            let booted_active = app_state
+                .core
+                .active_backend_name
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let db_active_matches = {
+                use crate::infrastructure::services::entry_backend::{
+                    ActiveEntry, resolve_active_entry,
+                };
+                match resolve_active_entry(&pool, &app_state.core.config.storage_entries).await {
+                    Ok(ActiveEntry::Explicit(e)) => e.name == booted_active,
+                    Ok(ActiveEntry::Unset) => true,
+                    Err(_) => false,
+                }
+            };
+
+            if !has_in_flight && db_active_matches {
+                use crate::infrastructure::services::entry_backend::persist_migration_readonly;
+                match persist_migration_readonly(&pool, false).await {
+                    Ok(()) => {
+                        app_state
+                            .migration_readonly
+                            .store(false, std::sync::atomic::Ordering::Relaxed);
+                        tracing::info!(
+                            target: "audit",
+                            event = "storage.migration_readonly.cleared_at_boot",
+                            active = %booted_active,
+                            "🧊 migration_readonly cleared at boot: no in-flight migration + \
+                             active_backend_name matches booted entry (cutover complete on prior boot)"
+                        );
+                    }
+                    Err(e) => tracing::warn!(
+                        target: "oxicloud::scheduler",
+                        event = "storage.migration_readonly.clear_persist_failed",
+                        error = %e,
+                        "cleared migration_readonly in memory would have been safe, but the DB \
+                         write failed — leaving the DB row alone; will re-check next boot"
+                    ),
+                }
+            } else {
+                tracing::info!(
+                    target: "oxicloud::scheduler",
+                    event = "storage.migration_readonly.retained_at_boot",
+                    has_in_flight = has_in_flight,
+                    db_active_matches = db_active_matches,
+                    "migration_readonly retained at boot (in-flight run and/or active-name \
+                     mismatch prevents auto-clear)"
+                );
+            }
+        }
+
         // Start the periodic-job scheduler AFTER every native service has
         // finished registering its jobs on `core.job_registry`. Starting
         // it earlier would race the first tick against late registrations.
@@ -2330,7 +2611,39 @@ pub struct CoreServices {
     /// `create_core_services` — notably `blobs_consistency` in
     /// `build_app_state` — can probe `blob_exists()` / re-hash bytes
     /// through the same stack DedupService uses.
+    ///
+    /// Concretely this is the hot-swap wrapper coerced to
+    /// `Arc<dyn ...>`; a migration cutover replaces the inner
+    /// backend via [`Self::blob_backend_hot_swap`] and every future
+    /// call through this `blob_backend` sees the new inner.
     pub blob_backend: Arc<dyn BlobStorageBackend>,
+    /// Typed handle to the hot-swap wrapper. Distinct from
+    /// [`Self::blob_backend`] only in its declared type: the raw
+    /// wrapper struct instead of `dyn BlobStorageBackend`. Same
+    /// underlying instance, so a call to `.swap(new)` here is
+    /// immediately visible through the trait-object handle above.
+    /// The migration handler is the only intended caller — it flips
+    /// the pointer on `RunOutcome::Completed`, so restart is no
+    /// longer required for cutover.
+    pub blob_backend_hot_swap:
+        Arc<crate::infrastructure::services::swappable_blob_backend::SwappableBlobBackend>,
+    /// Name of the storage entry the LIVE `blob_backend` was built
+    /// from. Populated at boot: either from
+    /// `admin_settings.storage.active_backend_name` when set, or the
+    /// first entry in `OXICLOUD_STORAGE_ENTRIES` when unset. For the
+    /// no-entries legacy path this is `"default"` (the synthesized
+    /// name) or `"legacy"` (framework-defaults case with zero storage
+    /// config at all). Migration handler consumes this to enforce the
+    /// "target != active" no-op guard by name; without needing to
+    /// re-read DB on every trigger.
+    ///
+    /// Wrapped in `Arc<RwLock<String>>` so the migration handler can
+    /// update it on hot-swap — subsequent name-based guards (a
+    /// second migration triggered by the admin after the first cut
+    /// over) see the new active without a restart. Read pattern:
+    /// acquire the read lock, clone the inner String, release the
+    /// lock, use the clone across await points.
+    pub active_backend_name: Arc<std::sync::RwLock<String>>,
 }
 
 /// Container for repository services
@@ -2419,7 +2732,6 @@ pub struct AppState {
     pub plugin_management:
         Option<Arc<dyn crate::application::ports::plugin_ports::PluginManagementPort>>,
     pub storage_settings_service: Option<Arc<StorageSettingsService>>,
-    pub migration_state: Arc<tokio::sync::RwLock<MigrationState>>,
     pub trash_service: Option<Arc<TrashService>>,
     pub share_service: Option<Arc<ShareService>>,
     pub share_browse_service: Option<Arc<ShareBrowseService>>,
@@ -2465,6 +2777,24 @@ pub struct AppState {
     /// an enum dispatcher or `Arc<dyn AuthorizationEngine>` (with
     /// `async_trait` boxing).
     pub authorization: Arc<crate::infrastructure::services::pg_acl_engine::PgAclEngine>,
+    /// Global "server is in migration read-only mode" flag, shared
+    /// with [`Self::authorization`] so it can short-circuit write
+    /// permissions. Backed by
+    /// `admin_settings.storage.migration_readonly` for restart
+    /// survival. Slice 5's cutover state machine flips this atomic
+    /// (via `Ordering::Relaxed`) and calls
+    /// `entry_backend::persist_migration_readonly` to keep DB and
+    /// memory in sync. See `docs/plan/storage-multi-entry.md`
+    /// §"Read-only mode".
+    pub migration_readonly: Arc<std::sync::atomic::AtomicBool>,
+    /// Live progress snapshot for the storage-migration handler.
+    /// `Some(_)` while a migration is running; `None` otherwise.
+    /// Updated by the handler on every batch checkpoint (cheap
+    /// in-memory write, no DB read on the request path). The
+    /// server-status header middleware reads it to inform every
+    /// user's session banner about maintenance progress without
+    /// polling. See `MigrationProgress` for the field shape.
+    pub migration_progress: Arc<std::sync::RwLock<Option<crate::common::migration_progress::MigrationProgress>>>,
     /// Drive entity repository — `GET /api/drives`, the personal-drive
     /// lifecycle hook, and (post-D2) shared-drive creation flow all read
     /// through this. Backing table is `storage.drives`; membership is
@@ -2607,6 +2937,7 @@ fn build_authorization_engine(
         crate::infrastructure::repositories::pg::file_blob_read_repository::FileBlobReadRepository,
     >,
     group_repo: Arc<crate::infrastructure::repositories::pg::SubjectGroupPgRepository>,
+    migration_readonly: Arc<std::sync::atomic::AtomicBool>,
 ) -> Arc<crate::infrastructure::services::pg_acl_engine::PgAclEngine> {
     use crate::infrastructure::services::pg_acl_engine::PgAclEngine;
 
@@ -2618,7 +2949,13 @@ fn build_authorization_engine(
             "OXICLOUD_AUTHZ_ENGINE={other:?} is not yet supported. Only 'postgres' is implemented; leave the variable unset to use the default."
         );
     }
-    Arc::new(PgAclEngine::new(pool, folder_repo, file_repo, group_repo))
+    Arc::new(PgAclEngine::new(
+        pool,
+        folder_repo,
+        file_repo,
+        group_repo,
+        migration_readonly,
+    ))
 }
 
 /// Pair returned by [`build_email_sender`] when wiring DI: the

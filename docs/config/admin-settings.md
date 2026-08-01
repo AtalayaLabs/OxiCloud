@@ -64,6 +64,50 @@ If a value is overridden by environment variables, the admin API can expose that
 
 Successful responses include discovered endpoints such as the authorization endpoint, token endpoint, and userinfo endpoint.
 
+## Storage & Migration
+
+The admin storage tab operates on the **named storage entries** declared in `.env` (see [Storage Entries](/config/env#storage-entries-multi-entry-recommended)). The set of entries is immutable per-deploy — adding or removing one requires a server restart. Runtime behaviour is driven by a single DB row that names which entry is currently active.
+
+### Endpoints
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET`  | `/api/admin/settings/storage`             | List entries + active pointer + read-only flag + basic stats |
+| `POST` | `/api/admin/settings/storage/test`        | Reachability + round-trip test against the currently-effective backend |
+| `POST` | `/api/admin/storage/migration/start`      | Trigger a cross-entry migration. Body: `{"target_name": "<entry>"}` |
+| `POST` | `/api/admin/storage/migration/pause`      | Cooperative cancel — handler yields at the next batch boundary |
+| `POST` | `/api/admin/storage/migration/resume`     | Resume a paused run (target read from `params.target_name`, no body needed) |
+| `GET`  | `/api/admin/storage/migration`            | Poll the current run's progress |
+
+Runs are recoverable — status, cursor, and per-blob failure findings all live in `jobs.recoverable_runs` / `jobs.run_findings`. The same run history is browsable via `GET /api/admin/jobs/storage_migration/runs`.
+
+### Cutover flow (moving the active pointer)
+
+1. Declare the target entry in `.env` and restart so `OXICLOUD_STORAGE_ENTRIES` picks it up.
+2. Admin storage tab → pick the target from the dropdown → **Start migration**. The server engages global read-only mode (writes refused across the whole app; reads keep working), then copies blobs from source → target.
+3. On `Completed`, the server writes `admin_settings.storage.active_backend_name = <target>`. Read-only stays ON — writes on the OLD backend would strand data now that the pointer says the new one is active.
+4. **Operator restarts the server.** Boot picks the new active entry, and the boot-clear rule drops the read-only flag (`no in-flight run + booted-entry matches DB pointer`). Server writable again, on the new backend.
+
+### Repair flag — pointer / entry drift
+
+If an entry is renamed or removed from `.env` while the DB pointer still names the old one, boot aborts with a clear error pointing at:
+
+```
+oxicloud --select-storage <name>
+```
+
+This one-shot repair command re-runs the same env-parse the server does at boot, verifies `<name>` is declared in `OXICLOUD_STORAGE_ENTRIES`, updates `admin_settings.storage.active_backend_name` in the DB, and exits. Operator then restarts normally. See [Environment Variables — Storage Entries](/config/env#storage-entries-multi-entry-recommended) for the model, and [`oxicloud --help`](https://github.com/oxicloud/oxicloud/blob/main/src/main.rs) for the full flag list.
+
+### Auditing entries other than the active one
+
+`blobs_consistency` and `backend_consistency` (recoverable jobs on the Jobs tab) accept `?storage=<name>` to probe any declared entry — not just the live one. Use this to verify a migration target before cutover, or to audit an old backend after cutover but before decommissioning:
+
+```
+POST /api/admin/jobs/blobs_consistency/trigger?storage=<name>
+```
+
+Unknown names 400 at the HTTP layer.
+
 ## Data Storage
 
 Runtime settings are stored in `auth.admin_settings`.

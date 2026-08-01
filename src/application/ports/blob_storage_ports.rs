@@ -67,7 +67,7 @@ pub struct BlobListPage {
 }
 
 /// Boxed future alias used by [`BlobStorageBackend`] to keep the trait dyn-compatible.
-type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Pinned boxed byte stream — the return type for blob reads.
 pub type BlobStream = Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>;

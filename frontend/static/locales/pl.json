@@ -38,6 +38,12 @@
       }
     }
   },
+  "server_status": {
+    "readonly_banner_aria": "Trwa konserwacja serwera",
+    "readonly_title": "Trwa konserwacja serwera",
+    "readonly_progress": "Migracja pamięci do `{{target}}` — {{percent}}% ({{migrated}} / {{total}} blobów). Przesyłanie, zmiana nazwy, usuwanie i udostępnianie są odrzucane; odczyt i pobieranie działają normalnie.",
+    "readonly_body": "Przesyłanie, zmiana nazwy, usuwanie i udostępnianie są tymczasowo odrzucane. Odczyt i pobieranie działają normalnie."
+  },
   "app": {
     "title": "OxiCloud",
     "description": "Minimalistyczny cloud storage"

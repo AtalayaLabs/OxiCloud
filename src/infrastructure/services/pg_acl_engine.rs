@@ -253,6 +253,18 @@ pub struct PgAclEngine {
     /// Total parent-resolution queries actually issued (point + batches) —
     /// exposed via [`Self::parent_query_count`] for benches/operators.
     parent_queries: Arc<AtomicU64>,
+    /// Global "server is in migration read-only mode" flag. When
+    /// `true`, `check_inner` short-circuits every write-adjacent
+    /// permission (`Create`/`Update`/`Delete`/`Share`/`Comment`/`Manage`)
+    /// with a `Denied` decision — same reason as the per-drive
+    /// `read_only` gate below, but scoped to the whole process rather
+    /// than a specific drive. Backed by
+    /// `admin_settings.storage.migration_readonly` so it survives
+    /// restart (see `docs/plan/storage-multi-entry.md` §"Read-only
+    /// mode"). Shared as `Arc<AtomicBool>` with `AppState` so the
+    /// cutover state machine (slice 5) can flip it without needing
+    /// to reach into the engine.
+    migration_readonly: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// One parked parent-resolution request: file id + reply slot. A dropped
@@ -297,12 +309,14 @@ impl PgAclEngine {
         folder_repo: Arc<FolderDbRepository>,
         file_repo: Arc<FileBlobReadRepository>,
         group_repo: Arc<SubjectGroupPgRepository>,
+        migration_readonly: Arc<std::sync::atomic::AtomicBool>,
     ) -> Self {
         Self {
             pool,
             folder_repo,
             file_repo,
             group_repo: Some(group_repo),
+            migration_readonly,
             user_groups_cache: Cache::builder()
                 .max_capacity(50_000)
                 .time_to_live(Duration::from_secs(30))
@@ -424,6 +438,7 @@ impl PgAclEngine {
                 .build(),
             parent_batch: Arc::new(std::sync::Mutex::new(None)),
             parent_queries: Arc::new(AtomicU64::new(0)),
+            migration_readonly: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -1461,6 +1476,38 @@ impl PgAclEngine {
         resource: Resource,
         counters: &QueryCounters,
     ) -> Result<bool, DomainError> {
+        // Global migration-readonly short-circuit. Applies to every
+        // resource type — no drive lookup, no per-resource state. When
+        // the server is in migration read-only mode, every mutating
+        // permission is refused with an audit line naming the specific
+        // `migration_readonly` reason so operators filtering the audit
+        // stream can distinguish it from per-drive freezes. Reads pass
+        // (browsers, downloads, PROPFIND all keep working — same as the
+        // per-drive gate). Admin operations don't reach `check_inner`
+        // — they go through `admin_guard` middleware which bypasses
+        // authz entirely, so the admin can still exit the mode, cancel
+        // the migration, restart the server, etc.
+        //
+        // See `docs/plan/storage-multi-entry.md` §"Read-only mode".
+        if Self::read_only_gate_applies(permission)
+            && self
+                .migration_readonly
+                .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            tracing::info!(
+                target: "audit",
+                event = "authz.denied",
+                reason = "migration_readonly",
+                subject_type = subject.type_str(),
+                subject_id = %subject.id(),
+                permission = permission.as_str(),
+                resource_type = resource.type_str(),
+                resource_id = %resource.id(),
+                "🚧 mutation refused: server is in storage-migration read-only mode",
+            );
+            return Ok(false);
+        }
+
         // Drive-membership precheck for File/Folder. A role on the resource's
         // drive is the baseline floor (`drive.md §5`): the caller passes any
         // permission check the role bundle covers. Replaces the legacy

@@ -176,6 +176,7 @@ fn fresh_engine(pool: &Arc<PgPool>) -> Arc<PgAclEngine> {
         folder_repo,
         file_repo,
         group_repo,
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
     ))
 }
 

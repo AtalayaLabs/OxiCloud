@@ -1,6 +1,8 @@
 <script lang="ts">
 	/**
-	 * Read-only drive banner.
+	 * Read-only banner — one component, two variants.
+	 *
+	 * ## `variant="drive"` (default) — drive-scoped freeze
 	 *
 	 * Rendered at the top of any page whose content lives in (or is scoped
 	 * to) a drive whose `policies.read_only === true`. Members see the
@@ -19,33 +21,60 @@
 	 *   - `routes/files/[...path]/+page.svelte` — shown when the current
 	 *     folder's owning drive is frozen (parent looks up drive via
 	 *     `drives.findByRootFolderId`/`findById`).
-	 *   - Future: `/photos`, `/music`, and any other drive-scoped views.
+	 *
+	 * ## `variant="maintenance"` — server-wide freeze
+	 *
+	 * Rendered inside `AppShell` above `{children}` when the
+	 * `x-server-status` header (see `middleware::server_status`) says
+	 * the whole server is in read-only mode — typically during a
+	 * storage-backend migration. Optional `progress` lets the banner
+	 * show target + percentage.
+	 *
+	 * Shape / accent is identical between both variants — the design
+	 * system reads them as the same family. Only the copy differs.
 	 */
 	import { t } from '$lib/i18n/index.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
 
-	interface Props {
-		/** Drive-name shown in the body so members know which drive the
-		 *  freeze applies to. Optional — omit on pages where the drive is
-		 *  implicit from context (e.g. the drive's own config page). */
-		driveName?: string;
+	interface Progress {
+		target: string;
+		migrated: number;
+		total: number;
+		percent: number;
 	}
 
-	let { driveName }: Props = $props();
+	interface Props {
+		/**
+		 * `"drive"` — a specific drive is frozen (default; back-compat
+		 * with pre-migration call sites). `"maintenance"` — the whole
+		 * server is in read-only mode.
+		 */
+		variant?: 'drive' | 'maintenance';
+		/** Drive-name shown in the body (variant="drive" only). */
+		driveName?: string;
+		/** Migration progress (variant="maintenance" only). */
+		progress?: Progress;
+	}
+
+	let { variant = 'drive', driveName, progress }: Props = $props();
 </script>
 
 <div
 	class="read-only-banner"
 	role="region"
-	aria-label={t('drive.read_only_banner.aria', 'This drive is read-only')}
-	data-testid="read-only-banner"
+	aria-label={variant === 'maintenance'
+		? t('server_status.readonly_banner_aria', 'Server maintenance in progress')
+		: t('drive.read_only_banner.aria', 'This drive is read-only')}
+	data-testid={variant === 'maintenance' ? 'server-status-banner' : 'read-only-banner'}
 >
 	<div class="read-only-banner__icon" aria-hidden="true">
 		<Icon name="lock" />
 	</div>
 	<div class="read-only-banner__body">
 		<strong>
-			{#if driveName}
+			{#if variant === 'maintenance'}
+				{t('server_status.readonly_title', 'Server maintenance in progress')}
+			{:else if driveName}
 				{t(
 					'drive.read_only_banner.title_named',
 					{ name: driveName },
@@ -56,10 +85,30 @@
 			{/if}
 		</strong>
 		<span>
-			{t(
-				'drive.read_only_banner.body',
-				'Uploads, edits, deletes, renames, sharing and membership changes are refused. Reads and downloads keep working. Contact an administrator to un-freeze the drive.'
-			)}
+			{#if variant === 'maintenance'}
+				{#if progress}
+					{t(
+						'server_status.readonly_progress',
+						{
+							target: progress.target,
+							migrated: progress.migrated,
+							total: progress.total,
+							percent: progress.percent
+						},
+						'Migrating storage to `{{target}}` — {{percent}}% ({{migrated}} / {{total}} blobs). Uploads, renames, deletes, and shares are refused; reads and downloads work as normal.'
+					)}
+				{:else}
+					{t(
+						'server_status.readonly_body',
+						'Uploads, renames, deletes, and shares are refused temporarily. Reads and downloads work as normal.'
+					)}
+				{/if}
+			{:else}
+				{t(
+					'drive.read_only_banner.body',
+					'Uploads, edits, deletes, renames, sharing and membership changes are refused. Reads and downloads keep working. Contact an administrator to un-freeze the drive.'
+				)}
+			{/if}
 		</span>
 	</div>
 </div>

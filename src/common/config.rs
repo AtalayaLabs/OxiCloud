@@ -383,6 +383,502 @@ impl Default for RetryConfig {
     }
 }
 
+/// AES-GCM / AEAD cipher choice for a `NamedStorageEntry`.
+///
+/// Today the only shipping variant is `Aes256Gcm` — the same cipher
+/// `EncryptedBlobBackend` has always hardcoded. The enum is
+/// future-proofing so `OXICLOUD_STORAGE_<N>_ENCRYPTION_CIPHER` is
+/// already an accepted knob when a second cipher lands
+/// (chacha20-poly1305, aes-256-siv, …). Absent + `_ENCRYPTION_KEY`
+/// present → defaults to `Aes256Gcm` for back-compat with entries
+/// declared before this field existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncryptionCipher {
+    /// AES-256 in Galois/Counter Mode. 96-bit nonce + 128-bit tag,
+    /// random nonce per blob. Layout on disk / S3:
+    /// `[12-byte nonce] [ciphertext] [16-byte GCM tag]`.
+    Aes256Gcm,
+}
+
+impl EncryptionCipher {
+    /// Stable env-var value → variant. Case-insensitive. Extend with
+    /// new variants as new ciphers land; the surface is one match
+    /// arm here + one branch in `EncryptedBlobBackend::new_for_cipher`
+    /// (when that gets added).
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.to_ascii_lowercase().as_str() {
+            "aes-256-gcm" | "aes256gcm" => Some(EncryptionCipher::Aes256Gcm),
+            _ => None,
+        }
+    }
+
+    /// Stable env-var-friendly name — the exact string
+    /// `OXICLOUD_STORAGE_<N>_ENCRYPTION_CIPHER` accepts, and what
+    /// admin surfaces render back to operators.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EncryptionCipher::Aes256Gcm => "aes-256-gcm",
+        }
+    }
+}
+
+/// One named storage entry declared in `.env`.
+///
+/// See `docs/plan/storage-multi-entry.md`. Each entry is a fully-realised
+/// backend configuration that the admin can point the runtime at via
+/// `admin_settings.storage.active_backend_name`. Migrations move blobs
+/// between two entries; consistency audits can be scoped to any registered
+/// entry via `?storage=<name>`.
+///
+/// Entries are parsed from env at boot and held on `AppConfig.storage_entries`.
+/// The set is immutable per-deploy — adding/removing entries requires a
+/// server restart. The DB pointer `active_backend_name` is the ONLY mutable
+/// runtime storage-selection surface.
+#[derive(Debug, Clone)]
+pub struct NamedStorageEntry {
+    /// Stable admin-authored identifier, `[a-z0-9_-]{1,32}`. Unique
+    /// within the entry list. Referenced from
+    /// `admin_settings.storage.active_backend_name` and from
+    /// `?storage=<name>` on the audit APIs.
+    pub name: String,
+    /// Which backend type this entry uses.
+    pub backend: StorageBackendType,
+    /// Root directory for `Local`. `None` for `S3`/`Azure`.
+    /// Defaults to `"storage"` when the entry is Local and no
+    /// `_ROOT_DIR` is set (matches today's flat-var default).
+    pub root_dir: Option<String>,
+    /// S3 configuration for `S3`. `None` for other backends.
+    pub s3: Option<S3StorageConfig>,
+    /// Azure configuration for `Azure`. `None` for other backends.
+    pub azure: Option<AzureStorageConfig>,
+    /// Per-entry AES-256-GCM key (base64, exactly 32 bytes decoded).
+    /// Presence implies encryption is enabled on this entry — no
+    /// separate `_ENCRYPTION_ENABLED` toggle. Absence = raw backend.
+    /// Validated at parse time; boot aborts on invalid key.
+    pub encryption_key_base64: Option<String>,
+    /// Cipher choice for this entry. `Some(Aes256Gcm)` today when
+    /// `_ENCRYPTION_KEY` is set (whether or not the operator
+    /// declared `_ENCRYPTION_CIPHER=aes-256-gcm` explicitly, since
+    /// that's currently the only supported variant).
+    /// `None` when no encryption key is set. When new ciphers land,
+    /// the parser reads `_ENCRYPTION_CIPHER` to distinguish; today
+    /// the field is effectively a boolean because there's exactly
+    /// one variant. Kept as an enum on the type so downstream code
+    /// pattern-matches the concept explicitly and we don't lose the
+    /// intent when a second cipher is added.
+    pub encryption_cipher: Option<EncryptionCipher>,
+}
+
+/// Validation for a `NamedStorageEntry.name`. Restricts to a safe subset
+/// so that entry names embed cleanly in env-var suffixes without
+/// escaping (`OXICLOUD_STORAGE_<NAME>_BACKEND=...`) and in query params
+/// (`?storage=<name>`) without URL-encoding surprises.
+///
+/// Rules:
+/// - 1 to 32 chars.
+/// - Lowercase ASCII letters, digits, `_`, `-` only.
+///
+/// Deliberately no uppercase — the env-var expansion is
+/// `OXICLOUD_STORAGE_<NAME>_...`, and mixing case would create confusing
+/// same-looking-different-behaving variants (`_S3_` vs `_s3_`). Lowercase-
+/// only keeps the surface unambiguous.
+pub fn is_valid_entry_name(name: &str) -> bool {
+    let len = name.len();
+    if !(1..=32).contains(&len) {
+        return false;
+    }
+    name.chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
+/// Env-var names counted as "legacy flat storage-backend vars" — set that
+/// triggers the conflict-with-`_ENTRIES` fail-fast. Kept in one place so
+/// docs, error messages, and tests reference the same list.
+///
+/// **Not included**: `OXICLOUD_STORAGE_PATH` — that variable drives
+/// multiple non-backend things (chunk-dir default, ambient storage path)
+/// and remains valid alongside `_ENTRIES`. Per-entry `_ROOT_DIR` falls
+/// back to it for Local entries when unset.
+pub const LEGACY_STORAGE_BACKEND_VARS: &[&str] = &[
+    "OXICLOUD_STORAGE_BACKEND",
+    "OXICLOUD_S3_ENDPOINT_URL",
+    "OXICLOUD_S3_BUCKET",
+    "OXICLOUD_S3_REGION",
+    "OXICLOUD_S3_ACCESS_KEY",
+    "OXICLOUD_S3_SECRET_KEY",
+    "OXICLOUD_S3_FORCE_PATH_STYLE",
+    "OXICLOUD_AZURE_ACCOUNT_NAME",
+    "OXICLOUD_AZURE_ACCOUNT_KEY",
+    "OXICLOUD_AZURE_CONTAINER",
+    "OXICLOUD_AZURE_SAS_TOKEN",
+    "OXICLOUD_AZURE_ENDPOINT_URL",
+    "OXICLOUD_STORAGE_ENCRYPTION_ENABLED",
+    "OXICLOUD_STORAGE_ENCRYPTION_KEY",
+];
+
+/// Parse the multi-entry storage config from env vars.
+///
+/// See `docs/plan/storage-multi-entry.md` for the full model. This
+/// function encodes the four-cell decision matrix documented there:
+///
+/// | `_ENTRIES` set? | legacy vars present? | Return                                        |
+/// |---|---|---|
+/// | No  | No  | `Ok(vec![])` — no entries; caller uses framework defaults. |
+/// | No  | Yes | `Ok(vec![synthesized_default])` — upgrade path.            |
+/// | Yes | No  | `Ok(vec![entry_1, entry_2, …])` — the declared entries.    |
+/// | Yes | Yes | `Err("legacy vars alongside _ENTRIES: …")` — fail-fast.    |
+///
+/// All fatal shapes return `Err`. Callers in the boot path
+/// (`AppConfig::from_env`) `.expect(...)` on the result — an invalid
+/// storage config must abort at startup, not silently degrade.
+pub fn parse_storage_entries() -> Result<Vec<NamedStorageEntry>, String> {
+    let entries_raw = env::var("OXICLOUD_STORAGE_ENTRIES").unwrap_or_default();
+    let entries_raw = entries_raw.trim();
+    let legacy_present: Vec<&&str> = LEGACY_STORAGE_BACKEND_VARS
+        .iter()
+        .filter(|v| env::var(v).is_ok())
+        .collect();
+
+    if entries_raw.is_empty() {
+        // Cell (No, No) OR (No, Yes).
+        if legacy_present.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Legacy synthesis: build one `default` entry from flat vars.
+        // Same field-extraction logic AppConfig::from_env uses today
+        // for `storage.backend` / `storage.s3` / `storage.azure` /
+        // `storage.encryption`; centralised here so the new entry
+        // model and the legacy path stay bit-identical.
+        //
+        // Emit a deprecation warning naming every legacy var we saw
+        // so operators see the exact cleanup list in boot logs. Also
+        // logs to `target: "audit"` so it lands on the operational
+        // stream that gets watched by monitoring, not just the debug
+        // channel. Removal target isn't fixed yet — legacy still
+        // works — but the earlier operators start migrating, the
+        // less churn when we do pull the plug.
+        let names: Vec<&str> = legacy_present.iter().map(|v| **v).collect();
+        tracing::warn!(
+            target: "audit",
+            event = "storage.legacy_flat_vars_deprecated",
+            vars = ?names,
+            "⚠️  DEPRECATED: booted with legacy flat storage vars ({vars:?}). \
+             Migrate each var into `OXICLOUD_STORAGE_<NAME>_*` under an entry \
+             declared in `OXICLOUD_STORAGE_ENTRIES`. See \
+             docs/plan/storage-multi-entry.md §'Legacy flat-var interaction'.",
+            vars = names,
+        );
+        return Ok(vec![synthesize_default_from_legacy_vars()?]);
+    }
+
+    // `_ENTRIES` is set.
+    if !legacy_present.is_empty() {
+        // Cell (Yes, Yes) — fail-fast. Name every legacy var found so
+        // the operator sees the exact cleanup list, not a generic
+        // "conflict" message.
+        let names: Vec<String> = legacy_present.iter().map(|v| (**v).to_string()).collect();
+        return Err(format!(
+            "OXICLOUD_STORAGE_ENTRIES is set, but legacy storage-backend env vars are also \
+             present: [{}]. In multi-entry mode these flat vars are ignored — remove them \
+             from your environment / .env, or migrate their values into per-entry \
+             OXICLOUD_STORAGE_<NAME>_* form. See docs/plan/storage-multi-entry.md \
+             §'Legacy flat-var interaction'.",
+            names.join(", ")
+        ));
+    }
+
+    // Cell (Yes, No): validate the name list structure first (empty
+    // names, invalid chars, duplicates), THEN parse each entry's
+    // fields. Two-phase separation guarantees the operator sees the
+    // structural problem — "you have a typo in `_ENTRIES` itself" —
+    // before any per-entry field-missing message, which would be
+    // more confusing than helpful when the underlying issue is the
+    // list itself.
+    let raw_names: Vec<&str> = entries_raw.split(',').map(str::trim).collect();
+    let mut names_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for name in &raw_names {
+        if name.is_empty() {
+            return Err(format!(
+                "OXICLOUD_STORAGE_ENTRIES contains an empty name (from `{entries_raw}`) — \
+                 commas must separate non-empty names."
+            ));
+        }
+        if !is_valid_entry_name(name) {
+            return Err(format!(
+                "OXICLOUD_STORAGE_ENTRIES: invalid entry name `{name}` — allowed characters \
+                 are lowercase ASCII letters, digits, `_`, `-`; length 1-32."
+            ));
+        }
+        if !names_seen.insert((*name).to_string()) {
+            return Err(format!(
+                "OXICLOUD_STORAGE_ENTRIES: duplicate name `{name}` — entry names must be unique."
+            ));
+        }
+    }
+    let mut out: Vec<NamedStorageEntry> = Vec::with_capacity(raw_names.len());
+    for name in raw_names {
+        out.push(parse_named_entry(name)?);
+    }
+    Ok(out)
+}
+
+/// Read the per-entry env vars for `name` and build a
+/// [`NamedStorageEntry`]. Called by [`parse_storage_entries`] for each
+/// declared name.
+fn parse_named_entry(name: &str) -> Result<NamedStorageEntry, String> {
+    let backend_raw = env::var(format!("OXICLOUD_STORAGE_{name}_BACKEND")).map_err(|_| {
+        format!(
+            "OXICLOUD_STORAGE_{name}_BACKEND is missing — every entry declared in \
+             OXICLOUD_STORAGE_ENTRIES must specify its backend type (local / s3 / azure)."
+        )
+    })?;
+    let backend = match backend_raw.to_lowercase().as_str() {
+        "local" => StorageBackendType::Local,
+        "s3" => StorageBackendType::S3,
+        "azure" => StorageBackendType::Azure,
+        other => {
+            return Err(format!(
+                "OXICLOUD_STORAGE_{name}_BACKEND=`{other}` is not a known backend type — \
+                 expected one of: local, s3, azure."
+            ));
+        }
+    };
+
+    let mut root_dir = None;
+    let mut s3 = None;
+    let mut azure = None;
+
+    match backend {
+        StorageBackendType::Local => {
+            // `_ROOT_DIR` optional; falls back to `OXICLOUD_STORAGE_PATH`,
+            // then to the framework default at build time. The fallback
+            // means a Local entry can be declared with just `_BACKEND=local`
+            // in .env — matches the friction level of the flat-var world.
+            root_dir = env::var(format!("OXICLOUD_STORAGE_{name}_ROOT_DIR"))
+                .ok()
+                .or_else(|| env::var("OXICLOUD_STORAGE_PATH").ok());
+        }
+        StorageBackendType::S3 => {
+            let bucket = env::var(format!("OXICLOUD_STORAGE_{name}_S3_BUCKET"))
+                .map_err(|_| {
+                    format!(
+                        "OXICLOUD_STORAGE_{name}_S3_BUCKET is required when \
+                         OXICLOUD_STORAGE_{name}_BACKEND=s3."
+                    )
+                })?
+                .trim()
+                .to_string();
+            if bucket.is_empty() {
+                return Err(format!(
+                    "OXICLOUD_STORAGE_{name}_S3_BUCKET is empty — bucket name is required for S3 \
+                     backend entries."
+                ));
+            }
+            s3 = Some(S3StorageConfig {
+                endpoint_url: env::var(format!("OXICLOUD_STORAGE_{name}_S3_ENDPOINT_URL")).ok(),
+                bucket,
+                region: env::var(format!("OXICLOUD_STORAGE_{name}_S3_REGION"))
+                    .unwrap_or_else(|_| "us-east-1".to_string()),
+                access_key: env::var(format!("OXICLOUD_STORAGE_{name}_S3_ACCESS_KEY"))
+                    .unwrap_or_default(),
+                secret_key: env::var(format!("OXICLOUD_STORAGE_{name}_S3_SECRET_KEY"))
+                    .unwrap_or_default(),
+                force_path_style: env::var(format!("OXICLOUD_STORAGE_{name}_S3_FORCE_PATH_STYLE"))
+                    .map(|v| v.parse::<bool>().unwrap_or(false))
+                    .unwrap_or(false),
+            });
+        }
+        StorageBackendType::Azure => {
+            let container = env::var(format!("OXICLOUD_STORAGE_{name}_AZURE_CONTAINER"))
+                .map_err(|_| {
+                    format!(
+                        "OXICLOUD_STORAGE_{name}_AZURE_CONTAINER is required when \
+                         OXICLOUD_STORAGE_{name}_BACKEND=azure."
+                    )
+                })?
+                .trim()
+                .to_string();
+            if container.is_empty() {
+                return Err(format!(
+                    "OXICLOUD_STORAGE_{name}_AZURE_CONTAINER is empty — container name is required \
+                     for Azure backend entries."
+                ));
+            }
+            azure = Some(AzureStorageConfig {
+                account_name: env::var(format!("OXICLOUD_STORAGE_{name}_AZURE_ACCOUNT_NAME"))
+                    .unwrap_or_default(),
+                account_key: env::var(format!("OXICLOUD_STORAGE_{name}_AZURE_ACCOUNT_KEY"))
+                    .unwrap_or_default(),
+                container,
+                sas_token: env::var(format!("OXICLOUD_STORAGE_{name}_AZURE_SAS_TOKEN")).ok(),
+                endpoint_url: env::var(format!("OXICLOUD_STORAGE_{name}_AZURE_ENDPOINT_URL")).ok(),
+            });
+        }
+    }
+
+    // Encryption key — presence implies enabled. Validate now (base64 +
+    // decoded length) so we fail at boot, not at first blob write.
+    let encryption_key_base64 = match env::var(format!("OXICLOUD_STORAGE_{name}_ENCRYPTION_KEY")) {
+        Ok(k) if !k.is_empty() => {
+            validate_encryption_key(name, &k)?;
+            Some(k)
+        }
+        _ => None,
+    };
+
+    // Cipher — future-proofing knob. Only `aes-256-gcm` today.
+    // Explicit value → parse (unknown = fail-fast so a typo isn't
+    // silently defaulted). Absent + key set → default to
+    // `Aes256Gcm`. Absent + no key → `None` (no encryption at all).
+    let encryption_cipher = match env::var(format!("OXICLOUD_STORAGE_{name}_ENCRYPTION_CIPHER")) {
+        Ok(raw) if !raw.is_empty() => match EncryptionCipher::parse(&raw) {
+            Some(c) => Some(c),
+            None => {
+                return Err(format!(
+                    "OXICLOUD_STORAGE_{name}_ENCRYPTION_CIPHER=`{raw}` is not a known cipher — \
+                     supported: `aes-256-gcm`."
+                ));
+            }
+        },
+        _ => {
+            if encryption_key_base64.is_some() {
+                Some(EncryptionCipher::Aes256Gcm)
+            } else {
+                None
+            }
+        }
+    };
+
+    // Nonsense combo — cipher declared without a key. Refuse rather
+    // than silently ignore the operator's declared intent.
+    if encryption_cipher.is_some() && encryption_key_base64.is_none() {
+        return Err(format!(
+            "OXICLOUD_STORAGE_{name}_ENCRYPTION_CIPHER is set but \
+             OXICLOUD_STORAGE_{name}_ENCRYPTION_KEY is not — set the key too, or remove the cipher."
+        ));
+    }
+
+    Ok(NamedStorageEntry {
+        name: name.to_string(),
+        backend,
+        root_dir,
+        s3,
+        azure,
+        encryption_key_base64,
+        encryption_cipher,
+    })
+}
+
+/// Build the synthesized `default` entry from the pre-multi-entry flat
+/// vars. Called only when `_ENTRIES` is unset AND at least one legacy
+/// storage-backend var is present. Preserves the exact field-population
+/// logic `AppConfig::from_env` used to run inline.
+fn synthesize_default_from_legacy_vars() -> Result<NamedStorageEntry, String> {
+    let backend = match env::var("OXICLOUD_STORAGE_BACKEND")
+        .unwrap_or_default()
+        .to_lowercase()
+        .as_str()
+    {
+        "s3" => StorageBackendType::S3,
+        "azure" => StorageBackendType::Azure,
+        _ => StorageBackendType::Local,
+    };
+
+    let mut root_dir = None;
+    let mut s3 = None;
+    let mut azure = None;
+
+    match backend {
+        StorageBackendType::Local => {
+            root_dir = env::var("OXICLOUD_STORAGE_PATH").ok();
+        }
+        StorageBackendType::S3 => {
+            let bucket = env::var("OXICLOUD_S3_BUCKET").unwrap_or_default();
+            if bucket.is_empty() {
+                return Err(
+                    "OXICLOUD_STORAGE_BACKEND=s3 but OXICLOUD_S3_BUCKET is not set — legacy \
+                     synthesis requires the bucket name."
+                        .to_string(),
+                );
+            }
+            s3 = Some(S3StorageConfig {
+                endpoint_url: env::var("OXICLOUD_S3_ENDPOINT_URL").ok(),
+                bucket,
+                region: env::var("OXICLOUD_S3_REGION").unwrap_or_else(|_| "us-east-1".to_string()),
+                access_key: env::var("OXICLOUD_S3_ACCESS_KEY").unwrap_or_default(),
+                secret_key: env::var("OXICLOUD_S3_SECRET_KEY").unwrap_or_default(),
+                force_path_style: env::var("OXICLOUD_S3_FORCE_PATH_STYLE")
+                    .map(|v| v.parse::<bool>().unwrap_or(false))
+                    .unwrap_or(false),
+            });
+        }
+        StorageBackendType::Azure => {
+            let container = env::var("OXICLOUD_AZURE_CONTAINER").unwrap_or_default();
+            if container.is_empty() {
+                return Err(
+                    "OXICLOUD_STORAGE_BACKEND=azure but OXICLOUD_AZURE_CONTAINER is not set — \
+                     legacy synthesis requires the container name."
+                        .to_string(),
+                );
+            }
+            azure = Some(AzureStorageConfig {
+                account_name: env::var("OXICLOUD_AZURE_ACCOUNT_NAME").unwrap_or_default(),
+                account_key: env::var("OXICLOUD_AZURE_ACCOUNT_KEY").unwrap_or_default(),
+                container,
+                sas_token: env::var("OXICLOUD_AZURE_SAS_TOKEN").ok(),
+                endpoint_url: env::var("OXICLOUD_AZURE_ENDPOINT_URL").ok(),
+            });
+        }
+    }
+
+    let encryption_key_base64 = match env::var("OXICLOUD_STORAGE_ENCRYPTION_KEY") {
+        Ok(k) if !k.is_empty() => {
+            validate_encryption_key("default", &k)?;
+            Some(k)
+        }
+        _ => None,
+    };
+    // Legacy synthesis: no `OXICLOUD_STORAGE_ENCRYPTION_CIPHER` env
+    // var exists in the legacy flat surface — always default to
+    // AES-256-GCM when a legacy key is set (matches the hardcoded
+    // pre-multi-entry behaviour).
+    let encryption_cipher = encryption_key_base64
+        .as_ref()
+        .map(|_| EncryptionCipher::Aes256Gcm);
+
+    Ok(NamedStorageEntry {
+        name: "default".to_string(),
+        backend,
+        root_dir,
+        s3,
+        azure,
+        encryption_key_base64,
+        encryption_cipher,
+    })
+}
+
+/// Validate a base64-encoded 32-byte encryption key. Called at parse
+/// time (not first-use) so a bad key aborts boot with a clear
+/// per-entry message instead of failing much later inside
+/// `EncryptedBlobBackend::new`.
+fn validate_encryption_key(entry_name: &str, key_b64: &str) -> Result<(), String> {
+    use base64::Engine;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(key_b64)
+        .map_err(|e| {
+            format!("OXICLOUD_STORAGE_{entry_name}_ENCRYPTION_KEY is not valid base64: {e}")
+        })?;
+    if decoded.len() != 32 {
+        return Err(format!(
+            "OXICLOUD_STORAGE_{entry_name}_ENCRYPTION_KEY decodes to {} bytes; must be exactly \
+             32 bytes (AES-256). Generate a fresh key via \
+             `POST /api/admin/settings/storage/generate-key`.",
+            decoded.len()
+        ));
+    }
+    Ok(())
+}
+
 impl Default for StorageConfig {
     fn default() -> Self {
         // Architecture-appropriate max upload size to avoid overflow on 32-bit systems
@@ -1378,8 +1874,37 @@ pub struct AppConfig {
     pub resources: ResourceConfig,
     /// Concurrency configuration
     pub concurrency: ConcurrencyConfig,
-    /// Storage configuration
+    /// Storage configuration.
+    ///
+    /// **Legacy flat-var surface.** Populated from `OXICLOUD_STORAGE_*`,
+    /// `OXICLOUD_S3_*`, `OXICLOUD_AZURE_*`, `OXICLOUD_STORAGE_ENCRYPTION_*`.
+    /// Represents the single-backend model that predates
+    /// `docs/plan/storage-multi-entry.md`. When that plan lands,
+    /// runtime boot reads `active_backend_name` from DB and picks
+    /// an entry from [`Self::storage_entries`] instead — but existing
+    /// deployments and code paths that still consult this field keep
+    /// working via the legacy-synthesis fallback (if `_ENTRIES` is
+    /// empty, one entry named `default` is synthesized from these
+    /// flat vars and mirrored here).
     pub storage: StorageConfig,
+    /// Named storage entries declared in `.env` via
+    /// `OXICLOUD_STORAGE_ENTRIES=name1,name2,...` plus per-entry
+    /// `OXICLOUD_STORAGE_<NAME>_*` env vars. See
+    /// `docs/plan/storage-multi-entry.md`.
+    ///
+    /// - Empty when neither `_ENTRIES` nor any legacy flat storage
+    ///   var is set (fresh install without any explicit storage
+    ///   config — the default is used, matching today's behaviour).
+    /// - Exactly one synthesized `default` entry when `_ENTRIES` is
+    ///   unset/empty but legacy flat vars are present (upgrade
+    ///   path — existing deployments keep working without touching
+    ///   `.env`).
+    /// - N entries when `_ENTRIES` is set — one per name.
+    ///
+    /// Boot / migration / consistency-audit code looks entries up
+    /// by name in this vec. Order is preserved from `_ENTRIES` for
+    /// the "no active pointer yet, pick the first one" fallback.
+    pub storage_entries: Vec<NamedStorageEntry>,
     /// Database configuration
     pub database: DatabaseConfig,
     /// Authentication configuration
@@ -1448,6 +1973,7 @@ impl Default for AppConfig {
             resources: ResourceConfig::default(),
             concurrency: ConcurrencyConfig::default(),
             storage: StorageConfig::default(),
+            storage_entries: Vec::new(),
             database: DatabaseConfig::default(),
             auth: AuthConfig::default(),
             features: FeaturesConfig::default(),
@@ -2095,6 +2621,20 @@ impl AppConfig {
                 enabled.eq_ignore_ascii_case("true") || enabled == "1";
         }
 
+        // Multi-entry storage config (docs/plan/storage-multi-entry.md).
+        // Parsed here so a bad config aborts boot with a clear error
+        // message before any downstream service tries to use it.
+        // Legacy synthesis is folded into the same call — when
+        // `_ENTRIES` is unset AND legacy flat vars are present, we get
+        // back a one-element vec named `default`. The flat-var block
+        // below still populates the legacy `config.storage.*` fields
+        // for any code path that hasn't migrated to reading from
+        // `storage_entries` yet — the two live side by side until
+        // slice 2 flips the boot backend to read from entries.
+        config.storage_entries = parse_storage_entries().unwrap_or_else(|e| {
+            panic!("Invalid storage configuration in environment: {e}");
+        });
+
         // Storage backend selection
         if let Ok(backend) = env::var("OXICLOUD_STORAGE_BACKEND") {
             match backend.to_lowercase().as_str() {
@@ -2498,5 +3038,323 @@ mod tests {
         // No `@` — rejected even though allowlist is set.
         assert!(!cfg.is_email_allowed("not-an-email"));
         assert!(!cfg.is_email_allowed(""));
+    }
+
+    // ── Multi-entry storage config parser tests
+    //
+    // These tests mutate process env. Cargo runs tests in parallel by
+    // default, so a shared Mutex serialises the env-touching sections.
+    // Every test acquires the guard, wipes the entire storage-related
+    // env surface, applies its own fixture, calls parse_storage_entries,
+    // and drops out. State is scrubbed by the pre-test wipe rather than
+    // any post-test cleanup — safer against a panic mid-test.
+    mod storage_entry_parser {
+        use super::*;
+        use std::sync::Mutex;
+
+        static ENV_GUARD: Mutex<()> = Mutex::new(());
+
+        /// Every env var the parser reads. Wiped before each test so
+        /// leftover state from another test (or from the developer's
+        /// shell) can't influence the result.
+        const ALL_PARSER_VARS: &[&str] = &[
+            "OXICLOUD_STORAGE_ENTRIES",
+            "OXICLOUD_STORAGE_PATH",
+            // Legacy flat vars
+            "OXICLOUD_STORAGE_BACKEND",
+            "OXICLOUD_S3_ENDPOINT_URL",
+            "OXICLOUD_S3_BUCKET",
+            "OXICLOUD_S3_REGION",
+            "OXICLOUD_S3_ACCESS_KEY",
+            "OXICLOUD_S3_SECRET_KEY",
+            "OXICLOUD_S3_FORCE_PATH_STYLE",
+            "OXICLOUD_AZURE_ACCOUNT_NAME",
+            "OXICLOUD_AZURE_ACCOUNT_KEY",
+            "OXICLOUD_AZURE_CONTAINER",
+            "OXICLOUD_AZURE_SAS_TOKEN",
+            "OXICLOUD_AZURE_ENDPOINT_URL",
+            "OXICLOUD_STORAGE_ENCRYPTION_ENABLED",
+            "OXICLOUD_STORAGE_ENCRYPTION_KEY",
+            // Common per-entry vars used in these tests
+            "OXICLOUD_STORAGE_local_main_BACKEND",
+            "OXICLOUD_STORAGE_local_main_ROOT_DIR",
+            "OXICLOUD_STORAGE_local_main_ENCRYPTION_KEY",
+            "OXICLOUD_STORAGE_s3_prod_BACKEND",
+            "OXICLOUD_STORAGE_s3_prod_S3_BUCKET",
+            "OXICLOUD_STORAGE_s3_prod_S3_ENDPOINT_URL",
+            "OXICLOUD_STORAGE_s3_prod_S3_REGION",
+            "OXICLOUD_STORAGE_s3_prod_S3_ACCESS_KEY",
+            "OXICLOUD_STORAGE_s3_prod_S3_SECRET_KEY",
+            "OXICLOUD_STORAGE_s3_prod_S3_FORCE_PATH_STYLE",
+            "OXICLOUD_STORAGE_s3_prod_ENCRYPTION_KEY",
+            "OXICLOUD_STORAGE_foo_BACKEND",
+            "OXICLOUD_STORAGE_bar_BACKEND",
+            "OXICLOUD_STORAGE_bar_S3_BUCKET",
+        ];
+
+        fn wipe_env() {
+            for k in ALL_PARSER_VARS {
+                // SAFETY: the ENV_GUARD mutex serialises all env
+                // mutation inside this module; the outer test harness
+                // makes no other calls to `set_var`/`remove_var` from
+                // concurrent threads for these keys.
+                unsafe { env::remove_var(k) };
+            }
+        }
+
+        fn set(k: &str, v: &str) {
+            unsafe { env::set_var(k, v) };
+        }
+
+        /// Base64 of 32 zero bytes — a syntactically-valid AES-256 key.
+        const VALID_KEY_B64: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
+        // ── Cell (No, No) — no entries, no legacy vars
+
+        #[test]
+        fn empty_no_legacy_returns_empty_vec() {
+            let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+            wipe_env();
+            assert_eq!(parse_storage_entries().unwrap(), vec![]);
+        }
+
+        // ── Cell (No, Yes) — legacy synthesis
+
+        #[test]
+        fn legacy_local_synthesizes_default_entry() {
+            let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+            wipe_env();
+            set("OXICLOUD_STORAGE_BACKEND", "local");
+            set("OXICLOUD_STORAGE_PATH", "/data");
+            let entries = parse_storage_entries().unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].name, "default");
+            assert_eq!(entries[0].backend, StorageBackendType::Local);
+            assert_eq!(entries[0].root_dir.as_deref(), Some("/data"));
+            assert!(entries[0].s3.is_none());
+            assert!(entries[0].encryption_key_base64.is_none());
+        }
+
+        #[test]
+        fn legacy_s3_synthesizes_default_entry() {
+            let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+            wipe_env();
+            set("OXICLOUD_STORAGE_BACKEND", "s3");
+            set("OXICLOUD_S3_BUCKET", "my-bucket");
+            set("OXICLOUD_S3_REGION", "eu-west-1");
+            let entries = parse_storage_entries().unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].name, "default");
+            assert_eq!(entries[0].backend, StorageBackendType::S3);
+            let s3 = entries[0].s3.as_ref().unwrap();
+            assert_eq!(s3.bucket, "my-bucket");
+            assert_eq!(s3.region, "eu-west-1");
+        }
+
+        #[test]
+        fn legacy_encryption_key_carries_into_synthesized_default() {
+            let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+            wipe_env();
+            // Only encryption var set — counts as legacy present, so
+            // synthesis fires. Backend defaults to Local.
+            set("OXICLOUD_STORAGE_ENCRYPTION_KEY", VALID_KEY_B64);
+            let entries = parse_storage_entries().unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(
+                entries[0].encryption_key_base64.as_deref(),
+                Some(VALID_KEY_B64)
+            );
+        }
+
+        #[test]
+        fn legacy_s3_without_bucket_fails() {
+            let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+            wipe_env();
+            set("OXICLOUD_STORAGE_BACKEND", "s3");
+            let err = parse_storage_entries().unwrap_err();
+            assert!(err.contains("OXICLOUD_S3_BUCKET"), "err was: {err}");
+        }
+
+        // ── Cell (Yes, No) — declared entries
+
+        #[test]
+        fn two_entries_local_and_s3() {
+            let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+            wipe_env();
+            set("OXICLOUD_STORAGE_ENTRIES", "local_main,s3_prod");
+            set("OXICLOUD_STORAGE_local_main_BACKEND", "local");
+            set("OXICLOUD_STORAGE_local_main_ROOT_DIR", "/srv/oxicloud");
+            set("OXICLOUD_STORAGE_s3_prod_BACKEND", "s3");
+            set("OXICLOUD_STORAGE_s3_prod_S3_BUCKET", "prod-bucket");
+
+            let entries = parse_storage_entries().unwrap();
+            assert_eq!(entries.len(), 2);
+            assert_eq!(entries[0].name, "local_main");
+            assert_eq!(entries[0].backend, StorageBackendType::Local);
+            assert_eq!(entries[0].root_dir.as_deref(), Some("/srv/oxicloud"));
+            assert_eq!(entries[1].name, "s3_prod");
+            assert_eq!(entries[1].backend, StorageBackendType::S3);
+            assert_eq!(entries[1].s3.as_ref().unwrap().bucket, "prod-bucket");
+        }
+
+        #[test]
+        fn entries_order_preserved_from_env() {
+            let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+            wipe_env();
+            set("OXICLOUD_STORAGE_ENTRIES", "bar,foo");
+            set("OXICLOUD_STORAGE_bar_BACKEND", "s3");
+            set("OXICLOUD_STORAGE_bar_S3_BUCKET", "b");
+            set("OXICLOUD_STORAGE_foo_BACKEND", "local");
+            let entries = parse_storage_entries().unwrap();
+            assert_eq!(entries[0].name, "bar");
+            assert_eq!(entries[1].name, "foo");
+        }
+
+        #[test]
+        fn per_entry_encryption_key_parsed_and_kept() {
+            let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+            wipe_env();
+            set("OXICLOUD_STORAGE_ENTRIES", "local_main");
+            set("OXICLOUD_STORAGE_local_main_BACKEND", "local");
+            set("OXICLOUD_STORAGE_local_main_ENCRYPTION_KEY", VALID_KEY_B64);
+            let entries = parse_storage_entries().unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(
+                entries[0].encryption_key_base64.as_deref(),
+                Some(VALID_KEY_B64)
+            );
+        }
+
+        // ── Cell (Yes, Yes) — fail fast on conflict
+
+        #[test]
+        fn entries_plus_legacy_vars_fails_and_lists_conflicts() {
+            let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+            wipe_env();
+            set("OXICLOUD_STORAGE_ENTRIES", "local_main");
+            set("OXICLOUD_STORAGE_local_main_BACKEND", "local");
+            set("OXICLOUD_STORAGE_BACKEND", "s3");
+            set("OXICLOUD_S3_BUCKET", "stale-bucket");
+            let err = parse_storage_entries().unwrap_err();
+            assert!(err.contains("OXICLOUD_STORAGE_ENTRIES"), "err was: {err}");
+            assert!(err.contains("OXICLOUD_STORAGE_BACKEND"), "err was: {err}");
+            assert!(err.contains("OXICLOUD_S3_BUCKET"), "err was: {err}");
+        }
+
+        // ── Name validation
+
+        #[test]
+        fn uppercase_name_rejected() {
+            let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+            wipe_env();
+            set("OXICLOUD_STORAGE_ENTRIES", "S3prod");
+            let err = parse_storage_entries().unwrap_err();
+            assert!(err.contains("S3prod"), "err was: {err}");
+        }
+
+        #[test]
+        fn empty_name_between_commas_rejected() {
+            let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+            wipe_env();
+            set("OXICLOUD_STORAGE_ENTRIES", "foo,,bar");
+            let err = parse_storage_entries().unwrap_err();
+            assert!(err.contains("empty name"), "err was: {err}");
+        }
+
+        #[test]
+        fn over_length_name_rejected() {
+            let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+            wipe_env();
+            let too_long = "a".repeat(33);
+            set("OXICLOUD_STORAGE_ENTRIES", &too_long);
+            let err = parse_storage_entries().unwrap_err();
+            assert!(err.contains(&too_long), "err was: {err}");
+        }
+
+        #[test]
+        fn duplicate_names_rejected() {
+            let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+            wipe_env();
+            set("OXICLOUD_STORAGE_ENTRIES", "foo,foo");
+            let err = parse_storage_entries().unwrap_err();
+            assert!(err.contains("duplicate name"), "err was: {err}");
+            assert!(err.contains("foo"), "err was: {err}");
+        }
+
+        // ── Per-entry field validation
+
+        #[test]
+        fn missing_backend_for_declared_entry_rejected() {
+            let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+            wipe_env();
+            set("OXICLOUD_STORAGE_ENTRIES", "foo");
+            let err = parse_storage_entries().unwrap_err();
+            assert!(
+                err.contains("OXICLOUD_STORAGE_foo_BACKEND"),
+                "err was: {err}"
+            );
+        }
+
+        #[test]
+        fn s3_entry_missing_bucket_rejected() {
+            let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+            wipe_env();
+            set("OXICLOUD_STORAGE_ENTRIES", "s3_prod");
+            set("OXICLOUD_STORAGE_s3_prod_BACKEND", "s3");
+            let err = parse_storage_entries().unwrap_err();
+            assert!(
+                err.contains("OXICLOUD_STORAGE_s3_prod_S3_BUCKET"),
+                "err was: {err}"
+            );
+        }
+
+        #[test]
+        fn unknown_backend_type_rejected() {
+            let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+            wipe_env();
+            set("OXICLOUD_STORAGE_ENTRIES", "foo");
+            set("OXICLOUD_STORAGE_foo_BACKEND", "gcs");
+            let err = parse_storage_entries().unwrap_err();
+            assert!(err.contains("gcs"), "err was: {err}");
+            assert!(err.contains("local, s3, azure"), "err was: {err}");
+        }
+
+        // ── Encryption key validation
+
+        #[test]
+        fn invalid_base64_encryption_key_rejected() {
+            let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+            wipe_env();
+            set("OXICLOUD_STORAGE_ENTRIES", "local_main");
+            set("OXICLOUD_STORAGE_local_main_BACKEND", "local");
+            set(
+                "OXICLOUD_STORAGE_local_main_ENCRYPTION_KEY",
+                "!!!not-base64!!!",
+            );
+            let err = parse_storage_entries().unwrap_err();
+            assert!(
+                err.contains("OXICLOUD_STORAGE_local_main_ENCRYPTION_KEY"),
+                "err was: {err}"
+            );
+            assert!(err.contains("base64"), "err was: {err}");
+        }
+
+        #[test]
+        fn wrong_length_encryption_key_rejected() {
+            let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+            wipe_env();
+            set("OXICLOUD_STORAGE_ENTRIES", "local_main");
+            set("OXICLOUD_STORAGE_local_main_BACKEND", "local");
+            // "AAAA" decodes to 3 bytes — valid base64, wrong length.
+            set("OXICLOUD_STORAGE_local_main_ENCRYPTION_KEY", "AAAA");
+            let err = parse_storage_entries().unwrap_err();
+            assert!(err.contains("32 bytes"), "err was: {err}");
+        }
+    }
+
+    impl PartialEq for NamedStorageEntry {
+        fn eq(&self, other: &Self) -> bool {
+            self.name == other.name && self.backend == other.backend
+        }
     }
 }
