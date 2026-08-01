@@ -215,46 +215,122 @@ impl AppServiceFactory {
         );
         image_transcode_service.initialize().await?;
 
-        // Build blob storage backend based on configuration
-        let base_backend: Arc<dyn BlobStorageBackend> = match self.config.storage.backend {
-            StorageBackendType::S3 => {
-                let s3_config = self
-                    .config
-                    .storage
-                    .s3
-                    .as_ref()
-                    .expect("S3 config required when OXICLOUD_STORAGE_BACKEND=s3");
-                Arc::new(
-                    crate::infrastructure::services::s3_blob_backend::S3BlobBackend::new(s3_config),
-                )
-            }
-            StorageBackendType::Azure => {
-                let az_config = self
-                    .config
-                    .storage
-                    .azure
-                    .as_ref()
-                    .expect("Azure config required when OXICLOUD_STORAGE_BACKEND=azure");
-                Arc::new(
-                    crate::infrastructure::services::azure_blob_backend::AzureBlobBackend::new(
-                        az_config,
+        // Build blob storage backend.
+        //
+        // Two paths, chosen by whether `_ENTRIES` (or the legacy
+        // synthesis) populated `storage_entries` at parse time:
+        //
+        // * `storage_entries` non-empty — multi-entry mode
+        //   (`docs/plan/storage-multi-entry.md`). Look up the active
+        //   entry name in `auth.admin_settings.storage.active_backend_name`,
+        //   fall back to the first entry when unset (fresh install,
+        //   no admin has picked one yet), fail-fast when the DB
+        //   points at a name that isn't declared. Build via the
+        //   shared `entry_backend::build_entry_backend` factory so
+        //   the encryption decorator is applied uniformly here and
+        //   in the migration handler (slice 3).
+        //
+        // * `storage_entries` empty — no explicit storage config at
+        //   all (fresh install without env vars). Use the framework
+        //   defaults captured on `config.storage` — matches today's
+        //   behaviour so a bare `cargo run` in a dev workspace keeps
+        //   working. Encryption never applies here (legacy synthesis
+        //   would have created an entry if any legacy var was set).
+        let active_backend_kind: StorageBackendType;
+        let base_backend: Arc<dyn BlobStorageBackend> = if self.config.storage_entries.is_empty() {
+            active_backend_kind = self.config.storage.backend.clone();
+            tracing::info!(
+                "Storage: no OXICLOUD_STORAGE_ENTRIES declared and no legacy vars — using \
+                 framework default (backend={:?}, path={:?})",
+                active_backend_kind,
+                self.storage_path,
+            );
+            match active_backend_kind {
+                StorageBackendType::S3 => {
+                    let s3_config = self
+                        .config
+                        .storage
+                        .s3
+                        .as_ref()
+                        .expect("S3 config required when OXICLOUD_STORAGE_BACKEND=s3");
+                    Arc::new(
+                        crate::infrastructure::services::s3_blob_backend::S3BlobBackend::new(
+                            s3_config,
+                        ),
+                    )
+                }
+                StorageBackendType::Azure => {
+                    let az_config = self
+                        .config
+                        .storage
+                        .azure
+                        .as_ref()
+                        .expect("Azure config required when OXICLOUD_STORAGE_BACKEND=azure");
+                    Arc::new(
+                        crate::infrastructure::services::azure_blob_backend::AzureBlobBackend::new(
+                            az_config,
+                        ),
+                    )
+                }
+                StorageBackendType::Local => Arc::new(
+                    crate::infrastructure::services::local_blob_backend::LocalBlobBackend::new(
+                        &self.storage_path,
                     ),
-                )
-            }
-            StorageBackendType::Local => Arc::new(
-                crate::infrastructure::services::local_blob_backend::LocalBlobBackend::new(
-                    &self.storage_path,
                 ),
-            ),
+            }
+        } else {
+            use crate::infrastructure::services::entry_backend::{
+                ActiveEntry, build_entry_backend, resolve_active_entry,
+            };
+            let active = resolve_active_entry(db_pool, &self.config.storage_entries)
+                .await
+                .unwrap_or_else(|e| {
+                    panic!("Storage boot failed: {e}");
+                });
+            let entry = match active {
+                ActiveEntry::Explicit(e) => {
+                    tracing::info!(
+                        "Storage: booting on entry `{}` (from auth.admin_settings.storage.active_backend_name)",
+                        e.name,
+                    );
+                    e
+                }
+                ActiveEntry::Unset => {
+                    // No admin pick yet. Fall back to the first entry
+                    // in `_ENTRIES` order. `storage_entries` is
+                    // guaranteed non-empty in this branch, so [0] is
+                    // safe. Loud info-level log so operators see
+                    // which entry was chosen for them.
+                    let first = &self.config.storage_entries[0];
+                    tracing::info!(
+                        "Storage: no active_backend_name set in DB — defaulting to first entry \
+                         `{}` (declared first in OXICLOUD_STORAGE_ENTRIES). Set explicitly via \
+                         the admin storage tab or `oxicloud --select-storage <name>` to pin.",
+                        first.name,
+                    );
+                    first
+                }
+            };
+            active_backend_kind = entry.backend.clone();
+            build_entry_backend(entry, &self.storage_path)
         };
 
-        // Stack decorators: retry → encryption → cache (inner-to-outer)
+        // Stack decorators: retry → encryption → cache (inner-to-outer).
+        //
+        // Encryption is applied INSIDE build_entry_backend (per-entry
+        // key), so it's already on the base returned above when the
+        // entry declared one. The legacy-vars-no-entries branch skips
+        // encryption (that path exists only for zero-storage-config
+        // installs); if legacy synthesis fired it produced an entry
+        // and we're on the entry branch instead.
+        //
+        // Retry + cache are app-level (config.storage.retry/cache), not
+        // per-entry, so they still apply here. `active_backend_kind`
+        // gates the "remote-only" decorators the same as before.
         let mut blob_backend: Arc<dyn BlobStorageBackend> = base_backend;
 
         // Retry decorator (for remote backends)
-        if self.config.storage.retry.enabled
-            && self.config.storage.backend != StorageBackendType::Local
-        {
+        if self.config.storage.retry.enabled && active_backend_kind != StorageBackendType::Local {
             use crate::infrastructure::services::retry_blob_backend::{
                 RetryBlobBackend, RetryPolicy,
             };
@@ -272,8 +348,17 @@ impl AppServiceFactory {
             tracing::info!("Blob storage retry decorator enabled");
         }
 
-        // Encryption decorator
-        if self.config.storage.encryption.enabled {
+        // Encryption decorator — legacy path only.
+        //
+        // When `storage_entries` is non-empty, encryption is already
+        // applied inside `build_entry_backend` from the entry's own
+        // `encryption_key_base64` (per-entry key). This block is the
+        // pre-multi-entry fallback that reads the flat
+        // `OXICLOUD_STORAGE_ENCRYPTION_*` vars — reachable only for
+        // fresh installs with no explicit storage config at all
+        // (legacy synthesis would have created an entry if any legacy
+        // var, including the encryption ones, was present).
+        if self.config.storage_entries.is_empty() && self.config.storage.encryption.enabled {
             use crate::infrastructure::services::encrypted_blob_backend::EncryptedBlobBackend;
             let key_b64 = self
                 .config
@@ -289,13 +374,11 @@ impl AppServiceFactory {
                 "OXICLOUD_STORAGE_ENCRYPTION_KEY must be exactly 32 bytes (base64 of 32 bytes)",
             );
             blob_backend = Arc::new(EncryptedBlobBackend::new(blob_backend, &key));
-            tracing::info!("Blob storage encryption decorator enabled (AES-256-GCM)");
+            tracing::info!("Blob storage encryption decorator enabled (AES-256-GCM) — legacy path");
         }
 
         // Cache decorator (for remote backends only)
-        if self.config.storage.cache.enabled
-            && self.config.storage.backend != StorageBackendType::Local
-        {
+        if self.config.storage.cache.enabled && active_backend_kind != StorageBackendType::Local {
             use crate::infrastructure::services::cached_blob_backend::{
                 BlobCacheConfig as CacheCfg, CachedBlobBackend,
             };
