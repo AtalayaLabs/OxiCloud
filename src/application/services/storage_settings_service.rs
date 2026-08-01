@@ -273,7 +273,7 @@ impl StorageSettingsService {
                     StorageBackendType::Azure => "azure".to_string(),
                 },
                 is_active: e.name == active_entry_name,
-                encryption_enabled: e.encryption_key_base64.is_some(),
+                encryption_enabled: e.is_encrypted(),
                 location_hint: entry_location_hint(e),
             })
             .collect();

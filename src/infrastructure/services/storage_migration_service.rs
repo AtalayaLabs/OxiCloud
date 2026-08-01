@@ -328,7 +328,10 @@ impl RecoverableJobHandler for StorageMigrationService {
         if let Some(source) = source_entry
             && entry_identity(source) == entry_identity(target_entry)
         {
-            let key_differs = source.encryption_key_base64 != target_entry.encryption_key_base64;
+            // Compare head-pair materials — the "write key" for each
+            // entry. A non-head pair difference (mid-rotation) doesn't
+            // count as a key change for the purposes of this refusal.
+            let key_differs = source.head_key_material() != target_entry.head_key_material();
             let hint = if key_differs {
                 " (encryption key differs → this looks like an in-place key rotation; \
                  create a new entry pointing at a DIFFERENT bucket / dir, migrate to it, \
@@ -446,7 +449,14 @@ impl RecoverableJobHandler for StorageMigrationService {
         };
 
         let mut copied_count = 0u64;
-        let mut skipped_count = 0u64;
+        // K1.2: with the target-skip short-circuit gone (see the
+        // detailed comment further down), no blob is ever "skipped"
+        // during a migration walk today. The counter stays wired
+        // through the log lines + `finish_completed` so K3's
+        // format-aware smart-skip can re-populate it without
+        // touching the observability surface. Not mutated in this
+        // slice — hence no `mut`.
+        let skipped_count: u64 = 0;
         let mut failed_count = 0u64;
         let mut source_missing_count = 0u64;
 
@@ -574,26 +584,33 @@ impl RecoverableJobHandler for StorageMigrationService {
                     }
                 }
 
-                // Skip when the target already has it — supports
-                // idempotent resume and cheap re-runs against a
-                // partially-migrated target.
-                match target.blob_exists(hash).await {
-                    Ok(true) => {
-                        skipped_count += 1;
-                        continue;
-                    }
-                    Ok(false) => {}
-                    Err(e) => {
-                        tracing::warn!(
-                            target: "oxicloud::migration",
-                            event = "storage_migration.blob_exists_error",
-                            run_id = %store.run_id(),
-                            hash = %hash,
-                            error = %e,
-                            "blob_exists probe on target failed; attempting copy anyway"
-                        );
-                    }
-                }
+                // Always copy — do NOT short-circuit on
+                // `target.blob_exists(hash)`. Ed hit this on 2026-08-01
+                // during S3 → local migration testing with encryption
+                // enabled on the target: the target had pre-existing
+                // plaintext blobs from an earlier local-active session,
+                // so `blob_exists` returned true and the migration
+                // silently skipped them. Result: the "encrypted"
+                // target ended up with mixed plaintext + ciphertext
+                // blobs — undetectable until a subsequent read failed.
+                //
+                // The old skip was justified by two use cases:
+                //   (a) resume idempotency — the last cursor-checkpoint
+                //       window (~100 blobs) gets re-processed on resume;
+                //   (b) target-side dedup — same content already present.
+                //
+                // Both are now handled by unconditional overwrite: the
+                // re-copy is bounded by the checkpoint window (small),
+                // and dedup-hit content is rare in practice
+                // (content-addressability means duplicate blobs ARE
+                // the same blob unless two backends were seeded
+                // separately from the same source).
+                //
+                // K3's `storage_rotate` job will restore a smart skip
+                // via the v1 header's `<key_fp>` field — "already at
+                // head format+key" then becomes cheaply detectable
+                // without reading target bytes. Until then, correct >
+                // fast.
 
                 match copy_blob(self.source.as_ref(), target.as_ref(), hash).await {
                     Ok(()) => {

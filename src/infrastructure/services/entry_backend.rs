@@ -229,30 +229,24 @@ pub fn build_entry_backend(
         }
     };
 
-    // Encryption decorator — presence-implies-enabled, per plan §Encryption.
-    let Some(key_b64) = entry.encryption_key_base64.as_ref() else {
+    // Encryption decorator — presence-implies-enabled, per plan
+    // §Encryption. K1 preserves single-head-pair behaviour: writes and
+    // reads use the head pair's material. K2 replaces the decorator
+    // with a header-aware read/write path that consults the full pair
+    // list; this call site becomes a wrapper construction rather than
+    // a single-key handoff at that point.
+    let Some(key) = entry.head_key_material() else {
+        // No pair list at all, OR head pair is `CipherKind::None`
+        // (mid-decrypt-migration state). Both cases mean "writes go
+        // straight to the raw backend today"; older encrypted pairs
+        // in the list stay unreachable until K2 wires the read
+        // fallback.
         return base;
     };
     use crate::infrastructure::services::encrypted_blob_backend::EncryptedBlobBackend;
-    let key_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, key_b64)
-        .unwrap_or_else(|e| {
-            panic!(
-                "entry `{}` encryption key is not valid base64: {e} — parser was supposed to \
-                 catch this at boot",
-                entry.name
-            )
-        });
-    let key: [u8; 32] = key_bytes.try_into().unwrap_or_else(|v: Vec<u8>| {
-        panic!(
-            "entry `{}` encryption key decoded to {} bytes; must be 32 — parser was supposed to \
-             catch this at boot",
-            entry.name,
-            v.len()
-        )
-    });
     tracing::info!(
-        "Storage entry `{}` encrypted with AES-256-GCM (key from env)",
+        "Storage entry `{}` encrypted with AES-256-GCM (head pair from env)",
         entry.name
     );
-    Arc::new(EncryptedBlobBackend::new(base, &key))
+    Arc::new(EncryptedBlobBackend::new(base, key))
 }

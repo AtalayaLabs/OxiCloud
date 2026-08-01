@@ -366,7 +366,7 @@ impl AppServiceFactory {
         //
         // When `storage_entries` is non-empty, encryption is already
         // applied inside `build_entry_backend` from the entry's own
-        // `encryption_key_base64` (per-entry key). This block is the
+        // pair-list (head-pair key). This block is the
         // pre-multi-entry fallback that reads the flat
         // `OXICLOUD_STORAGE_ENCRYPTION_*` vars — reachable only for
         // fresh installs with no explicit storage config at all

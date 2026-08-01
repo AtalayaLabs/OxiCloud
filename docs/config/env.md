@@ -103,8 +103,7 @@ Each declared name `<N>` then reads its own set of per-entry variables:
 | `OXICLOUD_STORAGE_<N>_AZURE_CONTAINER` | — | Azure-only: blob container name (required when backend=azure) |
 | `OXICLOUD_STORAGE_<N>_AZURE_SAS_TOKEN` | — | Azure-only: SAS token (alternative to account key) |
 | `OXICLOUD_STORAGE_<N>_AZURE_ENDPOINT_URL` | — | Azure-only: custom endpoint (Azurite, private deployments) |
-| `OXICLOUD_STORAGE_<N>_ENCRYPTION_KEY` | — | Base64-encoded 32-byte AES-256 key. **Presence implies encryption is enabled** on this entry — no separate enable flag. Bad base64 / wrong length aborts boot. |
-| `OXICLOUD_STORAGE_<N>_ENCRYPTION_CIPHER` | `aes-256-gcm` when `_ENCRYPTION_KEY` is set | Cipher choice for this entry. Only `aes-256-gcm` is accepted today (future-proofing knob — the enum is ready for a second cipher, the implementation still hardcodes AES-256-GCM). Setting the cipher without a key aborts boot. |
+| `OXICLOUD_STORAGE_<N>_ENCRYPTION_KEY` | — | Comma-separated list of `<cipher>:<base64 key>` pairs (or bare `<base64 key>`, which defaults to `aes-256-gcm`). **Presence implies encryption is enabled** on this entry — no separate enable flag. The LAST pair wins on writes; every pair is a candidate for reads. Supported ciphers: `aes-256-gcm` and `none` (empty-key sentinel used at pair-list head/tail for encrypt/decrypt-in-place rotations). Bad base64, wrong length, duplicate keys, or multiple `none` pairs abort boot. See [Storage key rotation](../plan/storage-key-rotation.md) for rotation recipes. |
 
 **Fail-fast rules** (boot aborts with actionable message):
 
@@ -125,7 +124,10 @@ OXICLOUD_STORAGE_s3_prod_S3_BUCKET=my-oxicloud-bucket
 OXICLOUD_STORAGE_s3_prod_S3_REGION=us-east-1
 OXICLOUD_STORAGE_s3_prod_S3_ACCESS_KEY=…
 OXICLOUD_STORAGE_s3_prod_S3_SECRET_KEY=…
-OXICLOUD_STORAGE_s3_prod_ENCRYPTION_KEY=…  # openssl rand -base64 32
+OXICLOUD_STORAGE_s3_prod_ENCRYPTION_KEY=aes-256-gcm:…  # openssl rand -base64 32
+
+# Rotation window (two pairs, last wins on writes):
+# OXICLOUD_STORAGE_s3_prod_ENCRYPTION_KEY=aes-256-gcm:<OLD>,aes-256-gcm:<NEW>
 ```
 
 ## Storage Backend (DEPRECATED — legacy single-backend)
