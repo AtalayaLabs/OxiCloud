@@ -769,6 +769,7 @@ fn wopi_engine(pool: &Arc<PgPool>) -> (Arc<PgAclEngine>, Arc<FileBlobReadReposit
             folder_repo,
             file_repo.clone(),
             group_repo,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
         )),
         file_repo,
     )

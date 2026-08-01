@@ -1487,11 +1487,34 @@ impl AppServiceFactory {
         let subject_group_repo = Arc::new(
             crate::infrastructure::repositories::pg::SubjectGroupPgRepository::new(pool.clone()),
         );
+        // Migration-readonly atomic. Seeded from
+        // `admin_settings.storage.migration_readonly` so the flag
+        // survives restart (an operator won't see writes accidentally
+        // re-enabled between a crash mid-migration and the retrigger).
+        // Shared with the AuthZ engine so it can short-circuit write
+        // permissions without a per-check DB round-trip. The boot
+        // clear rule (§Read-only mode) runs after this seeding, after
+        // the boot recovery sweep — enough for the runtime state
+        // machine to decide whether to keep or clear.
+        let migration_readonly = Arc::new(std::sync::atomic::AtomicBool::new(
+            crate::infrastructure::services::entry_backend::load_migration_readonly(&pool).await,
+        ));
+        if migration_readonly.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!(
+                target: "oxicloud::scheduler",
+                event = "storage.migration_readonly.loaded_true_at_boot",
+                "Server booted with migration_readonly=true — writes will be refused by AuthZ \
+                 until the flag is cleared (either by the boot-clear rule or via the admin \
+                 storage tab)."
+            );
+        }
+
         let authorization = build_authorization_engine(
             pool.clone(),
             repos.folder_repository.clone(),
             repos.file_read_repository.clone(),
             subject_group_repo.clone(),
+            migration_readonly.clone(),
         );
 
         // Recent service + recording hook are built up-front so the
@@ -1979,6 +2002,7 @@ impl AppServiceFactory {
             webdav_dead_props:
                 crate::infrastructure::services::webdav_dead_property_store::create_dead_property_store(pool.clone()),
             authorization: authorization.clone(),
+            migration_readonly: migration_readonly.clone(),
             drive_repo: drive_repo.clone(),
             drive_management_service: Arc::new(
                 crate::application::services::drive_management_service::DriveManagementService::new(
@@ -2195,6 +2219,7 @@ impl AppServiceFactory {
                     app_state.core.active_backend_name.clone(),
                     app_state.core.config.storage_entries.clone(),
                     self.storage_path.clone(),
+                    app_state.migration_readonly.clone(),
                 ),
             )
             .register_recoverable_job(&app_state.core.job_registry, &job_store_provider_dyn)
@@ -2393,6 +2418,105 @@ impl AppServiceFactory {
             ),
         }
 
+        // Migration-readonly boot-clear rule. See
+        // `docs/plan/storage-multi-entry.md` §"Read-only mode".
+        //
+        // If the flag was set true at boot AND no storage_migration
+        // run is currently non-terminal AND active_backend_name
+        // matches the entry the app actually booted onto — that means
+        // the cutover completed on a prior boot (the run reached
+        // Completed, the pointer flipped, the operator restarted).
+        // Safe to clear now: no in-flight migration means no one
+        // still needs writes-off, and matching active_backend_name
+        // means we're already on the target the run was pointing at.
+        //
+        // If ANY of those conditions fails (flag was false at boot;
+        // there's still a Paused/Running/CancelRequested run in the
+        // way; active doesn't match booted — mismatch means someone
+        // manually edited the pointer while readonly was on) we
+        // leave the flag alone. Operator has to decide.
+        if app_state
+            .migration_readonly
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            use crate::infrastructure::services::storage_migration_service::STORAGE_MIGRATION_JOB_NAME;
+            let has_in_flight = match app_state
+                .core
+                .job_store_provider
+                .list_runs(STORAGE_MIGRATION_JOB_NAME, 5)
+                .await
+            {
+                Ok(runs) => runs.iter().any(|r| {
+                    matches!(
+                        r.status,
+                        crate::infrastructure::scheduler::RunStatus::Running
+                            | crate::infrastructure::scheduler::RunStatus::Paused
+                            | crate::infrastructure::scheduler::RunStatus::CancelRequested
+                    )
+                }),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "oxicloud::scheduler",
+                        event = "storage.migration_readonly.clear_check_failed",
+                        error = %e,
+                        "failed to list storage_migration runs during readonly-clear check; \
+                         leaving migration_readonly flag as-is"
+                    );
+                    // Play it safe: assume in-flight to avoid clearing prematurely.
+                    true
+                }
+            };
+
+            // Look up the DB pointer to compare against the booted
+            // active_backend_name. Absence (Unset) is treated as "no
+            // mismatch to complain about" — the boot fallback already
+            // picked the first entry.
+            let db_active_matches = {
+                use crate::infrastructure::services::entry_backend::{
+                    ActiveEntry, resolve_active_entry,
+                };
+                match resolve_active_entry(&pool, &app_state.core.config.storage_entries).await {
+                    Ok(ActiveEntry::Explicit(e)) => e.name == app_state.core.active_backend_name,
+                    Ok(ActiveEntry::Unset) => true,
+                    Err(_) => false,
+                }
+            };
+
+            if !has_in_flight && db_active_matches {
+                use crate::infrastructure::services::entry_backend::persist_migration_readonly;
+                match persist_migration_readonly(&pool, false).await {
+                    Ok(()) => {
+                        app_state
+                            .migration_readonly
+                            .store(false, std::sync::atomic::Ordering::Relaxed);
+                        tracing::info!(
+                            target: "audit",
+                            event = "storage.migration_readonly.cleared_at_boot",
+                            active = %app_state.core.active_backend_name,
+                            "🧊 migration_readonly cleared at boot: no in-flight migration + \
+                             active_backend_name matches booted entry (cutover complete on prior boot)"
+                        );
+                    }
+                    Err(e) => tracing::warn!(
+                        target: "oxicloud::scheduler",
+                        event = "storage.migration_readonly.clear_persist_failed",
+                        error = %e,
+                        "cleared migration_readonly in memory would have been safe, but the DB \
+                         write failed — leaving the DB row alone; will re-check next boot"
+                    ),
+                }
+            } else {
+                tracing::info!(
+                    target: "oxicloud::scheduler",
+                    event = "storage.migration_readonly.retained_at_boot",
+                    has_in_flight = has_in_flight,
+                    db_active_matches = db_active_matches,
+                    "migration_readonly retained at boot (in-flight run and/or active-name \
+                     mismatch prevents auto-clear)"
+                );
+            }
+        }
+
         // Start the periodic-job scheduler AFTER every native service has
         // finished registering its jobs on `core.job_registry`. Starting
         // it earlier would race the first tick against late registrations.
@@ -2589,6 +2713,16 @@ pub struct AppState {
     /// an enum dispatcher or `Arc<dyn AuthorizationEngine>` (with
     /// `async_trait` boxing).
     pub authorization: Arc<crate::infrastructure::services::pg_acl_engine::PgAclEngine>,
+    /// Global "server is in migration read-only mode" flag, shared
+    /// with [`Self::authorization`] so it can short-circuit write
+    /// permissions. Backed by
+    /// `admin_settings.storage.migration_readonly` for restart
+    /// survival. Slice 5's cutover state machine flips this atomic
+    /// (via `Ordering::Relaxed`) and calls
+    /// `entry_backend::persist_migration_readonly` to keep DB and
+    /// memory in sync. See `docs/plan/storage-multi-entry.md`
+    /// §"Read-only mode".
+    pub migration_readonly: Arc<std::sync::atomic::AtomicBool>,
     /// Drive entity repository — `GET /api/drives`, the personal-drive
     /// lifecycle hook, and (post-D2) shared-drive creation flow all read
     /// through this. Backing table is `storage.drives`; membership is
@@ -2731,6 +2865,7 @@ fn build_authorization_engine(
         crate::infrastructure::repositories::pg::file_blob_read_repository::FileBlobReadRepository,
     >,
     group_repo: Arc<crate::infrastructure::repositories::pg::SubjectGroupPgRepository>,
+    migration_readonly: Arc<std::sync::atomic::AtomicBool>,
 ) -> Arc<crate::infrastructure::services::pg_acl_engine::PgAclEngine> {
     use crate::infrastructure::services::pg_acl_engine::PgAclEngine;
 
@@ -2742,7 +2877,13 @@ fn build_authorization_engine(
             "OXICLOUD_AUTHZ_ENGINE={other:?} is not yet supported. Only 'postgres' is implemented; leave the variable unset to use the default."
         );
     }
-    Arc::new(PgAclEngine::new(pool, folder_repo, file_repo, group_repo))
+    Arc::new(PgAclEngine::new(
+        pool,
+        folder_repo,
+        file_repo,
+        group_repo,
+        migration_readonly,
+    ))
 }
 
 /// Pair returned by [`build_email_sender`] when wiring DI: the

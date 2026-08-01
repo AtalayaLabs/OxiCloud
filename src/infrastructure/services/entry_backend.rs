@@ -34,6 +34,84 @@ use crate::common::config::{NamedStorageEntry, StorageBackendType};
 /// selection (see `docs/plan/storage-multi-entry.md` §"One DB row").
 pub const ACTIVE_BACKEND_NAME_KEY: &str = "storage.active_backend_name";
 
+/// Key in `auth.admin_settings` that holds the persistent-across-restart
+/// migration-readonly flag. See
+/// `docs/plan/storage-multi-entry.md` §"Read-only mode reuses the
+/// existing AuthZ short-circuit". Value is `"true"` or `"false"`
+/// (plain text; the settings table stores strings).
+pub const MIGRATION_READONLY_KEY: &str = "storage.migration_readonly";
+
+/// Read the persisted `migration_readonly` flag from `admin_settings`.
+/// Absent row / parse failure / DB error all resolve to `false` — the
+/// safer default when we can't determine the intent, since a false
+/// value only means "writes allowed by AuthZ" not "migration is
+/// running." Called once at boot to seed the in-memory `AtomicBool`.
+pub async fn load_migration_readonly(pool: &PgPool) -> bool {
+    let row: Result<Option<(Option<String>,)>, sqlx::Error> =
+        sqlx::query_as("SELECT value FROM auth.admin_settings WHERE key = $1")
+            .bind(MIGRATION_READONLY_KEY)
+            .fetch_optional(pool)
+            .await;
+    match row {
+        Ok(Some((Some(v),))) => matches!(v.to_lowercase().as_str(), "true" | "1"),
+        Ok(_) => false,
+        Err(e) => {
+            tracing::warn!(
+                target: "oxicloud::scheduler",
+                event = "storage.migration_readonly.load_failed",
+                error = %e,
+                "failed to read {MIGRATION_READONLY_KEY} at boot; defaulting to false"
+            );
+            false
+        }
+    }
+}
+
+/// Persist the `migration_readonly` flag. Idempotent — upserts the
+/// `admin_settings` row. Called by the cutover state machine (slice 5)
+/// when a migration starts (set true) or completes cleanly across a
+/// restart (set false via the boot clear rule). Handler / trigger
+/// callers should also update the in-memory `AtomicBool` alongside
+/// this call to keep the two in sync.
+pub async fn persist_migration_readonly(pool: &PgPool, value: bool) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO auth.admin_settings (key, value, category, is_secret)
+             VALUES ($1, $2, 'storage', FALSE)
+        ON CONFLICT (key)
+        DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+        "#,
+    )
+    .bind(MIGRATION_READONLY_KEY)
+    .bind(if value { "true" } else { "false" })
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Persist the `active_backend_name` pointer. Called by the migration
+/// handler on `RunOutcome::Completed` to flip the runtime backend to
+/// the just-migrated target entry. The next boot reads this via
+/// `resolve_active_entry` and picks the new entry for the LIVE
+/// backend; before the restart the process is still on the OLD
+/// backend (that's what the `migration_readonly` gate is protecting).
+/// Idempotent UPSERT.
+pub async fn persist_active_backend_name(pool: &PgPool, name: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO auth.admin_settings (key, value, category, is_secret)
+             VALUES ($1, $2, 'storage', FALSE)
+        ON CONFLICT (key)
+        DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+        "#,
+    )
+    .bind(ACTIVE_BACKEND_NAME_KEY)
+    .bind(name)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Result of [`resolve_active_entry`].
 pub enum ActiveEntry<'a> {
     /// DB has an `active_backend_name` set AND that name matches an

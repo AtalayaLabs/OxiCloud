@@ -48,6 +48,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -60,7 +61,9 @@ use crate::infrastructure::scheduler::{
     JobRegistry, JobRunArgs, JobStore, JobStoreProvider, RecoverableJobHandler, RunOutcome,
     RunStatus, record_or_log,
 };
-use crate::infrastructure::services::entry_backend::build_entry_backend;
+use crate::infrastructure::services::entry_backend::{
+    build_entry_backend, persist_active_backend_name, persist_migration_readonly,
+};
 
 pub const STORAGE_MIGRATION_JOB_NAME: &str = "storage_migration";
 
@@ -98,15 +101,26 @@ pub struct StorageMigrationService {
     /// own `_ROOT_DIR`. Same fallback rule as boot
     /// (`build_entry_backend`).
     storage_path_fallback: PathBuf,
+    /// Shared `AppState.migration_readonly` handle. Handler flips
+    /// this atomic (and persists to DB) at run start once all
+    /// guards pass, so writes across the whole app get refused by
+    /// the AuthZ short-circuit for the duration of the copy. Kept
+    /// ON when Completed — the boot-clear rule (slice 4) resets it
+    /// on the next restart after cutover, so operators can't
+    /// accidentally re-enable writes on the OLD backend while the
+    /// pointer already says the NEW one is active.
+    migration_readonly: Arc<AtomicBool>,
 }
 
 impl StorageMigrationService {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         pool: Arc<PgPool>,
         source: Arc<dyn BlobStorageBackend>,
         active_backend_name: String,
         storage_entries: Vec<NamedStorageEntry>,
         storage_path_fallback: PathBuf,
+        migration_readonly: Arc<AtomicBool>,
     ) -> Self {
         Self {
             pool,
@@ -114,6 +128,7 @@ impl StorageMigrationService {
             active_backend_name,
             storage_entries,
             storage_path_fallback,
+            migration_readonly,
         }
     }
 
@@ -313,6 +328,37 @@ impl RecoverableJobHandler for StorageMigrationService {
             };
         }
 
+        // All guards passed. Engage server-wide read-only mode for
+        // the duration of the copy so new writes can't create blobs
+        // the migration walk has already stepped past. Both DB and
+        // in-memory atomic get flipped in lock-step. Idempotent under
+        // resume — the row is already `true` from the original open
+        // (survived a restart via slice 4's boot seed), but rewriting
+        // it doesn't hurt.
+        //
+        // A DB persist failure aborts before any copy — we won't
+        // silently proceed with writes-allowed. If the atomic write
+        // succeeded but DB failed we'd still have writes-off in this
+        // process, but a restart mid-migration would lose it. Fail
+        // early instead so operators see the actual DB problem.
+        if let Err(e) = persist_migration_readonly(self.pool.as_ref(), true).await {
+            return RunOutcome::Failed {
+                message: format!(
+                    "engage migration_readonly (persist): {e} — refusing to copy without the \
+                     write freeze in place"
+                ),
+            };
+        }
+        self.migration_readonly.store(true, Ordering::Relaxed);
+        tracing::info!(
+            target: "audit",
+            event = "storage.migration_readonly.engaged",
+            run_id = %store.run_id(),
+            target_name = %target_name,
+            "🚧 migration_readonly engaged: writes across the whole app are refused until \
+             cutover completes and the operator restarts"
+        );
+
         let source_kind = self.source.backend_type();
         let target_kind = target.backend_type();
         tracing::info!(
@@ -403,17 +449,16 @@ impl RecoverableJobHandler for StorageMigrationService {
             };
 
             if rows.is_empty() {
-                tracing::info!(
-                    target: "oxicloud::migration",
-                    event = "storage_migration.completed",
-                    run_id = %store.run_id(),
-                    copied = copied_count,
-                    skipped = skipped_count,
-                    failed = failed_count,
-                    source_missing = source_missing_count,
-                    "storage_migration completed"
-                );
-                return RunOutcome::Completed;
+                return self
+                    .finish_completed(
+                        store,
+                        &target_name,
+                        copied_count,
+                        skipped_count,
+                        failed_count,
+                        source_missing_count,
+                    )
+                    .await;
             }
 
             for (hash, size) in &rows {
@@ -544,19 +589,71 @@ impl RecoverableJobHandler for StorageMigrationService {
             }
 
             if (rows.len() as i64) < BATCH_SIZE {
-                tracing::info!(
-                    target: "oxicloud::migration",
-                    event = "storage_migration.completed",
-                    run_id = %store.run_id(),
-                    copied = copied_count,
-                    skipped = skipped_count,
-                    failed = failed_count,
-                    source_missing = source_missing_count,
-                    "storage_migration completed"
-                );
-                return RunOutcome::Completed;
+                return self
+                    .finish_completed(
+                        store,
+                        &target_name,
+                        copied_count,
+                        skipped_count,
+                        failed_count,
+                        source_missing_count,
+                    )
+                    .await;
             }
         }
+    }
+}
+
+impl StorageMigrationService {
+    /// Terminal successful path — reached from both Completed sites
+    /// in the batch loop (empty-first-batch and short-batch). Flips
+    /// the runtime `active_backend_name` pointer to the target entry
+    /// so the NEXT boot picks it up. Leaves `migration_readonly` ON
+    /// — the boot-clear rule (slice 4) drops it after the operator
+    /// restart when no in-flight run remains AND the DB pointer
+    /// matches the entry the app booted onto.
+    ///
+    /// Pointer-write failure is FATAL to the outcome. Reporting
+    /// `Completed` while the DB still says the old entry is active
+    /// would strand the migrated bytes: the next boot would come up
+    /// on the OLD backend (writes to old!), while the operator
+    /// thinks cutover is done. `Failed` keeps the situation legible:
+    /// admin sees the error, can retry the pointer write, then
+    /// restart.
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_completed(
+        &self,
+        store: &dyn JobStore,
+        target_name: &str,
+        copied: u64,
+        skipped: u64,
+        failed: u64,
+        source_missing: u64,
+    ) -> RunOutcome {
+        if let Err(e) = persist_active_backend_name(self.pool.as_ref(), target_name).await {
+            return RunOutcome::Failed {
+                message: format!(
+                    "copy finished but writing active_backend_name = `{target_name}` to \
+                     admin_settings failed: {e}. Bytes are on the target; retrigger the run \
+                     once the DB is reachable and it will short-circuit on already-present \
+                     blobs and re-attempt the pointer flip."
+                ),
+            };
+        }
+        tracing::info!(
+            target: "audit",
+            event = "storage_migration.completed",
+            run_id = %store.run_id(),
+            active_backend_name = target_name,
+            previous_active = %self.active_backend_name,
+            copied = copied,
+            skipped = skipped,
+            failed = failed,
+            source_missing = source_missing,
+            "✅ storage_migration completed — active_backend_name = `{target_name}`. Restart the \
+             server to switch the live backend (migration_readonly stays ON until then)."
+        );
+        RunOutcome::Completed
     }
 }
 

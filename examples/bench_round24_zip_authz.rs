@@ -233,6 +233,7 @@ fn fresh_engine(pool: &Arc<PgPool>) -> (Arc<PgAclEngine>, Arc<FileBlobReadReposi
         folder_repo,
         file_repo.clone(),
         group_repo,
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
     ));
     (engine, file_repo)
 }
