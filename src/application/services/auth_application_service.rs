@@ -3387,3 +3387,197 @@ fn base64_url_encode(input: &[u8]) -> String {
     use base64::Engine;
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(input)
 }
+
+// ── Phase 4 gate: end-to-end service-level integration test ─────────────
+//
+// The repo layer proves `is_migrated` returns the right bool
+// (`opaque_pg_repository.rs::is_migrated_tracks_mark_and_clear_state_transitions`).
+// This module proves the WIRING between `is_migrated` and `login()` —
+// that a mark_migrated actually flips a subsequent legacy login from
+// success to `OpaqueLoginRequired`-shaped `AccessDenied`. Without
+// this test, the field / builder / gate could rot independently
+// (silent field rename, missing `.with_opaque_repo` call in the
+// factory, etc.) and only surface when an operator actually rolls
+// out the substrate.
+//
+// Runs against the real test DB (same `oxicloud_test` guard as the
+// other integration_tests modules). Gated on `all(test, integration_tests)`
+// so the module compiles ONLY during `cargo test --cfg integration_tests`:
+// a plain library build strips it, keeping `#[test]`-only imports from
+// tripping the unused-imports lint. Mirrors the pattern in
+// `folder_service::cascade_hook_integration_tests`.
+#[cfg(all(test, integration_tests))]
+mod phase4_gate_integration_tests {
+    use super::*;
+    use crate::application::ports::opaque_ports::OpaqueRepositoryPort;
+    use crate::infrastructure::repositories::pg::{
+        OpaquePgRepository, SessionPgRepository, UserPgRepository,
+    };
+    use crate::infrastructure::services::jwt_service::JwtTokenService;
+    use crate::infrastructure::services::password_hasher::Argon2PasswordHasher;
+    use crate::integration_test_support::{ensure_clean_test_db, test_db_url};
+    use sqlx::postgres::PgPoolOptions;
+    use std::path::PathBuf;
+
+    /// Assemble a minimal `AuthApplicationService` wired with the
+    /// real repos + a real (fast-KSF) password hasher against the
+    /// integration test DB. Only what `login()` and the Phase 4
+    /// gate touch — no lifecycle dispatcher, no magic-link repo,
+    /// no OIDC. Returns the service, a handle to the concrete
+    /// OPAQUE repo (so the test can call `mark_migrated` /
+    /// `clear_registration` directly), and the pool for seeding.
+    async fn build_service() -> (
+        AuthApplicationService,
+        Arc<OpaquePgRepository>,
+        Arc<sqlx::PgPool>,
+        Arc<Argon2PasswordHasher>,
+    ) {
+        let pool = Arc::new(
+            PgPoolOptions::new()
+                .max_connections(4)
+                .connect(&test_db_url())
+                .await
+                .expect("connect to integration-test PostgreSQL"),
+        );
+        ensure_clean_test_db(&pool).await;
+
+        let user_repo = Arc::new(UserPgRepository::new(pool.clone()));
+        let session_repo = Arc::new(SessionPgRepository::new(pool.clone()));
+        // Fast Argon2 so this test finishes in ms rather than seconds.
+        // Real deployments run at the OXICLOUD_HASH_* values; the gate
+        // logic under test doesn't care about hash cost.
+        let hasher = Arc::new(Argon2PasswordHasher::new(8, 1, 1));
+        let token = Arc::new(JwtTokenService::new(
+            "test-secret-do-not-use-in-prod-minimum-32-chars".to_string(),
+            3600,
+            86400,
+        ));
+        let opaque_repo = Arc::new(OpaquePgRepository::new(pool.clone()));
+
+        let svc = AuthApplicationService::new(
+            user_repo,
+            session_repo,
+            hasher.clone(),
+            token,
+            PathBuf::from("/tmp"),
+        )
+        .with_opaque_repo(opaque_repo.clone());
+
+        (svc, opaque_repo, pool, hasher)
+    }
+
+    /// Seed a user with a password hash + verified email — the
+    /// minimum shape `login()` accepts. `email_verified_at` set so
+    /// the (default-off) `require_verified_email` gate doesn't
+    /// interfere with the Phase 4 branch we're isolating.
+    async fn seed_user_with_password(
+        pool: &sqlx::PgPool,
+        hasher: &Argon2PasswordHasher,
+        email: &str,
+        password: &str,
+    ) -> uuid::Uuid {
+        use crate::application::ports::auth_ports::PasswordHasherPort;
+
+        let id = uuid::Uuid::new_v4();
+        let hash = hasher.hash_password(password).await.expect("hash password");
+        sqlx::query(
+            r#"
+            INSERT INTO auth.users (
+                id, username, email, password_hash, role,
+                storage_quota_bytes, storage_used_bytes,
+                created_at, updated_at, active,
+                email_verified_at
+            ) VALUES (
+                $1, NULL, $2, $3, 'user'::auth.userrole,
+                0, 0, NOW(), NOW(), TRUE, NOW()
+            )
+            "#,
+        )
+        .bind(id)
+        .bind(email)
+        .bind(hash)
+        .execute(pool)
+        .await
+        .expect("seed test user");
+        id
+    }
+
+    /// The full Phase 4 gate lifecycle: legacy login works, marking
+    /// migrated flips subsequent legacy logins to the `OpaqueLoginRequired`
+    /// shape, and admin-reset (`clear_registration`) re-opens legacy.
+    ///
+    /// The single test covers all three transitions so a regression
+    /// in any leg (missing `with_opaque_repo`, wrong error message,
+    /// clear-not-nulling-migrated-at) fails one assertion instead of
+    /// three separate tests reporting the same drift.
+    #[tokio::test]
+    async fn login_flow_across_mark_migrated_and_clear_registration() {
+        let (svc, opaque_repo, pool, hasher) = build_service().await;
+        let email = format!("phase4-{}@example.invalid", uuid::Uuid::new_v4());
+        let user_id = seed_user_with_password(&pool, &hasher, &email, "s3cret-passphrase").await;
+
+        // Baseline — no envelope, no migration mark → legacy works.
+        svc.login(crate::application::dtos::user_dto::LoginDto {
+            username: email.clone(),
+            password: "s3cret-passphrase".to_string(),
+        })
+        .await
+        .expect("baseline legacy login must succeed");
+
+        // Simulate a successful OPAQUE handshake landing.
+        opaque_repo
+            .mark_migrated(user_id)
+            .await
+            .expect("mark migrated");
+
+        // Now the Phase 4 gate fires: same credentials, same call,
+        // but AccessDenied with the exact message the handler layer
+        // remaps to `403 OpaqueLoginRequired`.
+        let refused = svc
+            .login(crate::application::dtos::user_dto::LoginDto {
+                username: email.clone(),
+                password: "s3cret-passphrase".to_string(),
+            })
+            .await
+            .expect_err("legacy login must be refused post-migration");
+        assert_eq!(
+            refused.kind,
+            ErrorKind::AccessDenied,
+            "gate must return AccessDenied"
+        );
+        assert_eq!(
+            refused.message, "Password login refused: this account has migrated to OPAQUE",
+            "message must match what the handler remaps to `OpaqueLoginRequired` — \
+             change either both sides at once or the handler stops recognising it"
+        );
+
+        // Wrong password on a migrated user MUST return the same
+        // shape as any other wrong-password (`Invalid credentials`),
+        // NOT the OPAQUE-migrated message — the gate lives AFTER the
+        // password check specifically so an attacker without the
+        // password learns nothing about migration state.
+        let wrong = svc
+            .login(crate::application::dtos::user_dto::LoginDto {
+                username: email.clone(),
+                password: "wrong-password".to_string(),
+            })
+            .await
+            .expect_err("wrong password must still fail");
+        assert_eq!(wrong.message, "Invalid credentials");
+
+        // Admin-side password reset (clear_registration NULLs
+        // opaque_migrated_at atomically) must re-open the fallback —
+        // otherwise the admin-reset user is locked out (envelope
+        // gone, gate still refusing).
+        opaque_repo
+            .clear_registration(user_id)
+            .await
+            .expect("clear registration");
+        svc.login(crate::application::dtos::user_dto::LoginDto {
+            username: email,
+            password: "s3cret-passphrase".to_string(),
+        })
+        .await
+        .expect("legacy login must succeed again after admin clear_registration");
+    }
+}
