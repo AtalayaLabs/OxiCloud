@@ -1435,6 +1435,8 @@ impl AppServiceFactory {
             crate::infrastructure::services::blobs_consistency_service::BlobsConsistencyCheck::new(
                 maintenance_pool.clone(),
                 core.blob_backend.clone(),
+                core.config.storage_entries.clone(),
+                self.storage_path.clone(),
             ),
         )
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
@@ -1453,6 +1455,8 @@ impl AppServiceFactory {
             crate::infrastructure::services::backend_consistency_service::BackendConsistencyCheck::new(
                 maintenance_pool.clone(),
                 core.blob_backend.clone(),
+                core.config.storage_entries.clone(),
+                self.storage_path.clone(),
             ),
         )
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
@@ -2191,11 +2195,19 @@ impl AppServiceFactory {
 
             app_state.admin_settings_service = Some(admin_svc.clone());
 
-            // 9b-1b. Wire storage settings service (reuses same settings_repo)
+            // 9b-1b. Wire storage settings service (reuses same settings_repo).
+            // Multi-entry view fields (entries + active_entry_name +
+            // migration_readonly) are populated from the same sources
+            // the migration handler and AuthZ engine read from — one
+            // snapshot at DI, shared atomic for the readonly flag so
+            // changes are visible without a DB round-trip.
             let storage_settings_svc = Arc::new(StorageSettingsService::new(
                 settings_repo.clone(),
                 self.config.storage.clone(),
                 app_state.core.dedup_service.clone(),
+                app_state.core.config.storage_entries.clone(),
+                app_state.core.active_backend_name.clone(),
+                app_state.migration_readonly.clone(),
             ));
             app_state.storage_settings_service = Some(storage_settings_svc.clone());
             tracing::info!("Storage settings service initialized");

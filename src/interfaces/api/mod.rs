@@ -225,7 +225,8 @@ use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
         handlers::admin_handler::start_migration,
         handlers::admin_handler::pause_migration,
         handlers::admin_handler::resume_migration,
-        handlers::admin_handler::verify_migration,
+        // handlers::admin_handler::verify_migration retired in
+        // slice 7 — superseded by `blobs_consistency?storage=<name>`.
         handlers::admin_handler::generate_encryption_key,
         // JobRegistry admin surface — production, always-on,
         // audit-logged. Retired the `/internal/trigger-*` handlers in

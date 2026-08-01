@@ -19,7 +19,7 @@ use crate::application::dtos::settings_dto::{
     AdminCreateUserDto, AdminResetPasswordDto, DashboardStatsDto, ListUsersQueryDto,
     MigrationStateDto, SaveOidcSettingsDto, SaveStorageSettingsDto, SendSmtpTestDto, SmtpInfoDto,
     SmtpTestResultDto, StartMigrationDto, TestOidcConnectionDto, TestStorageConnectionDto,
-    UpdateUserActiveDto, UpdateUserQuotaDto, UpdateUserRoleDto, VerifyMigrationDto,
+    UpdateUserActiveDto, UpdateUserQuotaDto, UpdateUserRoleDto,
 };
 use crate::application::dtos::user_dto::{AdminUserSummaryDto, UserDto};
 use crate::application::ports::authorization_ports::AuthorizationEngine;
@@ -85,7 +85,9 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         .route("/storage/migration/start", post(start_migration))
         .route("/storage/migration/pause", post(pause_migration))
         .route("/storage/migration/resume", post(resume_migration))
-        .route("/storage/migration/verify", post(verify_migration))
+        // NOTE: /storage/migration/verify retired in slice 7 (see the
+        // comment near where `verify_migration` used to live). Use
+        // `POST /api/admin/jobs/blobs_consistency/trigger?storage=<name>`.
         // Encryption key generation
         .route(
             "/settings/storage/generate-key",
@@ -562,55 +564,15 @@ pub async fn resume_migration(
     trigger_storage_migration(state, None).await
 }
 
-/// POST /api/admin/storage/migration/verify — post-migration integrity check.
-///
-/// Independent of the copy job: samples `sample_size` random blobs
-/// from `storage.blobs` and probes the currently-effective target
-/// backend for their existence + declared size. Passes iff no
-/// samples are missing and no sizes disagree.
-#[utoipa::path(
-    post,
-    path = "/api/admin/storage/migration/verify",
-    responses(
-        (status = 200, description = "Verification result"),
-        (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Admin required"),
-        (status = 500, description = "Verification failed")
-    ),
-    security(("bearerAuth" = [])),
-    tag = "admin"
-)]
-pub async fn verify_migration(
-    State(state): State<Arc<AppState>>,
-    Json(dto): Json<VerifyMigrationDto>,
-) -> Result<impl IntoResponse, AppError> {
-    let pool = state
-        .db_pool
-        .clone()
-        .ok_or_else(|| AppError::internal_error("Database not available"))?;
-
-    let svc = state
-        .storage_settings_service
-        .as_ref()
-        .ok_or_else(|| AppError::internal_error("Storage settings service not available"))?;
-
-    let target = svc
-        .build_effective_backend()
-        .await
-        .map_err(|e| AppError::internal_error(format!("Failed to build target backend: {}", e)))?;
-    target
-        .initialize()
-        .await
-        .map_err(|e| AppError::internal_error(format!("Target backend init failed: {}", e)))?;
-
-    let sample_size = dto.sample_size.unwrap_or(100).clamp(1, 1000);
-
-    let result = verify_backend_sample(target.as_ref(), pool.as_ref(), sample_size)
-        .await
-        .map_err(|e| AppError::internal_error(format!("Verification failed: {}", e)))?;
-
-    Ok(Json(result))
-}
+// verify_migration endpoint retired (slice 7 of
+// docs/plan/storage-multi-entry.md). It was a sample-based sanity
+// check against the currently-effective target backend; superseded
+// by `POST /api/admin/jobs/blobs_consistency/trigger?storage=<name>`
+// which does a full walk against ANY named entry (not just the
+// migration target), records structured findings per mismatch, and
+// integrates with the standard runs / cancel / findings admin
+// surface. Frontend "Verify integrity" button removed in the same
+// slice.
 
 /// Shared body for `start` / `resume` — both funnel through
 /// `run_or_resume` via `JobRegistry::trigger`. Detaches into a
@@ -650,73 +612,6 @@ async fn trigger_storage_migration(
         })),
     )
         .into_response())
-}
-
-/// Verify a random sample of blobs against the given target backend.
-/// Inlined from the retired `migration_job::verify_migration` — same
-/// query, same result shape; the recoverable-run engine has no reason
-/// to own an integrity check.
-async fn verify_backend_sample(
-    target: &dyn crate::application::ports::blob_storage_ports::BlobStorageBackend,
-    pool: &sqlx::PgPool,
-    sample_size: usize,
-) -> Result<MigrationVerifyResult, crate::common::errors::DomainError> {
-    use crate::common::errors::DomainError;
-
-    let pg_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM storage.blobs")
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
-
-    let sample_rows: Vec<(String, i64)> =
-        sqlx::query_as("SELECT hash, size FROM storage.blobs ORDER BY random() LIMIT $1")
-            .bind(sample_size as i64)
-            .fetch_all(pool)
-            .await
-            .map_err(|e| {
-                DomainError::internal_error("Migration", format!("Sample query failed: {}", e))
-            })?;
-
-    let mut missing = Vec::new();
-    let mut size_mismatches = Vec::new();
-
-    for (hash, expected_size) in &sample_rows {
-        match target.blob_exists(hash).await {
-            Ok(false) => missing.push(hash.clone()),
-            Err(e) => {
-                tracing::warn!("blob_exists failed for {}: {}", hash, e);
-                missing.push(hash.clone());
-            }
-            Ok(true) => {
-                if let Ok(actual_size) = target.blob_size(hash).await
-                    && actual_size != *expected_size as u64
-                {
-                    size_mismatches.push(hash.clone());
-                }
-            }
-        }
-    }
-
-    let passed = missing.is_empty() && size_mismatches.is_empty();
-    Ok(MigrationVerifyResult {
-        pg_blob_count: pg_count as u64,
-        sample_checked: sample_rows.len() as u64,
-        missing_in_target: missing,
-        size_mismatches,
-        passed,
-    })
-}
-
-/// Post-migration verification result — same shape as the retired
-/// `migration_job::VerificationResult` (kept identical so the admin
-/// UI's `MigrationVerifyResult` decoder needs no change).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct MigrationVerifyResult {
-    pub pg_blob_count: u64,
-    pub sample_checked: u64,
-    pub missing_in_target: Vec<String>,
-    pub size_mismatches: Vec<String>,
-    pub passed: bool,
 }
 
 /// Idle-state DTO — no run has been triggered yet.

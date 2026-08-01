@@ -47,6 +47,7 @@
 //!   pointing at reaped chunks) — already covered by
 //!   `files_consistency::chunk_missing`.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -54,12 +55,20 @@ use chrono::{DateTime, Duration, Utc};
 use sqlx::PgPool;
 
 use crate::application::ports::blob_storage_ports::BlobStorageBackend;
+use crate::common::config::NamedStorageEntry;
 use crate::infrastructure::scheduler::{
     JobRegistry, JobRunArgs, JobStore, JobStoreProvider, RecoverableJobHandler, RunOutcome,
     RunStatus, record_or_log,
 };
+use crate::infrastructure::services::entry_backend::build_entry_backend;
 
 pub const BLOBS_CONSISTENCY_JOB_NAME: &str = "blobs_consistency";
+
+/// `params` JSONB key under which the entry name being probed is
+/// stashed on a Fresh run (matches `TARGET_NAME_PARAM` on
+/// `storage_migration`). Resumed runs re-read it so a paused audit
+/// survives restart without the admin re-specifying the target.
+pub const PROBED_STORAGE_PARAM: &str = "probed_storage";
 
 /// Rows per batch. Blobs are numerous (millions on a busy install)
 /// but per-row work is one indexed backend probe + one indexed SQL
@@ -82,12 +91,35 @@ const AFFECTED_FILES_SAMPLE: i64 = 5;
 
 pub struct BlobsConsistencyCheck {
     pool: Arc<PgPool>,
+    /// The default backend to probe when `args.storage` is `None` —
+    /// the currently-active LIVE backend, injected at DI time. Runs
+    /// with `?storage=<name>` build a fresh backend for the named
+    /// entry instead (via [`build_entry_backend`]).
     backend: Arc<dyn BlobStorageBackend>,
+    /// Snapshot of `AppConfig.storage_entries` used to resolve
+    /// `args.storage` to a `NamedStorageEntry`. Empty for the
+    /// legacy zero-entries path — `?storage=<name>` runs then
+    /// fail-fast with a clear "no entries declared" message.
+    storage_entries: Vec<NamedStorageEntry>,
+    /// Ambient `AppConfig.storage_path` — used as the `root_dir`
+    /// fallback for a Local target entry with no `_ROOT_DIR`. Same
+    /// fallback rule the boot path uses.
+    storage_path_fallback: PathBuf,
 }
 
 impl BlobsConsistencyCheck {
-    pub fn new(pool: Arc<PgPool>, backend: Arc<dyn BlobStorageBackend>) -> Self {
-        Self { pool, backend }
+    pub fn new(
+        pool: Arc<PgPool>,
+        backend: Arc<dyn BlobStorageBackend>,
+        storage_entries: Vec<NamedStorageEntry>,
+        storage_path_fallback: PathBuf,
+    ) -> Self {
+        Self {
+            pool,
+            backend,
+            storage_entries,
+            storage_path_fallback,
+        }
     }
 
     pub async fn register_recoverable_job(
@@ -147,6 +179,80 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
         args: &JobRunArgs,
         resume_cursor: Option<Vec<u8>>,
     ) -> RunOutcome {
+        // Resolve the backend to probe. Two paths, mirroring the
+        // Fresh/Resumed split the storage_migration handler uses:
+        //
+        // * Fresh + args.storage=Some — probe that named entry
+        //   instead of the live backend. Stamp probed_storage in
+        //   params so a mid-audit restart resumes against the same
+        //   entry without re-input.
+        // * Fresh + args.storage=None — probe the live backend
+        //   (today's default; audit of what the app is actually
+        //   using).
+        // * Resumed — read probed_storage from params; None means
+        //   the original run was against the live backend.
+        let is_fresh = resume_cursor.is_none();
+        let probed_storage: Option<String> = if is_fresh {
+            let name = args.storage.clone();
+            if let Some(n) = &name
+                && let Err(e) = store.set_string_param(PROBED_STORAGE_PARAM, n).await
+            {
+                return RunOutcome::Failed {
+                    message: format!(
+                        "persist {PROBED_STORAGE_PARAM} to params: {e}"
+                    ),
+                };
+            }
+            name
+        } else {
+            match store.get_string_param(PROBED_STORAGE_PARAM).await {
+                Ok(v) => v,
+                Err(e) => {
+                    return RunOutcome::Failed {
+                        message: format!("read {PROBED_STORAGE_PARAM} from params: {e}"),
+                    };
+                }
+            }
+        };
+        let backend: Arc<dyn BlobStorageBackend> = match &probed_storage {
+            None => self.backend.clone(),
+            Some(name) => match self.storage_entries.iter().find(|e| &e.name == name) {
+                Some(entry) => build_entry_backend(entry, &self.storage_path_fallback),
+                None => {
+                    let available = if self.storage_entries.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        self.storage_entries
+                            .iter()
+                            .map(|e| e.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    };
+                    return RunOutcome::Failed {
+                        message: format!(
+                            "storage entry `{name}` not found in OXICLOUD_STORAGE_ENTRIES. \
+                             Available: [{available}]"
+                        ),
+                    };
+                }
+            },
+        };
+        if let Err(e) = backend.initialize().await {
+            return RunOutcome::Failed {
+                message: format!("probed backend init: {e}"),
+            };
+        }
+        if let Some(name) = &probed_storage {
+            tracing::info!(
+                target: "audit",
+                event = "blobs_consistency.probe_scoped",
+                run_id = %store.run_id(),
+                probed_storage = %name,
+                "blobs_consistency probing entry `{name}` (via ?storage=<name>) instead of \
+                 live backend"
+            );
+        }
+
         // Cursor = the last-visited `hash` string, UTF-8-encoded. On
         // resume, we walk `WHERE hash > $cursor` in ASC order. First
         // batch: NULL cursor → start from the smallest hash.
@@ -318,7 +424,7 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                 // error (log + skip): a transient S3 network blip
                 // shouldn't produce a flood of false data_loss
                 // findings.
-                let exists = match self.backend.blob_exists(&row.hash).await {
+                let exists = match backend.blob_exists(&row.hash).await {
                     Ok(v) => v,
                     Err(e) => {
                         tracing::warn!(
@@ -369,7 +475,7 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                 //   avoid mistaking it for "the hash we expect to
                 //   see on disk (i.e. what will fix this)".
                 if args.deep {
-                    match recompute_hash(self.backend.as_ref(), &row.hash).await {
+                    match recompute_hash(backend.as_ref(), &row.hash).await {
                         Ok(computed_hash) if computed_hash == row.hash => {}
                         Ok(computed_hash) => {
                             finding_count += 1;

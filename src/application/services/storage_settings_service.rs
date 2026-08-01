@@ -2,11 +2,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::application::dtos::settings_dto::{
-    SaveStorageSettingsDto, StorageSettingsDto, StorageTestResultDto, TestStorageConnectionDto,
+    SaveStorageSettingsDto, StorageEntrySummaryDto, StorageSettingsDto, StorageTestResultDto,
+    TestStorageConnectionDto,
 };
 use crate::application::ports::blob_storage_ports::BlobStorageBackend;
-use crate::common::config::{S3StorageConfig, StorageBackendType, StorageConfig};
+use crate::common::config::{
+    NamedStorageEntry, S3StorageConfig, StorageBackendType, StorageConfig,
+};
 use crate::common::errors::{DomainError, ErrorKind};
 use crate::domain::repositories::settings_repository::SettingsRepository;
 use crate::infrastructure::repositories::pg::SettingsPgRepository;
@@ -22,18 +27,39 @@ pub struct StorageSettingsService {
     settings_repo: Arc<SettingsPgRepository>,
     env_storage_config: StorageConfig,
     dedup_service: Arc<DedupService>,
+    /// Multi-entry snapshot from `AppConfig.storage_entries`. Populated
+    /// at DI time; immutable per-process (env can only change on
+    /// restart, per `docs/plan/storage-multi-entry.md`). Empty when
+    /// running in the pre-multi-entry legacy path.
+    storage_entries: Vec<NamedStorageEntry>,
+    /// Name of the entry the LIVE backend is bound to (matches
+    /// `CoreServices.active_backend_name`). Empty string / "legacy"
+    /// for the zero-entries path.
+    active_entry_name: String,
+    /// Shared readonly flag — read into the admin DTO so the UI can
+    /// render a "server in migration read-only mode" banner. Same
+    /// atomic as `AppState.migration_readonly`; changes made by the
+    /// migration handler are visible without a DB round-trip.
+    migration_readonly: Arc<AtomicBool>,
 }
 
 impl StorageSettingsService {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         settings_repo: Arc<SettingsPgRepository>,
         env_storage_config: StorageConfig,
         dedup_service: Arc<DedupService>,
+        storage_entries: Vec<NamedStorageEntry>,
+        active_entry_name: String,
+        migration_readonly: Arc<AtomicBool>,
     ) -> Self {
         Self {
             settings_repo,
             env_storage_config,
             dedup_service,
+            storage_entries,
+            active_entry_name,
+            migration_readonly,
         }
     }
 
@@ -262,6 +288,27 @@ impl StorageSettingsService {
             crate::common::config::StorageBackendType::Azure => "azure",
         };
 
+        // Project the multi-entry view. `is_active` is name-compared
+        // against the boot-selected `active_entry_name` (matches
+        // exactly one entry when we're in multi-entry mode; matches
+        // nothing when running the zero-entries legacy path, which
+        // is expected — the frontend hides the entries table then).
+        let entries: Vec<StorageEntrySummaryDto> = self
+            .storage_entries
+            .iter()
+            .map(|e| StorageEntrySummaryDto {
+                name: e.name.clone(),
+                backend: match e.backend {
+                    StorageBackendType::Local => "local".to_string(),
+                    StorageBackendType::S3 => "s3".to_string(),
+                    StorageBackendType::Azure => "azure".to_string(),
+                },
+                is_active: e.name == self.active_entry_name,
+                encryption_enabled: e.encryption_key_base64.is_some(),
+                location_hint: entry_location_hint(e),
+            })
+            .collect();
+
         Ok(StorageSettingsDto {
             backend: backend_str.to_string(),
             s3_endpoint_url: effective.s3.as_ref().and_then(|s| s.endpoint_url.clone()),
@@ -275,6 +322,9 @@ impl StorageSettingsService {
             total_blobs: stats.total_blobs,
             total_bytes_stored: stats.total_bytes_stored,
             dedup_ratio: stats.dedup_ratio,
+            entries,
+            active_entry_name: self.active_entry_name.clone(),
+            migration_readonly: self.migration_readonly.load(Ordering::Relaxed),
         })
     }
 
@@ -666,4 +716,18 @@ async fn run_backend_roundtrip(
             )
         },
     )
+}
+
+/// Cosmetic human-readable identifier for an entry — the physical
+/// location piece an admin uses to disambiguate two entries of the
+/// same backend type. Never carries credentials. `None` when the
+/// entry doesn't have a natural short label (S3 without a bucket,
+/// which shouldn't happen because the parser rejects that shape at
+/// boot).
+fn entry_location_hint(entry: &NamedStorageEntry) -> Option<String> {
+    match entry.backend {
+        StorageBackendType::Local => entry.root_dir.clone(),
+        StorageBackendType::S3 => entry.s3.as_ref().map(|s3| s3.bucket.clone()),
+        StorageBackendType::Azure => entry.azure.as_ref().map(|az| az.container.clone()),
+    }
 }

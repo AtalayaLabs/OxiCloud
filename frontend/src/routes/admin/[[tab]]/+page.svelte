@@ -35,7 +35,6 @@
 		setUserRole,
 		testOidc,
 		testStorage,
-		verifyMigration,
 		createExternalMount,
 		deleteExternalMount,
 		listExternalMounts,
@@ -44,7 +43,6 @@
 		type AdminDashboard,
 		type GeneratedKey,
 		type MigrationStatus,
-		type MigrationVerifyResult,
 		type OidcSettings,
 		type OidcTestResult,
 		type PluginInfo,
@@ -519,14 +517,38 @@
 			stopMigrationPoll();
 		}
 	}
-	async function doMigration(action: 'start' | 'pause' | 'resume') {
+	async function doMigration(action: 'start' | 'pause' | 'resume', targetName?: string) {
 		try {
-			await migrationAction(action);
+			await migrationAction(action, targetName);
 			await loadMigration();
 		} catch (e) {
 			reportError(e);
 		}
 	}
+
+	// ── Multi-entry migration target picker (slice 6) ────────────────
+	//
+	// Multi-entry mode requires the admin to name the target entry
+	// before starting a migration. Backend rejects an unnamed start
+	// with 400. Dropdown shows every non-active entry; picking one
+	// enables the Start button.
+	let migrationTarget = $state<string>('');
+	const availableTargets = $derived(
+		(storage?.entries ?? []).filter((e) => !e.is_active).map((e) => e.name)
+	);
+	// Sync target when the entries list first appears — pick the first
+	// non-active entry by default so the operator can just click Start
+	// on a simple two-entry setup.
+	$effect(() => {
+		if (!migrationTarget && availableTargets.length > 0) {
+			migrationTarget = availableTargets[0];
+		}
+		// Also unset when the previously-chosen target became active
+		// (cutover completed under our feet).
+		if (migrationTarget && !availableTargets.includes(migrationTarget)) {
+			migrationTarget = availableTargets[0] ?? '';
+		}
+	});
 
 	// ── Post-migration .env cutover hint ─────────────────────────────
 	//
@@ -595,22 +617,11 @@
 		}
 	}
 
-	// Migration integrity verification (separate result panel).
-	let verifyResult = $state<MigrationVerifyResult | null>(null);
-	let verifyError = $state<string | null>(null);
-	let verifying = $state(false);
-	async function doVerify() {
-		verifying = true;
-		verifyResult = null;
-		verifyError = null;
-		try {
-			verifyResult = await verifyMigration(100);
-		} catch (e) {
-			verifyError = errorMessage(e);
-		} finally {
-			verifying = false;
-		}
-	}
+	// Migration integrity verification retired in slice 7 — the
+	// sample-based /storage/migration/verify endpoint is replaced by
+	// `POST /api/admin/jobs/blobs_consistency/trigger?storage=<name>`,
+	// a full walk. Operators trigger it from the Jobs tab.
+
 	const migrationPct = $derived(
 		migration && migration.total_blobs > 0
 			? Math.round((migration.migrated_blobs / migration.total_blobs) * 100)
@@ -2147,6 +2158,62 @@
 
 		<div class="card">
 			<h2>{t('admin.migration', 'Storage migration')}</h2>
+			<!-- Entries table + readonly banner — multi-entry only.
+			     Hidden entirely on the legacy zero-entries path so admins
+			     without OXICLOUD_STORAGE_ENTRIES still see the old UI. -->
+			{#if storage?.entries && storage.entries.length > 0}
+				{#if storage.migration_readonly}
+					<div
+						class="cutover-hint cutover-hint--readonly"
+						data-testid="admin-migration-readonly-banner"
+					>
+						<h3>
+							<Icon name="lock" />
+							{t('admin.mig_readonly_title', 'Server in migration read-only mode')}
+						</h3>
+						<p class="muted">
+							{t(
+								'admin.mig_readonly_body',
+								'All writes (upload, rename, delete, share) are refused by AuthZ until the migration completes and you restart the server. Reads (browse, download) are unaffected.'
+							)}
+						</p>
+					</div>
+				{/if}
+				<table class="entries-table" data-testid="admin-storage-entries-table">
+					<thead>
+						<tr>
+							<th>{t('admin.entry_name', 'Entry')}</th>
+							<th>{t('admin.entry_backend', 'Backend')}</th>
+							<th>{t('admin.entry_location', 'Location')}</th>
+							<th>{t('admin.entry_encryption', 'Encryption')}</th>
+							<th>{t('admin.entry_status', 'Status')}</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each storage.entries as entry (entry.name)}
+							<tr class:entry-active={entry.is_active}>
+								<td><code>{entry.name}</code></td>
+								<td>{entry.backend}</td>
+								<td class="muted">{entry.location_hint ?? '—'}</td>
+								<td>
+									{#if entry.encryption_enabled}
+										<Icon name="lock" /> AES-256
+									{:else}
+										<span class="muted">—</span>
+									{/if}
+								</td>
+								<td>
+									{#if entry.is_active}
+										<strong>{t('admin.entry_active', 'active')}</strong>
+									{:else}
+										<span class="muted">{t('admin.entry_inactive', 'available')}</span>
+									{/if}
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			{/if}
 			{#if !migration}
 				<p class="status">{t('common.loading', 'Loading…')}</p>
 			{:else}
@@ -2179,13 +2246,46 @@
 					</details>
 				{/if}
 				<div class="smtp-test">
-					<!-- Start: only when no migration is active (running/paused) or completed. -->
+					<!-- Start: only when no migration is active (running/paused) or completed.
+					     Multi-entry mode requires a target picker before Start becomes clickable.
+					     Legacy zero-entries path keeps the old single-button behaviour so
+					     nothing regresses for admins who haven't opted into multi-entry yet. -->
 					{#if migration.status !== 'running' && migration.status !== 'paused' && migration.status !== 'completed'}
-						<button
-							class="btn btn-primary"
-							data-testid="admin-migration-start-btn"
-							onclick={() => doMigration('start')}>{t('admin.mig_start', 'Start')}</button
-						>
+						{#if storage?.entries && storage.entries.length > 0}
+							<label class="migration-target-picker">
+								<span>{t('admin.mig_target', 'Migrate to')}</span>
+								<select
+									bind:value={migrationTarget}
+									disabled={availableTargets.length === 0}
+									data-testid="admin-migration-target-select"
+								>
+									{#each availableTargets as name (name)}
+										<option value={name}>{name}</option>
+									{/each}
+									{#if availableTargets.length === 0}
+										<option value="" disabled selected>
+											{t(
+												'admin.mig_no_targets',
+												'no other entries — add one to OXICLOUD_STORAGE_ENTRIES'
+											)}
+										</option>
+									{/if}
+								</select>
+							</label>
+							<button
+								class="btn btn-primary"
+								data-testid="admin-migration-start-btn"
+								disabled={!migrationTarget || availableTargets.length === 0}
+								onclick={() => doMigration('start', migrationTarget)}
+								>{t('admin.mig_start', 'Start')}</button
+							>
+						{:else}
+							<button
+								class="btn btn-primary"
+								data-testid="admin-migration-start-btn"
+								onclick={() => doMigration('start')}>{t('admin.mig_start', 'Start')}</button
+							>
+						{/if}
 					{/if}
 					{#if migration.status === 'running'}
 						<button
@@ -2201,23 +2301,11 @@
 							onclick={() => doMigration('resume')}>{t('admin.mig_resume', 'Resume')}</button
 						>
 					{/if}
-					<!-- Verify: only once the copy phase has completed.
-					     Finalize was retired — a Completed row is its own
-					     acknowledgement, and cutover now happens via the
-					     .env hint block below (see `cutoverPending`). -->
-					{#if migration.status === 'completed'}
-						<button
-							class="btn btn-secondary"
-							data-testid="admin-migration-verify-btn"
-							disabled={verifying}
-							onclick={doVerify}
-						>
-							<Icon name="check-double" />
-							{verifying
-								? t('admin.mig_verifying', 'Verifying…')
-								: t('admin.mig_verify', 'Verify integrity')}
-						</button>
-					{/if}
+					<!-- Verify / Finalize retired in slice 7. The
+					     sample-based "Verify integrity" button is superseded
+					     by `blobs_consistency?storage=<target_name>` —
+					     trigger it from the Jobs tab for a full walk with
+					     structured findings. -->
 				</div>
 
 				{#if cutoverPending}
@@ -2263,55 +2351,6 @@
 								)}
 							</p>
 						</div>
-					</div>
-				{/if}
-
-				{#if verifyError}
-					<div class="discovery-result discovery-result--fail">
-						<strong><Icon name="times-circle" /> {verifyError}</strong>
-					</div>
-				{:else if verifyResult}
-					<div
-						class="discovery-result {verifyResult.passed
-							? 'discovery-result--ok'
-							: 'discovery-result--fail'}"
-					>
-						<strong>
-							<Icon name={verifyResult.passed ? 'check-circle' : 'times-circle'} />
-							{verifyResult.passed
-								? t('admin.mig_verify_passed', 'Verification passed')
-								: t('admin.mig_verify_failed', 'Verification failed')}
-						</strong>
-						{#if verifyResult.passed}
-							<p class="muted">
-								{t(
-									'admin.mig_verify_summary',
-									{ checked: verifyResult.sample_checked, total: verifyResult.pg_blob_count },
-									'{{checked}} blobs checked, {{total}} total in database'
-								)}
-							</p>
-						{:else}
-							<p class="muted">
-								{[
-									verifyResult.missing_in_target.length
-										? t(
-												'admin.mig_verify_missing',
-												{ n: verifyResult.missing_in_target.length },
-												'{{n}} missing'
-											)
-										: '',
-									verifyResult.size_mismatches.length
-										? t(
-												'admin.mig_verify_mismatch',
-												{ n: verifyResult.size_mismatches.length },
-												'{{n}} size mismatches'
-											)
-										: ''
-								]
-									.filter(Boolean)
-									.join(', ')}
-							</p>
-						{/if}
 					</div>
 				{/if}
 			{/if}
@@ -4224,6 +4263,49 @@
 		align-items: flex-start;
 		gap: var(--space-3);
 		flex-wrap: wrap;
+	}
+
+	.cutover-hint--readonly {
+		border-color: var(--color-danger-border, var(--color-border));
+		background: var(--color-danger-bg, var(--color-bg-muted));
+	}
+
+	.entries-table {
+		width: 100%;
+		margin-bottom: var(--space-3);
+		border-collapse: collapse;
+		font-size: var(--text-sm, 0.875rem);
+	}
+
+	.entries-table th,
+	.entries-table td {
+		padding: var(--space-2) var(--space-3);
+		border-bottom: 1px solid var(--color-border);
+		text-align: left;
+	}
+
+	.entries-table th {
+		font-weight: 600;
+		color: var(--color-text-muted);
+	}
+
+	.entries-table tr.entry-active {
+		background: var(--color-bg-muted);
+	}
+
+	.migration-target-picker {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-2);
+		margin-right: var(--space-2);
+	}
+
+	.migration-target-picker select {
+		padding: var(--space-1) var(--space-2);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		background: var(--color-bg);
+		color: var(--color-text);
 	}
 
 	.cutover-hint__note {

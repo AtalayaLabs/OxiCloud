@@ -466,6 +466,15 @@ export function saveOidc(body: Record<string, unknown>): Promise<void> {
 
 // ── Storage settings + migration ───────────────────────────────────────────
 
+export interface StorageEntrySummary {
+	name: string;
+	backend: string;
+	is_active: boolean;
+	encryption_enabled: boolean;
+	/** Human-readable physical hint (root_dir / bucket / container). */
+	location_hint?: string | null;
+}
+
 export interface StorageSettings {
 	backend: string;
 	s3_endpoint_url?: string | null;
@@ -479,6 +488,11 @@ export interface StorageSettings {
 	total_blobs?: number;
 	total_bytes_stored?: number;
 	dedup_ratio?: number;
+	// Multi-entry view (slice 6 of docs/plan/storage-multi-entry.md).
+	// `entries` is empty for the legacy zero-entries path.
+	entries?: StorageEntrySummary[];
+	active_entry_name?: string;
+	migration_readonly?: boolean;
 }
 
 export function getStorageSettings(): Promise<StorageSettings> {
@@ -512,50 +526,33 @@ export function getMigration(): Promise<MigrationStatus> {
 	return apiJson<MigrationStatus>('/api/admin/storage/migration', { credentials: 'same-origin' });
 }
 
-export function migrationAction(action: 'start' | 'pause' | 'resume'): Promise<void> {
+export function migrationAction(
+	action: 'start' | 'pause' | 'resume',
+	targetName?: string
+): Promise<void> {
 	// `complete` was retired when the migration became a recoverable
 	// job — Completed is the terminal `RunSummary.status`; there's
-	// nothing left to acknowledge. Post-migration cutover now happens
-	// via .env + restart, prompted by an inline hint on the admin
-	// storage tab (see `cutoverPending` in +page.svelte).
-	const body = action === 'start' ? { concurrency: 4 } : {};
+	// nothing left to acknowledge. Post-migration cutover happens on
+	// operator restart (server re-boots on active_backend_name = the
+	// new entry; the boot-clear rule drops migration_readonly).
+	//
+	// `start` REQUIRES `targetName` in multi-entry mode — the backend
+	// rejects an unnamed start with 400 (see StartMigrationDto).
+	// `pause` and `resume` take no body (resume reads target_name
+	// from the paused run's params).
+	const body: Record<string, unknown> =
+		action === 'start' ? { target_name: targetName ?? '', concurrency: 4 } : {};
 	return mutate(`/api/admin/storage/migration/${action}`, 'POST', body);
 }
 
-/** Result of a `verify` integrity check (POST .../migration/verify). */
-export interface MigrationVerifyResult {
-	passed: boolean;
-	sample_checked: number;
-	pg_blob_count: number;
-	missing_in_target: string[];
-	size_mismatches: string[];
-}
-
-/**
- * Run an integrity verification pass over a sample of migrated blobs. Unlike
- * the other migration actions this returns a structured result that the caller
- * renders (passed / sample-checked / missing / size-mismatch counts).
- */
-export async function verifyMigration(sampleSize = 100): Promise<MigrationVerifyResult> {
-	const res = await apiFetch('/api/admin/storage/migration/verify', {
-		method: 'POST',
-		credentials: 'same-origin',
-		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify({ sample_size: sampleSize })
-	});
-	if (!res.ok) {
-		const e = (await res.json().catch(() => ({}))) as { message?: string };
-		throw new Error(e.message || `verify failed: ${res.status}`);
-	}
-	const r = (await res.json()) as Partial<MigrationVerifyResult>;
-	return {
-		passed: r.passed ?? false,
-		sample_checked: r.sample_checked ?? 0,
-		pg_blob_count: r.pg_blob_count ?? 0,
-		missing_in_target: r.missing_in_target ?? [],
-		size_mismatches: r.size_mismatches ?? []
-	};
-}
+// verifyMigration + MigrationVerifyResult retired in slice 7 of
+// docs/plan/storage-multi-entry.md — the corresponding backend
+// endpoint's sample-based check is superseded by
+// `POST /api/admin/jobs/blobs_consistency/trigger?storage=<name>`,
+// which does a full walk against any named entry and integrates
+// with the standard runs / findings admin surface. Trigger from
+// the Jobs tab; the Storage tab drops the "Verify integrity"
+// button.
 
 // ── Plugins ─────────────────────────────────────────────────────────────
 

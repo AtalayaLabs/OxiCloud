@@ -143,10 +143,19 @@ pub struct DashboardStatsDto {
 // Storage Settings DTOs (Admin Panel)
 // ============================================================================
 
-/// Current storage settings returned to admin UI (secrets masked)
+/// Current storage settings returned to admin UI (secrets masked).
+///
+/// Post-multi-entry (`docs/plan/storage-multi-entry.md`) this carries
+/// two shapes side-by-side: the legacy flat storage-config fields
+/// (for the pre-multi-entry admin UI, until slice 6 completes the
+/// form retirement), plus the new `entries` / `active_entry_name` /
+/// `migration_readonly` view the multi-entry UI drives its entries-list,
+/// migration-target-dropdown, and readonly-banner from.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StorageSettingsDto {
-    /// Active backend type: "local" or "s3"
+    /// Active backend type: "local" or "s3". Legacy flat-config field
+    /// — mirrors `entries[i where is_active].backend` for the active
+    /// entry when multi-entry is in use.
     pub backend: String,
     pub s3_endpoint_url: Option<String>,
     pub s3_bucket: Option<String>,
@@ -163,6 +172,47 @@ pub struct StorageSettingsDto {
     pub total_blobs: u64,
     pub total_bytes_stored: u64,
     pub dedup_ratio: f64,
+    // ── Multi-entry view (slice 6) ──
+    /// All named storage entries declared in env. Empty when running
+    /// in legacy single-backend mode (`OXICLOUD_STORAGE_ENTRIES`
+    /// unset AND no legacy synthesis happened). Order matches
+    /// `_ENTRIES`.
+    pub entries: Vec<StorageEntrySummaryDto>,
+    /// Name of the entry the LIVE backend is currently bound to.
+    /// Populated as the boot-selected name (per
+    /// `CoreServices.active_backend_name`). Empty string for the
+    /// zero-entries legacy path (`"legacy"` sentinel).
+    pub active_entry_name: String,
+    /// Global read-only flag — when true, all write-adjacent
+    /// AuthZ checks refuse. Set by the migration handler at run
+    /// start; cleared by the boot-clear rule after operator
+    /// restart. Frontend renders a banner on the storage tab when
+    /// true.
+    pub migration_readonly: bool,
+}
+
+/// Per-entry summary emitted in `StorageSettingsDto.entries`. Never
+/// carries credentials — those live in env vars only. `is_active`
+/// marks which entry the LIVE backend uses right now (matches
+/// `active_entry_name` on the parent DTO).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StorageEntrySummaryDto {
+    pub name: String,
+    /// Backend type — "local" / "s3" / "azure".
+    pub backend: String,
+    /// True for exactly one entry (the entry the LIVE backend is on).
+    /// Frontend uses this to badge the active row and to exclude it
+    /// from the migration-target dropdown.
+    pub is_active: bool,
+    /// True when the entry has a per-entry encryption key. UI shows
+    /// a lock icon. Presence-only — the key bytes never leave the
+    /// server.
+    pub encryption_enabled: bool,
+    /// Human-readable physical location hint, if the backend surfaces
+    /// one (`root_dir` for Local, `bucket` for S3, `container` for
+    /// Azure). Cosmetic — helps the admin distinguish two Local
+    /// entries pointing at different disks.
+    pub location_hint: Option<String>,
 }
 
 /// Request body for saving storage settings from the admin panel
@@ -280,12 +330,11 @@ pub struct StartMigrationDto {
     pub concurrency: Option<usize>,
 }
 
-/// Request body (empty) for `POST /api/admin/storage/migration/verify`.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct VerifyMigrationDto {
-    /// Number of random blobs to sample-check (default: 100).
-    pub sample_size: Option<usize>,
-}
+// VerifyMigrationDto retired in slice 7 of
+// docs/plan/storage-multi-entry.md — the corresponding endpoint's
+// sample-based check is superseded by
+// `blobs_consistency?storage=<name>`, a full walk that emits
+// structured findings per mismatch.
 
 // ============================================================================
 // SMTP Settings DTOs (Admin Panel)

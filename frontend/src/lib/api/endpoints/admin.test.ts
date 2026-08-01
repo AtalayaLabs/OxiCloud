@@ -104,15 +104,8 @@ describe('admin test/probe endpoints', () => {
 		await expect(admin.testStorage({ backend: 's3' })).resolves.toMatchObject({ connected: true });
 	});
 
-	it('verifyMigration fills defaults and throws on error', async () => {
-		fetchMock.mockResolvedValue(okRes({ passed: true }));
-		await expect(admin.verifyMigration(10)).resolves.toMatchObject({
-			passed: true,
-			sample_checked: 0
-		});
-		fetchMock.mockResolvedValue(errRes(500, {}));
-		await expect(admin.verifyMigration()).rejects.toThrow(/verify failed/);
-	});
+	// verifyMigration retired in slice 7 of docs/plan/storage-multi-entry.md.
+	// Superseded by `POST /api/admin/jobs/blobs_consistency/trigger?storage=<name>`.
 
 	it('installPlugin posts a FormData bundle', async () => {
 		fetchMock.mockResolvedValue(okRes({ id: 'com.example.hello' }));
