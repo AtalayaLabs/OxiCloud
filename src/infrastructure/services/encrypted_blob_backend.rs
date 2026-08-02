@@ -237,46 +237,49 @@ impl EncryptedBlobBackend {
         }
     }
 
-    /// Smart-skip probe used by `backend_migration` (and potentially
-    /// `backend_rotate` if it ever gains a fast-path). Reads the
-    /// first [`HEADER_SIZE`] bytes of the on-disk blob and returns
-    /// `true` iff:
-    ///
-    /// * the blob exists, AND
-    /// * its first bytes carry the v1 header (`OXCPT | 0001`), AND
-    /// * the header's `key_fp` matches this wrapper's head key
-    ///   (encrypted-v1 → `head_key_fp`; plaintext-v1 → all-zero).
-    ///
-    /// Any error (blob missing, short read, IO failure) returns
-    /// `Ok(false)` — the caller re-writes, which is always safe.
-    /// Only propagates errors that the caller genuinely cannot
-    /// distinguish from "blob absent" and needs to see.
+    /// Richer variant of [`Self::is_at_head_format`] — returns not
+    /// just "matches head?" but also *why* it doesn't match, so
+    /// callers (currently `backend_migration`) can log the concrete
+    /// action they're about to take: **skip** (match), **overwrite**
+    /// (blob exists but with wrong format/key), or **fresh write**
+    /// (blob absent). Same one-round-trip cost as the boolean version.
     ///
     /// Backend-agnostic: reads through the trait's
     /// `get_blob_range_stream` on the *inner* backend (bypasses this
     /// wrapper's decrypt so we see the raw on-disk header bytes).
     /// Local pays one `pread` syscall; S3 pays one HEAD/GET with
     /// `Range: bytes=0-14`; Azure the same.
-    pub async fn is_at_head_format(&self, hash: &str) -> Result<bool, DomainError> {
-        // Skip the probe entirely for backends that don't stream —
-        // `get_blob_range_stream` would fail on a legit-missing blob
-        // with `NotFound` which we want to translate to `Ok(false)`.
+    pub async fn head_check(&self, hash: &str) -> HeadCheck {
         let stream = match self
             .inner
             .get_blob_range_stream(hash, 0, Some(HEADER_SIZE as u64))
             .await
         {
             Ok(s) => s,
-            Err(_) => return Ok(false),
+            Err(_) => return HeadCheck::Absent,
         };
         let raw = match collect_stream(stream).await {
             Ok(b) => b,
-            Err(_) => return Ok(false),
+            Err(_) => return HeadCheck::Absent,
         };
-        if raw.len() < HEADER_SIZE {
-            return Ok(false);
+        if raw.is_empty() {
+            return HeadCheck::Absent;
         }
-        Ok(BlobFormat::classify(&raw) == self.head_format())
+        // Bytes present but short-header — treat as "exists, needs
+        // rewrite" (malformed blob, classify falls back to Legacy).
+        let current = BlobFormat::classify(&raw);
+        if current == self.head_format() {
+            HeadCheck::Match
+        } else {
+            HeadCheck::Mismatch(current)
+        }
+    }
+
+    /// Boolean convenience wrapper over [`Self::head_check`] for
+    /// callers that only need "matches head?" — retained for API
+    /// symmetry with the original design.
+    pub async fn is_at_head_format(&self, hash: &str) -> Result<bool, DomainError> {
+        Ok(matches!(self.head_check(hash).await, HeadCheck::Match))
     }
 
     /// Fetch, classify, and decrypt a blob in one round-trip. Used by
@@ -364,6 +367,28 @@ impl BlobFormat {
             BlobFormat::EncryptedV1 { key_fp }
         }
     }
+}
+
+/// Result of [`EncryptedBlobBackend::head_check`] — describes the
+/// exact state of a target blob relative to the wrapper's current
+/// head format, so callers can log/act with precision.
+///
+/// [`HeadCheck::Absent`] and [`HeadCheck::Mismatch`] both require a
+/// write; the distinction is purely observability — operators seeing
+/// `Mismatch` in migration logs know the K1.2 residue is being
+/// repaired, while `Absent` is a plain first-time copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadCheck {
+    /// Blob exists AND its header bytes match the wrapper's
+    /// head format exactly — skip the write.
+    Match,
+    /// Blob exists but header differs (legacy shape, different
+    /// `key_fp`, plaintext vs encrypted, or malformed shorter than
+    /// [`HEADER_SIZE`]). The current on-disk shape is reported so
+    /// the caller can name it in the log.
+    Mismatch(BlobFormat),
+    /// No bytes at that hash — fresh write, not an overwrite.
+    Absent,
 }
 
 impl std::fmt::Display for BlobFormat {

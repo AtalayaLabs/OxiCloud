@@ -62,7 +62,7 @@ use crate::infrastructure::scheduler::{
     JobRegistry, JobRunArgs, JobStore, JobStoreProvider, RecoverableJobHandler, RunOutcome,
     RunStatus, record_or_log,
 };
-use crate::infrastructure::services::encrypted_blob_backend::EncryptedBlobBackend;
+use crate::infrastructure::services::encrypted_blob_backend::{EncryptedBlobBackend, HeadCheck};
 use crate::infrastructure::services::entry_backend::{
     build_entry_backend_typed, persist_active_backend_name, persist_migration_readonly,
 };
@@ -666,7 +666,8 @@ impl RecoverableJobHandler for BackendMigrationService {
                 // both correct (checks the header, not just
                 // existence) AND fast (skips the ~99% of resume
                 // blobs already at head format).
-                if target.is_at_head_format(hash).await.unwrap_or(false) {
+                let head_check = target.head_check(hash).await;
+                if matches!(head_check, HeadCheck::Match) {
                     skipped_count += 1;
                     tracing::debug!(
                         target: "oxicloud::migration",
@@ -682,6 +683,33 @@ impl RecoverableJobHandler for BackendMigrationService {
                 match copy_blob(self.source.as_ref(), target.clone(), hash).await {
                     Ok(()) => {
                         copied_count += 1;
+                        // Log the concrete action: overwrite (blob
+                        // existed with wrong format — the K1.2 repair
+                        // case) vs fresh write (blob absent). Info
+                        // level for both so a single log tail shows
+                        // operators exactly what happened per blob.
+                        match head_check {
+                            HeadCheck::Mismatch(prev) => tracing::info!(
+                                target: "oxicloud::migration",
+                                event = "backend_migration.blob_overwritten",
+                                run_id = %store.run_id(),
+                                hash = %hash,
+                                previous_format = %prev,
+                                new_format = %target.head_format(),
+                                "🔄 target blob existed with different format — overwritten"
+                            ),
+                            HeadCheck::Absent => tracing::info!(
+                                target: "oxicloud::migration",
+                                event = "backend_migration.blob_written",
+                                run_id = %store.run_id(),
+                                hash = %hash,
+                                new_format = %target.head_format(),
+                                "✍️  fresh blob written to target"
+                            ),
+                            // Unreachable in practice — we already
+                            // early-`continue`d on Match above.
+                            HeadCheck::Match => {}
+                        }
                     }
                     Err(e) => {
                         failed_count += 1;
