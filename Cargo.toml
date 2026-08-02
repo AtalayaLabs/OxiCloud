@@ -183,6 +183,15 @@ path = "src/bin/opaque-setup.rs"
 # registration — see docs/config/authentication.md §OPAQUE).
 
 [[bin]]
+name = "opaque-hurl-helper"
+path = "src/bin/opaque-hurl-helper.rs"
+# Test-suite crypto client — drives a full OPAQUE register + login
+# handshake against a running server. Invoked from tests/api/run.sh
+# after opaque_substrate.hurl to cover the parts Hurl can't (OPRF
+# blinding, AKE nonces are per-attempt-random). Not shipped in the
+# release Dockerfile (nothing outside tests/ calls it).
+
+[[bin]]
 name = "load-seed"
 path = "src/bin/load-seed.rs"
 # Test fixture seeder. Gated behind the empty `load_seed_bin` feature so

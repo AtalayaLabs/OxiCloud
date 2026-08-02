@@ -226,4 +226,26 @@ hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test 
 
 bash "$API_DIR/storage_cleanup_check.sh"
 
+# ── 5. OPAQUE crypto handshake — the parts Hurl can't drive ─────────────
+# Full OPAQUE register + login handshake against the running server,
+# using the real ciphersuite client-side. Closes the gap left by
+# `opaque_substrate.hurl` (which covers only wire shape, not OPRF-
+# blinded happy path). See `src/bin/opaque-hurl-helper.rs` for what
+# it exercises and why. Skips itself when the server reports OPAQUE
+# disabled so an operator running the suite with mode=off doesn't
+# get a spurious failure.
+OPAQUE_HELPER_BIN="$REPO_ROOT/target/$BUILD_TARGET/opaque-hurl-helper"
+if [[ ! -x "$OPAQUE_HELPER_BIN" ]]; then
+  log "Building opaque-hurl-helper ($BUILD_TARGET)..."
+  case "$BUILD_TARGET" in
+    debug)   (cd "$REPO_ROOT" && cargo build           --bin opaque-hurl-helper 2>&1 | tail -n 20) || die "opaque-hurl-helper build failed" ;;
+    release) (cd "$REPO_ROOT" && cargo build --release --bin opaque-hurl-helper 2>&1 | tail -n 20) || die "opaque-hurl-helper build failed" ;;
+  esac
+fi
+log "Running OPAQUE crypto handshake helper..."
+OPAQUE_HELPER_BASE_URL="$base_url" \
+OPAQUE_HELPER_USERNAME="$username" \
+OPAQUE_HELPER_PASSWORD="$password" \
+  "$OPAQUE_HELPER_BIN" || die "OPAQUE crypto handshake failed"
+
 log "All tests passed."

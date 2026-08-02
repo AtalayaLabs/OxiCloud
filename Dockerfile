@@ -45,6 +45,7 @@ RUN mkdir -p src/bin && \
     echo 'fn main() {}' > src/bin/generate-openapi.rs && \
     echo 'fn main() {}' > src/bin/migrate-nfc-filenames.rs && \
     echo 'fn main() {}' > src/bin/opaque-setup.rs && \
+    echo 'fn main() {}' > src/bin/opaque-hurl-helper.rs && \
     cargo build --release --bin oxicloud --bin generate-openapi --bin migrate-nfc-filenames --bin opaque-setup && \
     rm -rf src static-dist target/release/deps/oxicloud* target/release/build/oxicloud-*
 
