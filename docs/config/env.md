@@ -8,6 +8,7 @@ Most runtime variables use the `OXICLOUD_` prefix. A few build-time or allocator
 |---|---|---|
 | `OXICLOUD_STORAGE_PATH` | `./storage` | Root storage directory |
 | `OXICLOUD_STATIC_PATH` | `./static` | Static files directory |
+| `OXICLOUD_TEMP_DIR` | `std::env::temp_dir()` (`$TMPDIR`) | Directory for tier-1 temporary data — pure scratch, safe to lose at reboot. Backend services stream blobs here when extractors need a `&Path` (id3, mp3_duration, ffprobe, nom-exif video). Files are auto-removed after use. On Linux `/tmp` is often tmpfs (RAM-backed); point at a disk-backed dir under RAM-constrained deployments. |
 | `OXICLOUD_SERVER_PORT` | `8086` | Server port |
 | `OXICLOUD_SERVER_HOST` | `127.0.0.1` | Server bind address (IPv4 or IPv6 allowed) |
 | `OXICLOUD_BASE_URL` | (auto) | Public base URL for share links; defaults to `http://{host}:{port}` |

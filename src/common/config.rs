@@ -2252,6 +2252,19 @@ pub struct AppConfig {
     pub storage_path: PathBuf,
     /// Static files directory path
     pub static_path: PathBuf,
+    /// Directory for tier-1 temporary data — pure scratch, safe to
+    /// lose at reboot. Backend `stream_to_tempfile` writes here so
+    /// extractors that require a `&Path` (id3, mp3_duration,
+    /// ffprobe, nom-exif video) can operate on a local file
+    /// without the service ever seeing a raw blob path.
+    ///
+    /// Env: `OXICLOUD_TEMP_DIR`. Default: `std::env::temp_dir()`
+    /// (respects `$TMPDIR`). On Linux this is typically `/tmp`,
+    /// often mounted as tmpfs (RAM-backed); production
+    /// deployments concerned about physical RAM under
+    /// high concurrency should point this at a disk-backed
+    /// directory (e.g. `/var/lib/oxicloud/tmp`).
+    pub temp_dir: PathBuf,
     /// Server port
     pub server_port: u16,
     /// Server host
@@ -2356,6 +2369,7 @@ impl Default for AppConfig {
         Self {
             storage_path: PathBuf::from("./storage"),
             static_path: PathBuf::from("./static"),
+            temp_dir: env::temp_dir(),
             server_port: 8086,
             server_host: "127.0.0.1".to_string(),
             cache: CacheConfig::default(),
@@ -2392,6 +2406,10 @@ impl AppConfig {
 
         if let Ok(static_path) = env::var("OXICLOUD_STATIC_PATH") {
             config.static_path = PathBuf::from(static_path);
+        }
+
+        if let Ok(temp_dir) = env::var("OXICLOUD_TEMP_DIR") {
+            config.temp_dir = PathBuf::from(temp_dir);
         }
 
         if let Ok(server_port) = env::var("OXICLOUD_SERVER_PORT")
