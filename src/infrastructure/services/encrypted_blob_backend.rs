@@ -257,6 +257,7 @@ impl EncryptedBlobBackend {
         let fp_ciphers = self.fp_ciphers.clone();
         let head_cipher = self.head_cipher.clone();
         let head_key_fp = self.head_key_fp;
+        let hash_owned = hash.to_string();
         let len = raw.len();
         let plaintext = offload_crypto(len, move || {
             read_dispatch(
@@ -264,6 +265,7 @@ impl EncryptedBlobBackend {
                 &fp_ciphers,
                 head_cipher.as_deref(),
                 head_key_fp,
+                &hash_owned,
                 raw,
             )
         })
@@ -431,6 +433,7 @@ fn read_dispatch(
     fp_ciphers: &HashMap<[u8; KEY_FP_SIZE], Arc<Aes256Gcm>>,
     head_cipher: Option<&Aes256Gcm>,
     head_key_fp: [u8; KEY_FP_SIZE],
+    expected_hash: &str,
     encrypted: Vec<u8>,
 ) -> Result<Bytes, DomainError> {
     if encrypted.len() >= 5 && &encrypted[..5] == OXCPT_MAGIC {
@@ -474,6 +477,33 @@ fn read_dispatch(
                     return Ok(pt);
                 }
             }
+            // ── BLAKE3 rescue (last safety net) ─────────────────
+            // If every configured key failed AND the raw bytes
+            // BLAKE3 to the expected hash, those bytes ARE the
+            // plaintext — the blob was written pre-encryption
+            // (pre-K2 legacy plaintext) or via a migration that
+            // silently retained plaintext blobs (see the K1.2
+            // skip-check bug — historical residue).
+            //
+            // Zero-false-positive because we're recomputing the
+            // content-addressable hash: matching bytes = matching
+            // content, period. Cheap (BLAKE3 ~2 GB/s) and only
+            // runs on the pathological path where AES already
+            // failed. Emits an audit line so operators can spot
+            // pre-encryption blobs and decide whether to re-write
+            // them under the head via rotate.
+            if hex_matches_blake3(expected_hash, &encrypted) {
+                tracing::info!(
+                    target: "audit",
+                    event = "encryption.legacy_plaintext_rescued",
+                    hash = %expected_hash,
+                    size = encrypted.len(),
+                    "🩹 legacy plaintext blob served via BLAKE3 rescue — no configured key \
+                     decrypted it, but content hash matched. Run storage_rotate to re-write \
+                     under the current head."
+                );
+                return Ok(Bytes::from(encrypted));
+            }
             Err(DomainError::internal_error(
                 "Encryption",
                 "legacy blob failed to decrypt under any configured key — \
@@ -482,6 +512,23 @@ fn read_dispatch(
         }
         None => Ok(Bytes::from(encrypted)),
     }
+}
+
+/// Return true iff `expected_hex` is a valid 32-byte BLAKE3 hex
+/// digest AND matches `blake3(bytes)`. Case-insensitive on hex.
+///
+/// Kept out of the hot path — only called from the legacy-fallback
+/// last-resort branch when every AES key already failed.
+fn hex_matches_blake3(expected_hex: &str, bytes: &[u8]) -> bool {
+    if expected_hex.len() != 64 {
+        return false;
+    }
+    let mut expected = [0u8; 32];
+    if hex::decode_to_slice(expected_hex, &mut expected).is_err() {
+        return false;
+    }
+    let actual = blake3::hash(bytes);
+    actual.as_bytes() == &expected
 }
 
 /// The v1 branch of `read_dispatch`, factored out for clarity.
@@ -692,12 +739,14 @@ impl BlobStorageBackend for EncryptedBlobBackend {
             let enc_stream = inner.get_blob_stream(&hash).await?;
             let encrypted = collect_stream(enc_stream).await?;
             let len = encrypted.len();
+            let hash_for_dispatch = hash.clone();
             let plaintext = offload_crypto(len, move || {
                 read_dispatch(
                     &pairs,
                     &fp_ciphers,
                     head_cipher.as_deref(),
                     head_key_fp,
+                    &hash_for_dispatch,
                     encrypted,
                 )
             })
@@ -727,12 +776,14 @@ impl BlobStorageBackend for EncryptedBlobBackend {
             let enc_stream = inner.get_blob_stream(&hash).await?;
             let encrypted = collect_stream(enc_stream).await?;
             let len = encrypted.len();
+            let hash_for_dispatch = hash.clone();
             let plaintext = offload_crypto(len, move || {
                 read_dispatch(
                     &pairs,
                     &fp_ciphers,
                     head_cipher.as_deref(),
                     head_key_fp,
+                    &hash_for_dispatch,
                     encrypted,
                 )
             })
