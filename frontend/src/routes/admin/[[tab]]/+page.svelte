@@ -76,6 +76,7 @@
 		User
 	} from '$lib/api/types';
 	import { triggerJob } from '$lib/api/endpoints/adminJobs';
+	import { serverStatus } from '$lib/stores/serverStatus.svelte';
 	import AdminJobsPanel from '$lib/components/AdminJobsPanel.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
 	import Modal from '$lib/components/Modal.svelte';
@@ -2160,7 +2161,17 @@
 					<dd>{storage.dedup_ratio != null ? `${storage.dedup_ratio.toFixed(2)}x` : '—'}</dd>
 				</dl>
 			{:else}
-				{#if storage.migration_readonly}
+				<!-- Banner keys off `serverStatus().readonly` (live-updated
+				     via `x-server-status` on every API response) rather
+				     than `storage.migration_readonly` (a snapshot from
+				     the one-shot `getStorageSettings()` fetch). Prevents
+				     the "stale until force-refresh" bug when navigating
+				     into /admin/storage while a migration is running:
+				     any API call that fires on tab entry — even
+				     `loadStorage` itself — updates the store from the
+				     response header, so the banner shows within the
+				     first render cycle. -->
+				{#if serverStatus().readonly}
 					<div
 						class="cutover-hint cutover-hint--readonly"
 						data-testid="admin-migration-readonly-banner"
