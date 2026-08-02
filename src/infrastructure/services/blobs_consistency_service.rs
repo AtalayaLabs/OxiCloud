@@ -19,6 +19,15 @@
 //!   runs when the operator passes `?deep=true` because it costs a
 //!   full read of every blob.
 //!
+//! * `blob_unreadable` (severity `data_loss`, deep mode only) —
+//!   `blob_exists` returned true but the read pipeline errored (can't
+//!   decrypt, network glitch, permission error, etc.). Distinct from
+//!   `blob_corrupted` (which requires successful read + hash mismatch);
+//!   here we can't get bytes out at all. Same operator impact — any
+//!   file referencing this hash is inaccessible — but the remedy
+//!   differs (key recovery, retry, or blob replacement, depending on
+//!   the recorded `error` field).
+//!
 //! * `refcount_mismatch` (severity `inconsistent`) —
 //!   `storage.blobs.ref_count` disagrees with the actual reference
 //!   count computed from `storage.files.blob_hash` +
@@ -540,13 +549,46 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                             .await;
                         }
                         Err(e) => {
+                            // Blob can't be read at all — record as
+                            // `blob_unreadable`. Distinct from
+                            // `blob_corrupted` (hash mismatch = we
+                            // can read but content differs): here
+                            // we can't get bytes out to hash. Common
+                            // causes: decrypt failure (missing key),
+                            // network glitch on S3/Azure, missing
+                            // file on Local, permission error.
+                            //
+                            // Recorded as `data_loss` because from
+                            // the file's perspective the outcome is
+                            // the same as corruption: content is
+                            // inaccessible. Admins triage the error
+                            // string to distinguish transient
+                            // (retry-safe) from permanent (needs
+                            // key recovery or blob replacement).
+                            finding_count += 1;
+                            let affected = affected_files(self.pool.as_ref(), &row.hash).await;
+                            record_or_log(
+                                store,
+                                BLOBS_CONSISTENCY_JOB_NAME,
+                                "blob_unreadable",
+                                "data_loss",
+                                None,
+                                serde_json::json!({
+                                    "hash":           row.hash,
+                                    "size":           row.size,
+                                    "ref_count":      row.ref_count,
+                                    "affected_files": affected,
+                                    "error":          e.to_string(),
+                                }),
+                            )
+                            .await;
                             tracing::warn!(
                                 target: "oxicloud::consistency",
-                                event = "blobs_consistency.recompute_hash_error",
+                                event = "blobs_consistency.blob_unreadable",
                                 run_id = %store.run_id(),
                                 hash = %row.hash,
                                 error = %e,
-                                "recompute_hash failed; not a corruption signal on its own"
+                                "🚨 blob unreadable in deep mode — recorded finding, continuing"
                             );
                         }
                     }
