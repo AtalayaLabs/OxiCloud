@@ -212,18 +212,17 @@
     margin-top: var(--space-5);
 }
 
-/* SSO / OIDC button */
+/* SSO / OIDC button — inherits the primary .auth-button visual
+   (accent gradient + on-accent text), only overriding layout so an
+   optional provider icon can sit beside the label. The previous
+   text-color gradient was unreadable in dark mode because the
+   inherited text color also resolved to a light value. */
 .auth-button-oidc {
-    background: linear-gradient(135deg, var(--color-text) 0%, var(--color-text-secondary) 100%);
-    box-shadow: 0 4px 12px var(--color-shadow-3xl);
     display: flex;
     align-items: center;
     justify-content: center;
     gap: var(--space-2-5);
-}
-
-.auth-button-oidc:hover {
-    box-shadow: 0 6px 20px var(--color-shadow-4xl);
+    text-decoration: none;
 }
 
 .auth-button-sso {

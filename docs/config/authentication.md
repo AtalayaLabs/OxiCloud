@@ -122,6 +122,7 @@ The verification-piggyback flow above deliberately **bypasses the `has_password`
 | Token | Effect |
 | --- | --- |
 | `permit_magic_link_for_password_users` | Allow magic-link login for accounts that also have a password. OIDC-linked users are still refused. |
+| `auto_redirect_if_standalone_oidc` | When OIDC is the ONLY working login method (no password, no magic-link — via allowlist or the OIDC-master rule), the login SPA auto-redirects to the IdP on page load instead of showing a click-to-continue SSO button. Off by default to avoid redirect loops on IdP failure and to preserve logout UX (logging out then visiting `/login` would otherwise bounce the user right back in). Silent no-op when other methods are also live. Frontend reads this via `auto_redirect_to_oidc` on `GET /api/auth/oidc/providers`. |
 
 Unknown tokens are logged-and-skipped at startup so a typo doesn't silently zero the vector.
 

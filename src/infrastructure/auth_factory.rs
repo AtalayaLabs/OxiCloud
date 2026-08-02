@@ -57,6 +57,7 @@ pub async fn create_auth_services(
     // rather than reaching into the app config on every call.
     auth_app_service = auth_app_service.with_auth_policy(
         config.auth.allowed_auth_methods.clone(),
+        config.auth.auth_policies.clone(),
         config.auth.require_verified_email,
     );
 

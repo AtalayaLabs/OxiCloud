@@ -1062,6 +1062,7 @@ pub async fn oidc_providers(
     let password_login_enabled = auth_app.is_password_login_allowed();
     let magic_link_login_enabled = auth_app.is_magic_link_login_allowed();
     let require_verified_email = auth_app.require_verified_email();
+    let auto_redirect_to_oidc = auth_app.auto_redirect_to_oidc();
 
     if !auth_app.oidc_enabled() {
         return Ok(Json(OidcProviderInfoDto {
@@ -1071,6 +1072,7 @@ pub async fn oidc_providers(
             password_login_enabled,
             magic_link_login_enabled,
             require_verified_email,
+            auto_redirect_to_oidc: false,
         }));
     }
 
@@ -1083,6 +1085,7 @@ pub async fn oidc_providers(
         password_login_enabled,
         magic_link_login_enabled,
         require_verified_email,
+        auto_redirect_to_oidc,
     }))
 }
 

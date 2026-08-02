@@ -9,7 +9,7 @@ use crate::application::ports::auth_ports::{
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::user_lifecycle::{DeletionMode, LogoutReason};
 use crate::application::services::user_lifecycle_service::UserLifecycleService;
-use crate::common::config::{AuthMethod, OidcConfig};
+use crate::common::config::{AuthMethod, AuthPolicy, OidcConfig};
 use crate::common::errors::{DomainError, ErrorKind};
 use crate::domain::entities::magic_link_token::{MagicLinkResourceKind, MagicLinkStatus};
 use crate::domain::entities::session::Session;
@@ -161,6 +161,11 @@ pub struct AuthApplicationService {
     /// `is_password_login_allowed()` / `is_magic_link_login_allowed()`
     /// so callers don't have to reach for the app config.
     allowed_auth_methods: Vec<AuthMethod>,
+    /// Additive auth-policy switches (mirrors `AuthConfig::auth_policies`).
+    /// Consulted by handlers / providers-info endpoint to compose the
+    /// login-page UX hints (e.g. `AutoRedirectIfStandaloneOidc`) without
+    /// reaching into the app config on every call.
+    auth_policies: Vec<AuthPolicy>,
     /// Whether `POST /api/auth/login` refuses accounts whose
     /// `email_verified_at IS NULL`. Mirrors
     /// `AuthConfig::require_verified_email`.
@@ -209,20 +214,24 @@ impl AuthApplicationService {
                 .time_to_live(USER_FLAGS_CACHE_TTL)
                 .build(),
             allowed_auth_methods: vec![AuthMethod::Password, AuthMethod::MagicLink],
+            auth_policies: Vec::new(),
             require_verified_email: false,
         }
     }
 
-    /// Populates the auth-method allowlist + `require_verified_email`
-    /// snapshot from the loaded config. Called by the DI factory. If
-    /// left uncalled (test builds), defaults are permissive: both
-    /// methods enabled, verified-email not required.
+    /// Populates the auth-method allowlist + policy vector +
+    /// `require_verified_email` snapshot from the loaded config.
+    /// Called by the DI factory. If left uncalled (test builds),
+    /// defaults are permissive: both self-service methods enabled,
+    /// no policies, verified-email not required.
     pub fn with_auth_policy(
         mut self,
         allowed_methods: Vec<AuthMethod>,
+        auth_policies: Vec<AuthPolicy>,
         require_verified_email: bool,
     ) -> Self {
         self.allowed_auth_methods = allowed_methods;
+        self.auth_policies = auth_policies;
         self.require_verified_email = require_verified_email;
         self
     }
@@ -262,6 +271,26 @@ impl AuthApplicationService {
     /// NULL`. Backed by `OXICLOUD_REQUIRE_VERIFIED_EMAIL`.
     pub fn require_verified_email(&self) -> bool {
         self.require_verified_email
+    }
+
+    /// True iff the login SPA should auto-redirect to the OIDC
+    /// authorize endpoint on page load (SSO-only, no click needed).
+    ///
+    /// Composed to be BOTH policy-set AND effectively-standalone:
+    ///   * `AutoRedirectIfStandaloneOidc` policy is in the vector, AND
+    ///   * OIDC is enabled AND is the only WORKING login method
+    ///     (password + magic-link both refused by the composition of
+    ///     the allowlist + OIDC-master rule).
+    ///
+    /// When the policy is set but other methods are also live, this is
+    /// a silent no-op — the FE renders the multi-method chooser. If
+    /// the policy is NOT set, this is always false regardless.
+    pub fn auto_redirect_to_oidc(&self) -> bool {
+        self.auth_policies
+            .contains(&AuthPolicy::AutoRedirectIfStandaloneOidc)
+            && self.oidc_enabled()
+            && !self.is_password_login_allowed()
+            && !self.is_magic_link_login_allowed()
     }
 
     /// Resolve a login-identifier (username OR email) to the account's

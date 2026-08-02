@@ -628,7 +628,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let api_routes = create_api_routes(&app_state);
     let public_api_routes = create_public_api_routes(&app_state);
     let health_routes = create_health_routes(&app_state);
-    let web_routes = create_web_routes();
+    let web_routes = create_web_routes(app_state.clone());
 
     let mut app;
 

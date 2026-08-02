@@ -383,6 +383,14 @@ pub struct OidcProviderInfoDto {
     /// straight after signup.
     #[serde(default)]
     pub require_verified_email: bool,
+    /// True iff the effective allowlist is `[Oidc]` AND the
+    /// `auto_redirect_if_standalone_oidc` policy is set. Frontend
+    /// uses this to decide whether to auto-redirect to the authorize
+    /// endpoint on login-page mount (true) or show a click-to-continue
+    /// button (false). Default false — the safe posture that avoids
+    /// redirect loops when the IdP is degraded.
+    #[serde(default)]
+    pub auto_redirect_to_oidc: bool,
 }
 
 /// Claims extracted from the validated OIDC ID token

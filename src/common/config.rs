@@ -1493,6 +1493,24 @@ pub enum AuthPolicy {
     /// Deprecated legacy alias: `OXICLOUD_MAGIC_LINK_OPEN_TO_PASSWORD_USERS=true`
     /// adds this variant to the vector with a startup warning.
     PermitMagicLinkForPasswordUsers,
+
+    /// When OIDC is the ONLY auth method available (standalone SSO
+    /// posture — no password + no magic-link), instruct the login SPA
+    /// to auto-redirect to the OIDC authorize endpoint on page load
+    /// instead of showing a click-to-continue button.
+    ///
+    /// Opt-in because:
+    ///
+    /// - Auto-redirect can create loops on IdP failure (login → IdP
+    ///   error → back to login → auto-redirect again).
+    /// - Logout followed by "visit login page" would bounce the user
+    ///   right back into the app they just logged out of.
+    ///
+    /// Only takes effect when the effective allowlist is `[Oidc]`
+    /// (or magic-link is off via the OIDC-master rule and password is
+    /// disabled): if any other method is live the policy is a silent
+    /// no-op (there's a choice to render, not a single path).
+    AutoRedirectIfStandaloneOidc,
 }
 
 impl AuthPolicy {
@@ -1503,6 +1521,9 @@ impl AuthPolicy {
         match s.trim().to_ascii_lowercase().as_str() {
             "permit_magic_link_for_password_users" | "permit-magic-link-for-password-users" => {
                 Some(Self::PermitMagicLinkForPasswordUsers)
+            }
+            "auto_redirect_if_standalone_oidc" | "auto-redirect-if-standalone-oidc" => {
+                Some(Self::AutoRedirectIfStandaloneOidc)
             }
             _ => None,
         }
