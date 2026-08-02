@@ -409,19 +409,24 @@
 		}
 	}
 
+	// Entry-card action confirmations use `ui.notify()` (viewport
+	// toast) rather than `storageMsg` (top-of-tab banner). The
+	// buttons live on cards that can be scrolled far below the
+	// storage-msg region — a banner confirmation is invisible
+	// when the user is looking at the card that triggered it.
 	async function doAuditEntry(name: string) {
 		try {
 			await triggerJob('blobs_consistency', { storage: name });
-			storageMsg = {
-				text: t(
+			ui.notify(
+				t(
 					'admin.storage_audit_triggered',
 					{ name },
 					'blobs_consistency triggered for `{{name}}` — watch it on the Jobs tab.'
 				),
-				ok: true
-			};
+				'success'
+			);
 		} catch (e) {
-			storageMsg = { text: errorMessage(e), ok: false };
+			ui.notify(errorMessage(e), 'error');
 		}
 	}
 
@@ -433,16 +438,16 @@
 	async function doStorageConsistency(name: string) {
 		try {
 			await triggerJob('backend_consistency', { storage: name });
-			storageMsg = {
-				text: t(
+			ui.notify(
+				t(
 					'admin.storage_backend_audit_triggered',
 					{ name },
 					'backend_consistency triggered for `{{name}}` — watch it on the Jobs tab.'
 				),
-				ok: true
-			};
+				'success'
+			);
 		} catch (e) {
-			storageMsg = { text: errorMessage(e), ok: false };
+			ui.notify(errorMessage(e), 'error');
 		}
 	}
 
@@ -477,16 +482,16 @@
 			return;
 		try {
 			await rotateStorageEntry(name);
-			storageMsg = {
-				text: t(
+			ui.notify(
+				t(
 					'admin.storage_rotate_triggered',
 					{ name },
 					'Rotation started on `{{name}}` — watch it on the Jobs tab (`storage_rotate`).'
 				),
-				ok: true
-			};
+				'success'
+			);
 		} catch (e) {
-			storageMsg = { text: errorMessage(e), ok: false };
+			ui.notify(errorMessage(e), 'error');
 		}
 	}
 
@@ -2214,6 +2219,41 @@
 									</dd>
 								{/if}
 							</dl>
+							<!-- Pair-list chain — one row per configured pair,
+							     head marked. Empty state (no `_ENCRYPTION_KEY`
+							     declared at all) hides the whole block; a single
+							     `none:` pair renders as one row so admins can see
+							     "yes, encryption declaration exists but head is
+							     plaintext" vs "no encryption declared". -->
+							{#if entry.encryption_pairs?.length}
+								<section class="entry-card__pairs" aria-label="Encryption keys">
+									<h4 class="entry-card__pairs-title">
+										{t('admin.storage_pair_list', 'Encryption keys')}
+									</h4>
+									<ol class="entry-card__pair-chain">
+										{#each entry.encryption_pairs as pair, i (i)}
+											<li class="entry-card__pair" class:entry-card__pair--head={pair.is_head}>
+												<span class="entry-card__pair-idx">key{i + 1}:</span>
+												<span class="entry-card__pair-cipher">{pair.cipher}</span>
+												<code class="entry-card__pair-fp">
+													{pair.fingerprint ?? '—'}
+												</code>
+												{#if pair.is_head}
+													<span class="entry-card__pair-head-badge">
+														{t('admin.storage_pair_head', 'head')}
+													</span>
+												{/if}
+											</li>
+										{/each}
+									</ol>
+									<p class="entry-card__pairs-help muted">
+										{t(
+											'admin.storage_pair_help',
+											'Head is the write key. After a successful rotation with 0 failures, any non-head key can be safely removed from `.env`.'
+										)}
+									</p>
+								</section>
+							{/if}
 							{#if test?.result != null || test?.error != null}
 								<footer class="entry-card__test-result">
 									{#if test.error}
@@ -4329,6 +4369,78 @@
 		margin-top: var(--space-3);
 		padding-top: var(--space-2);
 		border-top: 1px solid var(--color-border);
+	}
+
+	/* K3.7 pair-chain — one row per configured pair. Head is bolded
+	   and gets an "← head" badge so the write pair pops out. Aligns
+	   the fingerprint column so admins can eyeball-diff between
+	   entries. */
+	.entry-card__pairs {
+		margin-top: var(--space-3);
+		padding-top: var(--space-2);
+		border-top: 1px solid var(--color-border);
+	}
+
+	.entry-card__pairs-title {
+		font-size: var(--text-xs, 0.75rem);
+		font-weight: var(--weight-semibold, 600);
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		color: var(--color-text-muted);
+		margin: 0 0 var(--space-2);
+	}
+
+	.entry-card__pair-chain {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+	}
+
+	.entry-card__pair {
+		display: grid;
+		grid-template-columns: 3rem 6.5rem 1fr auto;
+		align-items: center;
+		gap: var(--space-2);
+		font-size: var(--text-sm);
+	}
+
+	.entry-card__pair-idx {
+		color: var(--color-text-muted);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.entry-card__pair-cipher {
+		color: var(--color-text);
+	}
+
+	.entry-card__pair-fp {
+		font-family: var(--font-mono, monospace);
+		font-size: var(--text-xs);
+		color: var(--color-text-muted);
+		word-break: keep-all;
+	}
+
+	.entry-card__pair--head .entry-card__pair-cipher,
+	.entry-card__pair--head .entry-card__pair-fp {
+		color: var(--color-text);
+		font-weight: var(--weight-semibold, 600);
+	}
+
+	.entry-card__pair-head-badge {
+		font-size: var(--text-xs);
+		padding: 0 var(--space-1);
+		background: var(--color-surface);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		color: var(--color-accent);
+	}
+
+	.entry-card__pairs-help {
+		margin: var(--space-2) 0 0;
+		font-size: var(--text-xs);
 	}
 
 	.mig-status {

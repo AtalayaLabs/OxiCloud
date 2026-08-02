@@ -168,6 +168,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 select_storage = Some(name);
             }
+            "--fingerprint" => {
+                // One-shot helper: compute the SSH-style colon-hex
+                // fingerprint of a base64-encoded AES-256 key and
+                // print to stdout. Same truncation used by the v1
+                // header's `<key_fp>` field + the `storage_rotate`
+                // completion summary — so an admin can:
+                //   1. Look at the `head_key_fp` reported by the
+                //      last rotate run.
+                //   2. Run `oxicloud --fingerprint <base64key>` for
+                //      each candidate in `.env`.
+                //   3. Match — the key that produces the reported
+                //      fingerprint is the current head; any other
+                //      key in `_ENCRYPTION_KEY` no longer decrypts
+                //      any live blob and can be dropped.
+                //
+                // Also accepts `-` for stdin so keys never touch the
+                // shell history:
+                //     echo -n '<base64>' | oxicloud --fingerprint -
+                let Some(key_b64) = args.next() else {
+                    eprintln!("--fingerprint requires a base64 key argument (or `-` for stdin)");
+                    std::process::exit(2);
+                };
+                let key_b64 = if key_b64 == "-" {
+                    use std::io::Read;
+                    let mut buf = String::new();
+                    if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
+                        eprintln!("failed to read key from stdin: {e}");
+                        std::process::exit(2);
+                    }
+                    buf.trim().to_string()
+                } else {
+                    key_b64
+                };
+                match oxicloud::common::config::fingerprint_from_base64_key(&key_b64) {
+                    Ok(fp) => {
+                        println!("{fp}");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        eprintln!("--fingerprint: {e}");
+                        std::process::exit(2);
+                    }
+                }
+            }
             "--help" | "-h" => {
                 print_help();
                 return Ok(());
@@ -250,6 +294,13 @@ fn print_help() {
     println!("  oxicloud --select-storage <name>        One-shot repair — set the active");
     println!("                                          storage entry in the DB and exit.");
     println!();
+    println!("  oxicloud --fingerprint <base64key|->    One-shot helper — print the SSH-style");
+    println!("                                          fingerprint of a base64 AES-256 key.");
+    println!("                                          Same shape used by the v1 blob header");
+    println!("                                          + `storage_rotate` completion summary.");
+    println!("                                          Read stdin with `-` to keep keys out");
+    println!("                                          of shell history.");
+    println!();
     println!("  oxicloud --version                      Print version + commit and exit.");
     println!();
     println!("  oxicloud --help                         Print this help and exit.");
@@ -272,6 +323,19 @@ fn print_help() {
     println!("      the old name (the server aborts boot with a pointer to this flag");
     println!("      when that happens). See `docs/plan/storage-multi-entry.md`");
     println!("      §Fallback for the full recovery flow.");
+    println!();
+    println!("  --fingerprint <base64key | ->");
+    println!("      Compute the SSH-style colon-hex fingerprint (16-hex, 8-byte");
+    println!("      truncation of sha256) of a base64-encoded AES-256 key. Matches the");
+    println!("      `head_key_fp` field the `storage_rotate` job reports on completion,");
+    println!("      and the raw <key_fp> field embedded in every v1 blob header. Used");
+    println!("      to identify which key in `OXICLOUD_STORAGE_<N>_ENCRYPTION_KEY`");
+    println!("      corresponds to the current on-disk head — safe to drop any key");
+    println!("      whose fingerprint does NOT match the last-successful rotate's");
+    println!("      `head_key_fp`. Pass `-` to read the key from stdin so it never");
+    println!("      touches shell history:");
+    println!();
+    println!("          echo -n '<base64>' | oxicloud --fingerprint -");
     println!();
     println!("  --version, -V");
     println!("      Print the version, git branch, and commit hash. Exits 0.");

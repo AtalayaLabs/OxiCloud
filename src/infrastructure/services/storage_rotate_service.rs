@@ -65,6 +65,7 @@ use crate::infrastructure::scheduler::{
     JobRegistry, JobRunArgs, JobStore, JobStoreProvider, RecoverableJobHandler, RunOutcome,
     RunStatus, record_or_log,
 };
+use crate::infrastructure::services::encrypted_blob_backend::BlobFormat;
 use crate::infrastructure::services::entry_backend::build_entry_backend_typed;
 
 pub const STORAGE_ROTATE_JOB_NAME: &str = "storage_rotate";
@@ -332,6 +333,7 @@ impl RecoverableJobHandler for StorageRotateService {
                     .finish_completed(
                         store,
                         &target_name,
+                        head_format,
                         rewritten_count,
                         skipped_count,
                         failed_count,
@@ -454,6 +456,7 @@ impl RecoverableJobHandler for StorageRotateService {
                     .finish_completed(
                         store,
                         &target_name,
+                        head_format,
                         rewritten_count,
                         skipped_count,
                         failed_count,
@@ -469,15 +472,40 @@ impl StorageRotateService {
     /// final audit line. Unlike `storage_migration::finish_completed`
     /// there's no cutover / hot-swap step: rotation writes in place
     /// on the entry that's already there.
+    ///
+    /// `head_format` — the target format at run completion. Persisted
+    /// into the run row's `stats` as `head_format` (Display) +
+    /// `head_key_fp` (raw hex) so operators have a durable record of
+    /// "at time T, all blobs on entry E were normalised to fingerprint
+    /// F". Combined with `failed = 0`, that's the signal to remove
+    /// obsolete keys from `.env` — any key NOT matching `head_key_fp`
+    /// no longer decrypts any live blob and can be safely dropped.
     async fn finish_completed(
         &self,
         store: &dyn JobStore,
         target_name: &str,
+        head_format: BlobFormat,
         rewritten: u64,
         skipped: u64,
         failed: u64,
     ) -> RunOutcome {
         self.clear_progress();
+
+        // Render two fingerprint shapes:
+        //   * `head_format` — Display impl, e.g.
+        //     `encrypted-v1 key_fp=15:f3:8f:80:2c:ae:2c:50` — human
+        //     friendly for audit logs + admin UI.
+        //   * `head_key_fp` — bare 16-hex string, matches what an
+        //     operator gets from `openssl dgst -sha256 <keyfile> | head -c 16`
+        //     so post-hoc verification against the raw key material
+        //     is trivial.
+        let head_display = format!("{head_format}");
+        let head_key_fp_hex = match head_format {
+            BlobFormat::EncryptedV1 { key_fp } => hex::encode(key_fp),
+            BlobFormat::PlaintextV1 => String::new(), // all-zero, uninformative
+            BlobFormat::Legacy => String::new(),      // never emitted at head
+        };
+
         tracing::info!(
             target: "audit",
             event = "storage_rotate.run_completed",
@@ -486,17 +514,25 @@ impl StorageRotateService {
             rewritten = rewritten,
             skipped = skipped,
             failed = failed,
-            "storage_rotate completed on `{target_name}` — {rewritten} rewritten, {skipped} skipped, {failed} failed"
+            head_format = %head_display,
+            "storage_rotate completed on `{target_name}` — {rewritten} rewritten, {skipped} skipped, {failed} failed; head = {head_display}"
         );
+
         // Surface the per-run summary counters as extras merged into
         // the run row's `stats` JSONB. Frontend renders whatever keys
         // are present, so no wire-format bumping is needed — the
         // admin UI's run drawer just picks these up alongside the
         // engine-owned `finding_count` + `scanned_count`.
+        //
+        // `head_key_fp` empty string when head is not an encrypted
+        // pair (plaintext-v1) — frontend can render "all in clear"
+        // vs "all under fp <X>" based on that discriminator.
         RunOutcome::completed_with(serde_json::json!({
-            "rewritten": rewritten,
-            "skipped":   skipped,
-            "failed":    failed,
+            "rewritten":    rewritten,
+            "skipped":      skipped,
+            "failed":       failed,
+            "head_format":  head_display,
+            "head_key_fp":  head_key_fp_hex,
         }))
     }
 

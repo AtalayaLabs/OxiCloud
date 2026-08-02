@@ -265,16 +265,36 @@ impl StorageSettingsService {
         let entries: Vec<StorageEntrySummaryDto> = self
             .storage_entries
             .iter()
-            .map(|e| StorageEntrySummaryDto {
-                name: e.name.clone(),
-                backend: match e.backend {
-                    StorageBackendType::Local => "local".to_string(),
-                    StorageBackendType::S3 => "s3".to_string(),
-                    StorageBackendType::Azure => "azure".to_string(),
-                },
-                is_active: e.name == active_entry_name,
-                encryption_enabled: e.is_encrypted(),
-                location_hint: entry_location_hint(e),
+            .map(|e| {
+                // Render the pair-list summary — one row per pair,
+                // head marked. Never emits key material; only
+                // cipher + fingerprint. See `StorageEncryptionPairDto`
+                // for the display contract.
+                let pairs = e.encryption_pairs();
+                let head_idx = pairs.len().saturating_sub(1);
+                let encryption_pairs = pairs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, kp)| {
+                        crate::application::dtos::settings_dto::StorageEncryptionPairDto {
+                            cipher: kp.cipher.as_str().to_string(),
+                            fingerprint: kp.fingerprint_short(),
+                            is_head: i == head_idx,
+                        }
+                    })
+                    .collect();
+                StorageEntrySummaryDto {
+                    name: e.name.clone(),
+                    backend: match e.backend {
+                        StorageBackendType::Local => "local".to_string(),
+                        StorageBackendType::S3 => "s3".to_string(),
+                        StorageBackendType::Azure => "azure".to_string(),
+                    },
+                    is_active: e.name == active_entry_name,
+                    encryption_enabled: e.is_encrypted(),
+                    location_hint: entry_location_hint(e),
+                    encryption_pairs,
+                }
             })
             .collect();
 

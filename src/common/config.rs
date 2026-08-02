@@ -507,15 +507,13 @@ impl KeyPair {
         }
     }
 
-    /// Truncated SHA-256 fingerprint of the key material — 12 hex
-    /// chars (6 bytes of SHA output). Used at boot for the audit-
-    /// line dump so operators can eyeball which key is at each
-    /// position without seeing the raw material.
-    ///
-    /// The on-blob v1 header uses a DIFFERENT truncation — 8 bytes
-    /// / 16 hex chars — so this fingerprint is not usable as the
-    /// header's `<key_fp>` field. Kept short here to keep boot
-    /// logs tight.
+    /// SSH-style colon-hex fingerprint of the key material — 8 bytes
+    /// of SHA-256 truncation rendered as `xx:yy:zz:...`. Same
+    /// truncation as the v1 header's `<key_fp>` field and the
+    /// `head_key_fp` reported by `storage_rotate` on completion, so
+    /// operators can cross-reference the boot log against a rotate
+    /// report or the CLI's `oxicloud --fingerprint <base64key>`
+    /// output without any format conversion.
     ///
     /// Returns `None` for `CipherKind::None` (nothing to
     /// fingerprint) — callers render as `—` in that case.
@@ -523,7 +521,13 @@ impl KeyPair {
         use sha2::{Digest, Sha256};
         let mat = self.key_material.as_ref()?;
         let full = Sha256::digest(mat);
-        Some(hex::encode(&full[..6]))
+        Some(
+            full[..8]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<Vec<_>>()
+                .join(":"),
+        )
     }
 
     /// 8-byte SHA-256 truncation used as the v1 header's `<key_fp>`
@@ -710,6 +714,38 @@ pub fn parse_encryption_pair_list(entry_name: &str, raw: &str) -> Result<Vec<Key
     }
 
     Ok(pairs)
+}
+
+/// One-shot helper that computes the SSH-style colon-hex fingerprint
+/// of a base64-encoded AES-256 key.
+///
+/// Wraps [`KeyPair::new_aes_gcm`] + [`KeyPair::fingerprint_short`]
+/// with the same base64 / length validation the pair-list parser
+/// uses, so callers don't have to reimplement it.
+///
+/// Used by the `oxicloud --fingerprint <base64>` CLI subcommand so
+/// admins can identify which key in their `.env` corresponds to the
+/// `head_key_fp` a `storage_rotate` run reported on completion —
+/// see `docs/plan/storage-key-rotation.md`.
+///
+/// Errors on non-base64 input or on decoded length ≠ 32 bytes (the
+/// AES-256 key size constraint).
+pub fn fingerprint_from_base64_key(key_b64: &str) -> Result<String, String> {
+    use base64::Engine;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(key_b64.trim())
+        .map_err(|e| format!("input is not valid base64: {e}"))?;
+    if decoded.len() != 32 {
+        return Err(format!(
+            "decoded key is {} bytes; AES-256 requires exactly 32",
+            decoded.len()
+        ));
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&decoded);
+    Ok(KeyPair::new_aes_gcm(key)
+        .fingerprint_short()
+        .expect("aes_gcm pair always has key material"))
 }
 
 /// Emit a per-entry boot line summarising the pair-list — one line
@@ -3891,12 +3927,22 @@ mod tests {
         }
 
         #[test]
-        fn fingerprint_is_12_hex_chars_for_real_cipher_and_none_for_none() {
+        fn fingerprint_is_ssh_style_colon_hex_for_real_cipher_and_none_for_none() {
+            // K3.7: display fp switched from 12-char raw hex to
+            // SSH-style 8-byte colon-hex (16 hex + 7 colons = 23 chars)
+            // so operators can cross-reference against the v1 header's
+            // `<key_fp>` field + `storage_rotate`'s `head_key_fp`
+            // output + the `oxicloud --fingerprint` CLI.
             let pairs =
                 parse_encryption_pair_list("t", &format!("aes-256-gcm:{K1_B64},none:")).unwrap();
             let fp0 = pairs[0].fingerprint_short().unwrap();
-            assert_eq!(fp0.len(), 12);
-            assert!(fp0.chars().all(|c| c.is_ascii_hexdigit()));
+            assert_eq!(
+                fp0.len(),
+                23,
+                "expected xx:yy:… shape (23 chars), got {fp0:?}"
+            );
+            assert_eq!(fp0.matches(':').count(), 7);
+            assert!(fp0.chars().all(|c| c == ':' || c.is_ascii_hexdigit()));
             assert!(pairs[1].fingerprint_short().is_none());
         }
 
@@ -3957,17 +4003,57 @@ mod tests {
         }
 
         #[test]
-        fn key_fp_and_fingerprint_short_share_prefix() {
-            // Both derive from the same sha256(key); the on-blob fp is
-            // 8 raw bytes, the log fp is hex of the first 6. Pinning
+        fn key_fp_and_fingerprint_short_are_the_same_underlying_bytes() {
+            // K3.7 unified: both render the FIRST 8 bytes of
+            // sha256(key). `key_fp` returns them raw for the header;
+            // `fingerprint_short` renders them as colon-hex for
+            // display. Stripping the colons from the display form
+            // should match `hex::encode(key_fp)` exactly. Pinning
             // this alignment protects against a future refactor that
-            // accidentally switches one to a different hash / offset.
+            // silently switches one to a different truncation.
             let pairs = parse_encryption_pair_list("t", K1_B64).unwrap();
-            let hex_fp = pairs[0].fingerprint_short().unwrap();
+            let display_fp = pairs[0].fingerprint_short().unwrap();
             let raw_fp = pairs[0].key_fp();
-            // First 12 hex chars of the log fp = hex of the first 6
-            // bytes of the raw fp.
-            assert_eq!(&hex_fp[..12], &hex::encode(&raw_fp[..6]));
+            let display_stripped: String = display_fp.chars().filter(|c| *c != ':').collect();
+            assert_eq!(display_stripped, hex::encode(raw_fp));
+        }
+
+        // ── `fingerprint_from_base64_key` (CLI helper) ───────────────
+
+        #[test]
+        fn fingerprint_from_base64_key_all_zero_key() {
+            // 32 zero bytes → deterministic sha256; the first 8 bytes
+            // truncation is the SSH-style prefix that ships everywhere
+            // (v1 header, rotate output, boot log, CLI).
+            let fp = fingerprint_from_base64_key("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+                .unwrap();
+            assert_eq!(fp, "66:68:7a:ad:f8:62:bd:77");
+        }
+
+        #[test]
+        fn fingerprint_from_base64_key_wrong_length_rejected() {
+            // "AAAA" base64-decodes to 3 bytes, not 32.
+            let err = fingerprint_from_base64_key("AAAA").unwrap_err();
+            assert!(err.contains("32"), "err was: {err}");
+        }
+
+        #[test]
+        fn fingerprint_from_base64_key_non_base64_rejected() {
+            let err = fingerprint_from_base64_key("not@base64!").unwrap_err();
+            assert!(err.contains("base64"), "err was: {err}");
+        }
+
+        #[test]
+        fn fingerprint_from_base64_key_matches_pair_list_fp() {
+            // Passing the same key material through both paths — the
+            // CLI helper and the pair-list parser — MUST yield the
+            // same fingerprint. Guards against a future refactor that
+            // silently switches truncation or hash between the two
+            // consumers.
+            let cli_fp = fingerprint_from_base64_key(K1_B64).unwrap();
+            let pairs = parse_encryption_pair_list("t", K1_B64).unwrap();
+            let parser_fp = pairs[0].fingerprint_short().unwrap();
+            assert_eq!(cli_fp, parser_fp);
         }
     }
 }

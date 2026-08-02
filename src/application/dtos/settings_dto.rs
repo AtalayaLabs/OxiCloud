@@ -211,6 +211,40 @@ pub struct StorageEntrySummaryDto {
     /// Azure). Cosmetic — helps the admin distinguish two Local
     /// entries pointing at different disks.
     pub location_hint: Option<String>,
+    /// Ordered pair-list summary — one entry per configured pair in
+    /// `OXICLOUD_STORAGE_<NAME>_ENCRYPTION_KEY`, oldest first, head
+    /// last. Empty vec means the entry has no `_ENCRYPTION_KEY`
+    /// declared at all (pure plaintext-v1 writes today, no crypto).
+    ///
+    /// Frontend renders this on the entry card so operators can:
+    ///   - See which pairs are configured + their SSH-style
+    ///     fingerprints without inspecting `.env`.
+    ///   - Cross-reference the head pair against the `head_key_fp`
+    ///     from the last `storage_rotate` completion — if they
+    ///     match AND `failed = 0`, every on-disk blob is under the
+    ///     head, and non-head pairs are safe to remove.
+    #[serde(default)]
+    pub encryption_pairs: Vec<StorageEncryptionPairDto>,
+}
+
+/// One `<cipher>:<key>` pair rendered for the admin UI. Never
+/// carries key material — only cipher name + a truncated fingerprint
+/// safe to show operators.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StorageEncryptionPairDto {
+    /// `"aes-256-gcm"` for a real-cipher pair, `"none"` for a
+    /// `none:` sentinel (writes as plaintext-v1).
+    pub cipher: String,
+    /// SSH-style colon-hex 8-byte truncation of `sha256(key)`.
+    /// Matches the v1 header's `<key_fp>` field and the CLI's
+    /// `oxicloud --fingerprint <key>` output. `None` for `none:`
+    /// pairs (no key material to fingerprint).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    /// True for the LAST pair in the list — the write pair. UI
+    /// badges it distinctly ("← head" or an arrow). Exactly one
+    /// pair has `is_head = true` when the list is non-empty.
+    pub is_head: bool,
 }
 
 /// Request body for saving storage settings from the admin panel

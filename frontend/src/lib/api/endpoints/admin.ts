@@ -466,6 +466,25 @@ export function saveOidc(body: Record<string, unknown>): Promise<void> {
 
 // ── Storage settings + migration ───────────────────────────────────────────
 
+/**
+ * One `<cipher>:<key>` pair rendered for the admin storage panel.
+ * Never carries key material — only cipher name + SSH-style
+ * fingerprint safe to show operators.
+ */
+export interface StorageEncryptionPair {
+	/** `"aes-256-gcm"` for a real-cipher pair, `"none"` for a `none:` sentinel. */
+	cipher: string;
+	/**
+	 * SSH-style colon-hex 8-byte fingerprint of the key. Matches
+	 * `storage_rotate`'s `head_key_fp` and the `oxicloud --fingerprint`
+	 * CLI output — enables one-glance identification of which key is
+	 * which. `undefined` for `none:` pairs (no key material).
+	 */
+	fingerprint?: string;
+	/** True for the LAST pair in the list — the write pair (head). */
+	is_head: boolean;
+}
+
 export interface StorageEntrySummary {
 	name: string;
 	backend: string;
@@ -473,6 +492,14 @@ export interface StorageEntrySummary {
 	encryption_enabled: boolean;
 	/** Human-readable physical hint (root_dir / bucket / container). */
 	location_hint?: string | null;
+	/**
+	 * Ordered pair-list summary — oldest first, head last. Empty when
+	 * the entry has no `_ENCRYPTION_KEY` declared at all. Used by the
+	 * entry card to render the pair chain so admins can identify
+	 * which key is the current head + which are safe to remove after
+	 * a completed rotation.
+	 */
+	encryption_pairs: StorageEncryptionPair[];
 }
 
 export interface StorageSettings {
