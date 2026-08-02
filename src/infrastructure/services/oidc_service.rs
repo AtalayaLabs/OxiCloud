@@ -28,6 +28,10 @@ struct OidcDiscovery {
     token_endpoint: String,
     userinfo_endpoint: Option<String>,
     jwks_uri: String,
+    /// RP-initiated logout endpoint (OIDC Session Management 1.0).
+    /// Optional — not every IdP advertises it. When missing, callers
+    /// must fall back to local-only logout.
+    end_session_endpoint: Option<String>,
 }
 
 // ============================================================================
@@ -532,6 +536,28 @@ impl OidcServicePort for OidcService {
 
     fn provider_name(&self) -> &str {
         &self.config.provider_name
+    }
+
+    async fn build_end_session_url(
+        &self,
+        id_token_hint: &str,
+        post_logout_redirect_uri: &str,
+    ) -> Result<Option<String>, DomainError> {
+        let discovery = self.get_discovery().await?;
+        let Some(endpoint) = discovery.end_session_endpoint else {
+            return Ok(None);
+        };
+        // client_id is also included: some IdPs (Keycloak in "legacy" mode)
+        // use it to look up the registered post_logout_redirect_uri when
+        // the id_token_hint is expired or missing.
+        let url = format!(
+            "{}?id_token_hint={}&post_logout_redirect_uri={}&client_id={}",
+            endpoint,
+            urlencoding::encode(id_token_hint),
+            urlencoding::encode(post_logout_redirect_uri),
+            urlencoding::encode(&self.config.client_id),
+        );
+        Ok(Some(url))
     }
 }
 

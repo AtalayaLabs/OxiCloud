@@ -122,9 +122,21 @@ The verification-piggyback flow above deliberately **bypasses the `has_password`
 | Token | Effect |
 | --- | --- |
 | `permit_magic_link_for_password_users` | Allow magic-link login for accounts that also have a password. OIDC-linked users are still refused. |
-| `auto_redirect_if_standalone_oidc` | When OIDC is the ONLY working login method (no password, no magic-link — via allowlist or the OIDC-master rule), the login SPA auto-redirects to the IdP on page load instead of showing a click-to-continue SSO button. Off by default to avoid redirect loops on IdP failure and to preserve logout UX (logging out then visiting `/login` would otherwise bounce the user right back in). Silent no-op when other methods are also live. Frontend reads this via `auto_redirect_to_oidc` on `GET /api/auth/oidc/providers`. |
+| `auto_redirect_if_standalone_oidc` | When OIDC is the ONLY working login method (no password, no magic-link — via allowlist or the OIDC-master rule), `GET /login` returns a **server-side 302** to `/api/auth/oidc/authorize` before the SPA loads (no click-to-continue button, no flash). Off by default to avoid redirect loops on IdP failure; the interceptor falls through to the SPA when `?error=…` or `?oidc_code=…` are present. Silent no-op when other methods are also live. Pair with the RP-initiated logout setup below so users on shared computers can actually log out. |
 
 Unknown tokens are logged-and-skipped at startup so a typo doesn't silently zero the vector.
+
+## RP-initiated OIDC logout
+
+When a session was minted through OIDC, `POST /api/auth/logout` returns a JSON body containing `post_logout_url`. The SPA reads this and navigates the browser there via `window.location.replace(url)` — the IdP kills its SSO cookie and redirects the browser back to `<oxicloud>/login`. Without this hop the IdP session stays alive: the very next `/login` visit would silently re-authenticate through the still-valid SSO cookie, which under `auto_redirect_if_standalone_oidc` looks like the logout button did nothing (shared-computer scenario).
+
+Requirements:
+
+- **IdP discovery must advertise `end_session_endpoint`** (OIDC Session Management 1.0). Keycloak does by default. If your IdP doesn't, `post_logout_url` is omitted and the SPA falls back to a local-only logout; the IdP session ends only when it naturally times out.
+- **The OIDC client must register `<oxicloud-base-url>/login` as a valid post-logout redirect URI.** Keycloak calls this field "Valid post logout redirect URIs" on the client's Settings tab. If it's missing, the IdP shows its own error page after logging out instead of returning the user to OxiCloud.
+- Backend uses `AppConfig::base_url()` (i.e. `OXICLOUD_BASE_URL` if set, else derived from `server_host` / `server_port`) to build the redirect URI. Set `OXICLOUD_BASE_URL` when the browser reaches OxiCloud through a URL different from what the server binds locally (reverse proxy, Docker, TLS-terminating LB).
+
+The `id_token` used as `id_token_hint` is captured at login time from the OIDC token-exchange response and persisted on `auth.sessions.oidc_id_token`. Non-OIDC sessions leave the column NULL and `POST /api/auth/logout` returns `{}` (local-only logout).
 
 ## Example Flows
 

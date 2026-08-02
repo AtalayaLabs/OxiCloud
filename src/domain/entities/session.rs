@@ -14,6 +14,10 @@ pub struct Session {
     /// Groups all tokens issued from the same original login.
     /// Replaying a revoked token from this family triggers full-family revocation.
     family_id: Uuid,
+    /// ID token from the OIDC login exchange. Used as `id_token_hint` on the
+    /// RP-initiated logout URL so the IdP can terminate its own SSO session.
+    /// `None` for password / magic-link sessions.
+    oidc_id_token: Option<String>,
 }
 
 impl Session {
@@ -40,7 +44,16 @@ impl Session {
             created_at: now,
             revoked: false,
             family_id,
+            oidc_id_token: None,
         }
+    }
+
+    /// Attach an OIDC ID token — call on sessions minted via the OIDC exchange.
+    /// The token is persisted with the session and re-emitted at logout as
+    /// `id_token_hint` so the IdP can end its own SSO session.
+    pub fn with_oidc_id_token(mut self, id_token: String) -> Self {
+        self.oidc_id_token = Some(id_token);
+        self
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -54,6 +67,7 @@ impl Session {
         created_at: DateTime<Utc>,
         revoked: bool,
         family_id: Uuid,
+        oidc_id_token: Option<String>,
     ) -> Self {
         Self {
             id,
@@ -65,6 +79,7 @@ impl Session {
             created_at,
             revoked,
             family_id,
+            oidc_id_token,
         }
     }
 
@@ -111,5 +126,9 @@ impl Session {
 
     pub fn family_id(&self) -> Uuid {
         self.family_id
+    }
+
+    pub fn oidc_id_token(&self) -> Option<&str> {
+        self.oidc_id_token.as_deref()
     }
 }

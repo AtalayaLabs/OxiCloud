@@ -488,10 +488,25 @@
 	}
 
 	async function onLogout() {
+		let postLogoutUrl: string | undefined;
 		try {
-			await logout();
+			({ postLogoutUrl } = await logout());
 		} catch {
 			/* clear locally regardless */
+		}
+		if (postLogoutUrl) {
+			// Full-page navigation to the IdP end-session endpoint. Do NOT
+			// touch local session state first: `session.reset()` fires the
+			// layout $effect guard which races us with a competing
+			// `goto('/login?redirect=...')`, and any ambient in-flight
+			// fetch that 401s trips the sessionExpiredHandler with yet
+			// another navigation to `/login?source=session_expired`. Two
+			// or three concurrent navigations cancel each other and the
+			// browser stalls on the current page. The IdP round-trip lands
+			// us back on `/login` where the SPA reboots fresh from scratch —
+			// no local cleanup needed here.
+			window.location.replace(postLogoutUrl);
+			return;
 		}
 		session.reset();
 		await goto(resolve('/login'));

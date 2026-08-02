@@ -1233,7 +1233,27 @@ impl AuthApplicationService {
         })
     }
 
-    pub async fn logout(&self, user_id: Uuid, refresh_token: &str) -> Result<(), DomainError> {
+    /// Revoke the caller's session and, when the session was minted through
+    /// OIDC, build the RP-initiated logout URL so the browser can also end
+    /// the IdP's SSO session (fixes shared-computer scenario where local
+    /// logout alone would let the next `/login` visit silently re-auth
+    /// through a still-valid IdP cookie).
+    ///
+    /// Returns `Ok(None)` for:
+    /// - non-OIDC sessions (password / magic-link) — nothing to propagate;
+    /// - OIDC sessions where the IdP's discovery doesn't advertise an
+    ///   `end_session_endpoint` — no way to propagate. Callers should still
+    ///   clear local cookies; the IdP session will time out on its own.
+    ///
+    /// `post_logout_redirect_uri` MUST be registered on the OIDC client
+    /// (Keycloak: "Valid post logout redirect URIs"), else the IdP refuses
+    /// the redirect back and the user is left on the IdP error page.
+    pub async fn logout(
+        &self,
+        user_id: Uuid,
+        refresh_token: &str,
+        post_logout_redirect_uri: &str,
+    ) -> Result<Option<String>, DomainError> {
         // Get session
         let session = match self
             .session_storage
@@ -1242,7 +1262,7 @@ impl AuthApplicationService {
         {
             Ok(s) => s,
             // If the session doesn't exist, we consider the logout successful
-            Err(_) => return Ok(()),
+            Err(_) => return Ok(None),
         };
 
         // Verify that the session belongs to the user
@@ -1253,6 +1273,12 @@ impl AuthApplicationService {
                 "The session does not belong to the user",
             ));
         }
+
+        // Capture the id_token BEFORE revocation so we can build the
+        // RP-initiated logout URL. Revocation only flips a boolean, so the
+        // row (and its oidc_id_token column) survives — this order is
+        // defensive against a future change that hard-deletes on revoke.
+        let id_token_hint = session.oidc_id_token().map(str::to_string);
 
         // Revoke session
         self.session_storage.revoke_session(session.id()).await?;
@@ -1266,7 +1292,18 @@ impl AuthApplicationService {
             lc.dispatch_logout(user, LogoutReason::UserInitiated);
         }
 
-        Ok(())
+        // If this was an OIDC session AND the IdP advertises an
+        // end_session_endpoint, build the RP-initiated logout URL.
+        // Otherwise return None — the caller clears local state either way.
+        let Some(id_token) = id_token_hint else {
+            return Ok(None);
+        };
+        let oidc = { self.oidc.read().unwrap().service.clone() };
+        let Some(oidc) = oidc else {
+            return Ok(None);
+        };
+        oidc.build_end_session_url(&id_token, post_logout_redirect_uri)
+            .await
     }
 
     pub async fn logout_all(&self, user_id: Uuid) -> Result<u64, DomainError> {
@@ -3036,7 +3073,8 @@ impl AuthApplicationService {
             None,
             self.token_service.refresh_token_expiry_days(),
             Uuid::new_v4(),
-        );
+        )
+        .with_oidc_id_token(token_set.id_token.clone());
         self.session_storage.create_session(session).await?;
 
         let auth_response = AuthResponseDto {

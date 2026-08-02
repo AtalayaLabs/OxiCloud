@@ -52,9 +52,10 @@ impl SessionRepository for SessionPgRepository {
                     r#"
                         INSERT INTO auth.sessions (
                             id, user_id, refresh_token, expires_at,
-                            ip_address, user_agent, created_at, revoked, family_id
+                            ip_address, user_agent, created_at, revoked, family_id,
+                            oidc_id_token
                         ) VALUES (
-                            $1, $2, $3, $4, $5, $6, $7, $8, $9
+                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
                         )
                         "#,
                 )
@@ -67,6 +68,7 @@ impl SessionRepository for SessionPgRepository {
                 .bind(session_clone.created_at())
                 .bind(session_clone.is_revoked())
                 .bind(session_clone.family_id())
+                .bind(session_clone.oidc_id_token())
                 .execute(&mut **tx)
                 .await
                 .map_err(Self::map_sqlx_error)?;
@@ -111,7 +113,8 @@ impl SessionRepository for SessionPgRepository {
             r#"
             SELECT
                 id, user_id, refresh_token, expires_at,
-                ip_address, user_agent, created_at, revoked, family_id
+                ip_address, user_agent, created_at, revoked, family_id,
+                oidc_id_token
             FROM auth.sessions
             WHERE id = $1
             "#,
@@ -131,6 +134,7 @@ impl SessionRepository for SessionPgRepository {
             row.get("created_at"),
             row.get("revoked"),
             row.get("family_id"),
+            row.get("oidc_id_token"),
         ))
     }
 
@@ -144,7 +148,8 @@ impl SessionRepository for SessionPgRepository {
             r#"
             SELECT
                 id, user_id, refresh_token, expires_at,
-                ip_address, user_agent, created_at, revoked, family_id
+                ip_address, user_agent, created_at, revoked, family_id,
+                oidc_id_token
             FROM auth.sessions
             WHERE refresh_token = $1
             "#,
@@ -164,6 +169,7 @@ impl SessionRepository for SessionPgRepository {
             row.get("created_at"),
             row.get("revoked"),
             row.get("family_id"),
+            row.get("oidc_id_token"),
         ))
     }
 
@@ -176,7 +182,8 @@ impl SessionRepository for SessionPgRepository {
             r#"
             SELECT
                 id, user_id, refresh_token, expires_at,
-                ip_address, user_agent, created_at, revoked, family_id
+                ip_address, user_agent, created_at, revoked, family_id,
+                oidc_id_token
             FROM auth.sessions
             WHERE user_id = $1
             ORDER BY created_at DESC
@@ -200,6 +207,7 @@ impl SessionRepository for SessionPgRepository {
                     row.get("created_at"),
                     row.get("revoked"),
                     row.get("family_id"),
+                    row.get("oidc_id_token"),
                 )
             })
             .collect();
@@ -348,9 +356,10 @@ impl SessionStoragePort for SessionPgRepository {
                     r#"
                         INSERT INTO auth.sessions (
                             id, user_id, refresh_token, expires_at,
-                            ip_address, user_agent, created_at, revoked, family_id
+                            ip_address, user_agent, created_at, revoked, family_id,
+                            oidc_id_token
                         ) VALUES (
-                            $1, $2, $3, $4, $5, $6, $7, $8, $9
+                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
                         )
                         "#,
                 )
@@ -363,6 +372,7 @@ impl SessionStoragePort for SessionPgRepository {
                 .bind(session_clone.created_at())
                 .bind(session_clone.is_revoked())
                 .bind(session_clone.family_id())
+                .bind(session_clone.oidc_id_token())
                 .execute(&mut **tx)
                 .await
                 .map_err(Self::map_sqlx_error)?;

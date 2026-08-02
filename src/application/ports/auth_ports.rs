@@ -287,6 +287,22 @@ pub trait OidcServicePort: Send + Sync + 'static {
 
     /// Get the OIDC provider display name
     fn provider_name(&self) -> &str;
+
+    /// Build an RP-initiated logout URL (OIDC Session Management 1.0).
+    ///
+    /// Returns `Ok(None)` when the IdP's discovery document does not advertise
+    /// an `end_session_endpoint` — some providers don't support RP-initiated
+    /// logout, in which case the caller falls back to a local-only logout.
+    ///
+    /// `id_token_hint` is required by most IdPs (Keycloak in particular
+    /// rejects the request without it) so the server can identify the session
+    /// to terminate. `post_logout_redirect_uri` must be one of the URIs
+    /// registered on the OIDC client, else the IdP refuses the redirect.
+    async fn build_end_session_url(
+        &self,
+        id_token_hint: &str,
+        post_logout_redirect_uri: &str,
+    ) -> Result<Option<String>, DomainError>;
 }
 
 pub trait SessionStoragePort: Send + Sync + 'static {

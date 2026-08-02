@@ -858,13 +858,22 @@ pub async fn logout(
             AppError::unauthorized("Refresh token required for logout (JSON body or cookie)")
         })?;
 
-    auth_service
+    // Post-logout redirect URI = OxiCloud's `/login`. Must be registered on
+    // the OIDC client (Keycloak: "Valid post logout redirect URIs"), else
+    // the IdP will refuse the redirect and strand the user on its error page.
+    let post_logout_redirect_uri = format!("{}/login", state.core.config.base_url());
+
+    let post_logout_url = auth_service
         .auth_application_service
-        .logout(user_id, &refresh_token)
+        .logout(user_id, &refresh_token, &post_logout_redirect_uri)
         .await?;
 
     // Clear HttpOnly + CSRF cookies so the browser forgets the session
-    let mut response = StatusCode::OK.into_response();
+    // regardless of whether we also redirect to the IdP.
+    let body = post_logout_url
+        .map(|url| serde_json::json!({ "post_logout_url": url }))
+        .unwrap_or_else(|| serde_json::json!({}));
+    let mut response = (StatusCode::OK, axum::Json(body)).into_response();
     cookie_auth::append_clear_cookies(response.headers_mut());
     cookie_auth::append_clear_csrf_cookie(response.headers_mut());
     Ok(response)

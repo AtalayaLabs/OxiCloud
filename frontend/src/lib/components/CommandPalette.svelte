@@ -165,10 +165,17 @@
 				icon: 'sign-out-alt',
 				run: async () => {
 					close();
+					let postLogoutUrl: string | undefined;
 					try {
-						await logout();
+						({ postLogoutUrl } = await logout());
 					} catch {
 						/* clear locally regardless */
+					}
+					if (postLogoutUrl) {
+						// See AppShell::onLogout — `session.reset()` before this
+						// races the layout $effect guard and the 401 handler.
+						window.location.replace(postLogoutUrl);
+						return;
 					}
 					session.reset();
 					await goto(resolve('/login'));

@@ -258,11 +258,30 @@ export async function sendMagicLink(email: string): Promise<MagicLinkResult> {
 	return 'sent';
 }
 
-export async function logout(): Promise<void> {
-	await apiFetch('/api/auth/logout', {
+export interface LogoutResult {
+	/**
+	 * RP-initiated OIDC logout URL, present only when the session was minted
+	 * through OIDC AND the IdP advertises an `end_session_endpoint`. The
+	 * caller MUST navigate there via `window.location` (not `goto()`) so the
+	 * browser leaves the SPA and hits the IdP; the IdP kills its SSO cookie
+	 * and redirects back to `/login`. Without this hop the IdP session stays
+	 * alive and the next `/login` visit would silently re-authenticate.
+	 */
+	postLogoutUrl?: string;
+}
+
+export async function logout(): Promise<LogoutResult> {
+	const res = await apiFetch('/api/auth/logout', {
 		method: 'POST',
 		credentials: 'same-origin',
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: '{}'
 	});
+	if (!res.ok) return {};
+	try {
+		const body = (await res.json()) as { post_logout_url?: unknown };
+		return typeof body?.post_logout_url === 'string' ? { postLogoutUrl: body.post_logout_url } : {};
+	} catch {
+		return {};
+	}
 }

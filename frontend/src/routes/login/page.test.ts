@@ -198,14 +198,23 @@ it('renders an SSO sign-in link when an OIDC provider is configured', async () =
 	expect(sso.getAttribute('href')).toBe('https://idp.test/auth');
 });
 
-it('auto-redirects to the IdP when OIDC is the only login method', async () => {
+// Auto-redirect on standalone OIDC is enforced server-side via the
+// `auto_redirect_if_standalone_oidc` policy (see
+// src/interfaces/web/mod.rs::oidc_standalone_login_redirect). The SPA no
+// longer contains a client-side copy — a duplicate would override the admin's
+// policy choice. We keep this test asserting the *negative* to lock in
+// "SPA renders the click-to-continue button, no window.location.replace".
+it('does not client-side auto-redirect when OIDC is the only login method', async () => {
 	m(auth.getOidcProviders).mockResolvedValue({
 		enabled: true,
 		password_login_enabled: false,
 		authorize_endpoint: '/api/auth/oidc/authorize'
 	});
 	render(LoginPage);
-	await waitFor(() => expect(replaceSpy).toHaveBeenCalledWith('/api/auth/oidc/authorize'));
+	// Give onMount time to finish its probes; the SSO button must appear
+	// and `window.location.replace` must NOT have been called.
+	await screen.findByTestId('login-oidc-btn');
+	expect(replaceSpy).not.toHaveBeenCalled();
 });
 
 it('does not auto-redirect when password login is also enabled', async () => {
