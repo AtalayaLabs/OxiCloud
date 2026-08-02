@@ -787,6 +787,68 @@ impl StorageMigrationService {
         failed: u64,
         source_missing: u64,
     ) -> RunOutcome {
+        // ── Failure gate ───────────────────────────────────────────
+        // Refuse to flip the active backend if ANY blob failed to
+        // migrate. Flipping to a partial target strands live traffic
+        // on incomplete data — reads for the missing hashes would
+        // 404. Findings are already recorded per-blob in the batch
+        // loop; operator inspects, then either:
+        //   - retries (walk short-circuits on already-present blobs,
+        //     so the retry costs only the failed ones), OR
+        //   - fixes the source, retries, OR
+        //   - accepts the loss and manually flips via
+        //     `oxicloud --select-storage <target>`.
+        //
+        // Readonly is cleared either way — the source is still the
+        // active backend, and users shouldn't be locked out because
+        // of a partial run. Progress snapshot cleared too so the
+        // header middleware stops emitting.
+        if failed > 0 {
+            let readonly_persisted = persist_migration_readonly(self.pool.as_ref(), false)
+                .await
+                .is_ok();
+            self.migration_readonly.store(false, Ordering::Relaxed);
+            {
+                let mut guard = self
+                    .migration_progress
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                *guard = None;
+            }
+            if !readonly_persisted {
+                tracing::warn!(
+                    target: "oxicloud::migration",
+                    event = "storage_migration.readonly_clear_persist_failed",
+                    run_id = %store.run_id(),
+                    "cleared migration_readonly in memory (writes allowed against source) but the \
+                     DB persist failed. Boot-clear rule will fix on next restart."
+                );
+            }
+            tracing::info!(
+                target: "audit",
+                event = "storage_migration.aborted",
+                reason = "blobs_failed",
+                run_id = %store.run_id(),
+                active_backend_name = previous_active,
+                target_name = target_name,
+                copied = copied,
+                skipped = skipped,
+                failed = failed,
+                source_missing = source_missing,
+                "🛑 storage_migration aborted — {failed} blob(s) failed, active backend left at \
+                 `{previous_active}`, readonly cleared. Inspect findings and retry, or accept \
+                 the partial migration via `oxicloud --select-storage {target_name}`."
+            );
+            return RunOutcome::Failed {
+                message: format!(
+                    "{failed} blob(s) failed to migrate — active backend NOT switched \
+                     (still `{previous_active}`). Retry the run (short-circuits on already-copied \
+                     blobs) or accept the partial migration manually via \
+                     `oxicloud --select-storage {target_name}`."
+                ),
+            };
+        }
+
         // 1. DB pointer.
         if let Err(e) = persist_active_backend_name(self.pool.as_ref(), target_name).await {
             return RunOutcome::Failed {
