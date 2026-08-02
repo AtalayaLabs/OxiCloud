@@ -213,7 +213,7 @@ if permission.is_write() && self.migration_readonly.load(Ordering::Relaxed) {
 - **Reads are unaffected**. Users can still browse and download during
   migration.
 - **Boot-time clearing**: if boot detects `migration_readonly=true` AND no
-  in-flight `storage_migration` row (no `Running`/`Paused`) AND
+  in-flight `backend_migration` row (no `Running`/`Paused`) AND
   `active_backend_name` matches the entry the app booted onto → assume
   successful cutover completed on prior boot, clear the flag. Otherwise leave
   it set; admin knows they still need to finish something.
@@ -230,7 +230,7 @@ if permission.is_write() && self.migration_readonly.load(Ordering::Relaxed) {
      strings — but the identity check still runs as a second-line defence
      against the encryption-in-place case)
    - Write admin_settings.storage.migration_readonly = true
-   - Trigger `storage_migration` recoverable job with
+   - Trigger `backend_migration` recoverable job with
      params = { source_name: "local_main", target_name: "s3_prod" }
 
 3. Migration runs — target resolved fresh each batch by NAME lookup, so
@@ -473,5 +473,5 @@ Per slice, plus these end-to-end scenarios in Hurl:
   `PgAclEngine::check_inner` is where write-permission short-circuits live;
   the new global read-only clause lands next to the per-drive one.
 - `docs/plan/job-registry.md` Part 2 — recoverable-run engine that
-  `storage_migration` runs on; `params` field, resume semantics, boot
+  `backend_migration` runs on; `params` field, resume semantics, boot
   sweep.

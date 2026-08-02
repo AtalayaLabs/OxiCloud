@@ -259,7 +259,7 @@ pub struct StorageEntrySummaryDto {
     ///   - See which pairs are configured + their SSH-style
     ///     fingerprints without inspecting `.env`.
     ///   - Cross-reference the head pair against the `head_key_fp`
-    ///     from the last `storage_rotate` completion — if they
+    ///     from the last `backend_rotate` completion — if they
     ///     match AND `failed = 0`, every on-disk blob is under the
     ///     head, and non-head pairs are safe to remove.
     #[serde(default)]

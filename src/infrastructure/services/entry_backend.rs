@@ -201,7 +201,7 @@ pub async fn resolve_active_entry<'a>(
 ///
 /// Same construction path as `build_entry_backend`; the trait-object
 /// version delegates through this. Preferred for job handlers
-/// (`storage_rotate`) that need typed access. The trait-object
+/// (`backend_rotate`) that need typed access. The trait-object
 /// version stays for the DI hot-path where the caller only needs
 /// the generic `BlobStorageBackend` contract.
 pub fn build_entry_backend_typed(

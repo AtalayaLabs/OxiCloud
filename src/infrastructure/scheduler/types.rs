@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Semantics of `storage`, per job (added for the multi-entry storage
 /// design — see `docs/plan/storage-multi-entry.md`):
-/// - `storage_migration` — the NAME of the target storage entry to
+/// - `backend_migration` — the NAME of the target storage entry to
 ///   copy blobs INTO. Required on a Fresh run (handler refuses
 ///   without it); ignored on a Resumed run (target read from the
 ///   persisted `params.target_name`).

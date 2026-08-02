@@ -173,8 +173,8 @@ impl BlobStorageBackend for AzureBlobBackend {
         })
     }
 
-    /// Atomic overwrite path used by `storage_rotate` and
-    /// `storage_migration` when re-writing an already-present blob
+    /// Atomic overwrite path used by `backend_rotate` and
+    /// `backend_migration` when re-writing an already-present blob
     /// under a new head key/format. Trait default delegates to
     /// `put_blob_from_bytes` which `get_properties`-probes and
     /// silently skips — exactly wrong for the rotate/migrate use

@@ -11,11 +11,11 @@
 	 *
 	 * Rendered inside `AppShell` above `{children}` when the
 	 * `x-server-status` header says the whole server is in read-only
-	 * mode — typically during a `storage_migration` cutover.
+	 * mode — typically during a `backend_migration` cutover.
 	 *
 	 * ## `variant="rotating"` — background key rotation
 	 *
-	 * K4 storage-key-rotation. `storage_rotate` walks blobs in place;
+	 * K4 storage-key-rotation. `backend_rotate` walks blobs in place;
 	 * writes/reads continue normally throughout. Copy makes it clear
 	 * this is a background maintenance banner, not a freeze — the app
 	 * is fully usable.

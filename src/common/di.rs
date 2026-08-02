@@ -2245,7 +2245,7 @@ impl AppServiceFactory {
                 dyn crate::infrastructure::scheduler::JobStoreProvider,
             > = app_state.core.job_store_provider.clone();
             let _ = Arc::new(
-                crate::infrastructure::services::storage_migration_service::StorageMigrationService::new(
+                crate::infrastructure::services::backend_migration_service::BackendMigrationService::new(
                     app_state
                         .maintenance_pool
                         .clone()
@@ -2262,13 +2262,13 @@ impl AppServiceFactory {
             .register_recoverable_job(&app_state.core.job_registry, &job_store_provider_dyn)
             .await;
 
-            // K3: `storage_rotate` recoverable-job tenant. Same
-            // pattern as `storage_migration` but without the
+            // K3: `backend_rotate` recoverable-job tenant. Same
+            // pattern as `backend_migration` but without the
             // cutover/readonly plumbing — rotation writes in place on
             // whichever entry the trigger endpoint names. Target name
             // comes from `params.target_name` per run.
             let _ = Arc::new(
-                crate::infrastructure::services::storage_rotate_service::StorageRotateService::new(
+                crate::infrastructure::services::backend_rotate_service::BackendRotateService::new(
                     app_state
                         .maintenance_pool
                         .clone()
@@ -2477,7 +2477,7 @@ impl AppServiceFactory {
         // Migration-readonly boot-clear rule. See
         // `docs/plan/storage-multi-entry.md` §"Read-only mode".
         //
-        // If the flag was set true at boot AND no storage_migration
+        // If the flag was set true at boot AND no backend_migration
         // run is currently non-terminal AND active_backend_name
         // matches the entry the app actually booted onto — that means
         // the cutover completed on a prior boot (the run reached
@@ -2495,11 +2495,11 @@ impl AppServiceFactory {
             .migration_readonly
             .load(std::sync::atomic::Ordering::Relaxed)
         {
-            use crate::infrastructure::services::storage_migration_service::STORAGE_MIGRATION_JOB_NAME;
+            use crate::infrastructure::services::backend_migration_service::BACKEND_MIGRATION_JOB_NAME;
             let has_in_flight = match app_state
                 .core
                 .job_store_provider
-                .list_runs(STORAGE_MIGRATION_JOB_NAME, 5)
+                .list_runs(BACKEND_MIGRATION_JOB_NAME, 5)
                 .await
             {
                 Ok(runs) => runs.iter().any(|r| {
@@ -2515,7 +2515,7 @@ impl AppServiceFactory {
                         target: "oxicloud::scheduler",
                         event = "storage.migration_readonly.clear_check_failed",
                         error = %e,
-                        "failed to list storage_migration runs during readonly-clear check; \
+                        "failed to list backend_migration runs during readonly-clear check; \
                          leaving migration_readonly flag as-is"
                     );
                     // Play it safe: assume in-flight to avoid clearing prematurely.
@@ -2816,7 +2816,7 @@ pub struct AppState {
     /// polling. See `MigrationProgress` for the field shape.
     pub migration_progress: Arc<std::sync::RwLock<Option<crate::common::migration_progress::MigrationProgress>>>,
     /// Live progress snapshot for the storage-rotate handler
-    /// (`storage_rotate` — K3 of the storage-key-rotation plan).
+    /// (`backend_rotate` — K3 of the storage-key-rotation plan).
     /// `Some(_)` while a rotation is running; `None` otherwise.
     /// Held separately from `migration_progress` so the
     /// server-status header can broadcast the two states

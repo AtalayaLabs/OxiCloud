@@ -172,7 +172,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // One-shot helper: compute the SSH-style colon-hex
                 // fingerprint of a base64-encoded AES-256 key and
                 // print to stdout. Same truncation used by the v1
-                // header's `<key_fp>` field + the `storage_rotate`
+                // header's `<key_fp>` field + the `backend_rotate`
                 // completion summary — so an admin can:
                 //   1. Look at the `head_key_fp` reported by the
                 //      last rotate run.
@@ -297,7 +297,7 @@ fn print_help() {
     println!("  oxicloud --fingerprint <base64key|->    One-shot helper — print the SSH-style");
     println!("                                          fingerprint of a base64 AES-256 key.");
     println!("                                          Same shape used by the v1 blob header");
-    println!("                                          + `storage_rotate` completion summary.");
+    println!("                                          + `backend_rotate` completion summary.");
     println!("                                          Read stdin with `-` to keep keys out");
     println!("                                          of shell history.");
     println!();
@@ -327,7 +327,7 @@ fn print_help() {
     println!("  --fingerprint <base64key | ->");
     println!("      Compute the SSH-style colon-hex fingerprint (16-hex, 8-byte");
     println!("      truncation of sha256) of a base64-encoded AES-256 key. Matches the");
-    println!("      `head_key_fp` field the `storage_rotate` job reports on completion,");
+    println!("      `head_key_fp` field the `backend_rotate` job reports on completion,");
     println!("      and the raw <key_fp> field embedded in every v1 blob header. Used");
     println!("      to identify which key in `OXICLOUD_STORAGE_<N>_ENCRYPTION_KEY`");
     println!("      corresponds to the current on-disk head — safe to drop any key");

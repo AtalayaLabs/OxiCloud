@@ -142,7 +142,7 @@ pub struct EncryptedBlobBackend {
     /// * `read_dispatch` legacy-fallback path — iterates in order
     ///   (oldest → newest) to try every real-cipher pair when a
     ///   legacy blob's head-key decrypt fails.
-    /// * K3 `storage_rotate` — needs to walk pair indices.
+    /// * K3 `backend_rotate` — needs to walk pair indices.
     pairs: Vec<KeyPair>,
     /// `<key_fp>` → per-pair cipher, for O(1) read dispatch on v1
     /// blobs. Excludes any `none:` pair (nothing to build). Cloned
@@ -218,7 +218,7 @@ impl EncryptedBlobBackend {
         key
     }
 
-    /// The format `storage_rotate` should normalise every blob TO —
+    /// The format `backend_rotate` should normalise every blob TO —
     /// derived from the wrapper's head pair. When
     /// `head_cipher.is_some()` we're writing encrypted-v1 with the
     /// head pair's `key_fp`; when it's `None` we're writing
@@ -237,8 +237,8 @@ impl EncryptedBlobBackend {
         }
     }
 
-    /// Smart-skip probe used by `storage_migration` (and potentially
-    /// `storage_rotate` if it ever gains a fast-path). Reads the
+    /// Smart-skip probe used by `backend_migration` (and potentially
+    /// `backend_rotate` if it ever gains a fast-path). Reads the
     /// first [`HEADER_SIZE`] bytes of the on-disk blob and returns
     /// `true` iff:
     ///
@@ -280,7 +280,7 @@ impl EncryptedBlobBackend {
     }
 
     /// Fetch, classify, and decrypt a blob in one round-trip. Used by
-    /// K3's `storage_rotate` per-blob step: it needs both the
+    /// K3's `backend_rotate` per-blob step: it needs both the
     /// plaintext (to re-encrypt under the head pair) AND the current
     /// on-disk format (to decide whether a rewrite is needed at all).
     ///
@@ -317,7 +317,7 @@ impl EncryptedBlobBackend {
 }
 
 /// Classification of a raw blob's on-disk format. Exposed for K3's
-/// `storage_rotate` decision tree; not used on the hot request path.
+/// `backend_rotate` decision tree; not used on the hot request path.
 ///
 /// PartialEq is derived so `current == head_format` collapses the
 /// plan's six-case decision tree into a single equality check:
@@ -541,7 +541,7 @@ fn read_dispatch(
                     hash = %expected_hash,
                     size = encrypted.len(),
                     "🩹 legacy plaintext blob served via BLAKE3 rescue — no configured key \
-                     decrypted it, but content hash matched. Run storage_rotate to re-write \
+                     decrypted it, but content hash matched. Run backend_rotate to re-write \
                      under the current head."
                 );
                 return Ok(Bytes::from(encrypted));
@@ -737,7 +737,7 @@ impl BlobStorageBackend for EncryptedBlobBackend {
 
     /// Frame the plaintext with the head pair's format (encrypted-v1
     /// or plaintext-v1), then delegate the atomic replace to the
-    /// inner backend. Used by `storage_rotate` to actually change the
+    /// inner backend. Used by `backend_rotate` to actually change the
     /// on-disk bytes — `put_blob_from_bytes` would silently no-op on
     /// `LocalBlobBackend` when the object key already exists.
     fn put_blob_from_bytes_replace(
@@ -1373,7 +1373,7 @@ mod tests {
     // ─────────────────────────────────────────────────────────────
     // K3 tests — BlobFormat classifier + head_format + read_and_classify.
     //
-    // These pin the format-inspection contract that `storage_rotate`
+    // These pin the format-inspection contract that `backend_rotate`
     // depends on. The rotate job's per-blob decision tree collapses
     // to `current != head_format ? rewrite : skip`, so any drift in
     // either helper would silently change rotation semantics.

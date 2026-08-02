@@ -159,7 +159,7 @@ Properties this buys us:
   format-conversion work.
 * **Lazy conversion on hot paths.** Any COW overwrite (WebDAV MOVE, PUT-over,
   content-hash re-upload) naturally lands as v1 at the same object key.
-* **Explicit conversion via `storage_rotate`.** The rotate job walks
+* **Explicit conversion via `backend_rotate`.** The rotate job walks
   `storage.blobs`, reads each blob via the magic-byte dispatch, and if the
   blob is not already v1 with the head-pair key, PUTs it back as v1 with
   the head pair — in place, same object key.
@@ -186,7 +186,7 @@ Guardrail:
   whatever consistency scan cadence the deployment has (weekly by default; on
   demand from the admin panel).
 * The *"Rotation complete — safe to remove the old key"* hint appears in the
-  entry card only when the last `storage_rotate` run completed with zero
+  entry card only when the last `backend_rotate` run completed with zero
   findings AND the most recent consistency scan reported zero legacy blobs.
 * Nothing enforces removal at code level — the admin is trusted, given a
   clear signal, and warned.
@@ -226,11 +226,11 @@ disk pre-date the v1-code deployment.
 
 ### The rotation job
 
-New `RecoverableJobHandler` tenant, `storage_rotate`. Mirrors
-`storage_migration`'s shape:
+New `RecoverableJobHandler` tenant, `backend_rotate`. Mirrors
+`backend_migration`'s shape:
 
 * **Iterates `storage.blobs`** in hash-lex order. Cursor is the last-processed
-  hash (64 hex chars). Same cursor encoding as `storage_migration` and
+  hash (64 hex chars). Same cursor encoding as `backend_migration` and
   `blobs_consistency`.
 * **Per blob:**
   1. Fetch `<hash>.blob` and dispatch via the standard read path.
@@ -256,7 +256,7 @@ New `RecoverableJobHandler` tenant, `storage_rotate`. Mirrors
   * The v1 write is atomic at object-storage level (S3 replace, Local
     rename-into-place). A concurrent reader sees either state.
   * No readonly mode. This is a critical improvement over
-    `storage_migration`: rotation is per-blob idempotent, so we don't need
+    `backend_migration`: rotation is per-blob idempotent, so we don't need
     to freeze writes.
 * **Restart-survivable** — same boot-time sweep as every other recoverable
   handler.
@@ -274,7 +274,7 @@ Preconditions:
   `OXICLOUD_STORAGE_<name>_ENCRYPTION_KEY` first, or wait for legacy blobs to
   accumulate — nothing to rotate right now."*
 
-Clicking the button dispatches the `storage_rotate` job for that entry. The
+Clicking the button dispatches the `backend_rotate` job for that entry. The
 job's progress rides on the same `X-Server-Status` header infrastructure the
 maintenance banner uses — but this time WITHOUT engaging read-only mode.
 Banner variant reads *"Rotating encryption key on `<entry>` — X% (Y / Z
@@ -285,7 +285,7 @@ The entry card shows a **legacy-blob counter** sourced from the most recent
 next rotation)"*. Refresh-on-demand button next to it triggers a targeted
 `blobs_consistency` scan (already available via the admin surface). The
 *"Rotation complete — safe to remove the old key"* hint appears only when
-N = 0 and the last `storage_rotate` run completed with zero findings.
+N = 0 and the last `backend_rotate` run completed with zero findings.
 
 ### Removing the old pair
 
@@ -307,7 +307,7 @@ Zero admin work required. On upgrade:
   key.
 * Existing legacy blobs stay readable via the magic-byte dispatch — the
   legacy read path is preserved verbatim.
-* Admin can optionally trigger a `storage_rotate` run to consolidate every
+* Admin can optionally trigger a `backend_rotate` run to consolidate every
   legacy blob into v1 format. Not required — legacy blobs migrate
   opportunistically via COW overwrites and stay readable indefinitely
   otherwise.
@@ -347,7 +347,7 @@ The user-facing recipe (goes verbatim into `docs/guide/backend-storage.md`):
 2. Add it AFTER `none`:
    OXICLOUD_STORAGE_local_main_ENCRYPTION_KEY=none:,aes-256-gcm:<K>
 3. Restart. New uploads are encrypted; existing plaintext blobs stay readable.
-4. Run `storage_rotate` to encrypt existing blobs in place.
+4. Run `backend_rotate` to encrypt existing blobs in place.
 5. Remove `none:` from the list; restart.
 ```
 
@@ -357,7 +357,7 @@ The user-facing recipe (goes verbatim into `docs/guide/backend-storage.md`):
 1. Add `none:` AFTER the current encryption key:
    OXICLOUD_STORAGE_local_main_ENCRYPTION_KEY=aes-256-gcm:<K>,none:
 2. Restart. New uploads are plaintext; existing encrypted blobs stay readable.
-3. Run `storage_rotate` to decrypt existing blobs in place.
+3. Run `backend_rotate` to decrypt existing blobs in place.
 4. Remove the key pair, keep `none:` only (or drop `_ENCRYPTION_KEY` entirely);
    restart.
 ```
@@ -395,7 +395,7 @@ modules within source files").
   never silent misread. Keeps the "collisions can't silently corrupt" claim
   in the plan honest.
 * **Rotation decision tree.** Unit tests on the per-blob `decide()` helper of
-  `storage_rotate_service.rs`. All six cases from *The rotation job* section
+  `backend_rotate_service.rs`. All six cases from *The rotation job* section
   as separate tests with clear names (`legacy_upgrades_to_v1`,
   `v1_encrypted_under_head_skips`,
   `v1_encrypted_under_older_pair_rewrites`,
@@ -403,13 +403,13 @@ modules within source files").
   `v1_plaintext_encrypts_when_head_is_cipher`,
   `v1_encrypted_decrypts_when_head_is_none`).
 * **Recoverable-job round-trip.** Integration test in
-  `storage_rotate_service::tests` using the existing recoverable-run harness:
+  `backend_rotate_service::tests` using the existing recoverable-run harness:
   seed N blobs (mix of legacy + v1-under-old-key), trigger rotation, assert
   every blob ends v1-with-head, `format_generation` (if we add it later) or
   the consistency-scan count reports zero legacy remaining, findings=0.
 * **Crash recovery.** Same harness: interrupt mid-run at cursor position K,
   restart, assert resume from K and eventual completion with correct final
-  state. Same discipline `storage_migration` already uses.
+  state. Same discipline `backend_migration` already uses.
 * **Concurrency safety.** Test that a `put_blob` call during a rotation
   targeting the same hash produces exactly one v1 blob at end-state (either
   the rotate's or the concurrent write's — both are head-format so the final
@@ -496,19 +496,19 @@ the legacy-blob count.
 deployment reads existing legacy blobs and writes new v1 blobs at the same
 object-key. `blobs_consistency` reports a legacy-blob count in its run stats.
 
-### Slice K3 — The `storage_rotate` recoverable job
+### Slice K3 — The `backend_rotate` recoverable job
 
 **Scope.** New handler, admin-triggered, iterates blobs, per-blob decision
 tree (legacy → v1 upgrade, v1 with old key → v1 with head key, plaintext ↔
 encrypted where applicable), records findings.
 
-* New file `src/infrastructure/services/storage_rotate_service.rs`.
-* Registered in `JobRegistry` as `storage_rotate`. Runs on the same
+* New file `src/infrastructure/services/backend_rotate_service.rs`.
+* Registered in `JobRegistry` as `backend_rotate`. Runs on the same
   recoverable-runs engine (crash recovery, cursor persistence, pause/resume).
 * Trigger endpoint: `POST /api/admin/storage/entries/{name}/rotate`.
   Requires admin. Refuses if no work would happen (all blobs already at
-  head format + head key). Refuses if a `storage_rotate` or
-  `storage_migration` run is already Active for any entry.
+  head format + head key). Refuses if a `backend_rotate` or
+  `backend_migration` run is already Active for any entry.
 * Per-blob decision tree per *The rotation job* section above. In-place
   atomic replace at the same `<hash>.blob` object key.
 * No readonly mode engaged. `X-Server-Status` header payload gains a
@@ -566,7 +566,7 @@ changes. Reserved slots:
 
 v1 and v2 coexist in the same storage indefinitely — the magic-byte read
 dispatch handles arbitrary versions at position 5-6. Migration between
-generations reuses `storage_rotate`'s pattern: rewrite each blob with the
+generations reuses `backend_rotate`'s pattern: rewrite each blob with the
 new-generation writer, in-place at the same object key.
 
 ## Non-goals
@@ -592,7 +592,7 @@ new-generation writer, in-place at the same object key.
 
 ## Open questions
 
-* **Should we throttle the rotate job?** Same question `storage_migration` had.
+* **Should we throttle the rotate job?** Same question `backend_migration` had.
   Answer: not in v1. If throughput bites, add a `_ROTATE_MAX_MB_PER_SEC` on
   the entry later.
 * **Should rotation be idempotent under repeat trigger?** Yes. Running it a

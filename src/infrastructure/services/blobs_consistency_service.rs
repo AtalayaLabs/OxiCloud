@@ -75,7 +75,7 @@ pub const BLOBS_CONSISTENCY_JOB_NAME: &str = "blobs_consistency";
 
 /// `params` JSONB key under which the entry name being probed is
 /// stashed on a Fresh run (matches `TARGET_NAME_PARAM` on
-/// `storage_migration`). Resumed runs re-read it so a paused audit
+/// `backend_migration`). Resumed runs re-read it so a paused audit
 /// survives restart without the admin re-specifying the target.
 pub const PROBED_STORAGE_PARAM: &str = "probed_storage";
 
@@ -189,7 +189,7 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
         resume_cursor: Option<Vec<u8>>,
     ) -> RunOutcome {
         // Resolve the backend to probe. Two paths, mirroring the
-        // Fresh/Resumed split the storage_migration handler uses:
+        // Fresh/Resumed split the backend_migration handler uses:
         //
         // * Fresh + args.storage=Some — probe that named entry
         //   instead of the live backend. Stamp probed_storage in

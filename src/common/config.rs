@@ -510,7 +510,7 @@ impl KeyPair {
     /// SSH-style colon-hex fingerprint of the key material — 8 bytes
     /// of SHA-256 truncation rendered as `xx:yy:zz:...`. Same
     /// truncation as the v1 header's `<key_fp>` field and the
-    /// `head_key_fp` reported by `storage_rotate` on completion, so
+    /// `head_key_fp` reported by `backend_rotate` on completion, so
     /// operators can cross-reference the boot log against a rotate
     /// report or the CLI's `oxicloud --fingerprint <base64key>`
     /// output without any format conversion.
@@ -725,7 +725,7 @@ pub fn parse_encryption_pair_list(entry_name: &str, raw: &str) -> Result<Vec<Key
 ///
 /// Used by the `oxicloud --fingerprint <base64>` CLI subcommand so
 /// admins can identify which key in their `.env` corresponds to the
-/// `head_key_fp` a `storage_rotate` run reported on completion —
+/// `head_key_fp` a `backend_rotate` run reported on completion —
 /// see `docs/plan/storage-key-rotation.md`.
 ///
 /// Errors on non-base64 input or on decoded length ≠ 32 bytes (the
@@ -911,7 +911,7 @@ impl NamedStorageEntry {
 
     /// The whole pair list, or an empty slice when the entry is
     /// unencrypted. Used by K2's read path to walk pairs and by
-    /// `storage_rotate` to enumerate legacy pairs. Callers that only
+    /// `backend_rotate` to enumerate legacy pairs. Callers that only
     /// need the write pair should prefer [`Self::head_key_material`].
     pub fn encryption_pairs(&self) -> &[KeyPair] {
         self.encryption.as_deref().unwrap_or(&[])
@@ -3931,7 +3931,7 @@ mod tests {
             // K3.7: display fp switched from 12-char raw hex to
             // SSH-style 8-byte colon-hex (16 hex + 7 colons = 23 chars)
             // so operators can cross-reference against the v1 header's
-            // `<key_fp>` field + `storage_rotate`'s `head_key_fp`
+            // `<key_fp>` field + `backend_rotate`'s `head_key_fp`
             // output + the `oxicloud --fingerprint` CLI.
             let pairs =
                 parse_encryption_pair_list("t", &format!("aes-256-gcm:{K1_B64},none:")).unwrap();

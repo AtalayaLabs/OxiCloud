@@ -488,7 +488,7 @@ export interface StorageEncryptionPair {
 	cipher: string;
 	/**
 	 * SSH-style colon-hex 8-byte fingerprint of the key. Matches
-	 * `storage_rotate`'s `head_key_fp` and the `oxicloud --fingerprint`
+	 * `backend_rotate`'s `head_key_fp` and the `oxicloud --fingerprint`
 	 * CLI output — enables one-glance identification of which key is
 	 * which. `undefined` for `none:` pairs (no key material).
 	 */
@@ -578,15 +578,15 @@ export function migrationAction(
 }
 
 /**
- * K4 (storage-key-rotation): trigger `storage_rotate` on a specific
+ * K4 (storage-key-rotation): trigger `backend_rotate` on a specific
  * storage entry. Normalises every blob on `<name>` to that entry's
  * head-pair format: legacy → v1, plaintext ↔ encrypted, old-key →
- * new-key. Fire-and-forget — poll `GET /api/admin/jobs/storage_rotate`
+ * new-key. Fire-and-forget — poll `GET /api/admin/jobs/backend_rotate`
  * for status.
  *
  * Backend: `POST /api/admin/storage/entries/{name}/rotate`
- * (`admin_handler::trigger_storage_rotate`). Refuses (400) on unknown
- * entry name or when a `storage_rotate` / `storage_migration` run is
+ * (`admin_handler::trigger_backend_rotate`). Refuses (400) on unknown
+ * entry name or when a `backend_rotate` / `backend_migration` run is
  * already in flight.
  */
 export function rotateStorageEntry(name: string): Promise<void> {

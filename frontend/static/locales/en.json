@@ -1121,7 +1121,7 @@
     "storage_size": "Stored",
     "storage_tab": "Storage",
     "storage_test": "Test",
-    "storage_backend_audit": "Storage consistency",
+    "storage_backend_audit": "Backend consistency",
     "storage_backend_audit_triggered": "backend_consistency triggered for `{{name}}` — watch it on the Jobs tab.",
     "time_day_ago": "{{n}} d ago",
     "time_hour_ago": "{{n}} h ago",

@@ -15,13 +15,13 @@
 //!
 //! ### No readonly, no cutover
 //!
-//! `storage_rotate` is per-blob idempotent — repeat rewrites are
+//! `backend_rotate` is per-blob idempotent — repeat rewrites are
 //! byte-safe (content-addressability holds; the wrapper always
 //! produces the head format). Concurrent user writes coexist: they
 //! land as head-format themselves, so when the walk reaches that
 //! hash the classifier reports "already at head format" and the
 //! decision tree collapses to `skip`. No app-wide read-only gate is
-//! ever engaged — a critical improvement over `storage_migration`,
+//! ever engaged — a critical improvement over `backend_migration`,
 //! whose target-different-from-source cutover forces one.
 //!
 //! ### Restart survival
@@ -36,13 +36,13 @@
 //! ### Design notes
 //!
 //! * **Cursor** — UTF-8 hex of the last-processed blob hash (64
-//!   chars). Same encoding as `storage_migration` and
+//!   chars). Same encoding as `backend_migration` and
 //!   `blobs_consistency`.
 //! * **Target lookup** — the entry NAME is stashed in `params` at
 //!   Fresh-open time and re-read on Resume. The wrapper for that
 //!   entry is rebuilt at the top of every run via
 //!   `build_entry_backend_typed`; mid-run config changes are
-//!   ignored until the next run (mirrors `storage_migration`).
+//!   ignored until the next run (mirrors `backend_migration`).
 //! * **Per-blob failures don't fail the run** — each failure records
 //!   a `rotation_failed` finding (severity `data_loss` — the bytes
 //!   didn't get rewritten) and the walk continues. A run that
@@ -68,20 +68,20 @@ use crate::infrastructure::scheduler::{
 use crate::infrastructure::services::encrypted_blob_backend::BlobFormat;
 use crate::infrastructure::services::entry_backend::build_entry_backend_typed;
 
-pub const STORAGE_ROTATE_JOB_NAME: &str = "storage_rotate";
+pub const BACKEND_ROTATE_JOB_NAME: &str = "backend_rotate";
 
 /// The `params` JSONB key under which the run's target entry name is
 /// stashed at Fresh-open time via `JobStore::set_string_param`.
-/// Kept identical to `storage_migration`'s TARGET_NAME_PARAM so
+/// Kept identical to `backend_migration`'s TARGET_NAME_PARAM so
 /// operators grepping run rows see the same convention across both
 /// storage-touching tenants.
 pub const TARGET_NAME_PARAM: &str = "target_name";
 
-/// Rows per batch. Matches `storage_migration` / `blobs_consistency`
+/// Rows per batch. Matches `backend_migration` / `blobs_consistency`
 /// so the checkpoint + cancel-poll cadence is uniform across tenants.
 const BATCH_SIZE: i64 = 100;
 
-pub struct StorageRotateService {
+pub struct BackendRotateService {
     pool: Arc<PgPool>,
     /// Immutable per-deploy snapshot; used to look up the target
     /// entry by name at run start. Matches `AppConfig.storage_entries`.
@@ -99,7 +99,7 @@ pub struct StorageRotateService {
     rotation_progress: Arc<std::sync::RwLock<Option<MigrationProgress>>>,
 }
 
-impl StorageRotateService {
+impl BackendRotateService {
     pub fn new(
         pool: Arc<PgPool>,
         storage_entries: Vec<NamedStorageEntry>,
@@ -115,7 +115,7 @@ impl StorageRotateService {
     }
 
     /// Chainable self-registration — mirrors the `*_consistency`
-    /// tenants and `storage_migration`. On-demand only (no periodic
+    /// tenants and `backend_migration`. On-demand only (no periodic
     /// tick).
     pub async fn register_recoverable_job(
         self: Arc<Self>,
@@ -130,13 +130,13 @@ impl StorageRotateService {
 }
 
 #[async_trait]
-impl RecoverableJobHandler for StorageRotateService {
+impl RecoverableJobHandler for BackendRotateService {
     fn name(&self) -> &str {
-        STORAGE_ROTATE_JOB_NAME
+        BACKEND_ROTATE_JOB_NAME
     }
 
     /// Definitive count — one row per blob. Same query as
-    /// `storage_migration::count_total`; the two walk the same rows.
+    /// `backend_migration::count_total`; the two walk the same rows.
     async fn count_total(&self) -> Option<u64> {
         let row: Result<(i64,), sqlx::Error> = sqlx::query_as("SELECT COUNT(*) FROM storage.blobs")
             .fetch_one(self.pool.as_ref())
@@ -146,7 +146,7 @@ impl RecoverableJobHandler for StorageRotateService {
             Err(e) => {
                 tracing::debug!(
                     target: "oxicloud::rotate",
-                    event = "storage_rotate.count_total_failed",
+                    event = "backend_rotate.count_total_failed",
                     error = %e,
                     "count_total failed — run will not surface a progress bar"
                 );
@@ -161,12 +161,12 @@ impl RecoverableJobHandler for StorageRotateService {
         args: &JobRunArgs,
         resume_cursor: Option<Vec<u8>>,
     ) -> RunOutcome {
-        // Resolve target entry name — same shape as `storage_migration`.
+        // Resolve target entry name — same shape as `backend_migration`.
         let is_fresh = resume_cursor.is_none();
         let target_name = if is_fresh {
             let Some(name) = args.storage.clone() else {
                 return RunOutcome::Failed {
-                    message: "storage_rotate requires `target_name` on a fresh run — trigger via \
+                    message: "backend_rotate requires `target_name` on a fresh run — trigger via \
                               POST /api/admin/storage/entries/{name}/rotate"
                         .to_string(),
                 };
@@ -230,7 +230,7 @@ impl RecoverableJobHandler for StorageRotateService {
 
         tracing::info!(
             target: "audit",
-            event = "storage_rotate.run_started",
+            event = "backend_rotate.run_started",
             run_id = %store.run_id(),
             target_name = %target_name,
             // `%` (Display) → SSH-style `encrypted-v1 key_fp=83:96:...`
@@ -239,7 +239,7 @@ impl RecoverableJobHandler for StorageRotateService {
             // header bytes on disk.
             head_format = %head_format,
             resuming = !is_fresh,
-            "storage_rotate started on `{target_name}` (head_format = {head_format})"
+            "backend_rotate started on `{target_name}` (head_format = {head_format})"
         );
 
         // Seed the progress snapshot. Total = count_total's estimate;
@@ -280,12 +280,12 @@ impl RecoverableJobHandler for StorageRotateService {
                     self.clear_progress();
                     tracing::info!(
                         target: "oxicloud::rotate",
-                        event = "storage_rotate.cancelled",
+                        event = "backend_rotate.cancelled",
                         run_id = %store.run_id(),
                         rewritten = rewritten_count,
                         skipped = skipped_count,
                         failed = failed_count,
-                        "storage_rotate cancelled cooperatively, pausing"
+                        "backend_rotate cancelled cooperatively, pausing"
                     );
                     return RunOutcome::Paused {
                         cursor: cursor
@@ -304,7 +304,7 @@ impl RecoverableJobHandler for StorageRotateService {
             }
 
             // Fetch the next batch. Same keyset pagination shape as
-            // `storage_migration` — `hash > $1` on the PK, index-only.
+            // `backend_migration` — `hash > $1` on the PK, index-only.
             let rows: Vec<(String,)> = match sqlx::query_as(
                 r#"
                 SELECT hash
@@ -351,7 +351,7 @@ impl RecoverableJobHandler for StorageRotateService {
                         failed_count += 1;
                         tracing::warn!(
                             target: "oxicloud::rotate",
-                            event = "storage_rotate.read_failed",
+                            event = "backend_rotate.read_failed",
                             run_id = %store.run_id(),
                             hash = %hash,
                             error = %e,
@@ -359,7 +359,7 @@ impl RecoverableJobHandler for StorageRotateService {
                         );
                         record_or_log(
                             store,
-                            STORAGE_ROTATE_JOB_NAME,
+                            BACKEND_ROTATE_JOB_NAME,
                             "rotation_failed",
                             "data_loss",
                             None,
@@ -402,7 +402,7 @@ impl RecoverableJobHandler for StorageRotateService {
                     failed_count += 1;
                     tracing::warn!(
                         target: "oxicloud::rotate",
-                        event = "storage_rotate.write_failed",
+                        event = "backend_rotate.write_failed",
                         run_id = %store.run_id(),
                         hash = %hash,
                         error = %e,
@@ -410,7 +410,7 @@ impl RecoverableJobHandler for StorageRotateService {
                     );
                     record_or_log(
                         store,
-                        STORAGE_ROTATE_JOB_NAME,
+                        BACKEND_ROTATE_JOB_NAME,
                         "rotation_failed",
                         "data_loss",
                         None,
@@ -467,9 +467,9 @@ impl RecoverableJobHandler for StorageRotateService {
     }
 }
 
-impl StorageRotateService {
+impl BackendRotateService {
     /// Terminal successful path — clear the header snapshot and log a
-    /// final audit line. Unlike `storage_migration::finish_completed`
+    /// final audit line. Unlike `backend_migration::finish_completed`
     /// there's no cutover / hot-swap step: rotation writes in place
     /// on the entry that's already there.
     ///
@@ -508,14 +508,14 @@ impl StorageRotateService {
 
         tracing::info!(
             target: "audit",
-            event = "storage_rotate.run_completed",
+            event = "backend_rotate.run_completed",
             run_id = %store.run_id(),
             target_name = %target_name,
             rewritten = rewritten,
             skipped = skipped,
             failed = failed,
             head_format = %head_display,
-            "storage_rotate completed on `{target_name}` — {rewritten} rewritten, {skipped} skipped, {failed} failed; head = {head_display}"
+            "backend_rotate completed on `{target_name}` — {rewritten} rewritten, {skipped} skipped, {failed} failed; head = {head_display}"
         );
 
         // Surface the per-run summary counters as extras merged into

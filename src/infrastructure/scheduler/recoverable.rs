@@ -124,7 +124,7 @@ pub enum RunOutcome {
     /// `extra_stats` is merged into the run row's `stats` JSONB
     /// alongside the engine-owned `scanned_count` + `finding_count`
     /// / `severity_counts`. Handlers use it to surface per-run
-    /// summary counters (e.g. `storage_rotate` reports
+    /// summary counters (e.g. `backend_rotate` reports
     /// `{"rewritten": N, "skipped": M, "failed": K}`) — the outcome
     /// message in `JobOutcome.extra` and every downstream reader
     /// of `RunSummary.stats` see the merged fields.
@@ -304,7 +304,7 @@ pub trait JobStore: Send + Sync {
 
     /// Set an arbitrary string field on `params` (JSONB). Used by
     /// handlers on a Fresh run to persist per-run configuration that
-    /// must survive a mid-run restart — e.g. `storage_migration`
+    /// must survive a mid-run restart — e.g. `backend_migration`
     /// stamping `params.target_name` at run start so a resume can
     /// pick up the same target without the admin re-specifying it.
     ///

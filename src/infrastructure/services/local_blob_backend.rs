@@ -470,7 +470,7 @@ impl BlobStorageBackend for LocalBlobBackend {
     /// then `rename(2)` over the target. `write_blob_bytes`'s
     /// `O_CREAT|O_EXCL` idempotent-skip (the right choice for uploads)
     /// silently no-ops when the target already exists — wrong for
-    /// callers like `storage_rotate` that need the bytes to change.
+    /// callers like `backend_rotate` that need the bytes to change.
     /// See the trait doc for the full picture.
     ///
     /// Tempfile lives beside the target under the same shard directory

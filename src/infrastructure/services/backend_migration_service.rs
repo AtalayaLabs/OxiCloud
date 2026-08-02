@@ -67,7 +67,7 @@ use crate::infrastructure::services::entry_backend::{
     build_entry_backend_typed, persist_active_backend_name, persist_migration_readonly,
 };
 
-pub const STORAGE_MIGRATION_JOB_NAME: &str = "storage_migration";
+pub const BACKEND_MIGRATION_JOB_NAME: &str = "backend_migration";
 
 /// The `params` JSONB key under which the run's target entry name is
 /// stashed at Fresh-open time via `JobStore::set_string_param`.
@@ -93,7 +93,7 @@ pub const SOURCE_NAME_PARAM: &str = "source_name";
 /// every 100 rows too. Match `blobs_consistency` for consistency.
 const BATCH_SIZE: i64 = 100;
 
-pub struct StorageMigrationService {
+pub struct BackendMigrationService {
     pool: Arc<PgPool>,
     /// Backend the running app is bound to at handler-construction
     /// time. Refers to the hot-swap wrapper when multi-entry is
@@ -140,7 +140,7 @@ pub struct StorageMigrationService {
         Arc<std::sync::RwLock<Option<crate::common::migration_progress::MigrationProgress>>>,
 }
 
-impl StorageMigrationService {
+impl BackendMigrationService {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         pool: Arc<PgPool>,
@@ -183,9 +183,9 @@ impl StorageMigrationService {
 }
 
 #[async_trait]
-impl RecoverableJobHandler for StorageMigrationService {
+impl RecoverableJobHandler for BackendMigrationService {
     fn name(&self) -> &str {
-        STORAGE_MIGRATION_JOB_NAME
+        BACKEND_MIGRATION_JOB_NAME
     }
 
     /// Definitive count — one row per blob. `SELECT COUNT(*) FROM
@@ -200,7 +200,7 @@ impl RecoverableJobHandler for StorageMigrationService {
             Err(e) => {
                 tracing::debug!(
                     target: "oxicloud::migration",
-                    event = "storage_migration.count_total_failed",
+                    event = "backend_migration.count_total_failed",
                     error = %e,
                     "count_total failed — run will not surface a progress bar"
                 );
@@ -234,7 +234,7 @@ impl RecoverableJobHandler for StorageMigrationService {
             let Some(name) = args.storage.clone() else {
                 return RunOutcome::Failed {
                     message:
-                        "storage_migration requires `target_name` on a fresh run — trigger via \
+                        "backend_migration requires `target_name` on a fresh run — trigger via \
                          POST /api/admin/storage/migration/start with `{\"target_name\": \"<entry>\"}`."
                             .to_string(),
                 };
@@ -305,7 +305,7 @@ impl RecoverableJobHandler for StorageMigrationService {
                         .clone();
                     tracing::warn!(
                         target: "oxicloud::migration",
-                        event = "storage_migration.legacy_paused_row_source_defaulted",
+                        event = "backend_migration.legacy_paused_row_source_defaulted",
                         run_id = %store.run_id(),
                         fallback_source = %fallback,
                         "resumed run has no source_name in params (pre-K3.8 row) — defaulting \
@@ -330,11 +330,11 @@ impl RecoverableJobHandler for StorageMigrationService {
         if target_name == active_backend_name {
             tracing::warn!(
                 target: "audit",
-                event = "storage_migration.refused_noop",
+                event = "backend_migration.refused_noop",
                 run_id = %store.run_id(),
                 target_name = %target_name,
                 active = %active_backend_name,
-                "storage_migration refused: target equals the currently-active entry"
+                "backend_migration refused: target equals the currently-active entry"
             );
             return RunOutcome::Failed {
                 message: format!(
@@ -397,12 +397,12 @@ impl RecoverableJobHandler for StorageMigrationService {
             };
             tracing::warn!(
                 target: "audit",
-                event = "storage_migration.refused_same_physical_storage",
+                event = "backend_migration.refused_same_physical_storage",
                 run_id = %store.run_id(),
                 target_name = %target_name,
                 source_name = %active_backend_name,
                 encryption_differs = key_differs,
-                "storage_migration refused: named target differs from source but physical storage matches"
+                "backend_migration refused: named target differs from source but physical storage matches"
             );
             return RunOutcome::Failed {
                 message: format!(
@@ -484,14 +484,14 @@ impl RecoverableJobHandler for StorageMigrationService {
         let target_kind = target.backend_type();
         tracing::info!(
             target: "audit",
-            event = "storage_migration.run_started",
+            event = "backend_migration.run_started",
             run_id = %store.run_id(),
             source_name = %active_backend_name,
             target_name = %target_name,
             source_kind = source_kind,
             target_kind = target_kind,
             resuming = !is_fresh,
-            "storage_migration starting {active_backend_name} ({source_kind}) → {target_name} ({target_kind})"
+            "backend_migration starting {active_backend_name} ({source_kind}) → {target_name} ({target_kind})"
         );
 
         // Cursor = the last-visited blob hash, UTF-8-encoded. On resume
@@ -527,13 +527,13 @@ impl RecoverableJobHandler for StorageMigrationService {
                 Ok(RunStatus::CancelRequested) => {
                     tracing::info!(
                         target: "oxicloud::migration",
-                        event = "storage_migration.cancelled",
+                        event = "backend_migration.cancelled",
                         run_id = %store.run_id(),
                         copied = copied_count,
                         skipped = skipped_count,
                         failed = failed_count,
                         source_missing = source_missing_count,
-                        "storage_migration cancelled cooperatively, pausing"
+                        "backend_migration cancelled cooperatively, pausing"
                     );
                     return RunOutcome::Paused {
                         cursor: cursor
@@ -604,7 +604,7 @@ impl RecoverableJobHandler for StorageMigrationService {
                         source_missing_count += 1;
                         tracing::warn!(
                             target: "oxicloud::migration",
-                            event = "storage_migration.source_missing",
+                            event = "backend_migration.source_missing",
                             run_id = %store.run_id(),
                             hash = %hash,
                             source = source_kind,
@@ -612,7 +612,7 @@ impl RecoverableJobHandler for StorageMigrationService {
                         );
                         record_or_log(
                             store,
-                            STORAGE_MIGRATION_JOB_NAME,
+                            BACKEND_MIGRATION_JOB_NAME,
                             "source_missing",
                             "data_loss",
                             None,
@@ -635,7 +635,7 @@ impl RecoverableJobHandler for StorageMigrationService {
                         // it.
                         tracing::warn!(
                             target: "oxicloud::migration",
-                            event = "storage_migration.source_probe_error",
+                            event = "backend_migration.source_probe_error",
                             run_id = %store.run_id(),
                             hash = %hash,
                             error = %e,
@@ -670,7 +670,7 @@ impl RecoverableJobHandler for StorageMigrationService {
                     skipped_count += 1;
                     tracing::debug!(
                         target: "oxicloud::migration",
-                        event = "storage_migration.blob_skipped_head_match",
+                        event = "backend_migration.blob_skipped_head_match",
                         run_id = %store.run_id(),
                         hash = %hash,
                         head_format = %target.head_format(),
@@ -687,7 +687,7 @@ impl RecoverableJobHandler for StorageMigrationService {
                         failed_count += 1;
                         tracing::warn!(
                             target: "oxicloud::migration",
-                            event = "storage_migration.blob_failed",
+                            event = "backend_migration.blob_failed",
                             run_id = %store.run_id(),
                             hash = %hash,
                             error = %e,
@@ -698,7 +698,7 @@ impl RecoverableJobHandler for StorageMigrationService {
                         // where the admin UI reads it.
                         record_or_log(
                             store,
-                            STORAGE_MIGRATION_JOB_NAME,
+                            BACKEND_MIGRATION_JOB_NAME,
                             "migration_failed",
                             "data_loss",
                             None,
@@ -760,7 +760,7 @@ impl RecoverableJobHandler for StorageMigrationService {
     }
 }
 
-impl StorageMigrationService {
+impl BackendMigrationService {
     /// Terminal successful path — reached from both Completed sites
     /// in the batch loop (empty-first-batch and short-batch).
     ///
@@ -831,7 +831,7 @@ impl StorageMigrationService {
             if !readonly_persisted {
                 tracing::warn!(
                     target: "oxicloud::migration",
-                    event = "storage_migration.readonly_clear_persist_failed",
+                    event = "backend_migration.readonly_clear_persist_failed",
                     run_id = %store.run_id(),
                     "cleared migration_readonly in memory (writes allowed against source) but the \
                      DB persist failed. Boot-clear rule will fix on next restart."
@@ -839,7 +839,7 @@ impl StorageMigrationService {
             }
             tracing::info!(
                 target: "audit",
-                event = "storage_migration.aborted",
+                event = "backend_migration.aborted",
                 reason = "blobs_failed",
                 run_id = %store.run_id(),
                 active_backend_name = previous_active,
@@ -848,7 +848,7 @@ impl StorageMigrationService {
                 skipped = skipped,
                 failed = failed,
                 source_missing = source_missing,
-                "🛑 storage_migration aborted — {failed} blob(s) failed, active backend left at \
+                "🛑 backend_migration aborted — {failed} blob(s) failed, active backend left at \
                  `{previous_active}`, readonly cleared. Inspect findings and retry, or accept \
                  the partial migration via `oxicloud --select-storage {target_name}`."
             );
@@ -907,7 +907,7 @@ impl StorageMigrationService {
         if !readonly_persisted {
             tracing::warn!(
                 target: "oxicloud::migration",
-                event = "storage_migration.readonly_clear_persist_failed",
+                event = "backend_migration.readonly_clear_persist_failed",
                 run_id = %store.run_id(),
                 "cleared migration_readonly in memory (writes allowed) but the DB persist \
                  failed. If the server crashes before next boot, boot will re-seed the flag \
@@ -917,7 +917,7 @@ impl StorageMigrationService {
 
         tracing::info!(
             target: "audit",
-            event = "storage_migration.completed",
+            event = "backend_migration.completed",
             run_id = %store.run_id(),
             active_backend_name = target_name,
             previous_active = previous_active,
@@ -925,11 +925,11 @@ impl StorageMigrationService {
             skipped = skipped,
             failed = failed,
             source_missing = source_missing,
-            "✅ storage_migration completed — hot-swapped runtime backend to `{target_name}`, \
+            "✅ backend_migration completed — hot-swapped runtime backend to `{target_name}`, \
              writes resumed. No restart required."
         );
         // Per-run summary counters merged into `stats` for the admin
-        // UI drawer. Same shape as `storage_rotate`'s extras + one
+        // UI drawer. Same shape as `backend_rotate`'s extras + one
         // extra `source_missing` counter unique to migration.
         RunOutcome::completed_with(serde_json::json!({
             "copied":         copied,
@@ -1022,7 +1022,7 @@ async fn collect_stream_bytes(
     let mut stream = std::pin::pin!(stream);
     while let Some(chunk) = stream.next().await {
         let bytes = chunk.map_err(|e| {
-            DomainError::internal_error("StorageMigration", format!("source stream read: {e}"))
+            DomainError::internal_error("BackendMigration", format!("source stream read: {e}"))
         })?;
         buf.extend_from_slice(&bytes);
     }

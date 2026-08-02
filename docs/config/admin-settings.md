@@ -79,7 +79,7 @@ The admin storage tab operates on the **named storage entries** declared in `.en
 | `POST` | `/api/admin/storage/migration/resume`     | Resume a paused run (target read from `params.target_name`, no body needed) |
 | `GET`  | `/api/admin/storage/migration`            | Poll the current run's progress |
 
-Runs are recoverable — status, cursor, and per-blob failure findings all live in `jobs.recoverable_runs` / `jobs.run_findings`. The same run history is browsable via `GET /api/admin/jobs/storage_migration/runs`.
+Runs are recoverable — status, cursor, and per-blob failure findings all live in `jobs.recoverable_runs` / `jobs.run_findings`. The same run history is browsable via `GET /api/admin/jobs/backend_migration/runs`.
 
 ### Cutover flow (moving the active pointer)
 

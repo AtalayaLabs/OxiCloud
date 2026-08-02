@@ -136,12 +136,12 @@ pub trait BlobStorageBackend: Send + Sync + 'static {
     /// that need the on-disk BYTES to change even when the CONTENT
     /// hash doesn't:
     ///
-    /// * `storage_rotate` — rewrites every blob under the head pair's
+    /// * `backend_rotate` — rewrites every blob under the head pair's
     ///   format (legacy → v1 header, old key → new key, plaintext ↔
     ///   encrypted). If the target's `put_blob_from_bytes` silently
     ///   skipped, rotation would report success while leaving the old
     ///   format on disk.
-    /// * `storage_migration` — same story when a target already has a
+    /// * `backend_migration` — same story when a target already has a
     ///   blob at that hash from an earlier state (Ed hit this on
     ///   2026-08-01 in the S3 → local migration test).
     ///

@@ -556,7 +556,7 @@ export interface JobSummary {
 	 * whether the row is expandable (drawer with run history +
 	 * findings) and to gate the retention/purge action — replaces
 	 * the pre-K3 name-based allowlist that missed newly-added
-	 * recoverable tenants (`storage_rotate` shipped first without a
+	 * recoverable tenants (`backend_rotate` shipped first without a
 	 * row-expand until this flag was added).
 	 */
 	recoverable: boolean;

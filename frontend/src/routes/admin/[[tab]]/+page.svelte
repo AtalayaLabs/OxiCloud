@@ -473,7 +473,7 @@
 		if (
 			!confirm(
 				t(
-					'admin.storage_rotate_confirm',
+					'admin.backend_rotate_confirm',
 					{ name },
 					'Start a background rotation on `{{name}}`? Every existing blob is rewritten under the entry’s head pair (v1 header + head key). All operations continue normally during rotation — no read-only mode. Progress shows in the top banner and on the Jobs tab.'
 				)
@@ -484,9 +484,9 @@
 			await rotateStorageEntry(name);
 			ui.notify(
 				t(
-					'admin.storage_rotate_triggered',
+					'admin.backend_rotate_triggered',
 					{ name },
-					'Rotation started on `{{name}}` — watch it on the Jobs tab (`storage_rotate`).'
+					'Rotation started on `{{name}}` — watch it on the Jobs tab (`backend_rotate`).'
 				),
 				'success'
 			);
@@ -2217,7 +2217,7 @@
 										onclick={() => doStorageConsistency(entry.name)}
 									>
 										<Icon name="database" />
-										{t('admin.storage_backend_audit', 'Storage consistency')}
+										{t('admin.storage_backend_audit', 'Backend consistency')}
 									</button>
 									{#if !entry.is_active && !migrationInFlight}
 										<button
@@ -2259,16 +2259,16 @@
 											onclick={() => doRotateEntry(entry.name)}
 											title={migrationInFlight
 												? t(
-														'admin.storage_rotate_disabled_migration',
+														'admin.backend_rotate_disabled_migration',
 														'Cannot rotate while a migration is in flight.'
 													)
 												: t(
-														'admin.storage_rotate_tooltip',
+														'admin.backend_rotate_tooltip',
 														'Normalise every blob on this entry to the head pair’s format (upgrade legacy blobs, re-encrypt under a new key, etc.).'
 													)}
 										>
 											<Icon name="key" />
-											{t('admin.storage_rotate', 'Rotate key')}
+											{t('admin.backend_rotate', 'Rotate key')}
 										</button>
 									{:else}
 										<button
@@ -2279,7 +2279,7 @@
 											disabled
 										>
 											<Icon name="key" />
-											{t('admin.storage_rotate', 'Rotate key')}
+											{t('admin.backend_rotate', 'Rotate key')}
 										</button>
 									{/if}
 								</div>

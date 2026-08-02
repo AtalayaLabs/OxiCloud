@@ -75,9 +75,9 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         .route("/settings/storage", put(save_storage_settings))
         .route("/settings/storage/test", post(test_storage_connection))
         // Storage migration — thin shims over the recoverable-run
-        // engine (job_name = "storage_migration"). Retained under
+        // engine (job_name = "backend_migration"). Retained under
         // /storage/migration/* until the admin UI is rewired to
-        // /api/admin/jobs/storage_migration/*; both paths route to
+        // /api/admin/jobs/backend_migration/*; both paths route to
         // the same underlying JobRegistry dispatch. The old /complete
         // endpoint is retired — a finished run is a Completed row,
         // there's nothing to acknowledge.
@@ -91,7 +91,7 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         // new-key). No readonly mode; safe under normal traffic.
         .route(
             "/storage/entries/{name}/rotate",
-            post(trigger_storage_rotate),
+            post(trigger_backend_rotate),
         )
         // NOTE: /storage/migration/verify retired in slice 7 (see the
         // comment near where `verify_migration` used to live). Use
@@ -383,7 +383,7 @@ async fn test_storage_connection(
 /// GET /api/admin/storage/migration — current migration progress.
 ///
 /// Shim over the recoverable-run engine: reads the latest
-/// `storage_migration` run from `jobs.recoverable_runs` (via the
+/// `backend_migration` run from `jobs.recoverable_runs` (via the
 /// `JobStoreProvider`) and projects it into the legacy
 /// `MigrationStateDto` shape the admin storage tab expects. When no
 /// run has ever been triggered the response is an empty "idle" DTO —
@@ -403,11 +403,11 @@ async fn test_storage_connection(
 pub async fn get_migration_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, AppError> {
-    use crate::infrastructure::services::storage_migration_service::STORAGE_MIGRATION_JOB_NAME;
+    use crate::infrastructure::services::backend_migration_service::BACKEND_MIGRATION_JOB_NAME;
 
     let provider = state.core.job_store_provider.clone();
     let latest = provider
-        .list_runs(STORAGE_MIGRATION_JOB_NAME, 1)
+        .list_runs(BACKEND_MIGRATION_JOB_NAME, 1)
         .await
         .map_err(AppError::from)?
         .into_iter()
@@ -440,7 +440,7 @@ pub async fn get_migration_status(
 
 /// POST /api/admin/storage/migration/start — begin background migration.
 ///
-/// Shim that forwards to `JobRegistry::trigger("storage_migration",
+/// Shim that forwards to `JobRegistry::trigger("backend_migration",
 /// ...)`. `run_or_resume` (the RecoverableAdapter's inner dispatch)
 /// resumes a Paused run or starts a fresh one — one endpoint covers
 /// both. Exclusivity is enforced at the DB layer (the partial unique
@@ -500,7 +500,7 @@ pub async fn start_migration(
             dto.target_name
         )));
     }
-    trigger_storage_migration(state, Some(dto.target_name)).await
+    trigger_backend_migration(state, Some(dto.target_name)).await
 }
 
 /// POST /api/admin/storage/migration/pause — pause a running migration.
@@ -524,18 +524,18 @@ pub async fn start_migration(
 pub async fn pause_migration(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, AppError> {
-    use crate::infrastructure::services::storage_migration_service::STORAGE_MIGRATION_JOB_NAME;
+    use crate::infrastructure::services::backend_migration_service::BACKEND_MIGRATION_JOB_NAME;
 
     tracing::info!(
         target: "audit",
-        event = "storage_migration.pause_requested",
-        "👮🏻‍♂️ Admin requested storage_migration pause"
+        event = "backend_migration.pause_requested",
+        "👮🏻‍♂️ Admin requested backend_migration pause"
     );
 
     let flipped = state
         .core
         .job_store_provider
-        .request_cancel(STORAGE_MIGRATION_JOB_NAME)
+        .request_cancel(BACKEND_MIGRATION_JOB_NAME)
         .await
         .map_err(AppError::from)?;
 
@@ -576,7 +576,7 @@ pub async fn resume_migration(
     // it from `params.target_name` stamped on the original Fresh
     // open. Refuses gracefully via RunOutcome::Failed if there is
     // no Paused row to resume.
-    trigger_storage_migration(state, None).await
+    trigger_backend_migration(state, None).await
 }
 
 // verify_migration endpoint retired (slice 7 of
@@ -596,18 +596,18 @@ pub async fn resume_migration(
 /// desync `current_run_start` from the actually-running task). The
 /// admin UI polls `GET /storage/migration` for progress; the trigger
 /// itself is fire-and-forget.
-async fn trigger_storage_migration(
+async fn trigger_backend_migration(
     state: Arc<AppState>,
     target_name: Option<String>,
 ) -> Result<axum::response::Response, AppError> {
     use crate::infrastructure::scheduler::JobRunArgs;
-    use crate::infrastructure::services::storage_migration_service::STORAGE_MIGRATION_JOB_NAME;
+    use crate::infrastructure::services::backend_migration_service::BACKEND_MIGRATION_JOB_NAME;
 
     tracing::info!(
         target: "audit",
-        event = "storage_migration.trigger_requested",
+        event = "backend_migration.trigger_requested",
         target_name = target_name.as_deref().unwrap_or("<resume>"),
-        "👮🏻‍♂️ Admin triggered storage_migration"
+        "👮🏻‍♂️ Admin triggered backend_migration"
     );
 
     let registry = state.core.job_registry.clone();
@@ -616,7 +616,7 @@ async fn trigger_storage_migration(
         ..JobRunArgs::default()
     };
     tokio::spawn(async move {
-        registry.trigger(STORAGE_MIGRATION_JOB_NAME, &args).await;
+        registry.trigger(BACKEND_MIGRATION_JOB_NAME, &args).await;
     });
 
     Ok((
@@ -630,7 +630,7 @@ async fn trigger_storage_migration(
 }
 
 /// POST /api/admin/storage/entries/{name}/rotate — trigger the
-/// `storage_rotate` recoverable job on a specific entry.
+/// `backend_rotate` recoverable job on a specific entry.
 ///
 /// Normalises every blob on `<name>` to the entry's head-pair
 /// format: legacy → v1, plaintext ↔ encrypted, old-key → new-key.
@@ -658,13 +658,13 @@ async fn trigger_storage_migration(
     security(("bearerAuth" = [])),
     tag = "admin"
 )]
-pub async fn trigger_storage_rotate(
+pub async fn trigger_backend_rotate(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::infrastructure::scheduler::JobRunArgs;
-    use crate::infrastructure::services::storage_migration_service::STORAGE_MIGRATION_JOB_NAME;
-    use crate::infrastructure::services::storage_rotate_service::STORAGE_ROTATE_JOB_NAME;
+    use crate::infrastructure::services::backend_migration_service::BACKEND_MIGRATION_JOB_NAME;
+    use crate::infrastructure::services::backend_rotate_service::BACKEND_ROTATE_JOB_NAME;
 
     // Synchronous entry-existence check — a bad name would fail the
     // run anyway, but returning 400 here spares the operator an
@@ -699,7 +699,7 @@ pub async fn trigger_storage_rotate(
         .clone();
     if name != active {
         return Err(AppError::bad_request(format!(
-            "storage_rotate refuses non-active entry `{name}` — the DB blob registry \
+            "backend_rotate refuses non-active entry `{name}` — the DB blob registry \
              describes the active entry (`{active}`), so walking it against a stale \
              target produces spurious `rotation_failed` findings. Activate `{name}` \
              first via `Migrate & activate`, then rotate."
@@ -713,7 +713,7 @@ pub async fn trigger_storage_rotate(
     // hash. Cheap check — `list_runs` limit 1 with the status
     // filter is an index scan.
     let provider = state.core.job_store_provider.clone();
-    for job_name in [STORAGE_ROTATE_JOB_NAME, STORAGE_MIGRATION_JOB_NAME] {
+    for job_name in [BACKEND_ROTATE_JOB_NAME, BACKEND_MIGRATION_JOB_NAME] {
         let in_flight = provider
             .list_runs(job_name, 5)
             .await
@@ -729,7 +729,7 @@ pub async fn trigger_storage_rotate(
             });
         if in_flight {
             return Err(AppError::bad_request(format!(
-                "cannot start storage_rotate on `{name}` — `{job_name}` is already Running / \
+                "cannot start backend_rotate on `{name}` — `{job_name}` is already Running / \
                  Paused / CancelRequested. Wait for it to finish (or cancel via \
                  `POST /api/admin/jobs/{job_name}/cancel`)."
             )));
@@ -738,9 +738,9 @@ pub async fn trigger_storage_rotate(
 
     tracing::info!(
         target: "audit",
-        event = "storage_rotate.trigger_requested",
+        event = "backend_rotate.trigger_requested",
         target_name = %name,
-        "👮🏻‍♂️ Admin triggered storage_rotate on `{name}`"
+        "👮🏻‍♂️ Admin triggered backend_rotate on `{name}`"
     );
 
     let registry = state.core.job_registry.clone();
@@ -749,13 +749,13 @@ pub async fn trigger_storage_rotate(
         ..JobRunArgs::default()
     };
     tokio::spawn(async move {
-        registry.trigger(STORAGE_ROTATE_JOB_NAME, &args).await;
+        registry.trigger(BACKEND_ROTATE_JOB_NAME, &args).await;
     });
 
     Ok((
         StatusCode::ACCEPTED,
         Json(serde_json::json!({
-            "message": format!("Rotation dispatched on `{name}` — poll GET /api/admin/jobs/{STORAGE_ROTATE_JOB_NAME} for progress"),
+            "message": format!("Rotation dispatched on `{name}` — poll GET /api/admin/jobs/{BACKEND_ROTATE_JOB_NAME} for progress"),
             "detached": true,
         })),
     )
@@ -2348,7 +2348,7 @@ pub struct TriggerJobQuery {
     pub deep: bool,
     /// Optional named storage entry to scope the run against — used by
     /// tenants that respect `JobRunArgs.storage` (currently
-    /// `storage_migration` for its target; `blobs_consistency` /
+    /// `backend_migration` for its target; `blobs_consistency` /
     /// `backend_consistency` will pick this up in slice 7 to probe a
     /// non-active entry). Ignored by tenants that don't declare a
     /// semantic for it. Unknown-name validation is per-tenant — the
@@ -2405,7 +2405,7 @@ pub async fn trigger_job(
         storage: query.storage.clone(),
     };
 
-    // Jobs that can run for hours (storage_migration, future
+    // Jobs that can run for hours (backend_migration, future
     // reextract_*) are detached: `tokio::spawn` the trigger so the
     // HTTP request returns immediately. Without this, browser HTTP
     // timeouts drop the request future mid-await → the SemaphorePermit
@@ -2461,7 +2461,7 @@ pub async fn trigger_job(
 /// there's a second long-running tenant that justifies the plumbing.
 /// See the comment in `trigger_job` for why detach matters.
 fn is_detached_job(name: &str) -> bool {
-    matches!(name, "storage_migration")
+    matches!(name, "backend_migration")
 }
 
 /// `POST /api/admin/jobs/{name}/cancel` — cooperative cancel of the

@@ -29,9 +29,9 @@ export interface ProgressStatus {
 /**
  * JSON shape emitted in the `x-server-status` header.
  *
- * * `migration` — present only during a `storage_migration` run;
+ * * `migration` — present only during a `backend_migration` run;
  *   engages `readonly = true` (all writes are refused).
- * * `rotation` — present only during a `storage_rotate` run (K4
+ * * `rotation` — present only during a `backend_rotate` run (K4
  *   storage-key-rotation); `readonly` stays false, uploads and
  *   reads continue normally throughout.
  *
