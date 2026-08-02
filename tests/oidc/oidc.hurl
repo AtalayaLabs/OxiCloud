@@ -343,25 +343,28 @@ jsonpath "$.user.role" == "admin"
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 10 — Anti-takeover: an OIDC callback whose `email_verified`
-#           claim is `false` MUST be rejected. Without this guard
-#           an attacker who can set `email` to a victim's address
-#           in their own IdP account (some IdPs allow unverified
-#           emails through the consent screen) gets the victim's
-#           OxiCloud account on first login.
+# Step 10 — Operator-override: with `OXICLOUD_REQUIRE_VERIFIED_EMAIL=false`
+#           in `tests/common/server-with-oidc.env` (matching the
+#           default test posture), an OIDC callback whose
+#           `email_verified` claim is `false` MUST be accepted.
+#           This is the "I trust my IdP end-to-end" posture — the
+#           operator has told the server not to gate on the
+#           verification signal.
 #
-#           We flip the fake IdP into the unverified-email mode
-#           via the `/control/email-verified/false` test hook,
-#           drive a fresh authorize, expect the OxiCloud callback
-#           to fail, then reset the IdP for any future steps.
+#           This test used to be the anti-takeover check (assert
+#           rejection) BEFORE commit 1801150a moved the OIDC email
+#           check under the operator flag. Post-1801150a it flipped
+#           to a positive test of the operator-override branch.
 #
-#           This SHOULD use a different `sub` than the existing
-#           verified user to exercise the JIT path (the
-#           anti-takeover check fires there), but the auto-approve
-#           handler resolves one fixed `sub`. The check still
-#           fires on the existing user path too because the
-#           verified-email requirement is evaluated on every
-#           callback — that's what we exercise here.
+#           The rejection branch (`flag=true` + IdP `Some(false)` or
+#           `None`) is proved OUT-OF-SUITE — this Hurl file runs one
+#           server with one env config; asserting both branches
+#           needs either a second `hurl` invocation with the flag
+#           flipped, or a Rust unit test that exercises
+#           `handle_oidc_callback_with_id_claims` directly. The
+#           audit-log discriminator (`oidc.email_unverified_accepted`
+#           with reason `idp_asserts_unverified_flag_off`) is the
+#           operator-visible signal on the accept path here.
 # ─────────────────────────────────────────────────────────────
 POST http://localhost:1080/control/email-verified/false
 
@@ -382,25 +385,22 @@ GET {{unverified_idp_url}}
 location: true
 location-trusted: true
 
-# OxiCloud's callback returns 403 (or 401, depending on which
-# branch fires). What matters is the final URL is NOT
-# /login?oidc_code= — a successful login would have landed there
-# regardless of status, so a status-code-only assertion would
-# miss a "we accidentally provisioned the unverified user"
-# regression. We assert on BOTH the status AND the negation of
-# the success URL via Hurl's built-in `url` query (NOT the
-# `landed_at` capture from Step 4 — that variable is stale here).
+# Positive assertion of the operator-override: the redirect chain
+# lands on `/login?oidc_code=` (successful OIDC callback), and
+# the status is 2xx or 3xx (never 4xx/5xx). A regression that
+# re-added an unconditional rejection would land on the login
+# error page instead — either the URL negation or the status
+# ceiling catches it.
 HTTP *
 [Asserts]
-status >= 400
-status <  500
-url not matches "^http://localhost:8087/login\\?oidc_code="
+status < 400
+url matches "^http://localhost:8087/login\\?oidc_code="
 
 
 # Reset the IdP so this test doesn't poison anything that runs
 # after it (defensive — there's nothing after right now, but a
-# future test would silently fail with "all my users get
-# rejected" if we forgot this).
+# future test would silently fail with unexpected accept-paths
+# if we forgot this).
 POST http://localhost:1080/control/email-verified/true
 
 HTTP 200

@@ -3123,17 +3123,56 @@ impl AuthApplicationService {
         };
 
         let provider_name = oidc.provider_name().to_string();
-        // Check email_verified - only if email is present in claims, and email verification is required.
-        if self.require_verified_email()
-            && let Some(email) = &claims.email
-        {
-            let verified = claims.email_verified.unwrap_or(false);
-            if !verified {
-                tracing::warn!(
-                    "OIDC login rejected: email not verified (provider: {}, email: {})",
-                    provider_name,
-                    email
+        // Email-verification gate. The operator flag
+        // `OXICLOUD_REQUIRE_VERIFIED_EMAIL` is the master switch — an
+        // operator who opts out is telling us they trust the configured
+        // IdP end-to-end (e.g. corporate SSO where the directory already
+        // vets identities out-of-band). Both rejection reasons collapse
+        // to the same "flag off → accept" behaviour so the operator
+        // lever means what it says.
+        //
+        // Two distinct signals are audit-logged even in the accept path
+        // so operators can spot risky IdP behaviour after the fact:
+        //
+        //   Some(false)  → IdP is ACTIVELY asserting the email is
+        //                  unverified. Riskier than absence: it's the
+        //                  first-login takeover primitive (attacker
+        //                  types victim's address into an IdP-with-no-
+        //                  verify). Emit at info-level either way; the
+        //                  reject branch adds `oidc.callback_rejected`,
+        //                  the accept branch adds
+        //                  `oidc.email_unverified_accepted` so operators
+        //                  running with the flag off can still see the
+        //                  underlying risky signal in the audit log.
+        //   None         → IdP simply doesn't publish the claim.
+        //                  Weaker signal; rejected only when the flag
+        //                  is on. No audit line on the accept branch
+        //                  (the absence of a signal is not itself a
+        //                  signal — logging it would just be noise).
+        //
+        // We only evaluate when an email is present in the claims —
+        // no email → nothing to verify (the JIT path synthesises a
+        // placeholder later).
+        if let Some(email) = &claims.email {
+            let must_verify = self.require_verified_email();
+            let (reject, reason) = match (claims.email_verified, must_verify) {
+                (Some(true), _) => (false, None),
+                (Some(false), true) => (true, Some("idp_asserts_unverified")),
+                (Some(false), false) => (false, Some("idp_asserts_unverified_flag_off")),
+                (None, true) => (true, Some("claim_absent_and_required")),
+                (None, false) => (false, None),
+            };
+            if let Some(reason) = reason {
+                tracing::info!(
+                    target: "audit",
+                    event = if reject { "oidc.callback_rejected" } else { "oidc.email_unverified_accepted" },
+                    reason = reason,
+                    provider = %provider_name,
+                    email = %email,
+                    "👮🏻‍♂️ OIDC callback: email-verification signal"
                 );
+            }
+            if reject {
                 return Err(DomainError::new(
                     ErrorKind::AccessDenied,
                     "OIDC",
