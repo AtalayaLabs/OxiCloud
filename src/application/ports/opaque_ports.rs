@@ -2,7 +2,7 @@
 //!
 //! The registration record (encrypted "envelope" blob) and its
 //! metadata live in three columns on `auth.users` — introduced by the
-//! Phase 0 migration (`20260926000000_auth_opaque.sql`). This trait
+//! Phase 0 migration (`20260930000002_auth_opaque.sql`). This trait
 //! wraps the row-level access so:
 //!
 //!   * the OPAQUE handlers (Phase 1+) depend on a small, mockable
