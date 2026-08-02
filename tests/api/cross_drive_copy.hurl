@@ -30,7 +30,7 @@
 #      same `v_dest_drive_id` variable, so (a) passing implies
 #      file rows used the same value and (b) cross-checks it.
 #
-# Sweep convergence: `/api/admin/jobs/storage_reconcile/trigger` is the
+# Sweep convergence: `/api/admin/jobs/usage_reconcile/trigger` is the
 # deterministic synchronisation point — without it the
 # fire-and-forget delta hook may not yet have updated the cached
 # `used_bytes` when we read it.
@@ -136,7 +136,7 @@ file_id: jsonpath "$.id"
 # numbers, the late hook adds its delta on top, and used_bytes ends
 # up high by exactly one file's size. Symptom: expected 32, got 64.
 # Real fix is await'ing the hook inline server-side.
-POST {{base_url}}/api/admin/jobs/storage_reconcile/trigger
+POST {{base_url}}/api/admin/jobs/usage_reconcile/trigger
 Authorization: Bearer {{admin_token}}
 [Options]
 delay: 200ms
@@ -171,7 +171,7 @@ HTTP 200
 [Captures]
 shared_file_id: jsonpath "$.successful[0].id"
 
-POST {{base_url}}/api/admin/jobs/storage_reconcile/trigger
+POST {{base_url}}/api/admin/jobs/usage_reconcile/trigger
 Authorization: Bearer {{admin_token}}
 [Options]
 delay: 200ms
@@ -259,7 +259,7 @@ HTTP 201
 # the file's size into the cached counter. 200 ms is well above
 # the tokio task latency on any reasonable box; the deterministic
 # fix would be intra-transaction hooks, deferred until D7.
-POST {{base_url}}/api/admin/jobs/storage_reconcile/trigger
+POST {{base_url}}/api/admin/jobs/usage_reconcile/trigger
 Authorization: Bearer {{admin_token}}
 [Options]
 delay: 200ms
@@ -348,7 +348,7 @@ jsonpath "$.name"     == "dc-subtree-inner"
 # the Step 6 file copy (32) = 96. Anything other than (96, 96)
 # would mean the file INSERT in copy_folder_tree used the wrong
 # drive_id.
-POST {{base_url}}/api/admin/jobs/storage_reconcile/trigger
+POST {{base_url}}/api/admin/jobs/usage_reconcile/trigger
 Authorization: Bearer {{admin_token}}
 [Options]
 delay: 200ms

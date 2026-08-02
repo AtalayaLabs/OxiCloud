@@ -65,7 +65,7 @@ impl StorageUsageService {
     /// `GET /api/drives` therefore lags by up to the cache TTL (30 s),
     /// which matches the sibling caches' accepted UX phantom for
     /// drive-name staleness. Tests / operators that need immediate
-    /// freshness call `POST /api/admin/jobs/storage_reconcile/trigger`,
+    /// freshness call `POST /api/admin/jobs/usage_reconcile/trigger`,
     /// which runs `update_all_drives_storage_usage` → this method.
     ///
     /// Security posture unaffected: `check_drive_quota` reads
@@ -576,7 +576,7 @@ impl StorageUsageService {
     }
 }
 
-pub const STORAGE_RECONCILE_JOB_NAME: &str = "storage_reconcile";
+pub const USAGE_RECONCILE_JOB_NAME: &str = "usage_reconcile";
 
 use crate::infrastructure::scheduler::{JobHandler, JobOutcome, JobRegistry, JobRunArgs};
 use async_trait::async_trait;
@@ -600,7 +600,7 @@ impl StorageUsageService {
 #[async_trait]
 impl JobHandler for StorageUsageService {
     fn name(&self) -> &str {
-        STORAGE_RECONCILE_JOB_NAME
+        USAGE_RECONCILE_JOB_NAME
     }
 
     /// Runs both reconciliation sweeps — drives first, then users —

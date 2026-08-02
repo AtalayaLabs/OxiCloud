@@ -2335,7 +2335,7 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
 /// `force=true` requests acceleration semantics from handlers that
 /// support it (dedup_gc → grace = 0, grant_cleanup → grace = 0).
 /// Silently ignored by handlers that don't (trash_cleanup,
-/// storage_reconcile).
+/// usage_reconcile).
 ///
 /// `deep=true` opts into slow variants — `consistency_batch` fans it
 /// out to sub-jobs; `storage_consistency` (when implemented) will

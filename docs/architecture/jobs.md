@@ -41,7 +41,7 @@ operator benefit.
 | Job name           | Cadence                                    | Force semantic                                     | Service |
 |---|---|---|---|
 | `trash_cleanup`    | 24 h (hardcoded in DI, no env var yet)     | ignored                                            | [`trash_cleanup_service.rs`](../../src/infrastructure/services/trash_cleanup_service.rs) |
-| `storage_reconcile`| `OXICLOUD_STORAGE_USAGE_RECONCILE_SECS` (default 600s, min 30s) | ignored                            | [`storage_usage_service.rs`](../../src/application/services/storage_usage_service.rs) |
+| `usage_reconcile`  | `OXICLOUD_STORAGE_USAGE_RECONCILE_SECS` (default 600s, min 30s) | ignored                            | [`storage_usage_service.rs`](../../src/application/services/storage_usage_service.rs) |
 | `dedup_gc`         | on-demand only (trash cleanup runs it inline as its tail step) | `force=true` → `garbage_collect_force()` (skip orphan grace) | [`dedup_service.rs`](../../src/infrastructure/services/dedup_service.rs) |
 | `grant_cleanup`    | `OXICLOUD_GRANT_CLEANUP_INTERVAL_HOURS` (default 24h) — feature-gated by `OXICLOUD_GRANT_CLEANUP_ENABLED` | `force=true` → `purge(Some(0))` (grace_days=0) | [`grant_cleanup_service.rs`](../../src/infrastructure/services/grant_cleanup_service.rs) |
 

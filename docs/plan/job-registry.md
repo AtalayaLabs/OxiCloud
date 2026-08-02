@@ -787,7 +787,7 @@ reference for any external tool that still expects the old paths:
 
 | Legacy (retired)                                     | Replacement                                          |
 |---|---|
-| `POST /admin/internal/trigger-sweep`                 | `POST /admin/jobs/storage_reconcile/trigger`          |
+| `POST /admin/internal/trigger-sweep`                 | `POST /admin/jobs/usage_reconcile/trigger`            |
 | `POST /admin/internal/trigger-gc?force=X`            | `POST /admin/jobs/dedup_gc/trigger?force=X`           |
 | `POST /admin/internal/trigger-grant-cleanup?force=X` | `POST /admin/jobs/grant_cleanup/trigger?force=X`      |
 
@@ -816,7 +816,7 @@ complete. Rough shape:
 │ Name                Cadence     Last run          Status   Actions │
 │ ───────────────────────────────────────────────────────────────────│
 │ trash_cleanup       every 24 h  3h ago            ok       [Run]   │
-│ storage_reconcile   every 10 m  4m ago            ok       [Run]   │
+│ usage_reconcile     every 10 m  4m ago            ok       [Run]   │
 │ dedup_gc            on-demand   1d ago            ok       [Run]   │
 │ grant_cleanup       every 24 h  never             —        [Run]   │
 │ drives_consistency  on-demand   never             —        [Run]   │

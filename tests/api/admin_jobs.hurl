@@ -7,7 +7,7 @@
 #
 # Coverage:
 #   * Listing returns the four registered tenants
-#     (trash_cleanup, storage_reconcile, dedup_gc, grant_cleanup).
+#     (trash_cleanup, usage_reconcile, dedup_gc, grant_cleanup).
 #   * Scheduled jobs report `interval_ms`; on-demand jobs
 #     (`dedup_gc`) omit it via `skip_serializing_if=None`.
 #   * Triggering a job updates its `last_outcome` in the next list.
@@ -52,7 +52,7 @@ bob_token: jsonpath "$.access_token"
 
 # ─────────────────────────────────────────────────────────────
 # Step 1 — Admin lists jobs. All four Part 1 tenants must appear.
-# Scheduled jobs (trash_cleanup, storage_reconcile, grant_cleanup)
+# Scheduled jobs (trash_cleanup, usage_reconcile, grant_cleanup)
 # report `interval_ms`; on-demand jobs (`dedup_gc`) omit it via
 # serde's `skip_serializing_if = "Option::is_none"`.
 #
@@ -69,7 +69,7 @@ HTTP 200
 [Asserts]
 # Names — the four scheduler tenants.
 jsonpath "$[*].name" contains "trash_cleanup"
-jsonpath "$[*].name" contains "storage_reconcile"
+jsonpath "$[*].name" contains "usage_reconcile"
 jsonpath "$[*].name" contains "dedup_gc"
 jsonpath "$[*].name" contains "grant_cleanup"
 
@@ -90,7 +90,7 @@ jsonpath "$..interval_ms" count == 3
 
 # Every entry carries a `running` bool — same aggregate primitive.
 # Count matches the registered-tenant count: 4 Part 1 periodics
-# (trash_cleanup, storage_reconcile, dedup_gc, grant_cleanup) + 5
+# (trash_cleanup, usage_reconcile, dedup_gc, grant_cleanup) + 5
 # Part 2 recoverables (drives_consistency, folders_consistency,
 # files_consistency, blobs_consistency, backend_consistency —
 # wrapped by RecoverableAdapter so they appear here alongside the

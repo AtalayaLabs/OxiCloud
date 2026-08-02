@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 /// Semantics of `force`, per job:
 /// - `dedup_gc` — skip the orphan grace window (grace = 0).
 /// - `grant_cleanup` — grace = 0.
-/// - Others (trash_cleanup, storage_reconcile, …) — ignored.
+/// - Others (trash_cleanup, usage_reconcile, …) — ignored.
 ///
 /// Semantics of `deep`, per job:
 /// - `consistency_batch` — propagate to sub-jobs; only `storage_consistency`
