@@ -136,10 +136,32 @@ where
             .changes_since(collection_id, since_seq)
             .await?;
 
+        // A `label` (→ href) can appear on more than one row in this
+        // batch: CalDAV/CardDAV "update" is delete+recreate at the DB
+        // layer (a brand-new `member_id`, never a SQL UPDATE of the old
+        // row — see the migration header), so deleting then recreating
+        // the same href within one poll window produces two genuinely
+        // different rows — a tombstone for the old member_id and a
+        // creation for the new one. The handler renders upserts and
+        // deletions as separate buckets (`split_homogeneous`), which
+        // can't express "this happened before that", so a stale
+        // tombstone sharing a href with a live upsert in the SAME batch
+        // must be dropped here — the href demonstrably still exists,
+        // and a client has no order-based way to reach that conclusion
+        // itself from the rendered response.
+        let live_labels: std::collections::HashSet<String> = rows
+            .iter()
+            .filter(|r| !matches!(r.kind, SyncChangeKind::Deleted))
+            .map(|r| r.label.clone())
+            .collect();
+
         let mut changes = Vec::with_capacity(rows.len());
         for row in rows {
             match row.kind {
                 SyncChangeKind::Deleted => {
+                    if live_labels.contains(row.label.as_str()) {
+                        continue;
+                    }
                     changes.push(SyncChange::Deleted {
                         member_id: row.member_id,
                         href_hint: (self.label_to_href_hint)(&row.label),

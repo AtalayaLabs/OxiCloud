@@ -129,10 +129,29 @@ impl WebdavSyncCollectionService {
             .changes_since(collection_folder_id, since_seq)
             .await?;
 
+        // A `href_name` can appear on more than one row in this batch: a
+        // hard delete followed by a fresh create/upload of the same name
+        // within one poll window mints a brand-new `member_id`, never
+        // reusing the old row (unlike move/trash/restore, which do keep
+        // the same row). The handler renders upserts and deletions as
+        // separate buckets, which can't express "this happened before
+        // that", so a stale tombstone sharing a href with a live upsert
+        // in the SAME batch must be dropped here — the href demonstrably
+        // still exists, and a client has no order-based way to reach
+        // that conclusion itself from the rendered response.
+        let live_hrefs: std::collections::HashSet<String> = rows
+            .iter()
+            .filter(|r| !matches!(r.kind, SyncChangeKind::Deleted))
+            .map(|r| r.href_name.clone())
+            .collect();
+
         let mut changes = Vec::with_capacity(rows.len());
         for row in rows {
             match row.kind {
                 SyncChangeKind::Deleted => {
+                    if live_hrefs.contains(row.href_name.as_str()) {
+                        continue;
+                    }
                     changes.push(SyncChange::Deleted {
                         member_id: row.member_id,
                         href_hint: row.href_name,

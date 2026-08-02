@@ -86,6 +86,10 @@ impl<S: SyncChangeLogSchema> SyncChangeLogRepository for SyncChangeLogPgReposito
 
         let new_token_seq = max_seq.unwrap_or(since).max(since) as u64;
 
+        // Row order doesn't matter to the client — see the WebDAV repo's
+        // `changes_since` comment; the same-href-collision hazard is
+        // handled by dropping stale tombstones before rendering (see
+        // `sync_collection_engine.rs`), not by row order here.
         let sql = format!(
             r#"
             SELECT DISTINCT ON (member_id)
@@ -177,7 +181,7 @@ impl<S: SyncChangeLogSchema> SyncChangeLogRepository for SyncChangeLogPgReposito
                 ON CONFLICT ({collection_col}) DO UPDATE
                     SET low_water_seq = GREATEST({watermark}.low_water_seq, EXCLUDED.low_water_seq)
             )
-            SELECT COALESCE(SUM(n), 0) FROM per_collection
+            SELECT COALESCE(SUM(n), 0)::bigint FROM per_collection
             "#,
             table = S::TABLE,
             collection_col = S::COLLECTION_ID_COLUMN,
@@ -216,7 +220,7 @@ impl<S: SyncChangeLogSchema> SyncChangeLogRepository for SyncChangeLogPgReposito
                 ON CONFLICT ({collection_col}) DO UPDATE
                     SET low_water_seq = GREATEST({watermark}.low_water_seq, EXCLUDED.low_water_seq)
             )
-            SELECT COALESCE(SUM(n), 0) FROM per_collection
+            SELECT COALESCE(SUM(n), 0)::bigint FROM per_collection
             "#,
             table = S::TABLE,
             collection_col = S::COLLECTION_ID_COLUMN,

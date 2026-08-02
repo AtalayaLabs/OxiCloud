@@ -79,6 +79,29 @@ def caldav_app_password() -> str:
 
 
 @pytest.fixture(scope="session")
+def admin_jwt() -> str:
+    """Bearer JWT for the admin account, minted by `run-pycaldav.sh`.
+
+    Needed for admin-only endpoints (`/api/admin/...`) — app passwords /
+    DAV Basic Auth don't satisfy the `require_admin` middleware, only a
+    JWT with the admin role does."""
+    return _env("OXICLOUD_ADMIN_JWT")
+
+
+@pytest.fixture(scope="session")
+def base_url(caldav_url: str) -> str:
+    """Server origin, derived from `caldav_url` — same derivation style
+    as `carddav_url` below. Needed for endpoints outside the
+    `/caldav/`-rooted `dav_client` (e.g. `/api/admin/...`)."""
+    if "/caldav/" not in caldav_url:
+        raise RuntimeError(
+            f"OXICLOUD_CALDAV_URL={caldav_url!r} does not contain "
+            "'/caldav/'; can't derive the base origin."
+        )
+    return caldav_url.split("/caldav/", 1)[0]
+
+
+@pytest.fixture(scope="session")
 def dav_client(
     caldav_url: str, caldav_username: str, caldav_app_password: str
 ) -> caldav.DAVClient:

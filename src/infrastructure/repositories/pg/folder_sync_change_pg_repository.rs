@@ -54,7 +54,15 @@ impl FolderSyncChangeRepository for FolderSyncChangePgRepository {
 
         // DISTINCT ON collapses churn within the window to the latest row
         // per member (e.g. trash-then-restore nets to the correct single
-        // outcome instead of contradictory duplicate entries).
+        // outcome instead of contradictory duplicate entries). Row order
+        // here doesn't matter to the client: the handler buckets upserts
+        // and deletions into separate lists before rendering (see
+        // `webdav_handler.rs`'s manual split / `split_homogeneous`), so
+        // no response ever preserves this query's row order anyway — the
+        // real hazard that shape creates (a stale tombstone can outlive
+        // a same-href recreation within one poll window) is handled by
+        // dropping such tombstones before rendering, not by row order
+        // here. See `webdav_sync_collection_service.rs`'s comment.
         let rows = sqlx::query_as::<_, (i64, String, Uuid, String, String)>(
             r#"
             SELECT DISTINCT ON (member_id)
@@ -151,7 +159,7 @@ impl FolderSyncChangeRepository for FolderSyncChangePgRepository {
                         EXCLUDED.low_water_seq
                     )
             )
-            SELECT COALESCE(SUM(n), 0) FROM per_collection
+            SELECT COALESCE(SUM(n), 0)::bigint FROM per_collection
             "#,
         )
         .bind(cutoff)
@@ -188,7 +196,7 @@ impl FolderSyncChangeRepository for FolderSyncChangePgRepository {
                         EXCLUDED.low_water_seq
                     )
             )
-            SELECT COALESCE(SUM(n), 0) FROM per_collection
+            SELECT COALESCE(SUM(n), 0)::bigint FROM per_collection
             "#,
         )
         .bind(max_rows as i64)
