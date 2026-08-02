@@ -168,6 +168,7 @@ export default defineConfig({
             { text: "ReBAC Authorization", link: "/architecture/rebac-authorization" },
             { text: "Share Integration", link: "/architecture/share-integration" },
             { text: "Storage Quotas", link: "/architecture/storage-quotas" },
+            { text: "Backend Storage", link: "/architecture/backend-storage" },
             { text: "File and Blob lifecycle", link: "/architecture/file-and-blob-lifecycle" },
             { text: "ReBAC & Authorization", link: "/architecture/rebac-authorization" },
             { text: "User lifecycle", link: "/architecture/user-lifecycle" },
