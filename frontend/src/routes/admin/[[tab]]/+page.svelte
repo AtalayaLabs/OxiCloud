@@ -2080,8 +2080,52 @@
 		     The legacy form + related handlers/state live in git
 		     history; deleted here in one sweep.
 		     ══════════════════════════════════════════════════════════ -->
+		<!-- Section 1 — Content store: global DB blob stats,
+		     independent of any backend entry. Rendered first because
+		     it's the "what's actually in the system" answer;
+		     Storage backend + Encryption below are the "where /
+		     how it's stored" answers. -->
+		{#if storage}
+			<section
+				class="card storage-content-stats"
+				data-testid="admin-storage-content-stats"
+				aria-labelledby="admin-storage-content-stats-title"
+			>
+				<h2 id="admin-storage-content-stats-title">
+					{t('admin.storage_content_stats_title', 'Content store')}
+				</h2>
+				<p class="muted storage-content-stats__hint">
+					{t(
+						'admin.storage_content_stats_hint',
+						'Aggregate over the DB blob store — independent of which backend entry holds the bytes.'
+					)}
+				</p>
+				<dl class="storage-content-stats__grid">
+					<div>
+						<dt>{t('admin.storage_blobs', 'Blobs')}</dt>
+						<dd>{storage.total_blobs ?? '—'}</dd>
+					</div>
+					<div>
+						<dt>{t('admin.storage_size', 'Stored')}</dt>
+						<dd>
+							{storage.total_bytes_stored != null ? formatBytes(storage.total_bytes_stored) : '—'}
+						</dd>
+					</div>
+					<div>
+						<dt>{t('admin.storage_dedup', 'Dedup ratio')}</dt>
+						<dd>
+							{storage.dedup_ratio != null ? `${storage.dedup_ratio.toFixed(2)}x` : '—'}
+						</dd>
+					</div>
+				</dl>
+			</section>
+		{/if}
+
+		<!-- Section 2 — Storage backend: per-entry cards (backend
+		     type, location, actions). Encryption pair-chain moved
+		     out to its own section below. -->
 		<div class="card">
-			<h2>{t('admin.storage_title', 'Storage entries')}</h2>
+			<h2>{t('admin.storage_title', 'Storage backend')}</h2>
 			<p class="muted">
 				{t(
 					'admin.storage_move_hint',
@@ -2137,9 +2181,9 @@
 				<!-- Card-per-entry layout — most installs have 1 backend
 				     (occasionally 2 during a migration), so a rich card
 				     reads better than a wide table. Active entry gets
-				     the sub-stats + a highlight ring. Migrate & activate
-				     is per-card and only shown on non-active cards when
-				     no other migration is in flight. -->
+				     a highlight ring. Migrate & activate is per-card
+				     and only shown on non-active cards when no other
+				     migration is in flight. -->
 				{@const migrationInFlight =
 					migration != null && (migration.status === 'running' || migration.status === 'paused')}
 				<div class="entries-list" data-testid="admin-storage-entries-list">
@@ -2289,20 +2333,6 @@
 								<dd>{entry.backend}</dd>
 								<dt>{t('admin.entry_location', 'Location')}</dt>
 								<dd class="entry-card__mono">{entry.location_hint ?? '—'}</dd>
-								{#if entry.is_active}
-									<dt>{t('admin.storage_blobs', 'Blobs')}</dt>
-									<dd>{storage.total_blobs ?? '—'}</dd>
-									<dt>{t('admin.storage_size', 'Stored')}</dt>
-									<dd>
-										{storage.total_bytes_stored != null
-											? formatBytes(storage.total_bytes_stored)
-											: '—'}
-									</dd>
-									<dt>{t('admin.storage_dedup', 'Dedup ratio')}</dt>
-									<dd>
-										{storage.dedup_ratio != null ? `${storage.dedup_ratio.toFixed(2)}x` : '—'}
-									</dd>
-								{/if}
 							</dl>
 							<!-- Pair-list chain — one row per configured pair,
 							     head marked. Empty state (no `_ENCRYPTION_KEY`
@@ -2461,6 +2491,17 @@
 						<Icon name="copy" />
 						{t('common.copy', 'Copy')}
 					</button>
+				</p>
+				<p class="muted gen-key-fp">
+					{t('admin.gen_key_fingerprint', 'Fingerprint')}:
+					<code>{generatedKey.fingerprint}</code>
+					<span class="muted">
+						—
+						{t(
+							'admin.gen_key_fingerprint_hint',
+							'appears in the boot log and the pair chain above once loaded from `.env`.'
+						)}
+					</span>
 				</p>
 				<p class="alert alert--warn">
 					<Icon name="exclamation-triangle" />
@@ -4338,6 +4379,16 @@
 		flex-wrap: wrap;
 	}
 
+	.gen-key-fp {
+		margin-top: var(--space-2);
+		font-size: var(--text-sm);
+	}
+
+	.gen-key-fp code {
+		font-family: var(--font-mono);
+		color: var(--color-text-heading);
+	}
+
 	.maint-row {
 		display: flex;
 		align-items: center;
@@ -4446,6 +4497,47 @@
 	.cutover-hint__readonly-body {
 		margin: 0;
 		color: var(--color-danger-text, var(--color-text));
+	}
+
+	.storage-content-stats {
+		margin-bottom: var(--space-4);
+	}
+
+	.storage-content-stats h2 {
+		margin: 0 0 var(--space-1);
+	}
+
+	.storage-content-stats__hint {
+		margin: 0 0 var(--space-3);
+		font-size: var(--text-sm);
+	}
+
+	.storage-content-stats__grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+		gap: var(--space-3);
+		margin: 0;
+	}
+
+	.storage-content-stats__grid > div {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.storage-content-stats__grid dt {
+		font-size: var(--text-xs);
+		color: var(--color-text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+	}
+
+	.storage-content-stats__grid dd {
+		margin: 0;
+		font-size: var(--text-md);
+		font-weight: var(--weight-semibold);
+		color: var(--color-text-heading);
+		font-variant-numeric: tabular-nums;
 	}
 
 	.entries-list {

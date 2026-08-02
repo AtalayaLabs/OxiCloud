@@ -65,9 +65,13 @@ export function reextractPhotoMetadata(): Promise<ReextractResult> {
 }
 
 /** A freshly generated AES-256 at-rest blob-encryption key (base64) plus a
- *  data-loss warning authored by the server. */
+ *  data-loss warning authored by the server. The `fingerprint` is the
+ *  SSH-style colon-hex render the boot log / admin pair-chain / rotate
+ *  reports all use — admins can paste the key into `.env`, restart, and
+ *  check the fingerprint matches to confirm the key made it in intact. */
 export interface GeneratedKey {
 	key: string;
+	fingerprint: string;
 	warning: string;
 }
 

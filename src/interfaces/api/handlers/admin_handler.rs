@@ -842,9 +842,22 @@ pub async fn generate_encryption_key() -> Result<impl IntoResponse, AppError> {
         crate::infrastructure::services::encrypted_blob_backend::EncryptedBlobBackend::generate_key(
         );
     let key_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, key);
+    // Fingerprint uses the same colon-hex rendering as the boot log,
+    // the pair chain in admin/storage, and `oxicloud --fingerprint`.
+    // Ed can cross-reference it against `.env` after pasting the key
+    // in — if the fingerprints match, the key made it into the
+    // config intact.
+    let fingerprint =
+        crate::common::config::fingerprint_from_base64_key(&key_b64).unwrap_or_else(|_| {
+            // Should never happen — we JUST generated a 32-byte key
+            // and base64-encoded it — but if the fingerprint helper
+            // rejects, degrade gracefully rather than 500.
+            "—".to_string()
+        });
 
     Ok(Json(serde_json::json!({
         "key": key_b64,
+        "fingerprint": fingerprint,
         "warning": "Store this key securely. If lost, encrypted data is IRRECOVERABLY LOST."
     })))
 }
