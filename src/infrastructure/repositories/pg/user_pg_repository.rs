@@ -112,6 +112,55 @@ impl UserPgRepository {
         ))
     }
 
+    /// Read `force_password_change_at_next_login`. Written TRUE by the
+    /// admin password-reset flow (via `OpaquePgRepository::clear_registration`,
+    /// which sets it alongside the envelope invalidation in one UPDATE)
+    /// and by admin-side `set_user_password`. Cleared on a successful
+    /// user-initiated `change_password`.
+    ///
+    /// Reads via a single-column SELECT to avoid dragging the full row
+    /// (with its up-to-512 KiB `image`) on every login-response mint.
+    /// Returns `false` for missing users so the login path — which has
+    /// already resolved the user by id — treats a lost race the same
+    /// as "flag not set" rather than surfacing a 5xx.
+    pub async fn is_force_password_change(&self, id: Uuid) -> UserRepositoryResult<bool> {
+        let row: Option<(bool,)> = sqlx::query_as(
+            r#"
+            SELECT force_password_change_at_next_login
+              FROM auth.users
+             WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)?;
+        Ok(row.map(|(v,)| v).unwrap_or(false))
+    }
+
+    /// Clear `force_password_change_at_next_login`. Called by the
+    /// change-password flow on success so a legitimate self-service
+    /// password rotation lifts the admin-set "temporary" marker in
+    /// one round-trip.
+    ///
+    /// Deliberately does NOT gate on the current value — flipping FALSE
+    /// to FALSE is a no-op at the row level. That keeps the caller from
+    /// needing a read-modify-write.
+    pub async fn clear_force_password_change(&self, id: Uuid) -> UserRepositoryResult<()> {
+        sqlx::query(
+            r#"
+            UPDATE auth.users
+               SET force_password_change_at_next_login = FALSE
+             WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .execute(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)?;
+        Ok(())
+    }
+
     /// Updates a user's profile image (URL or data URI). Not part of the
     /// `UserRepository` trait — called directly from `AuthApplicationService`.
     pub async fn update_image(

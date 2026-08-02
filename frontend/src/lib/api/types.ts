@@ -246,6 +246,21 @@ export interface AuthResponse {
 	refresh_token: string;
 	token_type: string;
 	expires_in: number;
+	/**
+	 * Mirrors `auth.users.force_password_change_at_next_login` — set
+	 * TRUE by the admin password-reset flow (see backend
+	 * `OpaquePgRepository::clear_registration`) so admin-picked
+	 * passwords stay temporary until the user changes them. When true,
+	 * the SPA's post-login handler must route to `/settings/security`
+	 * (or the equivalent change-password surface) instead of the
+	 * user's home. Cleared server-side by a successful
+	 * `POST /api/auth/change-password`.
+	 *
+	 * Optional on the wire because the backend `#[serde(default)]`s
+	 * to `false` — older clients / non-login endpoints hitting this
+	 * type won't nil-deref.
+	 */
+	force_password_change?: boolean;
 }
 
 /**

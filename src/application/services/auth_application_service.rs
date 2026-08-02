@@ -965,13 +965,38 @@ impl AuthApplicationService {
         self.session_storage.create_session(session).await?;
 
         // Authentication response
+        let force_password_change = self.read_force_password_change(user.id()).await;
         Ok(AuthResponseDto {
             user: UserDto::from(user),
             access_token,
             refresh_token,
             token_type: "Bearer".to_string(),
             expires_in: self.token_service.refresh_token_expiry_secs(),
+            force_password_change,
         })
+    }
+
+    /// Read `force_password_change_at_next_login` for the given user,
+    /// with fail-open semantics on repo error (returns `false` and
+    /// logs a warn). Every callsite that builds an `AuthResponseDto`
+    /// uses this — mint_session (legacy + OPAQUE), magic-link
+    /// redemption, refresh, OIDC callback — so the flag surfaces
+    /// consistently across all login shapes, and a DB blip doesn't
+    /// spam every response with a spurious change-password prompt.
+    async fn read_force_password_change(&self, user_id: Uuid) -> bool {
+        self.user_storage
+            .is_force_password_change(user_id)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    target: "audit",
+                    event = "auth.force_password_change_read_failed",
+                    user_id = %user_id,
+                    error = %e,
+                    "force_password_change lookup failed; treating as false"
+                );
+                false
+            })
     }
 
     /// Redeem a magic-link token and emit a fresh session in one shot.
@@ -1204,12 +1229,14 @@ impl AuthApplicationService {
             cross_browser_confirmed = cross_browser_confirmed,
         );
 
+        let force_password_change = self.read_force_password_change(user.id()).await;
         let auth = AuthResponseDto {
             user: UserDto::from(user),
             access_token,
             refresh_token,
             token_type: "Bearer".to_string(),
             expires_in: self.token_service.refresh_token_expiry_secs(),
+            force_password_change,
         };
 
         Ok(MagicLinkRedeemResult::Allowed(Box::new(
@@ -1345,12 +1372,19 @@ impl AuthApplicationService {
             .rotate_session(session.id(), new_session)
             .await?;
 
+        // Refresh re-reads the flag so an admin flip mid-session
+        // surfaces on the next refresh even if it wasn't set at
+        // initial login. The SPA's post-refresh flow (silent, on
+        // its own timer) can then route the user to change-password
+        // without waiting for an explicit re-login.
+        let force_password_change = self.read_force_password_change(user.id()).await;
         Ok(AuthResponseDto {
             user: UserDto::from(user),
             access_token,
             refresh_token: new_refresh_token,
             token_type: "Bearer".to_string(),
             expires_in: self.token_service.refresh_token_expiry_secs(),
+            force_password_change,
         })
     }
 
@@ -1838,6 +1872,22 @@ impl AuthApplicationService {
 
         // Save updated user
         self.user_storage.update_user(user.clone()).await?;
+
+        // Clear the admin-set "temporary password" marker — the user
+        // has just picked their own password, so the next-login prompt
+        // has served its purpose. Failure here is non-fatal (login
+        // will just keep prompting until an admin resets or a later
+        // change_password succeeds), but log so ops sees any
+        // consistent drift.
+        if let Err(e) = self.user_storage.clear_force_password_change(user_id).await {
+            tracing::warn!(
+                target: "audit",
+                event = "auth.force_password_change_clear_failed",
+                user_id = %user_id,
+                error = %e,
+                "clear_force_password_change failed after change_password success"
+            );
+        }
 
         // Optional: revoke all sessions to force re-login with new password
         self.session_storage
@@ -3319,12 +3369,14 @@ impl AuthApplicationService {
         }
         self.session_storage.create_session(session).await?;
 
+        let force_password_change = self.read_force_password_change(user.id()).await;
         let auth_response = AuthResponseDto {
             user: UserDto::from(user),
             access_token,
             refresh_token,
             token_type: "Bearer".to_string(),
             expires_in: self.token_service.refresh_token_expiry_secs(),
+            force_password_change,
         };
 
         // 7. Store auth response behind a one-time exchange code (Fix #4: no tokens in URL)

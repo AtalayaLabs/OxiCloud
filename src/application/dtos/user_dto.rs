@@ -267,6 +267,23 @@ pub struct AuthResponseDto {
     pub refresh_token: String,
     pub token_type: String,
     pub expires_in: i64,
+    /// When `true`, the caller must be routed to the change-password
+    /// flow before any other action. Set on the login response for
+    /// users whose `auth.users.force_password_change_at_next_login`
+    /// column is TRUE — the admin password-reset flow flips that
+    /// column atomically alongside `clear_registration` so admin-set
+    /// passwords remain temporary until the user picks their own.
+    /// Cleared by a successful `POST /api/auth/change-password`.
+    ///
+    /// SPA policy: if this is `true`, redirect to `/settings/password`
+    /// (or the equivalent) immediately after the login handler settles.
+    /// Backend does not gate any endpoints on this flag — it's a
+    /// soft-enforcement signal; a client that ignores it keeps its
+    /// session, but the responsibility falls on the SPA to route
+    /// correctly. Backend enforcement (session scope claim) is a
+    /// possible follow-up if the soft path proves insufficient.
+    #[serde(default)]
+    pub force_password_change: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
