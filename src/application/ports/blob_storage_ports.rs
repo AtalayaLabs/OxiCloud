@@ -152,10 +152,19 @@ pub trait BlobStorageBackend: Send + Sync + 'static {
     /// overwrites atomically).
     ///
     /// Default: delegates to `put_blob_from_bytes`. That default is
-    /// CORRECT for backends whose `put_blob_from_bytes` already
-    /// overwrites (S3, Azure — object stores overwrite on PUT by
-    /// default). Backends whose `put_blob_from_bytes` is
-    /// idempotent-skip (like `LocalBlobBackend`) MUST override.
+    /// WRONG for every current backend — Local uses `O_EXCL` and
+    /// S3/Azure both HEAD-probe before writing, so `put_blob_from_bytes`
+    /// is silently a no-op when the target already exists. Every
+    /// production backend MUST override this to guarantee overwrite:
+    ///
+    /// - `LocalBlobBackend` — tempfile + rename(2) + fsync
+    /// - `S3BlobBackend` / `AzureBlobBackend` — unconditional PUT
+    ///   (same body as `put_blob_from_bytes_unsynced`, which already
+    ///   skips the HEAD probe; object-store PUTs are durable on
+    ///   return so no separate sync is needed)
+    ///
+    /// The default remains only for the `#[cfg(test)]` mocks that
+    /// never exercise rotate/migrate.
     fn put_blob_from_bytes_replace(
         &self,
         hash: &str,

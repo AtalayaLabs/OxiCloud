@@ -46,11 +46,12 @@
 //!   cancel + cursor discipline; the batch loop is I/O-bound anyway.
 //!   Add concurrency later if a real throughput need appears.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use futures::StreamExt;
 use sqlx::PgPool;
 
@@ -61,8 +62,9 @@ use crate::infrastructure::scheduler::{
     JobRegistry, JobRunArgs, JobStore, JobStoreProvider, RecoverableJobHandler, RunOutcome,
     RunStatus, record_or_log,
 };
+use crate::infrastructure::services::encrypted_blob_backend::EncryptedBlobBackend;
 use crate::infrastructure::services::entry_backend::{
-    build_entry_backend, persist_active_backend_name, persist_migration_readonly,
+    build_entry_backend_typed, persist_active_backend_name, persist_migration_readonly,
 };
 
 pub const STORAGE_MIGRATION_JOB_NAME: &str = "storage_migration";
@@ -413,7 +415,13 @@ impl RecoverableJobHandler for StorageMigrationService {
         // Build target backend via the shared factory — same code
         // path boot uses, so the encryption decorator wrapping is
         // uniform.
-        let target = build_entry_backend(target_entry, &self.storage_path_fallback);
+        // Typed variant: we need the wrapper's `is_at_head_format`
+        // + `put_blob_from_bytes_replace` for the smart-skip probe
+        // and overwrite path (the trait-object `put_blob` silently
+        // no-ops on existing target blobs — that's the bug this
+        // commit fixes end-to-end). The `Arc<dyn>` coercion is free
+        // for the swap-hot-swap call in `finish_completed`.
+        let target = build_entry_backend_typed(target_entry, &self.storage_path_fallback);
         if let Err(e) = target.initialize().await {
             return RunOutcome::Failed {
                 message: format!("target backend init: {e}"),
@@ -503,14 +511,13 @@ impl RecoverableJobHandler for StorageMigrationService {
         };
 
         let mut copied_count = 0u64;
-        // K1.2: with the target-skip short-circuit gone (see the
-        // detailed comment further down), no blob is ever "skipped"
-        // during a migration walk today. The counter stays wired
-        // through the log lines + `finish_completed` so K3's
-        // format-aware smart-skip can re-populate it without
-        // touching the observability surface. Not mutated in this
-        // slice — hence no `mut`.
-        let skipped_count: u64 = 0;
+        // Populated by the smart-skip probe below: target blob
+        // already exists at the current head format+key, so a
+        // rewrite would be identical bytes. Cheap (15-byte range
+        // read via `is_at_head_format`), massive latency win on
+        // resume + on backends where the source was rotated to the
+        // same key as the target already had.
+        let mut skipped_count: u64 = 0;
         let mut failed_count = 0u64;
         let mut source_missing_count = 0u64;
 
@@ -638,35 +645,41 @@ impl RecoverableJobHandler for StorageMigrationService {
                     }
                 }
 
-                // Always copy — do NOT short-circuit on
-                // `target.blob_exists(hash)`. Ed hit this on 2026-08-01
-                // during S3 → local migration testing with encryption
-                // enabled on the target: the target had pre-existing
-                // plaintext blobs from an earlier local-active session,
-                // so `blob_exists` returned true and the migration
-                // silently skipped them. Result: the "encrypted"
-                // target ended up with mixed plaintext + ciphertext
-                // blobs — undetectable until a subsequent read failed.
+                // Smart skip via v1 header inspection: read the
+                // target's first 15 bytes and only rewrite if the
+                // stored format+key_fp differs from the target's
+                // current head. This is the "if file exists and
+                // destination key mismatch, overwrite it" rule.
                 //
-                // The old skip was justified by two use cases:
-                //   (a) resume idempotency — the last cursor-checkpoint
-                //       window (~100 blobs) gets re-processed on resume;
-                //   (b) target-side dedup — same content already present.
+                // Failure of the probe → treat as "not at head" →
+                // fall through to overwrite. Safe because the
+                // overwrite is atomic (Local: tempfile + rename;
+                // S3/Azure: unconditional PUT via the newly-fixed
+                // `put_blob_from_bytes_replace` overrides).
                 //
-                // Both are now handled by unconditional overwrite: the
-                // re-copy is bounded by the checkpoint window (small),
-                // and dedup-hit content is rare in practice
-                // (content-addressability means duplicate blobs ARE
-                // the same blob unless two backends were seeded
-                // separately from the same source).
-                //
-                // K3's `storage_rotate` job will restore a smart skip
-                // via the v1 header's `<key_fp>` field — "already at
-                // head format+key" then becomes cheaply detectable
-                // without reading target bytes. Until then, correct >
-                // fast.
+                // Historical note: earlier we had `blob_exists`
+                // skip (K1.0), which silently skipped mismatched
+                // keys and produced mixed-encryption backends. K1.2
+                // removed that skip and made every blob rewrite
+                // unconditionally. This slice replaces the
+                // unconditional rewrite with a smart skip that's
+                // both correct (checks the header, not just
+                // existence) AND fast (skips the ~99% of resume
+                // blobs already at head format).
+                if target.is_at_head_format(hash).await.unwrap_or(false) {
+                    skipped_count += 1;
+                    tracing::debug!(
+                        target: "oxicloud::migration",
+                        event = "storage_migration.blob_skipped_head_match",
+                        run_id = %store.run_id(),
+                        hash = %hash,
+                        head_format = %target.head_format(),
+                        "target blob already at head format — skipping rewrite"
+                    );
+                    continue;
+                }
 
-                match copy_blob(self.source.as_ref(), target.as_ref(), hash).await {
+                match copy_blob(self.source.as_ref(), target.clone(), hash).await {
                     Ok(()) => {
                         copied_count += 1;
                     }
@@ -979,53 +992,39 @@ fn entry_identity(entry: &NamedStorageEntry) -> String {
 /// cleans up on reboot).
 async fn copy_blob(
     source: &dyn BlobStorageBackend,
-    target: &dyn BlobStorageBackend,
+    target: Arc<EncryptedBlobBackend>,
     hash: &str,
 ) -> Result<(), DomainError> {
-    let tmp_dir = std::env::temp_dir().join("oxicloud-migration");
-    tokio::fs::create_dir_all(&tmp_dir).await.map_err(|e| {
-        DomainError::internal_error(
-            "StorageMigration",
-            format!("create temp dir {}: {e}", tmp_dir.display()),
-        )
-    })?;
-    let tmp_path = tmp_dir.join(format!("{hash}.tmp"));
-
-    if let Err(e) = write_source_to_tmp(source, hash, &tmp_path).await {
-        let _ = tokio::fs::remove_file(&tmp_path).await;
-        return Err(e);
-    }
-
-    let put_result = target.put_blob(hash, &tmp_path).await;
-    let _ = tokio::fs::remove_file(&tmp_path).await;
-    put_result.map(|_bytes_written| ())
+    // Read the full plaintext from source (source is wrapped in
+    // `EncryptedBlobBackend`, so its `get_blob_stream` decrypts
+    // transparently — even legacy plaintext blobs come out clean
+    // via the BLAKE3 rescue). Collected in-memory because the
+    // target's `put_blob_from_bytes_replace` needs a `Bytes`.
+    //
+    // For CDC chunks (every blob written since chunking landed)
+    // this is ≤ 1 MiB. Legacy whole-file blobs pay a full-blob
+    // buffer here; acceptable given rotate/migration are admin-
+    // triggered operations. Streaming through a temp file (the
+    // old shape) doesn't help — target still needs the bytes.
+    let stream = source.get_blob_stream(hash).await?;
+    let plaintext = collect_stream_bytes(stream).await?;
+    target
+        .put_blob_from_bytes_replace(hash, plaintext)
+        .await
+        .map(|_bytes_written| ())
 }
 
-async fn write_source_to_tmp(
-    source: &dyn BlobStorageBackend,
-    hash: &str,
-    tmp_path: &Path,
-) -> Result<(), DomainError> {
-    use tokio::io::AsyncWriteExt;
-
-    let stream = source.get_blob_stream(hash).await?;
-    let mut file = tokio::fs::File::create(tmp_path).await.map_err(|e| {
-        DomainError::internal_error(
-            "StorageMigration",
-            format!("create temp file {}: {e}", tmp_path.display()),
-        )
-    })?;
+async fn collect_stream_bytes(
+    stream: crate::application::ports::blob_storage_ports::BlobStream,
+) -> Result<Bytes, DomainError> {
+    use bytes::BytesMut;
+    let mut buf = BytesMut::new();
     let mut stream = std::pin::pin!(stream);
     while let Some(chunk) = stream.next().await {
         let bytes = chunk.map_err(|e| {
             DomainError::internal_error("StorageMigration", format!("source stream read: {e}"))
         })?;
-        file.write_all(&bytes).await.map_err(|e| {
-            DomainError::internal_error("StorageMigration", format!("temp file write: {e}"))
-        })?;
+        buf.extend_from_slice(&bytes);
     }
-    file.flush()
-        .await
-        .map_err(|e| DomainError::internal_error("StorageMigration", format!("temp flush: {e}")))?;
-    Ok(())
+    Ok(buf.freeze())
 }

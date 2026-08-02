@@ -237,6 +237,48 @@ impl EncryptedBlobBackend {
         }
     }
 
+    /// Smart-skip probe used by `storage_migration` (and potentially
+    /// `storage_rotate` if it ever gains a fast-path). Reads the
+    /// first [`HEADER_SIZE`] bytes of the on-disk blob and returns
+    /// `true` iff:
+    ///
+    /// * the blob exists, AND
+    /// * its first bytes carry the v1 header (`OXCPT | 0001`), AND
+    /// * the header's `key_fp` matches this wrapper's head key
+    ///   (encrypted-v1 → `head_key_fp`; plaintext-v1 → all-zero).
+    ///
+    /// Any error (blob missing, short read, IO failure) returns
+    /// `Ok(false)` — the caller re-writes, which is always safe.
+    /// Only propagates errors that the caller genuinely cannot
+    /// distinguish from "blob absent" and needs to see.
+    ///
+    /// Backend-agnostic: reads through the trait's
+    /// `get_blob_range_stream` on the *inner* backend (bypasses this
+    /// wrapper's decrypt so we see the raw on-disk header bytes).
+    /// Local pays one `pread` syscall; S3 pays one HEAD/GET with
+    /// `Range: bytes=0-14`; Azure the same.
+    pub async fn is_at_head_format(&self, hash: &str) -> Result<bool, DomainError> {
+        // Skip the probe entirely for backends that don't stream —
+        // `get_blob_range_stream` would fail on a legit-missing blob
+        // with `NotFound` which we want to translate to `Ok(false)`.
+        let stream = match self
+            .inner
+            .get_blob_range_stream(hash, 0, Some(HEADER_SIZE as u64))
+            .await
+        {
+            Ok(s) => s,
+            Err(_) => return Ok(false),
+        };
+        let raw = match collect_stream(stream).await {
+            Ok(b) => b,
+            Err(_) => return Ok(false),
+        };
+        if raw.len() < HEADER_SIZE {
+            return Ok(false);
+        }
+        Ok(BlobFormat::classify(&raw) == self.head_format())
+    }
+
     /// Fetch, classify, and decrypt a blob in one round-trip. Used by
     /// K3's `storage_rotate` per-blob step: it needs both the
     /// plaintext (to re-encrypt under the head pair) AND the current
