@@ -14,7 +14,19 @@
 -- the trigger shape already proven by the `tree_etag_dirty` queue
 -- (`20260627000000_async_tree_etag_queue.sql`) — same
 -- `pg_trigger_depth() > 1` reentrancy guard, same DAV-observable-columns
--- value filter for UPDATE. Unlike that queue, rows here are NOT drained on
+-- value filter for UPDATE.
+--
+-- Footgun to watch for: the `pg_trigger_depth() > 1` guard on every
+-- function below silently skips logging when `storage.files`/`folders`
+-- are mutated from WITHIN another trigger (depth > 1) — correct for the
+-- bulk-cascade case this guard exists for (see the no-FK note below), but
+-- it means any FUTURE migration or backfill that mutates these tables
+-- from inside a trigger will silently produce no change-log rows for
+-- that mutation. If you're writing such code and it needs to be visible
+-- to sync-collection clients, call `storage.folder_sync_changes` INSERT
+-- logic directly instead of relying on these triggers firing.
+--
+-- Unlike that queue, rows here are NOT drained on
 -- flush: they persist until the retention sweep (`SyncLogRetentionService`,
 -- application-layer) deletes rows past the configured retention window and
 -- advances `folder_sync_watermark.low_water_seq` accordingly.
@@ -77,19 +89,27 @@ CREATE INDEX IF NOT EXISTS idx_folder_sync_changes_collection_seq
 CREATE INDEX IF NOT EXISTS idx_folder_sync_changes_changed_at
     ON storage.folder_sync_changes (changed_at);
 
--- Singleton low-water-mark row: durable record of "rows below this seq
--- have been purged by retention," needed because an empty/sparse table
--- alone can't distinguish "nothing has ever happened" from "so much
--- happened your token's rows are long gone." Monotonically advanced
--- (never decreased) by `SyncLogRetentionService`.
+-- Per-collection low-water-mark: durable record of "rows below this seq
+-- have been purged by retention for THIS collection," needed because an
+-- empty/sparse table alone can't distinguish "nothing has ever happened"
+-- from "so much happened your token's rows are long gone."
+--
+-- Keyed by `collection_folder_id`, NOT a singleton: `seq` is one IDENTITY
+-- sequence shared by every folder in the instance, so a single global
+-- watermark would let a high-churn folder's purged rows falsely expire a
+-- quiet sibling folder's still-valid token (the quiet folder's own rows
+-- were never touched by retention, but a global watermark can't tell the
+-- two apart). No FK to `storage.folders(id)`, same reasoning as
+-- `folder_sync_changes.collection_folder_id` above — the collection may
+-- already be gone by the time the sweep advances its watermark. Absence
+-- of a row for a given collection means "never purged" (never expired),
+-- not "expired" — the repository layer treats a missing row as seq 0.
+-- Monotonically advanced (never decreased) per collection by
+-- `SyncLogRetentionService`.
 CREATE TABLE IF NOT EXISTS storage.folder_sync_watermark (
-    singleton     BOOLEAN NOT NULL DEFAULT TRUE PRIMARY KEY CHECK (singleton),
-    low_water_seq BIGINT NOT NULL DEFAULT 0
+    collection_folder_id UUID PRIMARY KEY,
+    low_water_seq         BIGINT NOT NULL DEFAULT 0
 );
-
-INSERT INTO storage.folder_sync_watermark (singleton, low_water_seq)
-VALUES (TRUE, 0)
-ON CONFLICT (singleton) DO NOTHING;
 
 -- ── File side: INSERT ────────────────────────────────────────────────
 CREATE OR REPLACE FUNCTION storage.log_file_sync_changes_ins()

@@ -34,6 +34,24 @@ impl FolderSyncChangeRepository for FolderSyncChangePgRepository {
     ) -> Result<(Vec<FolderSyncChangeRow>, u64), DomainError> {
         let since = since_seq.map(|s| s as i64).unwrap_or(0);
 
+        // Capture the upper bound FIRST, then use it to bound the delta
+        // query below (`seq <= $3`). Reading MAX(seq) after the delta
+        // query would race a concurrent insert: it could land in a value
+        // this call mints as `new_token_seq` while being invisible to the
+        // already-fetched DISTINCT ON rows — silently skipped forever, since
+        // the next poll asks for `seq > new_token_seq`. Bounding both
+        // queries to the same captured max keeps the delivered rows and
+        // the minted token describing the same snapshot.
+        let max_seq: Option<i64> = sqlx::query_scalar(
+            "SELECT MAX(seq) FROM storage.folder_sync_changes WHERE collection_folder_id = $1",
+        )
+        .bind(collection_folder_id)
+        .fetch_one(&*self.pool)
+        .await
+        .map_err(|e| DomainError::database_error(format!("folder_sync_changes max_seq: {e}")))?;
+
+        let new_token_seq = max_seq.unwrap_or(since).max(since) as u64;
+
         // DISTINCT ON collapses churn within the window to the latest row
         // per member (e.g. trash-then-restore nets to the correct single
         // outcome instead of contradictory duplicate entries).
@@ -44,26 +62,18 @@ impl FolderSyncChangeRepository for FolderSyncChangePgRepository {
               FROM storage.folder_sync_changes
              WHERE collection_folder_id = $1
                AND seq > $2
+               AND seq <= $3
              ORDER BY member_id, seq DESC
             "#,
         )
         .bind(collection_folder_id)
         .bind(since)
+        .bind(new_token_seq as i64)
         .fetch_all(&*self.pool)
         .await
         .map_err(|e| {
             DomainError::database_error(format!("folder_sync_changes changes_since: {e}"))
         })?;
-
-        let max_seq: Option<i64> = sqlx::query_scalar(
-            "SELECT MAX(seq) FROM storage.folder_sync_changes WHERE collection_folder_id = $1",
-        )
-        .bind(collection_folder_id)
-        .fetch_one(&*self.pool)
-        .await
-        .map_err(|e| DomainError::database_error(format!("folder_sync_changes max_seq: {e}")))?;
-
-        let new_token_seq = max_seq.unwrap_or(since).max(since) as u64;
 
         let changes = rows
             .into_iter()
@@ -102,52 +112,89 @@ impl FolderSyncChangeRepository for FolderSyncChangePgRepository {
         Ok(max_seq.unwrap_or(0) as u64)
     }
 
-    async fn is_seq_expired(&self, seq: u64) -> Result<bool, DomainError> {
-        let low_water_seq: i64 = sqlx::query_scalar(
-            "SELECT low_water_seq FROM storage.folder_sync_watermark WHERE singleton = TRUE",
+    async fn is_seq_expired(
+        &self,
+        collection_folder_id: Uuid,
+        seq: u64,
+    ) -> Result<bool, DomainError> {
+        let low_water_seq: Option<i64> = sqlx::query_scalar(
+            "SELECT low_water_seq FROM storage.folder_sync_watermark
+              WHERE collection_folder_id = $1",
         )
-        .fetch_one(&*self.pool)
+        .bind(collection_folder_id)
+        .fetch_optional(&*self.pool)
         .await
         .map_err(|e| DomainError::database_error(format!("folder_sync_watermark read: {e}")))?;
 
-        Ok((seq as i64) < low_water_seq)
+        // No row means this collection has never had rows purged by
+        // retention — never expired, regardless of `seq`.
+        Ok(low_water_seq.is_some_and(|low_water| (seq as i64) < low_water))
     }
 
     async fn delete_expired_before(&self, cutoff: DateTime<Utc>) -> Result<u64, DomainError> {
-        let mut tx = self.pool.begin().await.map_err(|e| {
-            DomainError::database_error(format!("folder_sync_changes retention begin: {e}"))
-        })?;
-
-        let deleted_seqs: Vec<i64> = sqlx::query_scalar(
-            "DELETE FROM storage.folder_sync_changes WHERE changed_at < $1 RETURNING seq",
+        sqlx::query_scalar::<_, i64>(
+            r#"
+            WITH deleted AS (
+                DELETE FROM storage.folder_sync_changes
+                 WHERE changed_at < $1
+             RETURNING seq, collection_folder_id
+            ), per_collection AS (
+                SELECT collection_folder_id, MAX(seq) AS max_seq, COUNT(*) AS n
+                  FROM deleted
+                 GROUP BY collection_folder_id
+            ), upserted AS (
+                INSERT INTO storage.folder_sync_watermark (collection_folder_id, low_water_seq)
+                SELECT collection_folder_id, max_seq FROM per_collection
+                ON CONFLICT (collection_folder_id) DO UPDATE
+                    SET low_water_seq = GREATEST(
+                        storage.folder_sync_watermark.low_water_seq,
+                        EXCLUDED.low_water_seq
+                    )
+            )
+            SELECT COALESCE(SUM(n), 0) FROM per_collection
+            "#,
         )
         .bind(cutoff)
-        .fetch_all(&mut *tx)
+        .fetch_one(&*self.pool)
         .await
-        .map_err(|e| {
-            DomainError::database_error(format!("folder_sync_changes retention delete: {e}"))
-        })?;
+        .map(|n| n as u64)
+        .map_err(|e| DomainError::database_error(format!("folder_sync_changes retention: {e}")))
+    }
 
-        let deleted_count = deleted_seqs.len() as u64;
-
-        if let Some(max_seq) = deleted_seqs.into_iter().max() {
-            sqlx::query(
-                "UPDATE storage.folder_sync_watermark
-                    SET low_water_seq = GREATEST(low_water_seq, $1)
-                  WHERE singleton = TRUE",
+    async fn enforce_row_cap(&self, max_rows: u32) -> Result<u64, DomainError> {
+        sqlx::query_scalar::<_, i64>(
+            r#"
+            WITH ranked AS (
+                SELECT seq, collection_folder_id,
+                       row_number() OVER (
+                           PARTITION BY collection_folder_id ORDER BY seq DESC
+                       ) AS rn
+                  FROM storage.folder_sync_changes
+            ), to_delete AS (
+                DELETE FROM storage.folder_sync_changes f
+                 USING ranked r
+                 WHERE f.seq = r.seq AND r.rn > $1
+             RETURNING f.seq, f.collection_folder_id
+            ), per_collection AS (
+                SELECT collection_folder_id, MAX(seq) AS max_seq, COUNT(*) AS n
+                  FROM to_delete
+                 GROUP BY collection_folder_id
+            ), upserted AS (
+                INSERT INTO storage.folder_sync_watermark (collection_folder_id, low_water_seq)
+                SELECT collection_folder_id, max_seq FROM per_collection
+                ON CONFLICT (collection_folder_id) DO UPDATE
+                    SET low_water_seq = GREATEST(
+                        storage.folder_sync_watermark.low_water_seq,
+                        EXCLUDED.low_water_seq
+                    )
             )
-            .bind(max_seq)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| {
-                DomainError::database_error(format!("folder_sync_watermark retention advance: {e}"))
-            })?;
-        }
-
-        tx.commit().await.map_err(|e| {
-            DomainError::database_error(format!("folder_sync_changes retention commit: {e}"))
-        })?;
-
-        Ok(deleted_count)
+            SELECT COALESCE(SUM(n), 0) FROM per_collection
+            "#,
+        )
+        .bind(max_rows as i64)
+        .fetch_one(&*self.pool)
+        .await
+        .map(|n| n as u64)
+        .map_err(|e| DomainError::database_error(format!("folder_sync_changes row cap: {e}")))
     }
 }

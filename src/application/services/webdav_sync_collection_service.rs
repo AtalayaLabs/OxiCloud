@@ -108,7 +108,10 @@ impl WebdavSyncCollectionService {
             .await?;
 
         if let Some(token) = since_token
-            && self.change_log.is_seq_expired(token.seq()).await?
+            && self
+                .change_log
+                .is_seq_expired(collection_folder_id, token.seq())
+                .await?
         {
             return Err(DomainError::sync_token_expired(
                 "FolderSyncChange",

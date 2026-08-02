@@ -217,6 +217,12 @@ pub struct StorageConfig {
     /// How often the sync-log retention sweep runs, in hours. Default 1.
     /// Env: `OXICLOUD_SYNC_LOG_RETENTION_SWEEP_INTERVAL_HOURS`.
     pub sync_log_retention_sweep_interval_hours: u64,
+    /// Row-count cap per collection in the RFC 6578 sync-collection change
+    /// log, independent of `sync_log_retention_days`'s time-based cutoff —
+    /// guards against a single pathologically churny collection ballooning
+    /// the table within the retention window. Default 20_000. Env:
+    /// `OXICLOUD_SYNC_LOG_MAX_ROWS_PER_COLLECTION`.
+    pub sync_log_max_rows_per_collection: u32,
     /// Maximum upload file size in bytes (default: 10 GB).
     /// Applied as a hard limit to WebDAV PUT and streaming uploads.
     pub max_upload_size: usize,
@@ -1293,6 +1299,7 @@ impl Default for StorageConfig {
             trash_retention_days: 30,              // 30 days
             sync_log_retention_days: 30,
             sync_log_retention_sweep_interval_hours: 1,
+            sync_log_max_rows_per_collection: 20_000,
             max_upload_size: MAX_UPLOAD_SIZE,
             chunk_max_bytes: 100 * 1024 * 1024, // 100 MB — sane upper bound for a single chunked-upload PUT
             direct_put_max_bytes: 1024 * 1024 * 1024, // 1 GiB — pushes larger uploads onto the chunked protocol
@@ -3045,6 +3052,12 @@ impl AppConfig {
             && let Ok(val) = hours
         {
             config.storage.sync_log_retention_sweep_interval_hours = val;
+        }
+        if let Ok(rows) =
+            env::var("OXICLOUD_SYNC_LOG_MAX_ROWS_PER_COLLECTION").map(|v| v.parse::<u32>())
+            && let Ok(val) = rows
+        {
+            config.storage.sync_log_max_rows_per_collection = val;
         }
 
         // Legacy whole-file blob re-chunk migration (startup background task)

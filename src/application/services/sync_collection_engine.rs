@@ -4,6 +4,10 @@
 //! per-row resolve-or-degrade). WebDAV's service stays hand-rolled
 //! (`WebdavSyncCollectionService`, heterogeneous folder/file members,
 //! drive/path resolution) — not a fit here, per that service's doc comment.
+//!
+//! Authz here assumes a grant-only engine — see
+//! `application::ports::change_log_port`'s module doc for the reasoning
+//! and why deny rules would need this revisited.
 
 use std::sync::Arc;
 
@@ -111,7 +115,10 @@ where
             .await?;
 
         if let Some(token) = since_token
-            && self.change_log.is_seq_expired(token.seq()).await?
+            && self
+                .change_log
+                .is_seq_expired(collection_id, token.seq())
+                .await?
         {
             return Err(DomainError::sync_token_expired(
                 self.error_tag,

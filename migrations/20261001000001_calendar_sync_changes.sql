@@ -2,7 +2,7 @@
 -- calendar events.
 --
 -- Mirrors `storage.folder_sync_changes`
--- (`20260911000000_folder_sync_changes.sql`) — same append-only shape,
+-- (`20261001000000_folder_sync_changes.sql`) — same append-only shape,
 -- same trigger population, same retention-sweep lifecycle. Simpler than
 -- the WebDAV table because a `caldav.calendar_events` row never moves
 -- between calendars (no move branch) and is never soft-deleted (no
@@ -16,6 +16,12 @@
 -- deleted calendar 404s at calendar-resolution time before the
 -- change-log is ever queried, so the orphaned rows are inert and age
 -- out via the retention sweep like any other.
+--
+-- Footgun: the `pg_trigger_depth() > 1` guard on every function below
+-- (correct for the cascade case above) silently skips logging if a
+-- future migration/backfill mutates `caldav.calendar_events` from
+-- WITHIN another trigger. Call the change-log INSERT directly in that
+-- case instead of relying on these triggers firing.
 
 CREATE TABLE IF NOT EXISTS caldav.calendar_sync_changes (
     seq                    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -32,14 +38,15 @@ CREATE INDEX IF NOT EXISTS idx_calendar_sync_changes_collection_seq
 CREATE INDEX IF NOT EXISTS idx_calendar_sync_changes_changed_at
     ON caldav.calendar_sync_changes (changed_at);
 
+-- Per-collection (not singleton) — see `storage.folder_sync_watermark`'s
+-- comment in `20261001000000_folder_sync_changes.sql` for why a single
+-- global watermark would falsely expire a quiet calendar's token whenever
+-- a high-churn sibling calendar's rows get purged. Missing row for a
+-- given calendar means "never purged" (never expired).
 CREATE TABLE IF NOT EXISTS caldav.calendar_sync_watermark (
-    singleton     BOOLEAN NOT NULL DEFAULT TRUE PRIMARY KEY CHECK (singleton),
-    low_water_seq BIGINT NOT NULL DEFAULT 0
+    collection_calendar_id UUID PRIMARY KEY,
+    low_water_seq           BIGINT NOT NULL DEFAULT 0
 );
-
-INSERT INTO caldav.calendar_sync_watermark (singleton, low_water_seq)
-VALUES (TRUE, 0)
-ON CONFLICT (singleton) DO NOTHING;
 
 -- ── INSERT ────────────────────────────────────────────────────────────
 CREATE OR REPLACE FUNCTION caldav.log_calendar_sync_changes_ins()

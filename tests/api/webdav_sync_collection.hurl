@@ -2,7 +2,7 @@
 # OxiCloud — WebDAV sync-collection (RFC 6578) for the file surface
 # =============================================================
 # Real incremental sync, backed by `storage.folder_sync_changes`
-# (see migrations/20260911000000_folder_sync_changes.sql,
+# (see migrations/20261001000000_folder_sync_changes.sql,
 # WebdavSyncCollectionService, webdav_handler.rs::handle_report).
 #
 # Coverage:
@@ -18,6 +18,11 @@
 #   5. sync-collection with Depth: infinity → 403.
 #   6. sync-collection targeting a file (not a collection) → 409.
 #   7. sync-collection with a malformed sync-token → 400.
+#   8. sync-collection issued by a second user with NO grant on this
+#      folder → 404 (anti-enumeration — matches `permissions.hurl`'s
+#      IDOR-regression shape; pins the authz gate in
+#      `WebdavSyncCollectionService::list_changes_with_perms`/
+#      `mint_initial_token`).
 # =============================================================
 
 
@@ -230,6 +235,50 @@ Content-Type: application/xml; charset=utf-8
 ```
 
 HTTP 400
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 10 — A second user with no grant on this folder gets 404
+#           (anti-enumeration), not 403, on sync-collection REPORT.
+#           Self-contained fixture (idempotent register+login,
+#           same pattern as nc_second_user_setup.hurl) rather than
+#           relying on a Bob captured by an earlier file.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/auth/register
+Content-Type: application/json
+{
+  "username": "sync_collection_bob",
+  "email": "sync-collection-bob@example.com",
+  "password": "SyncBobPassword1!"
+}
+
+HTTP 200
+
+
+POST {{base_url}}/api/auth/login
+Content-Type: application/json
+{ "username": "sync_collection_bob", "password": "SyncBobPassword1!" }
+
+HTTP 200
+[Captures]
+sync_bob_token: jsonpath "$.access_token"
+
+
+REPORT {{base_url}}/webdav/sync-test-folder/
+Authorization: Bearer {{sync_bob_token}}
+Depth: 1
+Content-Type: application/xml; charset=utf-8
+```
+<?xml version="1.0" encoding="utf-8"?>
+<D:sync-collection xmlns:D="DAV:">
+  <D:sync-token/>
+  <D:prop><D:getetag/></D:prop>
+</D:sync-collection>
+```
+
+HTTP 404
+[Asserts]
+jsonpath "$.error_type" == "Not Found"
 
 
 # ─────────────────────────────────────────────────────────────

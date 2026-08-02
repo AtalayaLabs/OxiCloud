@@ -1,13 +1,28 @@
 //! Shared shape for RFC 6578 incremental sync-collection deltas.
 //!
 //! WebDAV (folders/files), CalDAV (calendar events), and CardDAV (contacts)
-//! each get their own change-log repository trait and table (real FKs per
-//! domain — see the `*_sync_changes` migrations and
-//! `domain/repositories/folder_sync_change_repository.rs`), but every one
-//! of those traits returns `SyncDelta<M>` built from these two types, so
-//! the response-building and depth/token-validation logic in the handlers
-//! is written once against this shape and reused by all three protocols
-//! instead of growing a fourth/fifth bespoke copy.
+//! each get their own change-log repository trait and table — deliberately
+//! WITHOUT a FK from the change-log row to its parent collection (see the
+//! `*_sync_changes` migrations and
+//! `domain/repositories/folder_sync_change_repository.rs` for why: a bulk
+//! delete of a collection can outrun the tombstone insert for its own
+//! members) — but every one of those traits returns `SyncDelta<M>` built
+//! from these two types, so the response-building and depth/token-validation
+//! logic in the handlers is written once against this shape and reused by
+//! all three protocols instead of growing a fourth/fifth bespoke copy.
+//!
+//! **Assumption baked into this design: the `AuthorizationEngine` is
+//! grant-only (additive).** A caller's set of visible collections can only
+//! grow (explicit grant) or shrink back to nothing (grant removed/expired)
+//! — there is no "deny" rule that can carve out a narrower view while a
+//! broader grant still exists. `AuthorizationEngine::require` is re-checked
+//! on every `list_changes_with_perms` call, so a caller who loses their
+//! grant simply gets a 404 (anti-enumeration) on their next REPORT — no
+//! proactive "you lost access, tear down your local copy" delta is ever
+//! emitted to a client still holding an older token; they just stop being
+//! able to sync. If deny rules are ever introduced, this needs revisiting:
+//! today's model has no way to express "still has SOME access, but this
+//! specific item became invisible," which a deny rule would require.
 
 use uuid::Uuid;
 

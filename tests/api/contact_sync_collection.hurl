@@ -3,7 +3,7 @@
 # =============================================================
 # Real incremental sync for contacts, backed by
 # `carddav.contact_sync_changes` (see
-# migrations/20260911000002_contact_sync_changes.sql,
+# migrations/20261001000002_contact_sync_changes.sql,
 # CarddavSyncCollectionService::list_changes_with_perms,
 # carddav_handler.rs::handle_report). Mirrors
 # calendar_sync_collection.hurl's coverage.

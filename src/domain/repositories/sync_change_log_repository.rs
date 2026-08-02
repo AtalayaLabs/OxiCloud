@@ -44,9 +44,12 @@ pub trait SyncChangeLogRepository: Send + Sync + 'static {
         since_seq: Option<u64>,
     ) -> Result<(Vec<SyncChangeRow>, u64), DomainError>;
 
-    /// Whether `seq` predates the retention watermark (RFC 6578 §3.6 →
-    /// HTTP 507).
-    async fn is_seq_expired(&self, seq: u64) -> Result<bool, DomainError>;
+    /// Whether `seq` predates `collection_id`'s retention watermark (RFC
+    /// 6578 §3.6 → HTTP 507). Per-collection, not global — see
+    /// `FolderSyncChangeRepository::is_seq_expired` for why. A collection
+    /// with no watermark row has never had rows purged, so it is never
+    /// expired regardless of `seq`.
+    async fn is_seq_expired(&self, collection_id: Uuid, seq: u64) -> Result<bool, DomainError>;
 
     /// The collection's current max `seq` (0 if none) — for minting an
     /// initial-sync token cheaply.
@@ -54,4 +57,7 @@ pub trait SyncChangeLogRepository: Send + Sync + 'static {
 
     /// Retention sweep — see `FolderSyncChangeRepository::delete_expired_before`.
     async fn delete_expired_before(&self, cutoff: DateTime<Utc>) -> Result<u64, DomainError>;
+
+    /// Row-count cap — see `FolderSyncChangeRepository::enforce_row_cap`.
+    async fn enforce_row_cap(&self, max_rows: u32) -> Result<u64, DomainError>;
 }

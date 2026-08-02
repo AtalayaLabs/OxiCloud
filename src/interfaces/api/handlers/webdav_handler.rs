@@ -987,16 +987,15 @@ async fn handle_report(
     } else if let Some(resolver) = &state.path_resolver {
         match resolver.resolve_path_in_drive(&path, drive_id).await {
             Ok(ResolvedResource::Folder(f)) => {
-                let folder_uuid = Uuid::parse_str(&f.id)
+                // No authz check here by design — AGENTS.md reserves
+                // ownership/permission checks for the application service
+                // layer. `sync_service.mint_initial_token`/
+                // `list_changes_with_perms` below both re-check
+                // `Resource::Folder(collection_id)` before touching the
+                // change log, same as the `else` branch a few lines down
+                // which never had a check here either.
+                Uuid::parse_str(&f.id)
                     .map_err(|_| AppError::not_found(format!("Resource not found: {}", path)))?;
-                state
-                    .authorization
-                    .require(
-                        Subject::User(user.id),
-                        Permission::Read,
-                        Resource::Folder(folder_uuid),
-                    )
-                    .await?;
                 Some(f.id)
             }
             Ok(ResolvedResource::File(_)) => {

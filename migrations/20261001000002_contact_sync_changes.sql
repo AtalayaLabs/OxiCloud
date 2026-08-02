@@ -2,7 +2,7 @@
 -- contacts.
 --
 -- Mirrors `caldav.calendar_sync_changes`
--- (`20260911000001_calendar_sync_changes.sql`) — same append-only shape,
+-- (`20261001000001_calendar_sync_changes.sql`) — same append-only shape,
 -- same trigger population, same retention-sweep lifecycle. Scoped to
 -- `carddav.contacts` only: contact groups are out of scope for
 -- sync-collection (CardDAV addressbook collections enumerate contacts,
@@ -17,6 +17,12 @@
 -- address-book-resolution time before the change-log is ever queried,
 -- so the orphaned rows are inert and age out via the retention sweep
 -- like any other.
+--
+-- Footgun: the `pg_trigger_depth() > 1` guard on every function below
+-- (correct for the cascade case above) silently skips logging if a
+-- future migration/backfill mutates `carddav.contacts` from WITHIN
+-- another trigger. Call the change-log INSERT directly in that case
+-- instead of relying on these triggers firing.
 
 CREATE TABLE IF NOT EXISTS carddav.contact_sync_changes (
     seq                        BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -33,14 +39,15 @@ CREATE INDEX IF NOT EXISTS idx_contact_sync_changes_collection_seq
 CREATE INDEX IF NOT EXISTS idx_contact_sync_changes_changed_at
     ON carddav.contact_sync_changes (changed_at);
 
+-- Per-collection (not singleton) — see `storage.folder_sync_watermark`'s
+-- comment in `20261001000000_folder_sync_changes.sql` for why a single
+-- global watermark would falsely expire a quiet address book's token
+-- whenever a high-churn sibling address book's rows get purged. Missing
+-- row for a given address book means "never purged" (never expired).
 CREATE TABLE IF NOT EXISTS carddav.contact_sync_watermark (
-    singleton     BOOLEAN NOT NULL DEFAULT TRUE PRIMARY KEY CHECK (singleton),
-    low_water_seq BIGINT NOT NULL DEFAULT 0
+    collection_address_book_id UUID PRIMARY KEY,
+    low_water_seq                BIGINT NOT NULL DEFAULT 0
 );
-
-INSERT INTO carddav.contact_sync_watermark (singleton, low_water_seq)
-VALUES (TRUE, 0)
-ON CONFLICT (singleton) DO NOTHING;
 
 -- ── INSERT ────────────────────────────────────────────────────────────
 CREATE OR REPLACE FUNCTION carddav.log_contact_sync_changes_ins()

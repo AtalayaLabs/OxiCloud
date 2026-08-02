@@ -71,7 +71,18 @@ pub trait FolderSyncChangeRepository: Send + Sync + 'static {
     /// call have already been purged, so the client must be told to
     /// discard local state and restart with a fresh initial sync
     /// (RFC 6578 §3.6, HTTP 507).
-    async fn is_seq_expired(&self, seq: u64) -> Result<bool, DomainError>;
+    ///
+    /// Scoped by `collection_folder_id`: the watermark is per-collection,
+    /// not global, because `seq` is one `IDENTITY` sequence shared by
+    /// every folder — a global watermark would let a high-churn folder's
+    /// purged rows falsely expire a quiet sibling folder's still-valid
+    /// token. A collection with no watermark row at all has never had
+    /// rows purged, so it is never expired regardless of `seq`.
+    async fn is_seq_expired(
+        &self,
+        collection_folder_id: Uuid,
+        seq: u64,
+    ) -> Result<bool, DomainError>;
 
     /// The collection's current max `seq` (0 if it has no change-log
     /// activity), for minting the token an **initial** sync response
@@ -81,10 +92,19 @@ pub trait FolderSyncChangeRepository: Send + Sync + 'static {
     async fn current_seq(&self, collection_folder_id: Uuid) -> Result<u64, DomainError>;
 
     /// Retention sweep: deletes every row with `changed_at < cutoff`, then
-    /// advances `folder_sync_watermark.low_water_seq` to the highest `seq`
-    /// deleted (never decreases it) — in one transaction, so a crash
-    /// mid-sweep cannot advance the watermark past rows that are still
-    /// actually present (which would wrongly reject a still-valid token
-    /// as expired). Returns the number of rows deleted.
+    /// advances each affected collection's `folder_sync_watermark.low_water_seq`
+    /// to the highest `seq` deleted for that collection (never decreases
+    /// it) — in one statement, so a crash mid-sweep cannot advance a
+    /// watermark past rows that are still actually present (which would
+    /// wrongly reject a still-valid token as expired). Returns the number
+    /// of rows deleted.
     async fn delete_expired_before(&self, cutoff: DateTime<Utc>) -> Result<u64, DomainError>;
+
+    /// Row-count cap, independent of `delete_expired_before`'s time-based
+    /// cutoff: for every collection with more than `max_rows` rows,
+    /// deletes the oldest excess rows (keeping the newest `max_rows`),
+    /// advancing that collection's watermark the same way. Guards against
+    /// a single pathologically churny collection ballooning the table
+    /// within the retention window. Returns the number of rows deleted.
+    async fn enforce_row_cap(&self, max_rows: u32) -> Result<u64, DomainError>;
 }

@@ -3,7 +3,7 @@
 # =============================================================
 # Real incremental sync for calendar events, backed by
 # `caldav.calendar_sync_changes` (see
-# migrations/20260911000001_calendar_sync_changes.sql,
+# migrations/20261001000001_calendar_sync_changes.sql,
 # CalendarService::list_event_changes_with_perms,
 # caldav_handler.rs::handle_report). Mirrors
 # webdav_sync_collection.hurl's coverage.
