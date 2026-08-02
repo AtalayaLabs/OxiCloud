@@ -138,10 +138,11 @@ pub struct EncryptedBlobBackend {
     inner: Arc<dyn BlobStorageBackend>,
     /// The pair list as declared by the operator. Guaranteed
     /// non-empty by ctor (an empty input auto-synthesises a single
-    /// `none:` pair, so the invariant holds). Preserved verbatim for
-    /// observability and for downstream K3 `storage_rotate` which
-    /// needs to walk pair indices.
-    #[allow(dead_code)]
+    /// `none:` pair, so the invariant holds). Used by:
+    /// * `read_dispatch` legacy-fallback path — iterates in order
+    ///   (oldest → newest) to try every real-cipher pair when a
+    ///   legacy blob's head-key decrypt fails.
+    /// * K3 `storage_rotate` — needs to walk pair indices.
     pairs: Vec<KeyPair>,
     /// `<key_fp>` → per-pair cipher, for O(1) read dispatch on v1
     /// blobs. Excludes any `none:` pair (nothing to build). Cloned
@@ -252,11 +253,19 @@ impl EncryptedBlobBackend {
         let enc_stream = self.inner.get_blob_stream(hash).await?;
         let raw = collect_stream(enc_stream).await?;
         let format = BlobFormat::classify(&raw);
+        let pairs = self.pairs.clone();
         let fp_ciphers = self.fp_ciphers.clone();
         let head_cipher = self.head_cipher.clone();
+        let head_key_fp = self.head_key_fp;
         let len = raw.len();
         let plaintext = offload_crypto(len, move || {
-            read_dispatch(&fp_ciphers, head_cipher.as_deref(), raw)
+            read_dispatch(
+                &pairs,
+                &fp_ciphers,
+                head_cipher.as_deref(),
+                head_key_fp,
+                raw,
+            )
         })
         .await?;
         Ok((plaintext, format))
@@ -397,10 +406,18 @@ fn write_plaintext_v1(data: &[u8]) -> Bytes {
 ///   * else `key_fp` lookup in `fp_ciphers` → AEAD decrypt over
 ///     the post-header body.
 /// * anything else → **legacy path**:
-///   * `head_cipher = Some` → AES-GCM decrypt over pre-K2 shape
-///     (`nonce | ct | tag`) — the pre-v1 world had exactly one key
-///     per entry, and that key is the head pair by construction of
-///     any pair-list upgraded from a pre-K1 config;
+///   * `head_cipher = Some` → AES-GCM decrypt attempts, head-first,
+///     then every OTHER real-cipher pair in the wrapper's list.
+///     Head-first is the fast path (pre-v1 world used exactly one
+///     key which becomes head on upgrade, so it's the correct key
+///     for legacy blobs the first time you rotate). The extra
+///     fallbacks cover post-rotation scenarios where an operator
+///     restores a pre-v1 backup encrypted under a now-non-head
+///     pair — that blob was encrypted with K1 but head is now K2;
+///     without the fallback the read would fail with tag error
+///     even though K1 is still in the pair-list. Each failed tag
+///     check is microseconds — bounded by the pair count (1-3 in
+///     practice).
 ///   * `head_cipher = None` → return raw bytes (pre-K2 plaintext
 ///     deployment).
 ///
@@ -410,15 +427,59 @@ fn write_plaintext_v1(data: &[u8]) -> Bytes {
 /// subsequent version/key_fp check with a hard error, not silent
 /// garbage.
 fn read_dispatch(
+    pairs: &[KeyPair],
     fp_ciphers: &HashMap<[u8; KEY_FP_SIZE], Arc<Aes256Gcm>>,
     head_cipher: Option<&Aes256Gcm>,
+    head_key_fp: [u8; KEY_FP_SIZE],
     encrypted: Vec<u8>,
 ) -> Result<Bytes, DomainError> {
     if encrypted.len() >= 5 && &encrypted[..5] == OXCPT_MAGIC {
         return read_v1(fp_ciphers, encrypted);
     }
     match head_cipher {
-        Some(cipher) => decrypt_aead_in_place(cipher, encrypted),
+        Some(head) => {
+            // Fast path: try the head pair first. This is the
+            // pre-v1-upgrade case (single key = head; correct by
+            // construction) and the most common case even
+            // post-rotation (head was head just before the operator
+            // rotated it to a new pair).
+            if let Ok(pt) = decrypt_aead_in_place(head, encrypted.clone()) {
+                return Ok(pt);
+            }
+            // Fallback: try every other real-cipher pair in
+            // list order — oldest → newest. Legacy blobs are OLD
+            // by definition (pre-K2, no header), so an older pair
+            // is more likely to have encrypted them than a newer
+            // one. Head is skipped (already tried above). Each
+            // failed AEAD tag check is µs; the loop is bounded by
+            // the pair count (1-3 in practice).
+            //
+            // `Vec<KeyPair>` ordering is stable (env-declaration
+            // order), unlike `HashMap` iteration which is randomised.
+            //
+            // Clone per attempt because `decrypt_in_place_detached`
+            // leaves the buffer in an undefined state on tag failure
+            // — retrying against another key needs a fresh copy.
+            for pair in pairs {
+                if !pair.cipher.needs_key() {
+                    continue; // `none` pair — no cipher to try
+                }
+                let fp = pair.key_fp();
+                if fp == head_key_fp {
+                    continue; // already tried above
+                }
+                if let Some(cipher) = fp_ciphers.get(&fp)
+                    && let Ok(pt) = decrypt_aead_in_place(cipher, encrypted.clone())
+                {
+                    return Ok(pt);
+                }
+            }
+            Err(DomainError::internal_error(
+                "Encryption",
+                "legacy blob failed to decrypt under any configured key — \
+                 wrong key removed from pair-list, or blob is corrupt",
+            ))
+        }
         None => Ok(Bytes::from(encrypted)),
     }
 }
@@ -621,8 +682,10 @@ impl BlobStorageBackend for EncryptedBlobBackend {
     {
         let inner = self.inner.clone();
         let hash = hash.to_string();
+        let pairs = self.pairs.clone();
         let fp_ciphers = self.fp_ciphers.clone();
         let head_cipher = self.head_cipher.clone();
+        let head_key_fp = self.head_key_fp;
         Box::pin(async move {
             // Collect the full blob, dispatch on magic bytes off the
             // runtime, then stream zero-copy plaintext slices.
@@ -630,7 +693,13 @@ impl BlobStorageBackend for EncryptedBlobBackend {
             let encrypted = collect_stream(enc_stream).await?;
             let len = encrypted.len();
             let plaintext = offload_crypto(len, move || {
-                read_dispatch(&fp_ciphers, head_cipher.as_deref(), encrypted)
+                read_dispatch(
+                    &pairs,
+                    &fp_ciphers,
+                    head_cipher.as_deref(),
+                    head_key_fp,
+                    encrypted,
+                )
             })
             .await?;
             Ok(plaintext_stream(plaintext))
@@ -646,8 +715,10 @@ impl BlobStorageBackend for EncryptedBlobBackend {
     {
         let inner = self.inner.clone();
         let hash = hash.to_string();
+        let pairs = self.pairs.clone();
         let fp_ciphers = self.fp_ciphers.clone();
         let head_cipher = self.head_cipher.clone();
+        let head_key_fp = self.head_key_fp;
         Box::pin(async move {
             // Decrypt (or unwrap) the full blob, then slice the plaintext
             // range without copying. For CDC chunks (every blob written
@@ -657,7 +728,13 @@ impl BlobStorageBackend for EncryptedBlobBackend {
             let encrypted = collect_stream(enc_stream).await?;
             let len = encrypted.len();
             let plaintext = offload_crypto(len, move || {
-                read_dispatch(&fp_ciphers, head_cipher.as_deref(), encrypted)
+                read_dispatch(
+                    &pairs,
+                    &fp_ciphers,
+                    head_cipher.as_deref(),
+                    head_key_fp,
+                    encrypted,
+                )
             })
             .await?;
 
@@ -1314,5 +1391,52 @@ mod tests {
         // Confirms the rotate decision: current != head_format →
         // rewrite (key rotation case).
         assert_ne!(current, reader.head_format());
+    }
+
+    /// Legacy blob (no OXCPT header) encrypted under a NON-head pair
+    /// still decrypts via the fallback loop. This is the
+    /// "operator restored a pre-K2 backup post-rotation" case:
+    /// the blob was originally encrypted with K1, then K2 was added
+    /// and rotated to head. Reading the restored bytes under a
+    /// `[K1, K2]` pair-list where K2 is head should succeed by
+    /// falling through to K1.
+    #[tokio::test]
+    async fn legacy_blob_under_non_head_key_still_readable() {
+        let tmp = TempDir::new().unwrap();
+        let local = Arc::new(LocalBlobBackend::new(&tmp.path().join("blobs")));
+        local.initialize().await.unwrap();
+
+        let k_old = [0x11u8; 32]; // will be non-head after rotation
+        let k_new = [0x22u8; 32]; // will be head after rotation
+
+        // Craft a legacy blob by hand: AES-GCM with K_OLD, no OXCPT
+        // header. Matches exactly what pre-K2 code wrote.
+        let plaintext = b"pre-K2 secret restored post-rotation";
+        let cipher_old = Aes256Gcm::new_from_slice(&k_old).unwrap();
+        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let mut legacy = Vec::new();
+        legacy.extend_from_slice(nonce.as_slice());
+        legacy.extend_from_slice(plaintext);
+        let tag = cipher_old
+            .encrypt_in_place_detached(&nonce, b"", &mut legacy[NONCE_SIZE..])
+            .unwrap();
+        legacy.extend_from_slice(&tag);
+        let hash = "9999999999999999999999999999999999999999999999999999999999999999";
+        local
+            .put_blob_from_bytes(hash, Bytes::from(legacy))
+            .await
+            .unwrap();
+
+        // Reader has BOTH keys, with K_NEW as head. The legacy blob's
+        // head decrypt attempt (with K_NEW) will fail on the tag —
+        // the fallback loop then tries K_OLD (the only other pair)
+        // and succeeds.
+        let reader = EncryptedBlobBackend::new(
+            local,
+            vec![KeyPair::new_aes_gcm(k_old), KeyPair::new_aes_gcm(k_new)],
+        );
+        let stream = reader.get_blob_stream(hash).await.unwrap();
+        let got = collect_stream(stream).await.unwrap();
+        assert_eq!(got, plaintext);
     }
 }
