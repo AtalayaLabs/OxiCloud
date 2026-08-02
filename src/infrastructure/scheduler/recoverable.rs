@@ -1029,6 +1029,9 @@ mod tests {
         async fn get_string_param(&self, key: &str) -> Result<Option<String>, DomainError> {
             Ok(self.state.lock().unwrap().string_params.get(key).cloned())
         }
+        async fn scanned_count(&self) -> Result<u64, DomainError> {
+            Ok(self.state.lock().unwrap().scanned_count)
+        }
         async fn merge_stats(
             &self,
             extras: &serde_json::Map<String, serde_json::Value>,

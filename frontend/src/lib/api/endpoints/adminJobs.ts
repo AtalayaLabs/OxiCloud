@@ -17,10 +17,18 @@ const JSON_HEADERS = { 'Content-Type': 'application/json' };
  * `ok: true` means "dispatch reached the handler"; the handler's own
  * pass/fail is in `outcome.outcome`. For `consistency_batch`, per-child
  * outcomes are inside `outcome.extra.per_check`.
+ *
+ * `outcome` is absent for detached jobs (currently only
+ * `backend_migration`) — the endpoint returns `202 Accepted` with
+ * `dispatched: true` immediately and the run continues in the
+ * background. Progress polling shows the state; there's no synchronous
+ * outcome to surface.
  */
 export interface TriggerResponse {
 	ok: boolean;
-	outcome: JobOutcome;
+	outcome?: JobOutcome;
+	dispatched?: boolean;
+	detached?: boolean;
 }
 
 /** Envelope from `POST /api/admin/jobs/{name}/cancel`. `run_id` is

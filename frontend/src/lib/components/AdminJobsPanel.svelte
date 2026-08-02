@@ -237,11 +237,33 @@
 		const key = `trigger:${name}${opts.deep ? ':deep' : ''}`;
 		markBusy(key, true);
 		try {
-			const res = await triggerJob(name, opts);
+			// Fire the trigger + a follow-up loadJobs after a short delay
+			// in parallel. Long jobs (backend_migration) come back 202
+			// immediately; short jobs (consistency checks) come back on
+			// completion. Either way, the `running` badge / Pause button
+			// should appear within a render cycle rather than waiting
+			// for the next 5s poll tick.
+			const triggerPromise = triggerJob(name, opts);
+			// Give the backend a moment to register the run's
+			// `current_run_start` before we ask "is it running?" — this
+			// races against the trigger acknowledgment for detached
+			// jobs. 300 ms is well under the 5 s poll cadence and
+			// invisible to the operator.
+			setTimeout(() => {
+				void loadJobs();
+				if (expandedJob === name) void loadRuns(expandedJob);
+			}, 300);
+
+			const res = await triggerPromise;
 			// The trigger envelope carries the child's outcome — surface
 			// its pass/fail immediately so operators don't have to click
-			// through to see whether the run completed cleanly.
-			if (res.outcome.outcome === 'ok') {
+			// through to see whether the run completed cleanly. Detached
+			// jobs come back with `dispatched: true` and no outcome —
+			// silence the notify for those (the "started" state is
+			// already visible via the badge).
+			if (!res.outcome) {
+				// dispatched (detached) — no outcome to render
+			} else if (res.outcome.outcome === 'ok') {
 				ui.notify(
 					t('admin.jobs.triggered_ok', { name }, '{{name}} triggered successfully'),
 					'success'

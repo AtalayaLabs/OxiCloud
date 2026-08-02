@@ -229,6 +229,22 @@ impl JobStore for PgJobStore {
         Ok(row.and_then(|(v,)| v))
     }
 
+    async fn scanned_count(&self) -> Result<u64, DomainError> {
+        // `(stats->>'scanned_count')::BIGINT` — text cast rather than
+        // `->` numeric extraction because the stored value has been
+        // written via `((...)::text)::jsonb` in `checkpoint`, which
+        // may present as either a JSON number or a JSON string
+        // depending on prior versions. `::BIGINT` handles both.
+        let row: Option<(Option<i64>,)> = sqlx::query_as(
+            "SELECT (stats ->> 'scanned_count')::BIGINT FROM jobs.recoverable_runs WHERE id = $1",
+        )
+        .bind(self.run_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| map_sqlx_err("scanned_count", e))?;
+        Ok(row.and_then(|(v,)| v).unwrap_or(0).max(0) as u64)
+    }
+
     async fn merge_stats(
         &self,
         extras: &serde_json::Map<String, serde_json::Value>,

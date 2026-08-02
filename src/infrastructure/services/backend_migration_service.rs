@@ -469,15 +469,31 @@ impl RecoverableJobHandler for BackendMigrationService {
             .await
             .map(|n| n.max(0) as u64)
             .unwrap_or(0);
+        // On Resume, seed the counter with what's already been done
+        // in prior sessions — else the banner shows "500 / 1536"
+        // right after resuming a run that had reached 900/1536,
+        // which misleads admins into thinking the migration
+        // regressed. Fresh run reports 0. `stats.scanned_count`
+        // was written by `checkpoint` after each batch, so it's
+        // durable across restarts.
+        let already_scanned = if is_fresh {
+            0
+        } else {
+            store.scanned_count().await.unwrap_or(0)
+        };
         {
             let mut guard = self
                 .migration_progress
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            *guard = Some(crate::common::migration_progress::MigrationProgress::new(
+            let mut progress = crate::common::migration_progress::MigrationProgress::new(
                 target_name.clone(),
                 total_blobs,
-            ));
+            );
+            if already_scanned > 0 {
+                progress.bump(already_scanned);
+            }
+            *guard = Some(progress);
         }
 
         let source_kind = self.source.backend_type();
