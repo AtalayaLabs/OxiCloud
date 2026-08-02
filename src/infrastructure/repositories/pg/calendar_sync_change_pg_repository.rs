@@ -1,7 +1,7 @@
 //! CalDAV sync-collection change log — a `SyncChangeLogSchema` instance
 //! over `caldav.calendar_sync_changes` (see `sync_change_log_pg_repository.rs`
 //! for the shared implementation; populated by triggers defined in
-//! `migrations/20260911000001_calendar_sync_changes.sql`).
+//! `migrations/20261001000001_calendar_sync_changes.sql`).
 
 use crate::infrastructure::repositories::pg::sync_change_log_pg_repository::{
     SyncChangeLogPgRepository, SyncChangeLogSchema,

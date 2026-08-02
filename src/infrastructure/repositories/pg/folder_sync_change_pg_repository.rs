@@ -1,7 +1,7 @@
 //! PostgreSQL-backed change-log repository for WebDAV `sync-collection`.
 //!
 //! Reads `storage.folder_sync_changes` (populated by triggers — see
-//! `migrations/20260911000000_folder_sync_changes.sql`) and the
+//! `migrations/20261001000000_folder_sync_changes.sql`) and the
 //! `storage.folder_sync_watermark` singleton row maintained by
 //! `SyncLogRetentionService`.
 

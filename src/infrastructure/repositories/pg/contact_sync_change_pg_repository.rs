@@ -1,7 +1,7 @@
 //! CardDAV sync-collection change log — a `SyncChangeLogSchema` instance
 //! over `carddav.contact_sync_changes` (see `sync_change_log_pg_repository.rs`
 //! for the shared implementation; populated by triggers defined in
-//! `migrations/20260911000002_contact_sync_changes.sql`).
+//! `migrations/20261001000002_contact_sync_changes.sql`).
 
 use crate::infrastructure::repositories::pg::sync_change_log_pg_repository::{
     SyncChangeLogPgRepository, SyncChangeLogSchema,

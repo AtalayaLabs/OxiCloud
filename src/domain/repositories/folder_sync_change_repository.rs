@@ -2,7 +2,7 @@
 //! (`storage.folder_sync_changes` / `storage.folder_sync_watermark`).
 //!
 //! Populated entirely by DB triggers (see
-//! `migrations/20260911000000_folder_sync_changes.sql`) — this port is
+//! `migrations/20261001000000_folder_sync_changes.sql`) — this port is
 //! read-only plus the retention sweep's cleanup call. No repository method
 //! writes a change row; the application layer never needs to (and must
 //! not) duplicate that bookkeeping.
