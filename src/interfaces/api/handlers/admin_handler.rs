@@ -30,7 +30,7 @@ use crate::application::ports::plugin_ports::{LogQuery, PluginManagementPort, Pl
 use crate::common::di::AppState;
 use crate::domain::repositories::drive_repository::DriveRepository;
 use crate::domain::services::authorization::{Resource, Subject};
-use crate::infrastructure::scheduler::JobStoreProvider;
+use crate::infrastructure::scheduler::{JobStoreProvider, PausedRunBrief};
 use crate::interfaces::api::handlers::dedup_handler::{get_stats, recalculate_stats};
 use crate::interfaces::api::handlers::search_handler::clear_search_cache;
 use crate::interfaces::errors::AppError;
@@ -2339,7 +2339,54 @@ pub async fn delete_drive_admin(
     tag = "admin"
 )]
 pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let summary = state.core.job_registry.snapshot().await;
+    let mut summary = state.core.job_registry.snapshot().await;
+
+    // Enrich with paused-run info for recoverable jobs so the admin
+    // panel can render "Resume (scanned/total)" on the row instead of
+    // just "Run". One indexed SELECT hits `jobs.recoverable_runs`
+    // (`one_active_run_per_job` partial UNIQUE keys the lookup);
+    // failures fall back to the pre-enrichment shape so the endpoint
+    // stays useful when the jobs DB is temporarily unreachable.
+    if let Some(pool) = state.db_pool.as_ref() {
+        let paused_rows: Vec<(String, uuid::Uuid, Option<i64>, Option<i64>)> = sqlx::query_as(
+            r#"
+            SELECT
+                job_name,
+                id,
+                (stats  ->> 'scanned_count')::BIGINT AS scanned,
+                (params ->> 'total_rows')::BIGINT   AS total
+            FROM jobs.recoverable_runs
+            WHERE status = 'Paused'
+            "#,
+        )
+        .fetch_all(pool.as_ref())
+        .await
+        .unwrap_or_default();
+
+        let by_name: std::collections::HashMap<String, PausedRunBrief> = paused_rows
+            .into_iter()
+            .map(|(name, id, scanned, total)| {
+                (
+                    name,
+                    PausedRunBrief {
+                        id,
+                        scanned: scanned.unwrap_or(0).max(0) as u64,
+                        total: total.filter(|t| *t > 0).map(|t| t as u64),
+                    },
+                )
+            })
+            .collect();
+
+        for job in summary.iter_mut() {
+            if job.recoverable
+                && !job.running
+                && let Some(paused) = by_name.get(&job.name)
+            {
+                job.paused_run = Some(paused.clone());
+            }
+        }
+    }
+
     (StatusCode::OK, Json(summary)).into_response()
 }
 

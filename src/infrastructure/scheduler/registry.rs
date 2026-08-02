@@ -226,6 +226,11 @@ impl JobRegistry {
                     last_outcome,
                     running: state.current_run_start.is_some(),
                     recoverable: entry.handler.is_recoverable(),
+                    // Populated in `list_jobs` handler via a single
+                    // DB round-trip — kept out of the registry
+                    // snapshot to avoid pulling a DB dependency into
+                    // the in-memory scheduler state.
+                    paused_run: None,
                 }
             })
             .collect()
@@ -293,6 +298,24 @@ pub enum RegisterError {
 ///   `jobs.recoverable_runs`. Consumed by the admin UI to decide
 ///   whether the row is expandable (drawer with run history +
 ///   findings) and to gate the retention/purge action.
+/// Enough info about a paused recoverable run for the admin panel
+/// to render "Resume (scanned/total)" on the job row without opening
+/// the drawer. Populated by `list_jobs` in the admin handler from a
+/// single `SELECT job_name, id, stats->>'scanned_count',
+/// params->>'total_rows' FROM jobs.recoverable_runs WHERE status =
+/// 'Paused'` — indexed by the `one_active_run_per_job` partial UNIQUE.
+///
+/// `total` is `None` when the tenant doesn't seed a countable subject
+/// (`RecoverableJobHandler::count_total`); the UI then shows just
+/// "Resume" without progress.
+#[derive(Debug, Clone, Serialize)]
+pub struct PausedRunBrief {
+    pub id: uuid::Uuid,
+    pub scanned: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct JobSummary {
     pub name: String,
@@ -306,6 +329,12 @@ pub struct JobSummary {
     pub last_outcome: Option<JobOutcome>,
     pub running: bool,
     pub recoverable: bool,
+    /// Populated iff a `Paused` row exists in `jobs.recoverable_runs`
+    /// for this job. Distinct from `running` — a paused run is
+    /// resumable via the same trigger endpoint (`run_or_resume`
+    /// picks Resume when the latest row is Paused).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paused_run: Option<PausedRunBrief>,
 }
 
 #[cfg(test)]

@@ -543,6 +543,19 @@ export type JobOutcome =
  * Cadence + last-run bookkeeping. `interval_ms` / `next_run_at` are
  * `undefined` on on-demand jobs (serde skips `Option::None`).
  */
+/**
+ * Enough info about a paused recoverable run for the admin panel to
+ * render "Resume (scanned/total)" on the job row without opening the
+ * drawer. Absent when no `Paused` row exists for this job. `total`
+ * is absent when the tenant didn't seed a countable subject —
+ * fallback UI is just "Resume".
+ */
+export interface PausedRunBrief {
+	id: string;
+	scanned: number;
+	total?: number;
+}
+
 export interface JobSummary {
 	name: string;
 	interval_ms?: number;
@@ -560,6 +573,10 @@ export interface JobSummary {
 	 * row-expand until this flag was added).
 	 */
 	recoverable: boolean;
+	/** Populated iff a `Paused` row exists in `jobs.recoverable_runs`
+	 *  for this job. Distinct from `running` — a paused run is
+	 *  resumable via the same trigger endpoint. */
+	paused_run?: PausedRunBrief;
 }
 
 /**

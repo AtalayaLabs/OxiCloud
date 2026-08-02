@@ -616,14 +616,37 @@
 							{/if}
 						</td>
 						<td class="jobs-panel__actions">
-							<button
-								class="jobs-panel__btn jobs-panel__btn--small"
-								disabled={busyKeys.has(`trigger:${job.name}`)}
-								onclick={() => onTrigger(job.name)}
-							>
-								{t('admin.jobs.run', 'Run')}
-							</button>
-							{#if supportsDeep(job.name)}
+							{#if job.paused_run}
+								{@const p = job.paused_run}
+								{@const label =
+									p.total && p.total > 0
+										? t(
+												'admin.jobs.resume_progress',
+												{ scanned: p.scanned, total: p.total },
+												'Resume ({{scanned}}/{{total}})'
+											)
+										: t('admin.jobs.resume', 'Resume')}
+								<button
+									class="jobs-panel__btn jobs-panel__btn--small jobs-panel__btn--primary"
+									disabled={busyKeys.has(`trigger:${job.name}`)}
+									onclick={() => onTrigger(job.name)}
+									title={t(
+										'admin.jobs.resume_title',
+										'Continue the paused run from its last checkpoint.'
+									)}
+								>
+									{label}
+								</button>
+							{:else}
+								<button
+									class="jobs-panel__btn jobs-panel__btn--small"
+									disabled={busyKeys.has(`trigger:${job.name}`)}
+									onclick={() => onTrigger(job.name)}
+								>
+									{t('admin.jobs.run', 'Run')}
+								</button>
+							{/if}
+							{#if supportsDeep(job.name) && !job.paused_run}
 								<button
 									class="jobs-panel__btn jobs-panel__btn--small"
 									disabled={busyKeys.has(`trigger:${job.name}:deep`)}
@@ -633,13 +656,33 @@
 								</button>
 							{/if}
 							{#if isRunning(job) && canExpand}
-								<button
-									class="jobs-panel__btn jobs-panel__btn--small jobs-panel__btn--danger"
-									disabled={busyKeys.has(`cancel:${job.name}`)}
-									onclick={() => onCancel(job.name)}
-								>
-									{t('admin.jobs.cancel', 'Cancel')}
-								</button>
+								{#if isRecoverable(job)}
+									<!-- Recoverable jobs: the "cancel" endpoint just
+									     flips CancelRequested → handler yields at the
+									     next batch boundary → status=Paused (resumable
+									     with a fresh Resume click, cursor preserved).
+									     Label it "Pause" so admins know it's not
+									     destructive. -->
+									<button
+										class="jobs-panel__btn jobs-panel__btn--small"
+										disabled={busyKeys.has(`cancel:${job.name}`)}
+										onclick={() => onCancel(job.name)}
+										title={t(
+											'admin.jobs.pause_title',
+											'Signal a graceful pause at the next batch boundary. Run row stays as `Paused` — Resume picks up from the checkpoint.'
+										)}
+									>
+										{t('admin.jobs.pause', 'Pause')}
+									</button>
+								{:else}
+									<button
+										class="jobs-panel__btn jobs-panel__btn--small jobs-panel__btn--danger"
+										disabled={busyKeys.has(`cancel:${job.name}`)}
+										onclick={() => onCancel(job.name)}
+									>
+										{t('admin.jobs.cancel', 'Cancel')}
+									</button>
+								{/if}
 							{/if}
 						</td>
 					</tr>

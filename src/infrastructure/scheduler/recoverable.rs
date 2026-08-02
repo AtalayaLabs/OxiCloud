@@ -320,6 +320,18 @@ pub trait JobStore: Send + Sync {
     /// stamped.
     async fn get_string_param(&self, key: &str) -> Result<Option<String>, DomainError>;
 
+    /// Current `stats.scanned_count` for this run. Used by handlers
+    /// on a Resume path to reconstruct progress state that isn't
+    /// persisted in `params` — e.g. `backend_migration` seeds its
+    /// user-facing `MigrationProgress` counter with this so the
+    /// admin banner shows continued progress across a restart
+    /// instead of resetting to 0.
+    ///
+    /// Returns `0` if the key is absent (fresh row) or not a
+    /// number. Callers on a Fresh run can safely skip this — the
+    /// answer is trivially 0 and the write path starts fresh.
+    async fn scanned_count(&self) -> Result<u64, DomainError>;
+
     /// Persist one finding to `jobs.run_findings` and bump
     /// `stats.finding_count` on the parent run. Consistency handlers
     /// call this in place of the transitional
