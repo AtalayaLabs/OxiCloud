@@ -468,11 +468,11 @@ impl AppServiceFactory {
         );
 
         // Audio metadata service — created here so it can be wired into file_lifecycle.
-        let audio_metadata_service = self.create_audio_metadata_service(db_pool);
+        let audio_metadata_service = self.create_audio_metadata_service(db_pool, &dedup_service);
 
         // Image/video capture-metadata service — extracts EXIF/container capture
         // dates so the Photos timeline groups by real capture time, not upload time.
-        let media_metadata_service = self.create_media_metadata_service(db_pool);
+        let media_metadata_service = self.create_media_metadata_service(db_pool, &dedup_service);
 
         // ThumbnailRefreshHook: handles FileLifecycleHook events (create/update/delete).
         // Implemented on ThumbnailRefreshHook (not ThumbnailService) to avoid circular Arc:
@@ -544,7 +544,7 @@ impl AppServiceFactory {
         }
         fls = fls.with_hook(media_metadata_service.clone());
         if self.config.features.enable_faces {
-            fls = fls.with_hook(self.create_face_indexing_service(db_pool));
+            fls = fls.with_hook(self.create_face_indexing_service(db_pool, &dedup_service));
         }
         let file_lifecycle = Arc::new(fls);
 
@@ -950,15 +950,16 @@ impl AppServiceFactory {
     pub fn create_audio_metadata_service(
         &self,
         db_pool: &Arc<PgPool>,
+        dedup: &Arc<crate::infrastructure::services::dedup_service::DedupService>,
     ) -> Option<Arc<AudioMetadataService>> {
         if !self.config.features.enable_music {
             tracing::info!("Audio metadata service is disabled (music feature disabled)");
             return None;
         }
-        let blob_root = self.storage_path.join(".blobs");
         Some(Arc::new(AudioMetadataService::new(
             db_pool.clone(),
-            blob_root,
+            dedup.clone(),
+            self.config.temp_dir.clone(),
         )))
     }
 
@@ -967,9 +968,13 @@ impl AppServiceFactory {
     pub fn create_media_metadata_service(
         &self,
         db_pool: &Arc<PgPool>,
+        dedup: &Arc<crate::infrastructure::services::dedup_service::DedupService>,
     ) -> Arc<MediaMetadataService> {
-        let blob_root = self.storage_path.join(".blobs");
-        Arc::new(MediaMetadataService::new(db_pool.clone(), blob_root))
+        Arc::new(MediaMetadataService::new(
+            db_pool.clone(),
+            dedup.clone(),
+            self.config.temp_dir.clone(),
+        ))
     }
 
     /// Creates the trash service
@@ -1137,13 +1142,13 @@ impl AppServiceFactory {
     pub fn create_face_indexing_service(
         &self,
         db_pool: &Arc<PgPool>,
+        dedup: &Arc<crate::infrastructure::services::dedup_service::DedupService>,
     ) -> Arc<crate::infrastructure::services::face_indexing_service::FaceIndexingService> {
-        let blob_root = self.storage_path.join(".blobs");
         let analyzer = self.build_face_analyzer();
         Arc::new(
             crate::infrastructure::services::face_indexing_service::FaceIndexingService::new(
                 db_pool.clone(),
-                blob_root,
+                dedup.clone(),
                 analyzer,
             ),
         )

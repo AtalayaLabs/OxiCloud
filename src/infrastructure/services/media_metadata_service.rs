@@ -32,6 +32,7 @@ use uuid::Uuid;
 use crate::application::ports::file_lifecycle::FileLifecycleHook;
 use crate::common::errors::DomainError;
 use crate::infrastructure::repositories::pg::file_metadata_repository::FileMetadataRepository;
+use crate::infrastructure::services::dedup_service::DedupService;
 use crate::infrastructure::services::exif_service::{ExifMetadata, ExifService};
 
 #[derive(Debug, FromRow)]
@@ -50,12 +51,22 @@ pub struct MetadataExtractionResult {
 
 pub struct MediaMetadataService {
     pool: Arc<PgPool>,
-    blob_root: PathBuf,
+    /// CDC-aware blob reader. Same abstraction `thumbnail_service` uses —
+    /// hides both the chunk-manifest concatenation and the underlying
+    /// `BlobStorageBackend` wrapper stack.
+    dedup: Arc<DedupService>,
+    /// Tier-1 scratch directory for `stream_blob_to_tempfile`. Pulled
+    /// from `AppConfig::temp_dir` (env `OXICLOUD_TEMP_DIR`) at DI time.
+    temp_dir: PathBuf,
 }
 
 impl MediaMetadataService {
-    pub fn new(pool: Arc<PgPool>, blob_root: PathBuf) -> Self {
-        Self { pool, blob_root }
+    pub fn new(pool: Arc<PgPool>, dedup: Arc<DedupService>, temp_dir: PathBuf) -> Self {
+        Self {
+            pool,
+            dedup,
+            temp_dir,
+        }
     }
 
     pub fn is_image_file(mime_type: &str) -> bool {
@@ -71,15 +82,11 @@ impl MediaMetadataService {
         Self::is_image_file(mime_type) || Self::is_video_file(mime_type)
     }
 
-    fn blob_path(&self, hash: &str) -> PathBuf {
-        let prefix = &hash[0..2];
-        self.blob_root.join(prefix).join(format!("{}.blob", hash))
-    }
-
     fn arc(&self) -> Arc<Self> {
         Arc::new(Self {
             pool: self.pool.clone(),
-            blob_root: self.blob_root.clone(),
+            dedup: self.dedup.clone(),
+            temp_dir: self.temp_dir.clone(),
         })
     }
 
@@ -130,13 +137,32 @@ impl MediaMetadataService {
 
     /// Extract metadata for one file and persist it (no-op when nothing useful
     /// could be extracted).
+    ///
+    /// Streams the blob (CDC-aware — chunks concatenated on the fly for
+    /// chunked files; wrapper stack handles encryption + retry + cache)
+    /// to a tempfile in the configured tier-1 temp dir, then hands its
+    /// `.path()` to the sync extractors (kamadak-exif via
+    /// `std::fs::read(path)` for images, `nom-exif` video track reader
+    /// for videos — both are path-based). Peak process-heap = one chunk
+    /// (~1 MiB) regardless of media size.
     pub async fn extract_and_save(
         &self,
         file_id: &Uuid,
-        file_path: &Path,
+        blob_hash: &str,
         mime_type: &str,
     ) -> Result<(), DomainError> {
-        let path = file_path.to_path_buf();
+        // File-extension hint for the tempfile suffix — helps
+        // `nom-exif`'s content sniffer land the right parser branch.
+        let suffix = if Self::is_video_file(mime_type) {
+            ".mp4"
+        } else {
+            ".jpg"
+        };
+        let named = self
+            .dedup
+            .stream_blob_to_tempfile(blob_hash, &self.temp_dir, suffix)
+            .await?;
+        let path = named.path().to_path_buf();
         let mime = mime_type.to_string();
         let meta = tokio::task::spawn_blocking(move || Self::extract_blocking(&path, &mime))
             .await
@@ -146,6 +172,9 @@ impl MediaMetadataService {
                     format!("spawn_blocking join error: {e}"),
                 )
             })?;
+        // Keep the tempfile alive until after extraction — the
+        // spawn_blocking closure only borrowed the raw path.
+        drop(named);
 
         let Some(meta) = meta else {
             return Ok(());
@@ -175,13 +204,13 @@ impl MediaMetadataService {
     pub fn spawn_extraction_background(
         service: Arc<Self>,
         file_id: Uuid,
-        file_path: PathBuf,
+        blob_hash: String,
         mime_type: String,
     ) {
         tokio::spawn(async move {
             tracing::info!("📷 Extracting capture metadata for: {}", file_id);
             if let Err(e) = service
-                .extract_and_save(&file_id, &file_path, &mime_type)
+                .extract_and_save(&file_id, &blob_hash, &mime_type)
                 .await
             {
                 tracing::warn!("Failed to extract capture metadata: {}", e);
@@ -192,14 +221,14 @@ impl MediaMetadataService {
     pub fn spawn_extraction_with_delete_background(
         service: Arc<Self>,
         file_id: Uuid,
-        file_path: PathBuf,
+        blob_hash: String,
         mime_type: String,
     ) {
         tokio::spawn(async move {
             tracing::info!("📷 Updating capture metadata for: {}", file_id);
             let _ = service.delete_metadata(&file_id).await;
             if let Err(e) = service
-                .extract_and_save(&file_id, &file_path, &mime_type)
+                .extract_and_save(&file_id, &blob_hash, &mime_type)
                 .await
             {
                 tracing::warn!("Failed to update capture metadata: {}", e);
@@ -287,9 +316,8 @@ impl MediaMetadataService {
                     info!("Cloned capture metadata for file {}", new_file_id);
                 }
                 Ok(_) => {
-                    let file_path = service.blob_path(&blob_hash);
                     if let Err(e) = service
-                        .extract_and_save(&new_file_id, &file_path, &mime_type)
+                        .extract_and_save(&new_file_id, &blob_hash, &mime_type)
                         .await
                     {
                         warn!(
@@ -335,9 +363,8 @@ impl MediaMetadataService {
             let media = row.map_err(|e| {
                 DomainError::database_error(format!("Failed to fetch media file row: {}", e))
             })?;
-            let file_path = self.blob_path(&media.blob_hash);
             match self
-                .extract_and_save(&media.file_id, &file_path, &media.mime_type)
+                .extract_and_save(&media.file_id, &media.blob_hash, &media.mime_type)
                 .await
             {
                 Ok(()) => processed += 1,
@@ -530,7 +557,7 @@ impl FileLifecycleHook for MediaMetadataService {
             Self::spawn_extraction_background(
                 service,
                 uuid,
-                self.blob_path(blob_hash),
+                blob_hash.to_string(),
                 content_type.to_string(),
             );
         } else {
@@ -584,7 +611,7 @@ impl FileLifecycleHook for MediaMetadataService {
         Self::spawn_extraction_with_delete_background(
             self.arc(),
             uuid,
-            self.blob_path(blob_hash),
+            blob_hash.to_string(),
             content_type.to_string(),
         );
     }

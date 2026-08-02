@@ -369,3 +369,7 @@ load-baseline:
 #   just db
 load-seed:
     cargo run --bin load-seed -- --depth 5 --fanout 4 --files-per-leaf 3
+
+# Check and test everything
+# recommanded before pull request
+pre-pull-request: check fe-check audit check-migrations test test-integration fe-test build api-test fe-build-e2e  front-test

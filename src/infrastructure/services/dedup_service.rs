@@ -2056,6 +2056,56 @@ impl DedupService {
         Ok(Bytes::from(data))
     }
 
+    /// Stream a blob to a temp file for extractors that only accept a
+    /// filesystem `Path` (id3, mp3_duration, ffprobe, nom-exif video).
+    /// CDC-aware — reads through [`Self::read_blob_stream`] so a chunked
+    /// file's chunks are concatenated on the fly. Peak process-heap =
+    /// one chunk (~1 MiB) regardless of blob size.
+    ///
+    /// `temp_dir` is the destination directory (typically
+    /// `AppConfig::temp_dir`, from env `OXICLOUD_TEMP_DIR`). `suffix`
+    /// is appended to the tempfile name (e.g. `".mp3"`, `".jpg"`) so
+    /// content-sniffing extractors get a hint. The returned
+    /// `NamedTempFile` auto-removes on drop; callers pass `.path()`
+    /// to the extractor, then let the guard fall out of scope.
+    pub async fn stream_blob_to_tempfile(
+        &self,
+        hash: &str,
+        temp_dir: &std::path::Path,
+        suffix: &str,
+    ) -> Result<tempfile::NamedTempFile, DomainError> {
+        use tokio::io::AsyncWriteExt;
+        let named = tempfile::Builder::new()
+            .prefix("oxi-blob-")
+            .suffix(suffix)
+            .tempfile_in(temp_dir)
+            .map_err(|e| {
+                DomainError::internal_error("Dedup", format!("mktemp in {:?}: {e}", temp_dir))
+            })?;
+        // Re-open with tokio's async File so we can await writes.
+        let path = named.path().to_path_buf();
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .await
+            .map_err(|e| DomainError::internal_error("Dedup", format!("reopen temp: {e}")))?;
+        // CDC-aware: manifest lookup + chunk concat OR legacy backend passthrough.
+        let mut stream = self.read_blob_stream(hash).await?;
+        while let Some(chunk) = stream.next().await {
+            let bytes = chunk
+                .map_err(|e| DomainError::internal_error("Dedup", format!("stream chunk: {e}")))?;
+            file.write_all(&bytes)
+                .await
+                .map_err(|e| DomainError::internal_error("Dedup", format!("temp write: {e}")))?;
+        }
+        file.flush()
+            .await
+            .map_err(|e| DomainError::internal_error("Dedup", format!("temp flush: {e}")))?;
+        drop(file);
+        Ok(named)
+    }
+
     /// Stream a byte range — CDC-aware with legacy fallback.
     ///
     /// For CDC files: calculates which chunks overlap the requested range,
@@ -3968,6 +4018,83 @@ mod rechunk_integration_tests {
             ranged.extend_from_slice(&chunk.expect("chunk"));
         }
         assert_eq!(ranged, &data[1_100_000..1_100_064]);
+
+        cleanup(&pool, &hash, &files).await;
+    }
+
+    // ─── stream_blob_to_tempfile — CDC-aware read to a filesystem path ───
+    //
+    // Regression tests for the fix landed on `fix/services-use-blob-abstraction`:
+    // audio_metadata_service, media_metadata_service, and face_indexing_service
+    // all read blob content via DedupService (`read_blob_bytes` /
+    // `stream_blob_to_tempfile`), NOT the raw `BlobStorageBackend`. If someone
+    // reverts a service to `backend.get_blob_stream(hash)`, this test fails
+    // because `hash` is a chunk-manifest hash — the physical backend has no
+    // blob at that key. Bug returns silently otherwise; these tests catch it.
+
+    /// Local backend: seed a > 64 KiB blob, rechunk to CDC, then call
+    /// `stream_blob_to_tempfile` and verify the tempfile contents match
+    /// the original. Proves the CDC chunk-concat path works.
+    #[tokio::test]
+    async fn stream_blob_to_tempfile_reads_cdc_chunked_local() {
+        let pool = test_pool().await;
+        let dir = TempDir::new().unwrap();
+        let svc = local_svc(&pool, &dir).await;
+
+        // 200 KiB → forced multi-chunk after rechunk_legacy_blobs.
+        let data = content(200 * 1024, 33);
+        let (hash, files) = seed_legacy(&svc, &pool, &dir, &data, 1, "cdc-local", None).await;
+        svc.rechunk_legacy_blobs().await.expect("sweep");
+
+        // Sanity: rechunk actually produced a manifest (i.e. we're on the
+        // CDC path, not the legacy-fallback branch of read_blob_stream).
+        assert!(
+            manifest(&pool, &hash).await.is_some(),
+            "expected a CDC manifest after rechunk (test wouldn't cover the bug otherwise)"
+        );
+
+        // New method — the entry point audio/media services use.
+        let temp_dir = TempDir::new().unwrap();
+        let named = svc
+            .stream_blob_to_tempfile(&hash, temp_dir.path(), ".bin")
+            .await
+            .expect("stream_blob_to_tempfile must succeed on CDC-chunked blob");
+
+        let round_tripped = tokio::fs::read(named.path()).await.expect("read tempfile");
+        assert_eq!(round_tripped, data, "tempfile content must match original");
+
+        cleanup(&pool, &hash, &files).await;
+    }
+
+    /// Encrypted backend variant — proves the wrapper stack (decryption
+    /// on read) is honoured. Same regression class: if a service reads
+    /// raw ciphertext instead of going through DedupService, this fails.
+    #[tokio::test]
+    async fn stream_blob_to_tempfile_reads_cdc_chunked_encrypted() {
+        let pool = test_pool().await;
+        let dir = TempDir::new().unwrap();
+        let svc = encrypted_svc(&pool, &dir).await;
+
+        let data = content(150 * 1024, 77);
+        let (hash, files) = seed_legacy(&svc, &pool, &dir, &data, 1, "cdc-enc", None).await;
+        svc.rechunk_legacy_blobs().await.expect("sweep");
+
+        assert!(
+            manifest(&pool, &hash).await.is_some(),
+            "expected a CDC manifest after rechunk"
+        );
+
+        let temp_dir = TempDir::new().unwrap();
+        let named = svc
+            .stream_blob_to_tempfile(&hash, temp_dir.path(), ".bin")
+            .await
+            .expect("stream_blob_to_tempfile must succeed on encrypted CDC blob");
+
+        let round_tripped = tokio::fs::read(named.path()).await.expect("read tempfile");
+        assert_eq!(
+            round_tripped, data,
+            "tempfile content must match original plaintext (wrapper stack must decrypt transparently)"
+        );
 
         cleanup(&pool, &hash, &files).await;
     }
