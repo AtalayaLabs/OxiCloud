@@ -1,8 +1,11 @@
 //! First tenant of Part 2 (recoverable-run engine).
 //!
 //! Iterates `storage.drives` and reports each drive whose cached
-//! `used_bytes` differs from `SUM(files.size) WHERE NOT is_trashed`
-//! for that drive. **Read-only** — reports drift as findings but does
+//! `used_bytes` differs from `SUM(files.size)` for that drive.
+//! Includes trashed files — matches the hot-path delta (upload
+//! writes never decrement on `move_to_trash`) and the sweep at
+//! `storage_usage_service.rs::update_all_drives_storage_usage`.
+//! **Read-only** — reports drift as findings but does
 //! NOT fix it. The existing `storage_reconcile` job (Part 1) is what
 //! corrects the counter; this check surfaces WHEN drift happens so
 //! operators can trace it back to root cause (missed delta call,
@@ -167,7 +170,6 @@ impl RecoverableJobHandler for DrivesConsistencyCheck {
                         SELECT SUM(size)::bigint
                           FROM storage.files
                          WHERE drive_id = d.id
-                           AND NOT is_trashed
                     ), 0)                          AS actual_bytes
                   FROM storage.drives d
                   LEFT JOIN storage.folders rf ON rf.id = d.root_folder_id

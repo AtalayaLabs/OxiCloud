@@ -16,10 +16,10 @@ use crate::application::dtos::plugin_dto::{
     SetEnabledDto,
 };
 use crate::application::dtos::settings_dto::{
-    AdminCreateUserDto, AdminResetPasswordDto, DashboardStatsDto, ListUsersQueryDto,
-    MigrationStateDto, SaveOidcSettingsDto, SaveStorageSettingsDto, SendSmtpTestDto, SmtpInfoDto,
-    SmtpTestResultDto, StartMigrationDto, TestOidcConnectionDto, TestStorageConnectionDto,
-    UpdateUserActiveDto, UpdateUserQuotaDto, UpdateUserRoleDto,
+    AdminCreateUserDto, AdminResetPasswordDto, DashboardStatsDto, DriveKindUsageDto,
+    ListUsersQueryDto, MigrationStateDto, SaveOidcSettingsDto, SaveStorageSettingsDto,
+    SendSmtpTestDto, SmtpInfoDto, SmtpTestResultDto, StartMigrationDto, TestOidcConnectionDto,
+    TestStorageConnectionDto, UpdateUserActiveDto, UpdateUserQuotaDto, UpdateUserRoleDto,
 };
 use crate::application::dtos::user_dto::{AdminUserSummaryDto, UserDto};
 use crate::application::ports::authorization_ports::AuthorizationEngine;
@@ -897,8 +897,6 @@ pub async fn get_dashboard_stats(
             COUNT(*)::INT8 as total_users,
             COUNT(*) FILTER (WHERE active = true)::INT8 as active_users,
             COUNT(*) FILTER (WHERE role::text = 'admin')::INT8 as admin_users,
-            COALESCE(SUM(storage_quota_bytes)::INT8, 0) as total_quota_bytes,
-            COALESCE(SUM(storage_used_bytes)::INT8, 0) as total_used_bytes,
             COUNT(*) FILTER (WHERE storage_quota_bytes > 0 AND storage_used_bytes > storage_quota_bytes * 0.8)::INT8 as users_over_80,
             COUNT(*) FILTER (WHERE storage_quota_bytes > 0 AND storage_used_bytes > storage_quota_bytes)::INT8 as users_over_quota
         FROM auth.users
@@ -910,13 +908,80 @@ pub async fn get_dashboard_stats(
     .map_err(|e| AppError::internal_error(format!("Database query failed: {}", e)))?;
 
     use sqlx::Row;
-    let total_quota: i64 = stats_row.get("total_quota_bytes");
-    let total_used: i64 = stats_row.get("total_used_bytes");
-    let usage_percent = if total_quota > 0 {
-        (total_used as f64 / total_quota as f64) * 100.0
-    } else {
-        0.0
+
+    // Per-drive-kind quota panel:
+    //
+    //   - **Personal** rolls up via the user envelope
+    //     (`auth.users.storage_quota_bytes`; `= 0` means unlimited),
+    //     because personal drives inherit their cap from the user per
+    //     `docs/plan/drive.md`. The "N unlimited" here counts USERS
+    //     with unlimited envelope, not drives.
+    //   - **Shared** uses `storage.drives.quota_bytes` directly
+    //     (`IS NULL` means unlimited).
+    //
+    // Both rows sum `used_bytes` — for personal that's
+    // `auth.users.storage_used_bytes`, which is itself
+    // `SUM(drives.used_bytes) WHERE kind='personal'` per the sweep
+    // in `storage_usage_service.rs`. For shared it's the drive's own
+    // `used_bytes`. Trashed files are excluded from both — see
+    // `bug_trash_excluded_from_quota` for the known gap.
+    let personal_row = sqlx::query(
+        r#"
+        SELECT
+            COALESCE(SUM(storage_used_bytes)::INT8, 0) AS used_bytes,
+            COALESCE(SUM(storage_quota_bytes) FILTER (WHERE storage_quota_bytes > 0)::INT8, 0) AS capped_quota_bytes,
+            COUNT(*) FILTER (WHERE storage_quota_bytes = 0)::INT8 AS unlimited_count,
+            COUNT(*) FILTER (WHERE storage_quota_bytes > 0)::INT8 AS capped_count
+        FROM auth.users
+        WHERE is_external = false
+        "#,
+    )
+    .fetch_one(db_pool.as_ref())
+    .await
+    .map_err(|e| AppError::internal_error(format!("Personal-drive stats failed: {}", e)))?;
+
+    let shared_row = sqlx::query(
+        r#"
+        SELECT
+            COALESCE(SUM(used_bytes)::INT8, 0) AS used_bytes,
+            COALESCE(SUM(quota_bytes) FILTER (WHERE quota_bytes IS NOT NULL)::INT8, 0) AS capped_quota_bytes,
+            COUNT(*) FILTER (WHERE quota_bytes IS NULL)::INT8 AS unlimited_count,
+            COUNT(*) FILTER (WHERE quota_bytes IS NOT NULL)::INT8 AS capped_count
+        FROM storage.drives
+        WHERE kind::text = 'shared'
+        "#,
+    )
+    .fetch_one(db_pool.as_ref())
+    .await
+    .map_err(|e| AppError::internal_error(format!("Shared-drive stats failed: {}", e)))?;
+
+    let build_row = |kind: &str, row: sqlx::postgres::PgRow| DriveKindUsageDto {
+        kind: kind.to_string(),
+        used_bytes: row.get("used_bytes"),
+        // Only surface the cap when there's at least one capped drive
+        // — else the FE would render "0 / 0 (NaN%)" for a kind that's
+        // entirely unlimited.
+        capped_quota_bytes: {
+            let capped_count: i64 = row.get("capped_count");
+            if capped_count > 0 {
+                Some(row.get("capped_quota_bytes"))
+            } else {
+                None
+            }
+        },
+        unlimited_count: row.get("unlimited_count"),
+        capped_count: row.get("capped_count"),
     };
+    let drive_usage = vec![
+        build_row("personal", personal_row),
+        build_row("shared", shared_row),
+    ];
+
+    // Backend physical stats (post-dedup, post-encryption) —
+    // rendered in the dashboard's "Backend Storage" card next to
+    // the user-quota panel. Same source `StorageSettingsDto` uses;
+    // cheap aggregate over `storage.blobs`.
+    let dedup_stats = state.core.dedup_service.get_stats().await;
 
     let stats = DashboardStatsDto {
         server_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -926,11 +991,11 @@ pub async fn get_dashboard_stats(
         total_users: stats_row.get("total_users"),
         active_users: stats_row.get("active_users"),
         admin_users: stats_row.get("admin_users"),
-        total_quota_bytes: total_quota,
-        total_used_bytes: total_used,
-        storage_usage_percent: (usage_percent * 100.0).round() / 100.0,
+        drive_usage,
         users_over_80_percent: stats_row.get("users_over_80"),
         users_over_quota: stats_row.get("users_over_quota"),
+        total_bytes_stored: Some(dedup_stats.total_bytes_stored as i64),
+        dedup_ratio: Some(dedup_stats.dedup_ratio),
         registration_enabled: {
             if let Some(svc) = state.admin_settings_service.as_ref() {
                 svc.get_registration_enabled().await

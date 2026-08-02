@@ -1642,7 +1642,7 @@
 	  communicates which admin area we're in — the plain "Admin"
 	  h1 was informationless once the tab bar moved out.
 	-->
-	<h1>{tabLabel}</h1>
+	<h1>{t('admin.title', 'Admin')} > {tabLabel}</h1>
 
 	{#if tab === 'dashboard'}
 		{#if dashboardError}
@@ -1713,20 +1713,105 @@
 				</div>
 			{/if}
 
-			<div class="card">
-				<h2>{t('admin.storage', 'Storage')}</h2>
-				<div class="ds-bar">
-					<div
-						class="ds-fill"
-						class:ds-fill--warn={dashboard.storage_usage_percent > 70}
-						class:ds-fill--danger={dashboard.storage_usage_percent > 90}
-						style:width="{Math.min(dashboard.storage_usage_percent, 100)}%"
-					></div>
+			<div class="storage-cards">
+				<div class="card storage-cards__quota">
+					<h2>{t('admin.quota_usage', 'Quota usage')}</h2>
+					<p class="muted storage-cards__hint">
+						{t(
+							'admin.quota_usage_hint',
+							'Pre-dedup, logical file sizes. Includes trashed files until permanent deletion.'
+						)}
+					</p>
+					<table class="quota-table">
+						<tbody>
+							{#each dashboard.drive_usage ?? [] as row (row.kind)}
+								{@const label =
+									row.kind === 'personal'
+										? t('admin.quota_personal', 'Personal drives')
+										: t('admin.quota_shared', 'Shared drives')}
+								{@const pct =
+									row.capped_quota_bytes && row.capped_quota_bytes > 0
+										? (row.used_bytes / row.capped_quota_bytes) * 100
+										: null}
+								{#if row.capped_count > 0 || row.unlimited_count > 0}
+									<tr>
+										<th scope="row">{label}</th>
+										<td class="quota-table__num">
+											{#if row.capped_quota_bytes !== null && pct !== null}
+												{formatBytes(row.used_bytes)} / {formatBytes(row.capped_quota_bytes)}
+												<span class="quota-table__pct">({pct.toFixed(1)}%)</span>
+											{:else}
+												{formatBytes(row.used_bytes)}
+											{/if}
+										</td>
+										<td class="quota-table__bar">
+											{#if pct !== null}
+												<div class="ds-bar">
+													<div
+														class="ds-fill"
+														class:ds-fill--warn={pct > 70}
+														class:ds-fill--danger={pct > 90}
+														style:width="{Math.min(pct, 100)}%"
+													></div>
+												</div>
+											{/if}
+										</td>
+										<td class="quota-table__meta">
+											{#if row.unlimited_count > 0}
+												<span class="quota-table__unlimited">
+													{t(
+														'admin.quota_unlimited',
+														{ n: row.unlimited_count },
+														'{{n}} unlimited'
+													)}
+												</span>
+											{/if}
+										</td>
+									</tr>
+								{/if}
+							{/each}
+						</tbody>
+					</table>
 				</div>
-				<p class="muted">
-					{formatBytes(dashboard.total_used_bytes)} / {formatBytes(dashboard.total_quota_bytes)}
-					({dashboard.storage_usage_percent.toFixed(1)}%)
-				</p>
+
+				<div class="card storage-cards__backend">
+					<h2>{t('admin.backend_storage', 'Backend storage')}</h2>
+					{#if dashboard.total_bytes_stored !== undefined}
+						<dl class="storage-cards__stats">
+							<div>
+								<dt>{t('admin.backend_stored', 'Stored')}</dt>
+								<dd>{formatBytes(dashboard.total_bytes_stored)}</dd>
+							</div>
+							<div
+								class="storage-cards__stat-hint"
+								title={t(
+									'admin.backend_referenced_hint',
+									'Sum of blob references (size × ref_count). Can exceed the drive total because thumbnails, derived assets, and blobs pending garbage collection still hold references.'
+								)}
+							>
+								<dt>
+									{t('admin.backend_referenced', 'Referenced')}
+									<Icon name="info-circle" />
+								</dt>
+								<dd>
+									{formatBytes(
+										Math.round((dashboard.total_bytes_stored ?? 0) * (dashboard.dedup_ratio ?? 1))
+									)}
+								</dd>
+							</div>
+							<div>
+								<dt>{t('admin.backend_dedup_ratio', 'Dedup ratio')}</dt>
+								<dd>
+									{dashboard.dedup_ratio !== undefined
+										? `${dashboard.dedup_ratio.toFixed(2)}×`
+										: '—'}
+								</dd>
+							</div>
+						</dl>
+					{:else}
+						<p class="muted">—</p>
+					{/if}
+				</div>
 			</div>
 
 			{#if dashboard.registration_enabled !== undefined}
@@ -1996,7 +2081,7 @@
 		     history; deleted here in one sweep.
 		     ══════════════════════════════════════════════════════════ -->
 		<div class="card">
-			<h2>{t('admin.storage_tab', 'Storage entries')}</h2>
+			<h2>{t('admin.storage_title', 'Storage entries')}</h2>
 			<p class="muted">
 				{t(
 					'admin.storage_move_hint',
@@ -3876,6 +3961,109 @@
 
 	.ds-fill--danger {
 		background: var(--color-error-text);
+	}
+
+	.storage-cards {
+		display: grid;
+		grid-template-columns: 2fr 1fr;
+		gap: var(--space-3);
+		margin-bottom: var(--space-4);
+	}
+
+	@media (width <= 40rem) {
+		.storage-cards {
+			grid-template-columns: 1fr;
+		}
+	}
+
+	.storage-cards__hint {
+		margin-top: calc(-1 * var(--space-2));
+		margin-bottom: var(--space-3);
+		font-size: var(--text-xs);
+	}
+
+	.storage-cards__stats {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+		margin: 0;
+	}
+
+	.storage-cards__stats > div {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: var(--space-3);
+	}
+
+	.storage-cards__stats dt {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1);
+		color: var(--color-text-muted);
+		font-size: var(--text-sm);
+	}
+
+	.storage-cards__stats dd {
+		margin: 0;
+		font-weight: var(--weight-semibold);
+		color: var(--color-text-heading);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.storage-cards__stat-hint {
+		cursor: help;
+	}
+
+	.quota-table {
+		width: 100%;
+		border-collapse: collapse;
+	}
+
+	.quota-table th,
+	.quota-table td {
+		padding: var(--space-2) var(--space-2);
+		text-align: left;
+		vertical-align: middle;
+		font-size: var(--text-sm);
+	}
+
+	.quota-table th {
+		font-weight: var(--weight-semibold);
+		color: var(--color-text-heading);
+		white-space: nowrap;
+	}
+
+	.quota-table__num {
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+	}
+
+	.quota-table__pct {
+		color: var(--color-text-muted);
+	}
+
+	.quota-table__bar {
+		width: 40%;
+		min-width: 6rem;
+	}
+
+	.quota-table__bar .ds-bar {
+		margin-bottom: 0;
+	}
+
+	.quota-table__meta {
+		text-align: right;
+		white-space: nowrap;
+	}
+
+	.quota-table__unlimited {
+		display: inline-block;
+		padding: 2px var(--space-2);
+		border-radius: var(--radius-full);
+		background: var(--color-bg-muted);
+		color: var(--color-text-muted);
+		font-size: var(--text-xs);
 	}
 
 	.kv {

@@ -338,20 +338,32 @@ export function promoteUserToInternal(userId: string): Promise<void> {
 
 // ── Dashboard ───────────────────────────────────────────────────────────
 
+export interface DriveKindUsage {
+	kind: 'personal' | 'shared';
+	used_bytes: number;
+	// null when there are no capped drives of this kind — the FE
+	// hides the ratio and just renders "N unlimited"
+	capped_quota_bytes: number | null;
+	unlimited_count: number;
+	capped_count: number;
+}
+
 export interface AdminDashboard {
 	total_users: number;
 	active_users: number;
 	admin_users: number;
 	server_version: string;
-	total_used_bytes: number;
-	total_quota_bytes: number;
-	storage_usage_percent: number;
+	drive_usage: DriveKindUsage[];
 	auth_enabled: boolean;
 	oidc_configured: boolean;
 	quotas_enabled: boolean;
 	registration_enabled?: boolean;
 	users_over_80_percent: number;
 	users_over_quota: number;
+	// Backend physical accounting — omitted when the dedup service
+	// is unavailable. Renders as "—" in that case.
+	total_bytes_stored?: number;
+	dedup_ratio?: number;
 }
 
 export function getDashboard(): Promise<AdminDashboard> {

@@ -484,7 +484,6 @@
 <section class="jobs-panel">
 	<header class="jobs-panel__header">
 		<div class="jobs-panel__header-text">
-			<h2>{t('admin.jobs.title', 'Jobs')}</h2>
 			<p class="jobs-panel__hint">
 				{t(
 					'admin.jobs.hint',
@@ -1006,10 +1005,6 @@
 		flex-wrap: wrap;
 	}
 
-	.jobs-panel__header-text h2 {
-		margin: 0 0 0.25rem;
-	}
-
 	.jobs-panel__hint {
 		margin: 0;
 		color: var(--color-text-muted);
@@ -1251,9 +1246,24 @@
 		background: var(--color-bg-surface);
 		padding: 0.5rem;
 		border-radius: 4px;
-		overflow-x: auto;
 		font-size: 0.8rem;
 		margin: 0.5rem 0 0;
+		/* Wrap long values (cursor_hex is 128 hex chars) instead of
+		   expanding the table cell — the run-drawer sits inside a
+		   `<td colspan>` that would otherwise grow horizontally past
+		   the viewport and blow out the page layout. `pre-wrap`
+		   preserves the multi-line JSON.stringify(…, 2) indent;
+		   `word-break: break-all` breaks the long hex strings mid-run
+		   without hyphens.
+
+		   `overflow-x: auto` is kept as a defense-in-depth for any
+		   future field that pre-wrap can't handle (e.g. a single
+		   unbroken word longer than max-width). It only kicks in
+		   when wrapping isn't enough. */
+		white-space: pre-wrap;
+		word-break: break-all;
+		max-width: 100%;
+		overflow-x: auto;
 	}
 
 	.jobs-panel__findings h4 {

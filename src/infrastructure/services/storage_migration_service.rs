@@ -75,6 +75,15 @@ pub const STORAGE_MIGRATION_JOB_NAME: &str = "storage_migration";
 /// projections read the same constant.
 pub const TARGET_NAME_PARAM: &str = "target_name";
 
+/// Companion to [`TARGET_NAME_PARAM`] — records the source entry
+/// name (the active backend at Fresh-open time) so a run row read
+/// months later self-describes the migration direction. Without
+/// this, an operator inspecting a Completed row from an old
+/// deployment could see "migrated to `s3_prod`" but had to
+/// cross-reference `admin_settings` history to know what it came
+/// from. Stamped once on Fresh open; Resume reads it back.
+pub const SOURCE_NAME_PARAM: &str = "source_name";
+
 /// Rows per batch. Copies are I/O-bound (source read + target write);
 /// larger batches amortise fewer SQL round-trips but the checkpoint
 /// / cancel-poll cadence lengthens. 100 balances the two — one
@@ -259,11 +268,56 @@ impl RecoverableJobHandler for StorageMigrationService {
         // reference reads from this local. A hot-swap that fires
         // mid-run (e.g., a second migration starting after this one
         // completes) doesn't reshape our decisions from underneath.
-        let active_backend_name = self
-            .active_backend_name
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+        //
+        // For Fresh runs we ALSO stamp this into `params.source_name`
+        // so an audit-log reader can self-describe the migration
+        // direction without cross-referencing `admin_settings`
+        // history. On Resume we read it back — the ORIGINAL source
+        // (from when the run was opened) is what's audit-worthy,
+        // not whatever the active backend happens to be at resume
+        // time.
+        let active_backend_name = if is_fresh {
+            let snap = self
+                .active_backend_name
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if let Err(e) = store.set_string_param(SOURCE_NAME_PARAM, &snap).await {
+                return RunOutcome::Failed {
+                    message: format!("failed to persist source_name to params: {e}"),
+                };
+            }
+            snap
+        } else {
+            match store.get_string_param(SOURCE_NAME_PARAM).await {
+                Ok(Some(name)) => name,
+                Ok(None) => {
+                    // Paused row predates K3.8's source-stamping.
+                    // Fall back to current active name and log a
+                    // note so the audit trail is at least
+                    // approximately correct.
+                    let fallback = self
+                        .active_backend_name
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    tracing::warn!(
+                        target: "oxicloud::migration",
+                        event = "storage_migration.legacy_paused_row_source_defaulted",
+                        run_id = %store.run_id(),
+                        fallback_source = %fallback,
+                        "resumed run has no source_name in params (pre-K3.8 row) — defaulting \
+                         to current active backend for the audit line"
+                    );
+                    fallback
+                }
+                Err(e) => {
+                    return RunOutcome::Failed {
+                        message: format!("read {SOURCE_NAME_PARAM} from params: {e}"),
+                    };
+                }
+            }
+        };
 
         // First-line guard: target name equals the currently-active
         // entry. Silent no-op if we let it through — the app would
