@@ -19,6 +19,15 @@
 //!   runs when the operator passes `?deep=true` because it costs a
 //!   full read of every blob.
 //!
+//! * `blob_unreadable` (severity `data_loss`, deep mode only) —
+//!   `blob_exists` returned true but the read pipeline errored (can't
+//!   decrypt, network glitch, permission error, etc.). Distinct from
+//!   `blob_corrupted` (which requires successful read + hash mismatch);
+//!   here we can't get bytes out at all. Same operator impact — any
+//!   file referencing this hash is inaccessible — but the remedy
+//!   differs (key recovery, retry, or blob replacement, depending on
+//!   the recorded `error` field).
+//!
 //! * `refcount_mismatch` (severity `inconsistent`) —
 //!   `storage.blobs.ref_count` disagrees with the actual reference
 //!   count computed from `storage.files.blob_hash` +
@@ -66,7 +75,7 @@ pub const BLOBS_CONSISTENCY_JOB_NAME: &str = "blobs_consistency";
 
 /// `params` JSONB key under which the entry name being probed is
 /// stashed on a Fresh run (matches `TARGET_NAME_PARAM` on
-/// `storage_migration`). Resumed runs re-read it so a paused audit
+/// `backend_migration`). Resumed runs re-read it so a paused audit
 /// survives restart without the admin re-specifying the target.
 pub const PROBED_STORAGE_PARAM: &str = "probed_storage";
 
@@ -180,7 +189,7 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
         resume_cursor: Option<Vec<u8>>,
     ) -> RunOutcome {
         // Resolve the backend to probe. Two paths, mirroring the
-        // Fresh/Resumed split the storage_migration handler uses:
+        // Fresh/Resumed split the backend_migration handler uses:
         //
         // * Fresh + args.storage=Some — probe that named entry
         //   instead of the live backend. Stamp probed_storage in
@@ -251,6 +260,12 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
             );
         }
 
+        // Snapshot "is this a Fresh run?" BEFORE the resume_cursor
+        // match consumes it — otherwise the `is_none()` check later
+        // borrows a partially-moved value. Fresh = no cursor bytes
+        // at all; Resumed = cursor bytes present (possibly empty).
+        let is_fresh = resume_cursor.is_none();
+
         // Cursor = the last-visited `hash` string, UTF-8-encoded. On
         // resume, we walk `WHERE hash > $cursor` in ASC order. First
         // batch: NULL cursor → start from the smallest hash.
@@ -272,10 +287,49 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
         // `record_finding` on each emission).
         let mut finding_count = 0u64;
 
-        // Deep mode = re-hash bytes for bit-rot detection. Logged
-        // once at run start so operators tailing tracing know why the
-        // scan is taking hours.
-        if args.deep {
+        // Deep mode is a per-run flag with two consumers:
+        //  1. This handler — decides whether to re-hash bytes.
+        //  2. The admin panel — needs to display whether the run
+        //     was deep so operators know what the scan actually
+        //     verified.
+        //
+        // On a Fresh run we take it from `deep` (the trigger
+        // endpoint stamps `?deep=true` onto the args) and stash it
+        // in `params.deep` so:
+        //   * Resume picks up the same mode (would previously become
+        //     non-deep on Resume — a Paused deep scan silently lost
+        //     its `deep` intent).
+        //   * The admin panel run-detail view can render
+        //     `params.deep = "true"` alongside `target_name`,
+        //     `progress_kind`, etc.
+        //
+        // Persist BEFORE the walk so a mid-fresh-batch crash still
+        // leaves a Paused row with the right mode marker.
+        let deep = if is_fresh {
+            let deep = args.deep;
+            let v = if deep { "true" } else { "false" };
+            if let Err(e) = store.set_string_param("deep", v).await {
+                return RunOutcome::Failed {
+                    message: format!("failed to persist deep flag to params: {e}"),
+                };
+            }
+            deep
+        } else {
+            // Resumed run — read the persisted flag. Default to
+            // false (fast mode) if the row is a pre-K3.5 Paused
+            // scan without the param stashed.
+            match store.get_string_param("deep").await {
+                Ok(Some(v)) => v == "true",
+                Ok(None) => false,
+                Err(e) => {
+                    return RunOutcome::Failed {
+                        message: format!("read `deep` from params: {e}"),
+                    };
+                }
+            }
+        };
+
+        if deep {
             tracing::info!(
                 target: "oxicloud::consistency",
                 event = "blobs_consistency.deep_mode_active",
@@ -377,11 +431,11 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                     event = "blobs_consistency.completed",
                     run_id = %store.run_id(),
                     finding_count = finding_count,
-                    deep = args.deep,
+                    deep = deep,
                     "blobs_consistency completed with {} finding(s)",
                     finding_count
                 );
-                return RunOutcome::Completed;
+                return RunOutcome::completed();
             }
 
             let grace_cutoff = Utc::now() - CREATE_GRACE;
@@ -472,7 +526,7 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                 //   `expected_hash` was NOT reused as a name to
                 //   avoid mistaking it for "the hash we expect to
                 //   see on disk (i.e. what will fix this)".
-                if args.deep {
+                if deep {
                     match recompute_hash(backend.as_ref(), &row.hash).await {
                         Ok(computed_hash) if computed_hash == row.hash => {}
                         Ok(computed_hash) => {
@@ -495,13 +549,46 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                             .await;
                         }
                         Err(e) => {
+                            // Blob can't be read at all — record as
+                            // `blob_unreadable`. Distinct from
+                            // `blob_corrupted` (hash mismatch = we
+                            // can read but content differs): here
+                            // we can't get bytes out to hash. Common
+                            // causes: decrypt failure (missing key),
+                            // network glitch on S3/Azure, missing
+                            // file on Local, permission error.
+                            //
+                            // Recorded as `data_loss` because from
+                            // the file's perspective the outcome is
+                            // the same as corruption: content is
+                            // inaccessible. Admins triage the error
+                            // string to distinguish transient
+                            // (retry-safe) from permanent (needs
+                            // key recovery or blob replacement).
+                            finding_count += 1;
+                            let affected = affected_files(self.pool.as_ref(), &row.hash).await;
+                            record_or_log(
+                                store,
+                                BLOBS_CONSISTENCY_JOB_NAME,
+                                "blob_unreadable",
+                                "data_loss",
+                                None,
+                                serde_json::json!({
+                                    "hash":           row.hash,
+                                    "size":           row.size,
+                                    "ref_count":      row.ref_count,
+                                    "affected_files": affected,
+                                    "error":          e.to_string(),
+                                }),
+                            )
+                            .await;
                             tracing::warn!(
                                 target: "oxicloud::consistency",
-                                event = "blobs_consistency.recompute_hash_error",
+                                event = "blobs_consistency.blob_unreadable",
                                 run_id = %store.run_id(),
                                 hash = %row.hash,
                                 error = %e,
-                                "recompute_hash failed; not a corruption signal on its own"
+                                "🚨 blob unreadable in deep mode — recorded finding, continuing"
                             );
                         }
                     }
@@ -524,11 +611,11 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                     event = "blobs_consistency.completed",
                     run_id = %store.run_id(),
                     finding_count = finding_count,
-                    deep = args.deep,
+                    deep = deep,
                     "blobs_consistency completed with {} finding(s)",
                     finding_count
                 );
-                return RunOutcome::Completed;
+                return RunOutcome::completed();
             }
         }
     }

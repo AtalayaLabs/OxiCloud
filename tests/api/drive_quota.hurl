@@ -120,7 +120,7 @@ small_file_id: jsonpath "$.id"
 #      Ed's 2026-07-17 design call: the sweep is the escape hatch
 #      for tests / operators that need immediate cache freshness;
 #      per-write invalidation would nuke the cache on every upload.
-POST {{base_url}}/api/admin/jobs/storage_reconcile/trigger
+POST {{base_url}}/api/admin/jobs/usage_reconcile/trigger
 Authorization: Bearer {{admin_token}}
 [Options]
 delay: 200ms
@@ -157,7 +157,7 @@ HTTP 201
 # `used_bytes` climbs to 64 (32 + 32). Same trigger-sweep pattern
 # as the first assertion — the delta is fire-and-forget and the
 # listing cache lags until the sweep invalidates it.
-POST {{base_url}}/api/admin/jobs/storage_reconcile/trigger
+POST {{base_url}}/api/admin/jobs/usage_reconcile/trigger
 Authorization: Bearer {{admin_token}}
 [Options]
 delay: 200ms
@@ -194,7 +194,7 @@ HTTP 507
 # consumed by the intervening GET which re-populated the cache
 # with the pre-refused-write value. Sweep + re-check for
 # determinism.
-POST {{base_url}}/api/admin/jobs/storage_reconcile/trigger
+POST {{base_url}}/api/admin/jobs/usage_reconcile/trigger
 Authorization: Bearer {{admin_token}}
 
 HTTP 200
@@ -238,7 +238,7 @@ HTTP 201
 
 # Unlimited drive's `used_bytes` climbs to the file's exact size
 # (5 MiB = 5_242_880 bytes). Trigger-sweep pattern (see above).
-POST {{base_url}}/api/admin/jobs/storage_reconcile/trigger
+POST {{base_url}}/api/admin/jobs/usage_reconcile/trigger
 Authorization: Bearer {{admin_token}}
 [Options]
 delay: 200ms
@@ -266,7 +266,7 @@ jsonpath "$[?(@.id=='{{unlimited_drive_id}}')].used_bytes" == 5242880
 #               tight drive; the 5 MiB is in the unlimited one).
 #            b) Permanently delete via empty-trash.
 #            c) Trigger the reconciliation sweep on demand —
-#               `POST /api/admin/jobs/storage_reconcile/trigger`.
+#               `POST /api/admin/jobs/usage_reconcile/trigger`.
 #            d) `GET /api/drives` now shows the corrected counter.
 # ─────────────────────────────────────────────────────────────
 DELETE {{base_url}}/api/files/{{small_file_id}}
@@ -284,7 +284,7 @@ HTTP 200
 
 # Sweep is fire-and-forget on a ticker (default 600 s). Run it now
 # so the assertion below is deterministic instead of polling.
-POST {{base_url}}/api/admin/jobs/storage_reconcile/trigger
+POST {{base_url}}/api/admin/jobs/usage_reconcile/trigger
 Authorization: Bearer {{admin_token}}
 
 HTTP 200
@@ -310,7 +310,7 @@ jsonpath "$[?(@.id=='{{unlimited_drive_id}}')].used_bytes" == 5242880
 #          the route in production configs; here we just confirm a
 #          non-admin caller is refused even when the feature is on.
 # ─────────────────────────────────────────────────────────────
-POST {{base_url}}/api/admin/jobs/storage_reconcile/trigger
+POST {{base_url}}/api/admin/jobs/usage_reconcile/trigger
 Authorization: Bearer {{owner_token}}
 
 HTTP 403
@@ -415,7 +415,7 @@ HTTP 200
 # operations above never wrote anything. Trigger-sweep so the
 # check reads live SQL (see the class doc on the earlier
 # sweep + GET pair for the design rationale).
-POST {{base_url}}/api/admin/jobs/storage_reconcile/trigger
+POST {{base_url}}/api/admin/jobs/usage_reconcile/trigger
 Authorization: Bearer {{admin_token}}
 
 HTTP 200
@@ -570,7 +570,7 @@ HTTP 201
 soft_shrink_file_id: jsonpath "$.id"
 
 
-POST {{base_url}}/api/admin/jobs/storage_reconcile/trigger
+POST {{base_url}}/api/admin/jobs/usage_reconcile/trigger
 Authorization: Bearer {{admin_token}}
 [Options]
 delay: 200ms
@@ -654,7 +654,7 @@ Authorization: Bearer {{owner_token}}
 HTTP 200
 
 
-POST {{base_url}}/api/admin/jobs/storage_reconcile/trigger
+POST {{base_url}}/api/admin/jobs/usage_reconcile/trigger
 Authorization: Bearer {{admin_token}}
 
 HTTP 200

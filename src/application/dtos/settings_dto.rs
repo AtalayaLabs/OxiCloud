@@ -118,6 +118,30 @@ pub struct ListUsersQueryDto {
     pub summary: Option<bool>,
 }
 
+/// One row of the dashboard's quota panel — usage aggregate for a
+/// single drive kind. Unlimited caps are excluded from `capped_quota_bytes`
+/// and counted in `unlimited_count` so the panel can render the ratio
+/// honestly ("X / Y over N capped drives · M unlimited").
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DriveKindUsageDto {
+    /// `"personal"` or `"shared"`.
+    pub kind: String,
+    /// Total bytes stored across drives of this kind. Excludes trashed
+    /// files (see `bug_trash_excluded_from_quota` for the known gap).
+    pub used_bytes: i64,
+    /// Sum of caps over capped drives only. `None` when there are no
+    /// capped drives of this kind (would otherwise report `0 / 0`
+    /// meaninglessly).
+    pub capped_quota_bytes: Option<i64>,
+    /// Count of drives (personal: users) with no cap. Personal-kind
+    /// unlimited = `auth.users.storage_quota_bytes = 0`; shared-kind
+    /// unlimited = `storage.drives.quota_bytes IS NULL`.
+    pub unlimited_count: i64,
+    /// Count of drives with a numeric cap. Used to hide rows with
+    /// zero drives and denominate the ratio.
+    pub capped_count: i64,
+}
+
 /// Dashboard statistics
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DashboardStatsDto {
@@ -130,12 +154,27 @@ pub struct DashboardStatsDto {
     pub total_users: i64,
     pub active_users: i64,
     pub admin_users: i64,
-    // Storage stats
-    pub total_quota_bytes: i64,
-    pub total_used_bytes: i64,
-    pub storage_usage_percent: f64,
+    // ── Per-drive-kind quota accounting ──
+    // One row per drive kind (personal, shared). Pre-dedup, logical
+    // file sizes summed from `drives.used_bytes` (personal rolls up
+    // via the user envelope). Cap sums exclude unlimited entries;
+    // `unlimited_count` tracks them separately so the ratio stays
+    // honest.
+    pub drive_usage: Vec<DriveKindUsageDto>,
     pub users_over_80_percent: i64,
     pub users_over_quota: i64,
+    // ── Backend physical accounting ──
+    // Bytes actually stored on the active backend (`storage.blobs`
+    // aggregate) plus the dedup ratio (referenced / stored).
+    // `total_bytes_stored` is typically << `total_used_bytes` on a
+    // healthy deployment — dedup + shared blobs mean many user file
+    // rows resolve to one physical blob. `None` when the dedup
+    // stats service is unavailable or errored (dashboard renders as
+    // "—" in that case).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_bytes_stored: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dedup_ratio: Option<f64>,
     pub registration_enabled: bool,
 }
 
@@ -211,6 +250,40 @@ pub struct StorageEntrySummaryDto {
     /// Azure). Cosmetic — helps the admin distinguish two Local
     /// entries pointing at different disks.
     pub location_hint: Option<String>,
+    /// Ordered pair-list summary — one entry per configured pair in
+    /// `OXICLOUD_STORAGE_<NAME>_ENCRYPTION_KEY`, oldest first, head
+    /// last. Empty vec means the entry has no `_ENCRYPTION_KEY`
+    /// declared at all (pure plaintext-v1 writes today, no crypto).
+    ///
+    /// Frontend renders this on the entry card so operators can:
+    ///   - See which pairs are configured + their SSH-style
+    ///     fingerprints without inspecting `.env`.
+    ///   - Cross-reference the head pair against the `head_key_fp`
+    ///     from the last `backend_rotate` completion — if they
+    ///     match AND `failed = 0`, every on-disk blob is under the
+    ///     head, and non-head pairs are safe to remove.
+    #[serde(default)]
+    pub encryption_pairs: Vec<StorageEncryptionPairDto>,
+}
+
+/// One `<cipher>:<key>` pair rendered for the admin UI. Never
+/// carries key material — only cipher name + a truncated fingerprint
+/// safe to show operators.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StorageEncryptionPairDto {
+    /// `"aes-256-gcm"` for a real-cipher pair, `"none"` for a
+    /// `none:` sentinel (writes as plaintext-v1).
+    pub cipher: String,
+    /// SSH-style colon-hex 8-byte truncation of `sha256(key)`.
+    /// Matches the v1 header's `<key_fp>` field and the CLI's
+    /// `oxicloud --fingerprint <key>` output. `None` for `none:`
+    /// pairs (no key material to fingerprint).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    /// True for the LAST pair in the list — the write pair. UI
+    /// badges it distinctly ("← head" or an arrow). Exactly one
+    /// pair has `is_head = true` when the list is non-empty.
+    pub is_head: bool,
 }
 
 /// Request body for saving storage settings from the admin panel

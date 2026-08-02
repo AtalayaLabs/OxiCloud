@@ -255,7 +255,7 @@ impl RecoverableJobHandler for FoldersConsistencyCheck {
                     "folders_consistency completed with {} finding(s)",
                     finding_count
                 );
-                return RunOutcome::Completed;
+                return RunOutcome::completed();
             }
 
             // Per-row branches. Add new ones here — same pattern as
@@ -352,7 +352,7 @@ impl RecoverableJobHandler for FoldersConsistencyCheck {
                     "folders_consistency completed with {} finding(s)",
                     finding_count
                 );
-                return RunOutcome::Completed;
+                return RunOutcome::completed();
             }
         }
     }

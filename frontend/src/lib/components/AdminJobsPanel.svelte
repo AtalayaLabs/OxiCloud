@@ -28,6 +28,7 @@
 		listJobs,
 		listRuns,
 		listFindings,
+		pauseJob,
 		triggerJob,
 		cancelJob,
 		purgeJobRuns
@@ -237,11 +238,33 @@
 		const key = `trigger:${name}${opts.deep ? ':deep' : ''}`;
 		markBusy(key, true);
 		try {
-			const res = await triggerJob(name, opts);
+			// Fire the trigger + a follow-up loadJobs after a short delay
+			// in parallel. Long jobs (backend_migration) come back 202
+			// immediately; short jobs (consistency checks) come back on
+			// completion. Either way, the `running` badge / Pause button
+			// should appear within a render cycle rather than waiting
+			// for the next 5s poll tick.
+			const triggerPromise = triggerJob(name, opts);
+			// Give the backend a moment to register the run's
+			// `current_run_start` before we ask "is it running?" — this
+			// races against the trigger acknowledgment for detached
+			// jobs. 300 ms is well under the 5 s poll cadence and
+			// invisible to the operator.
+			setTimeout(() => {
+				void loadJobs();
+				if (expandedJob === name) void loadRuns(expandedJob);
+			}, 300);
+
+			const res = await triggerPromise;
 			// The trigger envelope carries the child's outcome — surface
 			// its pass/fail immediately so operators don't have to click
-			// through to see whether the run completed cleanly.
-			if (res.outcome.outcome === 'ok') {
+			// through to see whether the run completed cleanly. Detached
+			// jobs come back with `dispatched: true` and no outcome —
+			// silence the notify for those (the "started" state is
+			// already visible via the badge).
+			if (!res.outcome) {
+				// dispatched (detached) — no outcome to render
+			} else if (res.outcome.outcome === 'ok') {
 				ui.notify(
 					t('admin.jobs.triggered_ok', { name }, '{{name}} triggered successfully'),
 					'success'
@@ -265,23 +288,71 @@
 		}
 	}
 
-	async function onCancel(name: string) {
-		const key = `cancel:${name}`;
+	async function onPause(name: string) {
+		const key = `pause:${name}`;
 		markBusy(key, true);
 		try {
-			const res = await cancelJob(name);
-			if (res.run_id) {
+			const res = await pauseJob(name);
+			if (res.paused) {
 				ui.notify(
 					t(
-						'admin.jobs.cancel_requested',
+						'admin.jobs.pause_requested',
 						{ name },
-						'Cancel requested — {{name}} will pause at the next safe boundary'
+						'Pause requested — {{name}} will pause at the next checkpoint (progress preserved)'
 					),
 					'info'
 				);
 			} else {
 				ui.notify(
-					t('admin.jobs.cancel_noop', { name }, 'Nothing to cancel — {{name}} is not running'),
+					t('admin.jobs.pause_noop', { name }, 'Nothing to pause — {{name}} is not running'),
+					'info'
+				);
+			}
+			await loadJobs();
+			if (expandedJob === name) await loadRuns(name);
+		} catch (e) {
+			ui.notify(errorMessage(e), 'error');
+		} finally {
+			markBusy(key, false);
+		}
+	}
+
+	async function onCancel(name: string) {
+		// Terminal cancel confirmation — this is destructive (marks the
+		// run as Cancelled, cursor preserved for post-mortem but not
+		// resumable). Skip the confirm for non-recoverable jobs since
+		// there's no persistent state to lose there today.
+		if (
+			!window.confirm(
+				t(
+					'admin.jobs.cancel_confirm',
+					{ name },
+					'Cancel run of {{name}}? The run will be marked as Cancelled and cannot be resumed. Progress bytes on disk stay put — this only affects the run row.'
+				)
+			)
+		) {
+			return;
+		}
+		const key = `cancel:${name}`;
+		markBusy(key, true);
+		try {
+			const res = await cancelJob(name);
+			if (res.cancelled) {
+				ui.notify(
+					t(
+						'admin.jobs.cancel_requested',
+						{ name },
+						'Cancel requested — {{name}} will land in Cancelled at the next batch boundary (Paused rows flip immediately)'
+					),
+					'info'
+				);
+			} else {
+				ui.notify(
+					t(
+						'admin.jobs.cancel_noop',
+						{ name },
+						'Nothing to cancel — {{name}} has no non-terminal run'
+					),
 					'info'
 				);
 			}
@@ -400,8 +471,38 @@
 				return 'jobs-panel__pill jobs-panel__pill--ok';
 			case 'Failed':
 				return 'jobs-panel__pill jobs-panel__pill--err';
+			case 'Cancelled':
+				return 'jobs-panel__pill jobs-panel__pill--neutral';
 			default:
 				return 'jobs-panel__pill jobs-panel__pill--neutral';
+		}
+	}
+
+	/**
+	 * Human-facing label for a `RunStatus`. Translates the internal
+	 * DB status enum into text an operator can read at a glance —
+	 * notably renders `CancelRequested` as "Pausing" for the
+	 * recoverable-run case (the mechanism is a cancel flag, but the
+	 * user intent is pause). Non-recoverable cancels aren't a thing
+	 * today because non-recoverable jobs run to completion inline,
+	 * so `CancelRequested` here is always the pause path.
+	 */
+	function statusLabel(status: RunStatus): string {
+		switch (status) {
+			case 'Running':
+				return t('admin.jobs.status_running', 'Running');
+			case 'Paused':
+				return t('admin.jobs.status_paused', 'Paused');
+			case 'CancelRequested':
+				return t('admin.jobs.status_ending', 'Ending');
+			case 'Completed':
+				return t('admin.jobs.status_completed', 'Completed');
+			case 'Failed':
+				return t('admin.jobs.status_failed', 'Failed');
+			case 'Cancelled':
+				return t('admin.jobs.status_cancelled', 'Cancelled');
+			default:
+				return status;
 		}
 	}
 
@@ -461,16 +562,13 @@
 	}
 
 	function isRecoverable(job: JobSummary): boolean {
-		// Heuristic: recoverable jobs are the ones that publish runs via
-		// `jobs.recoverable_runs`. There's no direct flag on JobSummary
-		// (Part 1 handlers and Part 2 adapters share the same summary
-		// shape by design). Name-based recognition is fine for now — the
-		// admin panel is the only consumer; broader use would call for
-		// a `recoverable: bool` field in JobSummary.
-		return name_is_recoverable(job.name);
-	}
-	function name_is_recoverable(name: string): boolean {
-		return name.endsWith('_consistency') || name === 'storage_migration';
+		// Backend authoritative source: the `recoverable` flag on
+		// `JobSummary` is set at registration time by
+		// `RecoverableAdapter::is_recoverable() -> true`. Every tenant
+		// registered via `register_recoverable_job` flips it
+		// automatically. No name-based allowlists — a new recoverable
+		// tenant is expandable in the UI as soon as it's registered.
+		return job.recoverable;
 	}
 
 	// Consistency batch shortcut — top button. Only shown when the
@@ -487,7 +585,6 @@
 <section class="jobs-panel">
 	<header class="jobs-panel__header">
 		<div class="jobs-panel__header-text">
-			<h2>{t('admin.jobs.title', 'Jobs')}</h2>
 			<p class="jobs-panel__hint">
 				{t(
 					'admin.jobs.hint',
@@ -620,30 +717,94 @@
 							{/if}
 						</td>
 						<td class="jobs-panel__actions">
-							<button
-								class="jobs-panel__btn jobs-panel__btn--small"
-								disabled={busyKeys.has(`trigger:${job.name}`)}
-								onclick={() => onTrigger(job.name)}
-							>
-								{t('admin.jobs.run', 'Run')}
-							</button>
-							{#if supportsDeep(job.name)}
+							{#if job.paused_run}
+								<!-- Paused row: [Resume (X/Y)] to continue, [Cancel]
+								     to abandon the checkpoint (marks run Cancelled). -->
+								{@const p = job.paused_run}
+								{@const label =
+									p.total && p.total > 0
+										? t(
+												'admin.jobs.resume_progress',
+												{ scanned: p.scanned, total: p.total },
+												'Resume ({{scanned}}/{{total}})'
+											)
+										: t('admin.jobs.resume', 'Resume')}
 								<button
-									class="jobs-panel__btn jobs-panel__btn--small"
-									disabled={busyKeys.has(`trigger:${job.name}:deep`)}
-									onclick={() => onTrigger(job.name, { deep: true })}
+									class="jobs-panel__btn jobs-panel__btn--small jobs-panel__btn--primary"
+									disabled={busyKeys.has(`trigger:${job.name}`)}
+									onclick={() => onTrigger(job.name)}
+									title={t(
+										'admin.jobs.resume_title',
+										'Continue the paused run from its last checkpoint.'
+									)}
 								>
-									{t('admin.jobs.run_deep', 'Run deep')}
+									{label}
 								</button>
-							{/if}
-							{#if isRunning(job) && canExpand}
 								<button
 									class="jobs-panel__btn jobs-panel__btn--small jobs-panel__btn--danger"
 									disabled={busyKeys.has(`cancel:${job.name}`)}
 									onclick={() => onCancel(job.name)}
+									title={t(
+										'admin.jobs.cancel_paused_title',
+										'Abandon the paused run — marks it as Cancelled. Not resumable.'
+									)}
 								>
 									{t('admin.jobs.cancel', 'Cancel')}
 								</button>
+							{:else}
+								<button
+									class="jobs-panel__btn jobs-panel__btn--small"
+									disabled={busyKeys.has(`trigger:${job.name}`)}
+									onclick={() => onTrigger(job.name)}
+								>
+									{t('admin.jobs.run', 'Run')}
+								</button>
+								{#if supportsDeep(job.name)}
+									<button
+										class="jobs-panel__btn jobs-panel__btn--small"
+										disabled={busyKeys.has(`trigger:${job.name}:deep`)}
+										onclick={() => onTrigger(job.name, { deep: true })}
+									>
+										{t('admin.jobs.run_deep', 'Run deep')}
+									</button>
+								{/if}
+							{/if}
+							{#if isRunning(job) && canExpand}
+								{#if isRecoverable(job)}
+									<!-- Recoverable running: [Pause] preserves cursor
+									     for later resume; [Cancel] abandons terminally
+									     (engine writes Cancelled when the handler yields). -->
+									<button
+										class="jobs-panel__btn jobs-panel__btn--small"
+										disabled={busyKeys.has(`pause:${job.name}`)}
+										onclick={() => onPause(job.name)}
+										title={t(
+											'admin.jobs.pause_title',
+											'Signal a graceful pause at the next batch boundary. Run row stays as `Paused` — Resume picks up from the checkpoint.'
+										)}
+									>
+										{t('admin.jobs.pause', 'Pause')}
+									</button>
+									<button
+										class="jobs-panel__btn jobs-panel__btn--small jobs-panel__btn--danger"
+										disabled={busyKeys.has(`cancel:${job.name}`)}
+										onclick={() => onCancel(job.name)}
+										title={t(
+											'admin.jobs.cancel_running_title',
+											'Abandon the run — marks it as Cancelled at the next batch boundary. Not resumable.'
+										)}
+									>
+										{t('admin.jobs.cancel', 'Cancel')}
+									</button>
+								{:else}
+									<button
+										class="jobs-panel__btn jobs-panel__btn--small jobs-panel__btn--danger"
+										disabled={busyKeys.has(`cancel:${job.name}`)}
+										onclick={() => onCancel(job.name)}
+									>
+										{t('admin.jobs.cancel', 'Cancel')}
+									</button>
+								{/if}
 							{/if}
 						</td>
 					</tr>
@@ -710,7 +871,7 @@
 														</td>
 														<td>
 															<span class={statusClass(run.status)}>
-																{run.status}
+																{statusLabel(run.status)}
 															</span>
 														</td>
 														<td class="jobs-panel__muted">
@@ -1009,10 +1170,6 @@
 		flex-wrap: wrap;
 	}
 
-	.jobs-panel__header-text h2 {
-		margin: 0 0 0.25rem;
-	}
-
 	.jobs-panel__hint {
 		margin: 0;
 		color: var(--color-text-muted);
@@ -1254,9 +1411,24 @@
 		background: var(--color-bg-surface);
 		padding: 0.5rem;
 		border-radius: 4px;
-		overflow-x: auto;
 		font-size: 0.8rem;
 		margin: 0.5rem 0 0;
+		/* Wrap long values (cursor_hex is 128 hex chars) instead of
+		   expanding the table cell — the run-drawer sits inside a
+		   `<td colspan>` that would otherwise grow horizontally past
+		   the viewport and blow out the page layout. `pre-wrap`
+		   preserves the multi-line JSON.stringify(…, 2) indent;
+		   `word-break: break-all` breaks the long hex strings mid-run
+		   without hyphens.
+
+		   `overflow-x: auto` is kept as a defense-in-depth for any
+		   future field that pre-wrap can't handle (e.g. a single
+		   unbroken word longer than max-width). It only kicks in
+		   when wrapping isn't enough. */
+		white-space: pre-wrap;
+		word-break: break-all;
+		max-width: 100%;
+		overflow-x: auto;
 	}
 
 	.jobs-panel__findings h4 {

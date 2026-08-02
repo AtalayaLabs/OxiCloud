@@ -16,10 +16,10 @@ use crate::application::dtos::plugin_dto::{
     SetEnabledDto,
 };
 use crate::application::dtos::settings_dto::{
-    AdminCreateUserDto, AdminResetPasswordDto, DashboardStatsDto, ListUsersQueryDto,
-    MigrationStateDto, SaveOidcSettingsDto, SaveStorageSettingsDto, SendSmtpTestDto, SmtpInfoDto,
-    SmtpTestResultDto, StartMigrationDto, TestOidcConnectionDto, TestStorageConnectionDto,
-    UpdateUserActiveDto, UpdateUserQuotaDto, UpdateUserRoleDto,
+    AdminCreateUserDto, AdminResetPasswordDto, DashboardStatsDto, DriveKindUsageDto,
+    ListUsersQueryDto, MigrationStateDto, SaveOidcSettingsDto, SaveStorageSettingsDto,
+    SendSmtpTestDto, SmtpInfoDto, SmtpTestResultDto, StartMigrationDto, TestOidcConnectionDto,
+    TestStorageConnectionDto, UpdateUserActiveDto, UpdateUserQuotaDto, UpdateUserRoleDto,
 };
 use crate::application::dtos::user_dto::{AdminUserSummaryDto, UserDto};
 use crate::application::ports::authorization_ports::AuthorizationEngine;
@@ -30,7 +30,7 @@ use crate::application::ports::plugin_ports::{LogQuery, PluginManagementPort, Pl
 use crate::common::di::AppState;
 use crate::domain::repositories::drive_repository::DriveRepository;
 use crate::domain::services::authorization::{Resource, Subject};
-use crate::infrastructure::scheduler::JobStoreProvider;
+use crate::infrastructure::scheduler::{JobStoreProvider, PausedRunBrief};
 use crate::interfaces::api::handlers::dedup_handler::{get_stats, recalculate_stats};
 use crate::interfaces::api::handlers::search_handler::clear_search_cache;
 use crate::interfaces::errors::AppError;
@@ -75,9 +75,9 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         .route("/settings/storage", put(save_storage_settings))
         .route("/settings/storage/test", post(test_storage_connection))
         // Storage migration — thin shims over the recoverable-run
-        // engine (job_name = "storage_migration"). Retained under
+        // engine (job_name = "backend_migration"). Retained under
         // /storage/migration/* until the admin UI is rewired to
-        // /api/admin/jobs/storage_migration/*; both paths route to
+        // /api/admin/jobs/backend_migration/*; both paths route to
         // the same underlying JobRegistry dispatch. The old /complete
         // endpoint is retired — a finished run is a Completed row,
         // there's nothing to acknowledge.
@@ -85,6 +85,14 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         .route("/storage/migration/start", post(start_migration))
         .route("/storage/migration/pause", post(pause_migration))
         .route("/storage/migration/resume", post(resume_migration))
+        // K3 (storage-key-rotation): per-entry rotate trigger.
+        // Normalises every blob on the named entry to its head-pair
+        // format (legacy → v1, plaintext ↔ encrypted, old-key →
+        // new-key). No readonly mode; safe under normal traffic.
+        .route(
+            "/storage/entries/{name}/rotate",
+            post(trigger_backend_rotate),
+        )
         // NOTE: /storage/migration/verify retired in slice 7 (see the
         // comment near where `verify_migration` used to live). Use
         // `POST /api/admin/jobs/blobs_consistency/trigger?storage=<name>`.
@@ -169,6 +177,7 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         .route("/jobs", get(list_jobs))
         .route("/jobs/{name}/trigger", post(trigger_job))
         .route("/jobs/{name}/cancel", post(cancel_job))
+        .route("/jobs/{name}/pause", post(pause_job))
         .route("/jobs/{name}/runs", get(list_job_runs))
         .route("/jobs/{name}/runs/{id}", get(get_job_run))
         .route(
@@ -375,7 +384,7 @@ async fn test_storage_connection(
 /// GET /api/admin/storage/migration — current migration progress.
 ///
 /// Shim over the recoverable-run engine: reads the latest
-/// `storage_migration` run from `jobs.recoverable_runs` (via the
+/// `backend_migration` run from `jobs.recoverable_runs` (via the
 /// `JobStoreProvider`) and projects it into the legacy
 /// `MigrationStateDto` shape the admin storage tab expects. When no
 /// run has ever been triggered the response is an empty "idle" DTO —
@@ -395,11 +404,11 @@ async fn test_storage_connection(
 pub async fn get_migration_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, AppError> {
-    use crate::infrastructure::services::storage_migration_service::STORAGE_MIGRATION_JOB_NAME;
+    use crate::infrastructure::services::backend_migration_service::BACKEND_MIGRATION_JOB_NAME;
 
     let provider = state.core.job_store_provider.clone();
     let latest = provider
-        .list_runs(STORAGE_MIGRATION_JOB_NAME, 1)
+        .list_runs(BACKEND_MIGRATION_JOB_NAME, 1)
         .await
         .map_err(AppError::from)?
         .into_iter()
@@ -432,7 +441,7 @@ pub async fn get_migration_status(
 
 /// POST /api/admin/storage/migration/start — begin background migration.
 ///
-/// Shim that forwards to `JobRegistry::trigger("storage_migration",
+/// Shim that forwards to `JobRegistry::trigger("backend_migration",
 /// ...)`. `run_or_resume` (the RecoverableAdapter's inner dispatch)
 /// resumes a Paused run or starts a fresh one — one endpoint covers
 /// both. Exclusivity is enforced at the DB layer (the partial unique
@@ -492,7 +501,7 @@ pub async fn start_migration(
             dto.target_name
         )));
     }
-    trigger_storage_migration(state, Some(dto.target_name)).await
+    trigger_backend_migration(state, Some(dto.target_name)).await
 }
 
 /// POST /api/admin/storage/migration/pause — pause a running migration.
@@ -516,18 +525,18 @@ pub async fn start_migration(
 pub async fn pause_migration(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, AppError> {
-    use crate::infrastructure::services::storage_migration_service::STORAGE_MIGRATION_JOB_NAME;
+    use crate::infrastructure::services::backend_migration_service::BACKEND_MIGRATION_JOB_NAME;
 
     tracing::info!(
         target: "audit",
-        event = "storage_migration.pause_requested",
-        "👮🏻‍♂️ Admin requested storage_migration pause"
+        event = "backend_migration.pause_requested",
+        "👮🏻‍♂️ Admin requested backend_migration pause"
     );
 
     let flipped = state
         .core
         .job_store_provider
-        .request_cancel(STORAGE_MIGRATION_JOB_NAME)
+        .request_cancel(BACKEND_MIGRATION_JOB_NAME)
         .await
         .map_err(AppError::from)?;
 
@@ -568,7 +577,7 @@ pub async fn resume_migration(
     // it from `params.target_name` stamped on the original Fresh
     // open. Refuses gracefully via RunOutcome::Failed if there is
     // no Paused row to resume.
-    trigger_storage_migration(state, None).await
+    trigger_backend_migration(state, None).await
 }
 
 // verify_migration endpoint retired (slice 7 of
@@ -588,18 +597,18 @@ pub async fn resume_migration(
 /// desync `current_run_start` from the actually-running task). The
 /// admin UI polls `GET /storage/migration` for progress; the trigger
 /// itself is fire-and-forget.
-async fn trigger_storage_migration(
+async fn trigger_backend_migration(
     state: Arc<AppState>,
     target_name: Option<String>,
 ) -> Result<axum::response::Response, AppError> {
     use crate::infrastructure::scheduler::JobRunArgs;
-    use crate::infrastructure::services::storage_migration_service::STORAGE_MIGRATION_JOB_NAME;
+    use crate::infrastructure::services::backend_migration_service::BACKEND_MIGRATION_JOB_NAME;
 
     tracing::info!(
         target: "audit",
-        event = "storage_migration.trigger_requested",
+        event = "backend_migration.trigger_requested",
         target_name = target_name.as_deref().unwrap_or("<resume>"),
-        "👮🏻‍♂️ Admin triggered storage_migration"
+        "👮🏻‍♂️ Admin triggered backend_migration"
     );
 
     let registry = state.core.job_registry.clone();
@@ -608,13 +617,146 @@ async fn trigger_storage_migration(
         ..JobRunArgs::default()
     };
     tokio::spawn(async move {
-        registry.trigger(STORAGE_MIGRATION_JOB_NAME, &args).await;
+        registry.trigger(BACKEND_MIGRATION_JOB_NAME, &args).await;
     });
 
     Ok((
         StatusCode::ACCEPTED,
         Json(serde_json::json!({
             "message": "Migration dispatched — poll GET /api/admin/storage/migration for status",
+            "detached": true,
+        })),
+    )
+        .into_response())
+}
+
+/// POST /api/admin/storage/entries/{name}/rotate — trigger the
+/// `backend_rotate` recoverable job on a specific entry.
+///
+/// Normalises every blob on `<name>` to the entry's head-pair
+/// format: legacy → v1, plaintext ↔ encrypted, old-key → new-key.
+/// See `docs/plan/storage-key-rotation.md` §"The rotation job".
+///
+/// Unlike migration, rotation does NOT engage read-only mode —
+/// rewrites happen in place under normal traffic. Concurrent user
+/// writes coexist safely.
+///
+/// The handler validates the entry name synchronously (400 on
+/// unknown entry); the actual walk detaches into a
+/// `tokio::spawn` so the HTTP call returns immediately.
+#[utoipa::path(
+    post,
+    path = "/api/admin/storage/entries/{name}/rotate",
+    responses(
+        (status = 202, description = "Rotation dispatched"),
+        (status = 400, description = "Unknown entry"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    params(
+        ("name" = String, Path, description = "Storage entry name to rotate")
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn trigger_backend_rotate(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::infrastructure::scheduler::JobRunArgs;
+    use crate::infrastructure::services::backend_migration_service::BACKEND_MIGRATION_JOB_NAME;
+    use crate::infrastructure::services::backend_rotate_service::BACKEND_ROTATE_JOB_NAME;
+
+    // Synchronous entry-existence check — a bad name would fail the
+    // run anyway, but returning 400 here spares the operator an
+    // audit-log round-trip.
+    let entries = &state.core.config.storage_entries;
+    if entries.iter().all(|e| e.name != name) {
+        let available = if entries.is_empty() {
+            "(none)".to_string()
+        } else {
+            entries
+                .iter()
+                .map(|e| e.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        return Err(AppError::bad_request(format!(
+            "unknown storage entry `{name}`. Available: [{available}]"
+        )));
+    }
+
+    // Refuse on non-active entry. `storage.blobs` describes what's on
+    // the ACTIVE backend; walking it against a stale target produces a
+    // `rotation_failed` finding per missing blob (pure noise) and can't
+    // actually normalise anything the app reads. The right recipe for
+    // "normalise a different backend" is: migrate to it (blobs land in
+    // the head-pair's format on arrival — no rotation needed).
+    let active = state
+        .core
+        .active_backend_name
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if name != active {
+        return Err(AppError::bad_request(format!(
+            "backend_rotate refuses non-active entry `{name}` — the DB blob registry \
+             describes the active entry (`{active}`), so walking it against a stale \
+             target produces spurious `rotation_failed` findings. Activate `{name}` \
+             first via `Migrate & activate`, then rotate."
+        )));
+    }
+
+    // Concurrency guard per plan: at most one encryption-touching
+    // recoverable run at a time across the whole app. Rotation
+    // rewrites blobs in place; migration copies + swaps; running
+    // both simultaneously could interleave writes on the same
+    // hash. Cheap check — `list_runs` limit 1 with the status
+    // filter is an index scan.
+    let provider = state.core.job_store_provider.clone();
+    for job_name in [BACKEND_ROTATE_JOB_NAME, BACKEND_MIGRATION_JOB_NAME] {
+        let in_flight = provider
+            .list_runs(job_name, 5)
+            .await
+            .map_err(AppError::from)?
+            .into_iter()
+            .any(|r| {
+                matches!(
+                    r.status,
+                    crate::infrastructure::scheduler::RunStatus::Running
+                        | crate::infrastructure::scheduler::RunStatus::Paused
+                        | crate::infrastructure::scheduler::RunStatus::CancelRequested
+                )
+            });
+        if in_flight {
+            return Err(AppError::bad_request(format!(
+                "cannot start backend_rotate on `{name}` — `{job_name}` is already Running / \
+                 Paused / CancelRequested. Wait for it to finish (or cancel via \
+                 `POST /api/admin/jobs/{job_name}/cancel`)."
+            )));
+        }
+    }
+
+    tracing::info!(
+        target: "audit",
+        event = "backend_rotate.trigger_requested",
+        target_name = %name,
+        "👮🏻‍♂️ Admin triggered backend_rotate on `{name}`"
+    );
+
+    let registry = state.core.job_registry.clone();
+    let args = JobRunArgs {
+        storage: Some(name.clone()),
+        ..JobRunArgs::default()
+    };
+    tokio::spawn(async move {
+        registry.trigger(BACKEND_ROTATE_JOB_NAME, &args).await;
+    });
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({
+            "message": format!("Rotation dispatched on `{name}` — poll GET /api/admin/jobs/{BACKEND_ROTATE_JOB_NAME} for progress"),
             "detached": true,
         })),
     )
@@ -658,6 +800,10 @@ fn run_to_migration_dto(
         RunStatus::CancelRequested => "paused",
         RunStatus::Completed => "completed",
         RunStatus::Failed => "failed",
+        // Cancelled is user-abandoned but terminal — same visual as
+        // failed for the migration status endpoint (both mean "not
+        // going to finish, look at findings/logs to know why").
+        RunStatus::Cancelled => "cancelled",
     }
     .to_string();
 
@@ -701,9 +847,22 @@ pub async fn generate_encryption_key() -> Result<impl IntoResponse, AppError> {
         crate::infrastructure::services::encrypted_blob_backend::EncryptedBlobBackend::generate_key(
         );
     let key_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, key);
+    // Fingerprint uses the same colon-hex rendering as the boot log,
+    // the pair chain in admin/storage, and `oxicloud --fingerprint`.
+    // Ed can cross-reference it against `.env` after pasting the key
+    // in — if the fingerprints match, the key made it into the
+    // config intact.
+    let fingerprint =
+        crate::common::config::fingerprint_from_base64_key(&key_b64).unwrap_or_else(|_| {
+            // Should never happen — we JUST generated a 32-byte key
+            // and base64-encoded it — but if the fingerprint helper
+            // rejects, degrade gracefully rather than 500.
+            "—".to_string()
+        });
 
     Ok(Json(serde_json::json!({
         "key": key_b64,
+        "fingerprint": fingerprint,
         "warning": "Store this key securely. If lost, encrypted data is IRRECOVERABLY LOST."
     })))
 }
@@ -756,8 +915,6 @@ pub async fn get_dashboard_stats(
             COUNT(*)::INT8 as total_users,
             COUNT(*) FILTER (WHERE active = true)::INT8 as active_users,
             COUNT(*) FILTER (WHERE role::text = 'admin')::INT8 as admin_users,
-            COALESCE(SUM(storage_quota_bytes)::INT8, 0) as total_quota_bytes,
-            COALESCE(SUM(storage_used_bytes)::INT8, 0) as total_used_bytes,
             COUNT(*) FILTER (WHERE storage_quota_bytes > 0 AND storage_used_bytes > storage_quota_bytes * 0.8)::INT8 as users_over_80,
             COUNT(*) FILTER (WHERE storage_quota_bytes > 0 AND storage_used_bytes > storage_quota_bytes)::INT8 as users_over_quota
         FROM auth.users
@@ -769,13 +926,80 @@ pub async fn get_dashboard_stats(
     .map_err(|e| AppError::internal_error(format!("Database query failed: {}", e)))?;
 
     use sqlx::Row;
-    let total_quota: i64 = stats_row.get("total_quota_bytes");
-    let total_used: i64 = stats_row.get("total_used_bytes");
-    let usage_percent = if total_quota > 0 {
-        (total_used as f64 / total_quota as f64) * 100.0
-    } else {
-        0.0
+
+    // Per-drive-kind quota panel:
+    //
+    //   - **Personal** rolls up via the user envelope
+    //     (`auth.users.storage_quota_bytes`; `= 0` means unlimited),
+    //     because personal drives inherit their cap from the user per
+    //     `docs/plan/drive.md`. The "N unlimited" here counts USERS
+    //     with unlimited envelope, not drives.
+    //   - **Shared** uses `storage.drives.quota_bytes` directly
+    //     (`IS NULL` means unlimited).
+    //
+    // Both rows sum `used_bytes` — for personal that's
+    // `auth.users.storage_used_bytes`, which is itself
+    // `SUM(drives.used_bytes) WHERE kind='personal'` per the sweep
+    // in `storage_usage_service.rs`. For shared it's the drive's own
+    // `used_bytes`. Trashed files are excluded from both — see
+    // `bug_trash_excluded_from_quota` for the known gap.
+    let personal_row = sqlx::query(
+        r#"
+        SELECT
+            COALESCE(SUM(storage_used_bytes)::INT8, 0) AS used_bytes,
+            COALESCE(SUM(storage_quota_bytes) FILTER (WHERE storage_quota_bytes > 0)::INT8, 0) AS capped_quota_bytes,
+            COUNT(*) FILTER (WHERE storage_quota_bytes = 0)::INT8 AS unlimited_count,
+            COUNT(*) FILTER (WHERE storage_quota_bytes > 0)::INT8 AS capped_count
+        FROM auth.users
+        WHERE is_external = false
+        "#,
+    )
+    .fetch_one(db_pool.as_ref())
+    .await
+    .map_err(|e| AppError::internal_error(format!("Personal-drive stats failed: {}", e)))?;
+
+    let shared_row = sqlx::query(
+        r#"
+        SELECT
+            COALESCE(SUM(used_bytes)::INT8, 0) AS used_bytes,
+            COALESCE(SUM(quota_bytes) FILTER (WHERE quota_bytes IS NOT NULL)::INT8, 0) AS capped_quota_bytes,
+            COUNT(*) FILTER (WHERE quota_bytes IS NULL)::INT8 AS unlimited_count,
+            COUNT(*) FILTER (WHERE quota_bytes IS NOT NULL)::INT8 AS capped_count
+        FROM storage.drives
+        WHERE kind::text = 'shared'
+        "#,
+    )
+    .fetch_one(db_pool.as_ref())
+    .await
+    .map_err(|e| AppError::internal_error(format!("Shared-drive stats failed: {}", e)))?;
+
+    let build_row = |kind: &str, row: sqlx::postgres::PgRow| DriveKindUsageDto {
+        kind: kind.to_string(),
+        used_bytes: row.get("used_bytes"),
+        // Only surface the cap when there's at least one capped drive
+        // — else the FE would render "0 / 0 (NaN%)" for a kind that's
+        // entirely unlimited.
+        capped_quota_bytes: {
+            let capped_count: i64 = row.get("capped_count");
+            if capped_count > 0 {
+                Some(row.get("capped_quota_bytes"))
+            } else {
+                None
+            }
+        },
+        unlimited_count: row.get("unlimited_count"),
+        capped_count: row.get("capped_count"),
     };
+    let drive_usage = vec![
+        build_row("personal", personal_row),
+        build_row("shared", shared_row),
+    ];
+
+    // Backend physical stats (post-dedup, post-encryption) —
+    // rendered in the dashboard's "Backend Storage" card next to
+    // the user-quota panel. Same source `StorageSettingsDto` uses;
+    // cheap aggregate over `storage.blobs`.
+    let dedup_stats = state.core.dedup_service.get_stats().await;
 
     let stats = DashboardStatsDto {
         server_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -785,11 +1009,11 @@ pub async fn get_dashboard_stats(
         total_users: stats_row.get("total_users"),
         active_users: stats_row.get("active_users"),
         admin_users: stats_row.get("admin_users"),
-        total_quota_bytes: total_quota,
-        total_used_bytes: total_used,
-        storage_usage_percent: (usage_percent * 100.0).round() / 100.0,
+        drive_usage,
         users_over_80_percent: stats_row.get("users_over_80"),
         users_over_quota: stats_row.get("users_over_quota"),
+        total_bytes_stored: Some(dedup_stats.total_bytes_stored as i64),
+        dedup_ratio: Some(dedup_stats.dedup_ratio),
         registration_enabled: {
             if let Some(svc) = state.admin_settings_service.as_ref() {
                 svc.get_registration_enabled().await
@@ -2120,7 +2344,54 @@ pub async fn delete_drive_admin(
     tag = "admin"
 )]
 pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let summary = state.core.job_registry.snapshot().await;
+    let mut summary = state.core.job_registry.snapshot().await;
+
+    // Enrich with paused-run info for recoverable jobs so the admin
+    // panel can render "Resume (scanned/total)" on the row instead of
+    // just "Run". One indexed SELECT hits `jobs.recoverable_runs`
+    // (`one_active_run_per_job` partial UNIQUE keys the lookup);
+    // failures fall back to the pre-enrichment shape so the endpoint
+    // stays useful when the jobs DB is temporarily unreachable.
+    if let Some(pool) = state.db_pool.as_ref() {
+        let paused_rows: Vec<(String, uuid::Uuid, Option<i64>, Option<i64>)> = sqlx::query_as(
+            r#"
+            SELECT
+                job_name,
+                id,
+                (stats  ->> 'scanned_count')::BIGINT AS scanned,
+                (params ->> 'total_rows')::BIGINT   AS total
+            FROM jobs.recoverable_runs
+            WHERE status = 'Paused'
+            "#,
+        )
+        .fetch_all(pool.as_ref())
+        .await
+        .unwrap_or_default();
+
+        let by_name: std::collections::HashMap<String, PausedRunBrief> = paused_rows
+            .into_iter()
+            .map(|(name, id, scanned, total)| {
+                (
+                    name,
+                    PausedRunBrief {
+                        id,
+                        scanned: scanned.unwrap_or(0).max(0) as u64,
+                        total: total.filter(|t| *t > 0).map(|t| t as u64),
+                    },
+                )
+            })
+            .collect();
+
+        for job in summary.iter_mut() {
+            if job.recoverable
+                && !job.running
+                && let Some(paused) = by_name.get(&job.name)
+            {
+                job.paused_run = Some(paused.clone());
+            }
+        }
+    }
+
     (StatusCode::OK, Json(summary)).into_response()
 }
 
@@ -2129,7 +2400,7 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
 /// `force=true` requests acceleration semantics from handlers that
 /// support it (dedup_gc → grace = 0, grant_cleanup → grace = 0).
 /// Silently ignored by handlers that don't (trash_cleanup,
-/// storage_reconcile).
+/// usage_reconcile).
 ///
 /// `deep=true` opts into slow variants — `consistency_batch` fans it
 /// out to sub-jobs; `storage_consistency` (when implemented) will
@@ -2142,7 +2413,7 @@ pub struct TriggerJobQuery {
     pub deep: bool,
     /// Optional named storage entry to scope the run against — used by
     /// tenants that respect `JobRunArgs.storage` (currently
-    /// `storage_migration` for its target; `blobs_consistency` /
+    /// `backend_migration` for its target; `blobs_consistency` /
     /// `backend_consistency` will pick this up in slice 7 to probe a
     /// non-active entry). Ignored by tenants that don't declare a
     /// semantic for it. Unknown-name validation is per-tenant — the
@@ -2199,7 +2470,7 @@ pub async fn trigger_job(
         storage: query.storage.clone(),
     };
 
-    // Jobs that can run for hours (storage_migration, future
+    // Jobs that can run for hours (backend_migration, future
     // reextract_*) are detached: `tokio::spawn` the trigger so the
     // HTTP request returns immediately. Without this, browser HTTP
     // timeouts drop the request future mid-await → the SemaphorePermit
@@ -2255,7 +2526,7 @@ pub async fn trigger_job(
 /// there's a second long-running tenant that justifies the plumbing.
 /// See the comment in `trigger_job` for why detach matters.
 fn is_detached_job(name: &str) -> bool {
-    matches!(name, "storage_migration")
+    matches!(name, "backend_migration")
 }
 
 /// `POST /api/admin/jobs/{name}/cancel` — cooperative cancel of the
@@ -2293,16 +2564,28 @@ pub async fn cancel_job(
         target: "audit",
         event = "job.cancel_requested",
         job = %name,
-        "👮🏻‍♂️ Admin requested cancel for job {}",
+        "👮🏻‍♂️ Admin requested TERMINAL cancel for job {}",
         name,
     );
-    match state.core.job_store_provider.request_cancel(&name).await {
+    // Terminal semantics: stamps `params.cancel_intent = "terminate"`
+    // when a Running / CancelRequested row is present so the engine
+    // upgrades the handler's yield to `Cancelled` instead of `Paused`.
+    // When the current row is `Paused` (no handler running), does a
+    // direct DB flip Paused → Cancelled. See
+    // `PgJobStoreProvider::request_terminal_cancel`.
+    match state
+        .core
+        .job_store_provider
+        .request_terminal_cancel(&name)
+        .await
+    {
         Ok(Some(run_id)) => (
             StatusCode::OK,
             Json(serde_json::json!({
                 "cancelled": true,
                 "run_id": run_id.to_string(),
-                "status": "CancelRequested",
+                "note": "Running row → will land in Cancelled at next batch boundary; \
+                         Paused row → flipped to Cancelled immediately.",
             })),
         )
             .into_response(),
@@ -2310,11 +2593,68 @@ pub async fn cancel_job(
             StatusCode::OK,
             Json(serde_json::json!({
                 "cancelled": false,
-                "reason": "no running run for this job",
+                "reason": "no non-terminal run for this job",
             })),
         )
             .into_response(),
         Err(e) => AppError::internal_error(format!("cancel failed: {e}")).into_response(),
+    }
+}
+
+/// `POST /api/admin/jobs/{name}/pause` — cooperative PAUSE of the
+/// currently-running recoverable run for `{name}`.
+///
+/// Same DB mechanism as the old cancel (Running → CancelRequested,
+/// handler yields to Paused), but no `cancel_intent` stamp so the
+/// engine writes `Paused`. Use this to interrupt a long-running
+/// job and resume it later; use `/cancel` to abandon it terminally.
+///
+/// Idempotent: if the row is already Paused, returns 200 with
+/// `paused: false, reason: "already_paused"`.
+#[utoipa::path(
+    post,
+    path = "/api/admin/jobs/{name}/pause",
+    params(("name" = String, Path, description = "Registered job name")),
+    responses(
+        (status = 200, description = "Pause signalled (or no-op if nothing was running)"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+        (status = 500, description = "DB error"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn pause_job(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    use crate::infrastructure::scheduler::JobStoreProvider as _;
+    tracing::info!(
+        target: "audit",
+        event = "job.pause_requested",
+        job = %name,
+        "👮🏻‍♂️ Admin requested pause for job {}",
+        name,
+    );
+    match state.core.job_store_provider.request_cancel(&name).await {
+        Ok(Some(run_id)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "paused": true,
+                "run_id": run_id.to_string(),
+                "note": "Handler will yield at the next batch boundary; row will land in Paused.",
+            })),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "paused": false,
+                "reason": "no running run for this job",
+            })),
+        )
+            .into_response(),
+        Err(e) => AppError::internal_error(format!("pause failed: {e}")).into_response(),
     }
 }
 

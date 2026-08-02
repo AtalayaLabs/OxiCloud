@@ -137,10 +137,11 @@ jsonpath "$.stats" exists
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 5 — Cancel-on-idle is a no-op. No Running row means no
-#          Running→CancelRequested flip. Response is 200 with
-#          `cancelled: false` (NOT a 404 — the job name is
-#          registered, cancel just found nothing to cancel).
+# Step 5 — Cancel-on-idle is a no-op. `cancel` is TERMINAL — it
+#          acts on any non-terminal row (Running, CancelRequested,
+#          or Paused). No such row → 200 with `cancelled: false`.
+#          NOT a 404 (job name is registered, cancel just found
+#          nothing to abandon).
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/admin/jobs/drives_consistency/cancel
 Authorization: Bearer {{admin_token}}
@@ -148,7 +149,7 @@ Authorization: Bearer {{admin_token}}
 HTTP 200
 [Asserts]
 jsonpath "$.cancelled" == false
-jsonpath "$.reason"    == "no running run for this job"
+jsonpath "$.reason"    == "no non-terminal run for this job"
 
 
 # ─────────────────────────────────────────────────────────────

@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 /// Semantics of `force`, per job:
 /// - `dedup_gc` — skip the orphan grace window (grace = 0).
 /// - `grant_cleanup` — grace = 0.
-/// - Others (trash_cleanup, storage_reconcile, …) — ignored.
+/// - Others (trash_cleanup, usage_reconcile, …) — ignored.
 ///
 /// Semantics of `deep`, per job:
 /// - `consistency_batch` — propagate to sub-jobs; only `storage_consistency`
@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Semantics of `storage`, per job (added for the multi-entry storage
 /// design — see `docs/plan/storage-multi-entry.md`):
-/// - `storage_migration` — the NAME of the target storage entry to
+/// - `backend_migration` — the NAME of the target storage entry to
 ///   copy blobs INTO. Required on a Fresh run (handler refuses
 ///   without it); ignored on a Resumed run (target read from the
 ///   persisted `params.target_name`).

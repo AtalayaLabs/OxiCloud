@@ -17,18 +17,37 @@ const JSON_HEADERS = { 'Content-Type': 'application/json' };
  * `ok: true` means "dispatch reached the handler"; the handler's own
  * pass/fail is in `outcome.outcome`. For `consistency_batch`, per-child
  * outcomes are inside `outcome.extra.per_check`.
+ *
+ * `outcome` is absent for detached jobs (currently only
+ * `backend_migration`) — the endpoint returns `202 Accepted` with
+ * `dispatched: true` immediately and the run continues in the
+ * background. Progress polling shows the state; there's no synchronous
+ * outcome to surface.
  */
 export interface TriggerResponse {
 	ok: boolean;
-	outcome: JobOutcome;
+	outcome?: JobOutcome;
+	dispatched?: boolean;
+	detached?: boolean;
 }
 
-/** Envelope from `POST /api/admin/jobs/{name}/cancel`. `run_id` is
- *  the id of the run whose `Running` status was flipped to
- *  `CancelRequested` (null when nothing was in flight to cancel). */
+/** Envelope from `POST /api/admin/jobs/{name}/cancel` — terminal
+ *  cancel. `run_id` populated iff a non-terminal row was flipped
+ *  (Running/CancelRequested get the intent stamp; Paused gets a
+ *  direct DB flip to Cancelled). */
 export interface CancelResponse {
-	ok: boolean;
-	run_id: string | null;
+	cancelled: boolean;
+	run_id?: string;
+	reason?: string;
+	note?: string;
+}
+
+/** Envelope from `POST /api/admin/jobs/{name}/pause` — soft pause. */
+export interface PauseResponse {
+	paused: boolean;
+	run_id?: string;
+	reason?: string;
+	note?: string;
 }
 
 /**
@@ -84,11 +103,11 @@ export async function triggerJob(
 }
 
 /**
- * `POST /api/admin/jobs/{name}/cancel` — cooperatively request cancel
- * of the currently running instance. The handler observes it on its
- * next `store.status()` poll and returns `RunOutcome::Paused` at the
- * next safe boundary. If nothing is running, this is a no-op that
- * returns `run_id: null`.
+ * `POST /api/admin/jobs/{name}/cancel` — TERMINAL cancel. Abandons
+ * the run: Running/CancelRequested rows get stamped with the intent
+ * flag and land as `Cancelled` when the handler yields; Paused rows
+ * get flipped directly to `Cancelled`. Not resumable. Use `pauseJob`
+ * for interruption-with-resume semantics.
  */
 export async function cancelJob(name: string): Promise<CancelResponse> {
 	const res = await apiFetch(`/api/admin/jobs/${encodeURIComponent(name)}/cancel`, {
@@ -107,6 +126,31 @@ export async function cancelJob(name: string): Promise<CancelResponse> {
 		throw new Error(msg);
 	}
 	return (await res.json()) as CancelResponse;
+}
+
+/**
+ * `POST /api/admin/jobs/{name}/pause` — cooperative pause. Row lands
+ * as `Paused` when the handler yields; a subsequent trigger click
+ * resumes from the cursor via `run_or_resume`. Use `cancelJob` to
+ * abandon terminally.
+ */
+export async function pauseJob(name: string): Promise<PauseResponse> {
+	const res = await apiFetch(`/api/admin/jobs/${encodeURIComponent(name)}/pause`, {
+		method: 'POST',
+		credentials: 'same-origin',
+		headers: { ...JSON_HEADERS, ...getCsrfHeaders() }
+	});
+	if (!res.ok) {
+		let msg = `pause failed: ${res.status}`;
+		try {
+			const body = (await res.json()) as { error?: string; message?: string };
+			msg = body.error ?? body.message ?? msg;
+		} catch {
+			/* no JSON body */
+		}
+		throw new Error(msg);
+	}
+	return (await res.json()) as PauseResponse;
 }
 
 /**

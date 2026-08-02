@@ -1,9 +1,12 @@
 //! First tenant of Part 2 (recoverable-run engine).
 //!
 //! Iterates `storage.drives` and reports each drive whose cached
-//! `used_bytes` differs from `SUM(files.size) WHERE NOT is_trashed`
-//! for that drive. **Read-only** — reports drift as findings but does
-//! NOT fix it. The existing `storage_reconcile` job (Part 1) is what
+//! `used_bytes` differs from `SUM(files.size)` for that drive.
+//! Includes trashed files — matches the hot-path delta (upload
+//! writes never decrement on `move_to_trash`) and the sweep at
+//! `storage_usage_service.rs::update_all_drives_storage_usage`.
+//! **Read-only** — reports drift as findings but does
+//! NOT fix it. The existing `usage_reconcile` job (Part 1) is what
 //! corrects the counter; this check surfaces WHEN drift happens so
 //! operators can trace it back to root cause (missed delta call,
 //! delta failed silently, race, etc.).
@@ -142,7 +145,7 @@ impl RecoverableJobHandler for DrivesConsistencyCheck {
 
             // Fetch next batch of drives + their actual SUM in one
             // query. LEFT JOIN via correlated subquery gets us both
-            // sides in one round-trip; the storage_reconcile sweep
+            // sides in one round-trip; the usage_reconcile sweep
             // uses the same shape.
             // Grace window: skip drives created within the last hour.
             // A drive being created RIGHT NOW may still have its first
@@ -167,7 +170,6 @@ impl RecoverableJobHandler for DrivesConsistencyCheck {
                         SELECT SUM(size)::bigint
                           FROM storage.files
                          WHERE drive_id = d.id
-                           AND NOT is_trashed
                     ), 0)                          AS actual_bytes
                   FROM storage.drives d
                   LEFT JOIN storage.folders rf ON rf.id = d.root_folder_id
@@ -199,7 +201,7 @@ impl RecoverableJobHandler for DrivesConsistencyCheck {
                     "drives_consistency completed with {} drift finding(s)",
                     drift_count
                 );
-                return RunOutcome::Completed;
+                return RunOutcome::completed();
             }
 
             // Per-row check: cached vs actual. This is the ONE check
@@ -255,7 +257,7 @@ impl RecoverableJobHandler for DrivesConsistencyCheck {
                     "drives_consistency completed with {} drift finding(s)",
                     drift_count
                 );
-                return RunOutcome::Completed;
+                return RunOutcome::completed();
             }
         }
     }

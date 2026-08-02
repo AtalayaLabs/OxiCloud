@@ -353,7 +353,7 @@ async fn main() {
     // Full production composition: Cache(Encrypted(Retry(S3))).
     let cache_dir_b = tempfile::tempdir().expect("tempdir");
     let full_stack: Arc<dyn BlobStorageBackend> = Arc::new(CachedBlobBackend::new(
-        Arc::new(EncryptedBlobBackend::new(
+        Arc::new(EncryptedBlobBackend::new_single_aes(
             Arc::new(RetryBlobBackend::new(
                 backend.clone() as Arc<dyn BlobStorageBackend>,
                 RetryPolicy::default(),

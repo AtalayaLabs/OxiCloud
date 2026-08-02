@@ -206,6 +206,11 @@ impl BlobStorageBackend for S3BlobBackend {
     /// dedup layer already filtered out chunks the database knows about,
     /// so the probe was a pure extra round-trip on every NEW chunk of
     /// every upload (2 RTTs -> 1, benches/S3-PUT.md).
+    ///
+    /// Shares the body with `put_blob_from_bytes_replace` below —
+    /// S3 PUT is durable on return, so "unsynced" and "replace"
+    /// collapse to the same semantics here (unlike Local, where
+    /// `_replace` needs tempfile-rename + fsync).
     fn put_blob_from_bytes_unsynced(
         &self,
         hash: &str,
@@ -230,6 +235,23 @@ impl BlobStorageBackend for S3BlobBackend {
                 })?;
             Ok(size)
         })
+    }
+
+    /// Atomic overwrite path used by `backend_rotate` and
+    /// `backend_migration` when re-writing an already-present blob
+    /// under a new head key/format. Trait default delegates to
+    /// `put_blob_from_bytes` which HEAD-probes and silently skips —
+    /// exactly wrong for the rotate/migrate use case (the whole
+    /// point is to replace the existing bytes). Override delegates
+    /// to the same unconditional PUT as `put_blob_from_bytes_unsynced`
+    /// — S3's PUT is durable on return, no separate sync barrier
+    /// needed.
+    fn put_blob_from_bytes_replace(
+        &self,
+        hash: &str,
+        data: Bytes,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<u64, DomainError>> + Send + '_>> {
+        self.put_blob_from_bytes_unsynced(hash, data)
     }
 
     fn get_blob_stream(

@@ -17,7 +17,7 @@
 #      a file inside and watching the destination drive's
 #      `used_bytes` jump by the descendant's size (not 0).
 #
-# Sweep convergence: `/api/admin/jobs/storage_reconcile/trigger` is the
+# Sweep convergence: `/api/admin/jobs/usage_reconcile/trigger` is the
 # deterministic synchronisation point — it recomputes every
 # drive's cached `used_bytes` from `SUM(file.size) WHERE
 # drive_id = d.id`. If the file/folder move didn't update
@@ -125,7 +125,7 @@ file_id: jsonpath "$.id"
 # Baseline used_bytes after the upload settles. Trigger-sweep is
 # the deterministic sync point — but only after the spawn'd hook
 # has had a chance to land (bug_trigger_sweep_vs_spawn_hook_race.md).
-POST {{base_url}}/api/admin/jobs/storage_reconcile/trigger
+POST {{base_url}}/api/admin/jobs/usage_reconcile/trigger
 Authorization: Bearer {{admin_token}}
 [Options]
 delay: 200ms
@@ -161,7 +161,7 @@ Content-Type: application/json
 
 HTTP 200
 
-POST {{base_url}}/api/admin/jobs/storage_reconcile/trigger
+POST {{base_url}}/api/admin/jobs/usage_reconcile/trigger
 Authorization: Bearer {{admin_token}}
 [Options]
 delay: 200ms
@@ -245,7 +245,7 @@ nested_file_id: jsonpath "$.id"
 # size. Symptom: expected 64, got 96 (one extra hook landed late).
 # Real fix is await'ing the hook inline server-side; until then this
 # delay deflakes the test.
-POST {{base_url}}/api/admin/jobs/storage_reconcile/trigger
+POST {{base_url}}/api/admin/jobs/usage_reconcile/trigger
 Authorization: Bearer {{admin_token}}
 [Options]
 delay: 200ms
@@ -278,7 +278,7 @@ HTTP 200
 #   shared:   nested hello-copy.txt now charged here (32)
 # Anything other than (32, 32) means the descendant file's
 # drive_id wasn't cascaded by the trigger.
-POST {{base_url}}/api/admin/jobs/storage_reconcile/trigger
+POST {{base_url}}/api/admin/jobs/usage_reconcile/trigger
 Authorization: Bearer {{admin_token}}
 [Options]
 delay: 200ms

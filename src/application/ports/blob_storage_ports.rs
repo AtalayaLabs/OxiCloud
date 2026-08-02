@@ -128,6 +128,51 @@ pub trait BlobStorageBackend: Send + Sync + 'static {
         self.put_blob_from_bytes(hash, data)
     }
 
+    /// Store a blob from in-memory bytes, **replacing** any existing
+    /// object at that hash. Distinct from [`Self::put_blob_from_bytes`]:
+    /// the standard variant is idempotent-skip (correct for uploads —
+    /// same plaintext always produces bytes that decrypt back to the
+    /// same plaintext), whereas this variant is required by callers
+    /// that need the on-disk BYTES to change even when the CONTENT
+    /// hash doesn't:
+    ///
+    /// * `backend_rotate` — rewrites every blob under the head pair's
+    ///   format (legacy → v1 header, old key → new key, plaintext ↔
+    ///   encrypted). If the target's `put_blob_from_bytes` silently
+    ///   skipped, rotation would report success while leaving the old
+    ///   format on disk.
+    /// * `backend_migration` — same story when a target already has a
+    ///   blob at that hash from an earlier state (Ed hit this on
+    ///   2026-08-01 in the S3 → local migration test).
+    ///
+    /// Must be **atomic** — a concurrent reader must see either the
+    /// old bytes or the new bytes, never a truncated partial write.
+    /// On POSIX that's a `write-to-tempfile + rename(2)` pattern; on
+    /// object storage (S3, Azure) it's a straight `PUT` (already
+    /// overwrites atomically).
+    ///
+    /// Default: delegates to `put_blob_from_bytes`. That default is
+    /// WRONG for every current backend — Local uses `O_EXCL` and
+    /// S3/Azure both HEAD-probe before writing, so `put_blob_from_bytes`
+    /// is silently a no-op when the target already exists. Every
+    /// production backend MUST override this to guarantee overwrite:
+    ///
+    /// - `LocalBlobBackend` — tempfile + rename(2) + fsync
+    /// - `S3BlobBackend` / `AzureBlobBackend` — unconditional PUT
+    ///   (same body as `put_blob_from_bytes_unsynced`, which already
+    ///   skips the HEAD probe; object-store PUTs are durable on
+    ///   return so no separate sync is needed)
+    ///
+    /// The default remains only for the `#[cfg(test)]` mocks that
+    /// never exercise rotate/migrate.
+    fn put_blob_from_bytes_replace(
+        &self,
+        hash: &str,
+        data: Bytes,
+    ) -> BoxFut<'_, Result<u64, DomainError>> {
+        self.put_blob_from_bytes(hash, data)
+    }
+
     /// Make previously written blobs durable in one batched operation.
     ///
     /// Durability barrier for blobs written via `put_blob_from_bytes_unsynced`:

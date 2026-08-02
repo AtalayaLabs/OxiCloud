@@ -366,7 +366,7 @@ impl AppServiceFactory {
         //
         // When `storage_entries` is non-empty, encryption is already
         // applied inside `build_entry_backend` from the entry's own
-        // `encryption_key_base64` (per-entry key). This block is the
+        // pair-list (head-pair key). This block is the
         // pre-multi-entry fallback that reads the flat
         // `OXICLOUD_STORAGE_ENCRYPTION_*` vars — reachable only for
         // fresh installs with no explicit storage config at all
@@ -387,7 +387,7 @@ impl AppServiceFactory {
             let key: [u8; 32] = key_bytes.try_into().expect(
                 "OXICLOUD_STORAGE_ENCRYPTION_KEY must be exactly 32 bytes (base64 of 32 bytes)",
             );
-            blob_backend = Arc::new(EncryptedBlobBackend::new(blob_backend, &key));
+            blob_backend = Arc::new(EncryptedBlobBackend::new_single_aes(blob_backend, &key));
             tracing::info!("Blob storage encryption decorator enabled (AES-256-GCM) — legacy path");
         }
 
@@ -2029,6 +2029,7 @@ impl AppServiceFactory {
             authorization: authorization.clone(),
             migration_readonly: migration_readonly.clone(),
             migration_progress: Arc::new(std::sync::RwLock::new(None)),
+            rotation_progress: Arc::new(std::sync::RwLock::new(None)),
             drive_repo: drive_repo.clone(),
             drive_management_service: Arc::new(
                 crate::application::services::drive_management_service::DriveManagementService::new(
@@ -2244,7 +2245,7 @@ impl AppServiceFactory {
                 dyn crate::infrastructure::scheduler::JobStoreProvider,
             > = app_state.core.job_store_provider.clone();
             let _ = Arc::new(
-                crate::infrastructure::services::storage_migration_service::StorageMigrationService::new(
+                crate::infrastructure::services::backend_migration_service::BackendMigrationService::new(
                     app_state
                         .maintenance_pool
                         .clone()
@@ -2256,6 +2257,25 @@ impl AppServiceFactory {
                     app_state.migration_readonly.clone(),
                     app_state.core.blob_backend_hot_swap.clone(),
                     app_state.migration_progress.clone(),
+                ),
+            )
+            .register_recoverable_job(&app_state.core.job_registry, &job_store_provider_dyn)
+            .await;
+
+            // K3: `backend_rotate` recoverable-job tenant. Same
+            // pattern as `backend_migration` but without the
+            // cutover/readonly plumbing — rotation writes in place on
+            // whichever entry the trigger endpoint names. Target name
+            // comes from `params.target_name` per run.
+            let _ = Arc::new(
+                crate::infrastructure::services::backend_rotate_service::BackendRotateService::new(
+                    app_state
+                        .maintenance_pool
+                        .clone()
+                        .expect("maintenance_pool set above"),
+                    app_state.core.config.storage_entries.clone(),
+                    self.storage_path.clone(),
+                    app_state.rotation_progress.clone(),
                 ),
             )
             .register_recoverable_job(&app_state.core.job_registry, &job_store_provider_dyn)
@@ -2457,7 +2477,7 @@ impl AppServiceFactory {
         // Migration-readonly boot-clear rule. See
         // `docs/plan/storage-multi-entry.md` §"Read-only mode".
         //
-        // If the flag was set true at boot AND no storage_migration
+        // If the flag was set true at boot AND no backend_migration
         // run is currently non-terminal AND active_backend_name
         // matches the entry the app actually booted onto — that means
         // the cutover completed on a prior boot (the run reached
@@ -2475,11 +2495,11 @@ impl AppServiceFactory {
             .migration_readonly
             .load(std::sync::atomic::Ordering::Relaxed)
         {
-            use crate::infrastructure::services::storage_migration_service::STORAGE_MIGRATION_JOB_NAME;
+            use crate::infrastructure::services::backend_migration_service::BACKEND_MIGRATION_JOB_NAME;
             let has_in_flight = match app_state
                 .core
                 .job_store_provider
-                .list_runs(STORAGE_MIGRATION_JOB_NAME, 5)
+                .list_runs(BACKEND_MIGRATION_JOB_NAME, 5)
                 .await
             {
                 Ok(runs) => runs.iter().any(|r| {
@@ -2495,7 +2515,7 @@ impl AppServiceFactory {
                         target: "oxicloud::scheduler",
                         event = "storage.migration_readonly.clear_check_failed",
                         error = %e,
-                        "failed to list storage_migration runs during readonly-clear check; \
+                        "failed to list backend_migration runs during readonly-clear check; \
                          leaving migration_readonly flag as-is"
                     );
                     // Play it safe: assume in-flight to avoid clearing prematurely.
@@ -2795,6 +2815,15 @@ pub struct AppState {
     /// user's session banner about maintenance progress without
     /// polling. See `MigrationProgress` for the field shape.
     pub migration_progress: Arc<std::sync::RwLock<Option<crate::common::migration_progress::MigrationProgress>>>,
+    /// Live progress snapshot for the storage-rotate handler
+    /// (`backend_rotate` — K3 of the storage-key-rotation plan).
+    /// `Some(_)` while a rotation is running; `None` otherwise.
+    /// Held separately from `migration_progress` so the
+    /// server-status header can broadcast the two states
+    /// independently: migration engages readonly mode, rotation
+    /// does not. Same `MigrationProgress` type — both are "walk
+    /// progress" fundamentally.
+    pub rotation_progress: Arc<std::sync::RwLock<Option<crate::common::migration_progress::MigrationProgress>>>,
     /// Drive entity repository — `GET /api/drives`, the personal-drive
     /// lifecycle hook, and (post-D2) shared-drive creation flow all read
     /// through this. Backing table is `storage.drives`; membership is

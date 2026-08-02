@@ -1,37 +1,27 @@
 <script lang="ts">
 	/**
-	 * Read-only banner — one component, two variants.
+	 * Read-only banner — one component, three variants.
 	 *
 	 * ## `variant="drive"` (default) — drive-scoped freeze
 	 *
 	 * Rendered at the top of any page whose content lives in (or is scoped
-	 * to) a drive whose `policies.read_only === true`. Members see the
-	 * banner and understand why upload / rename / delete / share
-	 * affordances elsewhere in the app fail with a generic error toast —
-	 * the backend engine gate refuses every non-`Read` permission on
-	 * resources in the drive.
-	 *
-	 * Only `Read` permissions pass; the banner does not need to gate any
-	 * behavior itself. It's pure signage. Backed by
-	 * `docs/plan/drive.md` §8 (`read_only`).
-	 *
-	 * Consumed by:
-	 *   - `routes/config/drive/[uuid]/+page.svelte` — always shown when
-	 *     the drive being configured is frozen.
-	 *   - `routes/files/[...path]/+page.svelte` — shown when the current
-	 *     folder's owning drive is frozen (parent looks up drive via
-	 *     `drives.findByRootFolderId`/`findById`).
+	 * to) a drive whose `policies.read_only === true`.
 	 *
 	 * ## `variant="maintenance"` — server-wide freeze
 	 *
 	 * Rendered inside `AppShell` above `{children}` when the
-	 * `x-server-status` header (see `middleware::server_status`) says
-	 * the whole server is in read-only mode — typically during a
-	 * storage-backend migration. Optional `progress` lets the banner
-	 * show target + percentage.
+	 * `x-server-status` header says the whole server is in read-only
+	 * mode — typically during a `backend_migration` cutover.
 	 *
-	 * Shape / accent is identical between both variants — the design
-	 * system reads them as the same family. Only the copy differs.
+	 * ## `variant="rotating"` — background key rotation
+	 *
+	 * K4 storage-key-rotation. `backend_rotate` walks blobs in place;
+	 * writes/reads continue normally throughout. Copy makes it clear
+	 * this is a background maintenance banner, not a freeze — the app
+	 * is fully usable.
+	 *
+	 * Shape / accent is identical across variants — the design system
+	 * reads them as the same family. Only the copy differs.
 	 */
 	import { t } from '$lib/i18n/index.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
@@ -47,12 +37,13 @@
 		/**
 		 * `"drive"` — a specific drive is frozen (default; back-compat
 		 * with pre-migration call sites). `"maintenance"` — the whole
-		 * server is in read-only mode.
+		 * server is in read-only mode. `"rotating"` — a background key
+		 * rotation is running; writes continue.
 		 */
-		variant?: 'drive' | 'maintenance';
+		variant?: 'drive' | 'maintenance' | 'rotating';
 		/** Drive-name shown in the body (variant="drive" only). */
 		driveName?: string;
-		/** Migration progress (variant="maintenance" only). */
+		/** Migration/rotation progress (variant="maintenance" | "rotating" only). */
 		progress?: Progress;
 	}
 
@@ -61,19 +52,28 @@
 
 <div
 	class="read-only-banner"
+	class:read-only-banner--rotating={variant === 'rotating'}
 	role="region"
 	aria-label={variant === 'maintenance'
 		? t('server_status.readonly_banner_aria', 'Server maintenance in progress')
-		: t('drive.read_only_banner.aria', 'This drive is read-only')}
-	data-testid={variant === 'maintenance' ? 'server-status-banner' : 'read-only-banner'}
+		: variant === 'rotating'
+			? t('server_status.rotating_banner_aria', 'Storage key rotation in progress')
+			: t('drive.read_only_banner.aria', 'This drive is read-only')}
+	data-testid={variant === 'maintenance'
+		? 'server-status-banner'
+		: variant === 'rotating'
+			? 'server-status-rotating-banner'
+			: 'read-only-banner'}
 >
 	<div class="read-only-banner__icon" aria-hidden="true">
-		<Icon name="lock" />
+		<Icon name={variant === 'rotating' ? 'key' : 'lock'} />
 	</div>
 	<div class="read-only-banner__body">
 		<strong>
 			{#if variant === 'maintenance'}
 				{t('server_status.readonly_title', 'Server maintenance in progress')}
+			{:else if variant === 'rotating'}
+				{t('server_status.rotating_title', 'Storage key rotation in progress')}
 			{:else if driveName}
 				{t(
 					'drive.read_only_banner.title_named',
@@ -101,6 +101,24 @@
 					{t(
 						'server_status.readonly_body',
 						'Uploads, renames, deletes, and shares are refused temporarily. Reads and downloads work as normal.'
+					)}
+				{/if}
+			{:else if variant === 'rotating'}
+				{#if progress}
+					{t(
+						'server_status.rotating_progress',
+						{
+							target: progress.target,
+							migrated: progress.migrated,
+							total: progress.total,
+							percent: progress.percent
+						},
+						'Rotating encryption on `{{target}}` — {{percent}}% ({{migrated}} / {{total}} blobs). All operations continue normally; this is a background maintenance task.'
+					)}
+				{:else}
+					{t(
+						'server_status.rotating_body',
+						'A background key rotation is normalising storage. All operations continue normally.'
 					)}
 				{/if}
 			{:else}
@@ -141,6 +159,18 @@
 		background: var(--color-surface);
 		color: var(--color-accent);
 		font-size: var(--text-lg);
+	}
+
+	/* K4 rotating variant — same shape, info accent (softer than the
+	   default), signalling "background task, no user-facing freeze".
+	   Uses `--color-info` when the palette defines it, falls back to
+	   `--color-accent` otherwise. */
+	.read-only-banner--rotating {
+		border-left-color: var(--color-info, var(--color-accent));
+	}
+
+	.read-only-banner--rotating .read-only-banner__icon {
+		color: var(--color-info, var(--color-accent));
 	}
 
 	.read-only-banner__body {

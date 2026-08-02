@@ -54,13 +54,21 @@ use super::types::{JobOutcome, JobRunArgs};
 
 /// Mirror of the `TEXT` values allowed in `jobs.recoverable_runs.status`.
 ///
-/// Terminal set = `{Completed, Failed}`. Non-terminal set (the one the
-/// exclusivity partial unique index scopes) =
+/// Terminal set = `{Completed, Failed, Cancelled}`. Non-terminal set
+/// (the one the exclusivity partial unique index scopes) =
 /// `{Running, Paused, CancelRequested}`.
 ///
 /// `CancelRequested` IS non-terminal — the run is still shutting down.
 /// A second trigger arriving during cancel MUST NOT spawn a parallel
 /// run; the trigger endpoint returns the surviving row instead.
+///
+/// `Cancelled` IS terminal — admin explicitly abandoned the run. Distinct
+/// from `Failed` because it's user-driven, not a handler error. Distinct
+/// from `Paused` because it's not resumable. Runs land in `Cancelled` via
+/// two paths: (1) admin cancel on a Running row (sets
+/// `params.cancel_intent = "terminate"` alongside the CancelRequested
+/// flip; engine post-processes handler's Paused return → Cancelled), or
+/// (2) admin cancel on an already-Paused row (direct DB flip).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum RunStatus {
     Running,
@@ -68,6 +76,7 @@ pub enum RunStatus {
     CancelRequested,
     Completed,
     Failed,
+    Cancelled,
 }
 
 impl RunStatus {
@@ -79,6 +88,7 @@ impl RunStatus {
             RunStatus::CancelRequested => "CancelRequested",
             RunStatus::Completed => "Completed",
             RunStatus::Failed => "Failed",
+            RunStatus::Cancelled => "Cancelled",
         }
     }
 
@@ -91,6 +101,7 @@ impl RunStatus {
             "CancelRequested" => Some(RunStatus::CancelRequested),
             "Completed" => Some(RunStatus::Completed),
             "Failed" => Some(RunStatus::Failed),
+            "Cancelled" => Some(RunStatus::Cancelled),
             _ => None,
         }
     }
@@ -104,6 +115,14 @@ impl RunStatus {
         )
     }
 }
+
+/// Value written to `params.cancel_intent` to tell the engine's
+/// terminal-write wrap how to interpret a subsequent
+/// [`RunOutcome::Paused`] return. Absent → treat as ordinary pause
+/// (write `Paused`). Present with this value → the admin asked to
+/// abandon, not just yield, so write `Cancelled` instead.
+pub const CANCEL_INTENT_PARAM: &str = "cancel_intent";
+pub const CANCEL_INTENT_TERMINATE: &str = "terminate";
 
 // ─── Run outcome (handler → engine) ─────────────────────────────────────────
 
@@ -119,9 +138,65 @@ impl RunStatus {
 ///   writes `status = Failed` with the message.
 #[derive(Debug, Clone)]
 pub enum RunOutcome {
-    Completed,
-    Paused { cursor: Vec<u8> },
-    Failed { message: String },
+    /// The run walked the whole subject space.
+    ///
+    /// `extra_stats` is merged into the run row's `stats` JSONB
+    /// alongside the engine-owned `scanned_count` + `finding_count`
+    /// / `severity_counts`. Handlers use it to surface per-run
+    /// summary counters (e.g. `backend_rotate` reports
+    /// `{"rewritten": N, "skipped": M, "failed": K}`) — the outcome
+    /// message in `JobOutcome.extra` and every downstream reader
+    /// of `RunSummary.stats` see the merged fields.
+    ///
+    /// Empty map = "no tenant-specific extras" — same shape as the
+    /// pre-K3 bare `Completed` variant. Handlers that don't
+    /// summarise their work call [`Self::completed`].
+    Completed {
+        extra_stats: serde_json::Map<String, serde_json::Value>,
+    },
+    Paused {
+        cursor: Vec<u8>,
+    },
+    Failed {
+        message: String,
+    },
+}
+
+impl RunOutcome {
+    /// Convenience for the common case: handler has nothing to add
+    /// to `stats` beyond what the engine already tracks (finding /
+    /// scanned counters). Equivalent to
+    /// `Completed { extra_stats: Map::new() }`.
+    pub fn completed() -> Self {
+        RunOutcome::Completed {
+            extra_stats: serde_json::Map::new(),
+        }
+    }
+
+    /// Convenience for handlers that want to surface per-run
+    /// summary counters. Takes any JSON object literal produced by
+    /// `serde_json::json!({...})`; panics if the top-level value
+    /// isn't an Object (programmer bug — the contract is
+    /// object-shaped).
+    ///
+    /// Example — a rotate handler at run-complete:
+    ///
+    /// ```ignore
+    /// return RunOutcome::completed_with(serde_json::json!({
+    ///     "rewritten": rewritten_count,
+    ///     "skipped":   skipped_count,
+    ///     "failed":    failed_count,
+    /// }));
+    /// ```
+    pub fn completed_with(extras: serde_json::Value) -> Self {
+        match extras {
+            serde_json::Value::Object(map) => RunOutcome::Completed { extra_stats: map },
+            other => panic!(
+                "RunOutcome::completed_with expected a JSON object, got {}",
+                other
+            ),
+        }
+    }
 }
 
 // ─── Traits — implementor + port ────────────────────────────────────────────
@@ -248,7 +323,7 @@ pub trait JobStore: Send + Sync {
 
     /// Set an arbitrary string field on `params` (JSONB). Used by
     /// handlers on a Fresh run to persist per-run configuration that
-    /// must survive a mid-run restart — e.g. `storage_migration`
+    /// must survive a mid-run restart — e.g. `backend_migration`
     /// stamping `params.target_name` at run start so a resume can
     /// pick up the same target without the admin re-specifying it.
     ///
@@ -263,6 +338,18 @@ pub trait JobStore: Send + Sync {
     /// use this to recover per-run config that a prior Fresh open
     /// stamped.
     async fn get_string_param(&self, key: &str) -> Result<Option<String>, DomainError>;
+
+    /// Current `stats.scanned_count` for this run. Used by handlers
+    /// on a Resume path to reconstruct progress state that isn't
+    /// persisted in `params` — e.g. `backend_migration` seeds its
+    /// user-facing `MigrationProgress` counter with this so the
+    /// admin banner shows continued progress across a restart
+    /// instead of resetting to 0.
+    ///
+    /// Returns `0` if the key is absent (fresh row) or not a
+    /// number. Callers on a Fresh run can safely skip this — the
+    /// answer is trivially 0 and the write path starts fresh.
+    async fn scanned_count(&self) -> Result<u64, DomainError>;
 
     /// Persist one finding to `jobs.run_findings` and bump
     /// `stats.finding_count` on the parent run. Consistency handlers
@@ -295,6 +382,24 @@ pub trait JobStore: Send + Sync {
         detail: serde_json::Value,
     ) -> Result<(), DomainError>;
 
+    /// **Engine-only.** Merge `extras` into the run row's `stats`
+    /// JSONB (SQL `stats = stats || $1`). Called by [`run_or_resume`]
+    /// on [`RunOutcome::Completed`] to persist the handler's
+    /// per-run summary counters alongside the engine-owned
+    /// `scanned_count` / `finding_count`. Handler code MUST NOT
+    /// call this directly — return an `extra_stats` map on
+    /// `Completed` and the engine handles the write.
+    ///
+    /// Idempotent: merging the same map twice yields the same row.
+    /// A stats key that already exists is OVERWRITTEN by the
+    /// merge (last-write-wins) — a handler that emits e.g.
+    /// `"rewritten": 300` at run end always displaces any prior
+    /// per-batch write of the same key.
+    async fn merge_stats(
+        &self,
+        extras: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), DomainError>;
+
     // ─── Terminal writes — engine-only. Do not call from handler code.
 
     /// Engine-only. Called by [`run_or_resume`] on
@@ -309,6 +414,15 @@ pub trait JobStore: Send + Sync {
     /// Engine-only. Called by [`run_or_resume`] on
     /// [`RunOutcome::Failed`]. Handler code MUST NOT call this.
     async fn mark_failed(&self, message: &str) -> Result<(), DomainError>;
+
+    /// Engine-only. Called by [`run_or_resume`] when the handler
+    /// returns [`RunOutcome::Paused`] AND
+    /// `params.cancel_intent = "terminate"` — the admin asked to
+    /// abandon the run, not just yield. Writes `status = 'Cancelled'`
+    /// + `completed_at = NOW()`. Preserves the cursor for post-mortem
+    /// (an operator can see how far it got before being killed).
+    /// Handler code MUST NOT call this.
+    async fn mark_cancelled(&self, cursor: Option<Vec<u8>>) -> Result<(), DomainError>;
 }
 
 /// Registry-level operations on `jobs.recoverable_runs` — NOT bound
@@ -364,6 +478,25 @@ pub trait JobStoreProvider: Send + Sync {
     /// the handler doesn't poll, cancel is a no-op until the run
     /// completes naturally.
     async fn request_cancel(&self, job_name: &str) -> Result<Option<Uuid>, DomainError>;
+
+    /// Request TERMINAL cancellation — admin abandons the run rather
+    /// than yielding it for later resume. Two paths depending on the
+    /// current row's status:
+    ///
+    /// - **`Running` / `CancelRequested`** — same DB flip as
+    ///   [`Self::request_cancel`] (Running → CancelRequested) BUT
+    ///   also stamps `params.cancel_intent = "terminate"`. When the
+    ///   handler yields and the engine wraps `RunOutcome::Paused`, it
+    ///   reads the intent and calls
+    ///   [`JobStore::mark_cancelled`] instead of `mark_paused`.
+    /// - **`Paused`** — no handler is running, so the engine wrap
+    ///   never fires. Direct DB flip `Paused → Cancelled +
+    ///   completed_at = NOW()`.
+    /// - **Terminal or absent** — no-op (`Ok(None)`).
+    ///
+    /// Returns the affected run's id when any transition happened,
+    /// `None` otherwise.
+    async fn request_terminal_cancel(&self, job_name: &str) -> Result<Option<Uuid>, DomainError>;
 
     /// Findings for a specific run, newest-last, paginated.
     /// Powers `GET /api/admin/jobs/{name}/runs/{id}/findings`.
@@ -630,8 +763,22 @@ pub async fn run_or_resume(
     let stats = fetch_outcome_stats(&*provider, run_id).await;
 
     match outcome {
-        RunOutcome::Completed => {
+        RunOutcome::Completed { extra_stats } => {
+            // Merge tenant-supplied extras into the run's stats
+            // JSONB BEFORE the terminal mark, so downstream readers
+            // see the merged view atomically. `fetch_outcome_stats`
+            // (a few lines up) already ran and reflects the state
+            // WITHOUT the merge — re-fetch so the outer JobOutcome
+            // includes the tenant counters too.
+            if !extra_stats.is_empty() {
+                log_terminal_write_err(
+                    "merge_stats",
+                    run_id,
+                    store.merge_stats(&extra_stats).await,
+                );
+            }
             log_terminal_write_err("mark_completed", run_id, store.mark_completed().await);
+            let stats = fetch_outcome_stats(&*provider, run_id).await;
             JobOutcome::ok_with(
                 stats.finding_count,
                 serde_json::json!({
@@ -640,23 +787,59 @@ pub async fn run_or_resume(
                     "finding_count":     stats.finding_count,
                     "scanned_count":     stats.scanned_count,
                     "severity_counts":   stats.by_severity,
+                    "extra_stats":       serde_json::Value::Object(extra_stats),
                 }),
             )
         }
         RunOutcome::Paused { cursor } => {
+            // Read the intent stamped by `/api/admin/jobs/{name}/cancel`
+            // (terminal cancel path). Absent → ordinary pause. Present
+            // with `terminate` → admin asked to abandon; write
+            // Cancelled instead of Paused. Any read error falls
+            // through to Paused — errs on preserving-progress side.
+            let terminate = store
+                .get_string_param(CANCEL_INTENT_PARAM)
+                .await
+                .ok()
+                .flatten()
+                .as_deref()
+                == Some(CANCEL_INTENT_TERMINATE);
             let cursor_hex = hex::encode(&cursor);
-            log_terminal_write_err("mark_paused", run_id, store.mark_paused(Some(cursor)).await);
-            JobOutcome::ok_with(
-                stats.finding_count,
-                serde_json::json!({
-                    "paused":            true,
-                    "run_id":            run_id.to_string(),
-                    "cursor_hex":        cursor_hex,
-                    "finding_count":     stats.finding_count,
-                    "scanned_count":     stats.scanned_count,
-                    "severity_counts":   stats.by_severity,
-                }),
-            )
+            if terminate {
+                log_terminal_write_err(
+                    "mark_cancelled",
+                    run_id,
+                    store.mark_cancelled(Some(cursor)).await,
+                );
+                JobOutcome::ok_with(
+                    stats.finding_count,
+                    serde_json::json!({
+                        "cancelled":         true,
+                        "run_id":            run_id.to_string(),
+                        "cursor_hex":        cursor_hex,
+                        "finding_count":     stats.finding_count,
+                        "scanned_count":     stats.scanned_count,
+                        "severity_counts":   stats.by_severity,
+                    }),
+                )
+            } else {
+                log_terminal_write_err(
+                    "mark_paused",
+                    run_id,
+                    store.mark_paused(Some(cursor)).await,
+                );
+                JobOutcome::ok_with(
+                    stats.finding_count,
+                    serde_json::json!({
+                        "paused":            true,
+                        "run_id":            run_id.to_string(),
+                        "cursor_hex":        cursor_hex,
+                        "finding_count":     stats.finding_count,
+                        "scanned_count":     stats.scanned_count,
+                        "severity_counts":   stats.by_severity,
+                    }),
+                )
+            }
         }
         RunOutcome::Failed { message } => {
             log_terminal_write_err("mark_failed", run_id, store.mark_failed(&message).await);
@@ -802,6 +985,14 @@ impl JobHandler for RecoverableAdapter {
     async fn run(&self, args: &JobRunArgs) -> JobOutcome {
         run_or_resume(self.inner.clone(), self.provider.clone(), args).await
     }
+    fn is_recoverable(&self) -> bool {
+        // Every tenant registered through `register_recoverable_job` is
+        // wrapped by this adapter, so this flag flips true for exactly
+        // the set of jobs whose runs + findings the admin UI should
+        // let operators drill into. No name-based allowlists needed
+        // downstream.
+        true
+    }
 }
 
 // ─── Ergonomics: JobRegistry extension for recoverable jobs ─────────────────
@@ -857,6 +1048,10 @@ mod tests {
         progress_total: Option<u64>,
         progress_kind: Option<ProgressKind>,
         string_params: std::collections::HashMap<String, String>,
+        /// K3+: extras merged into the run's stats JSONB via
+        /// `merge_stats` at Completed time. Tests observe the merged
+        /// view by reading this map alongside `scanned_count`.
+        extra_stats: serde_json::Map<String, serde_json::Value>,
     }
 
     #[async_trait]
@@ -916,6 +1111,19 @@ mod tests {
         async fn get_string_param(&self, key: &str) -> Result<Option<String>, DomainError> {
             Ok(self.state.lock().unwrap().string_params.get(key).cloned())
         }
+        async fn scanned_count(&self) -> Result<u64, DomainError> {
+            Ok(self.state.lock().unwrap().scanned_count)
+        }
+        async fn merge_stats(
+            &self,
+            extras: &serde_json::Map<String, serde_json::Value>,
+        ) -> Result<(), DomainError> {
+            let mut s = self.state.lock().unwrap();
+            for (k, v) in extras {
+                s.extra_stats.insert(k.clone(), v.clone());
+            }
+            Ok(())
+        }
         async fn mark_completed(&self) -> Result<(), DomainError> {
             self.state.lock().unwrap().status = RunStatus::Completed;
             Ok(())
@@ -932,6 +1140,14 @@ mod tests {
             let mut s = self.state.lock().unwrap();
             s.status = RunStatus::Failed;
             s.error_message = Some(message.to_string());
+            Ok(())
+        }
+        async fn mark_cancelled(&self, cursor: Option<Vec<u8>>) -> Result<(), DomainError> {
+            let mut s = self.state.lock().unwrap();
+            s.status = RunStatus::Cancelled;
+            if let Some(c) = cursor {
+                s.cursor = Some(c);
+            }
             Ok(())
         }
     }
@@ -968,6 +1184,7 @@ mod tests {
                     progress_total: None,
                     progress_kind: None,
                     string_params: std::collections::HashMap::new(),
+                    extra_stats: serde_json::Map::new(),
                 }),
             });
             let id = store.run_id;
@@ -1027,6 +1244,7 @@ mod tests {
                     progress_total: None,
                     progress_kind: None,
                     string_params: std::collections::HashMap::new(),
+                    extra_stats: serde_json::Map::new(),
                 }),
             });
             stores.push(store.clone());
@@ -1163,7 +1381,10 @@ mod tests {
             let before = stores.len();
             stores.retain(|s| {
                 let state = s.state.lock().unwrap();
-                !matches!(state.status, RunStatus::Completed | RunStatus::Failed)
+                !matches!(
+                    state.status,
+                    RunStatus::Completed | RunStatus::Failed | RunStatus::Cancelled
+                )
             });
             Ok((before - stores.len()) as u64)
         }
@@ -1175,6 +1396,32 @@ mod tests {
                 if state.status == RunStatus::Running {
                     state.status = RunStatus::CancelRequested;
                     return Ok(Some(s.run_id));
+                }
+            }
+            Ok(None)
+        }
+
+        async fn request_terminal_cancel(
+            &self,
+            _job_name: &str,
+        ) -> Result<Option<Uuid>, DomainError> {
+            let stores = self.stores.lock().unwrap();
+            if let Some(s) = stores.last() {
+                let mut state = s.state.lock().unwrap();
+                match state.status {
+                    RunStatus::Paused => {
+                        state.status = RunStatus::Cancelled;
+                        return Ok(Some(s.run_id));
+                    }
+                    RunStatus::Running | RunStatus::CancelRequested => {
+                        state.status = RunStatus::CancelRequested;
+                        state.string_params.insert(
+                            CANCEL_INTENT_PARAM.to_string(),
+                            CANCEL_INTENT_TERMINATE.to_string(),
+                        );
+                        return Ok(Some(s.run_id));
+                    }
+                    _ => {}
                 }
             }
             Ok(None)
@@ -1196,7 +1443,7 @@ mod tests {
             _resume_cursor: Option<Vec<u8>>,
         ) -> RunOutcome {
             store.checkpoint(vec![1, 2, 3], 5).await.unwrap();
-            RunOutcome::Completed
+            RunOutcome::completed()
         }
     }
 
@@ -1251,7 +1498,7 @@ mod tests {
             resume_cursor: Option<Vec<u8>>,
         ) -> RunOutcome {
             *self.saw_cursor.lock().unwrap() = resume_cursor;
-            RunOutcome::Completed
+            RunOutcome::completed()
         }
     }
 

@@ -565,7 +565,7 @@ CREATE SCHEMA IF NOT EXISTS admin;
 
 CREATE TABLE jobs.recoverable_runs (
     id                 UUID PRIMARY KEY,
-    job_name           TEXT NOT NULL,               -- 'consistency_blobs', 'storage_migration', 'reextract_audio', ...
+    job_name           TEXT NOT NULL,               -- 'consistency_blobs', 'backend_migration', 'reextract_audio', ...
     status             TEXT NOT NULL,               -- Running / Paused / Completed / Failed / CancelRequested
     started_at         TIMESTAMPTZ NOT NULL,
     last_progress_at   TIMESTAMPTZ NOT NULL,

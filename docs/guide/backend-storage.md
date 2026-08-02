@@ -40,14 +40,77 @@ A few things to know:
 Any backend can be encrypted at rest by adding an encryption key to it:
 
 ```
-OXICLOUD_STORAGE_s3_prod_ENCRYPTION_KEY=…   # base64 of 32 random bytes
+OXICLOUD_STORAGE_s3_prod_ENCRYPTION_KEY=aes-256-gcm:…   # base64 of 32 random bytes
 ```
 
 A key can be generated from **Settings → Storage → Generate key** in the admin panel. Set the same key on a new backend during migration and OxiCloud re-encrypts the data as it copies.
 
+The bare shorthand `OXICLOUD_STORAGE_s3_prod_ENCRYPTION_KEY=<key>` (no `aes-256-gcm:` prefix) also works and is treated as AES-256-GCM. Use the explicit form once you have more than one key in the list — see [Rotating an encryption key](#rotating-an-encryption-key) below.
+
 ::: warning
 If you lose the encryption key, the data encrypted with it is unrecoverable. Store the key somewhere as safe as you'd store a database backup.
 :::
+
+### Rotating an encryption key
+
+When it's time to rotate a key — after a suspected leak, on a periodic policy, or after a staff turnover — you don't need to provision a second bucket. Add the new key **alongside** the old one; the server writes with the new key while reads keep working through the old one; then a background job re-encrypts existing data under the new key; then you drop the old key.
+
+Step by step:
+
+1. Generate a new key:
+
+   ```
+   openssl rand -base64 32
+   ```
+
+2. Append it to the entry's key list. **Order matters — the NEW key goes LAST.**
+
+   ```
+   OXICLOUD_STORAGE_s3_prod_ENCRYPTION_KEY=aes-256-gcm:<OLD>,aes-256-gcm:<NEW>
+   ```
+
+3. Restart the server. New uploads are now encrypted with the new key; existing files still open normally because the old key is still in the list.
+
+4. On the **Storage** tab, click **Rotate encryption key** on the entry. This dispatches a background job that re-encrypts every existing file under the new key. All operations keep working during rotation — uploads, browsing, downloads, sharing.
+
+5. Wait for the job to complete. Progress shows in a top banner and on the **Jobs** tab.
+
+6. Once the entry card says "*Rotation complete — safe to remove the old key*", remove the OLD key from the list:
+
+   ```
+   OXICLOUD_STORAGE_s3_prod_ENCRYPTION_KEY=aes-256-gcm:<NEW>
+   ```
+
+7. Restart the server. Rotation is done.
+
+::: warning
+Do NOT remove the old key before the rotation job reports "safe to remove". Any file still encrypted under the old key would become unreadable.
+:::
+
+### Encrypting a backend that started unencrypted
+
+Same shape as key rotation, using the `none:` sentinel to represent "the current writes are plaintext":
+
+1. Generate a new key.
+2. Add it AFTER `none:`:
+
+   ```
+   OXICLOUD_STORAGE_local_main_ENCRYPTION_KEY=none:,aes-256-gcm:<NEW>
+   ```
+
+3. Restart. New uploads are encrypted; existing plaintext files stay readable.
+4. Trigger **Rotate encryption key** on the entry.
+5. Once the entry card says the rotation is done, remove `none:` from the list; restart.
+
+### Decrypting an encrypted backend
+
+The symmetric flow — add `none:` AFTER the current key, restart, rotate, drop the old key:
+
+```
+OXICLOUD_STORAGE_local_main_ENCRYPTION_KEY=aes-256-gcm:<KEY>,none:
+```
+
+After the rotation job completes and the entry card says done, remove the AES pair (or the whole variable) and restart. All files on that entry are now plaintext.
 
 ## Checking a backend
 

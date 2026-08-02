@@ -716,7 +716,7 @@ rationale + the merges/separations that fall out of the rule.
 | `files_consistency` | `storage.files` | file UUID | `parent_folder_trashed` (live file under trashed folder), `missing_blob` (severity `data_loss` — `blob_hash` present in neither `storage.blobs` nor `storage.chunk_manifests`), `chunk_missing` (severity `data_loss` — manifest exists but points at chunks absent from `storage.blobs`; typical dedup GC race), `blob_size_mismatch` (denormalised `files.size` diverges from the authoritative size — manifest first, blob fallback) | Shipped Slice 6, CDC-aware Slice 10. Handles both storage paths: `storage.chunk_manifests` (post-Apr-2026 FastCDC ingest, dominant path) and `storage.blobs` (pre-CDC whole-file blob, legacy fallback). Physical backend-existence checks (chunk bytes actually on disk) belong in `storage_consistency`. Room to grow: `drive_id_parent_mismatch`, mime-type reconciliation. |
 | `storage_consistency` | Storage backend (fs / S3) | object key / path | Each blob has a `storage.blobs` row (orphan detection) | `?deep=true` adds re-BLAKE3 + mime sniff. Orphan-side of the old bidirectional blob check + former `blob_integrity` + former `thumbnail_consistency`. |
 | `grants_consistency` (future) | `storage.role_grants` | grant UUID | subject/resource/granted_by exist | |
-| `storage_migration` | `storage.blobs` (source) → target backend | blob hash | Copy bytes; failures → `stats.failed_blobs` (and eventually `jobs.run_findings`) | Retires `Arc<RwLock<MigrationState>>` in `migration_job.rs`. |
+| `backend_migration` | `storage.blobs` (source) → target backend | blob hash | Copy bytes; failures → `stats.failed_blobs` (and eventually `jobs.run_findings`) | Retires `Arc<RwLock<MigrationState>>` in `migration_job.rs`. |
 | `reextract_audio` | `storage.files` where audio | file UUID | Re-run audio-tag parser, upsert `audio_metadata` | Retires synchronous admin-request execution. |
 | `reextract_image` | `storage.files` where image/video | file UUID | Re-run EXIF/container date parser, upsert capture date | Same shape as reextract_audio. |
 | `consistency_batch` (wrapper) | Iterates registered `*_consistency` jobs | — (JobHandler, not RecoverableJobHandler) | Sequentially triggers each sub-job; `?deep=true` propagates | Shipped Slice 5. One-click "run all" without per-job clicks; exclusivity via `job_name` prevents concurrent batches from stepping on each other. Batch itself always returns `Ok` — child failures land in `outcome.extra.per_check[<name>].outcome`. |
@@ -729,7 +729,7 @@ SELECT + one UPDATE. Kept as its own admin endpoint; do NOT fold into
 ### Verification (Part 2)
 
 1. **Compile + schema-migration idempotence.**
-2. **Fresh run:** `POST /api/admin/jobs/storage_migration/trigger` → new row with
+2. **Fresh run:** `POST /api/admin/jobs/backend_migration/trigger` → new row with
    `status='Running'`, `cursor=NULL`.
 3. **Concurrent trigger:** second `POST` while the first is running
    returns the SAME `run_id` (idempotent, DB unique index enforces).
@@ -787,7 +787,7 @@ reference for any external tool that still expects the old paths:
 
 | Legacy (retired)                                     | Replacement                                          |
 |---|---|
-| `POST /admin/internal/trigger-sweep`                 | `POST /admin/jobs/storage_reconcile/trigger`          |
+| `POST /admin/internal/trigger-sweep`                 | `POST /admin/jobs/usage_reconcile/trigger`            |
 | `POST /admin/internal/trigger-gc?force=X`            | `POST /admin/jobs/dedup_gc/trigger?force=X`           |
 | `POST /admin/internal/trigger-grant-cleanup?force=X` | `POST /admin/jobs/grant_cleanup/trigger?force=X`      |
 
@@ -816,7 +816,7 @@ complete. Rough shape:
 │ Name                Cadence     Last run          Status   Actions │
 │ ───────────────────────────────────────────────────────────────────│
 │ trash_cleanup       every 24 h  3h ago            ok       [Run]   │
-│ storage_reconcile   every 10 m  4m ago            ok       [Run]   │
+│ usage_reconcile     every 10 m  4m ago            ok       [Run]   │
 │ dedup_gc            on-demand   1d ago            ok       [Run]   │
 │ grant_cleanup       every 24 h  never             —        [Run]   │
 │ drives_consistency  on-demand   never             —        [Run]   │

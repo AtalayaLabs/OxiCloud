@@ -268,7 +268,7 @@ log "API confirms trash is empty."
 # disk state to be quiescent NOW. The two JobRegistry admin triggers
 # below (production surface, always on) make this deterministic:
 #
-#   1. storage_reconcile  — reconciles users.storage_used_bytes and
+#   1. usage_reconcile  — reconciles users.storage_used_bytes and
 #                           drives.used_bytes from SUM(size) — keeps
 #                           the cached counters honest for any quota
 #                           assertions that follow.
@@ -280,8 +280,8 @@ log "API confirms trash is empty."
 #                           row-delete → unlink window the grace
 #                           normally protects.
 
-curl -sf -X POST -H "$AUTH" "$base_url/api/admin/jobs/storage_reconcile/trigger" >/dev/null \
-    || fail "storage_reconcile trigger failed"
+curl -sf -X POST -H "$AUTH" "$base_url/api/admin/jobs/usage_reconcile/trigger" >/dev/null \
+    || fail "usage_reconcile trigger failed"
 log "Reconciliation sweep triggered."
 
 GC_RESULT=$(curl -sf -X POST -H "$AUTH" "$base_url/api/admin/jobs/dedup_gc/trigger?force=true")

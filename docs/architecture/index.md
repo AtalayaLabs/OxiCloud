@@ -74,4 +74,5 @@ src/
 - [Caching Architecture →](/architecture/caching)
 - [Resource Listing API →](/architecture/resource-listing)
 - [Storage Quotas →](/architecture/storage-quotas)
+- [Backend Storage →](/architecture/backend-storage)
 - [Background Jobs →](/architecture/jobs)

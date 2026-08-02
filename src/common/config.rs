@@ -383,41 +383,445 @@ impl Default for RetryConfig {
     }
 }
 
-/// AES-GCM / AEAD cipher choice for a `NamedStorageEntry`.
+// ─────────────────────────────────────────────────────────────────────
+// K1: pair-list encryption config (post-storage-multi-entry,
+// pre-v1-header). See `docs/plan/storage-key-rotation.md`.
+//
+// [`CipherKind`], [`KeyPair`] and [`parse_encryption_pair_list`]
+// replace the singular pre-K1 `EncryptionCipher` + `encryption_key_base64`
+// + `encryption_cipher` model with a list-of-pairs model where the
+// last pair wins on writes and every pair is a candidate for reads.
+// The `none` cipher is a first-class citizen so plaintext ↔ encrypted
+// transitions can be expressed as a single pair-list evolution.
+//
+// K1.2 wires the pair-list into `NamedStorageEntry`; K2 replaces the
+// on-disk format (`.blob` → v1 header at same suffix) and the read
+// path (magic-byte dispatch + `<key_fp>` lookup). See the plan.
+// ─────────────────────────────────────────────────────────────────────
+
+/// The AEAD (or absence of one) used by a single [`KeyPair`].
 ///
-/// Today the only shipping variant is `Aes256Gcm` — the same cipher
-/// `EncryptedBlobBackend` has always hardcoded. The enum is
-/// future-proofing so `OXICLOUD_STORAGE_<N>_ENCRYPTION_CIPHER` is
-/// already an accepted knob when a second cipher lands
-/// (chacha20-poly1305, aes-256-siv, …). Absent + `_ENCRYPTION_KEY`
-/// present → defaults to `Aes256Gcm` for back-compat with entries
-/// declared before this field existed.
+/// * `AesGcm256` — the only real AEAD OxiCloud ships today. On the
+///   wire (v1 header): `[12-byte nonce] [ciphertext] [16-byte tag]`.
+/// * `None` — no cipher. A pair with `CipherKind::None` says
+///   "writes routed to this pair produce raw plaintext". This is
+///   what makes the encrypt-a-plaintext-deployment and
+///   decrypt-an-encrypted-deployment recipes expressible without a
+///   second storage entry — see `docs/plan/storage-key-rotation.md`
+///   §"Encrypting a previously-plaintext deployment" and the
+///   symmetric decrypt recipe.
+///
+/// The type is carried by the v1 on-disk header's cipher field
+/// (indirectly via `<version>` in v1, but explicitly if a future
+/// v2 adds a cipher byte to the header — the enum grows without
+/// touching call sites).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EncryptionCipher {
-    /// AES-256 in Galois/Counter Mode. 96-bit nonce + 128-bit tag,
-    /// random nonce per blob. Layout on disk / S3:
-    /// `[12-byte nonce] [ciphertext] [16-byte GCM tag]`.
-    Aes256Gcm,
+pub enum CipherKind {
+    /// AES-256 in Galois/Counter Mode. 96-bit nonce + 128-bit tag.
+    /// The only real AEAD OxiCloud ships today. On the wire (v1
+    /// header): `[12-byte nonce] [ciphertext] [16-byte tag]`.
+    AesGcm256,
+    /// No cipher. Writes produce raw plaintext; reads return raw
+    /// bytes. Used as the head pair for a plaintext-target rotation
+    /// (`aes:K,none:`) or as a non-head legacy pair while an
+    /// encrypt-in-place rotation is still upgrading old plaintext
+    /// blobs (`none:,aes:K`). At most one `none` pair may appear in
+    /// a list (parser-enforced).
+    None,
 }
 
-impl EncryptionCipher {
-    /// Stable env-var value → variant. Case-insensitive. Extend with
-    /// new variants as new ciphers land; the surface is one match
-    /// arm here + one branch in `EncryptedBlobBackend::new_for_cipher`
-    /// (when that gets added).
+impl CipherKind {
+    /// Parse an env-var token: `"aes-256-gcm"` (with the `aes256gcm`
+    /// alias kept for continuity with the pre-K1 spelling) or
+    /// `"none"`. Case-insensitive.
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.to_ascii_lowercase().as_str() {
-            "aes-256-gcm" | "aes256gcm" => Some(EncryptionCipher::Aes256Gcm),
+            "aes-256-gcm" | "aes256gcm" => Some(CipherKind::AesGcm256),
+            "none" => Some(CipherKind::None),
             _ => None,
         }
     }
 
-    /// Stable env-var-friendly name — the exact string
-    /// `OXICLOUD_STORAGE_<N>_ENCRYPTION_CIPHER` accepts, and what
-    /// admin surfaces render back to operators.
+    /// Stable env-var-friendly name — the exact string the parser
+    /// accepts back and the string admin surfaces render.
     pub fn as_str(self) -> &'static str {
         match self {
-            EncryptionCipher::Aes256Gcm => "aes-256-gcm",
+            CipherKind::AesGcm256 => "aes-256-gcm",
+            CipherKind::None => "none",
+        }
+    }
+
+    /// `true` iff this cipher carries key material. `false` for
+    /// `CipherKind::None`. Used by the parser to enforce
+    /// "no key after `none:`" and by K2's write path to skip the
+    /// AEAD call.
+    pub fn needs_key(self) -> bool {
+        matches!(self, CipherKind::AesGcm256)
+    }
+}
+
+/// One `<cipher>:<key>` pair from an `_ENCRYPTION_KEY` list.
+///
+/// List order carries semantics — the LAST pair is the write pair
+/// (see `docs/plan/storage-key-rotation.md` §"The pair-list config").
+/// `key_material` is `Some(bytes)` when `cipher.needs_key()`, else
+/// `None`. Base64 is decoded once at parse time; downstream code
+/// takes the raw bytes directly (no re-decoding on every read).
+///
+/// Deliberately not `Copy` — a 32-byte key isn't cheap enough to
+/// silently `Copy` and cloning it in tests is a good deterrent
+/// against accidental leaks into logs.
+#[derive(Debug, Clone)]
+pub struct KeyPair {
+    /// Which AEAD (or none) this pair writes with.
+    pub cipher: CipherKind,
+    /// Raw 32-byte AES-256 key. Always `Some` for real ciphers,
+    /// always `None` for `CipherKind::None`. This invariant is
+    /// enforced at parse time; downstream can `unwrap()` when
+    /// `cipher.needs_key()` returns `true`.
+    pub key_material: Option<[u8; 32]>,
+}
+
+impl KeyPair {
+    /// Construct a real-cipher pair with pre-decoded key material.
+    /// Convenience for tests + the pre-multi-entry legacy synthesis
+    /// path where the base64-decoded key is already in hand. New
+    /// production code paths get their pairs from
+    /// [`parse_encryption_pair_list`] which produces the same
+    /// shape.
+    pub fn new_aes_gcm(key: [u8; 32]) -> Self {
+        Self {
+            cipher: CipherKind::AesGcm256,
+            key_material: Some(key),
+        }
+    }
+
+    /// Construct a `none:` sentinel pair. Used by `entry_backend.rs`
+    /// under the always-wrap rule to synthesise a 1-pair list for
+    /// entries with no `_ENCRYPTION_KEY` declared, so those writes
+    /// still get v1 headers (plaintext-v1 flavor).
+    pub fn new_none() -> Self {
+        Self {
+            cipher: CipherKind::None,
+            key_material: None,
+        }
+    }
+
+    /// SSH-style colon-hex fingerprint of the key material — 8 bytes
+    /// of SHA-256 truncation rendered as `xx:yy:zz:...`. Same
+    /// truncation as the v1 header's `<key_fp>` field and the
+    /// `head_key_fp` reported by `backend_rotate` on completion, so
+    /// operators can cross-reference the boot log against a rotate
+    /// report or the CLI's `oxicloud --fingerprint <base64key>`
+    /// output without any format conversion.
+    ///
+    /// Returns `None` for `CipherKind::None` (nothing to
+    /// fingerprint) — callers render as `—` in that case.
+    pub fn fingerprint_short(&self) -> Option<String> {
+        use sha2::{Digest, Sha256};
+        let mat = self.key_material.as_ref()?;
+        let full = Sha256::digest(mat);
+        Some(
+            full[..8]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<Vec<_>>()
+                .join(":"),
+        )
+    }
+
+    /// 8-byte SHA-256 truncation used as the v1 header's `<key_fp>`
+    /// field on every encrypted blob. Read dispatch looks up the
+    /// matching [`KeyPair`] in the pair list by this value in O(1),
+    /// so a blob written under any pair in the list can be decrypted
+    /// without falling through candidate keys.
+    ///
+    /// Semantic contract with the on-disk format:
+    ///
+    /// * `CipherKind::AesGcm256` pair → 8 bytes of `sha256(key)[..8]`.
+    ///   Effectively unique per configured pair (2⁻⁶⁴ collision on
+    ///   random keys — never in practice on the ~1-3 pairs a real
+    ///   deployment has).
+    /// * `CipherKind::None` pair → all-zero. This is what marks a
+    ///   plaintext-v1 blob so the read path can dispatch "return
+    ///   post-header raw bytes" without consulting a key. Real
+    ///   ciphers cannot collide with all-zero: an
+    ///   `sha256(key)[..8] == 0` real key is 2⁻⁶⁴ improbable AND
+    ///   the parser wouldn't accept two pairs with the same fp
+    ///   (uniqueness check on raw key material — same key = same
+    ///   fp).
+    ///
+    /// Distinct truncation from [`Self::fingerprint_short`] on
+    /// purpose: this is a raw byte string embedded in every
+    /// encrypted blob (compactness matters), while the boot log
+    /// wants a legible short-hex string.
+    pub fn key_fp(&self) -> [u8; 8] {
+        use sha2::{Digest, Sha256};
+        let mut fp = [0u8; 8];
+        if let Some(mat) = self.key_material.as_ref() {
+            let full = Sha256::digest(mat);
+            fp.copy_from_slice(&full[..8]);
+        }
+        fp
+    }
+}
+
+/// Parse the `OXICLOUD_STORAGE_<name>_ENCRYPTION_KEY` env var value
+/// into an ordered pair list.
+///
+/// Grammar (informal):
+///
+/// ```text
+/// pair_list := pair ("," pair)*
+/// pair      := (cipher ":")? material
+/// cipher    := "aes-256-gcm" | "none"      (case-insensitive)
+/// material  := base64_key                  (for real ciphers)
+///            | ε                           (for `none:`)
+/// ```
+///
+/// * Whitespace around commas / colons is tolerated.
+/// * A pair without a colon defaults its cipher to `aes-256-gcm`
+///   (since that's the only shipping AEAD today; new ciphers
+///   MUST use the explicit `<cipher>:<key>` form).
+/// * A `none` pair MUST use the explicit `none:` form (with the
+///   trailing colon and empty material) — omitting the colon
+///   would be ambiguous with a real key that happens to base64
+///   to `none`.
+///
+/// Guaranteed non-empty on `Ok`. All error messages carry the
+/// entry name so operators see which env var failed.
+///
+/// Errors:
+/// * Empty list.
+/// * Empty pair (leading / trailing / duplicate comma).
+/// * Unknown cipher name.
+/// * `none` pair with non-empty material.
+/// * More than one `none` pair.
+/// * Real-cipher pair with empty material.
+/// * Non-base64 key material.
+/// * Wrong-length key material (≠ 32 bytes).
+/// * Duplicate key material (same 32 bytes twice).
+pub fn parse_encryption_pair_list(entry_name: &str, raw: &str) -> Result<Vec<KeyPair>, String> {
+    use base64::Engine;
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err(format!(
+            "OXICLOUD_STORAGE_{entry_name}_ENCRYPTION_KEY is empty — set at least \
+             one `<cipher>:<key>` pair, or omit the variable entirely for an \
+             unencrypted entry."
+        ));
+    }
+
+    let mut pairs: Vec<KeyPair> = Vec::new();
+    let mut seen_none = false;
+    let mut seen_keys: Vec<[u8; 32]> = Vec::new();
+
+    for (idx0, pair_raw) in raw.split(',').enumerate() {
+        let pos = idx0 + 1;
+        let pair_raw = pair_raw.trim();
+        if pair_raw.is_empty() {
+            return Err(format!(
+                "OXICLOUD_STORAGE_{entry_name}_ENCRYPTION_KEY has an empty pair at \
+                 position {pos} — remove leading/trailing/duplicate commas."
+            ));
+        }
+
+        // `split_once(':')` gives us (cipher, key); no colon = key-only,
+        // implicit AES-256-GCM (the only shipping real cipher).
+        let (cipher_tok, key_b64) = match pair_raw.split_once(':') {
+            Some((c, k)) => (c.trim(), k.trim()),
+            None => ("aes-256-gcm", pair_raw),
+        };
+
+        let cipher = CipherKind::parse(cipher_tok).ok_or_else(|| {
+            format!(
+                "OXICLOUD_STORAGE_{entry_name}_ENCRYPTION_KEY pair {pos} has unknown \
+                 cipher `{cipher_tok}` — supported: `aes-256-gcm`, `none`."
+            )
+        })?;
+
+        if !cipher.needs_key() {
+            if !key_b64.is_empty() {
+                return Err(format!(
+                    "OXICLOUD_STORAGE_{entry_name}_ENCRYPTION_KEY pair {pos} declares \
+                     cipher `none` but has key material — use `none:` (trailing \
+                     colon, empty key)."
+                ));
+            }
+            if seen_none {
+                return Err(format!(
+                    "OXICLOUD_STORAGE_{entry_name}_ENCRYPTION_KEY has more than one \
+                     `none` pair — at most one is allowed."
+                ));
+            }
+            seen_none = true;
+            pairs.push(KeyPair {
+                cipher,
+                key_material: None,
+            });
+            continue;
+        }
+
+        // Real cipher — decode + length-check the key.
+        if key_b64.is_empty() {
+            return Err(format!(
+                "OXICLOUD_STORAGE_{entry_name}_ENCRYPTION_KEY pair {pos} has empty \
+                 key material for cipher `{}`.",
+                cipher.as_str()
+            ));
+        }
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(key_b64)
+            .map_err(|e| {
+                format!(
+                    "OXICLOUD_STORAGE_{entry_name}_ENCRYPTION_KEY pair {pos} is not \
+                     valid base64: {e}"
+                )
+            })?;
+        if decoded.len() != 32 {
+            return Err(format!(
+                "OXICLOUD_STORAGE_{entry_name}_ENCRYPTION_KEY pair {pos} decodes to \
+                 {} bytes; must be exactly 32 bytes (AES-256).",
+                decoded.len()
+            ));
+        }
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&decoded);
+
+        if seen_keys.iter().any(|k| k == &key) {
+            return Err(format!(
+                "OXICLOUD_STORAGE_{entry_name}_ENCRYPTION_KEY has the same key \
+                 material twice — each pair must be unique."
+            ));
+        }
+        seen_keys.push(key);
+
+        pairs.push(KeyPair {
+            cipher,
+            key_material: Some(key),
+        });
+    }
+
+    // Belt-and-braces: the loop above rejects empty pairs, so this
+    // can only fire if the whole raw input was pure whitespace, which
+    // we already caught at the top. Kept as an invariant guard so a
+    // future refactor can't silently produce an empty vec.
+    if pairs.is_empty() {
+        return Err(format!(
+            "OXICLOUD_STORAGE_{entry_name}_ENCRYPTION_KEY produced no pairs after \
+             parsing — this should never happen; please file a bug."
+        ));
+    }
+
+    Ok(pairs)
+}
+
+/// One-shot helper that computes the SSH-style colon-hex fingerprint
+/// of a base64-encoded AES-256 key.
+///
+/// Wraps [`KeyPair::new_aes_gcm`] + [`KeyPair::fingerprint_short`]
+/// with the same base64 / length validation the pair-list parser
+/// uses, so callers don't have to reimplement it.
+///
+/// Used by the `oxicloud --fingerprint <base64>` CLI subcommand so
+/// admins can identify which key in their `.env` corresponds to the
+/// `head_key_fp` a `backend_rotate` run reported on completion —
+/// see `docs/plan/storage-key-rotation.md`.
+///
+/// Errors on non-base64 input or on decoded length ≠ 32 bytes (the
+/// AES-256 key size constraint).
+pub fn fingerprint_from_base64_key(key_b64: &str) -> Result<String, String> {
+    use base64::Engine;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(key_b64.trim())
+        .map_err(|e| format!("input is not valid base64: {e}"))?;
+    if decoded.len() != 32 {
+        return Err(format!(
+            "decoded key is {} bytes; AES-256 requires exactly 32",
+            decoded.len()
+        ));
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&decoded);
+    Ok(KeyPair::new_aes_gcm(key)
+        .fingerprint_short()
+        .expect("aes_gcm pair always has key material"))
+}
+
+/// Emit a per-entry boot line summarising the pair-list — one line
+/// per encrypted entry, with each pair's cipher and truncated
+/// fingerprint, and a `←` marker on the head pair (the write pair).
+///
+/// The head-vs-non-head fingerprint comparison detects a rotation
+/// window (operator added a new pair but the format-upgrade job
+/// hasn't reconciled existing blobs yet). That's not an error — it's
+/// the expected state during a live rotation — but it's worth a
+/// prominent `warn!` line so operators can spot "we're mid-rotation"
+/// at a glance during boot audits.
+///
+/// Unencrypted entries emit a single `info!` line at
+/// `target: "oxicloud::storage"`, keeping the boot output symmetric.
+///
+/// The truncated fingerprint uses 12 hex chars (6 bytes of SHA-256)
+/// — enough to distinguish keys within a small pair list, short
+/// enough to keep the log line tight. The on-blob v1 header uses a
+/// DIFFERENT truncation (8 bytes / 16 hex chars) — see
+/// `KeyPair::fingerprint_short` for the rationale.
+pub fn log_storage_encryption_summary(entries: &[NamedStorageEntry]) {
+    for entry in entries {
+        match &entry.encryption {
+            None => {
+                tracing::info!(
+                    target: "oxicloud::storage",
+                    entry = %entry.name,
+                    "storage entry `{}` — unencrypted", entry.name
+                );
+            }
+            Some(pairs) => {
+                let head_idx = pairs.len() - 1;
+                let rendered: Vec<String> = pairs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, kp)| {
+                        let fp = kp.fingerprint_short().unwrap_or_else(|| "—".to_string());
+                        let head_mark = if i == head_idx { " ← head" } else { "" };
+                        format!("{}:{}{}", kp.cipher.as_str(), fp, head_mark)
+                    })
+                    .collect();
+
+                tracing::info!(
+                    target: "oxicloud::storage",
+                    entry = %entry.name,
+                    pairs = pairs.len(),
+                    "storage entry `{}` — {} pair(s): {}",
+                    entry.name,
+                    pairs.len(),
+                    rendered.join(", ")
+                );
+
+                // Warn on head-vs-other fingerprint divergence — the
+                // signal for "rotation in progress, don't drop the
+                // older key yet". Uses fingerprints (not raw
+                // material) so the comparison stays cheap and the
+                // log line reveals no key bytes.
+                let head_fp = pairs[head_idx].fingerprint_short();
+                let non_head_fps: Vec<Option<String>> = pairs[..head_idx]
+                    .iter()
+                    .map(|kp| kp.fingerprint_short())
+                    .collect();
+                if !non_head_fps.is_empty() && non_head_fps.iter().any(|fp| fp != &head_fp) {
+                    tracing::warn!(
+                        target: "oxicloud::storage",
+                        entry = %entry.name,
+                        head_fp = ?head_fp,
+                        "storage entry `{}` has a rotation window open — head pair differs \
+                         from at least one older pair. Existing blobs written under an older \
+                         key stay readable, but keep the older pair in `.env` until the \
+                         format-upgrade job has reconciled them.",
+                        entry.name
+                    );
+                }
+            }
         }
     }
 }
@@ -451,22 +855,67 @@ pub struct NamedStorageEntry {
     pub s3: Option<S3StorageConfig>,
     /// Azure configuration for `Azure`. `None` for other backends.
     pub azure: Option<AzureStorageConfig>,
-    /// Per-entry AES-256-GCM key (base64, exactly 32 bytes decoded).
-    /// Presence implies encryption is enabled on this entry — no
-    /// separate `_ENCRYPTION_ENABLED` toggle. Absence = raw backend.
-    /// Validated at parse time; boot aborts on invalid key.
-    pub encryption_key_base64: Option<String>,
-    /// Cipher choice for this entry. `Some(Aes256Gcm)` today when
-    /// `_ENCRYPTION_KEY` is set (whether or not the operator
-    /// declared `_ENCRYPTION_CIPHER=aes-256-gcm` explicitly, since
-    /// that's currently the only supported variant).
-    /// `None` when no encryption key is set. When new ciphers land,
-    /// the parser reads `_ENCRYPTION_CIPHER` to distinguish; today
-    /// the field is effectively a boolean because there's exactly
-    /// one variant. Kept as an enum on the type so downstream code
-    /// pattern-matches the concept explicitly and we don't lose the
-    /// intent when a second cipher is added.
-    pub encryption_cipher: Option<EncryptionCipher>,
+    /// Ordered list of `<cipher>:<key>` pairs from
+    /// `OXICLOUD_STORAGE_<NAME>_ENCRYPTION_KEY`. `None` means the
+    /// operator did not set the variable — the entry is
+    /// unencrypted, writes and reads pass through the raw backend.
+    ///
+    /// `Some(pairs)` is guaranteed non-empty (parser rejects the
+    /// empty-list case). The LAST pair is the write pair; every
+    /// pair is a candidate for reads. See
+    /// `docs/plan/storage-key-rotation.md` §"The pair-list config".
+    ///
+    /// Access this field through the [`Self::head_key_material`],
+    /// [`Self::head_cipher`], [`Self::is_encrypted`], and
+    /// [`Self::encryption_pairs`] helpers rather than pattern-matching
+    /// directly — they encapsulate the "unencrypted vs `none:`-headed
+    /// pair-list" distinction and keep call sites stable across
+    /// future K2 changes.
+    pub encryption: Option<Vec<KeyPair>>,
+}
+
+impl NamedStorageEntry {
+    /// Head pair — the one used for writes (K1) and, once K2 wires
+    /// the header, for read-dispatch of blobs whose header advertises
+    /// the head pair's `key_fp`.
+    ///
+    /// `None` when the entry has no `_ENCRYPTION_KEY` at all OR when
+    /// the head pair is `none:` (writes produce plaintext, so no key
+    /// material to hand to the AEAD).
+    pub fn head_key_material(&self) -> Option<&[u8; 32]> {
+        self.encryption
+            .as_ref()
+            .and_then(|pairs| pairs.last())
+            .and_then(|kp| kp.key_material.as_ref())
+    }
+
+    /// Head pair's cipher choice. `None` when the entry has no
+    /// `_ENCRYPTION_KEY` at all. `Some(CipherKind::None)` when the
+    /// head pair is explicitly `none:` — semantically distinct from
+    /// "unconfigured", useful during decrypt-in-place migrations.
+    pub fn head_cipher(&self) -> Option<CipherKind> {
+        self.encryption
+            .as_ref()
+            .and_then(|pairs| pairs.last())
+            .map(|kp| kp.cipher)
+    }
+
+    /// `true` iff writes to this entry produce ciphertext right now.
+    /// Distinct from "the operator has ever configured encryption" —
+    /// during a decrypt-in-place migration this returns `false` (head
+    /// is `none:`) even though older pairs in the list are real
+    /// ciphers used to READ existing encrypted blobs.
+    pub fn is_encrypted(&self) -> bool {
+        self.head_cipher().is_some_and(|c| c != CipherKind::None)
+    }
+
+    /// The whole pair list, or an empty slice when the entry is
+    /// unencrypted. Used by K2's read path to walk pairs and by
+    /// `backend_rotate` to enumerate legacy pairs. Callers that only
+    /// need the write pair should prefer [`Self::head_key_material`].
+    pub fn encryption_pairs(&self) -> &[KeyPair] {
+        self.encryption.as_deref().unwrap_or(&[])
+    }
 }
 
 /// Validation for a `NamedStorageEntry.name`. Restricts to a safe subset
@@ -716,47 +1165,14 @@ fn parse_named_entry(name: &str) -> Result<NamedStorageEntry, String> {
         }
     }
 
-    // Encryption key — presence implies enabled. Validate now (base64 +
-    // decoded length) so we fail at boot, not at first blob write.
-    let encryption_key_base64 = match env::var(format!("OXICLOUD_STORAGE_{name}_ENCRYPTION_KEY")) {
-        Ok(k) if !k.is_empty() => {
-            validate_encryption_key(name, &k)?;
-            Some(k)
-        }
+    // Encryption — pair-list format. Parser accepts both the K1
+    // shape (`aes-256-gcm:<K>` or bare `<K>`) and future shapes
+    // (2-pair rotation, `none:` head, …). See
+    // `docs/plan/storage-key-rotation.md`.
+    let encryption = match env::var(format!("OXICLOUD_STORAGE_{name}_ENCRYPTION_KEY")) {
+        Ok(raw) if !raw.trim().is_empty() => Some(parse_encryption_pair_list(name, &raw)?),
         _ => None,
     };
-
-    // Cipher — future-proofing knob. Only `aes-256-gcm` today.
-    // Explicit value → parse (unknown = fail-fast so a typo isn't
-    // silently defaulted). Absent + key set → default to
-    // `Aes256Gcm`. Absent + no key → `None` (no encryption at all).
-    let encryption_cipher = match env::var(format!("OXICLOUD_STORAGE_{name}_ENCRYPTION_CIPHER")) {
-        Ok(raw) if !raw.is_empty() => match EncryptionCipher::parse(&raw) {
-            Some(c) => Some(c),
-            None => {
-                return Err(format!(
-                    "OXICLOUD_STORAGE_{name}_ENCRYPTION_CIPHER=`{raw}` is not a known cipher — \
-                     supported: `aes-256-gcm`."
-                ));
-            }
-        },
-        _ => {
-            if encryption_key_base64.is_some() {
-                Some(EncryptionCipher::Aes256Gcm)
-            } else {
-                None
-            }
-        }
-    };
-
-    // Nonsense combo — cipher declared without a key. Refuse rather
-    // than silently ignore the operator's declared intent.
-    if encryption_cipher.is_some() && encryption_key_base64.is_none() {
-        return Err(format!(
-            "OXICLOUD_STORAGE_{name}_ENCRYPTION_CIPHER is set but \
-             OXICLOUD_STORAGE_{name}_ENCRYPTION_KEY is not — set the key too, or remove the cipher."
-        ));
-    }
 
     Ok(NamedStorageEntry {
         name: name.to_string(),
@@ -764,8 +1180,7 @@ fn parse_named_entry(name: &str) -> Result<NamedStorageEntry, String> {
         root_dir,
         s3,
         azure,
-        encryption_key_base64,
-        encryption_cipher,
+        encryption,
     })
 }
 
@@ -831,20 +1246,18 @@ fn synthesize_default_from_legacy_vars() -> Result<NamedStorageEntry, String> {
         }
     }
 
-    let encryption_key_base64 = match env::var("OXICLOUD_STORAGE_ENCRYPTION_KEY") {
-        Ok(k) if !k.is_empty() => {
-            validate_encryption_key("default", &k)?;
-            Some(k)
-        }
+    // Legacy synthesis path: the pre-multi-entry world had a single
+    // `OXICLOUD_STORAGE_ENCRYPTION_KEY` (raw base64, no cipher/none
+    // syntax). The pair-list parser accepts that shape as a
+    // 1-pair `aes-256-gcm:<K>` after defaulting the cipher, so we
+    // route through it and get the same validation for free.
+    //
+    // The legacy flat surface has no cipher variable, so no
+    // agreement check is needed here.
+    let encryption = match env::var("OXICLOUD_STORAGE_ENCRYPTION_KEY") {
+        Ok(k) if !k.trim().is_empty() => Some(parse_encryption_pair_list("default", &k)?),
         _ => None,
     };
-    // Legacy synthesis: no `OXICLOUD_STORAGE_ENCRYPTION_CIPHER` env
-    // var exists in the legacy flat surface — always default to
-    // AES-256-GCM when a legacy key is set (matches the hardcoded
-    // pre-multi-entry behaviour).
-    let encryption_cipher = encryption_key_base64
-        .as_ref()
-        .map(|_| EncryptionCipher::Aes256Gcm);
 
     Ok(NamedStorageEntry {
         name: "default".to_string(),
@@ -852,31 +1265,8 @@ fn synthesize_default_from_legacy_vars() -> Result<NamedStorageEntry, String> {
         root_dir,
         s3,
         azure,
-        encryption_key_base64,
-        encryption_cipher,
+        encryption,
     })
-}
-
-/// Validate a base64-encoded 32-byte encryption key. Called at parse
-/// time (not first-use) so a bad key aborts boot with a clear
-/// per-entry message instead of failing much later inside
-/// `EncryptedBlobBackend::new`.
-fn validate_encryption_key(entry_name: &str, key_b64: &str) -> Result<(), String> {
-    use base64::Engine;
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(key_b64)
-        .map_err(|e| {
-            format!("OXICLOUD_STORAGE_{entry_name}_ENCRYPTION_KEY is not valid base64: {e}")
-        })?;
-    if decoded.len() != 32 {
-        return Err(format!(
-            "OXICLOUD_STORAGE_{entry_name}_ENCRYPTION_KEY decodes to {} bytes; must be exactly \
-             32 bytes (AES-256). Generate a fresh key via \
-             `POST /api/admin/settings/storage/generate-key`.",
-            decoded.len()
-        ));
-    }
-    Ok(())
 }
 
 impl Default for StorageConfig {
@@ -2634,6 +3024,7 @@ impl AppConfig {
         config.storage_entries = parse_storage_entries().unwrap_or_else(|e| {
             panic!("Invalid storage configuration in environment: {e}");
         });
+        log_storage_encryption_summary(&config.storage_entries);
 
         // Storage backend selection
         if let Ok(backend) = env::var("OXICLOUD_STORAGE_BACKEND") {
@@ -3132,7 +3523,7 @@ mod tests {
             assert_eq!(entries[0].backend, StorageBackendType::Local);
             assert_eq!(entries[0].root_dir.as_deref(), Some("/data"));
             assert!(entries[0].s3.is_none());
-            assert!(entries[0].encryption_key_base64.is_none());
+            assert!(entries[0].encryption.is_none());
         }
 
         #[test]
@@ -3160,10 +3551,12 @@ mod tests {
             set("OXICLOUD_STORAGE_ENCRYPTION_KEY", VALID_KEY_B64);
             let entries = parse_storage_entries().unwrap();
             assert_eq!(entries.len(), 1);
-            assert_eq!(
-                entries[0].encryption_key_base64.as_deref(),
-                Some(VALID_KEY_B64)
-            );
+            // Legacy flat-var path routes through `parse_encryption_pair_list`
+            // and produces a 1-pair `aes-256-gcm:<K>` list.
+            let pairs = entries[0].encryption.as_ref().expect("expected pair list");
+            assert_eq!(pairs.len(), 1);
+            assert_eq!(pairs[0].cipher, CipherKind::AesGcm256);
+            assert_eq!(pairs[0].key_material, Some([0u8; 32]));
         }
 
         #[test]
@@ -3219,10 +3612,10 @@ mod tests {
             set("OXICLOUD_STORAGE_local_main_ENCRYPTION_KEY", VALID_KEY_B64);
             let entries = parse_storage_entries().unwrap();
             assert_eq!(entries.len(), 1);
-            assert_eq!(
-                entries[0].encryption_key_base64.as_deref(),
-                Some(VALID_KEY_B64)
-            );
+            let pairs = entries[0].encryption.as_ref().expect("expected pair list");
+            assert_eq!(pairs.len(), 1);
+            assert_eq!(pairs[0].cipher, CipherKind::AesGcm256);
+            assert_eq!(pairs[0].key_material, Some([0u8; 32]));
         }
 
         // ── Cell (Yes, Yes) — fail fast on conflict
@@ -3355,6 +3748,312 @@ mod tests {
     impl PartialEq for NamedStorageEntry {
         fn eq(&self, other: &Self) -> bool {
             self.name == other.name && self.backend == other.backend
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // K1: pair-list encryption parser tests.
+    //
+    // Pure function; no env-var seeding needed. Table-driven where
+    // the shape allows, individual tests where the error message is
+    // load-bearing.
+    // ─────────────────────────────────────────────────────────────
+    mod pair_list_parser {
+        use super::*;
+
+        /// 32-byte base64 string, deterministic across tests. Two
+        /// distinct valid keys for multi-pair tests.
+        const K1_B64: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="; // 0x00..0x1F
+        const K2_B64: &str = "IHwgP2AVE1E6VwlbT8BjSggJc9OjNXJDKf8bF19HYPU="; // random
+
+        #[test]
+        fn single_key_no_cipher_prefix_defaults_to_aes_gcm() {
+            let pairs = parse_encryption_pair_list("t", K1_B64).unwrap();
+            assert_eq!(pairs.len(), 1);
+            assert_eq!(pairs[0].cipher, CipherKind::AesGcm256);
+            assert!(pairs[0].key_material.is_some());
+        }
+
+        #[test]
+        fn single_key_with_explicit_cipher_prefix() {
+            let pairs = parse_encryption_pair_list("t", &format!("aes-256-gcm:{K1_B64}")).unwrap();
+            assert_eq!(pairs.len(), 1);
+            assert_eq!(pairs[0].cipher, CipherKind::AesGcm256);
+        }
+
+        #[test]
+        fn cipher_prefix_is_case_insensitive() {
+            for tok in [
+                "aes-256-gcm",
+                "AES-256-GCM",
+                "Aes-256-Gcm",
+                "aes256gcm",
+                "AES256GCM",
+            ] {
+                let pairs = parse_encryption_pair_list("t", &format!("{tok}:{K1_B64}")).unwrap();
+                assert_eq!(pairs.len(), 1, "failed on token `{tok}`");
+                assert_eq!(pairs[0].cipher, CipherKind::AesGcm256);
+            }
+        }
+
+        #[test]
+        fn two_pair_rotation_last_wins_on_writes() {
+            let raw = format!("aes-256-gcm:{K1_B64},aes-256-gcm:{K2_B64}");
+            let pairs = parse_encryption_pair_list("t", &raw).unwrap();
+            assert_eq!(pairs.len(), 2);
+            // Head pair (the write pair) is the LAST one — this test
+            // pins that invariant. When K2 wires the head-pair
+            // helpers, `pairs.last()` MUST resolve to K2's material.
+            let head = pairs.last().unwrap();
+            assert_eq!(head.cipher, CipherKind::AesGcm256);
+            // Materials differ.
+            assert_ne!(pairs[0].key_material, pairs[1].key_material);
+        }
+
+        #[test]
+        fn none_alone_is_legal_and_equivalent_to_unencrypted() {
+            let pairs = parse_encryption_pair_list("t", "none:").unwrap();
+            assert_eq!(pairs.len(), 1);
+            assert_eq!(pairs[0].cipher, CipherKind::None);
+            assert!(pairs[0].key_material.is_none());
+        }
+
+        #[test]
+        fn none_first_then_aes_is_encrypt_migration_shape() {
+            // `none:,aes:K` — head is aes, writes now encrypt. Legacy
+            // plaintext blobs still read via the `none` pair while the
+            // rotation job walks them.
+            let raw = format!("none:,aes-256-gcm:{K1_B64}");
+            let pairs = parse_encryption_pair_list("t", &raw).unwrap();
+            assert_eq!(pairs.len(), 2);
+            assert_eq!(pairs[0].cipher, CipherKind::None);
+            assert_eq!(pairs[1].cipher, CipherKind::AesGcm256);
+            assert!(pairs[1].key_material.is_some());
+        }
+
+        #[test]
+        fn aes_first_then_none_is_decrypt_migration_shape() {
+            // `aes:K,none:` — head is none, writes now produce plaintext.
+            let raw = format!("aes-256-gcm:{K1_B64},none:");
+            let pairs = parse_encryption_pair_list("t", &raw).unwrap();
+            assert_eq!(pairs.len(), 2);
+            assert_eq!(pairs[0].cipher, CipherKind::AesGcm256);
+            assert_eq!(pairs[1].cipher, CipherKind::None);
+        }
+
+        #[test]
+        fn whitespace_around_separators_is_tolerated() {
+            let raw = format!(" aes-256-gcm : {K1_B64} , none: ");
+            let pairs = parse_encryption_pair_list("t", &raw).unwrap();
+            assert_eq!(pairs.len(), 2);
+            assert_eq!(pairs[0].cipher, CipherKind::AesGcm256);
+            assert_eq!(pairs[1].cipher, CipherKind::None);
+        }
+
+        #[test]
+        fn empty_input_rejected() {
+            for raw in ["", "   ", "\t\n "] {
+                let err = parse_encryption_pair_list("t", raw).unwrap_err();
+                assert!(err.contains("empty"), "raw={raw:?} err={err}");
+            }
+        }
+
+        #[test]
+        fn leading_or_trailing_comma_rejected() {
+            for raw in [
+                format!(",aes-256-gcm:{K1_B64}"),
+                format!("aes-256-gcm:{K1_B64},"),
+                format!("aes-256-gcm:{K1_B64},,aes-256-gcm:{K2_B64}"),
+            ] {
+                let err = parse_encryption_pair_list("t", &raw).unwrap_err();
+                assert!(err.contains("empty pair"), "raw={raw:?} err={err}");
+            }
+        }
+
+        #[test]
+        fn unknown_cipher_rejected() {
+            let err = parse_encryption_pair_list("t", &format!("chacha20:{K1_B64}")).unwrap_err();
+            assert!(err.contains("unknown cipher"), "err was: {err}");
+            assert!(err.contains("chacha20"), "err was: {err}");
+        }
+
+        #[test]
+        fn none_with_material_rejected() {
+            // `none:<something>` — nonsense. Must be `none:` (empty
+            // material after the colon).
+            let err = parse_encryption_pair_list("t", &format!("none:{K1_B64}")).unwrap_err();
+            assert!(
+                err.contains("cipher `none` but has key material"),
+                "err was: {err}"
+            );
+        }
+
+        #[test]
+        fn multiple_none_pairs_rejected() {
+            let err = parse_encryption_pair_list("t", "none:,none:").unwrap_err();
+            assert!(err.contains("more than one `none` pair"), "err was: {err}");
+        }
+
+        #[test]
+        fn empty_material_for_real_cipher_rejected() {
+            let err = parse_encryption_pair_list("t", "aes-256-gcm:").unwrap_err();
+            assert!(err.contains("empty key material"), "err was: {err}");
+        }
+
+        #[test]
+        fn non_base64_key_rejected() {
+            let err = parse_encryption_pair_list("t", "aes-256-gcm:not_base64!!").unwrap_err();
+            assert!(err.contains("not valid base64"), "err was: {err}");
+        }
+
+        #[test]
+        fn wrong_length_key_rejected() {
+            // "AAAA" decodes to 3 bytes — valid base64, wrong length.
+            let err = parse_encryption_pair_list("t", "aes-256-gcm:AAAA").unwrap_err();
+            assert!(err.contains("32 bytes"), "err was: {err}");
+        }
+
+        #[test]
+        fn duplicate_key_material_rejected() {
+            let raw = format!("aes-256-gcm:{K1_B64},aes-256-gcm:{K1_B64}");
+            let err = parse_encryption_pair_list("t", &raw).unwrap_err();
+            assert!(err.contains("same key material twice"), "err was: {err}");
+        }
+
+        #[test]
+        fn entry_name_appears_in_error_message() {
+            let err = parse_encryption_pair_list("s3_prod", "").unwrap_err();
+            assert!(err.contains("s3_prod"), "err was: {err}");
+        }
+
+        #[test]
+        fn fingerprint_is_ssh_style_colon_hex_for_real_cipher_and_none_for_none() {
+            // K3.7: display fp switched from 12-char raw hex to
+            // SSH-style 8-byte colon-hex (16 hex + 7 colons = 23 chars)
+            // so operators can cross-reference against the v1 header's
+            // `<key_fp>` field + `backend_rotate`'s `head_key_fp`
+            // output + the `oxicloud --fingerprint` CLI.
+            let pairs =
+                parse_encryption_pair_list("t", &format!("aes-256-gcm:{K1_B64},none:")).unwrap();
+            let fp0 = pairs[0].fingerprint_short().unwrap();
+            assert_eq!(
+                fp0.len(),
+                23,
+                "expected xx:yy:… shape (23 chars), got {fp0:?}"
+            );
+            assert_eq!(fp0.matches(':').count(), 7);
+            assert!(fp0.chars().all(|c| c == ':' || c.is_ascii_hexdigit()));
+            assert!(pairs[1].fingerprint_short().is_none());
+        }
+
+        #[test]
+        fn fingerprint_stable_across_calls() {
+            let pairs_a = parse_encryption_pair_list("t", K1_B64).unwrap();
+            let pairs_b = parse_encryption_pair_list("t", K1_B64).unwrap();
+            assert_eq!(
+                pairs_a[0].fingerprint_short(),
+                pairs_b[0].fingerprint_short()
+            );
+        }
+
+        #[test]
+        fn fingerprint_differs_between_different_keys() {
+            let pairs = parse_encryption_pair_list(
+                "t",
+                &format!("aes-256-gcm:{K1_B64},aes-256-gcm:{K2_B64}"),
+            )
+            .unwrap();
+            assert_ne!(pairs[0].fingerprint_short(), pairs[1].fingerprint_short());
+        }
+
+        // ── key_fp (8-byte header field) tests ────────────────────
+
+        #[test]
+        fn key_fp_is_eight_bytes() {
+            let pairs = parse_encryption_pair_list("t", K1_B64).unwrap();
+            let fp = pairs[0].key_fp();
+            assert_eq!(fp.len(), 8);
+            // At least one byte non-zero (K1 = 0x00..0x1F sha256 has
+            // ample entropy; if this ever asserts we've got a truly
+            // improbable collision).
+            assert!(fp.iter().any(|b| *b != 0), "fp = {fp:?}");
+        }
+
+        #[test]
+        fn key_fp_zero_for_none_cipher() {
+            let pairs = parse_encryption_pair_list("t", "none:").unwrap();
+            assert_eq!(pairs[0].key_fp(), [0u8; 8]);
+        }
+
+        #[test]
+        fn key_fp_stable_across_calls() {
+            let pairs_a = parse_encryption_pair_list("t", K1_B64).unwrap();
+            let pairs_b = parse_encryption_pair_list("t", K1_B64).unwrap();
+            assert_eq!(pairs_a[0].key_fp(), pairs_b[0].key_fp());
+        }
+
+        #[test]
+        fn key_fp_differs_between_different_keys() {
+            let pairs = parse_encryption_pair_list(
+                "t",
+                &format!("aes-256-gcm:{K1_B64},aes-256-gcm:{K2_B64}"),
+            )
+            .unwrap();
+            assert_ne!(pairs[0].key_fp(), pairs[1].key_fp());
+        }
+
+        #[test]
+        fn key_fp_and_fingerprint_short_are_the_same_underlying_bytes() {
+            // K3.7 unified: both render the FIRST 8 bytes of
+            // sha256(key). `key_fp` returns them raw for the header;
+            // `fingerprint_short` renders them as colon-hex for
+            // display. Stripping the colons from the display form
+            // should match `hex::encode(key_fp)` exactly. Pinning
+            // this alignment protects against a future refactor that
+            // silently switches one to a different truncation.
+            let pairs = parse_encryption_pair_list("t", K1_B64).unwrap();
+            let display_fp = pairs[0].fingerprint_short().unwrap();
+            let raw_fp = pairs[0].key_fp();
+            let display_stripped: String = display_fp.chars().filter(|c| *c != ':').collect();
+            assert_eq!(display_stripped, hex::encode(raw_fp));
+        }
+
+        // ── `fingerprint_from_base64_key` (CLI helper) ───────────────
+
+        #[test]
+        fn fingerprint_from_base64_key_all_zero_key() {
+            // 32 zero bytes → deterministic sha256; the first 8 bytes
+            // truncation is the SSH-style prefix that ships everywhere
+            // (v1 header, rotate output, boot log, CLI).
+            let fp = fingerprint_from_base64_key("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+                .unwrap();
+            assert_eq!(fp, "66:68:7a:ad:f8:62:bd:77");
+        }
+
+        #[test]
+        fn fingerprint_from_base64_key_wrong_length_rejected() {
+            // "AAAA" base64-decodes to 3 bytes, not 32.
+            let err = fingerprint_from_base64_key("AAAA").unwrap_err();
+            assert!(err.contains("32"), "err was: {err}");
+        }
+
+        #[test]
+        fn fingerprint_from_base64_key_non_base64_rejected() {
+            let err = fingerprint_from_base64_key("not@base64!").unwrap_err();
+            assert!(err.contains("base64"), "err was: {err}");
+        }
+
+        #[test]
+        fn fingerprint_from_base64_key_matches_pair_list_fp() {
+            // Passing the same key material through both paths — the
+            // CLI helper and the pair-list parser — MUST yield the
+            // same fingerprint. Guards against a future refactor that
+            // silently switches truncation or hash between the two
+            // consumers.
+            let cli_fp = fingerprint_from_base64_key(K1_B64).unwrap();
+            let pairs = parse_encryption_pair_list("t", K1_B64).unwrap();
+            let parser_fp = pairs[0].fingerprint_short().unwrap();
+            assert_eq!(cli_fp, parser_fp);
         }
     }
 }

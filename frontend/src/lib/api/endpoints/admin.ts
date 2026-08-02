@@ -65,9 +65,13 @@ export function reextractPhotoMetadata(): Promise<ReextractResult> {
 }
 
 /** A freshly generated AES-256 at-rest blob-encryption key (base64) plus a
- *  data-loss warning authored by the server. */
+ *  data-loss warning authored by the server. The `fingerprint` is the
+ *  SSH-style colon-hex render the boot log / admin pair-chain / rotate
+ *  reports all use — admins can paste the key into `.env`, restart, and
+ *  check the fingerprint matches to confirm the key made it in intact. */
 export interface GeneratedKey {
 	key: string;
+	fingerprint: string;
 	warning: string;
 }
 
@@ -338,20 +342,32 @@ export function promoteUserToInternal(userId: string): Promise<void> {
 
 // ── Dashboard ───────────────────────────────────────────────────────────
 
+export interface DriveKindUsage {
+	kind: 'personal' | 'shared';
+	used_bytes: number;
+	// null when there are no capped drives of this kind — the FE
+	// hides the ratio and just renders "N unlimited"
+	capped_quota_bytes: number | null;
+	unlimited_count: number;
+	capped_count: number;
+}
+
 export interface AdminDashboard {
 	total_users: number;
 	active_users: number;
 	admin_users: number;
 	server_version: string;
-	total_used_bytes: number;
-	total_quota_bytes: number;
-	storage_usage_percent: number;
+	drive_usage: DriveKindUsage[];
 	auth_enabled: boolean;
 	oidc_configured: boolean;
 	quotas_enabled: boolean;
 	registration_enabled?: boolean;
 	users_over_80_percent: number;
 	users_over_quota: number;
+	// Backend physical accounting — omitted when the dedup service
+	// is unavailable. Renders as "—" in that case.
+	total_bytes_stored?: number;
+	dedup_ratio?: number;
 }
 
 export function getDashboard(): Promise<AdminDashboard> {
@@ -466,6 +482,25 @@ export function saveOidc(body: Record<string, unknown>): Promise<void> {
 
 // ── Storage settings + migration ───────────────────────────────────────────
 
+/**
+ * One `<cipher>:<key>` pair rendered for the admin storage panel.
+ * Never carries key material — only cipher name + SSH-style
+ * fingerprint safe to show operators.
+ */
+export interface StorageEncryptionPair {
+	/** `"aes-256-gcm"` for a real-cipher pair, `"none"` for a `none:` sentinel. */
+	cipher: string;
+	/**
+	 * SSH-style colon-hex 8-byte fingerprint of the key. Matches
+	 * `backend_rotate`'s `head_key_fp` and the `oxicloud --fingerprint`
+	 * CLI output — enables one-glance identification of which key is
+	 * which. `undefined` for `none:` pairs (no key material).
+	 */
+	fingerprint?: string;
+	/** True for the LAST pair in the list — the write pair (head). */
+	is_head: boolean;
+}
+
 export interface StorageEntrySummary {
 	name: string;
 	backend: string;
@@ -473,6 +508,14 @@ export interface StorageEntrySummary {
 	encryption_enabled: boolean;
 	/** Human-readable physical hint (root_dir / bucket / container). */
 	location_hint?: string | null;
+	/**
+	 * Ordered pair-list summary — oldest first, head last. Empty when
+	 * the entry has no `_ENCRYPTION_KEY` declared at all. Used by the
+	 * entry card to render the pair chain so admins can identify
+	 * which key is the current head + which are safe to remove after
+	 * a completed rotation.
+	 */
+	encryption_pairs: StorageEncryptionPair[];
 }
 
 export interface StorageSettings {
@@ -536,6 +579,22 @@ export function migrationAction(
 	const body: Record<string, unknown> =
 		action === 'start' ? { target_name: targetName ?? '', concurrency: 4 } : {};
 	return mutate(`/api/admin/storage/migration/${action}`, 'POST', body);
+}
+
+/**
+ * K4 (storage-key-rotation): trigger `backend_rotate` on a specific
+ * storage entry. Normalises every blob on `<name>` to that entry's
+ * head-pair format: legacy → v1, plaintext ↔ encrypted, old-key →
+ * new-key. Fire-and-forget — poll `GET /api/admin/jobs/backend_rotate`
+ * for status.
+ *
+ * Backend: `POST /api/admin/storage/entries/{name}/rotate`
+ * (`admin_handler::trigger_backend_rotate`). Refuses (400) on unknown
+ * entry name or when a `backend_rotate` / `backend_migration` run is
+ * already in flight.
+ */
+export function rotateStorageEntry(name: string): Promise<void> {
+	return mutate(`/api/admin/storage/entries/${encodeURIComponent(name)}/rotate`, 'POST', undefined);
 }
 
 // verifyMigration + MigrationVerifyResult retired in slice 7 of

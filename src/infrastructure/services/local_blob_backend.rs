@@ -181,6 +181,40 @@ async fn write_blob_bytes(blob_path: &Path, data: &Bytes) -> Result<Option<File>
     Ok(Some(file))
 }
 
+/// Delete every `*.replace.*.tmp` file in `dir` (best-effort).
+///
+/// Companion to `put_blob_from_bytes_replace`: those tempfiles are
+/// created under `<hash>.replace.<pid>.<counter>.tmp` immediately
+/// before the atomic `rename(2)` over the target. A crash between
+/// `write_all + sync_all` and `rename` leaves the tempfile behind
+/// with no owner (writer process gone). Since no other job cleans
+/// them (`dedup_gc` and `backend_consistency` operate on canonical
+/// `<hash>.blob` names), reap at boot in `initialize()`.
+///
+/// Silent on errors: a shard we can't read has bigger problems than
+/// leaked tmp files, and the boot flow's own `create_dir_all` will
+/// surface the underlying I/O error separately.
+async fn reap_replace_tmpfiles_in(dir: &Path) {
+    let mut entries = match fs::read_dir(dir).await {
+        Ok(rd) => rd,
+        Err(_) => return,
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name();
+        let name_str = match name.to_str() {
+            Some(s) => s,
+            None => continue,
+        };
+        // Match `<hash>.replace.<pid>.<counter>.tmp` — precise-enough
+        // to avoid nuking anything a future feature might drop next
+        // to blobs. Requires the `.replace.` marker AND the `.tmp`
+        // suffix; a plain `<hash>.blob` never matches.
+        if name_str.contains(".replace.") && name_str.ends_with(".tmp") {
+            let _ = fs::remove_file(entry.path()).await;
+        }
+    }
+}
+
 /// Bench-only public wrapper (feature = "bench") over the private chunk
 /// writer so `examples/bench_storage_micro.rs` can A/B the open strategy.
 #[cfg(feature = "bench")]
@@ -290,11 +324,21 @@ impl BlobStorageBackend for LocalBlobBackend {
                 .await
                 .map_err(DomainError::from)?;
 
-            // Create the 256 hash-prefix directories (00-ff)
+            // Create the 256 hash-prefix directories (00-ff), and while
+            // we're iterating them, reap any `*.replace.*.tmp` files
+            // that a previous run's `put_blob_from_bytes_replace` may
+            // have leaked (crashed between write + fsync + rename). No
+            // existing job GCs these — `dedup_gc` operates on blob
+            // hashes, `backend_consistency` reports orphans as
+            // findings but doesn't delete. Reaping at boot is cheap
+            // (one `read_dir` per shard, ~256 fast enumerations) and
+            // guarantees a clean slate.
             for prefix in &HEX_PREFIXES {
-                fs::create_dir_all(self.blob_root.join(prefix))
+                let shard = self.blob_root.join(prefix);
+                fs::create_dir_all(&shard)
                     .await
                     .map_err(DomainError::from)?;
+                reap_replace_tmpfiles_in(&shard).await;
             }
             Ok(())
         })
@@ -417,6 +461,96 @@ impl BlobStorageBackend for LocalBlobBackend {
                     DomainError::internal_error("Blob", format!("Failed to flush blob file: {}", e))
                 })?;
             }
+
+            Ok(size)
+        })
+    }
+
+    /// **Atomic replace**: write to a same-directory tempfile, fsync,
+    /// then `rename(2)` over the target. `write_blob_bytes`'s
+    /// `O_CREAT|O_EXCL` idempotent-skip (the right choice for uploads)
+    /// silently no-ops when the target already exists — wrong for
+    /// callers like `backend_rotate` that need the bytes to change.
+    /// See the trait doc for the full picture.
+    ///
+    /// Tempfile lives beside the target under the same shard directory
+    /// so `rename` is a cheap same-filesystem operation (never an
+    /// EXDEV cross-device copy fallback). The tempfile name embeds
+    /// the process pid + a monotonic counter so parallel replaces on
+    /// the same hash from different tasks don't clobber each other.
+    fn put_blob_from_bytes_replace(
+        &self,
+        hash: &str,
+        data: Bytes,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<u64, DomainError>> + Send + '_>> {
+        let hash = hash.to_owned();
+        Box::pin(async move {
+            let blob_path = self.blob_path(&hash);
+            let size = data.len() as u64;
+
+            // Tempfile in the SAME directory as the target → rename is
+            // cheap same-filesystem, never EXDEV. Counter ensures
+            // uniqueness under parallel replaces (rare — rotate is
+            // sequential per-blob today, but future concurrency won't
+            // corrupt).
+            static REPLACE_COUNTER: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(0);
+            let counter = REPLACE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let tmp_path = blob_path.with_file_name(format!(
+                "{}.replace.{}.{}.tmp",
+                hash,
+                std::process::id(),
+                counter
+            ));
+
+            // Create + write + fsync the tempfile. `create_new(true)`
+            // stays here to catch the astronomically-unlikely case of
+            // two tasks colliding on the same counter value (belt-and-
+            // braces; the pid+counter naming already prevents it).
+            {
+                let mut tmp = fs::File::options()
+                    .write(true)
+                    .create_new(true)
+                    .open(&tmp_path)
+                    .await
+                    .map_err(|e| {
+                        DomainError::internal_error(
+                            "Blob",
+                            format!("Failed to create replace-tmp: {}", e),
+                        )
+                    })?;
+                if let Err(e) = tmp.write_all(&data).await {
+                    let _ = fs::remove_file(&tmp_path).await;
+                    return Err(DomainError::internal_error(
+                        "Blob",
+                        format!("Failed to write replace-tmp: {}", e),
+                    ));
+                }
+                if let Err(e) = tmp.sync_all().await {
+                    let _ = fs::remove_file(&tmp_path).await;
+                    return Err(DomainError::internal_error(
+                        "Blob",
+                        format!("Failed to fsync replace-tmp: {}", e),
+                    ));
+                }
+            }
+
+            // Atomic replace. On POSIX `rename(2)` is atomic within a
+            // filesystem — a concurrent reader sees either the old or
+            // new bytes, never a truncated view. Older bytes drop out
+            // as soon as no reader holds an open fd.
+            if let Err(e) = fs::rename(&tmp_path, &blob_path).await {
+                let _ = fs::remove_file(&tmp_path).await;
+                return Err(DomainError::internal_error(
+                    "Blob",
+                    format!("Failed to atomically replace blob: {}", e),
+                ));
+            }
+
+            // fsync the parent directory so the dirent change (i.e. the
+            // rename result) survives a power loss, same discipline as
+            // the create path in `put_blob_from_bytes`.
+            fsync_parent_dir(&blob_path).await;
 
             Ok(size)
         })

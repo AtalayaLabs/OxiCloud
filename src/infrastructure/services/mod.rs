@@ -1,6 +1,8 @@
 pub mod audio_metadata_service;
 pub mod azure_blob_backend;
 pub mod backend_consistency_service;
+pub mod backend_migration_service;
+pub mod backend_rotate_service;
 pub mod blobs_consistency_service;
 pub mod cached_blob_backend;
 pub mod chunked_upload_service;
@@ -45,7 +47,6 @@ pub mod s3_blob_backend;
 pub mod search_index;
 pub mod share_unlock_cookie;
 pub mod smtp_email_sender;
-pub mod storage_migration_service;
 pub mod swappable_blob_backend;
 pub mod thumbnail_service;
 #[cfg(test)]

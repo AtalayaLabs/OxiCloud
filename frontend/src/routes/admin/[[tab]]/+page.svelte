@@ -34,6 +34,7 @@
 		setUserRole,
 		testOidc,
 		testStorage,
+		rotateStorageEntry,
 		createExternalMount,
 		deleteExternalMount,
 		listExternalMounts,
@@ -75,6 +76,7 @@
 		User
 	} from '$lib/api/types';
 	import { triggerJob } from '$lib/api/endpoints/adminJobs';
+	import { serverStatus } from '$lib/stores/serverStatus.svelte';
 	import AdminJobsPanel from '$lib/components/AdminJobsPanel.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
 	import Modal from '$lib/components/Modal.svelte';
@@ -408,19 +410,45 @@
 		}
 	}
 
+	// Entry-card action confirmations use `ui.notify()` (viewport
+	// toast) rather than `storageMsg` (top-of-tab banner). The
+	// buttons live on cards that can be scrolled far below the
+	// storage-msg region — a banner confirmation is invisible
+	// when the user is looking at the card that triggered it.
 	async function doAuditEntry(name: string) {
 		try {
 			await triggerJob('blobs_consistency', { storage: name });
-			storageMsg = {
-				text: t(
+			ui.notify(
+				t(
 					'admin.storage_audit_triggered',
 					{ name },
 					'blobs_consistency triggered for `{{name}}` — watch it on the Jobs tab.'
 				),
-				ok: true
-			};
+				'success'
+			);
 		} catch (e) {
-			storageMsg = { text: errorMessage(e), ok: false };
+			ui.notify(errorMessage(e), 'error');
+		}
+	}
+
+	// K4: `backend_consistency` — the mirror of `blobs_consistency`.
+	// Walks the entry's backend and reports blobs physically present
+	// on it that have no matching row in `storage.blobs` (orphans on
+	// disk/S3). Meaningful for ANY entry, not just the active one —
+	// useful for spotting leftover data on a deprecated backend.
+	async function doStorageConsistency(name: string) {
+		try {
+			await triggerJob('backend_consistency', { storage: name });
+			ui.notify(
+				t(
+					'admin.storage_backend_audit_triggered',
+					{ name },
+					'backend_consistency triggered for `{{name}}` — watch it on the Jobs tab.'
+				),
+				'success'
+			);
+		} catch (e) {
+			ui.notify(errorMessage(e), 'error');
 		}
 	}
 
@@ -436,6 +464,36 @@
 		)
 			return;
 		await doMigration('start', name);
+	}
+
+	// K4 storage-key-rotation: normalise every blob on `<name>` to
+	// that entry's head-pair format. Unlike migration, rotation does
+	// NOT engage read-only mode — uploads/reads keep working
+	// throughout. Fire-and-forget; the Jobs tab surfaces progress.
+	async function doRotateEntry(name: string) {
+		if (
+			!confirm(
+				t(
+					'admin.backend_rotate_confirm',
+					{ name },
+					'Start a background rotation on `{{name}}`? Every existing blob is rewritten under the entry’s head pair (v1 header + head key). All operations continue normally during rotation — no read-only mode. Progress shows in the top banner and on the Jobs tab.'
+				)
+			)
+		)
+			return;
+		try {
+			await rotateStorageEntry(name);
+			ui.notify(
+				t(
+					'admin.backend_rotate_triggered',
+					{ name },
+					'Rotation started on `{{name}}` — watch it on the Jobs tab (`backend_rotate`).'
+				),
+				'success'
+			);
+		} catch (e) {
+			ui.notify(errorMessage(e), 'error');
+		}
 	}
 
 	// Migration
@@ -1585,7 +1643,7 @@
 	  communicates which admin area we're in — the plain "Admin"
 	  h1 was informationless once the tab bar moved out.
 	-->
-	<h1>{tabLabel}</h1>
+	<h1>{t('admin.title', 'Admin')} > {tabLabel}</h1>
 
 	{#if tab === 'dashboard'}
 		{#if dashboardError}
@@ -1656,20 +1714,105 @@
 				</div>
 			{/if}
 
-			<div class="card">
-				<h2>{t('admin.storage', 'Storage')}</h2>
-				<div class="ds-bar">
-					<div
-						class="ds-fill"
-						class:ds-fill--warn={dashboard.storage_usage_percent > 70}
-						class:ds-fill--danger={dashboard.storage_usage_percent > 90}
-						style:width="{Math.min(dashboard.storage_usage_percent, 100)}%"
-					></div>
+			<div class="storage-cards">
+				<div class="card storage-cards__quota">
+					<h2>{t('admin.quota_usage', 'Quota usage')}</h2>
+					<p class="muted storage-cards__hint">
+						{t(
+							'admin.quota_usage_hint',
+							'Pre-dedup, logical file sizes. Includes trashed files until permanent deletion.'
+						)}
+					</p>
+					<table class="quota-table">
+						<tbody>
+							{#each dashboard.drive_usage ?? [] as row (row.kind)}
+								{@const label =
+									row.kind === 'personal'
+										? t('admin.quota_personal', 'Personal drives')
+										: t('admin.quota_shared', 'Shared drives')}
+								{@const pct =
+									row.capped_quota_bytes && row.capped_quota_bytes > 0
+										? (row.used_bytes / row.capped_quota_bytes) * 100
+										: null}
+								{#if row.capped_count > 0 || row.unlimited_count > 0}
+									<tr>
+										<th scope="row">{label}</th>
+										<td class="quota-table__num">
+											{#if row.capped_quota_bytes !== null && pct !== null}
+												{formatBytes(row.used_bytes)} / {formatBytes(row.capped_quota_bytes)}
+												<span class="quota-table__pct">({pct.toFixed(1)}%)</span>
+											{:else}
+												{formatBytes(row.used_bytes)}
+											{/if}
+										</td>
+										<td class="quota-table__bar">
+											{#if pct !== null}
+												<div class="ds-bar">
+													<div
+														class="ds-fill"
+														class:ds-fill--warn={pct > 70}
+														class:ds-fill--danger={pct > 90}
+														style:width="{Math.min(pct, 100)}%"
+													></div>
+												</div>
+											{/if}
+										</td>
+										<td class="quota-table__meta">
+											{#if row.unlimited_count > 0}
+												<span class="quota-table__unlimited">
+													{t(
+														'admin.quota_unlimited',
+														{ n: row.unlimited_count },
+														'{{n}} unlimited'
+													)}
+												</span>
+											{/if}
+										</td>
+									</tr>
+								{/if}
+							{/each}
+						</tbody>
+					</table>
 				</div>
-				<p class="muted">
-					{formatBytes(dashboard.total_used_bytes)} / {formatBytes(dashboard.total_quota_bytes)}
-					({dashboard.storage_usage_percent.toFixed(1)}%)
-				</p>
+
+				<div class="card storage-cards__backend">
+					<h2>{t('admin.backend_storage', 'Backend storage')}</h2>
+					{#if dashboard.total_bytes_stored !== undefined}
+						<dl class="storage-cards__stats">
+							<div>
+								<dt>{t('admin.backend_stored', 'Stored')}</dt>
+								<dd>{formatBytes(dashboard.total_bytes_stored)}</dd>
+							</div>
+							<div
+								class="storage-cards__stat-hint"
+								title={t(
+									'admin.backend_referenced_hint',
+									'Sum of blob references (size × ref_count). Can exceed the drive total because thumbnails, derived assets, and blobs pending garbage collection still hold references.'
+								)}
+							>
+								<dt>
+									{t('admin.backend_referenced', 'Referenced')}
+									<Icon name="info-circle" />
+								</dt>
+								<dd>
+									{formatBytes(
+										Math.round((dashboard.total_bytes_stored ?? 0) * (dashboard.dedup_ratio ?? 1))
+									)}
+								</dd>
+							</div>
+							<div>
+								<dt>{t('admin.backend_dedup_ratio', 'Dedup ratio')}</dt>
+								<dd>
+									{dashboard.dedup_ratio !== undefined
+										? `${dashboard.dedup_ratio.toFixed(2)}×`
+										: '—'}
+								</dd>
+							</div>
+						</dl>
+					{:else}
+						<p class="muted">—</p>
+					{/if}
+				</div>
 			</div>
 
 			{#if dashboard.registration_enabled !== undefined}
@@ -1938,8 +2081,52 @@
 		     The legacy form + related handlers/state live in git
 		     history; deleted here in one sweep.
 		     ══════════════════════════════════════════════════════════ -->
+		<!-- Section 1 — Content store: global DB blob stats,
+		     independent of any backend entry. Rendered first because
+		     it's the "what's actually in the system" answer;
+		     Storage backend + Encryption below are the "where /
+		     how it's stored" answers. -->
+		{#if storage}
+			<section
+				class="card storage-content-stats"
+				data-testid="admin-storage-content-stats"
+				aria-labelledby="admin-storage-content-stats-title"
+			>
+				<h2 id="admin-storage-content-stats-title">
+					{t('admin.storage_content_stats_title', 'Content store')}
+				</h2>
+				<p class="muted storage-content-stats__hint">
+					{t(
+						'admin.storage_content_stats_hint',
+						'Aggregate over the DB blob store — independent of which backend entry holds the bytes.'
+					)}
+				</p>
+				<dl class="storage-content-stats__grid">
+					<div>
+						<dt>{t('admin.storage_blobs', 'Blobs')}</dt>
+						<dd>{storage.total_blobs ?? '—'}</dd>
+					</div>
+					<div>
+						<dt>{t('admin.storage_size', 'Stored')}</dt>
+						<dd>
+							{storage.total_bytes_stored != null ? formatBytes(storage.total_bytes_stored) : '—'}
+						</dd>
+					</div>
+					<div>
+						<dt>{t('admin.storage_dedup', 'Dedup ratio')}</dt>
+						<dd>
+							{storage.dedup_ratio != null ? `${storage.dedup_ratio.toFixed(2)}x` : '—'}
+						</dd>
+					</div>
+				</dl>
+			</section>
+		{/if}
+
+		<!-- Section 2 — Storage backend: per-entry cards (backend
+		     type, location, actions). Encryption pair-chain moved
+		     out to its own section below. -->
 		<div class="card">
-			<h2>{t('admin.storage_tab', 'Storage entries')}</h2>
+			<h2>{t('admin.storage_title', 'Storage backend')}</h2>
 			<p class="muted">
 				{t(
 					'admin.storage_move_hint',
@@ -1974,7 +2161,17 @@
 					<dd>{storage.dedup_ratio != null ? `${storage.dedup_ratio.toFixed(2)}x` : '—'}</dd>
 				</dl>
 			{:else}
-				{#if storage.migration_readonly}
+				<!-- Banner keys off `serverStatus().readonly` (live-updated
+				     via `x-server-status` on every API response) rather
+				     than `storage.migration_readonly` (a snapshot from
+				     the one-shot `getStorageSettings()` fetch). Prevents
+				     the "stale until force-refresh" bug when navigating
+				     into /admin/storage while a migration is running:
+				     any API call that fires on tab entry — even
+				     `loadStorage` itself — updates the store from the
+				     response header, so the banner shows within the
+				     first render cycle. -->
+				{#if serverStatus().readonly}
 					<div
 						class="cutover-hint cutover-hint--readonly"
 						data-testid="admin-migration-readonly-banner"
@@ -1995,9 +2192,9 @@
 				<!-- Card-per-entry layout — most installs have 1 backend
 				     (occasionally 2 during a migration), so a rich card
 				     reads better than a wide table. Active entry gets
-				     the sub-stats + a highlight ring. Migrate & activate
-				     is per-card and only shown on non-active cards when
-				     no other migration is in flight. -->
+				     a highlight ring. Migrate & activate is per-card
+				     and only shown on non-active cards when no other
+				     migration is in flight. -->
 				{@const migrationInFlight =
 					migration != null && (migration.status === 'running' || migration.status === 'paused')}
 				<div class="entries-list" data-testid="admin-storage-entries-list">
@@ -2049,6 +2246,7 @@
 										data-testid={`admin-storage-test-${entry.name}`}
 										onclick={() => doTestEntry(entry.name)}
 									>
+										<Icon name="vial" />
 										{test?.busy
 											? t('admin.storage_testing', 'Testing…')
 											: t('admin.storage_test', 'Test')}
@@ -2062,6 +2260,20 @@
 										<Icon name="check-double" />
 										{t('admin.storage_audit', 'Blob consistency')}
 									</button>
+									<!-- Storage-side consistency (K4): the mirror of Blob
+									     consistency. `blobs_consistency` walks the DB and
+									     checks the backend has each blob; `backend_consistency`
+									     walks the backend and checks the DB has each hash.
+									     Together they close the reference graph. -->
+									<button
+										type="button"
+										class="btn btn-sm btn-secondary entry-card__action-btn"
+										data-testid={`admin-storage-backend-audit-${entry.name}`}
+										onclick={() => doStorageConsistency(entry.name)}
+									>
+										<Icon name="database" />
+										{t('admin.storage_backend_audit', 'Backend consistency')}
+									</button>
 									{#if !entry.is_active && !migrationInFlight}
 										<button
 											type="button"
@@ -2069,6 +2281,7 @@
 											data-testid={`admin-storage-migrate-${entry.name}`}
 											onclick={() => doMigrateActivate(entry.name)}
 										>
+											<Icon name="crown" />
 											{t('admin.storage_migrate_activate', 'Migrate & activate')}
 										</button>
 									{:else}
@@ -2079,7 +2292,49 @@
 											tabindex={-1}
 											disabled
 										>
+											<Icon name="crown" />
 											{t('admin.storage_migrate_activate', 'Migrate & activate')}
+										</button>
+									{/if}
+									<!-- Rotate encryption key (K4 storage-key-rotation).
+									     ACTIVE ENTRY ONLY — `storage.blobs` describes the
+									     active backend; rotating a non-active entry would
+									     produce a `rotation_failed` finding per blob that
+									     isn't there (backend refuses this with a 400 too).
+									     Placeholder slot on non-active cards keeps the
+									     three-button row aligned across the grid. Also
+									     disabled while any migration is in flight — backend
+									     refuses concurrent encryption-touching jobs. -->
+									{#if entry.is_active}
+										<button
+											type="button"
+											class="btn btn-sm btn-secondary entry-card__action-btn"
+											disabled={migrationInFlight}
+											data-testid={`admin-storage-rotate-${entry.name}`}
+											onclick={() => doRotateEntry(entry.name)}
+											title={migrationInFlight
+												? t(
+														'admin.backend_rotate_disabled_migration',
+														'Cannot rotate while a migration is in flight.'
+													)
+												: t(
+														'admin.backend_rotate_tooltip',
+														'Normalise every blob on this entry to the head pair’s format (upgrade legacy blobs, re-encrypt under a new key, etc.).'
+													)}
+										>
+											<Icon name="key" />
+											{t('admin.backend_rotate', 'Rotate key')}
+										</button>
+									{:else}
+										<button
+											type="button"
+											class="btn btn-sm btn-secondary entry-card__action-btn entry-card__action-btn--placeholder"
+											aria-hidden="true"
+											tabindex={-1}
+											disabled
+										>
+											<Icon name="key" />
+											{t('admin.backend_rotate', 'Rotate key')}
 										</button>
 									{/if}
 								</div>
@@ -2089,21 +2344,42 @@
 								<dd>{entry.backend}</dd>
 								<dt>{t('admin.entry_location', 'Location')}</dt>
 								<dd class="entry-card__mono">{entry.location_hint ?? '—'}</dd>
-								{#if entry.is_active}
-									<dt>{t('admin.storage_blobs', 'Blobs')}</dt>
-									<dd>{storage.total_blobs ?? '—'}</dd>
-									<dt>{t('admin.storage_size', 'Stored')}</dt>
-									<dd>
-										{storage.total_bytes_stored != null
-											? formatBytes(storage.total_bytes_stored)
-											: '—'}
-									</dd>
-									<dt>{t('admin.storage_dedup', 'Dedup ratio')}</dt>
-									<dd>
-										{storage.dedup_ratio != null ? `${storage.dedup_ratio.toFixed(2)}x` : '—'}
-									</dd>
-								{/if}
 							</dl>
+							<!-- Pair-list chain — one row per configured pair,
+							     head marked. Empty state (no `_ENCRYPTION_KEY`
+							     declared at all) hides the whole block; a single
+							     `none:` pair renders as one row so admins can see
+							     "yes, encryption declaration exists but head is
+							     plaintext" vs "no encryption declared". -->
+							{#if entry.encryption_pairs?.length}
+								<section class="entry-card__pairs" aria-label="Encryption keys">
+									<h4 class="entry-card__pairs-title">
+										{t('admin.storage_pair_list', 'Encryption keys')}
+									</h4>
+									<ol class="entry-card__pair-chain">
+										{#each entry.encryption_pairs as pair, i (i)}
+											<li class="entry-card__pair" class:entry-card__pair--head={pair.is_head}>
+												<span class="entry-card__pair-idx">key{i + 1}:</span>
+												<span class="entry-card__pair-cipher">{pair.cipher}</span>
+												<code class="entry-card__pair-fp">
+													{pair.fingerprint ?? '—'}
+												</code>
+												{#if pair.is_head}
+													<span class="entry-card__pair-head-badge">
+														{t('admin.storage_pair_head', 'head')}
+													</span>
+												{/if}
+											</li>
+										{/each}
+									</ol>
+									<p class="entry-card__pairs-help muted">
+										{t(
+											'admin.storage_pair_help',
+											'Head is the write key. After a successful rotation with 0 failures, any non-head key can be safely removed from `.env`.'
+										)}
+									</p>
+								</section>
+							{/if}
 							{#if test?.result != null || test?.error != null}
 								<footer class="entry-card__test-result">
 									{#if test.error}
@@ -2226,6 +2502,17 @@
 						<Icon name="copy" />
 						{t('common.copy', 'Copy')}
 					</button>
+				</p>
+				<p class="muted gen-key-fp">
+					{t('admin.gen_key_fingerprint', 'Fingerprint')}:
+					<code>{generatedKey.fingerprint}</code>
+					<span class="muted">
+						—
+						{t(
+							'admin.gen_key_fingerprint_hint',
+							'appears in the boot log and the pair chain above once loaded from `.env`.'
+						)}
+					</span>
 				</p>
 				<p class="alert alert--warn">
 					<Icon name="exclamation-triangle" />
@@ -3728,6 +4015,109 @@
 		background: var(--color-error-text);
 	}
 
+	.storage-cards {
+		display: grid;
+		grid-template-columns: 2fr 1fr;
+		gap: var(--space-3);
+		margin-bottom: var(--space-4);
+	}
+
+	@media (width <= 40rem) {
+		.storage-cards {
+			grid-template-columns: 1fr;
+		}
+	}
+
+	.storage-cards__hint {
+		margin-top: calc(-1 * var(--space-2));
+		margin-bottom: var(--space-3);
+		font-size: var(--text-xs);
+	}
+
+	.storage-cards__stats {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+		margin: 0;
+	}
+
+	.storage-cards__stats > div {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: var(--space-3);
+	}
+
+	.storage-cards__stats dt {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1);
+		color: var(--color-text-muted);
+		font-size: var(--text-sm);
+	}
+
+	.storage-cards__stats dd {
+		margin: 0;
+		font-weight: var(--weight-semibold);
+		color: var(--color-text-heading);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.storage-cards__stat-hint {
+		cursor: help;
+	}
+
+	.quota-table {
+		width: 100%;
+		border-collapse: collapse;
+	}
+
+	.quota-table th,
+	.quota-table td {
+		padding: var(--space-2) var(--space-2);
+		text-align: left;
+		vertical-align: middle;
+		font-size: var(--text-sm);
+	}
+
+	.quota-table th {
+		font-weight: var(--weight-semibold);
+		color: var(--color-text-heading);
+		white-space: nowrap;
+	}
+
+	.quota-table__num {
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+	}
+
+	.quota-table__pct {
+		color: var(--color-text-muted);
+	}
+
+	.quota-table__bar {
+		width: 40%;
+		min-width: 6rem;
+	}
+
+	.quota-table__bar .ds-bar {
+		margin-bottom: 0;
+	}
+
+	.quota-table__meta {
+		text-align: right;
+		white-space: nowrap;
+	}
+
+	.quota-table__unlimited {
+		display: inline-block;
+		padding: 2px var(--space-2);
+		border-radius: var(--radius-full);
+		background: var(--color-bg-muted);
+		color: var(--color-text-muted);
+		font-size: var(--text-xs);
+	}
+
 	.kv {
 		display: grid;
 		grid-template-columns: auto 1fr;
@@ -4000,6 +4390,16 @@
 		flex-wrap: wrap;
 	}
 
+	.gen-key-fp {
+		margin-top: var(--space-2);
+		font-size: var(--text-sm);
+	}
+
+	.gen-key-fp code {
+		font-family: var(--font-mono);
+		color: var(--color-text-heading);
+	}
+
 	.maint-row {
 		display: flex;
 		align-items: center;
@@ -4108,6 +4508,47 @@
 	.cutover-hint__readonly-body {
 		margin: 0;
 		color: var(--color-danger-text, var(--color-text));
+	}
+
+	.storage-content-stats {
+		margin-bottom: var(--space-4);
+	}
+
+	.storage-content-stats h2 {
+		margin: 0 0 var(--space-1);
+	}
+
+	.storage-content-stats__hint {
+		margin: 0 0 var(--space-3);
+		font-size: var(--text-sm);
+	}
+
+	.storage-content-stats__grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+		gap: var(--space-3);
+		margin: 0;
+	}
+
+	.storage-content-stats__grid > div {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.storage-content-stats__grid dt {
+		font-size: var(--text-xs);
+		color: var(--color-text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+	}
+
+	.storage-content-stats__grid dd {
+		margin: 0;
+		font-size: var(--text-md);
+		font-weight: var(--weight-semibold);
+		color: var(--color-text-heading);
+		font-variant-numeric: tabular-nums;
 	}
 
 	.entries-list {
@@ -4219,6 +4660,78 @@
 		margin-top: var(--space-3);
 		padding-top: var(--space-2);
 		border-top: 1px solid var(--color-border);
+	}
+
+	/* K3.7 pair-chain — one row per configured pair. Head is bolded
+	   and gets an "← head" badge so the write pair pops out. Aligns
+	   the fingerprint column so admins can eyeball-diff between
+	   entries. */
+	.entry-card__pairs {
+		margin-top: var(--space-3);
+		padding-top: var(--space-2);
+		border-top: 1px solid var(--color-border);
+	}
+
+	.entry-card__pairs-title {
+		font-size: var(--text-xs, 0.75rem);
+		font-weight: var(--weight-semibold, 600);
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		color: var(--color-text-muted);
+		margin: 0 0 var(--space-2);
+	}
+
+	.entry-card__pair-chain {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+	}
+
+	.entry-card__pair {
+		display: grid;
+		grid-template-columns: 3rem 6.5rem 1fr auto;
+		align-items: center;
+		gap: var(--space-2);
+		font-size: var(--text-sm);
+	}
+
+	.entry-card__pair-idx {
+		color: var(--color-text-muted);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.entry-card__pair-cipher {
+		color: var(--color-text);
+	}
+
+	.entry-card__pair-fp {
+		font-family: var(--font-mono, monospace);
+		font-size: var(--text-xs);
+		color: var(--color-text-muted);
+		word-break: keep-all;
+	}
+
+	.entry-card__pair--head .entry-card__pair-cipher,
+	.entry-card__pair--head .entry-card__pair-fp {
+		color: var(--color-text);
+		font-weight: var(--weight-semibold, 600);
+	}
+
+	.entry-card__pair-head-badge {
+		font-size: var(--text-xs);
+		padding: 0 var(--space-1);
+		background: var(--color-surface);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		color: var(--color-accent);
+	}
+
+	.entry-card__pairs-help {
+		margin: var(--space-2) 0 0;
+		font-size: var(--text-xs);
 	}
 
 	.mig-status {

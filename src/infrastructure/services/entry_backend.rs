@@ -194,11 +194,47 @@ pub async fn resolve_active_entry<'a>(
 ///
 /// Both are boot-fatal and indicate a code (not config) bug, so
 /// panic is the honest response.
-pub fn build_entry_backend(
+/// Typed variant of [`build_entry_backend`] — returns the concrete
+/// [`EncryptedBlobBackend`] wrapper so callers that need K3's
+/// introspection API (`read_and_classify`, `head_format`, …) can hit
+/// it directly without a downcast.
+///
+/// Same construction path as `build_entry_backend`; the trait-object
+/// version delegates through this. Preferred for job handlers
+/// (`backend_rotate`) that need typed access. The trait-object
+/// version stays for the DI hot-path where the caller only needs
+/// the generic `BlobStorageBackend` contract.
+pub fn build_entry_backend_typed(
+    entry: &NamedStorageEntry,
+    local_storage_path_fallback: &Path,
+) -> Arc<crate::infrastructure::services::encrypted_blob_backend::EncryptedBlobBackend> {
+    let base = build_base_backend(entry, local_storage_path_fallback);
+    let pairs = entry.encryption.clone().unwrap_or_default();
+    let mode = match entry.head_cipher() {
+        Some(crate::common::config::CipherKind::AesGcm256) => "encrypted-v1",
+        _ => "plaintext-v1",
+    };
+    tracing::info!(
+        "Storage entry `{}` — {} wrapper (pairs: {})",
+        entry.name,
+        mode,
+        pairs.len()
+    );
+    Arc::new(
+        crate::infrastructure::services::encrypted_blob_backend::EncryptedBlobBackend::new(
+            base, pairs,
+        ),
+    )
+}
+
+/// Construct just the raw backend for the entry (no wrapper). Split
+/// out of [`build_entry_backend`] so the typed variant can share the
+/// switch on backend type without duplicating panic messages.
+fn build_base_backend(
     entry: &NamedStorageEntry,
     local_storage_path_fallback: &Path,
 ) -> Arc<dyn BlobStorageBackend> {
-    let base: Arc<dyn BlobStorageBackend> = match entry.backend {
+    match entry.backend {
         StorageBackendType::Local => {
             let path = entry
                 .root_dir
@@ -227,32 +263,12 @@ pub fn build_entry_backend(
             });
             Arc::new(crate::infrastructure::services::azure_blob_backend::AzureBlobBackend::new(az))
         }
-    };
+    }
+}
 
-    // Encryption decorator — presence-implies-enabled, per plan §Encryption.
-    let Some(key_b64) = entry.encryption_key_base64.as_ref() else {
-        return base;
-    };
-    use crate::infrastructure::services::encrypted_blob_backend::EncryptedBlobBackend;
-    let key_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, key_b64)
-        .unwrap_or_else(|e| {
-            panic!(
-                "entry `{}` encryption key is not valid base64: {e} — parser was supposed to \
-                 catch this at boot",
-                entry.name
-            )
-        });
-    let key: [u8; 32] = key_bytes.try_into().unwrap_or_else(|v: Vec<u8>| {
-        panic!(
-            "entry `{}` encryption key decoded to {} bytes; must be 32 — parser was supposed to \
-             catch this at boot",
-            entry.name,
-            v.len()
-        )
-    });
-    tracing::info!(
-        "Storage entry `{}` encrypted with AES-256-GCM (key from env)",
-        entry.name
-    );
-    Arc::new(EncryptedBlobBackend::new(base, &key))
+pub fn build_entry_backend(
+    entry: &NamedStorageEntry,
+    local_storage_path_fallback: &Path,
+) -> Arc<dyn BlobStorageBackend> {
+    build_entry_backend_typed(entry, local_storage_path_fallback)
 }
