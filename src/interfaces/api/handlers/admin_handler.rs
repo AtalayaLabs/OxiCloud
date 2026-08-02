@@ -177,6 +177,7 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         .route("/jobs", get(list_jobs))
         .route("/jobs/{name}/trigger", post(trigger_job))
         .route("/jobs/{name}/cancel", post(cancel_job))
+        .route("/jobs/{name}/pause", post(pause_job))
         .route("/jobs/{name}/runs", get(list_job_runs))
         .route("/jobs/{name}/runs/{id}", get(get_job_run))
         .route(
@@ -799,6 +800,10 @@ fn run_to_migration_dto(
         RunStatus::CancelRequested => "paused",
         RunStatus::Completed => "completed",
         RunStatus::Failed => "failed",
+        // Cancelled is user-abandoned but terminal — same visual as
+        // failed for the migration status endpoint (both mean "not
+        // going to finish, look at findings/logs to know why").
+        RunStatus::Cancelled => "cancelled",
     }
     .to_string();
 
@@ -2559,16 +2564,28 @@ pub async fn cancel_job(
         target: "audit",
         event = "job.cancel_requested",
         job = %name,
-        "👮🏻‍♂️ Admin requested cancel for job {}",
+        "👮🏻‍♂️ Admin requested TERMINAL cancel for job {}",
         name,
     );
-    match state.core.job_store_provider.request_cancel(&name).await {
+    // Terminal semantics: stamps `params.cancel_intent = "terminate"`
+    // when a Running / CancelRequested row is present so the engine
+    // upgrades the handler's yield to `Cancelled` instead of `Paused`.
+    // When the current row is `Paused` (no handler running), does a
+    // direct DB flip Paused → Cancelled. See
+    // `PgJobStoreProvider::request_terminal_cancel`.
+    match state
+        .core
+        .job_store_provider
+        .request_terminal_cancel(&name)
+        .await
+    {
         Ok(Some(run_id)) => (
             StatusCode::OK,
             Json(serde_json::json!({
                 "cancelled": true,
                 "run_id": run_id.to_string(),
-                "status": "CancelRequested",
+                "note": "Running row → will land in Cancelled at next batch boundary; \
+                         Paused row → flipped to Cancelled immediately.",
             })),
         )
             .into_response(),
@@ -2576,11 +2593,68 @@ pub async fn cancel_job(
             StatusCode::OK,
             Json(serde_json::json!({
                 "cancelled": false,
-                "reason": "no running run for this job",
+                "reason": "no non-terminal run for this job",
             })),
         )
             .into_response(),
         Err(e) => AppError::internal_error(format!("cancel failed: {e}")).into_response(),
+    }
+}
+
+/// `POST /api/admin/jobs/{name}/pause` — cooperative PAUSE of the
+/// currently-running recoverable run for `{name}`.
+///
+/// Same DB mechanism as the old cancel (Running → CancelRequested,
+/// handler yields to Paused), but no `cancel_intent` stamp so the
+/// engine writes `Paused`. Use this to interrupt a long-running
+/// job and resume it later; use `/cancel` to abandon it terminally.
+///
+/// Idempotent: if the row is already Paused, returns 200 with
+/// `paused: false, reason: "already_paused"`.
+#[utoipa::path(
+    post,
+    path = "/api/admin/jobs/{name}/pause",
+    params(("name" = String, Path, description = "Registered job name")),
+    responses(
+        (status = 200, description = "Pause signalled (or no-op if nothing was running)"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+        (status = 500, description = "DB error"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn pause_job(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    use crate::infrastructure::scheduler::JobStoreProvider as _;
+    tracing::info!(
+        target: "audit",
+        event = "job.pause_requested",
+        job = %name,
+        "👮🏻‍♂️ Admin requested pause for job {}",
+        name,
+    );
+    match state.core.job_store_provider.request_cancel(&name).await {
+        Ok(Some(run_id)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "paused": true,
+                "run_id": run_id.to_string(),
+                "note": "Handler will yield at the next batch boundary; row will land in Paused.",
+            })),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "paused": false,
+                "reason": "no running run for this job",
+            })),
+        )
+            .into_response(),
+        Err(e) => AppError::internal_error(format!("pause failed: {e}")).into_response(),
     }
 }
 

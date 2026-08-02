@@ -345,6 +345,45 @@ impl JobStore for PgJobStore {
         .map_err(|e| map_sqlx_err("mark_failed", e))?;
         Ok(())
     }
+
+    async fn mark_cancelled(&self, cursor: Option<Vec<u8>>) -> Result<(), DomainError> {
+        // Mirror of `mark_paused`'s two-branch cursor handling: preserve
+        // the last-known cursor for post-mortem inspection (an operator
+        // can see how far the abandoned run got) even though nothing
+        // will resume it.
+        if let Some(c) = cursor {
+            sqlx::query(
+                r#"
+                UPDATE jobs.recoverable_runs
+                   SET status           = 'Cancelled',
+                       cursor           = $2,
+                       completed_at     = NOW(),
+                       last_progress_at = NOW()
+                 WHERE id = $1
+                "#,
+            )
+            .bind(self.run_id)
+            .bind(&c[..])
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| map_sqlx_err("mark_cancelled", e))?;
+        } else {
+            sqlx::query(
+                r#"
+                UPDATE jobs.recoverable_runs
+                   SET status           = 'Cancelled',
+                       completed_at     = NOW(),
+                       last_progress_at = NOW()
+                 WHERE id = $1
+                "#,
+            )
+            .bind(self.run_id)
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| map_sqlx_err("mark_cancelled", e))?;
+        }
+        Ok(())
+    }
 }
 
 // ─── PgJobStoreProvider — registry-level ops ────────────────────────────────
@@ -557,6 +596,82 @@ impl JobStoreProvider for PgJobStoreProvider {
         .await
         .map_err(|e| map_sqlx_err("request_cancel", e))?;
         Ok(flipped.map(|(id,)| id))
+    }
+
+    async fn request_terminal_cancel(&self, job_name: &str) -> Result<Option<Uuid>, DomainError> {
+        // Latest non-terminal row for this job. Order by started_at DESC
+        // + LIMIT 1 defends against partial-index churn during retries.
+        let row: Option<(Uuid, String)> = sqlx::query_as(
+            r#"
+            SELECT id, status FROM jobs.recoverable_runs
+             WHERE job_name = $1
+               AND status IN ('Running', 'CancelRequested', 'Paused')
+             ORDER BY started_at DESC
+             LIMIT 1
+            "#,
+        )
+        .bind(job_name)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| map_sqlx_err("request_terminal_cancel.select", e))?;
+
+        let Some((id, status)) = row else {
+            return Ok(None);
+        };
+        match status.as_str() {
+            "Paused" => {
+                // Direct DB flip — no handler is running to observe
+                // the intent flag, so we transition immediately.
+                sqlx::query(
+                    r#"
+                    UPDATE jobs.recoverable_runs
+                       SET status           = 'Cancelled',
+                           completed_at     = NOW(),
+                           last_progress_at = NOW()
+                     WHERE id = $1
+                       AND status = 'Paused'
+                    "#,
+                )
+                .bind(id)
+                .execute(self.pool.as_ref())
+                .await
+                .map_err(|e| map_sqlx_err("request_terminal_cancel.paused_flip", e))?;
+                Ok(Some(id))
+            }
+            "Running" | "CancelRequested" => {
+                // Stamp intent + flip to CancelRequested in one statement.
+                // The handler's next `store.status()` poll observes
+                // CancelRequested, returns `RunOutcome::Paused` at the
+                // next boundary; the engine wrap reads the intent and
+                // calls `mark_cancelled` instead of `mark_paused`.
+                //
+                // If the row was already CancelRequested (admin clicked
+                // Pause first, then Cancel), the status update is a
+                // no-op but the intent flag stamps — the engine wrap
+                // upgrades the pending Paused into Cancelled at yield
+                // time.
+                sqlx::query(
+                    r#"
+                    UPDATE jobs.recoverable_runs
+                       SET status           = 'CancelRequested',
+                           params           = jsonb_set(COALESCE(params, '{}'::jsonb),
+                                                        '{cancel_intent}',
+                                                        '"terminate"'::jsonb),
+                           last_progress_at = NOW()
+                     WHERE id = $1
+                    "#,
+                )
+                .bind(id)
+                .execute(self.pool.as_ref())
+                .await
+                .map_err(|e| map_sqlx_err("request_terminal_cancel.running_flip", e))?;
+                Ok(Some(id))
+            }
+            other => Err(DomainError::internal_error(
+                "JobStore",
+                format!("request_terminal_cancel: unexpected status `{other}`"),
+            )),
+        }
     }
 }
 

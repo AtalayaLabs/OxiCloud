@@ -584,7 +584,13 @@ export interface JobSummary {
  * non-terminal set (Running / Paused / CancelRequested) is what the
  * DB's `one_active_run_per_job` partial unique index scopes.
  */
-export type RunStatus = 'Running' | 'Paused' | 'CancelRequested' | 'Completed' | 'Failed';
+export type RunStatus =
+	| 'Running'
+	| 'Paused'
+	| 'CancelRequested'
+	| 'Completed'
+	| 'Failed'
+	| 'Cancelled';
 
 /**
  * `RunSummary` — one row per recoverable-job run from
