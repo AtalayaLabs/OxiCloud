@@ -38,21 +38,32 @@ OxiCloud ships with JWT-based authentication and Argon2id password hashing for l
 
 ## Configuring which methods are offered
 
-Two environment variables control the self-service surface (OIDC is orthogonal — see `OXICLOUD_OIDC_ENABLED`).
+Two environment variables control the auth surface. OIDC is a first-class allowlist token alongside `password` and `magic_link`.
 
 ### `OXICLOUD_AUTH_METHODS`
 
-Comma-separated allowlist of `password` and/or `magic_link`. Default `password,magic_link`.
+Comma-separated allowlist of `password`, `magic_link`, and/or `oidc`. Default (when unset): `password,magic_link`.
 
 | Configuration | Effect |
 | --- | --- |
-| Unset or `password,magic_link` | Both methods allowed (default) |
+| Unset | Password + magic-link (OIDC gated separately by `OXICLOUD_OIDC_ENABLED`) |
+| `password,magic_link` | Same as unset — both self-service methods |
 | `password` | Password login OK. Magic-link send / redeem → 403 `MagicLinkLoginDisabled` |
 | `magic_link` | Password login → 403 `PasswordLoginDisabled`. Password-based `register` → 403 `PasswordRegistrationDisabled`. Email-only signup still works |
+| `oidc` | **SSO-only** posture. Requires `OXICLOUD_OIDC_ENABLED=true` + a full OIDC config bucket; local password + magic-link both disabled |
+| `password,oidc` | Hybrid: local password + SSO, no magic-link |
+| `password,magic_link,oidc` | Everything on |
 
-**Startup gate.** If `magic_link` is the only method allowed AND no SMTP transport is configured (`OXICLOUD_SMTP_HOST` empty), the server refuses to start with a fatal message. A magic-link-only policy without a working mailer silently locks every user out.
+**Fail-fast.** Misconfiguration panics at boot instead of degrading silently:
+- Unknown token (e.g. `password,sso2`) → boot panic with `expected: password, magic_link, oidc`
+- Empty allowlist (e.g. `OXICLOUD_AUTH_METHODS=`) → boot panic (would lock everyone out otherwise)
+- `oidc` listed but `OXICLOUD_OIDC_ENABLED != true` → boot panic (advertising a method the server can't serve)
 
-**OIDC master rule.** When `OXICLOUD_OIDC_ENABLED=true`, magic-link login is **hard-disabled** regardless of this list. The IdP is the identity boundary; magic-link would bypass any 2FA / step-up policy the IdP enforces. The startup gate above does **not** trigger in this case — OIDC provides the login path.
+**Loose semantic (documented).** The symmetric case is NOT fatal yet: when `OXICLOUD_AUTH_METHODS` is explicitly set WITHOUT `oidc` but `OXICLOUD_OIDC_ENABLED=true`, OIDC is served in addition to the listed methods — the enabled flag wins. A warning is logged at boot to make the mismatch visible. **Planned for the next major release**: this will escalate to a fail-fast panic so `AUTH_METHODS` becomes the authoritative allowlist for OIDC too. Align configs now (either add `oidc` to the list or set `OXICLOUD_OIDC_ENABLED=false`) to avoid the breaking change.
+
+**Startup gate.** If `magic_link` is the only working method (no `password`, no `oidc`) AND no SMTP transport is configured (`OXICLOUD_SMTP_HOST` empty), the server refuses to start with a fatal message. A magic-link-only policy without a working mailer silently locks every user out.
+
+**OIDC master rule.** When OIDC is enabled, magic-link login is **hard-disabled** regardless of this list. The IdP is the identity boundary; magic-link would bypass any 2FA / step-up policy the IdP enforces. The startup gate above does **not** trigger in this case — OIDC provides the login path.
 
 Legacy alias: `OXICLOUD_OIDC_DISABLE_PASSWORD_LOGIN=true` still removes `password` from the effective allowlist.
 

@@ -1452,21 +1452,26 @@ pub struct AuthConfig {
 
 /// Self-service auth method. Exposed as `AuthConfig::allowed_auth_methods`
 /// and parsed from `OXICLOUD_AUTH_METHODS` (comma-separated). OIDC is
-/// deliberately excluded — it lives in `OidcConfig` with its own gate.
+/// a first-class allowlist token: `OXICLOUD_AUTH_METHODS=oidc` = OIDC
+/// only (needs `OXICLOUD_OIDC_ENABLED=true` + a full OIDC config bucket
+/// or the boot rejects — cross-validation lives in `AppConfig::from_env`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthMethod {
     Password,
     MagicLink,
+    Oidc,
 }
 
 impl AuthMethod {
     /// Case-insensitive parse: accepts `password`, `magic_link`, and the
-    /// dash form `magic-link` (some operators habitually use dashes).
-    /// Unknown token returns `None` so the caller can log-and-skip.
+    /// dash form `magic-link` (some operators habitually use dashes),
+    /// plus `oidc`. Unknown token returns `None`; the caller (env
+    /// parser) treats that as a fatal boot error rather than a warning.
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "password" => Some(Self::Password),
             "magic_link" | "magic-link" | "magiclink" => Some(Self::MagicLink),
+            "oidc" | "sso" => Some(Self::Oidc),
             _ => None,
         }
     }
@@ -2653,28 +2658,72 @@ impl AppConfig {
         // operator wrote `OXICLOUD_AUTH_METHODS=nope`), we restore the
         // default — a zero-method allowlist would refuse every login.
         if let Ok(v) = env::var("OXICLOUD_AUTH_METHODS") {
-            let methods: Vec<AuthMethod> = v
-                .split(',')
-                .filter_map(|s| {
-                    let parsed = AuthMethod::parse(s);
-                    if parsed.is_none() && !s.trim().is_empty() {
-                        eprintln!(
-                            "⚠️  OXICLOUD_AUTH_METHODS: ignoring unknown token '{}' \
-                             (expected: password, magic_link)",
-                            s.trim()
-                        );
-                    }
-                    parsed
-                })
-                .collect();
-            if methods.is_empty() {
-                eprintln!(
-                    "⚠️  OXICLOUD_AUTH_METHODS parsed to an empty allowlist; \
-                     falling back to default (password, magic_link)"
-                );
-            } else {
-                config.auth.allowed_auth_methods = methods;
+            // Fail-fast on operator error: an unknown token, an empty
+            // allowlist, or a listed method whose infrastructure isn't
+            // wired all indicate a misconfiguration that would silently
+            // change auth surface behaviour (per memory
+            // `feedback_fail_fast_config`: boot panic > silent skip
+            // for anything a mistyped env var could break).
+            let mut methods: Vec<AuthMethod> = Vec::new();
+            for raw in v.split(',') {
+                let token = raw.trim();
+                if token.is_empty() {
+                    continue;
+                }
+                match AuthMethod::parse(token) {
+                    Some(m) => methods.push(m),
+                    None => panic!(
+                        "OXICLOUD_AUTH_METHODS: unknown token '{}' — expected any of: \
+                         password, magic_link, oidc",
+                        token
+                    ),
+                }
             }
+            if methods.is_empty() {
+                panic!(
+                    "OXICLOUD_AUTH_METHODS is set to '{}' but produced an empty allowlist. \
+                     Either unset the variable (default = password, magic_link) or list at \
+                     least one method (password, magic_link, oidc).",
+                    v
+                );
+            }
+            // Cross-validation A: `oidc` in the allowlist requires OIDC
+            // to be enabled. Otherwise the login page would advertise a
+            // method the server can't actually serve.
+            let oidc_env_enabled = env::var("OXICLOUD_OIDC_ENABLED")
+                .ok()
+                .and_then(|s| s.parse::<bool>().ok())
+                .unwrap_or(false);
+            if methods.contains(&AuthMethod::Oidc) && !oidc_env_enabled {
+                panic!(
+                    "OXICLOUD_AUTH_METHODS includes 'oidc' but OXICLOUD_OIDC_ENABLED \
+                     is not 'true'. Either set OXICLOUD_OIDC_ENABLED=true (plus \
+                     OXICLOUD_OIDC_ISSUER_URL / OXICLOUD_OIDC_CLIENT_ID / \
+                     OXICLOUD_OIDC_CLIENT_SECRET), or configure OIDC via the admin \
+                     panel and drop 'oidc' from OXICLOUD_AUTH_METHODS until it's ready."
+                );
+            }
+
+            // Cross-validation B: the reverse — OIDC enabled but the
+            // admin's explicit AUTH_METHODS list doesn't include `oidc`.
+            // Today: warn loudly (soft mismatch). PLANNED for the next
+            // major release: escalate to a fail-fast panic to match the
+            // symmetric cross-validation A above. The current loose
+            // behaviour silently serves OIDC in addition to what
+            // AUTH_METHODS lists — the enabled flag wins — which
+            // contradicts the "AUTH_METHODS is the authoritative
+            // allowlist" mental model.
+            if !methods.contains(&AuthMethod::Oidc) && oidc_env_enabled {
+                eprintln!(
+                    "⚠️  OXICLOUD_AUTH_METHODS excludes 'oidc' but \
+                     OXICLOUD_OIDC_ENABLED=true — OIDC will be served \
+                     regardless. Add 'oidc' to OXICLOUD_AUTH_METHODS to \
+                     make the allowlist authoritative, or set \
+                     OXICLOUD_OIDC_ENABLED=false to exclude OIDC. \
+                     A future release will escalate this to a fatal boot error."
+                );
+            }
+            config.auth.allowed_auth_methods = methods;
         }
 
         // Legacy alias: OXICLOUD_OIDC_DISABLE_PASSWORD_LOGIN=true still

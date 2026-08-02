@@ -532,13 +532,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .auth
             .allowed_auth_methods
             .contains(&common::config::AuthMethod::Password)
+        && !config
+            .auth
+            .allowed_auth_methods
+            .contains(&common::config::AuthMethod::Oidc)
         && !config.smtp.is_enabled()
     {
         panic!(
             "FATAL: OXICLOUD_AUTH_METHODS enables `magic_link` as the ONLY \
              self-service auth method, but no SMTP transport is configured. \
-             Set OXICLOUD_SMTP_HOST (and matching OXICLOUD_SMTP_* settings) \
-             or add `password` to OXICLOUD_AUTH_METHODS. Refusing to start."
+             Set OXICLOUD_SMTP_HOST (and matching OXICLOUD_SMTP_* settings), \
+             add `password` or `oidc` to OXICLOUD_AUTH_METHODS, or drop \
+             `magic_link` from the list. Refusing to start."
         );
     }
 
