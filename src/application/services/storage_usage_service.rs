@@ -752,6 +752,12 @@ impl StorageUsagePort for StorageUsageService {
     /// FROM` guard to skip no-op rewrites so idle drives don't churn
     /// dead tuples. Runs from the same reconciliation ticker as the
     /// user sweep; failure is logged but doesn't stop the next tick.
+    ///
+    /// Trashed files ARE included in the sum — matching the hot-path
+    /// delta which never decrements on `move_to_trash`. Trash weight
+    /// stays billed to the drive/user until permanent deletion (that's
+    /// when the delta subtracts). Excluding trash here would make
+    /// `used_bytes` oscillate between sweep runs and delta writes.
     async fn update_all_drives_storage_usage(&self) -> Result<u64, DomainError> {
         debug!("Starting drive storage-usage reconciliation sweep");
         let result = sqlx::query(
@@ -762,7 +768,6 @@ impl StorageUsagePort for StorageUsageService {
               LEFT JOIN (
                     SELECT drive_id, SUM(size)::bigint AS total
                       FROM storage.files
-                     WHERE NOT is_trashed
                      GROUP BY drive_id
                    ) t ON t.drive_id = d2.id
              WHERE d.id = d2.id
