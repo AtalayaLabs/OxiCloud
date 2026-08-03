@@ -115,6 +115,15 @@ const configuration = {
       // (all-device) revocation.
       backchannel_logout_uri: `${OXICLOUD_BASE_URL}/api/auth/oidc/backchannel-logout`,
       backchannel_logout_session_required: true,
+      // RP-initiated logout — required for tests/oidc/sso-only.hurl to
+      // exercise the `post_logout_url` shape returned by OxiCloud's
+      // /api/auth/logout when the session is OIDC-backed. The `/login`
+      // URLs on both automated (8087) and manual (8090) ports are
+      // registered so both runners can drive the flow.
+      post_logout_redirect_uris: [
+        'http://localhost:8087/login',
+        'http://localhost:8090/login',
+      ],
     },
   ],
 
@@ -181,6 +190,12 @@ const configuration = {
     // and POSTs it to OxiCloud. That's the same wire shape a real
     // IdP produces, so OxiCloud's validator is exercised end-to-end.
     backchannelLogout: { enabled: true },
+    // RP-Initiated Logout 1.0. Turning it on advertises
+    // `end_session_endpoint` in discovery so OxiCloud's
+    // `build_end_session_url` (invoked from POST /api/auth/logout)
+    // returns a real URL instead of None. Without this the SSO-only
+    // Hurl assertion `post_logout_url is present` fails silently.
+    rpInitiatedLogout: { enabled: true },
   },
 
   // Put scope-implied claims (name, given_name, family_name,
