@@ -253,6 +253,24 @@ pub struct OidcIdClaims {
     /// `LocaleRegistry`; ignored on subsequent logins so a later
     /// UI-driven choice isn't overwritten by the IdP.
     pub locale: Option<String>,
+    /// OIDC session identifier. Populated only when the IdP emits `sid`
+    /// on the id_token (Keycloak: "Backchannel Logout Session Required"
+    /// on the client). When present, we persist it on the OxiCloud
+    /// session so Back-Channel Logout can revoke that specific device.
+    pub sid: Option<String>,
+}
+
+/// OIDC Back-Channel Logout 1.0 identifiers extracted from a validated
+/// logout_token. The BCL handler uses these to resolve which OxiCloud
+/// session(s) to revoke: `sid` for per-device (preferred), else `sub` for
+/// all of the user's sessions.
+#[derive(Debug, Clone)]
+pub struct OidcLogoutClaims {
+    pub sub: Option<String>,
+    pub sid: Option<String>,
+    /// JWT identifier — used by the app service to prevent replay of the
+    /// same logout_token within the token's freshness window.
+    pub jti: Option<String>,
 }
 
 /// Port for OIDC operations — implemented in infrastructure layer
@@ -287,6 +305,36 @@ pub trait OidcServicePort: Send + Sync + 'static {
 
     /// Get the OIDC provider display name
     fn provider_name(&self) -> &str;
+
+    /// Validate an OIDC Back-Channel Logout 1.0 logout_token.
+    ///
+    /// Enforces all mandatory spec checks: JWKS signature, iss+aud match,
+    /// `events` claim contains the backchannel-logout URI, presence of
+    /// `sub` and/or `sid`, absence of `nonce`. On any failure returns
+    /// `AccessDenied` — the handler translates to a 400 per spec.
+    ///
+    /// The caller is responsible for jti replay prevention (this validator
+    /// is stateless).
+    async fn validate_logout_token(
+        &self,
+        logout_token: &str,
+    ) -> Result<OidcLogoutClaims, DomainError>;
+
+    /// Build an RP-initiated logout URL (OIDC Session Management 1.0).
+    ///
+    /// Returns `Ok(None)` when the IdP's discovery document does not advertise
+    /// an `end_session_endpoint` — some providers don't support RP-initiated
+    /// logout, in which case the caller falls back to a local-only logout.
+    ///
+    /// `id_token_hint` is required by most IdPs (Keycloak in particular
+    /// rejects the request without it) so the server can identify the session
+    /// to terminate. `post_logout_redirect_uri` must be one of the URIs
+    /// registered on the OIDC client, else the IdP refuses the redirect.
+    async fn build_end_session_url(
+        &self,
+        id_token_hint: &str,
+        post_logout_redirect_uri: &str,
+    ) -> Result<Option<String>, DomainError>;
 }
 
 pub trait SessionStoragePort: Send + Sync + 'static {
@@ -317,6 +365,21 @@ pub trait SessionStoragePort: Send + Sync + 'static {
 
     /// Revokes all sessions in a token family (used when replay of a revoked token is detected)
     async fn revoke_session_family(&self, family_id: Uuid) -> Result<u64, DomainError>;
+
+    /// OIDC Back-Channel Logout: revoke sessions matching an IdP-supplied
+    /// `sid` (per-device). Returns the user id(s) of revoked sessions so
+    /// the caller can dispatch lifecycle hooks.
+    async fn revoke_sessions_by_oidc_sid(&self, sid: &str) -> Result<Vec<Uuid>, DomainError>;
+
+    /// OIDC Back-Channel Logout fallback when the IdP didn't supply a `sid`:
+    /// revoke every session belonging to the user identified by
+    /// `(oidc_provider, oidc_subject)`. Returns the affected user id, or
+    /// `None` if we don't know that user.
+    async fn revoke_user_sessions_by_oidc_subject(
+        &self,
+        oidc_provider: &str,
+        oidc_subject: &str,
+    ) -> Result<Option<Uuid>, DomainError>;
 }
 
 // ============================================================================

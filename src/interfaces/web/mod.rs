@@ -1,7 +1,10 @@
 use crate::common::config::AppConfig;
 use crate::common::di::AppState;
 use axum::Router;
+use axum::extract::{Request, State};
 use axum::http::header::{CACHE_CONTROL, HeaderValue};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get_service;
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
@@ -41,7 +44,7 @@ pub fn resolve_static_path(config: &AppConfig) -> PathBuf {
 /// Caching: content-hashed assets under `/_app/immutable` are cached forever;
 /// everything else — crucially the `index.html` shell — is `no-cache` so a deploy
 /// can't leave a stale app pinned in browsers.
-pub fn create_web_routes() -> Router<Arc<AppState>> {
+pub fn create_web_routes(app_state: Arc<AppState>) -> Router<Arc<AppState>> {
     let config = AppConfig::from_env();
     let static_path = resolve_static_path(&config);
 
@@ -91,6 +94,52 @@ pub fn create_web_routes() -> Router<Arc<AppState>> {
             CACHE_CONTROL,
             HeaderValue::from_static("no-cache"),
         ))
+        // Short-circuit `GET /login` to the OIDC authorize endpoint when
+        // the AutoRedirectIfStandaloneOidc policy resolves. Runs BEFORE
+        // the SPA shell is served, so there's no form-then-redirect flash.
+        // The SPA carries the same predicate as belt-and-suspenders for
+        // deep links / browser-cache hits that skip this hop.
+        .layer(axum::middleware::from_fn_with_state(
+            app_state,
+            oidc_standalone_login_redirect,
+        ))
+}
+
+/// Intercept `GET /login` and 302 to `/api/auth/oidc/authorize` when OIDC is
+/// the only working method (see `AuthApplicationService::auto_redirect_to_oidc`).
+///
+/// Loop-guards mirror the SPA:
+/// - `?error=…` — the IdP bounced us back; falling through lets the SPA render
+///   the error rather than looping straight back to the failing IdP.
+/// - `?oidc_code=…` — the callback landing carries the exchange code; the SPA
+///   must handle it, not another authorize round-trip.
+async fn oidc_standalone_login_redirect(
+    State(state): State<Arc<AppState>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    if req.method() == axum::http::Method::GET && req.uri().path() == "/login" {
+        let has_loop_guard_param = req
+            .uri()
+            .query()
+            .map(|q| {
+                q.split('&')
+                    .any(|p| p.starts_with("error=") || p.starts_with("oidc_code="))
+            })
+            .unwrap_or(false);
+
+        let should_redirect = !has_loop_guard_param
+            && state
+                .auth_service
+                .as_ref()
+                .map(|svc| svc.auth_application_service.auto_redirect_to_oidc())
+                .unwrap_or(false);
+
+        if should_redirect {
+            return Redirect::temporary("/api/auth/oidc/authorize").into_response();
+        }
+    }
+    next.run(req).await
 }
 
 /// Build the `content-security-policy` header value served on every response.

@@ -46,18 +46,20 @@ The same dispatch applies to `POST /api/auth/magic-link/send` — its `email` fi
 
 ## Deployment auth policy
 
-Two env vars control the self-service auth surface, orthogonal to OIDC:
+Two env vars control the auth surface. OIDC is a first-class allowlist token, no longer orthogonal:
 
-- `OXICLOUD_AUTH_METHODS` — allowlist of enabled methods (`password`, `magic_link`, or both). Default: both. Removing one produces distinct error_type codes so the SPA can render specific UX:
+- `OXICLOUD_AUTH_METHODS` — allowlist of enabled methods (`password`, `magic_link`, `oidc`, or any comma-separated combination). Default (unset): `password,magic_link`. Removing a token produces distinct error_type codes so the SPA can render specific UX:
   - Removing `password` → `POST /api/auth/login` → 403 `PasswordLoginDisabled`; password-based `register` → 403 `PasswordRegistrationDisabled`.
   - Removing `magic_link` → `magic-link/send` → 403 `MagicLinkLoginDisabled`; login-purpose token redemption refuses.
-  - **Startup gate:** magic-link-only + no SMTP wired → server refuses to start (main.rs panics).
+  - Setting to just `oidc` → SSO-only posture, local login surface disabled.
+  - **Fail-fast on boot:** unknown token, empty allowlist, or `oidc` listed without `OXICLOUD_OIDC_ENABLED=true` all panic startup.
+  - **Startup gate:** `magic_link` as the only working method (no `password`, no `oidc`) with no SMTP wired → server refuses to start.
 - `OXICLOUD_AUTH_POLICIES` — additive policy switches. Today: `permit_magic_link_for_password_users`. Future variants (`Require...`, `Deny...`) reuse the same vector-shaped env var — no per-policy env-var proliferation.
 - `OXICLOUD_REQUIRE_VERIFIED_EMAIL` — when true, `POST /api/auth/login` returns 403 `EmailNotVerified` for accounts with `email_verified_at IS NULL`. Checked AFTER password validation (anti-enum — an attacker without the password can't probe verification state). **Admin accounts are exempt** from this gate to prevent a config flip from locking pre-existing admins out of their own instance.
 
 **Verification piggyback.** When the `EmailNotVerified` branch fires (password OK + email unverified), the login handler auto-sends a verification magic-link to the account via a distinct service method that bypasses the `has_password` eligibility gate — the password itself just proved identity, so mailbox-only trust isn't being extended beyond what the password already established. Response is 403 `EmailNotVerified` with "check your inbox"; re-submitting the same login re-triggers the send. This is why there is no unauthenticated "resend verification" endpoint — one would leak `has_password` state to unauthenticated callers.
 
-**OIDC-master rule.** When `OXICLOUD_OIDC_ENABLED=true`, magic-link login is hard-off regardless of `OXICLOUD_AUTH_METHODS`. Magic-link would bypass any 2FA / step-up the IdP enforces.
+**OIDC-master rule.** When OIDC is enabled (either explicitly in `OXICLOUD_AUTH_METHODS` or via `OXICLOUD_OIDC_ENABLED=true`), magic-link login is hard-off regardless of what the allowlist says. Magic-link would bypass any 2FA / step-up the IdP enforces.
 
 ## Login paths
 

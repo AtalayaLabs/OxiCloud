@@ -532,13 +532,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .auth
             .allowed_auth_methods
             .contains(&common::config::AuthMethod::Password)
+        && !config
+            .auth
+            .allowed_auth_methods
+            .contains(&common::config::AuthMethod::Oidc)
         && !config.smtp.is_enabled()
     {
         panic!(
             "FATAL: OXICLOUD_AUTH_METHODS enables `magic_link` as the ONLY \
              self-service auth method, but no SMTP transport is configured. \
-             Set OXICLOUD_SMTP_HOST (and matching OXICLOUD_SMTP_* settings) \
-             or add `password` to OXICLOUD_AUTH_METHODS. Refusing to start."
+             Set OXICLOUD_SMTP_HOST (and matching OXICLOUD_SMTP_* settings), \
+             add `password` or `oidc` to OXICLOUD_AUTH_METHODS, or drop \
+             `magic_link` from the list. Refusing to start."
         );
     }
 
@@ -623,7 +628,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let api_routes = create_api_routes(&app_state);
     let public_api_routes = create_public_api_routes(&app_state);
     let health_routes = create_health_routes(&app_state);
-    let web_routes = create_web_routes();
+    let web_routes = create_web_routes(app_state.clone());
 
     let mut app;
 

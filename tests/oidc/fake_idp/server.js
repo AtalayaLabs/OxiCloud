@@ -27,6 +27,12 @@
 import http from 'node:http';
 import { URL } from 'node:url';
 import { default as Provider } from 'oidc-provider';
+// `jose` ships as a transitive dep of oidc-provider (it's what the
+// library uses internally for JWTs). We reuse it to (a) generate the
+// signing keypair at boot so oidc-provider signs id_tokens with keys
+// we also own, and (b) mint spec-compliant logout_token JWTs in the
+// /control/backchannel-logout endpoint below.
+import { SignJWT, exportJWK, generateKeyPair } from 'jose';
 
 // ── Configuration knobs ─────────────────────────────────────────────────
 const ISSUER = process.env.FAKE_IDP_ISSUER || 'http://localhost:1080';
@@ -53,6 +59,14 @@ const TEST_USER_PICTURE = 'https://example.com/oidc-test-user.png';
 // app roles.
 const TEST_USER_GROUPS = ['admin-users'];
 
+// OxiCloud's base URL — derived from the callback URI so run.sh only
+// has one place (test.env) to change the port. Used by the BCL control
+// endpoint to POST logout_tokens back to OxiCloud.
+const OXICLOUD_BASE_URL =
+  process.env.OXICLOUD_BASE_URL_FOR_BCL || 'http://localhost:8087';
+const BCL_KID = 'fake-idp-key-1';
+const BCL_EVENT = 'http://schemas.openid.net/event/backchannel-logout';
+
 // ── Runtime-toggleable state for negative tests ────────────────────────
 // `email_verified` is normally true; the test flips it to false via
 // `POST /control/email-verified/false` to drive OxiCloud's anti-takeover
@@ -61,6 +75,21 @@ const TEST_USER_GROUPS = ['admin-users'];
 // because oidc-provider doesn't pass test-specific context into the
 // claims() callback.
 let emailVerifiedState = true;
+
+// Pre-generate the signing keypair. oidc-provider v9 accepts private
+// JWKs via configuration.jwks and exports the public halves at
+// /jwks.json; keeping our own reference to the private key means we
+// can also mint valid logout_token JWTs from the /control endpoint,
+// so OxiCloud's back-channel-logout validator (which fetches the same
+// JWKS) accepts them.
+const { publicKey: bclPublicKey, privateKey: bclPrivateKey } =
+  await generateKeyPair('RS256', { extractable: true });
+const bclPrivateJwk = await exportJWK(bclPrivateKey);
+bclPrivateJwk.use = 'sig';
+bclPrivateJwk.alg = 'RS256';
+bclPrivateJwk.kid = BCL_KID;
+// eslint-disable-next-line no-unused-vars
+const _bclPublicKeyRef = bclPublicKey; // kept for symmetry / debugging
 
 const configuration = {
   clients: [
@@ -76,8 +105,33 @@ const configuration = {
       grant_types: ['authorization_code'],
       response_types: ['code'],
       token_endpoint_auth_method: 'client_secret_post',
+      // Back-Channel Logout 1.0 wire-up. The URI is where OxiCloud's
+      // handler lives (POST /api/auth/oidc/backchannel-logout). With
+      // session_required = true, the OP MUST include `sid` in both the
+      // id_token AND the logout_token — mirrors Keycloak's "Backchannel
+      // Logout Session Required" client toggle. OxiCloud persists the
+      // id_token sid on auth.sessions.oidc_sid so per-device revocation
+      // works; without session_required we'd fall back to sub-based
+      // (all-device) revocation.
+      backchannel_logout_uri: `${OXICLOUD_BASE_URL}/api/auth/oidc/backchannel-logout`,
+      backchannel_logout_session_required: true,
+      // RP-initiated logout — required for tests/oidc/sso-only.hurl to
+      // exercise the `post_logout_url` shape returned by OxiCloud's
+      // /api/auth/logout when the session is OIDC-backed. The `/login`
+      // URLs on both automated (8087) and manual (8090) ports are
+      // registered so both runners can drive the flow.
+      post_logout_redirect_uris: [
+        'http://localhost:8087/login',
+        'http://localhost:8090/login',
+      ],
     },
   ],
+
+  // Register the private JWK we generated above. The library uses it
+  // to sign id_tokens; the public half is served at /jwks.json and is
+  // what OxiCloud's OidcService caches for id_token AND logout_token
+  // signature verification (they share the same JWKS per BCL 1.0).
+  jwks: { keys: [bclPrivateJwk] },
 
   pkce: { required: () => true, methods: ['S256'] },
 
@@ -125,6 +179,23 @@ const configuration = {
   features: {
     // Turn off the dev login/consent UI; we own the interaction route.
     devInteractions: { enabled: false },
+    // OIDC Back-Channel Logout 1.0. Turning it on makes the OP
+    // advertise `backchannel_logout_supported` in discovery and
+    // emit `sid` in id_tokens when the client has
+    // `backchannel_logout_session_required: true`. We do NOT rely on
+    // oidc-provider to send BCL notifications from its internal
+    // session-destroy path (which would require driving OP session
+    // lifecycle from the test); the /control/backchannel-logout
+    // endpoint below mints a spec-compliant logout_token directly
+    // and POSTs it to OxiCloud. That's the same wire shape a real
+    // IdP produces, so OxiCloud's validator is exercised end-to-end.
+    backchannelLogout: { enabled: true },
+    // RP-Initiated Logout 1.0. Turning it on advertises
+    // `end_session_endpoint` in discovery so OxiCloud's
+    // `build_end_session_url` (invoked from POST /api/auth/logout)
+    // returns a real URL instead of None. Without this the SSO-only
+    // Hurl assertion `post_logout_url is present` fails silently.
+    rpInitiatedLogout: { enabled: true },
   },
 
   // Put scope-implied claims (name, given_name, family_name,
@@ -164,7 +235,7 @@ const oidcHandler = provider.callback();
 // to exercise OxiCloud's anti-takeover rejection branch). Kept on the
 // SAME port as the OIDC endpoints so we don't have to thread two ports
 // through every test config. Never used in production-shaped flows.
-function handleControl(req, res) {
+async function handleControl(req, res) {
   const url = new URL(req.url, ISSUER);
   if (req.method === 'POST' && url.pathname === '/control/email-verified/true') {
     emailVerifiedState = true;
@@ -177,6 +248,74 @@ function handleControl(req, res) {
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     return res.end(JSON.stringify({ email_verified: false }));
+  }
+  if (req.method === 'POST' && url.pathname === '/control/backchannel-logout') {
+    // Body shape: `{ sub?: string, sid?: string }`. Optional so the test
+    // can exercise both revocation modes:
+    //   * sub only → OxiCloud falls back to revoke-by-subject (kills all
+    //     the user's sessions).
+    //   * sid present → OxiCloud revokes just the session bound to that
+    //     sid (per-device path — the "typical" mode when
+    //     backchannel_logout_session_required is on).
+    // Default to sub-only against the built-in test user when neither is
+    // supplied — that keeps the simplest scenario a one-liner in Hurl.
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed = {};
+    try {
+      parsed = body ? JSON.parse(body) : {};
+    } catch {
+      res.statusCode = 400;
+      res.setHeader('content-type', 'application/json');
+      return res.end(JSON.stringify({ error: 'invalid_json' }));
+    }
+    const sub = parsed.sub ?? TEST_USER_SUB;
+    const sid = parsed.sid; // may be undefined
+    const now = Math.floor(Date.now() / 1000);
+
+    // Mint the logout_token per BCL 1.0 §2.4:
+    //   * `events` MUST contain the backchannel-logout URI as a key.
+    //   * `sub` and/or `sid` MUST be present (we always include sub;
+    //     sid conditional).
+    //   * `nonce` MUST NOT be present (SignJWT does not add one by default).
+    //   * `iat` present, `jti` present for replay-guard testing.
+    const payload = { events: { [BCL_EVENT]: {} } };
+    if (sub) payload.sub = sub;
+    if (sid) payload.sid = sid;
+
+    const jwt = await new SignJWT(payload)
+      .setProtectedHeader({ alg: 'RS256', kid: BCL_KID, typ: 'JWT' })
+      .setIssuer(ISSUER)
+      .setAudience('oxicloud-test')
+      .setIssuedAt(now)
+      .setJti(`bcl-${now}-${Math.random().toString(36).slice(2, 10)}`)
+      .sign(bclPrivateKey);
+
+    // POST as application/x-www-form-urlencoded per BCL §2.5.
+    const target = `${OXICLOUD_BASE_URL}/api/auth/oidc/backchannel-logout`;
+    try {
+      const resp = await fetch(target, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ logout_token: jwt }).toString(),
+      });
+      const respBody = await resp.text();
+      res.statusCode = 200;
+      res.setHeader('content-type', 'application/json');
+      return res.end(
+        JSON.stringify({
+          forwarded_to: target,
+          oxicloud_status: resp.status,
+          oxicloud_body: respBody,
+        }),
+      );
+    } catch (e) {
+      res.statusCode = 502;
+      res.setHeader('content-type', 'application/json');
+      return res.end(
+        JSON.stringify({ error: 'forward_failed', detail: String(e) }),
+      );
+    }
   }
   res.statusCode = 404;
   res.setHeader('content-type', 'application/json');
@@ -193,7 +332,7 @@ function handleControl(req, res) {
 const server = http.createServer(async (req, res) => {
   // eslint-disable-next-line no-console
   console.log(`[fake-idp] ${req.method} ${req.url}`);
-  if (req.url.startsWith('/control/')) return handleControl(req, res);
+  if (req.url.startsWith('/control/')) return await handleControl(req, res);
 
   try {
     const url = new URL(req.url, ISSUER);

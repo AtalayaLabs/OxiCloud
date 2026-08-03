@@ -14,6 +14,15 @@ pub struct Session {
     /// Groups all tokens issued from the same original login.
     /// Replaying a revoked token from this family triggers full-family revocation.
     family_id: Uuid,
+    /// ID token from the OIDC login exchange. Used as `id_token_hint` on the
+    /// RP-initiated logout URL so the IdP can terminate its own SSO session.
+    /// `None` for password / magic-link sessions.
+    oidc_id_token: Option<String>,
+    /// OIDC session identifier (sid claim). Populated only when the IdP
+    /// emits it. Enables per-device Back-Channel Logout — without it, a
+    /// BCL notification would revoke all of the user's sessions rather
+    /// than just the one that logged out on the far end.
+    oidc_sid: Option<String>,
 }
 
 impl Session {
@@ -40,7 +49,27 @@ impl Session {
             created_at: now,
             revoked: false,
             family_id,
+            oidc_id_token: None,
+            oidc_sid: None,
         }
+    }
+
+    /// Attach an OIDC ID token — call on sessions minted via the OIDC exchange.
+    /// The token is persisted with the session and re-emitted at logout as
+    /// `id_token_hint` so the IdP can end its own SSO session.
+    pub fn with_oidc_id_token(mut self, id_token: String) -> Self {
+        self.oidc_id_token = Some(id_token);
+        self
+    }
+
+    /// Attach the OIDC session identifier from the id_token's `sid` claim.
+    /// Optional even for OIDC sessions — only present when the IdP emits
+    /// sid (Keycloak requires "Backchannel Logout Session Required" on the
+    /// client). Without it, Back-Channel Logout falls back to sub-based
+    /// revocation which is coarser (all of the user's OxiCloud sessions).
+    pub fn with_oidc_sid(mut self, sid: String) -> Self {
+        self.oidc_sid = Some(sid);
+        self
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -54,6 +83,8 @@ impl Session {
         created_at: DateTime<Utc>,
         revoked: bool,
         family_id: Uuid,
+        oidc_id_token: Option<String>,
+        oidc_sid: Option<String>,
     ) -> Self {
         Self {
             id,
@@ -65,6 +96,8 @@ impl Session {
             created_at,
             revoked,
             family_id,
+            oidc_id_token,
+            oidc_sid,
         }
     }
 
@@ -111,5 +144,13 @@ impl Session {
 
     pub fn family_id(&self) -> Uuid {
         self.family_id
+    }
+
+    pub fn oidc_id_token(&self) -> Option<&str> {
+        self.oidc_id_token.as_deref()
+    }
+
+    pub fn oidc_sid(&self) -> Option<&str> {
+        self.oidc_sid.as_deref()
     }
 }

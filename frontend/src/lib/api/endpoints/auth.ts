@@ -99,6 +99,20 @@ export interface OidcProviders {
 	 */
 	require_verified_email?: boolean;
 	authorize_endpoint?: string;
+	/**
+	 * Server-computed: true when the `auto_redirect_if_standalone_oidc`
+	 * policy is on AND OIDC is the only working method (see
+	 * `AuthApplicationService::auto_redirect_to_oidc`). When true the root
+	 * layout guard `window.location.replace`s to `authorize_endpoint`
+	 * instead of routing through `/login` — the server-side `/login`
+	 * middleware only fires on full HTTP loads, so SPA client-side
+	 * navigation to `/login` (root guard, dev via Vite) would otherwise
+	 * stall on the login page. Because the flag is gated by the admin's
+	 * policy on the SERVER, using it on the client does NOT override the
+	 * policy toggle — we're just enacting the same decision on paths the
+	 * middleware can't reach.
+	 */
+	auto_redirect_to_oidc?: boolean;
 }
 
 /** Public OIDC provider info for the login page. */
@@ -258,11 +272,30 @@ export async function sendMagicLink(email: string): Promise<MagicLinkResult> {
 	return 'sent';
 }
 
-export async function logout(): Promise<void> {
-	await apiFetch('/api/auth/logout', {
+export interface LogoutResult {
+	/**
+	 * RP-initiated OIDC logout URL, present only when the session was minted
+	 * through OIDC AND the IdP advertises an `end_session_endpoint`. The
+	 * caller MUST navigate there via `window.location` (not `goto()`) so the
+	 * browser leaves the SPA and hits the IdP; the IdP kills its SSO cookie
+	 * and redirects back to `/login`. Without this hop the IdP session stays
+	 * alive and the next `/login` visit would silently re-authenticate.
+	 */
+	postLogoutUrl?: string;
+}
+
+export async function logout(): Promise<LogoutResult> {
+	const res = await apiFetch('/api/auth/logout', {
 		method: 'POST',
 		credentials: 'same-origin',
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: '{}'
 	});
+	if (!res.ok) return {};
+	try {
+		const body = (await res.json()) as { post_logout_url?: unknown };
+		return typeof body?.post_logout_url === 'string' ? { postLogoutUrl: body.post_logout_url } : {};
+	} catch {
+		return {};
+	}
 }

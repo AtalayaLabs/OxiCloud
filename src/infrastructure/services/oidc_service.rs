@@ -9,7 +9,9 @@ use serde::Deserialize;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
-use crate::application::ports::auth_ports::{OidcIdClaims, OidcServicePort, OidcTokenSet};
+use crate::application::ports::auth_ports::{
+    OidcIdClaims, OidcLogoutClaims, OidcServicePort, OidcTokenSet,
+};
 use crate::common::config::OidcConfig;
 use crate::common::errors::{DomainError, ErrorKind};
 
@@ -28,6 +30,10 @@ struct OidcDiscovery {
     token_endpoint: String,
     userinfo_endpoint: Option<String>,
     jwks_uri: String,
+    /// RP-initiated logout endpoint (OIDC Session Management 1.0).
+    /// Optional — not every IdP advertises it. When missing, callers
+    /// must fall back to local-only logout.
+    end_session_endpoint: Option<String>,
 }
 
 // ============================================================================
@@ -71,6 +77,10 @@ struct IdTokenClaims {
     nonce: Option<String>,
     picture: Option<String>,
     locale: Option<String>,
+    /// OIDC session identifier — only set by IdPs configured to emit it
+    /// (Keycloak: "Backchannel Logout Session Required"). When present,
+    /// bind it to the OxiCloud session so BCL can revoke just that device.
+    sid: Option<String>,
     // Standard JWT fields
     #[allow(dead_code)]
     iss: Option<String>,
@@ -81,6 +91,28 @@ struct IdTokenClaims {
     #[allow(dead_code)]
     iat: Option<i64>,
 }
+
+/// OIDC Back-Channel Logout 1.0, §2.4 — the logout_token JWT.
+///
+/// Structural differences from an id_token:
+/// - MUST have `sub` OR `sid` (or both).
+/// - MUST have `events` claim containing the backchannel-logout URI.
+/// - MUST NOT have `nonce`.
+/// - `exp` is optional (unlike id_token where it's required); a missing
+///   exp is fine, we clamp with our own iat-based freshness check.
+#[derive(Debug, Deserialize)]
+struct LogoutTokenClaims {
+    iss: String,
+    aud: serde_json::Value,
+    iat: i64,
+    jti: Option<String>,
+    sub: Option<String>,
+    sid: Option<String>,
+    events: serde_json::Value,
+    nonce: Option<String>,
+}
+
+const BACKCHANNEL_LOGOUT_EVENT: &str = "http://schemas.openid.net/event/backchannel-logout";
 
 // ============================================================================
 // UserInfo response
@@ -472,6 +504,7 @@ impl OidcServicePort for OidcService {
             groups: claims.groups.unwrap_or_default(),
             picture: claims.picture,
             locale: claims.locale,
+            sid: claims.sid,
         })
     }
 
@@ -527,11 +560,188 @@ impl OidcServicePort for OidcService {
             groups: info.groups.unwrap_or_default(),
             picture: info.picture,
             locale: info.locale,
+            // UserInfo endpoint doesn't emit sid — it's an id_token-only
+            // claim. Callers merging UserInfo into id_token claims must
+            // preserve the id_token's sid.
+            sid: None,
         })
     }
 
     fn provider_name(&self) -> &str {
         &self.config.provider_name
+    }
+
+    async fn build_end_session_url(
+        &self,
+        id_token_hint: &str,
+        post_logout_redirect_uri: &str,
+    ) -> Result<Option<String>, DomainError> {
+        let discovery = self.get_discovery().await?;
+        let Some(endpoint) = discovery.end_session_endpoint else {
+            return Ok(None);
+        };
+        // client_id is also included: some IdPs (Keycloak in "legacy" mode)
+        // use it to look up the registered post_logout_redirect_uri when
+        // the id_token_hint is expired or missing.
+        let url = format!(
+            "{}?id_token_hint={}&post_logout_redirect_uri={}&client_id={}",
+            endpoint,
+            urlencoding::encode(id_token_hint),
+            urlencoding::encode(post_logout_redirect_uri),
+            urlencoding::encode(&self.config.client_id),
+        );
+        Ok(Some(url))
+    }
+
+    async fn validate_logout_token(
+        &self,
+        logout_token: &str,
+    ) -> Result<OidcLogoutClaims, DomainError> {
+        let jwks = self.get_jwks().await?;
+        let discovery = self.get_discovery().await?;
+
+        let kid = Self::extract_jwt_kid(logout_token);
+        let jwk = Self::find_key(&jwks, kid.as_deref()).ok_or_else(|| {
+            DomainError::new(
+                ErrorKind::AccessDenied,
+                "OIDC",
+                "No suitable key found in JWKS for logout_token validation",
+            )
+        })?;
+
+        let decoding_key = jsonwebtoken::DecodingKey::from_jwk(jwk).map_err(|e| {
+            DomainError::new(
+                ErrorKind::InternalError,
+                "OIDC",
+                format!("Failed to create decoding key from JWK: {}", e),
+            )
+        })?;
+
+        let alg = match jwk.common.key_algorithm {
+            Some(jsonwebtoken::jwk::KeyAlgorithm::RS256) => jsonwebtoken::Algorithm::RS256,
+            Some(jsonwebtoken::jwk::KeyAlgorithm::RS384) => jsonwebtoken::Algorithm::RS384,
+            Some(jsonwebtoken::jwk::KeyAlgorithm::RS512) => jsonwebtoken::Algorithm::RS512,
+            Some(jsonwebtoken::jwk::KeyAlgorithm::ES256) => jsonwebtoken::Algorithm::ES256,
+            Some(jsonwebtoken::jwk::KeyAlgorithm::ES384) => jsonwebtoken::Algorithm::ES384,
+            _ => jsonwebtoken::Algorithm::RS256,
+        };
+
+        // Spec: iss + aud validated same as id_token. exp is OPTIONAL for
+        // logout_tokens (unlike id_tokens where it's mandatory), so tell
+        // jsonwebtoken not to require it; the iat-based freshness clamp
+        // below enforces our own upper bound.
+        let mut validation = jsonwebtoken::Validation::new(alg);
+        validation.set_issuer(&[&discovery.issuer]);
+        validation.set_audience(&[&self.config.client_id]);
+        validation.required_spec_claims.remove("exp");
+
+        let token_data =
+            jsonwebtoken::decode::<LogoutTokenClaims>(logout_token, &decoding_key, &validation)
+                .map_err(|e| {
+                    tracing::warn!("OIDC logout_token validation failed: {}", e);
+                    DomainError::new(
+                        ErrorKind::AccessDenied,
+                        "OIDC",
+                        format!("logout_token validation failed: {}", e),
+                    )
+                })?;
+
+        let claims = token_data.claims;
+
+        // Spec §2.4: MUST NOT contain a nonce claim (that's an id_token thing).
+        // If we see one, the IdP is confused or an attacker is replaying an
+        // id_token as a logout_token; refuse.
+        if claims.nonce.is_some() {
+            tracing::warn!(
+                "OIDC logout_token rejected: nonce claim present (spec §2.4 forbids it)"
+            );
+            return Err(DomainError::new(
+                ErrorKind::AccessDenied,
+                "OIDC",
+                "logout_token must not contain nonce",
+            ));
+        }
+
+        // Spec §2.4: MUST have `events` claim as a JSON object with a
+        // property whose name is the backchannel-logout URI. Value is
+        // typically `{}` — we don't inspect it.
+        let has_event = claims
+            .events
+            .as_object()
+            .map(|o| o.contains_key(BACKCHANNEL_LOGOUT_EVENT))
+            .unwrap_or(false);
+        if !has_event {
+            tracing::warn!(
+                "OIDC logout_token rejected: missing events.'{}'",
+                BACKCHANNEL_LOGOUT_EVENT
+            );
+            return Err(DomainError::new(
+                ErrorKind::AccessDenied,
+                "OIDC",
+                "logout_token missing required backchannel-logout event",
+            ));
+        }
+
+        // Spec §2.4: MUST contain `sub` and/or `sid`. Without one, we have
+        // nothing to key the revocation on.
+        if claims.sub.is_none() && claims.sid.is_none() {
+            tracing::warn!("OIDC logout_token rejected: neither sub nor sid present");
+            return Err(DomainError::new(
+                ErrorKind::AccessDenied,
+                "OIDC",
+                "logout_token must contain sub or sid",
+            ));
+        }
+
+        // Freshness clamp — iat within the last 5 minutes. Prevents
+        // rogue replay of an old logout_token. Not spec-mandated but
+        // recommended (BCL §2.6).
+        let now = chrono::Utc::now().timestamp();
+        const MAX_AGE_SECS: i64 = 300;
+        if (now - claims.iat).abs() > MAX_AGE_SECS {
+            tracing::warn!(
+                "OIDC logout_token rejected: iat too old (age={}s, max={}s)",
+                now - claims.iat,
+                MAX_AGE_SECS
+            );
+            return Err(DomainError::new(
+                ErrorKind::AccessDenied,
+                "OIDC",
+                "logout_token iat outside freshness window",
+            ));
+        }
+
+        // Belt-and-suspenders — the jsonwebtoken decode already enforced
+        // iss+aud, but log if we get here somehow. Actively used only if
+        // future changes to Validation config regress the check.
+        if claims.iss != discovery.issuer {
+            return Err(DomainError::new(
+                ErrorKind::AccessDenied,
+                "OIDC",
+                "logout_token iss mismatch",
+            ));
+        }
+        // aud may be string or array — accept either shape carrying our client_id.
+        let aud_ok = match &claims.aud {
+            serde_json::Value::String(s) => s == &self.config.client_id,
+            serde_json::Value::Array(a) => a
+                .iter()
+                .any(|v| v.as_str() == Some(self.config.client_id.as_str())),
+            _ => false,
+        };
+        if !aud_ok {
+            return Err(DomainError::new(
+                ErrorKind::AccessDenied,
+                "OIDC",
+                "logout_token aud mismatch",
+            ));
+        }
+
+        Ok(OidcLogoutClaims {
+            sub: claims.sub,
+            sid: claims.sid,
+            jti: claims.jti,
+        })
     }
 }
 

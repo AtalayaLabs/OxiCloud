@@ -32,6 +32,9 @@ pub fn auth_public_routes() -> Router<Arc<AppState>> {
         .route("/oidc/authorize", get(oidc_authorize))
         .route("/oidc/callback", get(oidc_callback))
         .route("/oidc/exchange", post(oidc_exchange))
+        // OIDC Back-Channel Logout 1.0 — public (server-to-server call
+        // from the IdP with a signed logout_token; no cookies, no CSRF).
+        .route("/oidc/backchannel-logout", post(oidc_backchannel_logout))
         // Login-via-email — sends a magic-link to the user's email so
         // accounts with no other login credential can sign in.
         .route("/magic-link/send", post(send_magic_link))
@@ -858,16 +861,119 @@ pub async fn logout(
             AppError::unauthorized("Refresh token required for logout (JSON body or cookie)")
         })?;
 
-    auth_service
+    // Post-logout redirect URI = OxiCloud's `/login`. Must be registered on
+    // the OIDC client (Keycloak: "Valid post logout redirect URIs"), else
+    // the IdP will refuse the redirect and strand the user on its error page.
+    let post_logout_redirect_uri = format!("{}/login", state.core.config.base_url());
+
+    let post_logout_url = auth_service
         .auth_application_service
-        .logout(user_id, &refresh_token)
+        .logout(user_id, &refresh_token, &post_logout_redirect_uri)
         .await?;
 
     // Clear HttpOnly + CSRF cookies so the browser forgets the session
-    let mut response = StatusCode::OK.into_response();
+    // regardless of whether we also redirect to the IdP.
+    let body = post_logout_url
+        .map(|url| serde_json::json!({ "post_logout_url": url }))
+        .unwrap_or_else(|| serde_json::json!({}));
+    let mut response = (StatusCode::OK, axum::Json(body)).into_response();
     cookie_auth::append_clear_cookies(response.headers_mut());
     cookie_auth::append_clear_csrf_cookie(response.headers_mut());
     Ok(response)
+}
+
+/// OIDC Back-Channel Logout 1.0 receiver.
+///
+/// The IdP POSTs a signed `logout_token` JWT here when a user's SSO
+/// session ends (they logged out elsewhere, admin revoked the session,
+/// account was disabled). Body is `application/x-www-form-urlencoded`
+/// per spec §2.5 with a single `logout_token` field.
+///
+/// Response codes are constrained by the spec (§2.8):
+/// - 200 on successful processing (including a validated token that
+///   matched no OxiCloud sessions — the notification is still "handled").
+/// - 400 on any validation failure (bad signature, expired, missing
+///   required claims, replay). We do NOT return 200 with an error body.
+///
+/// This endpoint is public: no auth middleware, no CSRF, no cookie.
+/// The `logout_token` signature IS the authentication — an unsigned or
+/// wrongly-signed token gets rejected by the OIDC service validator.
+#[utoipa::path(
+    post,
+    path = "/api/auth/oidc/backchannel-logout",
+    request_body(
+        content_type = "application/x-www-form-urlencoded",
+        description = "Form-encoded body with a single `logout_token` field (the signed JWT from the IdP)",
+    ),
+    responses(
+        (status = 200, description = "Logout notification accepted (0 or more sessions revoked)"),
+        (status = 400, description = "logout_token missing, malformed, or failed validation"),
+        (status = 503, description = "OIDC not configured on this deployment"),
+    ),
+    tag = "auth"
+)]
+pub async fn oidc_backchannel_logout(
+    State(state): State<Arc<AppState>>,
+    axum::Form(form): axum::Form<BackchannelLogoutForm>,
+) -> Response {
+    let auth_service = match state.auth_service.as_ref() {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(serde_json::json!({
+                    "error": "authentication_not_configured",
+                    "error_description": "OIDC is not enabled on this deployment"
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    match auth_service
+        .auth_application_service
+        .backchannel_logout(&form.logout_token)
+        .await
+    {
+        Ok(revoked) => {
+            tracing::info!(
+                target: "audit",
+                event = "oidc.backchannel_logout_accepted",
+                revoked_count = revoked,
+                "👮🏻‍♂️ OIDC backchannel-logout accepted"
+            );
+            // Spec §2.8: response body has no defined content. Empty JSON
+            // object keeps content-type coherent and is cheap for the IdP
+            // to skip.
+            (StatusCode::OK, axum::Json(serde_json::json!({}))).into_response()
+        }
+        Err(e) => {
+            // Log the real reason for operators; return a spec-compliant
+            // 400 with a minimal error payload (spec §2.8 recommends
+            // `application/json` with `error` + `error_description` per
+            // OAuth 2.0 error style).
+            tracing::warn!(
+                target: "audit",
+                event = "oidc.backchannel_logout_rejected",
+                reason = %e,
+                "👮🏻‍♂️ OIDC backchannel-logout rejected"
+            );
+            (
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({
+                    "error": "invalid_request",
+                    "error_description": "logout_token validation failed"
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Form body carried by OIDC Back-Channel Logout notifications.
+#[derive(Debug, serde::Deserialize)]
+pub struct BackchannelLogoutForm {
+    pub logout_token: String,
 }
 
 /// One-time endpoint to create the first admin user.
@@ -1062,6 +1168,7 @@ pub async fn oidc_providers(
     let password_login_enabled = auth_app.is_password_login_allowed();
     let magic_link_login_enabled = auth_app.is_magic_link_login_allowed();
     let require_verified_email = auth_app.require_verified_email();
+    let auto_redirect_to_oidc = auth_app.auto_redirect_to_oidc();
 
     if !auth_app.oidc_enabled() {
         return Ok(Json(OidcProviderInfoDto {
@@ -1071,6 +1178,7 @@ pub async fn oidc_providers(
             password_login_enabled,
             magic_link_login_enabled,
             require_verified_email,
+            auto_redirect_to_oidc: false,
         }));
     }
 
@@ -1083,6 +1191,7 @@ pub async fn oidc_providers(
         password_login_enabled,
         magic_link_login_enabled,
         require_verified_email,
+        auto_redirect_to_oidc,
     }))
 }
 
