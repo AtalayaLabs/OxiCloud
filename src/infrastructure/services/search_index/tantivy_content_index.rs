@@ -137,12 +137,41 @@ impl TantivyContentIndex {
             .unwrap_or(false);
 
         if !version_ok && dir.exists() {
-            std::fs::remove_dir_all(dir).map_err(|e| {
-                DomainError::internal_error(
-                    "ContentIndex",
-                    format!("wiping stale index dir {}: {e}", dir.display()),
-                )
-            })?;
+            // remove_dir_all is racy on Linux against concurrent writes:
+            // it enumerates entries, unlinks them, then rmdirs the parent.
+            // Tantivy writer threads from a previously-opened Index may
+            // still be flushing segment files as we walk — the fresh
+            // segment lands after our listing, and the final rmdir fails
+            // with ENOTEMPTY (os error 39). CI hits this on tmpfs where
+            // the race window is widest; local runs on APFS/ext4 rarely
+            // reproduce it. Retry a few times with short backoffs so the
+            // background writer can drain. In practice one retry is enough;
+            // three gives headroom for a very slow VM without stalling the
+            // real "dir can't be removed" case (permissions, EBUSY, etc.)
+            // which will still surface after the last attempt.
+            let mut attempt = 0;
+            loop {
+                match std::fs::remove_dir_all(dir) {
+                    Ok(()) => break,
+                    Err(e)
+                        if attempt < 3
+                            && matches!(
+                                e.kind(),
+                                std::io::ErrorKind::DirectoryNotEmpty
+                                    | std::io::ErrorKind::ResourceBusy
+                            ) =>
+                    {
+                        attempt += 1;
+                        std::thread::sleep(std::time::Duration::from_millis(50 * attempt));
+                    }
+                    Err(e) => {
+                        return Err(DomainError::internal_error(
+                            "ContentIndex",
+                            format!("wiping stale index dir {}: {e}", dir.display()),
+                        ));
+                    }
+                }
+            }
         }
         std::fs::create_dir_all(dir).map_err(|e| {
             DomainError::internal_error(
