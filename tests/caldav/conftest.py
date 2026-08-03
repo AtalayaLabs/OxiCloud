@@ -247,3 +247,47 @@ def fresh_addressbook(dav_client: caldav.DAVClient, carddav_url: str):
         dav_client.request(ab_url, method="DELETE")
     except Exception:
         pass
+
+
+# ─────────────────────────────────────────────────────────────
+# WebDAV files fixtures — same rationale as the CardDAV block
+# above (no first-class client library for this surface), raw
+# HTTP through the same authenticated DAVClient session.
+# ─────────────────────────────────────────────────────────────
+
+
+@pytest.fixture(scope="session")
+def webdav_url(caldav_url: str) -> str:
+    """WebDAV files base URL derived from the CalDAV URL — same
+    derivation as `carddav_url`."""
+    if "/caldav/" not in caldav_url:
+        raise RuntimeError(
+            f"OXICLOUD_CALDAV_URL={caldav_url!r} does not contain "
+            "'/caldav/'; can't derive the WebDAV counterpart."
+        )
+    return caldav_url.replace("/caldav/", "/webdav/", 1)
+
+
+@pytest.fixture
+def fresh_webdav_folder(dav_client: caldav.DAVClient, webdav_url: str):
+    """Create a fresh WebDAV folder and return its URL as a string.
+
+    Unlike `fresh_calendar`/`fresh_addressbook`, WebDAV's MKCOL uses the
+    client-given slug directly as the folder's path/name — no
+    server-UUID rebind needed (confirmed against
+    `webdav_sync_collection.hurl`, which references its MKCOL'd folder
+    by the exact same slug it created, with no PROPFIND-based rediscovery
+    step). Yields the URL (string, trailing `/`); teardown DELETEs it on
+    best-effort."""
+    name = f"pywebdav-{uuid.uuid4().hex[:12]}"
+    url = webdav_url.rstrip("/") + f"/{name}/"
+
+    r = dav_client.request(url, method="MKCOL", body="")
+    if r.status not in (200, 201):
+        raise RuntimeError(f"MKCOL {url} → HTTP {r.status}\n{r.raw!r}")
+
+    yield url
+    try:
+        dav_client.request(url, method="DELETE")
+    except Exception:
+        pass

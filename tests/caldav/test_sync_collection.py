@@ -316,6 +316,31 @@ def test_calendar_sync_token_rejected_against_wrong_calendar(
 # ─────────────────────────────────────────────────────────────
 
 
+def test_contact_sync_initial_returns_full_listing_and_token(
+    dav_client: caldav.DAVClient, fresh_addressbook: str
+) -> None:
+    uid = f"sync-init-{uuid.uuid4().hex[:8]}"
+    _put_vcard(dav_client, fresh_addressbook, uid)
+
+    status, xml = _sync_collection(dav_client, fresh_addressbook, None)
+    assert status == 207, f"Initial sync-collection → HTTP {status}\n{xml}"
+    assert uid in xml, f"Seeded contact {uid} missing from initial sync:\n{xml}"
+    assert _extract_sync_token(xml)
+
+
+def test_contact_sync_noop_returns_empty_delta(
+    dav_client: caldav.DAVClient, fresh_addressbook: str
+) -> None:
+    uid = f"sync-noop-{uuid.uuid4().hex[:8]}"
+    _put_vcard(dav_client, fresh_addressbook, uid)
+    _, xml = _sync_collection(dav_client, fresh_addressbook, None)
+    token = _extract_sync_token(xml)
+
+    status, xml2 = _sync_collection(dav_client, fresh_addressbook, token)
+    assert status == 207
+    assert uid not in xml2, f"No-op resync re-listed {uid}:\n{xml2}"
+
+
 def test_contact_sync_delta_contains_only_new_contacts(
     dav_client: caldav.DAVClient, fresh_addressbook: str
 ) -> None:
@@ -424,6 +449,35 @@ def test_calendar_sync_churn_nets_to_single_correct_outcome(
         f"(recreated last) but the delta reports it deleted — a client "
         f"applying this would incorrectly delete a resource that still "
         f"exists:\n{blocks[0]}"
+    )
+
+
+def test_contact_sync_churn_nets_to_single_correct_outcome(
+    dav_client: caldav.DAVClient, fresh_addressbook: str
+) -> None:
+    """CardDAV counterpart of the calendar churn test above — same
+    delete+recreate "update" semantics, same server-side stale-tombstone
+    drop (shared code path, `sync_collection_engine.rs`). A regression
+    here without one on the calendar side would mean the fix only works
+    for calendar by coincidence, not because it's actually shared."""
+    uid = f"sync-churn-{uuid.uuid4().hex[:8]}"
+    _, xml = _sync_collection(dav_client, fresh_addressbook, None)
+    token = _extract_sync_token(xml)
+
+    _put_vcard(dav_client, fresh_addressbook, uid)
+    _delete_vcard(dav_client, fresh_addressbook, uid)
+    _put_vcard(dav_client, fresh_addressbook, uid)
+
+    status, xml2 = _sync_collection(dav_client, fresh_addressbook, token)
+    assert status == 207
+    blocks = [b for b in _response_blocks(xml2) if uid in b]
+    assert len(blocks) == 1, (
+        f"Delete+recreate of the same href within one poll window must "
+        f"net to exactly one delta entry; got {len(blocks)}:\n{xml2}"
+    )
+    assert not _is_deleted_block(blocks[0]), (
+        f"Churned contact {uid}'s true final state is 'present' "
+        f"(recreated last) but the delta reports it deleted:\n{blocks[0]}"
     )
 
 
@@ -645,4 +699,84 @@ def test_calendar_sync_expired_token_after_row_cap_returns_507_then_recovers(
         f"Recovery full resync doesn't match ground truth.\n"
         f"Only in resync: {recovered - ground_truth}\n"
         f"Only on server: {ground_truth - recovered}"
+    )
+
+
+def test_contact_sync_concurrent_writers_delta_contains_both(
+    dav_client: caldav.DAVClient, fresh_addressbook: str
+) -> None:
+    """CardDAV counterpart of the calendar concurrent-writers test —
+    same `changes_since` snapshot-race regression pin, same shared code
+    path (`sync_change_log_pg_repository.rs`, the generic CalDAV/CardDAV
+    repo)."""
+    _, xml = _sync_collection(dav_client, fresh_addressbook, None)
+    token = _extract_sync_token(xml)
+
+    uid_a = f"sync-race-a-{uuid.uuid4().hex[:8]}"
+    uid_b = f"sync-race-b-{uuid.uuid4().hex[:8]}"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fut_a = pool.submit(_put_vcard, dav_client, fresh_addressbook, uid_a)
+        fut_b = pool.submit(_put_vcard, dav_client, fresh_addressbook, uid_b)
+        fut_a.result()
+        fut_b.result()
+
+    status, xml2 = _sync_collection(dav_client, fresh_addressbook, token)
+    assert status == 207
+    assert uid_a in xml2, (
+        f"Concurrently-written contact {uid_a} missing from delta — "
+        f"snapshot race regression:\n{xml2}"
+    )
+    assert uid_b in xml2, (
+        f"Concurrently-written contact {uid_b} missing from delta — "
+        f"snapshot race regression:\n{xml2}"
+    )
+
+
+def test_contact_sync_expired_token_after_row_cap_returns_507_then_recovers(
+    dav_client: caldav.DAVClient,
+    fresh_addressbook: str,
+    base_url: str,
+    admin_jwt: str,
+) -> None:
+    """CardDAV counterpart of the calendar row-cap/expiry test — same
+    `OXICLOUD_SYNC_LOG_MAX_ROWS_PER_COLLECTION` server config, same
+    admin-triggered `sync_log_retention` job (one instance-wide config
+    value covers all three domains)."""
+    seed_uid = f"sync-cap-seed-{uuid.uuid4().hex[:8]}"
+    _put_vcard(dav_client, fresh_addressbook, seed_uid)
+    _, xml = _sync_collection(dav_client, fresh_addressbook, None)
+    stale_token = _extract_sync_token(xml)
+
+    for i in range(10):
+        uid = f"sync-cap-churn-{i}-{uuid.uuid4().hex[:6]}"
+        _put_vcard(dav_client, fresh_addressbook, uid)
+        _delete_vcard(dav_client, fresh_addressbook, uid)
+
+    trigger_resp = requests.post(
+        f"{base_url}/api/admin/jobs/sync_log_retention/trigger",
+        params={"force": "true"},
+        headers={"Authorization": f"Bearer {admin_jwt}"},
+        timeout=30,
+    )
+    assert trigger_resp.status_code == 200, (
+        f"Admin retention-job trigger → HTTP {trigger_resp.status_code}\n"
+        f"{trigger_resp.text}"
+    )
+    outcome = trigger_resp.json()
+    assert outcome.get("outcome", {}).get("outcome") == "ok", (
+        f"Retention job did not report success: {outcome}"
+    )
+
+    status, body = _sync_collection(dav_client, fresh_addressbook, stale_token)
+    assert status == 507, (
+        f"Stale token after row-cap enforcement expected HTTP 507; got "
+        f"{status}\n{body}"
+    )
+
+    status, xml2 = _sync_collection(dav_client, fresh_addressbook, None)
+    assert status == 207, f"Recovery full resync → HTTP {status}\n{xml2}"
+    assert seed_uid in xml2, (
+        f"Seed contact {seed_uid} (never deleted) missing from recovery "
+        f"full resync:\n{xml2}"
     )

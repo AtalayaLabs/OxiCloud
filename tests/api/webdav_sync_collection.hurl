@@ -278,7 +278,7 @@ Content-Type: application/xml; charset=utf-8
 
 HTTP 404
 [Asserts]
-jsonpath "$.error_type" == "Not Found"
+jsonpath "$.error_type" == "NotFound"
 
 
 # ─────────────────────────────────────────────────────────────
