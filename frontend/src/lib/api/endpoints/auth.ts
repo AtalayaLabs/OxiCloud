@@ -99,6 +99,20 @@ export interface OidcProviders {
 	 */
 	require_verified_email?: boolean;
 	authorize_endpoint?: string;
+	/**
+	 * Server-computed: true when the `auto_redirect_if_standalone_oidc`
+	 * policy is on AND OIDC is the only working method (see
+	 * `AuthApplicationService::auto_redirect_to_oidc`). When true the root
+	 * layout guard `window.location.replace`s to `authorize_endpoint`
+	 * instead of routing through `/login` — the server-side `/login`
+	 * middleware only fires on full HTTP loads, so SPA client-side
+	 * navigation to `/login` (root guard, dev via Vite) would otherwise
+	 * stall on the login page. Because the flag is gated by the admin's
+	 * policy on the SERVER, using it on the client does NOT override the
+	 * policy toggle — we're just enacting the same decision on paths the
+	 * middleware can't reach.
+	 */
+	auto_redirect_to_oidc?: boolean;
 }
 
 /** Public OIDC provider info for the login page. */
