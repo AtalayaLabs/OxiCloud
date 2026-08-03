@@ -141,6 +141,16 @@ pub struct AuthApplicationService {
     /// Auto-expires after 60 seconds via moka TTL; max 10 000 entries for DoS protection.
     pending_oidc_tokens: Cache<String, PendingOidcToken>,
     completed_oidc_logins: Cache<String, String>,
+    /// Back-Channel Logout replay guard — dedupes logout_tokens by their
+    /// `jti` claim within the token's freshness window (5 min per BCL §2.6).
+    /// A cooperative IdP will not re-send a logout_token, but the endpoint
+    /// is public and unauthenticated so a rogue caller could try to; we
+    /// short-circuit repeats to avoid burning DB writes on duplicates.
+    /// Note: tokens without a jti bypass this guard — the validator has
+    /// already enforced signature + freshness + subject-presence, so at
+    /// worst a legitimate re-notification runs the (idempotent) revoke path
+    /// a second time and returns "no rows changed".
+    backchannel_logout_jti_seen: Cache<String, ()>,
     /// Magic-link token repository — populated when the magic-link feature
     /// is enabled (PR 8+). `None` means redemption endpoints return 503.
     magic_link_repo: Option<Arc<dyn MagicLinkTokenRepository>>,
@@ -207,6 +217,13 @@ impl AuthApplicationService {
             completed_oidc_logins: Cache::builder()
                 .max_capacity(10_000)
                 .time_to_live(Duration::from_secs(120))
+                .build(),
+            backchannel_logout_jti_seen: Cache::builder()
+                .max_capacity(10_000)
+                // Matches OidcService::validate_logout_token freshness clamp
+                // (5 min). Any token older than that fails validation before
+                // reaching the jti check, so no need to remember jtis longer.
+                .time_to_live(Duration::from_secs(300))
                 .build(),
             magic_link_repo: None,
             user_flags_cache: moka::future::Cache::builder()
@@ -1304,6 +1321,99 @@ impl AuthApplicationService {
         };
         oidc.build_end_session_url(&id_token, post_logout_redirect_uri)
             .await
+    }
+
+    /// OIDC Back-Channel Logout 1.0 entry point.
+    ///
+    /// Called by the public BCL handler with an unvalidated logout_token
+    /// (as delivered by the IdP over server-to-server HTTP). This method
+    /// owns the full flow:
+    ///
+    ///   1. Validate the token (signature + spec-mandated claims).
+    ///   2. Reject replays via the `jti` seen-cache (best-effort — tokens
+    ///      without a jti are impossible to dedupe cheaply, so the revoke
+    ///      path stays idempotent as a safety net).
+    ///   3. Prefer `sid` (per-device revocation) over `sub` (all-device)
+    ///      when both are present — matches the intent of the IdP that
+    ///      chose to include `sid`.
+    ///   4. Dispatch per-user lifecycle hooks so downstream systems
+    ///      (websocket subscriptions, etc.) can react.
+    ///
+    /// Returns the count of session rows actually flipped from
+    /// `revoked=false` to `revoked=true` — 0 is a fine outcome (already
+    /// logged out or unknown user; both are indistinguishable from the
+    /// IdP's viewpoint and both mean "OxiCloud has no live session for
+    /// that identity").
+    pub async fn backchannel_logout(&self, logout_token: &str) -> Result<u64, DomainError> {
+        let oidc = {
+            let state = self.oidc.read().unwrap();
+            state.service.clone().ok_or_else(|| {
+                DomainError::new(
+                    ErrorKind::InternalError,
+                    "OIDC",
+                    "OIDC service not configured — cannot process backchannel logout",
+                )
+            })?
+        };
+
+        let claims = oidc.validate_logout_token(logout_token).await?;
+
+        // Replay guard. Insertion-first-then-check: `get()` + `insert()`
+        // is racy across concurrent BCL calls with the same jti (both
+        // could observe absent, both would run the revocation), but the
+        // revocation is idempotent so at worst we double-audit. If it
+        // matters more we can move to `entry().or_insert()` semantics.
+        if let Some(jti) = claims.jti.as_ref() {
+            if self.backchannel_logout_jti_seen.get(jti).is_some() {
+                tracing::info!(
+                    target: "audit",
+                    event = "oidc.backchannel_logout_replayed",
+                    jti = %jti,
+                    "👮🏻‍♂️ OIDC backchannel-logout token replayed — ignored"
+                );
+                return Ok(0);
+            }
+            self.backchannel_logout_jti_seen.insert(jti.clone(), ());
+        }
+
+        let provider_name = oidc.provider_name().to_string();
+
+        // Resolve which sessions to revoke.
+        let affected_user_ids: Vec<Uuid> = if let Some(sid) = claims.sid.as_ref() {
+            self.session_storage
+                .revoke_sessions_by_oidc_sid(sid)
+                .await?
+        } else if let Some(sub) = claims.sub.as_ref() {
+            self.session_storage
+                .revoke_user_sessions_by_oidc_subject(&provider_name, sub)
+                .await?
+                .into_iter()
+                .collect()
+        } else {
+            // Validator already enforced sub-or-sid presence; being here
+            // means the validator has drifted. Fail loud.
+            return Err(DomainError::new(
+                ErrorKind::InternalError,
+                "OIDC",
+                "backchannel_logout: validator returned claims without sub or sid",
+            ));
+        };
+
+        // Dispatch lifecycle hooks per unique affected user. Best-effort;
+        // hook failures don't undo the revocation (which already committed).
+        // Deduped because sid-based revocation could theoretically match
+        // multiple sessions for the same user if the IdP re-issued sids.
+        if let Some(lc) = &self.user_lifecycle {
+            let unique: std::collections::HashSet<Uuid> =
+                affected_user_ids.iter().copied().collect();
+            for uid in unique {
+                if let Ok(user) = self.user_storage.get_user_by_id(uid).await {
+                    lc.dispatch_logout(user, LogoutReason::IdpNotification);
+                }
+            }
+        }
+
+        Ok(affected_user_ids.len() as u64)
     }
 
     pub async fn logout_all(&self, user_id: Uuid) -> Result<u64, DomainError> {
@@ -3066,7 +3176,7 @@ impl AuthApplicationService {
         let access_token = self.token_service.generate_access_token(&user)?;
         let refresh_token = self.token_service.generate_refresh_token();
 
-        let session = Session::new(
+        let mut session = Session::new(
             user.id(),
             refresh_token.clone(),
             None,
@@ -3075,6 +3185,14 @@ impl AuthApplicationService {
             Uuid::new_v4(),
         )
         .with_oidc_id_token(token_set.id_token.clone());
+        // Bind the IdP's session identifier so Back-Channel Logout can
+        // revoke this specific device (see auth_ports::OidcLogoutClaims
+        // and session_pg_repository::revoke_sessions_by_oidc_sid). IdPs
+        // that don't emit sid leave this None; BCL then falls back to
+        // sub-based revocation.
+        if let Some(sid) = claims.sid.as_ref() {
+            session = session.with_oidc_sid(sid.clone());
+        }
         self.session_storage.create_session(session).await?;
 
         let auth_response = AuthResponseDto {

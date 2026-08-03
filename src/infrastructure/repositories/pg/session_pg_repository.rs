@@ -53,9 +53,9 @@ impl SessionRepository for SessionPgRepository {
                         INSERT INTO auth.sessions (
                             id, user_id, refresh_token, expires_at,
                             ip_address, user_agent, created_at, revoked, family_id,
-                            oidc_id_token
+                            oidc_id_token, oidc_sid
                         ) VALUES (
-                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
                         )
                         "#,
                 )
@@ -69,6 +69,7 @@ impl SessionRepository for SessionPgRepository {
                 .bind(session_clone.is_revoked())
                 .bind(session_clone.family_id())
                 .bind(session_clone.oidc_id_token())
+                .bind(session_clone.oidc_sid())
                 .execute(&mut **tx)
                 .await
                 .map_err(Self::map_sqlx_error)?;
@@ -114,7 +115,7 @@ impl SessionRepository for SessionPgRepository {
             SELECT
                 id, user_id, refresh_token, expires_at,
                 ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token
+                oidc_id_token, oidc_sid
             FROM auth.sessions
             WHERE id = $1
             "#,
@@ -135,6 +136,7 @@ impl SessionRepository for SessionPgRepository {
             row.get("revoked"),
             row.get("family_id"),
             row.get("oidc_id_token"),
+            row.get("oidc_sid"),
         ))
     }
 
@@ -149,7 +151,7 @@ impl SessionRepository for SessionPgRepository {
             SELECT
                 id, user_id, refresh_token, expires_at,
                 ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token
+                oidc_id_token, oidc_sid
             FROM auth.sessions
             WHERE refresh_token = $1
             "#,
@@ -170,6 +172,7 @@ impl SessionRepository for SessionPgRepository {
             row.get("revoked"),
             row.get("family_id"),
             row.get("oidc_id_token"),
+            row.get("oidc_sid"),
         ))
     }
 
@@ -183,7 +186,7 @@ impl SessionRepository for SessionPgRepository {
             SELECT
                 id, user_id, refresh_token, expires_at,
                 ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token
+                oidc_id_token, oidc_sid
             FROM auth.sessions
             WHERE user_id = $1
             ORDER BY created_at DESC
@@ -208,6 +211,7 @@ impl SessionRepository for SessionPgRepository {
                     row.get("revoked"),
                     row.get("family_id"),
                     row.get("oidc_id_token"),
+                    row.get("oidc_sid"),
                 )
             })
             .collect();
@@ -308,6 +312,92 @@ impl SessionRepository for SessionPgRepository {
         Ok(affected)
     }
 
+    /// Back-Channel Logout — revoke sessions matched by the IdP-supplied
+    /// `sid`. Filters `NOT revoked` so double-notifications are idempotent
+    /// (returning empty second time). Only session rows with a non-null
+    /// oidc_sid ever match, so this is safe against sid values happening
+    /// to collide with anything else.
+    async fn revoke_sessions_by_oidc_sid(&self, sid: &str) -> SessionRepositoryResult<Vec<Uuid>> {
+        let rows = sqlx::query(
+            r#"
+            UPDATE auth.sessions
+            SET revoked = true
+            WHERE oidc_sid = $1 AND NOT revoked
+            RETURNING user_id
+            "#,
+        )
+        .bind(sid)
+        .fetch_all(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)?;
+
+        let user_ids: Vec<Uuid> = rows.iter().map(|r| r.get("user_id")).collect();
+        if !user_ids.is_empty() {
+            tracing::info!(
+                target: "audit",
+                event = "oidc.backchannel_logout_by_sid",
+                sid = %sid,
+                revoked_count = user_ids.len(),
+                "👮🏻‍♂️ OIDC backchannel-logout revoked sessions by sid"
+            );
+        }
+        Ok(user_ids)
+    }
+
+    /// Back-Channel Logout fallback — the IdP omitted `sid` in the
+    /// logout_token, so we revoke every session belonging to the user
+    /// identified by (oidc_provider, oidc_subject). Users are looked up
+    /// through the existing auth.users columns.
+    async fn revoke_user_sessions_by_oidc_subject(
+        &self,
+        oidc_provider: &str,
+        oidc_subject: &str,
+    ) -> SessionRepositoryResult<Option<Uuid>> {
+        // Two-step: look up the user first (deterministic error class if
+        // the user is unknown), then revoke. Combining into a single
+        // UPDATE-FROM would work but the audit log wants the user_id
+        // separately from the revocation count.
+        let user_row = sqlx::query(
+            r#"
+            SELECT id FROM auth.users
+            WHERE oidc_provider = $1 AND oidc_subject = $2
+            "#,
+        )
+        .bind(oidc_provider)
+        .bind(oidc_subject)
+        .fetch_optional(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)?;
+
+        let Some(row) = user_row else {
+            return Ok(None);
+        };
+        let user_id: Uuid = row.get("id");
+
+        let result = sqlx::query(
+            r#"
+            UPDATE auth.sessions
+            SET revoked = true
+            WHERE user_id = $1 AND NOT revoked
+            "#,
+        )
+        .bind(user_id)
+        .execute(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)?;
+
+        tracing::info!(
+            target: "audit",
+            event = "oidc.backchannel_logout_by_sub",
+            oidc_provider = %oidc_provider,
+            oidc_subject = %oidc_subject,
+            user_id = %user_id,
+            revoked_count = result.rows_affected(),
+            "👮🏻‍♂️ OIDC backchannel-logout revoked all user sessions by sub"
+        );
+        Ok(Some(user_id))
+    }
+
     /// Deletes expired sessions
     async fn delete_expired_sessions(&self) -> SessionRepositoryResult<u64> {
         let now = Utc::now();
@@ -357,9 +447,9 @@ impl SessionStoragePort for SessionPgRepository {
                         INSERT INTO auth.sessions (
                             id, user_id, refresh_token, expires_at,
                             ip_address, user_agent, created_at, revoked, family_id,
-                            oidc_id_token
+                            oidc_id_token, oidc_sid
                         ) VALUES (
-                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
                         )
                         "#,
                 )
@@ -373,6 +463,7 @@ impl SessionStoragePort for SessionPgRepository {
                 .bind(session_clone.is_revoked())
                 .bind(session_clone.family_id())
                 .bind(session_clone.oidc_id_token())
+                .bind(session_clone.oidc_sid())
                 .execute(&mut **tx)
                 .await
                 .map_err(Self::map_sqlx_error)?;
@@ -431,6 +522,22 @@ impl SessionStoragePort for SessionPgRepository {
 
     async fn revoke_session_family(&self, family_id: Uuid) -> Result<u64, DomainError> {
         SessionRepository::revoke_session_family(self, family_id)
+            .await
+            .map_err(DomainError::from)
+    }
+
+    async fn revoke_sessions_by_oidc_sid(&self, sid: &str) -> Result<Vec<Uuid>, DomainError> {
+        SessionRepository::revoke_sessions_by_oidc_sid(self, sid)
+            .await
+            .map_err(DomainError::from)
+    }
+
+    async fn revoke_user_sessions_by_oidc_subject(
+        &self,
+        oidc_provider: &str,
+        oidc_subject: &str,
+    ) -> Result<Option<Uuid>, DomainError> {
+        SessionRepository::revoke_user_sessions_by_oidc_subject(self, oidc_provider, oidc_subject)
             .await
             .map_err(DomainError::from)
     }

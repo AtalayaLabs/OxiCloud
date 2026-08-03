@@ -55,6 +55,28 @@ pub trait SessionRepository: Send + Sync + 'static {
     /// Revokes all sessions in a token family (theft response)
     async fn revoke_session_family(&self, family_id: Uuid) -> SessionRepositoryResult<u64>;
 
+    /// Revokes every OxiCloud session whose OIDC sid claim matches.
+    ///
+    /// Used by the Back-Channel Logout handler when the IdP sends a
+    /// logout_token with a `sid` — this is the per-device path and
+    /// matches (in the typical case) exactly one session row. Returns
+    /// user IDs of every affected session so the caller can dispatch
+    /// per-user lifecycle hooks.
+    async fn revoke_sessions_by_oidc_sid(&self, sid: &str) -> SessionRepositoryResult<Vec<Uuid>>;
+
+    /// Revokes every session belonging to the user identified by
+    /// `(oidc_provider, oidc_subject)`.
+    ///
+    /// Fallback path for the Back-Channel Logout handler when the IdP
+    /// omits `sid` from the logout_token — coarser than sid-based
+    /// revocation (kills the user's other devices too). Returns the
+    /// user id of the affected account, or `None` if no matching user.
+    async fn revoke_user_sessions_by_oidc_subject(
+        &self,
+        oidc_provider: &str,
+        oidc_subject: &str,
+    ) -> SessionRepositoryResult<Option<Uuid>>;
+
     /// Deletes expired sessions
     async fn delete_expired_sessions(&self) -> SessionRepositoryResult<u64>;
 }

@@ -138,6 +138,41 @@ Requirements:
 
 The `id_token` used as `id_token_hint` is captured at login time from the OIDC token-exchange response and persisted on `auth.sessions.oidc_id_token`. Non-OIDC sessions leave the column NULL and `POST /api/auth/logout` returns `{}` (local-only logout).
 
+## OIDC Back-Channel Logout
+
+Complements RP-initiated logout by letting the **IdP** kick OxiCloud sessions server-to-server, without any browser involvement. Fires when:
+
+- The user logged out of another RP (single sign-out across your fleet).
+- An admin revoked the user's SSO session from the Keycloak admin console.
+- The user's account was disabled at the IdP.
+
+Endpoint: `POST /api/auth/oidc/backchannel-logout`. Public (no auth middleware, no CSRF, no cookies) — the signed `logout_token` JWT IS the authentication.
+
+**IdP-side setup (Keycloak):**
+
+1. On the client's Settings tab, set **Backchannel Logout URL** to `<oxicloud-base-url>/api/auth/oidc/backchannel-logout`.
+2. Turn on **Backchannel Logout Session Required**. This makes Keycloak include the `sid` claim on both id_tokens (which OxiCloud persists on `auth.sessions.oidc_sid`) AND on the logout_tokens it sends. With `sid` present, OxiCloud revokes only the specific device that logged out; without it, we fall back to revoking every session belonging to the same OIDC subject (all of the user's OxiCloud devices).
+3. Leave **Backchannel Logout Revoke Offline Sessions** off unless you have a reason — OxiCloud uses only online sessions today.
+
+**What OxiCloud validates on the logout_token** (per OIDC Back-Channel Logout 1.0):
+
+- Signature via the IdP's JWKS (same key material as id_token validation).
+- `iss` matches the discovery document's issuer.
+- `aud` contains our `client_id`.
+- `events` claim contains the `http://schemas.openid.net/event/backchannel-logout` key.
+- `sub` and/or `sid` present (else there's nothing to revoke — 400).
+- `nonce` absent (spec §2.4 forbids it — a token with a nonce is either an IdP bug or a replay of an id_token; 400).
+- `iat` within a 5-minute freshness window.
+- `jti` (if present) deduped for 5 minutes so retransmissions don't cause double-audit.
+
+Response codes are constrained by the spec:
+
+- **200** — token validated; 0 or more sessions revoked (both are "handled" from the IdP's view).
+- **400** — validation failed. Real reason is logged locally (`event=oidc.backchannel_logout_rejected`) and NOT returned in the body; the IdP just sees `invalid_request`.
+- **503** — OIDC is not enabled on this deployment. The IdP shouldn't be calling us in that case.
+
+**Compared to RP-initiated logout** (the flow triggered by `POST /api/auth/logout`): RP-initiated is browser-driven and evicts the local session + kills the IdP session. Back-channel is IdP-driven and evicts the local session; the IdP's own state is not affected. The two are complementary — enable both.
+
 ## Example Flows
 
 ### Register — classic

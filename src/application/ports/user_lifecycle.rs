@@ -123,6 +123,11 @@ pub enum LogoutReason {
     /// Refresh-token reuse detected by the session-family guard. Entire
     /// family revoked because the rotation was probably stolen.
     TokenReused,
+    /// OIDC Back-Channel Logout — the IdP notified us that a session
+    /// ended on its side (user logged out on another RP, or admin
+    /// revoked the SSO session). Session(s) revoked without any user
+    /// action on OxiCloud itself.
+    IdpNotification,
 }
 
 /// How aggressively `on_user_deleted` cleanup should run. Today both
