@@ -65,7 +65,7 @@ Comma-separated allowlist of `password`, `magic_link`, and/or `oidc`. Default (w
 
 **OIDC master rule.** When OIDC is enabled, magic-link login is **hard-disabled** regardless of this list. The IdP is the identity boundary; magic-link would bypass any 2FA / step-up policy the IdP enforces. The startup gate above does **not** trigger in this case — OIDC provides the login path.
 
-Legacy alias: `OXICLOUD_OIDC_DISABLE_PASSWORD_LOGIN=true` still removes `password` from the effective allowlist.
+**DEPRECATED** alias: `OXICLOUD_OIDC_DISABLE_PASSWORD_LOGIN=true` still removes `password` from the effective allowlist. Setting it emits a boot warning; the flag will be removed in the next major release. Migrate to `OXICLOUD_AUTH_METHODS=oidc` (and add `OXICLOUD_AUTH_POLICIES=auto_redirect_if_standalone_oidc` if you want the server-side `/login` redirect too).
 
 ### `OXICLOUD_REQUIRE_VERIFIED_EMAIL`
 

@@ -2753,13 +2753,36 @@ impl AppConfig {
         // response; this line makes the effect apply uniformly through
         // `is_method_allowed(Password)` so services don't need to check
         // both flags.
-        if let Ok(v) = env::var("OXICLOUD_OIDC_DISABLE_PASSWORD_LOGIN")
-            && v.parse::<bool>().unwrap_or(false)
-        {
-            config
-                .auth
-                .allowed_auth_methods
-                .retain(|m| *m != AuthMethod::Password);
+        //
+        // Deprecated in favour of the composable `OXICLOUD_AUTH_METHODS=oidc`
+        // allowlist which handles the same SSO-only intent alongside the
+        // AUTH_POLICIES vector. Warn every time the env var is observed so
+        // operators migrating a config from a pre-AUTH_METHODS release see
+        // the recommendation on the first boot after upgrade. Removal is
+        // slated for the next major release; the setting continues to work
+        // until then to avoid breaking existing deployments.
+        if let Ok(v) = env::var("OXICLOUD_OIDC_DISABLE_PASSWORD_LOGIN") {
+            let parsed = v.parse::<bool>().unwrap_or(false);
+            tracing::warn!(
+                "OXICLOUD_OIDC_DISABLE_PASSWORD_LOGIN is DEPRECATED and will \
+                 be removed in a future major release. Use \
+                 `OXICLOUD_AUTH_METHODS=oidc` instead (add \
+                 `OXICLOUD_AUTH_POLICIES=auto_redirect_if_standalone_oidc` \
+                 to also enable server-side /login redirect). \
+                 Current value: {} — {}",
+                v,
+                if parsed {
+                    "password login is disabled"
+                } else {
+                    "no effect (value must be `true` to take effect)"
+                },
+            );
+            if parsed {
+                config
+                    .auth
+                    .allowed_auth_methods
+                    .retain(|m| *m != AuthMethod::Password);
+            }
         }
 
         if let Ok(v) = env::var("OXICLOUD_REQUIRE_VERIFIED_EMAIL") {

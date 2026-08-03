@@ -48,7 +48,7 @@ OXICLOUD_OIDC_PROVIDER_NAME="Authentik"
 | `OXICLOUD_OIDC_FRONTEND_URL` | `http://localhost:8086` | Where to redirect the browser after auth |
 | `OXICLOUD_OIDC_AUTO_PROVISION` | `true` | Auto-create users on first login |
 | `OXICLOUD_OIDC_ADMIN_GROUPS` | — | OIDC groups that grant admin role |
-| `OXICLOUD_OIDC_DISABLE_PASSWORD_LOGIN` | `false` | Hide password login when OIDC is active |
+| `OXICLOUD_OIDC_DISABLE_PASSWORD_LOGIN` | `false` | **DEPRECATED** — use `OXICLOUD_AUTH_METHODS=oidc` instead. Emits a boot warning; slated for removal in next major release. |
 | `OXICLOUD_OIDC_PROVIDER_NAME` | `SSO` | Label shown on the login button |
 
 ::: warning
