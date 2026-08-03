@@ -34,10 +34,35 @@
  * carries. In Phase 1 the config is fetched from `/api/health` (or a
  * dedicated `/api/auth/opaque/params` endpoint) at page load and cached.
  */
-import { client, ready } from '@serenity-kit/opaque';
 import { ApiError, apiFetch } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type { AuthResponse } from '$lib/api/types';
+
+/**
+ * Lazily load the `@serenity-kit/opaque` WASM module. A top-level
+ * static import here would trigger `WebAssembly.compile()` the moment
+ * ANYONE imports this file — including the read-only helpers
+ * (`fetchOpaqueParams`, `checkOpaqueAvailable`) that don't need
+ * crypto at all. Under a strict CSP without `'wasm-unsafe-eval'`
+ * (which is the default posture and what Playwright's SPA suite
+ * exercises), that fails at import time and crashes the login page
+ * even in OPAQUE-off deployments where the substrate is disabled.
+ *
+ * Hoisting the import into this async helper defers WASM
+ * compilation to the first crypto call site. The read-only paths
+ * never fire it; only `opaqueRegister` / `opaqueLogin` do — and
+ * those callers already know they need the WASM (they've already
+ * confirmed `params.enabled === true` upstream).
+ *
+ * Awaits `ready` before returning so callers get a fully-initialized
+ * client. `import()` is memoized by the module loader so subsequent
+ * calls hit the same instance.
+ */
+async function opaqueWasm(): Promise<typeof import('@serenity-kit/opaque').client> {
+	const mod = await import('@serenity-kit/opaque');
+	await mod.ready;
+	return mod.client;
+}
 
 /**
  * Client-side Argon2id parameters — must match the server's config
@@ -232,7 +257,7 @@ export async function opaqueRegister(
 	ksf: OpaqueKsfConfig,
 	ciphersuiteVersion: number
 ): Promise<void> {
-	await ready;
+	const client = await opaqueWasm();
 
 	// ── Round 1 ─────────────────────────────────────────────────────────
 	const { clientRegistrationState, registrationRequest } = client.startRegistration({ password });
@@ -297,7 +322,7 @@ export async function opaqueLogin(
 	password: string,
 	ksf: OpaqueKsfConfig
 ): Promise<AuthResponse> {
-	await ready;
+	const client = await opaqueWasm();
 
 	// ── KE1 ─────────────────────────────────────────────────────────────
 	const { clientLoginState, startLoginRequest } = client.startLogin({ password });

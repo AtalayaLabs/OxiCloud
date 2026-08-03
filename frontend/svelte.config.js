@@ -90,7 +90,13 @@ const config = {
 			mode: 'hash',
 			directives: {
 				'default-src': ['self'],
-				'script-src': ['self', themeInitHash],
+				// `'wasm-unsafe-eval'` (CSP Level 3) permits WebAssembly.compile()
+				// without allowing eval() for JavaScript. Required for the OPAQUE
+				// aPAKE client (`@serenity-kit/opaque`), lazy-loaded by the login
+				// path only when `OXICLOUD_OPAQUE_MODE != off`. Mirrors the Rust
+				// server's `content_security_policy` in `src/interfaces/web/mod.rs`
+				// so headers + this meta tag agree on the same posture.
+				'script-src': ['self', 'wasm-unsafe-eval', themeInitHash],
 				'worker-src': ['self'],
 				'style-src': ['self', 'unsafe-inline'],
 				'img-src': ['self', 'data:', 'blob:', 'https:'],
