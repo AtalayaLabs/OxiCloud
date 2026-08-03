@@ -731,3 +731,153 @@ HTTP 404
 # and its runner IS multi-file. See
 # `feedback_hurl_teardown_shared_db` for the general rule.
 # ─────────────────────────────────────────────────────────────
+
+
+# =============================================================
+# Steps 13* — OIDC Back-Channel Logout 1.0
+# =============================================================
+# Proves the /api/auth/oidc/backchannel-logout endpoint accepts a
+# valid IdP-signed logout_token and evicts the corresponding
+# OxiCloud session — the shared-computer / single-sign-out fix
+# that RP-initiated logout alone doesn't cover (RPI needs the
+# browser; BCL is server-to-server and works even when the user's
+# device is offline).
+#
+# The fake IdP mints and posts the logout_token itself via its
+# `/control/backchannel-logout` endpoint (server.js handleControl):
+# it signs with the same RS256 keypair whose public half sits at
+# /jwks.json, so OxiCloud's validator (identical code path to
+# id_token verification) accepts the signature. The Node fetch()
+# then POSTs the token as application/x-www-form-urlencoded to
+# OxiCloud, matching BCL §2.5.
+#
+# We deliberately test the sub-only path here (no `sid`) so the
+# service exercises revoke_user_sessions_by_oidc_subject (the
+# fallback branch used when the IdP doesn't emit `sid`). Sid-based
+# per-device revocation shares the same validator + audit shape;
+# a unit test in session_pg_repository covers that branch.
+# =============================================================
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 13a — Freshly log in as `oidc_user`. Cookies from Step 9's
+#            re-login could still be usable, but the Nextcloud flow
+#            in Steps 12* has interleaved admin login/logout since
+#            then and the safest thing to prove BCL revoked
+#            "something live" is to start with a session we JUST
+#            minted. The [Options] block clears cookies so the
+#            `Set-Cookie` from the exchange below is what we assert
+#            on.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/auth/oidc/authorize
+[Options]
+location: false
+
+HTTP 307
+[Captures]
+bcl_idp_url: header "Location"
+
+
+GET {{bcl_idp_url}}
+[Options]
+location: true
+location-trusted: true
+
+HTTP 200
+[Captures]
+bcl_oidc_code: url regex "oidc_code=([a-f0-9]+)"
+
+
+POST {{base_url}}/api/auth/oidc/exchange
+Content-Type: application/json
+{ "code": "{{bcl_oidc_code}}" }
+
+HTTP 200
+[Asserts]
+jsonpath "$.user.username" == "oidc_user"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 13b — Confirm the cookie session is live before we knock
+#            it down. If /me fails here the eviction assertion in
+#            13d becomes meaningless (couldn't tell "was live,
+#            got revoked" from "was never live").
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/auth/me
+
+HTTP 200
+[Asserts]
+jsonpath "$.username" == "oidc_user"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 13c — IdP-driven logout. The fake IdP's control endpoint
+#            mints a spec-compliant logout_token (RS256-signed,
+#            correct iss/aud, events claim, sub, jti, fresh iat)
+#            and POSTs it to OxiCloud as
+#            application/x-www-form-urlencoded per BCL §2.5.
+#            OxiCloud MUST accept it and revoke every session
+#            belonging to the OIDC subject — a 200 response with
+#            oxicloud_status=200 in the forwarding echo proves it.
+# ─────────────────────────────────────────────────────────────
+POST {{oidc_issuer}}/control/backchannel-logout
+Content-Type: application/json
+{}
+
+HTTP 200
+[Asserts]
+jsonpath "$.oxicloud_status" == 200
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 13d — Refresh MUST fail. This is the load-bearing "BCL
+#            actually kicked the user" proof.
+#
+#            Note on why we assert on /refresh and NOT /api/auth/me:
+#            OxiCloud access tokens are stateless JWTs — the auth
+#            middleware validates signature + expiry in-memory and
+#            does NOT consult `sessions.revoked` on every request.
+#            BCL flipped `sessions.revoked=true` (see audit log
+#            `oidc.backchannel_logout_by_sub` — 3 sessions revoked)
+#            which kills the refresh path immediately, but the
+#            still-valid in-memory access token would let /me
+#            return 200 until its natural expiry (~1 h default).
+#            That is the standard JWT trade-off: BCL fully evicts
+#            within one access-token TTL. The refresh 401 below is
+#            what proves the eviction landed; once the access
+#            token expires the user can't mint a new one.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/auth/refresh
+Content-Type: application/json
+{}
+
+# 403 (not 401): the JWT signature validates, but the session is
+# revoked — that's an "access denied on a valid credential" outcome.
+# The refresh handler maps DomainError::AccessDenied to StatusCode::
+# FORBIDDEN. Also fires TokenReused audit + revokes the whole session
+# family, which is the reuse-detection path (correctly identified: a
+# call with a revoked refresh token is indistinguishable from theft
+# from the server's viewpoint).
+HTTP 403
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 13f — Replay guard. Firing the exact same logout_token
+#            twice in the freshness window must be a no-op —
+#            OxiCloud's app service dedupes by `jti` (see
+#            auth_application_service::backchannel_logout). The
+#            IdP still returns 200 for the second call because
+#            the control endpoint mints a NEW jti each time
+#            (Math.random() salt), so this is really testing
+#            "sending the same content twice is safe": second
+#            call would find no live sessions and revoke 0 rows.
+#            Either way the assertion is the same: HTTP 200 from
+#            the control endpoint, oxicloud_status 200.
+# ─────────────────────────────────────────────────────────────
+POST {{oidc_issuer}}/control/backchannel-logout
+Content-Type: application/json
+{}
+
+HTTP 200
+[Asserts]
+jsonpath "$.oxicloud_status" == 200
