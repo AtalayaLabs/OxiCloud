@@ -105,6 +105,7 @@ use uuid::Uuid;
 
 use crate::application::dtos::user_dto::AuthResponseDto;
 use crate::common::di::AppState;
+use crate::interfaces::api::cookie_auth;
 use crate::infrastructure::services::opaque_login_exchange::{ExchangeId, OpaqueLoginExchange};
 use crate::infrastructure::services::opaque_service::{OpaqueService, OxiCloudSuite};
 use crate::interfaces::errors::AppError;
@@ -722,7 +723,26 @@ pub async fn login_ke3(
         "OPAQUE login completed"
     );
 
-    Ok(Json(session))
+    // Mint the HttpOnly auth cookies + double-submit CSRF cookie —
+    // the SAME shape the legacy `/api/auth/login` handler emits. The
+    // SPA reads the CSRF cookie into an `X-CSRF-Token` header on every
+    // mutating request, and gates its "login succeeded" branch on the
+    // cookie being present (`csrfCookiePresent()` in the login page).
+    // Returning just `Json(session)` without touching cookies — the
+    // shape this handler used before — silently broke the browser
+    // login flow: session tokens were valid but no cookies landed, so
+    // the SPA reported "Login succeeded but the browser rejected the
+    // session cookie" even on http+cookie_secure=false deployments.
+    let mut response = (StatusCode::OK, Json(&session)).into_response();
+    cookie_auth::append_auth_cookies(
+        response.headers_mut(),
+        &session.access_token,
+        &session.refresh_token,
+        session.expires_in,
+        state.core.config.auth.refresh_token_expiry_secs,
+    );
+    cookie_auth::append_csrf_cookie(response.headers_mut(), session.expires_in);
+    Ok(response)
 }
 
 // ── Params publish ───────────────────────────────────────────────────
