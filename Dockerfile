@@ -172,7 +172,7 @@ COPY --from=app --chmod=755 /app/release/oxicloud /usr/local/bin/
 # ship; it only mutates `storage.files` rows whose name ≠ NFC(name).
 COPY --from=app --chmod=755 /app/release/migrate-nfc-filenames /usr/local/bin/
 # Ship the OPAQUE server-setup generator alongside the server so operators
-# can generate their `OXICLOUD_OPAQUE_SERVER_SETUP` value inside the
+# can generate their `OXICLOUD_AUTH_OPAQUE_SERVER_SETUP` value inside the
 # container without a separate Rust toolchain:
 #   docker run --rm <image> opaque-setup   # prints the base64 value
 # One-shot, side-effect-free — safe to include; the runtime doesn't

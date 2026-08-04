@@ -85,8 +85,8 @@ export async function startStack(): Promise<Stack> {
       // OPAQUE substrate off for the container E2E — same rationale as the
       // playwright.config.ts / playwright.coverage.config.ts overrides.
       // The Hurl suite exercises OPAQUE via server.env directly.
-      OXICLOUD_OPAQUE_MODE: 'off',
-      OXICLOUD_OPAQUE_SERVER_SETUP: '',
+      OXICLOUD_AUTH_OPAQUE_MODE: 'off',
+      OXICLOUD_AUTH_OPAQUE_SERVER_SETUP: '',
     })
     // /health is a fast liveness probe (no DB hit); 200 means the HTTP server
     // is up and sqlx migrations have completed.

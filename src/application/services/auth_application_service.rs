@@ -181,7 +181,7 @@ pub struct AuthApplicationService {
     /// `AuthConfig::require_verified_email`.
     require_verified_email: bool,
     /// OPAQUE envelope repo — populated when the OPAQUE substrate is
-    /// wired (`OXICLOUD_OPAQUE_MODE != off`). `login()` consults it to
+    /// wired (`OXICLOUD_AUTH_OPAQUE_MODE != off`). `login()` consults it to
     /// enforce the Phase 4 gate: once a user has completed at least
     /// one successful OPAQUE handshake (`opaque_migrated_at IS NOT
     /// NULL`), legacy `POST /api/auth/login` is refused for that
@@ -366,7 +366,7 @@ impl AuthApplicationService {
     }
 
     /// Wire the OPAQUE envelope repo. Called by the DI factory when the
-    /// OPAQUE substrate is configured (`OXICLOUD_OPAQUE_MODE != off`).
+    /// OPAQUE substrate is configured (`OXICLOUD_AUTH_OPAQUE_MODE != off`).
     /// Enables the Phase 4 legacy-login gate — see the field docstring.
     pub fn with_opaque_repo(
         mut self,

@@ -119,20 +119,20 @@ The verification-piggyback flow above deliberately **bypasses the `has_password`
 
 OPAQUE (RFC 9807) replaces the traditional "browser sends passphrase, server hashes it" flow with a two-round cryptographic exchange in which the passphrase **never leaves the client**. On registration the client encrypts a random key blob under the passphrase and uploads that opaque envelope. On login the client proves possession of the passphrase without transmitting it — the server can neither read it nor derive it from what it stores.
 
-This is the substrate for planned end-to-end encryption work (see `docs/plan/opaque.md` for the full multi-phase roadmap). This build ships **Phase 0 only** — the primitives, migration column, and configuration substrate. Endpoints are inert until `OXICLOUD_OPAQUE_MODE` is enabled in a future release.
+This is the substrate for planned end-to-end encryption work (see `docs/plan/opaque.md` for the full multi-phase roadmap). This build ships **Phase 0 only** — the primitives, migration column, and configuration substrate. Endpoints are inert until `OXICLOUD_AUTH_OPAQUE_MODE` is enabled in a future release.
 
 ### When to enable OPAQUE
 
-OPAQUE only touches the password login path. If your deployment doesn't use password auth at all — you've set `OXICLOUD_AUTH_METHODS=oidc`, or `magic_link`, or the OIDC master-rule has locked things down to SSO only — OPAQUE has nothing to shadow and there's no reason to enable it. **Leave every `OXICLOUD_OPAQUE_*` variable at default** (unset). No `OXICLOUD_OPAQUE_SERVER_SETUP` is required in that case; the server won't ask for one.
+OPAQUE only touches the password login path. If your deployment doesn't use password auth at all — you've set `OXICLOUD_AUTH_METHODS=oidc`, or `magic_link`, or the OIDC master-rule has locked things down to SSO only — OPAQUE has nothing to shadow and there's no reason to enable it. **Leave every `OXICLOUD_AUTH_OPAQUE_*` variable at default** (unset). No `OXICLOUD_AUTH_OPAQUE_SERVER_SETUP` is required in that case; the server won't ask for one.
 
-Even if you accidentally set `OXICLOUD_OPAQUE_MODE=migrate` in an OIDC-only deployment, the boot-time cross-check downgrades the effective mode to `off` and emits an audit-channel INFO explaining why. This is intentional so operators aren't blocked by a setup requirement for a feature they don't use.
+Even if you accidentally set `OXICLOUD_AUTH_OPAQUE_MODE=migrate` in an OIDC-only deployment, the boot-time cross-check downgrades the effective mode to `off` and emits an audit-channel INFO explaining why. This is intentional so operators aren't blocked by a setup requirement for a feature they don't use.
 
 ### Enabling OPAQUE (when the endpoints ship in Phase 1)
 
 Password-using deployments will opt in via three env vars:
 
-1. **`OXICLOUD_OPAQUE_MODE`** — set to `migrate` for the dual-mode phase where both OPAQUE and legacy password login are accepted, then later to `opaque_only` after most users have completed migration.
-2. **`OXICLOUD_OPAQUE_SERVER_SETUP`** — generated once and persisted like your JWT secret. Rotating this invalidates every user's registration; treat it as one of the crown jewels. Two ways to generate:
+1. **`OXICLOUD_AUTH_OPAQUE_MODE`** — set to `migrate` for the dual-mode phase where both OPAQUE and legacy password login are accepted, then later to `opaque_only` after most users have completed migration.
+2. **`OXICLOUD_AUTH_OPAQUE_SERVER_SETUP`** — generated once and persisted like your JWT secret. Rotating this invalidates every user's registration; treat it as one of the crown jewels. Two ways to generate:
    ```bash
    # Docker (recommended in production — no toolchain needed):
    docker run --rm ghcr.io/atalayalabs/oxicloud:latest opaque-setup
@@ -141,9 +141,9 @@ Password-using deployments will opt in via three env vars:
    cargo run --bin opaque-setup
    ```
    Both print the base64 value on stdout (with guidance on stderr, so shell pipelines like `$(docker run ... opaque-setup)` capture cleanly).
-3. **`OXICLOUD_OPAQUE_KSF_*`** — client-side Argon2id key-stretching cost. Defaults (256 MiB / 3 iter / 4 lanes) are appropriate for modern desktop / phone hardware. Bumping later is safe (only affects new registrations); lowering is not (still-registered users get a security downgrade the next time they change their passphrase).
+3. **`OXICLOUD_AUTH_OPAQUE_KSF_*`** — client-side Argon2id key-stretching cost. Defaults (256 MiB / 3 iter / 4 lanes) are appropriate for modern desktop / phone hardware. Bumping later is safe (only affects new registrations); lowering is not (still-registered users get a security downgrade the next time they change their passphrase).
 
-The `OXICLOUD_HASH_*` variables (server-side legacy Argon2) and `OXICLOUD_OPAQUE_KSF_*` (client-side OPAQUE Argon2) are intentionally separate: the server-side path is RAM-bounded by concurrent-login traffic and needs to stay modest; the client-side path is single-user per attempt and can afford much higher memory. Tuning them together would force a bad compromise in one direction or the other.
+The `OXICLOUD_HASH_*` variables (server-side legacy Argon2) and `OXICLOUD_AUTH_OPAQUE_KSF_*` (client-side OPAQUE Argon2) are intentionally separate: the server-side path is RAM-bounded by concurrent-login traffic and needs to stay modest; the client-side path is single-user per attempt and can afford much higher memory. Tuning them together would force a bad compromise in one direction or the other.
 
 ### What OPAQUE does NOT touch
 

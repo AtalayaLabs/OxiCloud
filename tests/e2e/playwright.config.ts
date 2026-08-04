@@ -71,8 +71,8 @@ export default defineConfig({
       // need the boot-time init nor the ~200 KiB WASM client. Blanking
       // the inherited commonEnv values takes the DI factory's
       // `effective_mode == Off` short-circuit.
-      OXICLOUD_OPAQUE_MODE: 'off',
-      OXICLOUD_OPAQUE_SERVER_SETUP: '',
+      OXICLOUD_AUTH_OPAQUE_MODE: 'off',
+      OXICLOUD_AUTH_OPAQUE_SERVER_SETUP: '',
     },
   },
 });

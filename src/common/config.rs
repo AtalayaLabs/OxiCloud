@@ -1667,17 +1667,17 @@ pub struct OpaqueConfig {
     /// [`crate::infrastructure::services::opaque_service::OpaqueMode`]
     /// for the state-machine and the phase-plan mapping.
     ///
-    /// Env: `OXICLOUD_OPAQUE_MODE` (`off` | `migrate` | `opaque_only`).
+    /// Env: `OXICLOUD_AUTH_OPAQUE_MODE` (`off` | `migrate` | `opaque_only`).
     /// Default: `off`.
     pub mode: crate::infrastructure::services::opaque_service::OpaqueMode,
     /// Base64-encoded [`opaque_ke::ServerSetup`] blob. Generated once
     /// per deployment and persisted verbatim — rotating this invalidates
     /// every user's registration. Runbook: on first boot with
-    /// `OXICLOUD_OPAQUE_MODE != off`, if this is unset, print a fatal
+    /// `OXICLOUD_AUTH_OPAQUE_MODE != off`, if this is unset, print a fatal
     /// message with a fresh setup for the operator to paste into their
     /// env, then exit.
     ///
-    /// Env: `OXICLOUD_OPAQUE_SERVER_SETUP`. No default.
+    /// Env: `OXICLOUD_AUTH_OPAQUE_SERVER_SETUP`. No default.
     pub server_setup_b64: Option<String>,
     /// Ciphersuite version stamped into `auth.users.opaque_ciphersuite_version`
     /// on registration. Bumping this without changing the actual
@@ -1690,15 +1690,15 @@ pub struct OpaqueConfig {
     /// the client can construct a matching `argon2::Argon2` before
     /// running `ClientRegistration::start` / `ClientLogin::start`.
     ///
-    /// Env: `OXICLOUD_OPAQUE_KSF_MEMORY_KIB`. Default: `262144` (256 MiB).
+    /// Env: `OXICLOUD_AUTH_OPAQUE_KSF_MEMORY_KIB`. Default: `262144` (256 MiB).
     pub ksf_memory_kib: u32,
     /// Client-side Argon2id iteration count.
     ///
-    /// Env: `OXICLOUD_OPAQUE_KSF_ITERATIONS`. Default: `3`.
+    /// Env: `OXICLOUD_AUTH_OPAQUE_KSF_ITERATIONS`. Default: `3`.
     pub ksf_iterations: u32,
     /// Client-side Argon2id parallelism (lanes).
     ///
-    /// Env: `OXICLOUD_OPAQUE_KSF_PARALLELISM`. Default: `4`.
+    /// Env: `OXICLOUD_AUTH_OPAQUE_KSF_PARALLELISM`. Default: `4`.
     pub ksf_parallelism: u32,
 }
 
@@ -1723,33 +1723,33 @@ impl OpaqueConfig {
     pub fn from_env() -> Self {
         use std::env;
         let mut cfg = Self::default();
-        if let Ok(v) = env::var("OXICLOUD_OPAQUE_MODE") {
+        if let Ok(v) = env::var("OXICLOUD_AUTH_OPAQUE_MODE") {
             match crate::infrastructure::services::opaque_service::OpaqueMode::parse(&v) {
                 Some(m) => cfg.mode = m,
                 None => {
                     tracing::warn!(
                         target: "oxicloud::config",
                         value = %v,
-                        "OXICLOUD_OPAQUE_MODE has an unrecognised value — keeping default (off). \
+                        "OXICLOUD_AUTH_OPAQUE_MODE has an unrecognised value — keeping default (off). \
                          Accepted: off | migrate | opaque_only"
                     );
                 }
             }
         }
-        if let Ok(v) = env::var("OXICLOUD_OPAQUE_SERVER_SETUP") {
+        if let Ok(v) = env::var("OXICLOUD_AUTH_OPAQUE_SERVER_SETUP") {
             cfg.server_setup_b64 = Some(v);
         }
-        if let Ok(v) = env::var("OXICLOUD_OPAQUE_KSF_MEMORY_KIB")
+        if let Ok(v) = env::var("OXICLOUD_AUTH_OPAQUE_KSF_MEMORY_KIB")
             && let Ok(n) = v.parse::<u32>()
         {
             cfg.ksf_memory_kib = n;
         }
-        if let Ok(v) = env::var("OXICLOUD_OPAQUE_KSF_ITERATIONS")
+        if let Ok(v) = env::var("OXICLOUD_AUTH_OPAQUE_KSF_ITERATIONS")
             && let Ok(n) = v.parse::<u32>()
         {
             cfg.ksf_iterations = n;
         }
-        if let Ok(v) = env::var("OXICLOUD_OPAQUE_KSF_PARALLELISM")
+        if let Ok(v) = env::var("OXICLOUD_AUTH_OPAQUE_KSF_PARALLELISM")
             && let Ok(n) = v.parse::<u32>()
         {
             cfg.ksf_parallelism = n;
@@ -1764,7 +1764,7 @@ impl OpaqueConfig {
     /// OIDC-only or magic-link-only (`OXICLOUD_AUTH_METHODS=oidc` or
     /// `=magic_link`) has no password path for OPAQUE to shadow; any
     /// non-`Off` mode would be a no-op that still nagged them for
-    /// `OXICLOUD_OPAQUE_SERVER_SETUP` at boot.
+    /// `OXICLOUD_AUTH_OPAQUE_SERVER_SETUP` at boot.
     ///
     /// This helper resolves the misconfig quietly: if password isn't in
     /// the allowlist AND OPAQUE mode is non-`Off`, we downgrade to `Off`
@@ -1787,7 +1787,7 @@ impl OpaqueConfig {
                 event = "opaque.mode_downgraded",
                 reason = "password_auth_disabled",
                 configured_mode = ?self.mode,
-                "OXICLOUD_OPAQUE_MODE is configured but password auth is disabled \
+                "OXICLOUD_AUTH_OPAQUE_MODE is configured but password auth is disabled \
                  via OXICLOUD_AUTH_METHODS — treating OPAQUE as off. \
                  OPAQUE only replaces the password login path; enable password \
                  in OXICLOUD_AUTH_METHODS to make this setting take effect."
@@ -2490,7 +2490,7 @@ pub struct AppConfig {
     pub auth: AuthConfig,
     /// OPAQUE (RFC 9807) zero-knowledge password auth configuration.
     /// Substrate only in Phase 0 — endpoints are inert until
-    /// `OXICLOUD_OPAQUE_MODE != off`.
+    /// `OXICLOUD_AUTH_OPAQUE_MODE != off`.
     pub opaque: OpaqueConfig,
     /// Feature configuration
     pub features: FeaturesConfig,
@@ -4332,7 +4332,7 @@ mod tests {
     //
     // OPAQUE is fundamentally a password mechanism; enabling its mode when
     // password auth is disabled would be a no-op that still nagged
-    // operators for `OXICLOUD_OPAQUE_SERVER_SETUP` at boot. The
+    // operators for `OXICLOUD_AUTH_OPAQUE_SERVER_SETUP` at boot. The
     // `effective_mode` helper resolves that quietly by downgrading to
     // Off + emitting an audit log, and these tests pin the truth table.
 

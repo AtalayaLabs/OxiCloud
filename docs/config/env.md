@@ -41,7 +41,7 @@ Most runtime variables use the `OXICLOUD_` prefix. A few build-time or allocator
 | `OXICLOUD_JWT_SECRET` | (auto-generated) | JWT signing secret; auto-persisted to `<STORAGE_PATH>/.jwt_secret` if unset |
 | `OXICLOUD_ACCESS_TOKEN_EXPIRY_SECS` | `3600` | Access token lifetime (1 hour) |
 | `OXICLOUD_REFRESH_TOKEN_EXPIRY_SECS` | `604800` | Refresh token lifetime (7 days); active sessions auto-renew on use |
-| `OXICLOUD_HASH_MEMORY_COST` | `65536` | Argon2id memory cost in KiB (64 MiB). **Server-side** — used by the legacy password path (`POST /api/auth/login`) and the app-password Basic-Auth verifier. Distinct from `OXICLOUD_OPAQUE_KSF_*` (client-side). |
+| `OXICLOUD_HASH_MEMORY_COST` | `65536` | Argon2id memory cost in KiB (64 MiB). **Server-side** — used by the legacy password path (`POST /api/auth/login`) and the app-password Basic-Auth verifier. Distinct from `OXICLOUD_AUTH_OPAQUE_KSF_*` (client-side). |
 | `OXICLOUD_HASH_TIME_COST` | `3` | Argon2id iteration count for the server-side legacy path. |
 | `OXICLOUD_HASH_PARALLELISM` | `2` | Argon2id parallelism lanes for the server-side legacy path. |
 | `OXICLOUD_DISABLE_REGISTRATION` | false | Disable registration of new user accounts |
@@ -52,15 +52,15 @@ Most runtime variables use the `OXICLOUD_` prefix. A few build-time or allocator
 
 ### OPAQUE aPAKE (zero-knowledge password login)
 
-OPAQUE (RFC 9807) is a zero-knowledge password-authenticated key exchange: the passphrase never leaves the client, not on registration and not on login. It's shipped in stages (see `docs/plan/opaque.md`); this build carries the **substrate only** — endpoints are inert until `OXICLOUD_OPAQUE_MODE` is set. See `docs/config/authentication.md` for the phase rollout, the migration plan, and admin-facing guidance.
+OPAQUE (RFC 9807) is a zero-knowledge password-authenticated key exchange: the passphrase never leaves the client, not on registration and not on login. It's shipped in stages (see `docs/plan/opaque.md`); this build carries the **substrate only** — endpoints are inert until `OXICLOUD_AUTH_OPAQUE_MODE` is set. See `docs/config/authentication.md` for the phase rollout, the migration plan, and admin-facing guidance.
 
 | Variable | Default | Description |
 |---|---|---|
-| `OXICLOUD_OPAQUE_MODE` | `off` | Runtime mode. `off` = endpoints 404 (default). `migrate` = endpoints live, legacy `POST /api/auth/login` still accepted. `opaque_only` = endpoints live, legacy refused for users with an envelope. **Effective-mode cross-check**: when `password` is not in `OXICLOUD_AUTH_METHODS`, the mode is auto-downgraded to `off` with an audit-channel INFO line (OPAQUE only replaces the password path — nothing to shadow in an OIDC-only or magic-link-only deployment). So OIDC / magic-link-only operators can safely ignore every `OXICLOUD_OPAQUE_*` variable. |
-| `OXICLOUD_OPAQUE_SERVER_SETUP` | — | Base64-encoded `ServerSetup` blob. **Required** when `OXICLOUD_OPAQUE_MODE != off` AND password is enabled — the server refuses to start with a helpful error otherwise. Generate once with the `opaque-setup` CLI subcommand and persist the value like your JWT secret. **Never rotate** — rotating invalidates every user's envelope (they'd all need to reset their passphrase). |
-| `OXICLOUD_OPAQUE_KSF_MEMORY_KIB` | `262144` | Client-side Argon2id memory cost in KiB (256 MiB). Runs on the user's device during OPAQUE login/registration, not on the server. Distinct from `OXICLOUD_HASH_MEMORY_COST` (server-side legacy path). Higher values slow brute-force after a hypothetical envelope leak but also slow login on the user's device. |
-| `OXICLOUD_OPAQUE_KSF_ITERATIONS` | `3` | Client-side Argon2id iteration count. |
-| `OXICLOUD_OPAQUE_KSF_PARALLELISM` | `4` | Client-side Argon2id parallelism lanes. |
+| `OXICLOUD_AUTH_OPAQUE_MODE` | `off` | Runtime mode. `off` = endpoints 404 (default). `migrate` = endpoints live, legacy `POST /api/auth/login` still accepted. `opaque_only` = endpoints live, legacy refused for users with an envelope. **Effective-mode cross-check**: when `password` is not in `OXICLOUD_AUTH_METHODS`, the mode is auto-downgraded to `off` with an audit-channel INFO line (OPAQUE only replaces the password path — nothing to shadow in an OIDC-only or magic-link-only deployment). So OIDC / magic-link-only operators can safely ignore every `OXICLOUD_AUTH_OPAQUE_*` variable. |
+| `OXICLOUD_AUTH_OPAQUE_SERVER_SETUP` | — | Base64-encoded `ServerSetup` blob. **Required** when `OXICLOUD_AUTH_OPAQUE_MODE != off` AND password is enabled — the server refuses to start with a helpful error otherwise. Generate once with the `opaque-setup` CLI subcommand and persist the value like your JWT secret. **Never rotate** — rotating invalidates every user's envelope (they'd all need to reset their passphrase). |
+| `OXICLOUD_AUTH_OPAQUE_KSF_MEMORY_KIB` | `262144` | Client-side Argon2id memory cost in KiB (256 MiB). Runs on the user's device during OPAQUE login/registration, not on the server. Distinct from `OXICLOUD_HASH_MEMORY_COST` (server-side legacy path). Higher values slow brute-force after a hypothetical envelope leak but also slow login on the user's device. |
+| `OXICLOUD_AUTH_OPAQUE_KSF_ITERATIONS` | `3` | Client-side Argon2id iteration count. |
+| `OXICLOUD_AUTH_OPAQUE_KSF_PARALLELISM` | `4` | Client-side Argon2id parallelism lanes. |
 
 ### Rate Limiting & Account Lockout
 

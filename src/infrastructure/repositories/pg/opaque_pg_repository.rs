@@ -387,7 +387,7 @@ mod integration_tests {
         .await;
 
         // Fresh server setup for this test only — mirrors what the
-        // DI factory would load from OXICLOUD_OPAQUE_SERVER_SETUP.
+        // DI factory would load from OXICLOUD_AUTH_OPAQUE_SERVER_SETUP.
         let mut server_rng = OsRng;
         let server_setup = ServerSetup::<OxiCloudSuite>::new(&mut server_rng);
 

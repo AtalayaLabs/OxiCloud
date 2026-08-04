@@ -71,8 +71,8 @@ export default defineConfig({
       // WASM bundle nor the boot-time substrate init. Blank the two OPAQUE
       // env vars inherited from commonEnv so the DI factory takes the
       // `effective_mode == Off` short-circuit path.
-      OXICLOUD_OPAQUE_MODE: 'off',
-      OXICLOUD_OPAQUE_SERVER_SETUP: '',
+      OXICLOUD_AUTH_OPAQUE_MODE: 'off',
+      OXICLOUD_AUTH_OPAQUE_SERVER_SETUP: '',
     },
   },
 });

@@ -1936,7 +1936,7 @@ impl AppServiceFactory {
         // `OXICLOUD_AUTH_METHODS` (password must be enabled for OPAQUE to
         // have anything to shadow), so OIDC-only / magic-link-only
         // deployments transparently get `opaque_service = None` even if
-        // the operator accidentally set `OXICLOUD_OPAQUE_MODE=migrate`.
+        // the operator accidentally set `OXICLOUD_AUTH_OPAQUE_MODE=migrate`.
         //
         // Failing here (missing SERVER_SETUP, malformed base64, ciphersuite
         // drift) refuses server boot — same fail-closed posture as the
@@ -1957,9 +1957,9 @@ impl AppServiceFactory {
                     DomainError::internal_error(
                         "OpaqueInit",
                         format!(
-                            "OXICLOUD_OPAQUE_MODE={:?} but the OPAQUE service failed: {}. \
-                             Persist a valid OXICLOUD_OPAQUE_SERVER_SETUP or set \
-                             OXICLOUD_OPAQUE_MODE=off. Refusing to start.",
+                            "OXICLOUD_AUTH_OPAQUE_MODE={:?} but the OPAQUE service failed: {}. \
+                             Persist a valid OXICLOUD_AUTH_OPAQUE_SERVER_SETUP or set \
+                             OXICLOUD_AUTH_OPAQUE_MODE=off. Refusing to start.",
                             effective, e
                         ),
                     )
@@ -2850,9 +2850,9 @@ pub struct AppState {
     pub auth_service: Option<AuthServices>,
     /// OPAQUE aPAKE substrate (RFC 9807). Populated only when
     /// [`OpaqueConfig::effective_mode`] is not `Off` — that method
-    /// cross-checks `OXICLOUD_OPAQUE_MODE` against
+    /// cross-checks `OXICLOUD_AUTH_OPAQUE_MODE` against
     /// `OXICLOUD_AUTH_METHODS` so an OIDC-only or magic-link-only
-    /// deployment gets `None` here even if `OXICLOUD_OPAQUE_MODE` was
+    /// deployment gets `None` here even if `OXICLOUD_AUTH_OPAQUE_MODE` was
     /// set (with an audit-channel INFO explaining why). `None` also
     /// means the future OPAQUE endpoints must 404 — a handler that
     /// unwraps this without a nil check would break the phase gate.

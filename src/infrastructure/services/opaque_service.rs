@@ -72,10 +72,10 @@ pub struct OpaqueService {
 
 impl OpaqueService {
     /// Build the service from runtime config. Expects the operator to have
-    /// persisted the server setup already (via `OXICLOUD_OPAQUE_SERVER_SETUP`);
+    /// persisted the server setup already (via `OXICLOUD_AUTH_OPAQUE_SERVER_SETUP`);
     /// call [`OpaqueService::generate_server_setup_b64`] first-time and print
     /// the value for the operator to paste into their env before enabling
-    /// `OXICLOUD_OPAQUE_MODE`.
+    /// `OXICLOUD_AUTH_OPAQUE_MODE`.
     ///
     /// Rejects with `InternalError` if the setup is missing / malformed, or
     /// with `AccessDenied` if the mode is `off` (guarding against
@@ -84,14 +84,14 @@ impl OpaqueService {
         if config.mode == OpaqueMode::Off {
             return Err(DomainError::access_denied(
                 "opaque",
-                "OPAQUE is disabled (OXICLOUD_OPAQUE_MODE=off)",
+                "OPAQUE is disabled (OXICLOUD_AUTH_OPAQUE_MODE=off)",
             ));
         }
         let setup_b64 = config.server_setup_b64.as_deref().ok_or_else(|| {
             DomainError::new(
                 ErrorKind::InternalError,
                 "opaque",
-                "OXICLOUD_OPAQUE_SERVER_SETUP is required when OPAQUE is enabled — \
+                "OXICLOUD_AUTH_OPAQUE_SERVER_SETUP is required when OPAQUE is enabled — \
                  generate one with `oxicloud opaque-setup` and persist it in the env",
             )
         })?;
@@ -141,7 +141,7 @@ impl OpaqueService {
 
     /// Generate a fresh server setup and return it as base64. Called once
     /// per deployment; the returned string must be persisted in
-    /// `OXICLOUD_OPAQUE_SERVER_SETUP` and NEVER rotated (rotating
+    /// `OXICLOUD_AUTH_OPAQUE_SERVER_SETUP` and NEVER rotated (rotating
     /// invalidates every existing envelope — see
     /// `docs/plan/opaque.md` §Phase 0).
     pub fn generate_server_setup_b64() -> String {
@@ -160,7 +160,7 @@ fn decode_server_setup(b64: &str) -> Result<ServerSetup<OxiCloudSuite>, DomainEr
             DomainError::new(
                 ErrorKind::InternalError,
                 "opaque",
-                format!("OXICLOUD_OPAQUE_SERVER_SETUP is not valid base64: {e}"),
+                format!("OXICLOUD_AUTH_OPAQUE_SERVER_SETUP is not valid base64: {e}"),
             )
         })?;
     ServerSetup::<OxiCloudSuite>::deserialize(&bytes).map_err(|e| {
@@ -168,7 +168,7 @@ fn decode_server_setup(b64: &str) -> Result<ServerSetup<OxiCloudSuite>, DomainEr
             ErrorKind::InternalError,
             "opaque",
             format!(
-                "OXICLOUD_OPAQUE_SERVER_SETUP payload does not match ciphersuite v1: {e}. \
+                "OXICLOUD_AUTH_OPAQUE_SERVER_SETUP payload does not match ciphersuite v1: {e}. \
                  If you rotated the ciphersuite, every user must re-register."
             ),
         )
@@ -256,7 +256,7 @@ mod tests {
         };
         let err = OpaqueService::from_config(cfg).expect_err("must reject missing setup");
         assert_eq!(err.kind, ErrorKind::InternalError);
-        assert!(err.to_string().contains("OXICLOUD_OPAQUE_SERVER_SETUP"));
+        assert!(err.to_string().contains("OXICLOUD_AUTH_OPAQUE_SERVER_SETUP"));
     }
 
     #[test]

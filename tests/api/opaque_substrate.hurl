@@ -12,7 +12,7 @@
 #   1. The server booted with the OPAQUE substrate loaded — proved
 #      transitively by the fact that this suite reached the
 #      `--test-report` stage at all. `tests/common/server.env` sets
-#      `OXICLOUD_OPAQUE_MODE=migrate` + a persisted `SERVER_SETUP`;
+#      `OXICLOUD_AUTH_OPAQUE_MODE=migrate` + a persisted `SERVER_SETUP`;
 #      a boot failure (bad base64, missing setup, ciphersuite drift)
 #      would 500 every request or refuse to bind the port.
 #
@@ -191,7 +191,7 @@ jsonpath "$.error_type" == "InvalidCredentials"
 
 # ─────────────────────────────────────────────────────────────
 # Case 9 — Params publish returns enabled=true under the test
-#           env (`OXICLOUD_OPAQUE_MODE=migrate`), the current
+#           env (`OXICLOUD_AUTH_OPAQUE_MODE=migrate`), the current
 #           ciphersuite version (1 — see `docs/config/env.md`),
 #           and the fast test-only KSF params
 #           (memoryKib=8 / iter=1 / lanes=1 from server.env).
