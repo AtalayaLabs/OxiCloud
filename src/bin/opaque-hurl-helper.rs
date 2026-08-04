@@ -45,7 +45,21 @@
 //!     because subsequent hurl files don't assume `hasOpaque=false`.
 
 use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD as B64;
+use base64::engine::general_purpose::{
+    STANDARD as B64, URL_SAFE_NO_PAD as B64_URL_NO_PAD,
+};
+
+/// Decode base64 emitted by the server. The server emits URL-safe-no-pad
+/// (matching what the SPA's WASM client expects); this helper accepts
+/// both flavours so a future format change on either side doesn't
+/// silently break the round-trip. Mirrors `decode_opaque_b64` in the
+/// server-side handler.
+fn decode_opaque_b64(input: &str) -> Result<Vec<u8>, base64::DecodeError> {
+    let trimmed = input.trim();
+    B64_URL_NO_PAD
+        .decode(trimmed)
+        .or_else(|_| B64.decode(trimmed))
+}
 use opaque_ke::{
     ClientLogin, ClientLoginFinishParameters, ClientRegistration,
     ClientRegistrationFinishParameters, CredentialResponse, RegistrationResponse,
@@ -213,7 +227,7 @@ async fn main() -> ExitCode {
         }
         Err(e) => return fail(format!("register/start network: {e}")),
     };
-    let reg_response_bytes = match B64.decode(reg_start.registration_response.trim()) {
+    let reg_response_bytes = match decode_opaque_b64(&reg_start.registration_response) {
         Ok(b) => b,
         Err(e) => return fail(format!("decode registration_response: {e}")),
     };
@@ -280,7 +294,7 @@ async fn main() -> ExitCode {
         }
         Err(e) => return fail(format!("login/ke1 network: {e}")),
     };
-    let cred_bytes = match B64.decode(ke1.login_response.trim()) {
+    let cred_bytes = match decode_opaque_b64(&ke1.login_response) {
         Ok(b) => b,
         Err(e) => return fail(format!("decode loginResponse: {e}")),
     };

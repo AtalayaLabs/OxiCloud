@@ -30,11 +30,15 @@
 //!
 //! ## Payload encoding
 //!
-//! All OPAQUE messages are opaque byte blobs. We serialise them as
-//! **standard base64** (not URL-safe, no padding-strip) because the
-//! WASM client (`@serenity-kit/opaque`) emits the same shape and both
-//! ends need to agree on one flavour. Round-tripped through
-//! `serde_json` as a `String` field.
+//! All OPAQUE messages are opaque byte blobs, round-tripped through
+//! `serde_json` as a `String` field. The server emits **URL-safe-no-pad**
+//! base64 (`-`/`_`, no `=`) via `B64.encode(...)` — the WASM client
+//! (`@serenity-kit/opaque`) rejects standard base64 with an
+//! `Invalid symbol` error on the first `+`/`/`. On decode the server
+//! accepts BOTH flavours via `decode_opaque_b64` so the Rust
+//! `opaque-hurl-helper` test binary (which emits standard) still
+//! round-trips. Asymmetry is intentional: URL-safe is the compatible
+//! superset for the client mix we support.
 //!
 //! ## Ciphersuite version handshake
 //!
@@ -64,7 +68,32 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD as B64;
+use base64::engine::general_purpose::{
+    STANDARD as B64_STANDARD, URL_SAFE_NO_PAD as B64_URL_NO_PAD,
+};
+
+/// Decode base64 payloads received from OPAQUE clients, accepting BOTH
+/// standard (`+`/`/`, padded) and URL-safe-no-pad (`-`/`_`, no padding)
+/// alphabets. `@serenity-kit/opaque` (the WASM client the SPA uses)
+/// emits URL-safe-no-pad; the `opaque-hurl-helper` binary and the
+/// original spec docs use standard. Accepting both means neither
+/// side has to renormalize.
+fn decode_opaque_b64(input: &str) -> Result<Vec<u8>, base64::DecodeError> {
+    let trimmed = input.trim();
+    B64_STANDARD
+        .decode(trimmed)
+        .or_else(|_| B64_URL_NO_PAD.decode(trimmed))
+}
+
+/// Encode OPAQUE payloads emitted BY the server. Emits **URL-safe-no-pad**
+/// (`-`/`_`, no `=`) because the WASM client (`@serenity-kit/opaque` —
+/// the SPA's OPAQUE library) decodes strictly as URL-safe-no-pad and
+/// rejects standard base64 with an `Invalid symbol` error on the first
+/// `+`/`/` in the payload. Rust `opaque-hurl-helper` and any other
+/// client parses through `decode_opaque_b64` above which accepts BOTH
+/// flavours, so this direction is asymmetric on purpose — URL-safe is
+/// the compatible superset for the client mix we support.
+const B64: base64::engine::general_purpose::GeneralPurpose = B64_URL_NO_PAD;
 use opaque_ke::{
     CredentialFinalization, CredentialRequest, RegistrationRequest, RegistrationUpload,
     ServerLoginStartParameters, ServerRegistration,
@@ -186,11 +215,28 @@ pub async fn register_start(
 ) -> Result<impl IntoResponse, AppError> {
     let svc = require_opaque_service(&state)?;
 
-    let req_bytes = B64
-        .decode(dto.registration_request.trim())
-        .map_err(|_| malformed("registrationRequest is not valid base64"))?;
-    let req = RegistrationRequest::<OxiCloudSuite>::deserialize(&req_bytes)
-        .map_err(|_| malformed("registrationRequest failed to deserialize"))?;
+    let req_bytes = decode_opaque_b64(&dto.registration_request).map_err(|e| {
+        tracing::info!(
+            target: "audit",
+            event = "opaque.register_start_rejected",
+            reason = "malformed_base64",
+            user_id = %user_id,
+            error = %e,
+            "👮🏻‍♂️ OPAQUE register/start rejected: registrationRequest is not valid base64"
+        );
+        malformed("registrationRequest is not valid base64")
+    })?;
+    let req = RegistrationRequest::<OxiCloudSuite>::deserialize(&req_bytes).map_err(|e| {
+        tracing::info!(
+            target: "audit",
+            event = "opaque.register_start_rejected",
+            reason = "malformed_registration_request",
+            user_id = %user_id,
+            error = %e,
+            "👮🏻‍♂️ OPAQUE register/start rejected: RegistrationRequest deserialize failed"
+        );
+        malformed("registrationRequest failed to deserialize")
+    })?;
 
     // `user_id` (a UUID) is the OPAQUE server-side user identifier.
     // Encoded as the UUID's raw bytes so the same identifier bytes
@@ -270,8 +316,7 @@ pub async fn register_finish(
         ));
     }
 
-    let record_bytes = B64
-        .decode(dto.registration_record.trim())
+    let record_bytes = decode_opaque_b64(&dto.registration_record)
         .map_err(|_| malformed("registrationRecord is not valid base64"))?;
     let record = RegistrationUpload::<OxiCloudSuite>::deserialize(&record_bytes)
         .map_err(|_| malformed("registrationRecord failed to deserialize"))?;
@@ -464,8 +509,7 @@ pub async fn login_ke1(
     let repo = require_opaque_repo(&state)?;
     let exchange = require_opaque_exchange(&state)?;
 
-    let cred_bytes = B64
-        .decode(dto.start_login_request.trim())
+    let cred_bytes = decode_opaque_b64(&dto.start_login_request)
         .map_err(|_| malformed("startLoginRequest is not valid base64"))?;
     let cred_request = CredentialRequest::<OxiCloudSuite>::deserialize(&cred_bytes)
         .map_err(|_| malformed("startLoginRequest failed to deserialize"))?;
@@ -596,8 +640,7 @@ pub async fn login_ke3(
         invalid_credentials()
     })?;
 
-    let cred_bytes = B64
-        .decode(dto.finish_login_request.trim())
+    let cred_bytes = decode_opaque_b64(&dto.finish_login_request)
         .map_err(|_| malformed("finishLoginRequest is not valid base64"))?;
     let cred_final = CredentialFinalization::<OxiCloudSuite>::deserialize(&cred_bytes)
         .map_err(|_| malformed("finishLoginRequest failed to deserialize"))?;
