@@ -121,17 +121,35 @@ check-migrations base='main':
         echo "No migrations on origin/{{base}} — skipping ordering check."
         exit 0
     fi
-    new=$(git diff --name-only --diff-filter=A "origin/{{base}}...HEAD" -- migrations/ \
-        | grep -E 'migrations/[0-9]{14}_' || true)
+    # Working-tree view (not "committed on HEAD"): compare the CURRENT
+    # migrations/ directory against origin/{{base}}'s. That way an
+    # uncommitted `git mv OLD NEW` shows up as "NEW is new," so you can
+    # `just check-migrations` immediately after renaming without having
+    # to commit first. CI checks out HEAD onto a clean tree, so working-
+    # tree == HEAD there and the semantics coincide with the old
+    # `origin/main...HEAD` diff.
+    #
+    # Uses `ls migrations/` (not `git ls-files`) so untracked new
+    # migrations (freshly-created files before `git add`) are also
+    # covered — the sqlx applier reads the filesystem too.
+    current=$(ls migrations/ 2>/dev/null \
+        | grep -E '^[0-9]{14}_.*\.sql$' \
+        | sort)
+    base_files=$(git ls-tree -r "origin/{{base}}" --name-only -- migrations/ \
+        | grep -oE 'migrations/[0-9]{14}_[^/]+\.sql$' \
+        | sed 's|migrations/||' \
+        | sort)
+    new=$(comm -23 <(echo "$current") <(echo "$base_files") \
+        | grep -E '^[0-9]{14}_' || true)
     if [[ -z "$new" ]]; then
         echo "No new migrations on this branch — nothing to check."
         exit 0
     fi
     fail=0
     for m in $new; do
-        ts=$(basename "$m" | grep -oE '^[0-9]{14}')
+        ts=$(echo "$m" | grep -oE '^[0-9]{14}')
         if [[ "$ts" -le "$base_max" ]]; then
-            echo "ERROR: $m has timestamp $ts, not strictly > origin/{{base}}'s latest ($base_max)."
+            echo "ERROR: migrations/$m has timestamp $ts, not strictly > origin/{{base}}'s latest ($base_max)."
             echo "       Rename to a timestamp > $base_max to avoid sqlx strict-mode errors on deploy."
             fail=1
         fi

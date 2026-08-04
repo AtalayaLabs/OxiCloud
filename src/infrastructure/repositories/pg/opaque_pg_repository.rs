@@ -1,7 +1,7 @@
 //! PostgreSQL repository for OPAQUE aPAKE envelopes.
 //!
 //! Backs [`OpaqueRepositoryPort`] against the three OPAQUE columns on
-//! `auth.users` introduced by migration `20260930000002_auth_opaque.sql`:
+//! `auth.users` introduced by migration `20261001000002_auth_opaque.sql`:
 //!
 //!   * `opaque_envelope BYTEA` — the serialised registration blob,
 //!   * `opaque_ciphersuite_version SMALLINT` — the bound suite version,
