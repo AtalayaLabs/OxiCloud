@@ -1863,6 +1863,27 @@ impl AuthApplicationService {
             ));
         }
 
+        // Reject same-as-current. Load-bearing when the caller is on
+        // an admin-picked temp password (force_password_change_at_next_login
+        // = TRUE): silently accepting the same string would clear the
+        // force flag without the user actually rotating the credential,
+        // defeating the whole "temporary password" pattern. Verify
+        // against the stored hash (constant-time via `verify_password`)
+        // rather than string-comparing plaintexts, so length / case
+        // typos on the caller's part still fail cleanly. Handler
+        // layer remaps the message to `error_type: "PasswordUnchanged"`.
+        let same_as_current = self
+            .password_hasher
+            .verify_password(&dto.new_password, hash)
+            .await?;
+        if same_as_current {
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "User",
+                "New password must differ from the current password",
+            ));
+        }
+
         // Hash new password and update user
         let new_hash = self
             .password_hasher
@@ -1888,6 +1909,15 @@ impl AuthApplicationService {
                 "clear_force_password_change failed after change_password success"
             );
         }
+
+        // Evict the cached UserFlags entry so
+        // `require_no_password_change_pending` sees the just-cleared
+        // flag on the next request — otherwise the caller would keep
+        // hitting 403 PasswordChangeRequired until the 30 s TTL rolls
+        // over. (The revoke_all_user_sessions below will force a
+        // re-login anyway, but the cache eviction covers the window
+        // between change_password success and the new session mint.)
+        self.user_flags_cache.invalidate(&user_id).await;
 
         // Optional: revoke all sessions to force re-login with new password
         self.session_storage
@@ -2755,13 +2785,70 @@ impl AuthApplicationService {
         let hash = self.password_hasher.hash_password(new_password).await?;
         self.user_storage.change_password(user_id, &hash).await?;
 
+        // Mark the admin-picked password as temporary so the user gets
+        // prompted to pick their own on next login. Two branches:
+        //
+        //   * OPAQUE wired: `clear_registration` is the atomic write
+        //     that (a) NULLs the OPAQUE envelope + migration mark so
+        //     the migrated user drops back to legacy login (the old
+        //     envelope is bound to the OLD passphrase and would fail
+        //     OPAQUE KE3), and (b) sets `force_password_change`.
+        //     Silent-migration on the next legacy login re-mints a
+        //     fresh envelope bound to the admin's new password; the
+        //     force flag then routes the SPA to change-password.
+        //
+        //   * OPAQUE off: no envelope to invalidate; just flip the
+        //     force flag directly via user_storage. Same downstream
+        //     behaviour — SPA sees force_password_change=true on
+        //     the next login response and routes accordingly.
+        //
+        // Both writes are non-fatal (logged at warn on failure): the
+        // password reset itself succeeded, and a stale force flag is
+        // recoverable on the next admin reset.
+        if let Some(opaque) = self.opaque_repo.as_ref() {
+            if let Err(e) = opaque.clear_registration(user_id).await {
+                tracing::warn!(
+                    target: "audit",
+                    event = "auth.admin_reset_opaque_clear_failed",
+                    user_id = %user_id,
+                    error = %e,
+                    "OPAQUE clear_registration failed during admin password reset — \
+                     force flag + envelope invalidation deferred to next opportunity"
+                );
+            }
+        } else if let Err(e) = self.user_storage.set_force_password_change(user_id).await {
+            tracing::warn!(
+                target: "audit",
+                event = "auth.admin_reset_force_flag_failed",
+                user_id = %user_id,
+                error = %e,
+                "set_force_password_change failed during admin password reset — \
+                 user will not be prompted to change from admin's temp password"
+            );
+        }
+
         // Invalidate all existing sessions so the user must re-login
         // with the new password.  Mirrors the behaviour of change_password().
         self.session_storage
             .revoke_all_user_sessions(user_id)
             .await?;
 
-        tracing::info!(user_id = %user_id, "Admin reset password — all sessions revoked");
+        // Evict the cached UserFlags row so the next authenticated
+        // request from this user (on their next session) sees the
+        // updated force_password_change value without waiting for
+        // the 30s TTL. The middleware
+        // `require_no_password_change_pending` reads from this cache
+        // — a stale FALSE would keep the API open to the admin's
+        // temp-password holder until the TTL rolled over.
+        self.user_flags_cache.invalidate(&user_id).await;
+
+        tracing::info!(
+            target: "audit",
+            event = "auth.admin_reset_password",
+            user_id = %user_id,
+            opaque_wired = self.opaque_repo.is_some(),
+            "👮🏻‍♂️ Admin reset password — sessions revoked, force-change flag set"
+        );
         Ok(())
     }
 

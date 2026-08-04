@@ -72,6 +72,28 @@ pub struct UserDto {
     /// `frontend/src/lib/stores/preferences.svelte.ts`). Always present
     /// on the wire; empty bag is `{}`, never `null`.
     pub ui_preferences: serde_json::Value,
+    /// Mirrors `auth.users.force_password_change_at_next_login`. Set
+    /// TRUE by the admin password-reset flow (see
+    /// `AuthApplicationService::admin_reset_password`) and cleared by
+    /// a successful self-service `POST /api/auth/change-password`.
+    ///
+    /// Populated only by the `/api/auth/me` handler and the login
+    /// response minter (via a distinct code path). `From<User>` — used
+    /// by admin listings, share-recipient responses, group-member DTOs,
+    /// etc. — leaves it at `false`. The flag is a per-session-account
+    /// concern (does *this* user need to change their password before
+    /// they can proceed?), not a general user attribute worth
+    /// surfacing on every list row.
+    ///
+    /// The load-bearing consumer is the SPA's session store: on
+    /// startup and after every refresh, `/me` returns the current
+    /// flag value and the SPA's nav-guard blocks navigation to
+    /// anything but the change-password surface until it flips
+    /// back to false. Backend enforcement is separate (see the
+    /// `require_no_password_change_pending` middleware) — this DTO
+    /// field is what the SPA reads to render the mandatory-mode UI.
+    #[serde(default)]
+    pub force_password_change: bool,
 }
 
 /// Compact row returned by the paginated admin user table.
@@ -145,6 +167,13 @@ impl From<User> for UserDto {
             preferred_locale: p.preferred_locale,
             notify_on_share: p.notify_on_share,
             ui_preferences: p.ui_preferences,
+            // Defaults to false. The `/me` handler + the login-response
+            // minter populate this via a distinct code path (a
+            // repo read that goes through the auth service's cache);
+            // admin listings and other UserDto consumers deliberately
+            // leave it false — the flag is per-session-account state,
+            // not a general user attribute.
+            force_password_change: false,
         }
     }
 }

@@ -614,10 +614,23 @@ pub async fn get_current_user(
     // never count against this envelope — collaborating in a team drive
     // costs no personal bytes. The matching cap is
     // `storage_quota_bytes` (admin-only mutation).
-    let user = auth_service
+    let mut user = auth_service
         .auth_application_service
         .get_user_by_id(user_id)
         .await?;
+
+    // Overlay the cached `force_password_change` flag (see UserFlags).
+    // `From<User>` defaults to false; the SPA reads this field on
+    // startup to decide whether to enter mandatory change-password
+    // mode. Using the cached path (`get_user_flags` → `user_flags_cache`)
+    // avoids a second DB round-trip on this hot endpoint.
+    if let Ok(flags) = auth_service
+        .auth_application_service
+        .get_user_flags(user_id)
+        .await
+    {
+        user.force_password_change = flags.force_password_change;
+    }
 
     Ok((StatusCode::OK, Json(user)))
 }
@@ -652,12 +665,28 @@ pub async fn change_password(
         .as_ref()
         .ok_or_else(|| AppError::internal_error("Authentication service not configured"))?;
 
-    auth_service
+    match auth_service
         .auth_application_service
         .change_password(user_id, dto)
-        .await?;
-
-    Ok(StatusCode::OK)
+        .await
+    {
+        Ok(()) => Ok(StatusCode::OK),
+        Err(err) => {
+            // Remap the same-as-current guard into a stable error_type
+            // the SPA can surface as "pick a different one" without
+            // needing to fall back to the generic 400 message. The
+            // service returns InvalidInput; keep the 400 status but
+            // swap the shape.
+            if err.message == "New password must differ from the current password" {
+                return Err(AppError::new(
+                    StatusCode::BAD_REQUEST,
+                    "New password must differ from the current password",
+                    "PasswordUnchanged",
+                ));
+            }
+            Err(err.into())
+        }
+    }
 }
 
 /// Convert the authenticated external user into a full internal

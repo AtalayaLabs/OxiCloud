@@ -62,9 +62,12 @@ impl UserPgRepository {
     pub async fn get_user_flags(&self, id: Uuid) -> UserRepositoryResult<UserFlags> {
         let row = sqlx::query(
             r#"
-            SELECT role::text as role_text, is_external, active
-            FROM auth.users
-            WHERE id = $1
+            SELECT role::text as role_text,
+                   is_external,
+                   active,
+                   force_password_change_at_next_login
+              FROM auth.users
+             WHERE id = $1
             "#,
         )
         .bind(id)
@@ -82,6 +85,7 @@ impl UserPgRepository {
             role,
             is_external: row.get("is_external"),
             active: row.get("active"),
+            force_password_change: row.get("force_password_change_at_next_login"),
         })
     }
 
@@ -151,6 +155,30 @@ impl UserPgRepository {
             r#"
             UPDATE auth.users
                SET force_password_change_at_next_login = FALSE
+             WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .execute(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)?;
+        Ok(())
+    }
+
+    /// Set `force_password_change_at_next_login = TRUE`. Used by
+    /// admin-initiated password reset when the OPAQUE substrate is NOT
+    /// wired. When it IS wired, callers should prefer
+    /// `OpaquePgRepository::clear_registration` which does the same
+    /// flag flip AND invalidates the OPAQUE envelope in one UPDATE
+    /// (see the port doc on `clear_registration` for the atomicity
+    /// contract). This method exists so OPAQUE-off deployments still
+    /// get the "admin's temp password prompts change on next login"
+    /// behaviour without having to depend on the OPAQUE code path.
+    pub async fn set_force_password_change(&self, id: Uuid) -> UserRepositoryResult<()> {
+        sqlx::query(
+            r#"
+            UPDATE auth.users
+               SET force_password_change_at_next_login = TRUE
              WHERE id = $1
             "#,
         )

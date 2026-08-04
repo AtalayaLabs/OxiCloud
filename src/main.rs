@@ -776,6 +776,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         let auth_public = auth_public_routes().with_state(app_state.clone());
         // Protected auth routes (/me, /change-password, /logout) — require auth + CSRF
         let auth_protected = auth_protected_routes()
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                require_no_password_change_pending_layer,
+            ))
             .layer(axum::middleware::from_fn(csrf_middleware))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
@@ -784,6 +788,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .with_state(app_state.clone());
         // App password management routes — require auth + CSRF
         let app_pw_protected = app_password_handler::app_password_routes()
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                require_no_password_change_pending_layer,
+            ))
             .layer(axum::middleware::from_fn(csrf_middleware))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
@@ -802,6 +810,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         // is safe.
         let opaque_register_protected =
             oxicloud::interfaces::api::handlers::opaque_auth_handler::opaque_register_routes()
+                .layer(axum::middleware::from_fn_with_state(
+                    app_state.clone(),
+                    require_no_password_change_pending_layer,
+                ))
                 .layer(axum::middleware::from_fn(csrf_middleware))
                 .layer(axum::middleware::from_fn_with_state(
                     app_state.clone(),
@@ -835,6 +847,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             device_auth_handler::device_auth_public_routes().with_state(app_state.clone());
         // Protected endpoints: /api/auth/device/verify, /api/auth/device/devices
         let device_protected = device_auth_handler::device_auth_protected_routes()
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                require_no_password_change_pending_layer,
+            ))
             .layer(axum::middleware::from_fn(csrf_middleware))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
@@ -844,6 +860,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         // Protected API routes — require valid JWT token
         let protected_api = api_routes
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                require_no_password_change_pending_layer,
+            ))
             .layer(axum::middleware::from_fn(csrf_middleware))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
@@ -857,8 +877,22 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         // surface to a principal kind that can do nothing with it. The
         // `require_internal_user_layer` runs AFTER auth (tower order:
         // later .layer() = outermost = runs first).
-        use oxicloud::interfaces::middleware::user::require_internal_user_layer;
+        //
+        // `require_no_password_change_pending_layer` is layered on
+        // every authenticated /api/* subtree so an admin-set temp
+        // password cannot be used against files / WebDAV / CalDAV /
+        // admin from any non-SPA client. The layer allowlists /me,
+        // change-password, and logout internally so the SPA can
+        // complete the reset flow — see the middleware doc for the
+        // allowlist and its rationale.
+        use oxicloud::interfaces::middleware::user::{
+            require_internal_user_layer, require_no_password_change_pending_layer,
+        };
         let caldav_protected = caldav_router
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                require_no_password_change_pending_layer,
+            ))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 require_internal_user_layer,
@@ -870,6 +904,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         let carddav_protected = carddav_router
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
+                require_no_password_change_pending_layer,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
                 require_internal_user_layer,
             ))
             .layer(axum::middleware::from_fn_with_state(
@@ -877,6 +915,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 auth_middleware,
             ));
         let webdav_protected = webdav_router
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                require_no_password_change_pending_layer,
+            ))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 require_internal_user_layer,

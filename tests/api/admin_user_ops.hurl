@@ -130,7 +130,13 @@ Content-Type: application/json
 
 HTTP 403
 
-# New password works.
+# New password works AND the login response carries
+# `force_password_change: true` — the admin-picked password is
+# temporary; the SPA reads this to enter mandatory-mode and route
+# the user to `/profile?forcePasswordChange=1`. See the backend
+# `admin_reset_password` → `OpaquePgRepository::clear_registration`
+# (or `UserPgRepository::set_force_password_change` when OPAQUE is
+# off) for the atomic flag write.
 POST {{base_url}}/api/auth/login
 Content-Type: application/json
 { "username": "charlie-ops", "password": "AdminResetPassword2!" }
@@ -138,6 +144,82 @@ Content-Type: application/json
 HTTP 200
 [Captures]
 charlie_token_v2: jsonpath "$.access_token"
+[Asserts]
+jsonpath "$.force_password_change" == true
+
+
+# `require_no_password_change_pending_layer` middleware assertion:
+# a random authenticated endpoint that ISN'T on the allowlist
+# (`/me`, `/change-password`, `/logout`) must refuse with
+# `403 PasswordChangeRequired` while the flag is set. Without
+# this gate the admin-picked password would let holders reach
+# files / DAV / admin via any non-SPA client.
+GET {{base_url}}/api/folders
+Authorization: Bearer {{charlie_token_v2}}
+
+HTTP 403
+[Asserts]
+jsonpath "$.error_type" == "PasswordChangeRequired"
+
+
+# Same session, but the allowlisted `/api/auth/me` DOES pass —
+# the SPA needs this to detect the flag and render the mandatory
+# banner. Response also mirrors the flag so a page reload sees
+# the same state a fresh login would.
+GET {{base_url}}/api/auth/me
+Authorization: Bearer {{charlie_token_v2}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.force_password_change" == true
+
+
+# Trying to change back to the SAME password must fail with a
+# distinct `PasswordUnchanged` error_type — silently accepting
+# the no-op would clear the force flag without actually rotating
+# the credential, defeating the temporary-password pattern.
+PUT {{base_url}}/api/auth/change-password
+Authorization: Bearer {{charlie_token_v2}}
+Content-Type: application/json
+{ "current_password": "AdminResetPassword2!", "new_password": "AdminResetPassword2!" }
+
+HTTP 400
+[Asserts]
+jsonpath "$.error_type" == "PasswordUnchanged"
+
+
+# Change to a genuinely different password: succeeds AND
+# `change_password` revokes all sessions (per its own contract);
+# the CURRENT token stops working right after. That side effect
+# is what forces the user through a fresh login where the flag
+# is now cleared.
+PUT {{base_url}}/api/auth/change-password
+Authorization: Bearer {{charlie_token_v2}}
+Content-Type: application/json
+{ "current_password": "AdminResetPassword2!", "new_password": "CharliePicked3!" }
+
+HTTP 200
+
+
+# Fresh login with the user-picked password: succeeds AND the
+# flag has flipped back to false, so mandatory-mode is off.
+POST {{base_url}}/api/auth/login
+Content-Type: application/json
+{ "username": "charlie-ops", "password": "CharliePicked3!" }
+
+HTTP 200
+[Captures]
+charlie_token_v3: jsonpath "$.access_token"
+[Asserts]
+jsonpath "$.force_password_change" == false
+
+
+# Same random endpoint that 403'd above now succeeds — the gate
+# has lifted.
+GET {{base_url}}/api/folders
+Authorization: Bearer {{charlie_token_v3}}
+
+HTTP 200
 
 
 # ─────────────────────────────────────────────────────────────
@@ -155,7 +237,7 @@ HTTP 200
 
 POST {{base_url}}/api/auth/login
 Content-Type: application/json
-{ "username": "charlie-ops", "password": "AdminResetPassword2!" }
+{ "username": "charlie-ops", "password": "CharliePicked3!" }
 
 HTTP 403
 
@@ -172,7 +254,7 @@ HTTP 200
 
 POST {{base_url}}/api/auth/login
 Content-Type: application/json
-{ "username": "charlie-ops", "password": "AdminResetPassword2!" }
+{ "username": "charlie-ops", "password": "CharliePicked3!" }
 
 HTTP 200
 

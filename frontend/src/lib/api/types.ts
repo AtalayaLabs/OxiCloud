@@ -216,6 +216,17 @@ export interface User {
 	 * delete it from the bag.
 	 */
 	ui_preferences: Record<string, unknown>;
+	/**
+	 * Mirrors `auth.users.force_password_change_at_next_login`. Only
+	 * populated by `GET /api/auth/me` (see the backend UserDto doc for
+	 * why other UserDto call-sites default to false). When true, the
+	 * SPA MUST lock navigation to the password-change surface — the
+	 * root layout's guard + the backend's `require_no_password_change_pending`
+	 * middleware together enforce this. Optional on the wire because
+	 * older backend builds omit it and `#[serde(default)]` maps
+	 * missing → `false`.
+	 */
+	force_password_change?: boolean;
 }
 
 /** Fields rendered by the paginated admin table. Full account details remain
