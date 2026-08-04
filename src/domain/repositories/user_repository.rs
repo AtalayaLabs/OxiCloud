@@ -47,6 +47,18 @@ pub struct UserListEntry {
     pub active: bool,
     pub oidc_provider: Option<String>,
     pub is_external: bool,
+    /// TRUE when `auth.users.opaque_envelope IS NOT NULL` — the user
+    /// has completed OPAQUE registration (typically via the Phase 2
+    /// silent-migration hook after a successful legacy login). Surfaced
+    /// on the admin user table so operators can see rollout progress
+    /// per-user. Admin-only exposure — see `AdminUserSummaryDto`.
+    pub opaque_registered: bool,
+    /// TRUE when `auth.users.opaque_migrated_at IS NOT NULL` — the
+    /// user has completed at least one successful OPAQUE login. Distinct
+    /// from `opaque_registered` because a user can have an envelope on
+    /// file without having actually logged in via OPAQUE yet (e.g.
+    /// admin cleared the envelope, silent-migration hasn't re-run).
+    pub opaque_migrated: bool,
 }
 
 // Conversion from UserRepositoryError to DomainError

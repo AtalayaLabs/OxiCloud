@@ -231,7 +231,14 @@ export interface User {
 
 /** Fields rendered by the paginated admin table. Full account details remain
  * available from the detail endpoint; this shape keeps avatars and preference
- * documents off every listing page. */
+ * documents off every listing page.
+ *
+ * The two OPAQUE flags below are ADMIN-ONLY signals: they surface per-user
+ * OPAQUE rollout progress in the admin table. The backend deliberately keeps
+ * them off `UserDto` (`/api/auth/me`, share-recipient DTOs, group members)
+ * so a non-admin can't enumerate the adoption set through third-party
+ * endpoints. Both optional on the wire — older backend builds omit them and
+ * `#[serde(default)]` maps missing → `false`. */
 export type AdminUserSummary = Pick<
 	User,
 	| 'id'
@@ -244,7 +251,17 @@ export type AdminUserSummary = Pick<
 	| 'active'
 	| 'auth_provider'
 	| 'is_external'
->;
+> & {
+	/** TRUE = user has an OPAQUE envelope on file (Phase 2 silent migration
+	 * succeeded, or the user completed a manual re-registration). */
+	opaque_registered?: boolean;
+	/** TRUE = user has completed at least one successful OPAQUE login.
+	 * Distinct from `opaque_registered` — the envelope may have been
+	 * cleared by an admin reset while a stale migrated=true remains as
+	 * historical signal (backend clears both atomically today, but the
+	 * two-flag shape keeps the option open for a future policy split). */
+	opaque_migrated?: boolean;
+};
 
 export interface AdminUsersPage {
 	total: number;

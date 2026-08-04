@@ -2671,6 +2671,44 @@
 								{:else}
 									<span class="badge badge--local">{t('admin.local', 'local')}</span>
 								{/if}
+								<!--
+									OPAQUE adoption chips — ADMIN-ONLY signal (the
+									DTO field is scoped to `AdminUserSummaryDto`;
+									never surfaced via `UserDto`). Two chips share
+									a compact column:
+									  * "OPAQUE" (migrated=true) — the user has
+									    completed at least one successful OPAQUE
+									    login. Strongest positive signal.
+									  * "envelope" (registered=true, migrated=false)
+									    — envelope on file (silent-migration
+									    succeeded) but no OPAQUE login has landed
+									    yet. Common transient state during rollout.
+									Absent = user has neither and is still fully
+									on the legacy password path.
+								-->
+								{#if u.opaque_migrated}
+									<span
+										class="badge badge--opaque"
+										title={t(
+											'admin.opaque_migrated_title',
+											'User has completed at least one OPAQUE login'
+										)}
+									>
+										<Icon name="shield-alt" />
+										<span class="badge__label">OPAQUE</span>
+									</span>
+								{:else if u.opaque_registered}
+									<span
+										class="badge badge--opaque-registered"
+										title={t(
+											'admin.opaque_registered_title',
+											'OPAQUE envelope on file — waiting for the user to complete an OPAQUE login'
+										)}
+									>
+										<Icon name="shield-alt" />
+										<span class="badge__label">{t('admin.opaque_envelope', 'envelope')}</span>
+									</span>
+								{/if}
 							</td>
 							<td>
 								<span class="badge badge--{u.active ? 'active' : 'inactive'}">
@@ -4162,6 +4200,33 @@
 		background: var(--color-bg-muted);
 		color: var(--color-text-muted);
 		text-transform: uppercase;
+	}
+
+	/*
+	 * OPAQUE adoption chips — sit next to the auth-provider badge in
+	 * the admin user table. Green = user has actually logged in via
+	 * OPAQUE at least once (`opaque_migrated`); softer info shade =
+	 * envelope on file but the OPAQUE handshake hasn't landed yet
+	 * (`opaque_registered && !opaque_migrated`). The two-shade pattern
+	 * matches the way `.badge--active` vs `.badge--inactive` split
+	 * "success" from "neutral".
+	 */
+	.badge--opaque {
+		background: var(--color-success-bg);
+		color: var(--color-success-text);
+		text-transform: uppercase;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+	}
+
+	.badge--opaque-registered {
+		background: var(--color-info-bg);
+		color: var(--color-info-text);
+		text-transform: uppercase;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
 	}
 
 	.badge--active {

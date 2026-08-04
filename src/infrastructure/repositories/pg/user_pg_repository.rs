@@ -767,17 +767,26 @@ impl UserRepository for UserPgRepository {
                 bool,
                 Option<String>,
                 bool,
+                bool,
+                bool,
             ),
         >(
+            // OPAQUE columns are projected as booleans via `IS NOT NULL`
+            // rather than as timestamps so the row-mapping tuple stays
+            // small and the wire shape is exactly what the admin table
+            // needs. Both are per-row scalar tests — no cost beyond the
+            // full-table sequential scan the LIMIT/OFFSET already pays.
             r#"
             SELECT
                 id, username, email, role::text,
                 storage_quota_bytes, storage_used_bytes,
-                last_login_at, active, oidc_provider, is_external
-            FROM auth.users
-            WHERE ($3 OR is_external = FALSE)
-            ORDER BY created_at DESC, id DESC
-            LIMIT $1 OFFSET $2
+                last_login_at, active, oidc_provider, is_external,
+                (opaque_envelope IS NOT NULL)     AS opaque_registered,
+                (opaque_migrated_at IS NOT NULL)  AS opaque_migrated
+              FROM auth.users
+             WHERE ($3 OR is_external = FALSE)
+             ORDER BY created_at DESC, id DESC
+             LIMIT $1 OFFSET $2
             "#,
         )
         .bind(limit)
@@ -801,6 +810,8 @@ impl UserRepository for UserPgRepository {
                     active,
                     oidc_provider,
                     is_external,
+                    opaque_registered,
+                    opaque_migrated,
                 )| UserListEntry {
                     id,
                     username,
@@ -816,6 +827,8 @@ impl UserRepository for UserPgRepository {
                     active,
                     oidc_provider,
                     is_external,
+                    opaque_registered,
+                    opaque_migrated,
                 },
             )
             .collect())

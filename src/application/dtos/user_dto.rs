@@ -115,6 +115,24 @@ pub struct AdminUserSummaryDto {
     pub active: bool,
     pub auth_provider: String,
     pub is_external: bool,
+    /// Mirrors `UserListEntry::opaque_registered` — TRUE when the user
+    /// has an OPAQUE envelope on file. Surfaced on the admin table so
+    /// operators can see per-user rollout progress during the
+    /// migration window. **Admin-only exposure**: this field is NOT
+    /// on `UserDto` — putting it there would leak adoption status
+    /// through every user-directory-adjacent endpoint (share targets,
+    /// group members, invite listings). `#[serde(default)]` keeps
+    /// older SPA builds tolerant of the added field.
+    #[serde(default)]
+    pub opaque_registered: bool,
+    /// Mirrors `UserListEntry::opaque_migrated` — TRUE when the user
+    /// has completed at least one successful OPAQUE login. Distinct
+    /// from `opaque_registered`: an admin can invalidate the envelope
+    /// (`clear_registration`) leaving the user registered=false but
+    /// with a historical migrated=true; the SPA's admin table shows
+    /// both so this operational nuance is visible.
+    #[serde(default)]
+    pub opaque_migrated: bool,
 }
 
 impl From<UserListEntry> for AdminUserSummaryDto {
@@ -130,6 +148,8 @@ impl From<UserListEntry> for AdminUserSummaryDto {
             active: entry.active,
             auth_provider: entry.oidc_provider.unwrap_or_else(|| "local".to_string()),
             is_external: entry.is_external,
+            opaque_registered: entry.opaque_registered,
+            opaque_migrated: entry.opaque_migrated,
         }
     }
 }
