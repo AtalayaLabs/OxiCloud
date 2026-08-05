@@ -218,6 +218,46 @@ impl OpaqueRepositoryPort for OpaquePgRepository {
         Ok(row.and_then(|(t,)| t).is_some())
     }
 
+    async fn clear_envelope_only(&self, user_id: Uuid) -> Result<()> {
+        // Nulls the OPAQUE columns (envelope + ciphersuite + registered
+        // + migrated + KSF triple) but DOES NOT touch
+        // `force_password_change_at_next_login`. Called by
+        // `AuthApplicationService::change_password` to invalidate an
+        // envelope bound to the OLD passphrase after the user rotates
+        // their legacy password; silent-migration on the next login
+        // re-mints an envelope under the new passphrase. Distinct
+        // from `clear_registration` (which co-flips force_change) —
+        // see the port doc for the "user chose the new value" vs
+        // "admin picked it" split.
+        //
+        // rows_affected is intentionally NOT checked: `change_password`
+        // may run against a user who never had an OPAQUE envelope
+        // (legacy-only account, or `OXICLOUD_AUTH_OPAQUE_MODE=off`
+        // was in effect during their entire lifetime), and that's not
+        // an error — the WHERE just matches nothing. Only real DB
+        // errors propagate.
+        sqlx::query(
+            r#"
+            UPDATE auth.users
+               SET opaque_envelope            = NULL,
+                   opaque_ciphersuite_version = NULL,
+                   opaque_registered_at       = NULL,
+                   opaque_migrated_at         = NULL,
+                   opaque_ksf_memory_kib      = NULL,
+                   opaque_ksf_iterations      = NULL,
+                   opaque_ksf_parallelism     = NULL
+             WHERE id = $1
+            "#,
+        )
+        .bind(user_id)
+        .execute(self.pool())
+        .await
+        .map_err(|e| {
+            DomainError::internal_error("OpaquePg", format!("clear_envelope_only: {e}"))
+        })?;
+        Ok(())
+    }
+
     async fn clear_registration(&self, user_id: Uuid) -> Result<()> {
         // One UPDATE nulls the whole OPAQUE column set AND flips the
         // force-change flag — matches the atomicity we promise in

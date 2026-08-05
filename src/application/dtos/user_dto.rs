@@ -94,6 +94,20 @@ pub struct UserDto {
     /// field is what the SPA reads to render the mandatory-mode UI.
     #[serde(default)]
     pub force_password_change: bool,
+    /// TRUE when the account has a local Argon2id `password_hash` on
+    /// file. Distinct from `auth_provider`: an SSO-linked account
+    /// (auth_provider != "local") can ALSO carry a local password if
+    /// it was set at signup or later — a hybrid posture. The SPA
+    /// gates the profile page's change-password card on this flag,
+    /// so hybrid users can rotate their local password even though
+    /// they normally sign in via SSO.
+    ///
+    /// Populated only by the `/api/auth/me` handler. `From<User>` in
+    /// this file leaves it `false` — other UserDto emitters (admin
+    /// listings, share-recipient responses, group members) do not
+    /// need to surface per-user credential state.
+    #[serde(default)]
+    pub has_password: bool,
 }
 
 /// Compact row returned by the paginated admin user table.
@@ -176,6 +190,11 @@ impl From<User> for UserDto {
         // entity before the move.
         let role = format!("{}", user.role());
         let can_edit_image = !user.is_oidc_user();
+        // has_password is derivable from the entity — read before the
+        // move. Cheap (bool from Option::is_some), no extra DB round-
+        // trip, so From<User> can populate it uniformly rather than
+        // leaving it false and requiring per-call-site backfill.
+        let has_password = user.has_password();
         let p = user.into_parts();
         Self {
             id: p.id.to_string(),
@@ -206,6 +225,7 @@ impl From<User> for UserDto {
             // leave it false — the flag is per-session-account state,
             // not a general user attribute.
             force_password_change: false,
+            has_password,
         }
     }
 }

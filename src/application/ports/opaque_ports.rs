@@ -122,6 +122,26 @@ pub trait OpaqueRepositoryPort: Send + Sync + 'static {
     /// (that's the point of the admin call).
     async fn clear_registration(&self, user_id: Uuid) -> Result<()>;
 
+    /// Invalidate the OPAQUE envelope for `user_id` WITHOUT touching
+    /// `force_password_change_at_next_login`. Used by the self-service
+    /// `change_password` path: the user just proved and rotated their
+    /// legacy password, so the OLD envelope (bound to the OLD
+    /// passphrase) MUST go, but no forced-change prompt is needed on
+    /// the next login (the user did just change it themselves).
+    ///
+    /// Distinct from [`clear_registration`], which co-flips
+    /// `force_password_change` because that path represents an admin
+    /// override — the user did NOT choose the new value, so they must
+    /// pick their own on next login. Change-password is the inverse:
+    /// user chose the value, no re-choice needed.
+    ///
+    /// Also used by `oxicloud-cli opaque reset --user X` for KSF
+    /// rotation recovery — same "envelope stale, don't touch other
+    /// state" semantics.
+    ///
+    /// Idempotent: nulling already-null columns is a no-op.
+    async fn clear_envelope_only(&self, user_id: Uuid) -> Result<()>;
+
     /// Stamp `opaque_migrated_at` on `user_id` if it isn't set yet.
     /// Called by the login-KE3 handler after a successful OPAQUE
     /// handshake — the presence of this timestamp is the Phase 3+

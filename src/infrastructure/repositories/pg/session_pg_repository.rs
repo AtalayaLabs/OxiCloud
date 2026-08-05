@@ -287,6 +287,50 @@ impl SessionRepository for SessionPgRepository {
         .await
     }
 
+    async fn revoke_other_user_sessions(
+        &self,
+        user_id: Uuid,
+        keep_session_id: Uuid,
+    ) -> SessionRepositoryResult<u64> {
+        // Classic "password change" revocation: kill every OTHER
+        // session for this user so a stolen credential elsewhere is
+        // invalidated, but leave the caller's own session alive so
+        // the SPA can complete follow-up work (envelope re-register,
+        // etc.) without racing a session-death 401.
+        let user_id_copy = user_id;
+        let keep = keep_session_id;
+        with_transaction(&self.pool, "revoke_other_user_sessions", |tx| {
+            Box::pin(async move {
+                let result = sqlx::query(
+                    r#"
+                    UPDATE auth.sessions
+                       SET revoked = true
+                     WHERE user_id  = $1
+                       AND id      != $2
+                       AND revoked  = false
+                    "#,
+                )
+                .bind(user_id_copy)
+                .bind(keep)
+                .execute(&mut **tx)
+                .await
+                .map_err(Self::map_sqlx_error)?;
+
+                let affected = result.rows_affected();
+                if affected > 0 {
+                    tracing::info!(
+                        "Revoked {} other sessions for user {} (kept {})",
+                        affected,
+                        user_id_copy,
+                        keep
+                    );
+                }
+                Ok(affected)
+            }) as BoxFuture<'_, SessionRepositoryResult<u64>>
+        })
+        .await
+    }
+
     /// Revokes all sessions in a token family (theft response)
     async fn revoke_session_family(&self, family_id: Uuid) -> SessionRepositoryResult<u64> {
         let result = sqlx::query(
@@ -516,6 +560,16 @@ impl SessionStoragePort for SessionPgRepository {
 
     async fn revoke_all_user_sessions(&self, user_id: Uuid) -> Result<u64, DomainError> {
         SessionRepository::revoke_all_user_sessions(self, user_id)
+            .await
+            .map_err(DomainError::from)
+    }
+
+    async fn revoke_other_user_sessions(
+        &self,
+        user_id: Uuid,
+        keep_session_id: Uuid,
+    ) -> Result<u64, DomainError> {
+        SessionRepository::revoke_other_user_sessions(self, user_id, keep_session_id)
             .await
             .map_err(DomainError::from)
     }

@@ -71,7 +71,17 @@
 	const usernameClaimed = $derived(!!session.user?.username);
 	const isAdmin = $derived(session.user?.role === 'admin');
 	const canEditImage = $derived(session.user?.can_edit_image === true && isLocal);
-	const showPasswordCard = $derived(isLocal && passwordLoginEnabled);
+	// Show the change-password card when the user CAN change their
+	// local password: they have `password_hash` on file AND the
+	// deployment offers password login (backend `change_password`
+	// refuses on either count — see `AuthApplicationService::change_password`).
+	// Distinct from the OLD `isLocal && passwordLoginEnabled` gate,
+	// which refused any SSO-linked account regardless of whether they
+	// carried a local password. Hybrid accounts (OIDC + local
+	// password) are a legitimate posture and MUST be able to rotate
+	// their local credential; the new gate lets them, and the backend
+	// refusal covers the pure-SSO case where has_password is false.
+	const showPasswordCard = $derived((session.user?.has_password ?? false) && passwordLoginEnabled);
 
 	/**
 	 * Mandatory change-password mode. TRUE when the backend has

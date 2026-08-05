@@ -227,6 +227,17 @@ export interface User {
 	 * missing → `false`.
 	 */
 	force_password_change?: boolean;
+	/**
+	 * TRUE when the account has a local Argon2id `password_hash` on
+	 * file. Distinct from `auth_provider`: an SSO-linked account can
+	 * ALSO carry a local password (hybrid posture — SSO for daily
+	 * login, local password as fallback). The profile page's
+	 * change-password card gates on this flag rather than on
+	 * `auth_provider === 'local'` so hybrid users can rotate their
+	 * local credential. Optional on the wire for older-backend
+	 * compatibility; missing → `false` (safe default: hide the card).
+	 */
+	has_password?: boolean;
 }
 
 /** Fields rendered by the paginated admin table. Full account details remain

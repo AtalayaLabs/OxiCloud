@@ -36,6 +36,12 @@
         "subject": "{{inviter}} partilhou um {{kind}} consigo no OxiCloud",
         "body": "{{inviter_full}} partilhou um {{kind}} consigo no OxiCloud.\n\nAbra o OxiCloud para ver a sua nova partilha:\n{{login_link}}\n\nPode ter mais partilhas novas de {{inviter}} — inicie sessão para ver todos os itens partilhados consigo.\n\n— OxiCloud\n\nRecebeu esta mensagem porque tem uma conta OxiCloud e a preferência de notificação de partilhas está ativada. Pode desativá-la no seu perfil (Avisar-me por e-mail quando alguém compartilhar comigo)."
       }
+    },
+    "security": {
+      "password_changed": {
+        "subject": "Sua senha do OxiCloud foi alterada",
+        "body": "Olá,\n\nSua senha do OxiCloud foi alterada em {{timestamp}} (UTC) a partir do endereço IP {{ip}}.\n\nSe foi você, nenhuma ação é necessária — pode ignorar esta mensagem.\n\nSe NÃO foi você, entre em contato com o seu administrador imediatamente. Alguém pode ter obtido acesso à sua conta.\n\n— OxiCloud"
+      }
     }
   },
   "server_status": {

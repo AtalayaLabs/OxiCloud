@@ -68,12 +68,19 @@ export async function changePassword(currentPw: string, newPw: string): Promise<
 		body: JSON.stringify({ current_password: currentPw, new_password: newPw })
 	});
 	if (!res.ok) throw new Error(`password change failed: ${res.status}`);
-	// Re-mint the OPAQUE envelope under the new passphrase — session
-	// stays valid across change-password (backend doesn't invalidate),
-	// so the session-authenticated register endpoints are reachable
-	// straight away. Non-fatal on failure: silent migration on next
-	// legacy login recovers the envelope. See
-	// `$lib/api/endpoints/opaque.ts::syncOpaqueEnvelope`.
+	// Re-mint the OPAQUE envelope under the new passphrase — SAME
+	// session is still valid after change_password (the backend now
+	// preserves the caller's session via `revoke_other_user_sessions`;
+	// only OTHER devices are logged out). That means the session-
+	// authenticated register endpoints are reachable straight away,
+	// no 401 race like the earlier `revoke_all_user_sessions` shape.
+	//
+	// This is the PRIMARY migration path: the envelope transitions
+	// straight from OLD-password bound to NEW-password bound with no
+	// null intermediate. `opaque_migrated_at` stays intact, admin
+	// dashboards don't see a spurious "unmigrated" blip. Non-fatal
+	// on failure — silent-migration on next legacy login (post
+	// `oxicloud-cli opaque reset` recovery) is the fallback.
 	//
 	// Dynamic import keeps the ~200 KiB `@serenity-kit/opaque` WASM
 	// bundle out of the profile route's initial chunk — the module

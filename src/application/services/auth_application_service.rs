@@ -1816,20 +1816,61 @@ impl AuthApplicationService {
         Ok(UserDto::from(updated))
     }
 
+    /// `keep_session_id` — when `Some`, revoke every OTHER session for
+    /// this user but leave the identified one alive. Classic
+    /// "password change" pattern: log the user out from other devices
+    /// but keep the current one authenticated so the SPA can complete
+    /// follow-up work (OPAQUE envelope re-registration) without
+    /// racing a session-death 401. When `None`, revokes all sessions
+    /// (preserves the original behaviour for callers without session
+    /// context).
+    ///
+    /// Handler-layer callers should extract the current session_id
+    /// from the request's refresh-token cookie and pass it in; other
+    /// callers (CLI, tests, admin flows that don't have a specific
+    /// current session) leave it `None`.
     pub async fn change_password(
         &self,
         user_id: Uuid,
         dto: ChangePasswordDto,
+        keep_session_id: Option<Uuid>,
     ) -> Result<(), DomainError> {
         // Get user
         let mut user = self.user_storage.get_user_by_id(user_id).await?;
 
-        // Block password changes for OIDC-provisioned users
-        if user.is_oidc_user() {
+        // Two structural refusals. Order chosen so the more-specific
+        // "your credential is IdP-managed" wins for pure-OIDC users
+        // (which is the case the message text addresses); the
+        // deployment-wide "password auth is off" wins for everyone
+        // else on an SSO-only deployment.
+        //
+        //   1. Pure-OIDC user (SSO-linked AND no local password).
+        //      Hybrid accounts with an OIDC linkage BUT also a
+        //      `password_hash` on file are a legitimate posture on
+        //      deployments that offer SSO alongside password auth —
+        //      they can and must be able to rotate the local
+        //      credential from this endpoint.
+        //
+        //   2. Deployment has password auth disabled globally
+        //      (`OXICLOUD_AUTH_METHODS` missing `password`, or the
+        //      legacy `OXICLOUD_OIDC_DISABLE_PASSWORD_LOGIN` alias).
+        //      Even a user who still has `password_hash` from before
+        //      the operator flipped this shouldn't be updating that
+        //      hash — they can't USE it to log in, and leaving a
+        //      write path exposed keeps a live credential the
+        //      operator likely wanted retired.
+        if user.is_oidc_user() && !user.has_password() {
             return Err(DomainError::new(
                 ErrorKind::AccessDenied,
                 "Auth",
                 "Password changes are not available for SSO/OIDC accounts. Your password is managed by your identity provider.",
+            ));
+        }
+        if !self.is_password_login_allowed() {
+            return Err(DomainError::new(
+                ErrorKind::AccessDenied,
+                "Auth",
+                "Password login is disabled on this deployment; password change is not available.",
             ));
         }
 
@@ -1894,6 +1935,34 @@ impl AuthApplicationService {
         // Save updated user
         self.user_storage.update_user(user.clone()).await?;
 
+        // OPAQUE envelope handling: the OLD envelope was bound to the
+        // OLD passphrase via the OPRF. Left in place, the next OPAQUE
+        // login with the NEW password would derive a mismatched OPRF
+        // output and fail the AKE with InvalidCredentials → user
+        // locked out (Phase 3 SPA doesn't fall back OPAQUE→legacy).
+        //
+        // The RESPONSIBILITY for re-minting the envelope belongs to
+        // the SPA — see `frontend/src/lib/api/endpoints/profile.ts`
+        // → `changePassword` → `syncOpaqueEnvelope(newPw)`. That call
+        // hits the session-authenticated `/register/*` endpoints
+        // immediately after this handler returns 200. It works
+        // because we keep the current session alive below
+        // (`revoke_other_user_sessions` instead of the full-revocation
+        // call this handler used to make).
+        //
+        // The server does NOT clear the envelope here. The SPA
+        // re-registration is monotonic — the envelope transitions
+        // straight from OLD-password bound to NEW-password bound
+        // without a null intermediate. This matters for the migration
+        // ledger: `opaque_migrated_at` stays intact, admin dashboards
+        // don't see a spurious "unmigrated" blip.
+        //
+        // Recovery for the rare SPA-failure case: the operator runs
+        // `oxicloud-cli opaque reset --user <id>` to null the
+        // envelope; the user's next login goes through legacy path
+        // (since `hasOpaque: false` after the CLI reset) and silent-
+        // migration mints a fresh envelope under the new password.
+
         // Clear the admin-set "temporary password" marker — the user
         // has just picked their own password, so the next-login prompt
         // has served its purpose. Failure here is non-fatal (login
@@ -1919,10 +1988,29 @@ impl AuthApplicationService {
         // between change_password success and the new session mint.)
         self.user_flags_cache.invalidate(&user_id).await;
 
-        // Optional: revoke all sessions to force re-login with new password
-        self.session_storage
-            .revoke_all_user_sessions(user_id)
-            .await?;
+        // Session revocation posture: classic "password change" pattern
+        // — kill every OTHER session for this user (any device / tab
+        // that had cached the old credential), but keep the caller's
+        // CURRENT session alive so the SPA can complete the OPAQUE
+        // envelope re-registration on the same session cookie that
+        // successfully hit this endpoint. Without the `keep_session_id`
+        // preservation, `syncOpaqueEnvelope` in profile.ts would 401
+        // (session gone), the envelope would stay bound to the OLD
+        // password, and the user would be locked out on next OPAQUE
+        // login. `None` = caller has no session context (CLI, admin
+        // flows), fall back to full revocation.
+        match keep_session_id {
+            Some(keep) => {
+                self.session_storage
+                    .revoke_other_user_sessions(user_id, keep)
+                    .await?;
+            }
+            None => {
+                self.session_storage
+                    .revoke_all_user_sessions(user_id)
+                    .await?;
+            }
+        }
 
         // Lifecycle: PasswordChanged logout — fired once per logical
         // revoke-all call. PR 4 may refine to per-session firing.
@@ -1994,6 +2082,31 @@ impl AuthApplicationService {
     ///
     /// Staleness is bounded by [`USER_FLAGS_CACHE_TTL`]; role and active
     /// changes made through this service invalidate the entry eagerly.
+    /// Look up the session id for a refresh token string. Returns
+    /// `Ok(None)` when the token doesn't match any session (typo,
+    /// revoked, expired), `Err` only on real storage errors. Used by
+    /// the change-password handler to identify the caller's current
+    /// session so `revoke_other_user_sessions` can spare it while
+    /// killing the rest.
+    ///
+    /// Kept as a thin lookup — this handler doesn't care about the
+    /// full Session entity, only its id, so the caller doesn't have
+    /// to reason about the wire shape of `Session`.
+    pub async fn get_session_id_by_refresh_token(
+        &self,
+        refresh_token: &str,
+    ) -> Result<Option<Uuid>, DomainError> {
+        match self
+            .session_storage
+            .get_session_by_refresh_token(refresh_token)
+            .await
+        {
+            Ok(session) => Ok(Some(session.id())),
+            Err(e) if e.kind == ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     pub async fn get_user_flags(&self, user_id: Uuid) -> Result<UserFlags, DomainError> {
         // Single-flight: concurrent misses for the same user coalesce
         // into ONE storage lookup; errors are never cached (same herd

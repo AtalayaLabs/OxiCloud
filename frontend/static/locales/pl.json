@@ -36,6 +36,12 @@
         "subject": "{{inviter}} udostępnił Ci {{kind}} w OxiCloud",
         "body": "{{inviter_full}} udostępnił Ci {{kind}} w OxiCloud.\n\nOtwórz OxiCloud, aby zobaczyć nowe udostępnienie:\n{{login_link}}\n\nMożesz mieć dodatkowe nowe udostępnienia od {{inviter}} — zaloguj się, aby zobaczyć wszystkie udostępnione Ci elementy.\n\n— OxiCloud\n\nOtrzymujesz tę wiadomość, ponieważ masz konto OxiCloud i preferencja powiadomień o udostępnieniach jest włączona. Możesz ją wyłączyć w swoim profilu (Wyślij mi e-mail, gdy ktoś coś mi udostępni)."
       }
+    },
+    "security": {
+      "password_changed": {
+        "subject": "Twoje hasło OxiCloud zostało zmienione",
+        "body": "Cześć,\n\nTwoje hasło OxiCloud zostało właśnie zmienione w dniu {{timestamp}} (UTC) z adresu IP {{ip}}.\n\nJeśli to byłeś Ty, żadne działanie nie jest wymagane — możesz zignorować tę wiadomość.\n\nJeśli to NIE byłeś Ty, natychmiast skontaktuj się z administratorem. Ktoś mógł uzyskać dostęp do Twojego konta.\n\n— OxiCloud"
+      }
     }
   },
   "server_status": {

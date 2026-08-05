@@ -733,6 +733,109 @@ impl MagicLinkInviteService {
         Ok(())
     }
 
+    /// Fire-and-forget security notification: a password change just
+    /// completed on this account. Sends a bilingual email with the
+    /// timestamp and originating IP so a compromised-account victim
+    /// notices out-of-band and can contact their admin. Fired by
+    /// `change_password` after a successful update.
+    ///
+    /// NOT a magic-link — no token minted, no link in the body, no
+    /// TTL to reason about. Pure informational. Distinct audit event
+    /// (`auth.password_changed_notification_*`) so operators can
+    /// spot delivery issues separately from magic-link sends.
+    ///
+    /// Deactivated accounts skip — no point mailing someone the
+    /// operator just locked out.
+    ///
+    /// NOTE: we intentionally do NOT skip OIDC-linked users. Hybrid
+    /// accounts (SSO + local password) are a real posture: users who
+    /// sign in daily via SSO but ALSO keep a local password as a
+    /// fallback. When they rotate that local password, they DO need
+    /// the notification — the fact that they also have an SSO
+    /// linkage doesn't change the "someone touched my local
+    /// credential" signal. If `change_password` reached success and
+    /// we're here, there was a password worth notifying about (the
+    /// upstream `is_oidc_user() && !has_password()` refusal ensured
+    /// pure-OIDC users never reach this point).
+    ///
+    /// `client_ip` is the string the request-scope span already
+    /// stamped (via `trusted_proxy::client_ip_from_parts`). We do NOT
+    /// re-derive it here; caller passes exactly what the audit log
+    /// sees, so the recipient can cross-reference with support.
+    pub async fn send_password_changed_notification(
+        &self,
+        user: &User,
+        client_ip: &str,
+    ) -> Result<(), DomainError> {
+        if !user.is_active() {
+            tracing::info!(
+                target: "audit",
+                event = "auth.password_changed_notification_skipped",
+                reason = "account_deactivated",
+                user_id = %user.id(),
+                "🔔 password-change notification skipped: account deactivated",
+            );
+            return Ok(());
+        }
+
+        let locale = self.locale_for(user);
+        // ISO-8601 UTC — machine-parseable, unambiguous across time
+        // zones. Human-friendly formatting is a translator concern
+        // for a future iteration; for a security email the exact
+        // timestamp matters more than the pretty rendering.
+        let timestamp = chrono::Utc::now()
+            .format("%Y-%m-%d %H:%M:%S UTC")
+            .to_string();
+        let args: Vec<(&str, &str)> = vec![("ip", client_ip), ("timestamp", &timestamp)];
+
+        let subject = self
+            .i18n_or("server.security.password_changed.subject", &locale, &args)
+            .await;
+        let text_body = self
+            .render_bilingual("server.security.password_changed.body", &locale, &args)
+            .await;
+
+        let message = EmailMessage {
+            to: user.email().to_string(),
+            subject,
+            text_body,
+            html_body: None,
+        };
+
+        match self.email_sender.send(message).await {
+            Ok(outcome) => {
+                tracing::info!(
+                    target: "audit",
+                    event = "auth.password_changed_notification_sent",
+                    user_id = %user.id(),
+                    email = %user.email(),
+                    client_ip = %client_ip,
+                    smtp_code = outcome.code,
+                    smtp_message = %outcome.message,
+                    "🔔 password-change notification sent to '{}'",
+                    user.email(),
+                );
+            }
+            Err(e) => {
+                // Non-fatal: change_password already succeeded; a
+                // delivery failure here just means the victim of a
+                // hypothetical compromise won't be notified out-of-
+                // band. Log at warn so ops sees consistent SMTP issues.
+                tracing::warn!(
+                    target: "audit",
+                    event = "auth.password_changed_notification_failed",
+                    user_id = %user.id(),
+                    email = %user.email(),
+                    error = %e.message,
+                    "🔔 password-change notification SMTP send failed for '{}'",
+                    user.email(),
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     /// Resolve a translation, falling back to the literal key on any
     /// lookup error. Identical to the handler-side helper — kept inline
     /// here because the service layer can't pull in a UI util module

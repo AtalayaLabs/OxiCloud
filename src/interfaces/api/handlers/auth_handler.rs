@@ -657,6 +657,8 @@ pub struct UpdateUserImageDto {
 )]
 pub async fn change_password(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     CurrentUserId(user_id): CurrentUserId,
     Json(dto): Json<ChangePasswordDto>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -665,12 +667,86 @@ pub async fn change_password(
         .as_ref()
         .ok_or_else(|| AppError::internal_error("Authentication service not configured"))?;
 
+    // Resolve the CURRENT session id from the refresh-token cookie so
+    // the service layer can revoke every OTHER session (classic
+    // password-change security posture) while keeping THIS session
+    // alive — the SPA needs to hit `/api/auth/opaque/register/*`
+    // immediately after this response to re-mint the OPAQUE envelope
+    // under the new password. If we revoked the current session too
+    // (the old behaviour), the follow-up register requests would 401
+    // silently and the envelope would stay bound to the OLD password.
+    //
+    // Best-effort: an unauthenticated or cookie-less caller (a CLI
+    // hitting this endpoint with just a bearer, no refresh cookie)
+    // falls back to `None` → the service revokes ALL sessions, same
+    // as the pre-refactor behaviour. That's the safer default when we
+    // can't identify "this" session.
+    let keep_session_id: Option<Uuid> = {
+        let refresh_tok = cookie_auth::extract_cookie_value(&headers, cookie_auth::REFRESH_COOKIE);
+        match refresh_tok {
+            Some(tok) => auth_service
+                .auth_application_service
+                .get_session_id_by_refresh_token(&tok)
+                .await
+                .ok()
+                .flatten(),
+            None => None,
+        }
+    };
+
     match auth_service
         .auth_application_service
-        .change_password(user_id, dto)
+        .change_password(user_id, dto, keep_session_id)
         .await
     {
-        Ok(()) => Ok(StatusCode::OK),
+        Ok(()) => {
+            // Fire-and-forget security notification: password changed
+            // at [now] from [client_ip]. Reaches the user out-of-band
+            // so a compromised-account victim can notice and alert
+            // their admin. SMTP delivery failures don't affect the
+            // 200 response (the change already succeeded); the
+            // service's own audit log tracks send outcomes.
+            //
+            // Runs on a background task so a slow SMTP handshake
+            // (30-60 s under a marginal mail server) can't stall the
+            // response to the SPA. Cloning the `Arc<MagicLinkInviteService>`
+            // is a refcount bump; the User entity is re-fetched inside
+            // the task from the same user_id we just verified.
+            if let Some(invite_svc) = state.magic_link_invite_service.as_ref() {
+                let client_ip = crate::interfaces::middleware::trusted_proxy::client_ip_from_parts(
+                    &headers,
+                    Some(peer),
+                    false,
+                )
+                .to_string();
+                let invite = invite_svc.clone();
+                let auth = auth_service.auth_application_service.clone();
+                tokio::spawn(async move {
+                    // Refetch the user entity fresh — the change we
+                    // just made rewrote the row (password_hash), and
+                    // the notification method reads `is_active` +
+                    // `is_oidc_user` + `email` off the entity to
+                    // decide whether to send and where.
+                    match auth.get_user_entity(user_id).await {
+                        Ok(u) => {
+                            let _ = invite
+                                .send_password_changed_notification(&u, &client_ip)
+                                .await;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "audit",
+                                event = "auth.password_changed_notification_lookup_failed",
+                                user_id = %user_id,
+                                error = %e.message,
+                                "🔔 skipped notification: could not re-fetch user after change_password"
+                            );
+                        }
+                    }
+                });
+            }
+            Ok(StatusCode::OK)
+        }
         Err(err) => {
             // Remap the same-as-current guard into a stable error_type
             // the SPA can surface as "pick a different one" without
