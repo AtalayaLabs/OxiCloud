@@ -96,13 +96,16 @@ it('tryRefresh returns false when the refresh fails', async () => {
 //     false — same net effect as above).
 //   - The OPAQUE branch silently falls back to legacy on any WASM
 //     hiccup (would mask a wrong passphrase as a network error).
-it('login flips to OPAQUE when the lookup reports hasOpaque: true', async () => {
+it('login flips to OPAQUE when the lookup reports hasOpaque: true (no rotation when KSF matches)', async () => {
 	// Order on the wire, given the current implementation:
 	//   1. GET  /api/auth/opaque/params            (via checkOpaqueAvailable → fetchOpaqueParams)
-	//   2. POST /api/auth/opaque/login/lookup     → { hasOpaque: true }
+	//   2. POST /api/auth/opaque/login/lookup     → { hasOpaque: true, ksf: <matches /params> }
 	//   3. POST /api/auth/opaque/login/ke1        → { exchangeId, loginResponse }
 	//   4. POST /api/auth/opaque/login/ke3        → AuthResponse
-	// The legacy /api/auth/login POST must NOT fire on this branch.
+	// The legacy /api/auth/login POST must NOT fire on this branch, AND
+	// Phase C's rotation MUST NOT fire because the envelope's KSF matches
+	// what /params publishes — nothing to rotate to.
+	const paramsKsf = { memoryKib: 8, iterations: 1, parallelism: 1 };
 	f.mockResolvedValueOnce({
 		ok: true,
 		status: 200,
@@ -110,14 +113,14 @@ it('login flips to OPAQUE when the lookup reports hasOpaque: true', async () => 
 		json: async () => ({
 			enabled: true,
 			ciphersuiteVersion: 1,
-			ksf: { memoryKib: 8, iterations: 1, parallelism: 1 }
+			ksf: paramsKsf
 		})
 	})
 		.mockResolvedValueOnce({
 			ok: true,
 			status: 200,
 			statusText: 'OK',
-			json: async () => ({ hasOpaque: true })
+			json: async () => ({ hasOpaque: true, ksf: paramsKsf })
 		})
 		.mockResolvedValueOnce({
 			ok: true,
@@ -150,6 +153,138 @@ it('login flips to OPAQUE when the lookup reports hasOpaque: true', async () => 
 	]);
 	// Legacy MUST NOT run when we took the OPAQUE branch.
 	expect(urls).not.toContain('/api/auth/login');
+	// Phase C: no rotation → no register/* calls.
+	expect(urls).not.toContain('/api/auth/opaque/register/start');
+	expect(urls).not.toContain('/api/auth/opaque/register/finish');
+});
+
+// ── Phase C: silent KSF rotation on OPAQUE login ─────────────────────
+//
+// `login()` MUST fire `syncOpaqueEnvelope(password)` after a successful
+// OPAQUE login when the envelope's stored KSF differs from the server's
+// currently-published KSF (or when the envelope predates per-envelope
+// KSF storage, signalled by `lookup.ksf === null / absent`). Regression
+// this guards: silently ignoring the drift would freeze users on
+// whatever KSF they registered under years ago, making the operator's
+// tuning-defaults knob effectively write-only for existing accounts.
+
+it('OPAQUE login triggers silent KSF rotation when envelope KSF drifted from /params', async () => {
+	// Wire order:
+	//   1. GET  /api/auth/opaque/params     (via checkOpaqueAvailable — server publishes NEW KSF)
+	//   2. POST /api/auth/opaque/login/lookup → { hasOpaque: true, ksf: <OLD, drifted from /params> }
+	//   3. POST /api/auth/opaque/login/ke1  → { exchangeId, loginResponse }  (uses OLD envelope KSF)
+	//   4. POST /api/auth/opaque/login/ke3  → AuthResponse
+	//   5. POST /api/auth/opaque/register/start  ← rotation fires
+	//   6. POST /api/auth/opaque/register/finish
+	// After (6), the envelope is re-minted under the CURRENT /params
+	// KSF, so the user's next login uses the new values.
+	const newParamsKsf = { memoryKib: 8, iterations: 1, parallelism: 1 };
+	const oldEnvelopeKsf = { memoryKib: 32, iterations: 3, parallelism: 4 };
+	f.mockResolvedValueOnce({
+		ok: true,
+		status: 200,
+		statusText: 'OK',
+		json: async () => ({ enabled: true, ciphersuiteVersion: 1, ksf: newParamsKsf })
+	})
+		.mockResolvedValueOnce({
+			ok: true,
+			status: 200,
+			statusText: 'OK',
+			json: async () => ({ hasOpaque: true, ksf: oldEnvelopeKsf })
+		})
+		.mockResolvedValueOnce({
+			ok: true,
+			status: 200,
+			statusText: 'OK',
+			json: async () => ({ exchangeId: 'ex-1', loginResponse: 'LR' })
+		})
+		.mockResolvedValueOnce({
+			ok: true,
+			status: 200,
+			statusText: 'OK',
+			json: async () => ({
+				user: { id: 'u1', email: 'a@x.test' },
+				access_token: 'at-opaque',
+				refresh_token: 'rt-opaque',
+				token_type: 'Bearer',
+				expires_in: 3600
+			})
+		})
+		.mockResolvedValueOnce({
+			ok: true,
+			status: 200,
+			statusText: 'OK',
+			json: async () => ({ registrationResponse: 'RESP-R' })
+		})
+		.mockResolvedValueOnce({ ok: true, status: 204, json: async () => ({}) });
+
+	const authResponse = await auth.login('alice@example.com', 'pw');
+	expect(authResponse.access_token).toBe('at-opaque');
+
+	const urls = f.mock.calls.map((c: unknown[]) => c[0] as string);
+	expect(urls).toEqual([
+		'/api/auth/opaque/params',
+		'/api/auth/opaque/login/lookup',
+		'/api/auth/opaque/login/ke1',
+		'/api/auth/opaque/login/ke3',
+		'/api/auth/opaque/register/start',
+		'/api/auth/opaque/register/finish'
+	]);
+});
+
+it('OPAQUE login triggers silent rotation when envelope predates per-envelope KSF (ksf null)', async () => {
+	// `lookup.ksf` is null/absent → envelope predates migration
+	// 20261005000000 → rotation fires so the envelope gets stored under
+	// the new per-envelope schema on the next go-round. Same wire
+	// sequence as the drift case above.
+	f.mockResolvedValueOnce({
+		ok: true,
+		status: 200,
+		statusText: 'OK',
+		json: async () => ({
+			enabled: true,
+			ciphersuiteVersion: 1,
+			ksf: { memoryKib: 8, iterations: 1, parallelism: 1 }
+		})
+	})
+		.mockResolvedValueOnce({
+			ok: true,
+			status: 200,
+			statusText: 'OK',
+			// No `ksf` field at all — pre-migration envelope.
+			json: async () => ({ hasOpaque: true })
+		})
+		.mockResolvedValueOnce({
+			ok: true,
+			status: 200,
+			statusText: 'OK',
+			json: async () => ({ exchangeId: 'ex-1', loginResponse: 'LR' })
+		})
+		.mockResolvedValueOnce({
+			ok: true,
+			status: 200,
+			statusText: 'OK',
+			json: async () => ({
+				user: { id: 'u1', email: 'a@x.test' },
+				access_token: 'at',
+				refresh_token: 'rt',
+				token_type: 'Bearer',
+				expires_in: 3600
+			})
+		})
+		.mockResolvedValueOnce({
+			ok: true,
+			status: 200,
+			statusText: 'OK',
+			json: async () => ({ registrationResponse: 'RESP-R' })
+		})
+		.mockResolvedValueOnce({ ok: true, status: 204, json: async () => ({}) });
+
+	await auth.login('alice@example.com', 'pw');
+
+	const urls = f.mock.calls.map((c: unknown[]) => c[0] as string);
+	expect(urls).toContain('/api/auth/opaque/register/start');
+	expect(urls).toContain('/api/auth/opaque/register/finish');
 });
 
 it('login falls back to legacy + silent-migration when hasOpaque: false', async () => {

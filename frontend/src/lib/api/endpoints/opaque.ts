@@ -154,13 +154,27 @@ export function fetchOpaqueParams(): Promise<OpaqueServerParams> {
  * both "unknown user" and "user without envelope." Callers must
  * never assume `hasOpaque: false` implies the user exists.
  */
-export async function checkOpaqueAvailable(userIdentifier: string): Promise<boolean> {
+/**
+ * Result of `checkOpaqueAvailable`. `has: true` means the user has an
+ * OPAQUE envelope on file — take the OPAQUE login branch. `ksf` is the
+ * server-echoed KSF from the envelope: when present, the client MUST
+ * use these values (not `/params`) on the login handshake, so a KSF
+ * config change on the server side doesn't invalidate historical
+ * envelopes. `ksf === null` means the envelope predates per-envelope
+ * KSF storage — fall back to `/params` values.
+ */
+export interface OpaqueLookupResult {
+	has: boolean;
+	ksf: OpaqueKsfConfig | null;
+}
+
+export async function checkOpaqueAvailable(userIdentifier: string): Promise<OpaqueLookupResult> {
 	// Cheap short-circuit: if the substrate isn't enabled server-side,
 	// the endpoint would return 503 anyway. `syncOpaqueEnvelope`
 	// primed the cache after any prior login in this session; this
 	// call reuses it.
 	const params = await fetchOpaqueParams();
-	if (!params.enabled) return false;
+	if (!params.enabled) return { has: false, ksf: null };
 	try {
 		const res = await apiFetch('/api/auth/opaque/login/lookup', {
 			method: 'POST',
@@ -168,11 +182,15 @@ export async function checkOpaqueAvailable(userIdentifier: string): Promise<bool
 			headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 			body: JSON.stringify({ userIdentifier })
 		});
-		if (!res.ok) return false;
-		const body = (await res.json()) as { hasOpaque?: boolean };
-		return body.hasOpaque === true;
+		if (!res.ok) return { has: false, ksf: null };
+		const body = (await res.json()) as {
+			hasOpaque?: boolean;
+			ksf?: OpaqueKsfConfig;
+		};
+		if (body.hasOpaque !== true) return { has: false, ksf: null };
+		return { has: true, ksf: body.ksf ?? null };
 	} catch {
-		return false;
+		return { has: false, ksf: null };
 	}
 }
 
@@ -286,11 +304,22 @@ export async function opaqueRegister(
 		clientRegistrationState,
 		keyStretching: ksfOption(ksf)
 	});
+	// Declare the KSF we ACTUALLY used to the server so it persists
+	// them per-envelope. Server falls back to its current config when
+	// omitted (older-client compat), but declaring them ensures the
+	// stored values reflect exactly what this handshake used — future
+	// KSF config changes then won't invalidate this envelope on login.
 	const finishRes = await apiFetch('/api/auth/opaque/register/finish', {
 		method: 'POST',
 		credentials: 'same-origin',
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify({ registrationRecord, ciphersuiteVersion })
+		body: JSON.stringify({
+			registrationRecord,
+			ciphersuiteVersion,
+			ksfMemoryKib: ksf.memoryKib,
+			ksfIterations: ksf.iterations,
+			ksfParallelism: ksf.parallelism
+		})
 	});
 	if (!finishRes.ok) {
 		const { errorType, message } = await parseErrorBody(finishRes);

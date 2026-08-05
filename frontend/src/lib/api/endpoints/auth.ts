@@ -87,8 +87,43 @@ export async function login(emailOrUsername: string, password: string): Promise<
 	// as a network hiccup.
 	const { checkOpaqueAvailable, opaqueLogin, syncOpaqueEnvelope } =
 		await import('$lib/api/endpoints/opaque');
-	if (await checkOpaqueAvailable(emailOrUsername)) {
-		return await opaqueLogin(emailOrUsername, password, await opaqueKsfForClient());
+	const lookup = await checkOpaqueAvailable(emailOrUsername);
+	if (lookup.has) {
+		// Prefer the envelope's OWN KSF (returned by lookup) over the
+		// server's current /params values: after a KSF config change,
+		// existing envelopes need their historical KSF for the OPRF
+		// to derive the right value; using current /params would fail
+		// the AKE integrity check and return `InvalidCredentials`.
+		// Fallback to /params only when the envelope predates
+		// per-envelope KSF storage (`ksf === null`), which preserves
+		// the pre-migration behaviour.
+		const ksf = lookup.ksf ?? (await opaqueKsfForClient());
+		const auth = await opaqueLogin(emailOrUsername, password, ksf);
+
+		// Phase C: silent KSF rotation. If this envelope's KSF drifted
+		// from what the server currently publishes (operator retuned
+		// OXICLOUD_AUTH_OPAQUE_KSF_*), re-register the envelope under
+		// the current params so the NEXT login benefits from the new
+		// values (faster / stronger / whatever the tuning direction).
+		// Envelopes that predate per-envelope storage (`lookup.ksf ===
+		// null`) always trigger rotation — that's how they migrate
+		// into the new storage schema organically.
+		//
+		// `syncOpaqueEnvelope` is the same helper the Phase 2 hook
+		// uses after a legacy login; it swallows errors, so a
+		// rotation failure is non-fatal (this login already succeeded)
+		// and the NEXT login retries the same check. Fires only when
+		// there's a real difference — no wasted crypto on the common
+		// same-params case.
+		const current = await opaqueKsfForClient();
+		const needsRotation =
+			!lookup.ksf ||
+			lookup.ksf.memoryKib !== current.memoryKib ||
+			lookup.ksf.iterations !== current.iterations ||
+			lookup.ksf.parallelism !== current.parallelism;
+		if (needsRotation) await syncOpaqueEnvelope(password);
+
+		return auth;
 	}
 
 	// ── Legacy login (fallback for users without an envelope yet) ─────

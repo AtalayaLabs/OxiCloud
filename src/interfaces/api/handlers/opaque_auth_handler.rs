@@ -181,12 +181,25 @@ pub struct OpaqueRegisterStartResponse {
 /// base64-encoded output of `ClientRegistration::finish(...).message`;
 /// `ciphersuiteVersion` is what the client believed it was minting
 /// under (compared to the current server value — mismatch → 400).
+///
+/// `ksf*` fields carry the Argon2id parameters the client actually
+/// used at `startRegistration`/`finishRegistration` time. Server
+/// persists them per-envelope so future changes to the server's
+/// `OpaqueConfig::ksf_*` don't invalidate this envelope. Optional
+/// on the wire (older clients that predate per-envelope storage
+/// omit them; server falls back to its current config in that case).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct OpaqueRegisterFinishDto {
     #[serde(rename = "registrationRecord")]
     pub registration_record: String,
     #[serde(rename = "ciphersuiteVersion")]
     pub ciphersuite_version: i16,
+    #[serde(rename = "ksfMemoryKib", default)]
+    pub ksf_memory_kib: Option<u32>,
+    #[serde(rename = "ksfIterations", default)]
+    pub ksf_iterations: Option<u32>,
+    #[serde(rename = "ksfParallelism", default)]
+    pub ksf_parallelism: Option<u32>,
 }
 
 /// KE1 (register/start): parse client `RegistrationRequest`, run
@@ -329,7 +342,25 @@ pub async fn register_finish(
     let stored = ServerRegistration::<OxiCloudSuite>::finish(record);
     let envelope_bytes = stored.serialize();
 
-    repo.write_registration(user_id, &envelope_bytes, svc.ciphersuite_version())
+    // KSF params the client used. Client-declared per migration
+    // 20261005000000; older clients omit and we fall back to the
+    // server's CURRENT config values (best guess: the client fetched
+    // /params right before registering, so current-config is what it
+    // saw). Persisting the exact per-envelope values means future
+    // config changes don't break this envelope on login.
+    let ksf = crate::application::ports::opaque_ports::StoredKsf {
+        memory_kib: dto
+            .ksf_memory_kib
+            .unwrap_or_else(|| svc.config_ksf_memory_kib()),
+        iterations: dto
+            .ksf_iterations
+            .unwrap_or_else(|| svc.config_ksf_iterations()),
+        parallelism: dto
+            .ksf_parallelism
+            .unwrap_or_else(|| svc.config_ksf_parallelism()),
+    };
+
+    repo.write_registration(user_id, &envelope_bytes, svc.ciphersuite_version(), ksf)
         .await
         .map_err(|e| {
             tracing::error!(
@@ -387,6 +418,25 @@ pub struct OpaqueLookupDto {
 pub struct OpaqueLookupResponse {
     #[serde(rename = "hasOpaque")]
     pub has_opaque: bool,
+    /// KSF parameters this user's envelope was minted under. Present
+    /// only when `has_opaque = true`. The client MUST use these values
+    /// (not the ones from `GET /params`) on the login handshake — the
+    /// envelope's OPRF derivation was bound to them at register time
+    /// and a mismatch will fail the AKE with `InvalidCredentials`.
+    ///
+    /// `None` when: (a) `has_opaque = false` (nothing to publish),
+    /// or (b) the envelope predates per-envelope-KSF storage
+    /// (migration `20261005000000`) — in which case the client falls
+    /// back to `/params` values, which is the same behaviour as
+    /// before per-envelope storage existed.
+    ///
+    /// Anti-enum note: the presence of this field ONLY signals what
+    /// `has_opaque` already signals (positive existence). Value
+    /// differences across users could reveal timing of registration
+    /// but not identity — same low-severity leak as the existing
+    /// per-identifier probe, no additional exposure.
+    #[serde(rename = "ksf", skip_serializing_if = "Option::is_none")]
+    pub ksf: Option<OpaqueKsfParams>,
 }
 
 /// Resolve `userIdentifier` → envelope-existence check. Used by the
@@ -418,19 +468,35 @@ pub async fn login_lookup(
         return Err(malformed("userIdentifier is empty"));
     }
 
-    // Resolve the identifier → user_id → envelope presence. Any miss
-    // (unknown user, user without envelope, DB blip) collapses to
-    // `hasOpaque: false` — the anti-enum contract on the wire shape.
-    // No audit event here: a successful lookup isn't a login attempt,
-    // and logging every miss would flood the channel without adding
-    // signal (rate limiter already caps volume; enumeration attempts
-    // show up in the login-lockout / rate-limit metrics).
-    let has_opaque = match auth.lookup_user_for_login(identifier).await {
-        Ok(user) => matches!(repo.read_registration(user.id()).await, Ok(Some(_))),
-        Err(_) => false,
+    // Resolve the identifier → user_id → envelope presence + KSF.
+    // Any miss (unknown user, user without envelope, DB blip) collapses
+    // to `hasOpaque: false, ksf: None` — the anti-enum contract on the
+    // wire shape. No audit event here: a successful lookup isn't a
+    // login attempt, and logging every miss would flood the channel
+    // without adding signal (rate limiter already caps volume;
+    // enumeration attempts show up in the login-lockout / rate-limit
+    // metrics).
+    //
+    // KSF fallback: if the envelope has NULL KSF (predates per-envelope
+    // storage migration 20261005000000), we return `ksf: None` — the
+    // client then uses the server's current `/params` values, which is
+    // the pre-per-envelope-storage behaviour.
+    let (has_opaque, ksf) = match auth.lookup_user_for_login(identifier).await {
+        Ok(user) => match repo.read_registration(user.id()).await {
+            Ok(Some(stored)) => {
+                let ksf = stored.ksf.map(|k| OpaqueKsfParams {
+                    memory_kib: k.memory_kib,
+                    iterations: k.iterations,
+                    parallelism: k.parallelism,
+                });
+                (true, ksf)
+            }
+            _ => (false, None),
+        },
+        Err(_) => (false, None),
     };
 
-    Ok(Json(OpaqueLookupResponse { has_opaque }))
+    Ok(Json(OpaqueLookupResponse { has_opaque, ksf }))
 }
 
 // ── Login: KE1 + KE3 ─────────────────────────────────────────────────

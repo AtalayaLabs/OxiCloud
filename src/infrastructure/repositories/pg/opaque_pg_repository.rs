@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::application::ports::opaque_ports::{OpaqueRepositoryPort, StoredEnvelope};
+use crate::application::ports::opaque_ports::{OpaqueRepositoryPort, StoredEnvelope, StoredKsf};
 use crate::common::errors::{DomainError, Result};
 
 pub struct OpaquePgRepository {
@@ -46,24 +46,38 @@ impl OpaqueRepositoryPort for OpaquePgRepository {
         user_id: Uuid,
         envelope: &[u8],
         ciphersuite_version: i16,
+        ksf: StoredKsf,
     ) -> Result<()> {
         // COALESCE preserves the first-registration timestamp across
         // re-registrations (password change → new envelope, same
         // registered_at). The alternative — always stamping `NOW()`
         // — would erase the operational signal "when did this user
         // first join OPAQUE," which the migration dashboard reads.
+        //
+        // KSF params ARE rewritten on every re-registration (unlike
+        // registered_at) — the point of storing them is to reflect
+        // what the CURRENT envelope was minted under, not the
+        // historical first. INTEGER column type in PG is i32; cast
+        // from u32 is lossless for realistic Argon2 values (max
+        // memory_kib would need ~2 TiB to overflow i32).
         let res = sqlx::query(
             r#"
             UPDATE auth.users
                SET opaque_envelope            = $2,
                    opaque_ciphersuite_version = $3,
-                   opaque_registered_at       = COALESCE(opaque_registered_at, NOW())
+                   opaque_registered_at       = COALESCE(opaque_registered_at, NOW()),
+                   opaque_ksf_memory_kib      = $4,
+                   opaque_ksf_iterations      = $5,
+                   opaque_ksf_parallelism     = $6
              WHERE id = $1
             "#,
         )
         .bind(user_id)
         .bind(envelope)
         .bind(ciphersuite_version)
+        .bind(ksf.memory_kib as i32)
+        .bind(ksf.iterations as i32)
+        .bind(ksf.parallelism as i32)
         .execute(self.pool())
         .await
         .map_err(|e| DomainError::internal_error("OpaquePg", format!("write_registration: {e}")))?;
@@ -86,7 +100,10 @@ impl OpaqueRepositoryPort for OpaquePgRepository {
             r#"
             SELECT opaque_envelope,
                    opaque_ciphersuite_version,
-                   opaque_registered_at
+                   opaque_registered_at,
+                   opaque_ksf_memory_kib,
+                   opaque_ksf_iterations,
+                   opaque_ksf_parallelism
               FROM auth.users
              WHERE id = $1
             "#,
@@ -100,15 +117,46 @@ impl OpaqueRepositoryPort for OpaquePgRepository {
             return Err(DomainError::not_found("User", user_id.to_string()));
         };
 
-        // All three columns are NULL together (they're set atomically by
-        // `write_registration`). Any partial-NULL is a schema-drift
-        // symptom — return None with a warn so ops can catch it.
+        // Envelope + ciphersuite_version + registered_at move as one
+        // atomic set (all three set together by write_registration).
+        // Partial-NULL there is schema drift → warn + treat as
+        // unregistered.
+        //
+        // KSF columns are independently nullable: existing envelopes
+        // minted before migration 20261005000000 predate per-envelope
+        // storage and carry NULL. The service layer falls back to the
+        // server's current `OpaqueConfig` KSF in that case. Partial-
+        // NULL of the KSF triple IS caught below because they are also
+        // set atomically at register time.
         match (row.envelope, row.ciphersuite_version, row.registered_at) {
-            (Some(env), Some(ver), Some(at)) => Ok(Some(StoredEnvelope {
-                envelope: env,
-                ciphersuite_version: ver,
-                registered_at: at,
-            })),
+            (Some(env), Some(ver), Some(at)) => {
+                let ksf = match (row.ksf_memory_kib, row.ksf_iterations, row.ksf_parallelism) {
+                    (Some(m), Some(i), Some(p)) => Some(StoredKsf {
+                        memory_kib: m as u32,
+                        iterations: i as u32,
+                        parallelism: p as u32,
+                    }),
+                    (None, None, None) => None,
+                    (m, i, p) => {
+                        tracing::warn!(
+                            target: "oxicloud::opaque",
+                            user_id = %user_id,
+                            memory_kib_set = m.is_some(),
+                            iterations_set = i.is_some(),
+                            parallelism_set = p.is_some(),
+                            "OPAQUE KSF columns partial-NULL — treating as absent \
+                             (falls back to server current defaults). Check for a broken migration."
+                        );
+                        None
+                    }
+                };
+                Ok(Some(StoredEnvelope {
+                    envelope: env,
+                    ciphersuite_version: ver,
+                    registered_at: at,
+                    ksf,
+                }))
+            }
             (None, None, None) => Ok(None),
             (env, ver, at) => {
                 tracing::warn!(
@@ -171,9 +219,13 @@ impl OpaqueRepositoryPort for OpaquePgRepository {
     }
 
     async fn clear_registration(&self, user_id: Uuid) -> Result<()> {
-        // One UPDATE writes both the envelope invalidation AND the
-        // force-change flag — matches the atomicity we promise in the
-        // port doc, avoids drift between two separate writes.
+        // One UPDATE nulls the whole OPAQUE column set AND flips the
+        // force-change flag — matches the atomicity we promise in
+        // the port doc, avoids drift between separate writes. KSF
+        // columns move with the envelope (they're bound to it) so
+        // they're nulled here too; a subsequent silent-migration
+        // re-registration will re-populate them with the client's
+        // current declared values.
         let res = sqlx::query(
             r#"
             UPDATE auth.users
@@ -181,6 +233,9 @@ impl OpaqueRepositoryPort for OpaquePgRepository {
                    opaque_ciphersuite_version          = NULL,
                    opaque_registered_at                = NULL,
                    opaque_migrated_at                  = NULL,
+                   opaque_ksf_memory_kib               = NULL,
+                   opaque_ksf_iterations               = NULL,
+                   opaque_ksf_parallelism              = NULL,
                    force_password_change_at_next_login = TRUE
              WHERE id = $1
             "#,
@@ -205,6 +260,15 @@ struct EnvelopeRow {
     ciphersuite_version: Option<i16>,
     #[sqlx(rename = "opaque_registered_at")]
     registered_at: Option<chrono::DateTime<chrono::Utc>>,
+    // KSF columns are per-envelope (see migration 20261005000000). PG
+    // stores them as INTEGER (i32); the domain layer widens to u32.
+    // NULL for envelopes minted before per-envelope storage landed.
+    #[sqlx(rename = "opaque_ksf_memory_kib")]
+    ksf_memory_kib: Option<i32>,
+    #[sqlx(rename = "opaque_ksf_iterations")]
+    ksf_iterations: Option<i32>,
+    #[sqlx(rename = "opaque_ksf_parallelism")]
+    ksf_parallelism: Option<i32>,
 }
 
 #[cfg(integration_tests)]
@@ -268,9 +332,18 @@ mod integration_tests {
         );
 
         let payload = b"envelope-v1-bytes".to_vec();
-        repo.write_registration(user, &payload, 1)
-            .await
-            .expect("write");
+        repo.write_registration(
+            user,
+            &payload,
+            1,
+            StoredKsf {
+                memory_kib: 47_104,
+                iterations: 1,
+                parallelism: 1,
+            },
+        )
+        .await
+        .expect("write");
 
         let stored = repo
             .read_registration(user)
@@ -294,18 +367,36 @@ mod integration_tests {
         )
         .await;
 
-        repo.write_registration(user, b"first-envelope", 1)
-            .await
-            .expect("first write");
+        repo.write_registration(
+            user,
+            b"first-envelope",
+            1,
+            StoredKsf {
+                memory_kib: 47_104,
+                iterations: 1,
+                parallelism: 1,
+            },
+        )
+        .await
+        .expect("first write");
         let first = repo.read_registration(user).await.unwrap().unwrap();
 
         // Tiny sleep so a bug that overwrites registered_at with NOW()
         // would produce a measurably different timestamp.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        repo.write_registration(user, b"second-envelope", 1)
-            .await
-            .expect("second write");
+        repo.write_registration(
+            user,
+            b"second-envelope",
+            1,
+            StoredKsf {
+                memory_kib: 47_104,
+                iterations: 1,
+                parallelism: 1,
+            },
+        )
+        .await
+        .expect("second write");
         let second = repo.read_registration(user).await.unwrap().unwrap();
 
         assert_eq!(second.envelope, b"second-envelope");
@@ -324,9 +415,18 @@ mod integration_tests {
         )
         .await;
 
-        repo.write_registration(user, b"envelope", 1)
-            .await
-            .expect("prime with envelope");
+        repo.write_registration(
+            user,
+            b"envelope",
+            1,
+            StoredKsf {
+                memory_kib: 47_104,
+                iterations: 1,
+                parallelism: 1,
+            },
+        )
+        .await
+        .expect("prime with envelope");
         repo.clear_registration(user)
             .await
             .expect("clear registration");
@@ -429,9 +529,18 @@ mod integration_tests {
         // `GenericArray`; convert to `Vec<u8>` at the boundary so
         // downstream comparisons stay simple.
         let envelope_bytes: Vec<u8> = password_file.serialize().to_vec();
-        repo.write_registration(user, &envelope_bytes, 1)
-            .await
-            .expect("persist envelope");
+        repo.write_registration(
+            user,
+            &envelope_bytes,
+            1,
+            StoredKsf {
+                memory_kib: 47_104,
+                iterations: 1,
+                parallelism: 1,
+            },
+        )
+        .await
+        .expect("persist envelope");
 
         // ── LOGIN — reads the envelope back the way `login/ke1` will ─────
         let stored = repo

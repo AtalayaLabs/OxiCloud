@@ -119,11 +119,7 @@ mod opaque {
     pub async fn run(action: Action) -> ExitCode {
         match action {
             Action::Setup => run_setup(),
-            Action::Reset {
-                user,
-                all,
-                dry_run,
-            } => run_reset(user, all, dry_run).await,
+            Action::Reset { user, all, dry_run } => run_reset(user, all, dry_run).await,
         }
     }
 

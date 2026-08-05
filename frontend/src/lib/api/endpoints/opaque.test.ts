@@ -120,9 +120,15 @@ describe('opaqueRegister', () => {
 
 		const [finishUrl, finishInit] = f.mock.calls[1];
 		expect(finishUrl).toBe('/api/auth/opaque/register/finish');
+		// Body carries the KSF the client declared. Server persists these
+		// per-envelope so future KSF config changes don't invalidate this
+		// envelope on login — see migration 20261005000000.
 		expect(JSON.parse(finishInit.body as string)).toEqual({
 			registrationRecord: 'RECORD-R',
-			ciphersuiteVersion: 1
+			ciphersuiteVersion: 1,
+			ksfMemoryKib: KSF.memoryKib,
+			ksfIterations: KSF.iterations,
+			ksfParallelism: KSF.parallelism
 		});
 	});
 

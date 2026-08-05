@@ -54,6 +54,26 @@ pub struct StoredEnvelope {
     /// across re-registrations (password changes) via a NULL check in
     /// [`OpaqueRepositoryPort::write_registration`].
     pub registered_at: DateTime<Utc>,
+    /// Client-side Argon2id KSF parameters the CLIENT declared at
+    /// register time. `None` when the envelope predates the
+    /// per-envelope-KSF migration (`20261005000000`) — callers fall
+    /// back to the server's current `OpaqueConfig::ksf_*` in that
+    /// case. See the migration file for the "why per-envelope"
+    /// rationale.
+    pub ksf: Option<StoredKsf>,
+}
+
+/// Client-declared Argon2id parameters carried alongside an OPAQUE
+/// envelope. All three move as an atomic set (populated together at
+/// `register_finish`, nulled together at `clear_registration`).
+#[derive(Debug, Clone, Copy)]
+pub struct StoredKsf {
+    /// Argon2id memory cost in KiB.
+    pub memory_kib: u32,
+    /// Argon2id iteration count.
+    pub iterations: u32,
+    /// Argon2id parallelism (lanes).
+    pub parallelism: u32,
 }
 
 /// Secondary (outbound) port for OPAQUE envelope persistence.
@@ -67,7 +87,15 @@ pub trait OpaqueRepositoryPort: Send + Sync + 'static {
     ///
     /// Idempotent w.r.t. `opaque_registered_at`: the first-registration
     /// timestamp is preserved across re-registrations. Only the
-    /// envelope + ciphersuite_version rotate on password change.
+    /// envelope + ciphersuite_version + KSF params rotate on password
+    /// change.
+    ///
+    /// `ksf` carries the Argon2id parameters the CLIENT used at
+    /// register time (declared in the register/finish request). Stored
+    /// per-envelope so future changes to the server's
+    /// `OpaqueConfig::ksf_*` do not invalidate this envelope — the
+    /// lookup endpoint returns these values and the client uses them
+    /// on the login handshake.
     ///
     /// Does NOT touch `opaque_migrated_at` — that's flipped by the
     /// login endpoint after the first successful OPAQUE handshake.
@@ -76,6 +104,7 @@ pub trait OpaqueRepositoryPort: Send + Sync + 'static {
         user_id: Uuid,
         envelope: &[u8],
         ciphersuite_version: i16,
+        ksf: StoredKsf,
     ) -> Result<()>;
 
     /// Read the current envelope for `user_id`. Returns `None` when
