@@ -700,9 +700,18 @@ mod integration_tests {
         let ghost = Uuid::new_v4();
 
         for err in [
-            repo.write_registration(ghost, b"whatever", 1)
-                .await
-                .unwrap_err(),
+            repo.write_registration(
+                ghost,
+                b"whatever",
+                1,
+                StoredKsf {
+                    memory_kib: 47_104,
+                    iterations: 1,
+                    parallelism: 1,
+                },
+            )
+            .await
+            .unwrap_err(),
             repo.read_registration(ghost).await.unwrap_err(),
             repo.clear_registration(ghost).await.unwrap_err(),
             repo.mark_migrated(ghost).await.unwrap_err(),
