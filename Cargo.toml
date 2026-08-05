@@ -21,6 +21,10 @@ flate2 = "1.1.9"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 chrono = { version = "0.4.45", features = ["serde"] }
+# CLI argument parser for the operator toolbox (`oxicloud-cli`). `derive`
+# for the subcommand tree; the runtime dep is small (< 300 KiB compiled)
+# and shared with any future subcommand additions.
+clap = { version = "4", features = ["derive"] }
 # RFC 5545 iCalendar parser + emitter.
 #
 # Adopted 2026-07-14 to replace the hand-rolled property-scan in
@@ -175,12 +179,13 @@ name = "migrate-nfc-filenames"
 path = "src/bin/migrate-nfc-filenames.rs"
 
 [[bin]]
-name = "opaque-setup"
-path = "src/bin/opaque-setup.rs"
-# One-shot operator helper — prints a base64 OPAQUE ServerSetup for
-# OXICLOUD_OPAQUE_SERVER_SETUP. Runs once per deployment; the output
-# must be persisted verbatim (rotating invalidates every user's
-# registration — see docs/config/authentication.md §OPAQUE).
+name = "oxicloud-cli"
+path = "src/bin/oxicloud-cli.rs"
+# Operator toolbox — subcommand-driven CLI for tasks that don't belong
+# in the main server. Currently: `oxicloud-cli opaque {setup,reset}`.
+# Ships in the release Dockerfile as the single operator-facing helper
+# (replaces the earlier per-task `opaque-setup` bin, which was folded
+# into `oxicloud-cli opaque setup`).
 
 [[bin]]
 name = "opaque-hurl-helper"

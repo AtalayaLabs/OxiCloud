@@ -47,6 +47,15 @@ pub struct UserListEntry {
     pub active: bool,
     pub oidc_provider: Option<String>,
     pub is_external: bool,
+    /// TRUE when `auth.users.password_hash IS NOT NULL` — user has a
+    /// server-verifiable password on file (legacy or admin-set).
+    /// Distinct from `opaque_registered` (which is the zero-knowledge
+    /// envelope): a fully-migrated user carries BOTH — password for
+    /// the fallback / operator flows, envelope for the actual login.
+    /// A user with `has_password = false AND !opaque_registered AND
+    /// oidc_provider IS NULL` is passwordless — the only path in is
+    /// via magic-link (or, for externals, whatever grant they hold).
+    pub has_password: bool,
     /// TRUE when `auth.users.opaque_envelope IS NOT NULL` — the user
     /// has completed OPAQUE registration (typically via the Phase 2
     /// silent-migration hook after a successful legacy login). Surfaced

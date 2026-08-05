@@ -769,18 +769,25 @@ impl UserRepository for UserPgRepository {
                 bool,
                 bool,
                 bool,
+                bool,
             ),
         >(
-            // OPAQUE columns are projected as booleans via `IS NOT NULL`
-            // rather than as timestamps so the row-mapping tuple stays
-            // small and the wire shape is exactly what the admin table
-            // needs. Both are per-row scalar tests — no cost beyond the
-            // full-table sequential scan the LIMIT/OFFSET already pays.
+            // Auth-credential columns projected as booleans via `IS NOT
+            // NULL` rather than as timestamps / hashes so the row-mapping
+            // tuple stays small and the wire shape is exactly what the
+            // admin table needs. Per-row scalar tests — no cost beyond
+            // the full-table sequential scan the LIMIT/OFFSET already
+            // pays. `has_password` on the password_hash column tells
+            // the admin table whether a server-verifiable password is
+            // on file; combined with the two OPAQUE flags and
+            // oidc_provider, the SPA derives the full "capability
+            // set" per user (password / OPAQUE / SSO / passwordless).
             r#"
             SELECT
                 id, username, email, role::text,
                 storage_quota_bytes, storage_used_bytes,
                 last_login_at, active, oidc_provider, is_external,
+                (password_hash IS NOT NULL)       AS has_password,
                 (opaque_envelope IS NOT NULL)     AS opaque_registered,
                 (opaque_migrated_at IS NOT NULL)  AS opaque_migrated
               FROM auth.users
@@ -810,6 +817,7 @@ impl UserRepository for UserPgRepository {
                     active,
                     oidc_provider,
                     is_external,
+                    has_password,
                     opaque_registered,
                     opaque_migrated,
                 )| UserListEntry {
@@ -827,6 +835,7 @@ impl UserRepository for UserPgRepository {
                     active,
                     oidc_provider,
                     is_external,
+                    has_password,
                     opaque_registered,
                     opaque_migrated,
                 },

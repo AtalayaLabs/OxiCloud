@@ -115,6 +115,17 @@ pub struct AdminUserSummaryDto {
     pub active: bool,
     pub auth_provider: String,
     pub is_external: bool,
+    /// TRUE when the user has a server-verifiable password on file
+    /// (`password_hash IS NOT NULL`). The admin table uses this
+    /// alongside `oidc_provider` and `opaque_registered` to render
+    /// the user's full capability set: a `password` chip lights up
+    /// here, an OIDC provider name renders the SSO badge, an
+    /// envelope-on-file flips the OPAQUE chip. A user with none of
+    /// the three is passwordless (magic-link only — the SPA renders
+    /// a distinct `passwordless` chip in that case). Admin-only
+    /// exposure — see the DTO doc for why this isn't on `UserDto`.
+    #[serde(default)]
+    pub has_password: bool,
     /// Mirrors `UserListEntry::opaque_registered` — TRUE when the user
     /// has an OPAQUE envelope on file. Surfaced on the admin table so
     /// operators can see per-user rollout progress during the
@@ -148,6 +159,7 @@ impl From<UserListEntry> for AdminUserSummaryDto {
             active: entry.active,
             auth_provider: entry.oidc_provider.unwrap_or_else(|| "local".to_string()),
             is_external: entry.is_external,
+            has_password: entry.has_password,
             opaque_registered: entry.opaque_registered,
             opaque_migrated: entry.opaque_migrated,
         }

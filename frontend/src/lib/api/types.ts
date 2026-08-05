@@ -252,6 +252,13 @@ export type AdminUserSummary = Pick<
 	| 'auth_provider'
 	| 'is_external'
 > & {
+	/** TRUE = user has a server-verifiable password on file (legacy or
+	 * admin-set). Combined with `opaque_registered` and `auth_provider`,
+	 * the admin table derives the full auth capability set — a user with
+	 * `has_password=false`, `opaque_registered=false` AND
+	 * `auth_provider === 'local'` is passwordless (magic-link only,
+	 * which is the default for externals). */
+	has_password?: boolean;
 	/** TRUE = user has an OPAQUE envelope on file (Phase 2 silent migration
 	 * succeeded, or the user completed a manual re-registration). */
 	opaque_registered?: boolean;

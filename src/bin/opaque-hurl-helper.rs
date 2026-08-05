@@ -45,9 +45,7 @@
 //!     because subsequent hurl files don't assume `hasOpaque=false`.
 
 use base64::Engine as _;
-use base64::engine::general_purpose::{
-    STANDARD as B64, URL_SAFE_NO_PAD as B64_URL_NO_PAD,
-};
+use base64::engine::general_purpose::{STANDARD as B64, URL_SAFE_NO_PAD as B64_URL_NO_PAD};
 
 /// Decode base64 emitted by the server. The server emits URL-safe-no-pad
 /// (matching what the SPA's WASM client expects); this helper accepts

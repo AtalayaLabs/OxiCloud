@@ -92,7 +92,7 @@ impl OpaqueService {
                 ErrorKind::InternalError,
                 "opaque",
                 "OXICLOUD_AUTH_OPAQUE_SERVER_SETUP is required when OPAQUE is enabled — \
-                 generate one with `oxicloud opaque-setup` and persist it in the env",
+                 generate one with `oxicloud-cli opaque setup` and persist it in the env",
             )
         })?;
         let setup = decode_server_setup(setup_b64)?;
@@ -256,7 +256,10 @@ mod tests {
         };
         let err = OpaqueService::from_config(cfg).expect_err("must reject missing setup");
         assert_eq!(err.kind, ErrorKind::InternalError);
-        assert!(err.to_string().contains("OXICLOUD_AUTH_OPAQUE_SERVER_SETUP"));
+        assert!(
+            err.to_string()
+                .contains("OXICLOUD_AUTH_OPAQUE_SERVER_SETUP")
+        );
     }
 
     #[test]

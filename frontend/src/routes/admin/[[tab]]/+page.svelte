@@ -2663,29 +2663,44 @@
 							     narrow; the full provider stays reachable via the
 							     tooltip on the badge. -->
 							<td class="auth-cell">
+								<!--
+									Auth-capability chip set — ADMIN-ONLY (fields
+									scoped to `AdminUserSummaryDto`; never on
+									`UserDto`). Any user carries ZERO OR MORE of:
+									  * SSO/OIDC — `auth_provider !== 'local'`,
+									    identity delegated to the IdP; label is
+									    the provider name.
+									  * password — `has_password` — server has a
+									    verifiable password on file. Silent
+									    migration adds `envelope` alongside.
+									  * OPAQUE — migrated=true (green) or
+									    envelope=true (info shade, waiting for
+									    first OPAQUE login).
+									  * mail — user has NONE of the
+									    above (no oidc, no password, no
+									    envelope). Magic-link-only login. This
+									    is the default for externals (grant-only
+									    recipients) and for pre-signup accounts
+									    awaiting their welcome magic-link.
+								-->
 								{#if isOidcUser(u)}
 									<span class="badge badge--oidc" title={u.auth_provider}>
 										<Icon name="key" />
 										<span class="badge__label">{u.auth_provider}</span>
 									</span>
-								{:else}
-									<span class="badge badge--local">{t('admin.local', 'local')}</span>
 								{/if}
-								<!--
-									OPAQUE adoption chips — ADMIN-ONLY signal (the
-									DTO field is scoped to `AdminUserSummaryDto`;
-									never surfaced via `UserDto`). Two chips share
-									a compact column:
-									  * "OPAQUE" (migrated=true) — the user has
-									    completed at least one successful OPAQUE
-									    login. Strongest positive signal.
-									  * "envelope" (registered=true, migrated=false)
-									    — envelope on file (silent-migration
-									    succeeded) but no OPAQUE login has landed
-									    yet. Common transient state during rollout.
-									Absent = user has neither and is still fully
-									on the legacy password path.
-								-->
+								{#if u.has_password}
+									<span
+										class="badge badge--password"
+										title={t(
+											'admin.has_password_title',
+											'User has a password on file (legacy or admin-set)'
+										)}
+									>
+										<Icon name="key" />
+										<span class="badge__label">{t('admin.auth_password', 'password')}</span>
+									</span>
+								{/if}
 								{#if u.opaque_migrated}
 									<span
 										class="badge badge--opaque"
@@ -2707,6 +2722,27 @@
 									>
 										<Icon name="shield-alt" />
 										<span class="badge__label">{t('admin.opaque_envelope', 'envelope')}</span>
+									</span>
+								{/if}
+								{#if !isOidcUser(u) && !u.has_password && !u.opaque_registered}
+									<!--
+										`mail` chip — user's only login path is a
+										magic-link to their mailbox. Renamed from
+										`passwordless` (2026-08-05) because "mail"
+										names the credential channel the operator
+										actually cares about (does the user need
+										email access to log in? yes) rather than
+										the absence of another one.
+									-->
+									<span
+										class="badge badge--mail"
+										title={t(
+											'admin.mail_login_title',
+											'No password, no OPAQUE envelope, no SSO — user logs in via magic-link only'
+										)}
+									>
+										<Icon name="envelope" />
+										<span class="badge__label">{t('admin.auth_mail', 'mail')}</span>
 									</span>
 								{/if}
 							</td>
@@ -4211,6 +4247,38 @@
 	 * matches the way `.badge--active` vs `.badge--inactive` split
 	 * "success" from "neutral".
 	 */
+	/*
+	 * `password` chip — neutral tone since the presence of a password
+	 * is neither notably positive nor risky on its own; the OPAQUE
+	 * chip next to it (if present) carries the "hardened" signal.
+	 */
+	.badge--password {
+		background: var(--color-bg-muted);
+		color: var(--color-text-muted);
+		text-transform: uppercase;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+	}
+
+	/*
+	 * `mail` chip — user has no password / no OPAQUE / no SSO, so
+	 * their only login path is a magic-link to their mailbox.
+	 * Warning tone because for an internal account it's usually an
+	 * in-flight-invitation state the operator wants to notice; for
+	 * externals (grant-only) it's the by-design default. Named
+	 * `mail` (not `passwordless`) so the label describes the actual
+	 * channel the operator has to care about.
+	 */
+	.badge--mail {
+		background: var(--color-warning-bg, var(--color-bg-muted));
+		color: var(--color-warning-text, var(--color-text-muted));
+		text-transform: uppercase;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+	}
+
 	.badge--opaque {
 		background: var(--color-success-bg);
 		color: var(--color-success-text);
@@ -4278,8 +4346,14 @@
 	   splits mid-word either. */
 	.role-badges {
 		display: flex;
-		flex-flow: row nowrap;
-		align-items: center;
+		/* Stack role above the (rare) external tag so the two signals
+		 * are unambiguous — one reads "admin\nexternal" instead of a
+		 * horizontal row that could be misread as "admin external"
+		 * (as-if externals-can-be-admin, which they can't). Narrow
+		 * items align left so the badges keep a consistent left edge
+		 * with the surrounding text. */
+		flex-flow: column nowrap;
+		align-items: flex-start;
 		gap: var(--space-1, 0.25rem);
 	}
 

@@ -255,10 +255,7 @@ pub async fn require_internal_user_layer(
 /// on a rate-limited public path that doesn't carry a `CurrentUser` at
 /// middleware time; the gate never fires on it. If refresh ever moves
 /// under the gate, add `(&Method::POST, "/api/auth/refresh")` here.
-fn is_password_change_pending_allowlisted(
-    method: &axum::http::Method,
-    path: &str,
-) -> bool {
+fn is_password_change_pending_allowlisted(method: &axum::http::Method, path: &str) -> bool {
     use axum::http::Method;
     matches!(
         (method, path),

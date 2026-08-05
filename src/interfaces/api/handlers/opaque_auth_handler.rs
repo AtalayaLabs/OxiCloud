@@ -105,9 +105,9 @@ use uuid::Uuid;
 
 use crate::application::dtos::user_dto::AuthResponseDto;
 use crate::common::di::AppState;
-use crate::interfaces::api::cookie_auth;
 use crate::infrastructure::services::opaque_login_exchange::{ExchangeId, OpaqueLoginExchange};
 use crate::infrastructure::services::opaque_service::{OpaqueService, OxiCloudSuite};
+use crate::interfaces::api::cookie_auth;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::CurrentUserId;
 
