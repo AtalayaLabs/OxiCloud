@@ -1690,15 +1690,27 @@ pub struct OpaqueConfig {
     /// the client can construct a matching `argon2::Argon2` before
     /// running `ClientRegistration::start` / `ClientLogin::start`.
     ///
-    /// Env: `OXICLOUD_AUTH_OPAQUE_KSF_MEMORY_KIB`. Default: `262144` (256 MiB).
+    /// **The KSF runs client-side, twice per login** (once each in
+    /// OPAQUE's `start` and `finish` steps), inside a synchronous WASM
+    /// call on the main thread. So the interactive login latency the
+    /// user perceives is roughly `2 × Argon2(memory, iterations)`.
+    ///
+    /// Default: `47104` KiB (46 MiB) — matches the OWASP recommendation
+    /// for interactive password-based KDF. Rationale in
+    /// `docs/config/authentication.md § OPAQUE — KSF parameters`.
+    ///
+    /// Env: `OXICLOUD_AUTH_OPAQUE_KSF_MEMORY_KIB`.
     pub ksf_memory_kib: u32,
     /// Client-side Argon2id iteration count.
     ///
-    /// Env: `OXICLOUD_AUTH_OPAQUE_KSF_ITERATIONS`. Default: `3`.
+    /// Env: `OXICLOUD_AUTH_OPAQUE_KSF_ITERATIONS`. Default: `1`
+    /// (OWASP recommendation for interactive auth).
     pub ksf_iterations: u32,
     /// Client-side Argon2id parallelism (lanes).
     ///
-    /// Env: `OXICLOUD_AUTH_OPAQUE_KSF_PARALLELISM`. Default: `4`.
+    /// Env: `OXICLOUD_AUTH_OPAQUE_KSF_PARALLELISM`. Default: `1`
+    /// (OWASP recommendation). Higher values only help on multi-core
+    /// hardware and hurt single-core / older mobile devices.
     pub ksf_parallelism: u32,
 }
 
@@ -1708,9 +1720,22 @@ impl Default for OpaqueConfig {
             mode: crate::infrastructure::services::opaque_service::OpaqueMode::Off,
             server_setup_b64: None,
             ciphersuite_version: 1,
-            ksf_memory_kib: 262_144,
-            ksf_iterations: 3,
-            ksf_parallelism: 4,
+            // OWASP recommended interactive-auth Argon2id parameters
+            // (2024 password-storage cheat sheet): 46 MiB / 1 iter /
+            // 1 lane. Keeps interactive login usable on older /
+            // low-end / mobile devices where a heavier memory budget
+            // either takes tens of seconds OR fails to allocate WASM
+            // heap outright (iOS Safari + old Android WebView cap).
+            // Full rationale in docs/config/authentication.md.
+            //
+            // Changing these values does NOT invalidate existing
+            // envelopes — the KSF params are effectively baked into
+            // the envelope at register time. Silent-migration
+            // re-mints under the current params on the user's next
+            // password change.
+            ksf_memory_kib: 47_104,
+            ksf_iterations: 1,
+            ksf_parallelism: 1,
         }
     }
 }

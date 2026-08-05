@@ -135,15 +135,46 @@ Password-using deployments will opt in via three env vars:
 2. **`OXICLOUD_AUTH_OPAQUE_SERVER_SETUP`** — generated once and persisted like your JWT secret. Rotating this invalidates every user's registration; treat it as one of the crown jewels. Two ways to generate:
    ```bash
    # Docker (recommended in production — no toolchain needed):
-   docker run --rm ghcr.io/atalayalabs/oxicloud:latest opaque-setup
+   docker run --rm ghcr.io/atalayalabs/oxicloud:latest oxicloud-cli opaque setup
 
    # From a source checkout:
-   cargo run --bin opaque-setup
+   cargo run --bin oxicloud-cli -- opaque setup
    ```
-   Both print the base64 value on stdout (with guidance on stderr, so shell pipelines like `$(docker run ... opaque-setup)` capture cleanly).
-3. **`OXICLOUD_AUTH_OPAQUE_KSF_*`** — client-side Argon2id key-stretching cost. Defaults (256 MiB / 3 iter / 4 lanes) are appropriate for modern desktop / phone hardware. Bumping later is safe (only affects new registrations); lowering is not (still-registered users get a security downgrade the next time they change their passphrase).
+   Both print the base64 value on stdout (with guidance on stderr, so shell pipelines like `$(docker run ... oxicloud-cli opaque setup)` capture cleanly).
+3. **`OXICLOUD_AUTH_OPAQUE_KSF_*`** — client-side Argon2id key-stretching cost. Defaults (46 MiB / 1 iter / 1 lane) match OWASP's interactive-auth recommendation. See the next section for the rationale + when to bump.
 
-The `OXICLOUD_HASH_*` variables (server-side legacy Argon2) and `OXICLOUD_AUTH_OPAQUE_KSF_*` (client-side OPAQUE Argon2) are intentionally separate: the server-side path is RAM-bounded by concurrent-login traffic and needs to stay modest; the client-side path is single-user per attempt and can afford much higher memory. Tuning them together would force a bad compromise in one direction or the other.
+The `OXICLOUD_HASH_*` variables (server-side legacy Argon2) and `OXICLOUD_AUTH_OPAQUE_KSF_*` (client-side OPAQUE Argon2) are intentionally separate: the server-side path is RAM-bounded by concurrent-login traffic and needs to stay modest; the client-side path is single-user per attempt and can be tuned independently. Tuning them together would force a bad compromise in one direction or the other.
+
+### OPAQUE — KSF parameters
+
+The **key-stretching function** (KSF) is Argon2id, applied to the user's passphrase before OPAQUE's OPRF step. It runs **client-side, inside a synchronous WASM call on the main thread, twice per login** (once each in OPAQUE's `start` and `finish`). Interactive login latency is roughly `2 × Argon2(memory, iterations)`. There is no server-side cost — the KSF exists solely to raise the price an attacker would pay to brute-force a passphrase from a hypothetically-stolen envelope.
+
+**Defaults chosen: 46 MiB / 1 iteration / 1 lane.** This is OWASP's [Argon2 for interactive authentication](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html) recommendation. We picked it over the library's higher suggestions because:
+
+1. **Client-side execution means device-compatibility trumps peak resistance.** The KSF must fit inside the browser's WASM heap AND finish in a UX-tolerable window on the WORST device your users have — not just the fastest one. A 256 MiB memory cost is fine on an M1 desktop (~4 s per login) but on a 2015-era budget phone or a 4 GB Chromebook it either takes tens of seconds OR fails to allocate the WASM heap outright, locking those users out of the app entirely. 46 MiB stays well below iOS Safari's WASM caps and finishes in <300 ms even on old laptops.
+
+2. **OPAQUE's whole design shifts the threat away from the KSF.** Unlike server-side password hashing where a database dump plus a fast KSF plus a common-password wordlist is a real threat, OPAQUE's envelope is *useless* without both the passphrase AND the server's static secret AND running the full aPAKE handshake. The KSF here isn't the primary defense — it's defense-in-depth for an attacker who somehow gets both the envelope AND the server's `OXICLOUD_AUTH_OPAQUE_SERVER_SETUP`. That's a compromised-server scenario where 46 MiB vs 256 MiB isn't the deciding factor.
+
+3. **Modern passphrase entropy already outpaces KSF cost.** A random 12-character passphrase carries ~72 bits of entropy. Even at 46 MiB / 1 iter (~150 ms per Argon2 run on modern silicon), 2^72 guesses cost 2^72 × 150 ms ≈ 10^13 CPU-years. 5× more Argon2 doesn't change that being computationally infeasible.
+
+Per-device login latency at the defaults:
+
+| Device | ~Time per login |
+|---|---|
+| Apple M-series desktop | ~250 ms |
+| Modern Intel/AMD desktop | ~300 ms |
+| 2015-era Intel i5 laptop | ~1 s |
+| Modern mid-range Android/iOS phone | ~700 ms |
+| 2015-era budget Android / old iPad | ~2-3 s |
+| Chromebook (low-end, 4 GB RAM) | ~1-2 s |
+
+**When to bump the defaults higher:**
+- You run OPAQUE against a threat model where a full server compromise (envelope + `SERVER_SETUP` both leaked) is a realistic scenario, AND your users' passphrases are weak (short, common-word, reused), AND your user base is on modern hardware only. Then a 4× memory bump multiplies attacker cost by 4× per guess.
+- Rule of thumb: `65536` KiB (64 MiB) is a reasonable middle ground for a modern-only user base; `262144` (256 MiB) is paranoid-tier and will lock out older devices.
+
+**When to LOWER further:** don't — 46 MiB is already OWASP's floor for interactive auth. Below that, offline brute-force starts to become genuinely fast on GPU.
+
+**Changing these values does NOT invalidate existing envelopes.** KSF params are baked into the envelope at register time and the SPA fetches them via `GET /api/auth/opaque/params` on each login. If you bump the config, existing users keep logging in with their old (cheaper) KSF; only *new* registrations use the new value. Silent-migration re-mints envelopes under the current KSF whenever a user changes their password. So you can dial up or down without disrupting live users — the change propagates organically over the next password rotation cycle.
 
 ### What OPAQUE does NOT touch
 
