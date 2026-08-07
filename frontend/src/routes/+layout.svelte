@@ -8,6 +8,7 @@
 	import AppShell from '$lib/components/AppShell.svelte';
 	import DialogHost from '$lib/components/DialogHost.svelte';
 	import Toaster from '$lib/components/Toaster.svelte';
+	import { setPasswordChangeRequiredHandler } from '$lib/api/client';
 	import { session } from '$lib/stores/session.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { hashUrlToPath } from '$lib/utils/hashRedirect';
@@ -43,6 +44,21 @@
 	// the IdP directly if the server tells us to. Null until fetched;
 	// the guard waits for it before deciding.
 	let providers = $state<OidcProviders | null>(null);
+
+	// Wire the fetch-interceptor's mandatory-mode handler to a soft
+	// `goto()` so a stale-tab request that surfaces a 403
+	// `PasswordChangeRequired` routes to `/profile` without a full
+	// page reload — preserving the SPA session, drives cache, etc.
+	// The `next=` carries the intended destination so the profile
+	// page can bounce back after the change lands. Falls back to
+	// `window.location` if no `next` context (see the default handler
+	// in client.ts).
+	setPasswordChangeRequiredHandler(() => {
+		const path = page.url.pathname + page.url.search;
+		void goto(resolve(`/profile?forcePasswordChange=1&next=${encodeURIComponent(path)}`), {
+			replaceState: true
+		});
+	});
 
 	onMount(async () => {
 		await killLegacyServiceWorker();
@@ -83,6 +99,34 @@
 			return;
 		}
 		void goto(resolve(`/login?redirect=${encodeURIComponent(path)}`), { replaceState: true });
+	});
+
+	// Mandatory change-password guard. When the backend has set
+	// `force_password_change_at_next_login` (admin reset), the SPA MUST
+	// keep the user on the profile page until they pick a new password.
+	// The backend also refuses every non-allowlisted endpoint with 403
+	// PasswordChangeRequired — this guard is the UX side of that lock,
+	// so the user sees the password form instead of a wall of 403s
+	// wherever they clicked.
+	//
+	// Runs AFTER the unauthenticated guard so we don't misroute a
+	// still-loading session. Skips the guard on `/login` too — a
+	// signed-out user on the login form doesn't yet have a session
+	// state to consult, and if `session.mustChangePassword` is true
+	// on `/login` (rare — happens if the user reloaded post-login
+	// but before the profile navigation completed), the login-form
+	// success handler will route to `/profile?forcePasswordChange=1`
+	// on its own.
+	$effect(() => {
+		if (!ready) return;
+		if (!session.isAuthenticated) return;
+		if (!session.mustChangePassword) return;
+		const path = page.url.pathname;
+		if (path === '/profile' || isPublic(path)) return;
+		// Preserve the intended destination so the profile page can
+		// bounce back once the password is successfully changed.
+		const next = encodeURIComponent(path);
+		void goto(resolve(`/profile?forcePasswordChange=1&next=${next}`), { replaceState: true });
 	});
 </script>
 

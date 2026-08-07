@@ -62,9 +62,12 @@ impl UserPgRepository {
     pub async fn get_user_flags(&self, id: Uuid) -> UserRepositoryResult<UserFlags> {
         let row = sqlx::query(
             r#"
-            SELECT role::text as role_text, is_external, active
-            FROM auth.users
-            WHERE id = $1
+            SELECT role::text as role_text,
+                   is_external,
+                   active,
+                   force_password_change_at_next_login
+              FROM auth.users
+             WHERE id = $1
             "#,
         )
         .bind(id)
@@ -82,6 +85,7 @@ impl UserPgRepository {
             role,
             is_external: row.get("is_external"),
             active: row.get("active"),
+            force_password_change: row.get("force_password_change_at_next_login"),
         })
     }
 
@@ -110,6 +114,79 @@ impl UserPgRepository {
             row.get("storage_used_bytes"),
             row.get("storage_quota_bytes"),
         ))
+    }
+
+    /// Read `force_password_change_at_next_login`. Written TRUE by the
+    /// admin password-reset flow (via `OpaquePgRepository::clear_registration`,
+    /// which sets it alongside the envelope invalidation in one UPDATE)
+    /// and by admin-side `set_user_password`. Cleared on a successful
+    /// user-initiated `change_password`.
+    ///
+    /// Reads via a single-column SELECT to avoid dragging the full row
+    /// (with its up-to-512 KiB `image`) on every login-response mint.
+    /// Returns `false` for missing users so the login path — which has
+    /// already resolved the user by id — treats a lost race the same
+    /// as "flag not set" rather than surfacing a 5xx.
+    pub async fn is_force_password_change(&self, id: Uuid) -> UserRepositoryResult<bool> {
+        let row: Option<(bool,)> = sqlx::query_as(
+            r#"
+            SELECT force_password_change_at_next_login
+              FROM auth.users
+             WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)?;
+        Ok(row.map(|(v,)| v).unwrap_or(false))
+    }
+
+    /// Clear `force_password_change_at_next_login`. Called by the
+    /// change-password flow on success so a legitimate self-service
+    /// password rotation lifts the admin-set "temporary" marker in
+    /// one round-trip.
+    ///
+    /// Deliberately does NOT gate on the current value — flipping FALSE
+    /// to FALSE is a no-op at the row level. That keeps the caller from
+    /// needing a read-modify-write.
+    pub async fn clear_force_password_change(&self, id: Uuid) -> UserRepositoryResult<()> {
+        sqlx::query(
+            r#"
+            UPDATE auth.users
+               SET force_password_change_at_next_login = FALSE
+             WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .execute(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)?;
+        Ok(())
+    }
+
+    /// Set `force_password_change_at_next_login = TRUE`. Used by
+    /// admin-initiated password reset when the OPAQUE substrate is NOT
+    /// wired. When it IS wired, callers should prefer
+    /// `OpaquePgRepository::clear_registration` which does the same
+    /// flag flip AND invalidates the OPAQUE envelope in one UPDATE
+    /// (see the port doc on `clear_registration` for the atomicity
+    /// contract). This method exists so OPAQUE-off deployments still
+    /// get the "admin's temp password prompts change on next login"
+    /// behaviour without having to depend on the OPAQUE code path.
+    pub async fn set_force_password_change(&self, id: Uuid) -> UserRepositoryResult<()> {
+        sqlx::query(
+            r#"
+            UPDATE auth.users
+               SET force_password_change_at_next_login = TRUE
+             WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .execute(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)?;
+        Ok(())
     }
 
     /// Updates a user's profile image (URL or data URI). Not part of the
@@ -690,17 +767,33 @@ impl UserRepository for UserPgRepository {
                 bool,
                 Option<String>,
                 bool,
+                bool,
+                bool,
+                bool,
             ),
         >(
+            // Auth-credential columns projected as booleans via `IS NOT
+            // NULL` rather than as timestamps / hashes so the row-mapping
+            // tuple stays small and the wire shape is exactly what the
+            // admin table needs. Per-row scalar tests — no cost beyond
+            // the full-table sequential scan the LIMIT/OFFSET already
+            // pays. `has_password` on the password_hash column tells
+            // the admin table whether a server-verifiable password is
+            // on file; combined with the two OPAQUE flags and
+            // oidc_provider, the SPA derives the full "capability
+            // set" per user (password / OPAQUE / SSO / passwordless).
             r#"
             SELECT
                 id, username, email, role::text,
                 storage_quota_bytes, storage_used_bytes,
-                last_login_at, active, oidc_provider, is_external
-            FROM auth.users
-            WHERE ($3 OR is_external = FALSE)
-            ORDER BY created_at DESC, id DESC
-            LIMIT $1 OFFSET $2
+                last_login_at, active, oidc_provider, is_external,
+                (password_hash IS NOT NULL)       AS has_password,
+                (opaque_envelope IS NOT NULL)     AS opaque_registered,
+                (opaque_migrated_at IS NOT NULL)  AS opaque_migrated
+              FROM auth.users
+             WHERE ($3 OR is_external = FALSE)
+             ORDER BY created_at DESC, id DESC
+             LIMIT $1 OFFSET $2
             "#,
         )
         .bind(limit)
@@ -724,6 +817,9 @@ impl UserRepository for UserPgRepository {
                     active,
                     oidc_provider,
                     is_external,
+                    has_password,
+                    opaque_registered,
+                    opaque_migrated,
                 )| UserListEntry {
                     id,
                     username,
@@ -739,6 +835,9 @@ impl UserRepository for UserPgRepository {
                     active,
                     oidc_provider,
                     is_external,
+                    has_password,
+                    opaque_registered,
+                    opaque_migrated,
                 },
             )
             .collect())

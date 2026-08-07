@@ -19,6 +19,18 @@ class SessionStore {
 
 	isExternalUser = $derived(this.user?.is_external ?? false);
 	isAuthenticated = $derived(this.user !== null);
+	/**
+	 * TRUE when the backend has set `force_password_change_at_next_login`
+	 * on this account — an admin picked a temporary password and the
+	 * user MUST change it before doing anything else. Drives the root
+	 * layout's mandatory-mode redirect: any protected route other than
+	 * `/profile` bounces back until the flag flips to false.
+	 *
+	 * Set to false by default so an older backend that predates the
+	 * flag (or a malformed `/me` response) doesn't accidentally
+	 * quarantine every user.
+	 */
+	mustChangePassword = $derived(this.user?.force_password_change === true);
 
 	/**
 	 * Resolve the session once. Probes /api/auth/me; on 401 it makes a single

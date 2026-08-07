@@ -1878,10 +1878,32 @@ impl AppServiceFactory {
             // PersonalDriveLifecycleHook, which already holds an Arc to the
             // folder service via the user_lifecycle dispatcher.
             if self.config.features.enable_auth {
+                // OPAQUE repo built here (pre-`create_auth_services`) so
+                // the AuthApplicationService gets the Phase 4 gate wired
+                // at construction time — before Arc-wrapping locks the
+                // shape. Gate fires only when `effective_mode != Off`;
+                // an OPAQUE-off deployment gets `None` and legacy login
+                // stays open for every user (including anyone with a
+                // stale `opaque_migrated_at` from a previous rollout).
+                let opaque_repo_for_auth: Option<
+                    Arc<dyn crate::application::ports::opaque_ports::OpaqueRepositoryPort>,
+                > = {
+                    use crate::infrastructure::services::opaque_service::OpaqueMode;
+                    if self.config.opaque.effective_mode(&self.config.auth) != OpaqueMode::Off {
+                        Some(Arc::new(
+                            crate::infrastructure::repositories::pg::OpaquePgRepository::new(
+                                pool.clone(),
+                            ),
+                        ))
+                    } else {
+                        None
+                    }
+                };
                 let services = crate::infrastructure::auth_factory::create_auth_services(
                     &self.config,
                     pool.clone(),
                     user_lifecycle.clone(),
+                    opaque_repo_for_auth,
                 )
                 .await
                 .map_err(|e| {
@@ -1908,6 +1930,80 @@ impl AppServiceFactory {
 
             user_lifecycle_handle = Some(user_lifecycle);
         }
+
+        // OPAQUE aPAKE substrate — construct only when effective_mode != Off.
+        // The `effective_mode` helper resolves the cross-check against
+        // `OXICLOUD_AUTH_METHODS` (password must be enabled for OPAQUE to
+        // have anything to shadow), so OIDC-only / magic-link-only
+        // deployments transparently get `opaque_service = None` even if
+        // the operator accidentally set `OXICLOUD_AUTH_OPAQUE_MODE=migrate`.
+        //
+        // Failing here (missing SERVER_SETUP, malformed base64, ciphersuite
+        // drift) refuses server boot — same fail-closed posture as the
+        // auth-service init above. Better to catch a misconfigured
+        // deployment at startup than at first login attempt.
+        let opaque_service = {
+            use crate::infrastructure::services::opaque_service::{OpaqueMode, OpaqueService};
+            let effective = self.config.opaque.effective_mode(&self.config.auth);
+            if effective == OpaqueMode::Off {
+                None
+            } else {
+                let svc = OpaqueService::from_config(self.config.opaque.clone()).map_err(|e| {
+                    tracing::error!(
+                        "FATAL: OPAQUE mode is {:?} but service failed to initialize: {}",
+                        effective,
+                        e
+                    );
+                    DomainError::internal_error(
+                        "OpaqueInit",
+                        format!(
+                            "OXICLOUD_AUTH_OPAQUE_MODE={:?} but the OPAQUE service failed: {}. \
+                             Persist a valid OXICLOUD_AUTH_OPAQUE_SERVER_SETUP or set \
+                             OXICLOUD_AUTH_OPAQUE_MODE=off. Refusing to start.",
+                            effective, e
+                        ),
+                    )
+                })?;
+                tracing::info!(
+                    target: "audit",
+                    event = "opaque.service_initialized",
+                    mode = ?effective,
+                    ciphersuite_version = svc.ciphersuite_version(),
+                    "OPAQUE substrate active — endpoints will be wired in a subsequent phase"
+                );
+                Some(Arc::new(svc))
+            }
+        };
+
+        // OPAQUE persistence repo — mirrors the service's mode gate so
+        // both are `Some`/`None` in lock-step. Kept as
+        // `Arc<dyn OpaqueRepositoryPort>` on `AppState` so future
+        // handlers can inject the trait instead of the concrete PG
+        // type — matches the trait-first convention used by
+        // FavoritesRepositoryPort / RecentItemsRepositoryPort.
+        let opaque_repo: Option<
+            Arc<dyn crate::application::ports::opaque_ports::OpaqueRepositoryPort>,
+        > = if opaque_service.is_some() {
+            Some(Arc::new(
+                crate::infrastructure::repositories::pg::OpaquePgRepository::new(pool.clone()),
+            ))
+        } else {
+            None
+        };
+
+        // OPAQUE login-exchange cache — holds ServerLogin state between
+        // KE1 and KE3 (~60s TTL). Same lock-step gate as the repo and
+        // service. Process-local; single-instance deployments only —
+        // multi-instance would need Redis or LB session affinity, but
+        // the swap is local to this cache since callers use
+        // `store`/`take` opaque handles.
+        let opaque_login_exchange = if opaque_service.is_some() {
+            Some(Arc::new(
+                crate::infrastructure::services::opaque_login_exchange::OpaqueLoginExchange::new(),
+            ))
+        } else {
+            None
+        };
 
         // Shared App Password service — created once, used by both NC routes and native API
         let shared_app_pw_svc: Option<Arc<AppPasswordService>> =
@@ -2003,6 +2099,9 @@ impl AppServiceFactory {
             maintenance_pool: Some(maintenance_pool),
             mount_router,
             auth_service: auth_services,
+            opaque_service,
+            opaque_repo,
+            opaque_login_exchange,
             nextcloud: nextcloud_services,
             admin_settings_service: None,
             storage_settings_service: None,
@@ -2749,6 +2848,32 @@ pub struct AppState {
     pub mount_router:
         Arc<crate::application::services::external_mount_router::MountRouter>,
     pub auth_service: Option<AuthServices>,
+    /// OPAQUE aPAKE substrate (RFC 9807). Populated only when
+    /// [`OpaqueConfig::effective_mode`] is not `Off` — that method
+    /// cross-checks `OXICLOUD_AUTH_OPAQUE_MODE` against
+    /// `OXICLOUD_AUTH_METHODS` so an OIDC-only or magic-link-only
+    /// deployment gets `None` here even if `OXICLOUD_AUTH_OPAQUE_MODE` was
+    /// set (with an audit-channel INFO explaining why). `None` also
+    /// means the future OPAQUE endpoints must 404 — a handler that
+    /// unwraps this without a nil check would break the phase gate.
+    pub opaque_service: Option<
+        Arc<crate::infrastructure::services::opaque_service::OpaqueService>,
+    >,
+    /// OPAQUE envelope persistence. Populated in lock-step with
+    /// [`Self::opaque_service`] — both `Some` or both `None`, gated
+    /// on the same `effective_mode` cross-check. Handlers should
+    /// consume both together so a partial-`Some` never occurs.
+    pub opaque_repo: Option<
+        Arc<dyn crate::application::ports::opaque_ports::OpaqueRepositoryPort>,
+    >,
+    /// OPAQUE login-exchange state cache (KE1 → KE3). Populated in
+    /// lock-step with [`Self::opaque_service`] and [`Self::opaque_repo`]
+    /// — all three `Some` or all three `None`. Process-local moka;
+    /// 60s TTL; atomic single-use `take` prevents replay of an
+    /// exchange_id.
+    pub opaque_login_exchange: Option<
+        Arc<crate::infrastructure::services::opaque_login_exchange::OpaqueLoginExchange>,
+    >,
     pub nextcloud: Option<NextcloudServices>,
     pub admin_settings_service: Option<Arc<AdminSettingsService>>,
     /// WASM plugin management (list/install/toggle/remove), backing the admin

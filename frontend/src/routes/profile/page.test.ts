@@ -14,7 +14,8 @@ const { session, ui } = vi.hoisted(() => ({
 			role: 'admin',
 			storage_used_bytes: 100,
 			storage_quota_bytes: 1000,
-			is_external: false
+			is_external: false,
+			has_password: true
 		}
 	},
 	ui: { notify: vi.fn() }
@@ -54,7 +55,8 @@ beforeEach(() => {
 		role: 'admin',
 		storage_used_bytes: 100,
 		storage_quota_bytes: 1000,
-		is_external: false
+		is_external: false,
+		has_password: true
 	};
 	m(profile.listAppPasswords).mockResolvedValue([]);
 	m(profile.updateProfile).mockResolvedValue(undefined);

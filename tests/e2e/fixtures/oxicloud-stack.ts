@@ -82,6 +82,11 @@ export async function startStack(): Promise<Stack> {
       // The app defaults to binding 127.0.0.1, which a published container port
       // can't reach. Bind all interfaces so Testcontainers' mapped port works.
       OXICLOUD_SERVER_HOST: '0.0.0.0',
+      // OPAQUE substrate off for the container E2E — same rationale as the
+      // playwright.config.ts / playwright.coverage.config.ts overrides.
+      // The Hurl suite exercises OPAQUE via server.env directly.
+      OXICLOUD_AUTH_OPAQUE_MODE: 'off',
+      OXICLOUD_AUTH_OPAQUE_SERVER_SETUP: '',
     })
     // /health is a fast liveness probe (no DB hit); 200 means the HTTP server
     // is up and sqlx migrations have completed.

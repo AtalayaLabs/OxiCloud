@@ -64,6 +64,69 @@ export async function tryRefresh(): Promise<boolean> {
 }
 
 export async function login(emailOrUsername: string, password: string): Promise<AuthResponse> {
+	// ── OPAQUE lookup (Phase 3) ────────────────────────────────────────
+	// Ask the server whether this identifier already has an OPAQUE
+	// envelope on file. If yes → use OPAQUE login (KE1/KE3). If no →
+	// fall back to legacy `POST /api/auth/login`, which then silently
+	// mints the envelope via the Phase 2 hook.
+	//
+	// Both paths return the SAME `AuthResponse` shape, so downstream
+	// callers don't need to know which branch fired. Dynamic import
+	// keeps the ~200 KiB `@serenity-kit/opaque` WASM bundle out of
+	// pre-login bundles — the module loads only when a login is
+	// actually attempted.
+	//
+	// `checkOpaqueAvailable` and `opaqueLogin` both fall back
+	// gracefully: any wire failure inside the OPAQUE branch (503,
+	// timeout, malformed response) either short-circuits to `false`
+	// (lookup) or throws with an `InvalidCredentials` shape (login).
+	// The lookup fallback lands here as `false` → legacy branch
+	// takes over; a mid-login OPAQUE failure surfaces as a login
+	// error to the user, same shape as a legacy failure — no silent
+	// legacy fallback there because it would mask a wrong passphrase
+	// as a network hiccup.
+	const { checkOpaqueAvailable, opaqueLogin, syncOpaqueEnvelope } =
+		await import('$lib/api/endpoints/opaque');
+	const lookup = await checkOpaqueAvailable(emailOrUsername);
+	if (lookup.has) {
+		// Prefer the envelope's OWN KSF (returned by lookup) over the
+		// server's current /params values: after a KSF config change,
+		// existing envelopes need their historical KSF for the OPRF
+		// to derive the right value; using current /params would fail
+		// the AKE integrity check and return `InvalidCredentials`.
+		// Fallback to /params only when the envelope predates
+		// per-envelope KSF storage (`ksf === null`), which preserves
+		// the pre-migration behaviour.
+		const ksf = lookup.ksf ?? (await opaqueKsfForClient());
+		const auth = await opaqueLogin(emailOrUsername, password, ksf);
+
+		// Phase C: silent KSF rotation. If this envelope's KSF drifted
+		// from what the server currently publishes (operator retuned
+		// OXICLOUD_AUTH_OPAQUE_KSF_*), re-register the envelope under
+		// the current params so the NEXT login benefits from the new
+		// values (faster / stronger / whatever the tuning direction).
+		// Envelopes that predate per-envelope storage (`lookup.ksf ===
+		// null`) always trigger rotation — that's how they migrate
+		// into the new storage schema organically.
+		//
+		// `syncOpaqueEnvelope` is the same helper the Phase 2 hook
+		// uses after a legacy login; it swallows errors, so a
+		// rotation failure is non-fatal (this login already succeeded)
+		// and the NEXT login retries the same check. Fires only when
+		// there's a real difference — no wasted crypto on the common
+		// same-params case.
+		const current = await opaqueKsfForClient();
+		const needsRotation =
+			!lookup.ksf ||
+			lookup.ksf.memoryKib !== current.memoryKib ||
+			lookup.ksf.iterations !== current.iterations ||
+			lookup.ksf.parallelism !== current.parallelism;
+		if (needsRotation) await syncOpaqueEnvelope(password);
+
+		return auth;
+	}
+
+	// ── Legacy login (fallback for users without an envelope yet) ─────
 	const res = await apiFetch('/api/auth/login', {
 		method: 'POST',
 		credentials: 'same-origin',
@@ -77,7 +140,39 @@ export async function login(emailOrUsername: string, password: string): Promise<
 		const { errorType, message } = await parseErrorBody(res);
 		throw new ApiError(res.status, res.statusText, '/api/auth/login', errorType, message);
 	}
-	return (await res.json()) as AuthResponse;
+	const auth = (await res.json()) as AuthResponse;
+
+	// ── OPAQUE silent migration (Phase 2) ──────────────────────────────
+	// After a successful legacy password login, transparently mint an
+	// OPAQUE envelope for the same passphrase. The NEXT login for this
+	// account will take the OPAQUE branch above.
+	//
+	// The freshly-issued session cookie is already active in the
+	// browser at this point (Set-Cookie from the POST response), so
+	// the session-authenticated register endpoints are reachable
+	// straight away. `syncOpaqueEnvelope` no-ops when OPAQUE is
+	// disabled server-side (mode=off) and swallows any error — a
+	// failure here just leaves the envelope stale, and the NEXT
+	// legacy login retries the same hook.
+	await syncOpaqueEnvelope(password);
+
+	return auth;
+}
+
+/**
+ * Fetch the server's OPAQUE KSF config to pass to `opaqueLogin`.
+ * Extracted so `login()` reads more linearly and the module keeps
+ * one `fetchOpaqueParams` call site regardless of which branch
+ * (lookup / login / silent-migration) reaches it first.
+ */
+async function opaqueKsfForClient(): Promise<{
+	memoryKib: number;
+	iterations: number;
+	parallelism: number;
+}> {
+	const { fetchOpaqueParams } = await import('$lib/api/endpoints/opaque');
+	const params = await fetchOpaqueParams();
+	return params.ksf;
 }
 
 export interface OidcProviders {

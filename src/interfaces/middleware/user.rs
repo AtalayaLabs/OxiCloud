@@ -242,6 +242,126 @@ pub async fn require_internal_user_layer(
     next.run(request).await
 }
 
+/// Endpoints the gate lets through even when
+/// `force_password_change_at_next_login` is TRUE — the caller needs
+/// them to complete the mandatory reset:
+///
+///   * `GET  /api/auth/me`             — the SPA must be able to read
+///     the flag (that's what tells it to enter mandatory-mode).
+///   * `PUT  /api/auth/change-password` — the way OUT of the state.
+///   * `POST /api/auth/logout`         — bailing out is always allowed.
+///
+/// `/api/auth/refresh` is not on this list because refresh is mounted
+/// on a rate-limited public path that doesn't carry a `CurrentUser` at
+/// middleware time; the gate never fires on it. If refresh ever moves
+/// under the gate, add `(&Method::POST, "/api/auth/refresh")` here.
+fn is_password_change_pending_allowlisted(method: &axum::http::Method, path: &str) -> bool {
+    use axum::http::Method;
+    matches!(
+        (method, path),
+        (&Method::GET, "/api/auth/me")
+            | (&Method::PUT, "/api/auth/change-password")
+            | (&Method::POST, "/api/auth/logout")
+    )
+}
+
+/// Axum middleware layer that blocks EVERY authenticated request when
+/// the caller's `force_password_change_at_next_login` flag is TRUE —
+/// EXCEPT the small allowlist above ([`is_password_change_pending_allowlisted`]).
+/// Mounted on all authenticated `/api/*` subtrees so an admin-set
+/// temp password cannot be used to hit files / WebDAV / CalDAV / etc.
+/// via any non-SPA client.
+///
+/// The flag is read from the cached `UserFlags` (same cache the role /
+/// external guards use — see [`require_internal_user`]), so this adds
+/// no DB round-trip on the hot path. `admin_reset_password` and
+/// `change_password` both invalidate the entry eagerly so the gate
+/// lifts within one request round-trip.
+///
+/// Response shape on refusal: `403 { error_type: "PasswordChangeRequired" }`.
+/// The SPA reads that error_type on any subsequent request that leaks
+/// past its own nav guard (mid-navigation refresh, stale tab, …) and
+/// bounces the user back to the change-password screen. Non-SPA
+/// clients (WebDAV sync, mobile app, curl) get the same 403 — that's
+/// intentional; they need to log in via the SPA once to complete the
+/// reset before other clients work again.
+///
+/// Must run AFTER the auth middleware. On unauthenticated paths (no
+/// `CurrentUser` populated) this is a pass-through — the inner
+/// handler / auth layer will produce the 401.
+pub async fn require_no_password_change_pending_layer(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    // Cheap path check FIRST — allowlisted endpoints never even hit
+    // the flag lookup. Keeps the /me polling path (which the SPA hits
+    // as part of every session-probe) from doing the cache lookup on
+    // every call, and makes the allowlist trivially auditable in one
+    // place (see `is_password_change_pending_allowlisted`).
+    //
+    // MUST use `OriginalUri` — axum's `.nest("/api/auth", …)` strips
+    // the prefix so `request.uri().path()` returns `/me` inside the
+    // nested router, not `/api/auth/me`. The allowlist is defined
+    // against the operator-visible full URL, so we need the pre-strip
+    // path. `OriginalUri` is set on the request extensions by axum
+    // whenever a nest strips a prefix; falls back to the current path
+    // when this middleware is layered on a top-level (non-nested)
+    // router (defense in depth).
+    let full_path = request
+        .extensions()
+        .get::<axum::extract::OriginalUri>()
+        .map(|uri| uri.0.path().to_owned())
+        .unwrap_or_else(|| request.uri().path().to_owned());
+    if is_password_change_pending_allowlisted(request.method(), &full_path) {
+        return next.run(request).await;
+    }
+
+    let caller_id = request
+        .extensions()
+        .get::<Arc<CurrentUser>>()
+        .map(|cu| cu.id);
+
+    let (Some(caller_id), Some(svc)) = (
+        caller_id,
+        state
+            .auth_service
+            .as_ref()
+            .map(|s| &*s.auth_application_service),
+    ) else {
+        return next.run(request).await;
+    };
+
+    // Cached lookup — no DB hit on the hot path. Fail-open on repo
+    // error (the same posture as require_internal_user_layer above):
+    // a transient DB blip must not lock every user out of every API,
+    // and the SPA-side nav guard is a defense-in-depth backstop.
+    let flag = match svc.get_user_flags(caller_id).await {
+        Ok(f) => f.force_password_change,
+        Err(_) => false,
+    };
+    if flag {
+        // Log the operator-visible full path (not the nest-stripped
+        // one). `full_path` was computed above via `OriginalUri`.
+        tracing::info!(
+            target: "audit",
+            event = "auth.password_change_required_blocked",
+            reason = "force_password_change_pending",
+            caller_id = %caller_id,
+            path = %full_path,
+            "👮🏻‍♂️ Blocked API access — user must change admin-set temp password first"
+        );
+        return AppError::new(
+            StatusCode::FORBIDDEN,
+            "Password change required before accessing this endpoint",
+            "PasswordChangeRequired",
+        )
+        .into_response();
+    }
+
+    next.run(request).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,6 +371,7 @@ mod tests {
             role,
             is_external: false,
             active,
+            force_password_change: false,
         }
     }
 

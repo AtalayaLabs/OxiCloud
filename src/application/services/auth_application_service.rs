@@ -180,6 +180,13 @@ pub struct AuthApplicationService {
     /// `email_verified_at IS NULL`. Mirrors
     /// `AuthConfig::require_verified_email`.
     require_verified_email: bool,
+    /// OPAQUE envelope repo — populated when the OPAQUE substrate is
+    /// wired (`OXICLOUD_AUTH_OPAQUE_MODE != off`). `login()` consults it to
+    /// enforce the Phase 4 gate: once a user has completed at least
+    /// one successful OPAQUE handshake (`opaque_migrated_at IS NOT
+    /// NULL`), legacy `POST /api/auth/login` is refused for that
+    /// account. `None` = substrate off, no gate applies.
+    opaque_repo: Option<Arc<dyn crate::application::ports::opaque_ports::OpaqueRepositoryPort>>,
 }
 
 /// TTL for [`AuthApplicationService::user_flags_cache`]. Upper bound on how
@@ -233,6 +240,7 @@ impl AuthApplicationService {
             allowed_auth_methods: vec![AuthMethod::Password, AuthMethod::MagicLink],
             auth_policies: Vec::new(),
             require_verified_email: false,
+            opaque_repo: None,
         }
     }
 
@@ -355,6 +363,17 @@ impl AuthApplicationService {
     /// before attempting to redeem a token; `false` → return 503.
     pub fn magic_link_enabled(&self) -> bool {
         self.magic_link_repo.is_some()
+    }
+
+    /// Wire the OPAQUE envelope repo. Called by the DI factory when the
+    /// OPAQUE substrate is configured (`OXICLOUD_AUTH_OPAQUE_MODE != off`).
+    /// Enables the Phase 4 legacy-login gate — see the field docstring.
+    pub fn with_opaque_repo(
+        mut self,
+        repo: Arc<dyn crate::application::ports::opaque_ports::OpaqueRepositoryPort>,
+    ) -> Self {
+        self.opaque_repo = Some(repo);
+        self
     }
 
     /// Returns the default quota for the given role, capped to the available
@@ -712,7 +731,7 @@ impl AuthApplicationService {
         } else {
             self.user_storage.get_user_by_username(&dto.username).await
         };
-        let mut user = lookup.map_err(|_| {
+        let user = lookup.map_err(|_| {
             // Audit: unknown-identifier login attempt. Reason key kept
             // stable so log search can aggregate without parsing the
             // human-readable message. Caller's client IP + request id
@@ -788,6 +807,59 @@ impl AuthApplicationService {
             ));
         }
 
+        // Phase 4 gate: legacy password login is refused for users who
+        // have completed at least one OPAQUE handshake
+        // (`opaque_migrated_at IS NOT NULL`). A stale client or a
+        // downgrade attacker with a stolen password blob is the only
+        // caller who lands here — the SPA already probes
+        // `POST /api/auth/opaque/login/lookup` and takes the OPAQUE
+        // branch when an envelope exists. Admin password reset
+        // atomically NULLs `opaque_migrated_at` (see
+        // `opaque_pg_repository.rs::clear_registration`), so the
+        // state is coherent — no `force_password_change`
+        // carve-out is needed here.
+        //
+        // Checked AFTER password verify so an attacker without the
+        // password learns nothing new about a user's OPAQUE status:
+        // only a caller who supplied the right password gets the
+        // distinguishing "use OPAQUE" signal, and that caller was
+        // going to be redirected anyway.
+        //
+        // Fails OPEN on repo error — a transient DB blip must not
+        // lock every migrated user out; the same login path will
+        // succeed on the next attempt when the repo recovers, and
+        // an operator reading the audit log sees the failure clearly.
+        if let Some(opaque) = self.opaque_repo.as_ref() {
+            match opaque.is_migrated(user.id()).await {
+                Ok(true) => {
+                    tracing::info!(
+                        target: "audit",
+                        event = "auth.login_rejected",
+                        reason = "opaque_migrated_use_opaque",
+                        user_id = %user.id(),
+                        username = %user.display_for_audit(),
+                        "🔐 legacy login refused: user is OPAQUE-migrated ('{}')",
+                        user.display_for_audit(),
+                    );
+                    return Err(DomainError::new(
+                        ErrorKind::AccessDenied,
+                        "Auth",
+                        "Password login refused: this account has migrated to OPAQUE",
+                    ));
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        target: "audit",
+                        event = "auth.opaque_migration_check_failed",
+                        user_id = %user.id(),
+                        error = %e,
+                        "OPAQUE migration check failed — allowing legacy login as fallback"
+                    );
+                }
+            }
+        }
+
         // Gate: `OXICLOUD_REQUIRE_VERIFIED_EMAIL`. Checked AFTER password
         // validation so an attacker with only a username cannot probe
         // account verification state (the response shape is
@@ -827,6 +899,38 @@ impl AuthApplicationService {
             ));
         }
 
+        // Mint the session — factored so the OPAQUE login handler
+        // can reuse the exact same shape after a successful OPAQUE
+        // handshake (Phase 1, `login/ke3`). Both paths converge here
+        // so lifecycle + token + session-family semantics stay in
+        // one place.
+        self.mint_session_for_authenticated_user(user).await
+    }
+
+    /// Emit a fresh session for a user who has ALREADY been
+    /// authenticated by a mechanism the caller trusts (legacy
+    /// password verify, OPAQUE KE3 success, magic-link redemption).
+    ///
+    /// This method does NOT verify any credential — the caller must
+    /// have proven identity before invoking it. What it DOES do:
+    ///
+    ///   * Dispatch `on_user_login` lifecycle (so
+    ///     `PersonalDriveLifecycleHook` can safety-net first-login
+    ///     provisioning).
+    ///   * Update `last_login_at` (in-memory; `create_session`
+    ///     persists it as a side effect via its own transaction).
+    ///   * Mint access + refresh tokens under a fresh token family.
+    ///   * Persist the session row.
+    ///   * Return the shared [`AuthResponseDto`] shape.
+    ///
+    /// Callers: `login()` (after password verify),
+    /// `redeem_magic_link()` (after token redemption),
+    /// `interfaces::api::handlers::opaque_auth_handler::login_ke3`
+    /// (after OPAQUE handshake).
+    pub async fn mint_session_for_authenticated_user(
+        &self,
+        mut user: crate::domain::entities::user::User,
+    ) -> Result<AuthResponseDto, DomainError> {
         // Lifecycle: dispatch login BEFORE register_login() so hooks
         // observing `last_login_at().is_none()` see "first ever login"
         // correctly. See tip #1 in user_lifecycle.rs.
@@ -861,13 +965,38 @@ impl AuthApplicationService {
         self.session_storage.create_session(session).await?;
 
         // Authentication response
+        let force_password_change = self.read_force_password_change(user.id()).await;
         Ok(AuthResponseDto {
             user: UserDto::from(user),
             access_token,
             refresh_token,
             token_type: "Bearer".to_string(),
             expires_in: self.token_service.refresh_token_expiry_secs(),
+            force_password_change,
         })
+    }
+
+    /// Read `force_password_change_at_next_login` for the given user,
+    /// with fail-open semantics on repo error (returns `false` and
+    /// logs a warn). Every callsite that builds an `AuthResponseDto`
+    /// uses this — mint_session (legacy + OPAQUE), magic-link
+    /// redemption, refresh, OIDC callback — so the flag surfaces
+    /// consistently across all login shapes, and a DB blip doesn't
+    /// spam every response with a spurious change-password prompt.
+    async fn read_force_password_change(&self, user_id: Uuid) -> bool {
+        self.user_storage
+            .is_force_password_change(user_id)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    target: "audit",
+                    event = "auth.force_password_change_read_failed",
+                    user_id = %user_id,
+                    error = %e,
+                    "force_password_change lookup failed; treating as false"
+                );
+                false
+            })
     }
 
     /// Redeem a magic-link token and emit a fresh session in one shot.
@@ -1100,12 +1229,14 @@ impl AuthApplicationService {
             cross_browser_confirmed = cross_browser_confirmed,
         );
 
+        let force_password_change = self.read_force_password_change(user.id()).await;
         let auth = AuthResponseDto {
             user: UserDto::from(user),
             access_token,
             refresh_token,
             token_type: "Bearer".to_string(),
             expires_in: self.token_service.refresh_token_expiry_secs(),
+            force_password_change,
         };
 
         Ok(MagicLinkRedeemResult::Allowed(Box::new(
@@ -1241,12 +1372,19 @@ impl AuthApplicationService {
             .rotate_session(session.id(), new_session)
             .await?;
 
+        // Refresh re-reads the flag so an admin flip mid-session
+        // surfaces on the next refresh even if it wasn't set at
+        // initial login. The SPA's post-refresh flow (silent, on
+        // its own timer) can then route the user to change-password
+        // without waiting for an explicit re-login.
+        let force_password_change = self.read_force_password_change(user.id()).await;
         Ok(AuthResponseDto {
             user: UserDto::from(user),
             access_token,
             refresh_token: new_refresh_token,
             token_type: "Bearer".to_string(),
             expires_in: self.token_service.refresh_token_expiry_secs(),
+            force_password_change,
         })
     }
 
@@ -1678,20 +1816,61 @@ impl AuthApplicationService {
         Ok(UserDto::from(updated))
     }
 
+    /// `keep_session_id` — when `Some`, revoke every OTHER session for
+    /// this user but leave the identified one alive. Classic
+    /// "password change" pattern: log the user out from other devices
+    /// but keep the current one authenticated so the SPA can complete
+    /// follow-up work (OPAQUE envelope re-registration) without
+    /// racing a session-death 401. When `None`, revokes all sessions
+    /// (preserves the original behaviour for callers without session
+    /// context).
+    ///
+    /// Handler-layer callers should extract the current session_id
+    /// from the request's refresh-token cookie and pass it in; other
+    /// callers (CLI, tests, admin flows that don't have a specific
+    /// current session) leave it `None`.
     pub async fn change_password(
         &self,
         user_id: Uuid,
         dto: ChangePasswordDto,
+        keep_session_id: Option<Uuid>,
     ) -> Result<(), DomainError> {
         // Get user
         let mut user = self.user_storage.get_user_by_id(user_id).await?;
 
-        // Block password changes for OIDC-provisioned users
-        if user.is_oidc_user() {
+        // Two structural refusals. Order chosen so the more-specific
+        // "your credential is IdP-managed" wins for pure-OIDC users
+        // (which is the case the message text addresses); the
+        // deployment-wide "password auth is off" wins for everyone
+        // else on an SSO-only deployment.
+        //
+        //   1. Pure-OIDC user (SSO-linked AND no local password).
+        //      Hybrid accounts with an OIDC linkage BUT also a
+        //      `password_hash` on file are a legitimate posture on
+        //      deployments that offer SSO alongside password auth —
+        //      they can and must be able to rotate the local
+        //      credential from this endpoint.
+        //
+        //   2. Deployment has password auth disabled globally
+        //      (`OXICLOUD_AUTH_METHODS` missing `password`, or the
+        //      legacy `OXICLOUD_OIDC_DISABLE_PASSWORD_LOGIN` alias).
+        //      Even a user who still has `password_hash` from before
+        //      the operator flipped this shouldn't be updating that
+        //      hash — they can't USE it to log in, and leaving a
+        //      write path exposed keeps a live credential the
+        //      operator likely wanted retired.
+        if user.is_oidc_user() && !user.has_password() {
             return Err(DomainError::new(
                 ErrorKind::AccessDenied,
                 "Auth",
                 "Password changes are not available for SSO/OIDC accounts. Your password is managed by your identity provider.",
+            ));
+        }
+        if !self.is_password_login_allowed() {
+            return Err(DomainError::new(
+                ErrorKind::AccessDenied,
+                "Auth",
+                "Password login is disabled on this deployment; password change is not available.",
             ));
         }
 
@@ -1725,6 +1904,27 @@ impl AuthApplicationService {
             ));
         }
 
+        // Reject same-as-current. Load-bearing when the caller is on
+        // an admin-picked temp password (force_password_change_at_next_login
+        // = TRUE): silently accepting the same string would clear the
+        // force flag without the user actually rotating the credential,
+        // defeating the whole "temporary password" pattern. Verify
+        // against the stored hash (constant-time via `verify_password`)
+        // rather than string-comparing plaintexts, so length / case
+        // typos on the caller's part still fail cleanly. Handler
+        // layer remaps the message to `error_type: "PasswordUnchanged"`.
+        let same_as_current = self
+            .password_hasher
+            .verify_password(&dto.new_password, hash)
+            .await?;
+        if same_as_current {
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "User",
+                "New password must differ from the current password",
+            ));
+        }
+
         // Hash new password and update user
         let new_hash = self
             .password_hasher
@@ -1735,10 +1935,82 @@ impl AuthApplicationService {
         // Save updated user
         self.user_storage.update_user(user.clone()).await?;
 
-        // Optional: revoke all sessions to force re-login with new password
-        self.session_storage
-            .revoke_all_user_sessions(user_id)
-            .await?;
+        // OPAQUE envelope handling: the OLD envelope was bound to the
+        // OLD passphrase via the OPRF. Left in place, the next OPAQUE
+        // login with the NEW password would derive a mismatched OPRF
+        // output and fail the AKE with InvalidCredentials → user
+        // locked out (Phase 3 SPA doesn't fall back OPAQUE→legacy).
+        //
+        // The RESPONSIBILITY for re-minting the envelope belongs to
+        // the SPA — see `frontend/src/lib/api/endpoints/profile.ts`
+        // → `changePassword` → `syncOpaqueEnvelope(newPw)`. That call
+        // hits the session-authenticated `/register/*` endpoints
+        // immediately after this handler returns 200. It works
+        // because we keep the current session alive below
+        // (`revoke_other_user_sessions` instead of the full-revocation
+        // call this handler used to make).
+        //
+        // The server does NOT clear the envelope here. The SPA
+        // re-registration is monotonic — the envelope transitions
+        // straight from OLD-password bound to NEW-password bound
+        // without a null intermediate. This matters for the migration
+        // ledger: `opaque_migrated_at` stays intact, admin dashboards
+        // don't see a spurious "unmigrated" blip.
+        //
+        // Recovery for the rare SPA-failure case: the operator runs
+        // `oxicloud-cli opaque reset --user <id>` to null the
+        // envelope; the user's next login goes through legacy path
+        // (since `hasOpaque: false` after the CLI reset) and silent-
+        // migration mints a fresh envelope under the new password.
+
+        // Clear the admin-set "temporary password" marker — the user
+        // has just picked their own password, so the next-login prompt
+        // has served its purpose. Failure here is non-fatal (login
+        // will just keep prompting until an admin resets or a later
+        // change_password succeeds), but log so ops sees any
+        // consistent drift.
+        if let Err(e) = self.user_storage.clear_force_password_change(user_id).await {
+            tracing::warn!(
+                target: "audit",
+                event = "auth.force_password_change_clear_failed",
+                user_id = %user_id,
+                error = %e,
+                "clear_force_password_change failed after change_password success"
+            );
+        }
+
+        // Evict the cached UserFlags entry so
+        // `require_no_password_change_pending` sees the just-cleared
+        // flag on the next request — otherwise the caller would keep
+        // hitting 403 PasswordChangeRequired until the 30 s TTL rolls
+        // over. (The revoke_all_user_sessions below will force a
+        // re-login anyway, but the cache eviction covers the window
+        // between change_password success and the new session mint.)
+        self.user_flags_cache.invalidate(&user_id).await;
+
+        // Session revocation posture: classic "password change" pattern
+        // — kill every OTHER session for this user (any device / tab
+        // that had cached the old credential), but keep the caller's
+        // CURRENT session alive so the SPA can complete the OPAQUE
+        // envelope re-registration on the same session cookie that
+        // successfully hit this endpoint. Without the `keep_session_id`
+        // preservation, `syncOpaqueEnvelope` in profile.ts would 401
+        // (session gone), the envelope would stay bound to the OLD
+        // password, and the user would be locked out on next OPAQUE
+        // login. `None` = caller has no session context (CLI, admin
+        // flows), fall back to full revocation.
+        match keep_session_id {
+            Some(keep) => {
+                self.session_storage
+                    .revoke_other_user_sessions(user_id, keep)
+                    .await?;
+            }
+            None => {
+                self.session_storage
+                    .revoke_all_user_sessions(user_id)
+                    .await?;
+            }
+        }
 
         // Lifecycle: PasswordChanged logout — fired once per logical
         // revoke-all call. PR 4 may refine to per-session firing.
@@ -1810,6 +2082,31 @@ impl AuthApplicationService {
     ///
     /// Staleness is bounded by [`USER_FLAGS_CACHE_TTL`]; role and active
     /// changes made through this service invalidate the entry eagerly.
+    /// Look up the session id for a refresh token string. Returns
+    /// `Ok(None)` when the token doesn't match any session (typo,
+    /// revoked, expired), `Err` only on real storage errors. Used by
+    /// the change-password handler to identify the caller's current
+    /// session so `revoke_other_user_sessions` can spare it while
+    /// killing the rest.
+    ///
+    /// Kept as a thin lookup — this handler doesn't care about the
+    /// full Session entity, only its id, so the caller doesn't have
+    /// to reason about the wire shape of `Session`.
+    pub async fn get_session_id_by_refresh_token(
+        &self,
+        refresh_token: &str,
+    ) -> Result<Option<Uuid>, DomainError> {
+        match self
+            .session_storage
+            .get_session_by_refresh_token(refresh_token)
+            .await
+        {
+            Ok(session) => Ok(Some(session.id())),
+            Err(e) if e.kind == ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     pub async fn get_user_flags(&self, user_id: Uuid) -> Result<UserFlags, DomainError> {
         // Single-flight: concurrent misses for the same user coalesce
         // into ONE storage lookup; errors are never cached (same herd
@@ -2071,6 +2368,26 @@ impl AuthApplicationService {
         user_id: Uuid,
     ) -> Result<crate::domain::entities::user::User, DomainError> {
         UserStoragePort::get_user_by_id(&*self.user_storage, user_id).await
+    }
+
+    /// Login-style identifier lookup: dispatches on `@` in the input
+    /// (email path when present, username path when not), identical
+    /// to `login()`'s dispatch. Exposed so the OPAQUE login handler
+    /// (`opaque_auth_handler::login_ke1`) can resolve the same
+    /// identifier shape without duplicating the `@` heuristic.
+    ///
+    /// Returns the raw DB error on miss — callers are responsible
+    /// for the anti-enum shape (do NOT surface the DomainError kind
+    /// distinction to unauthenticated clients).
+    pub async fn lookup_user_for_login(
+        &self,
+        identifier: &str,
+    ) -> Result<crate::domain::entities::user::User, DomainError> {
+        if identifier.contains('@') {
+            self.user_storage.get_user_by_email(identifier).await
+        } else {
+            self.user_storage.get_user_by_username(identifier).await
+        }
     }
 
     /// Visibility-checked profile lookup for `GET /api/users/{id}`.
@@ -2581,13 +2898,70 @@ impl AuthApplicationService {
         let hash = self.password_hasher.hash_password(new_password).await?;
         self.user_storage.change_password(user_id, &hash).await?;
 
+        // Mark the admin-picked password as temporary so the user gets
+        // prompted to pick their own on next login. Two branches:
+        //
+        //   * OPAQUE wired: `clear_registration` is the atomic write
+        //     that (a) NULLs the OPAQUE envelope + migration mark so
+        //     the migrated user drops back to legacy login (the old
+        //     envelope is bound to the OLD passphrase and would fail
+        //     OPAQUE KE3), and (b) sets `force_password_change`.
+        //     Silent-migration on the next legacy login re-mints a
+        //     fresh envelope bound to the admin's new password; the
+        //     force flag then routes the SPA to change-password.
+        //
+        //   * OPAQUE off: no envelope to invalidate; just flip the
+        //     force flag directly via user_storage. Same downstream
+        //     behaviour — SPA sees force_password_change=true on
+        //     the next login response and routes accordingly.
+        //
+        // Both writes are non-fatal (logged at warn on failure): the
+        // password reset itself succeeded, and a stale force flag is
+        // recoverable on the next admin reset.
+        if let Some(opaque) = self.opaque_repo.as_ref() {
+            if let Err(e) = opaque.clear_registration(user_id).await {
+                tracing::warn!(
+                    target: "audit",
+                    event = "auth.admin_reset_opaque_clear_failed",
+                    user_id = %user_id,
+                    error = %e,
+                    "OPAQUE clear_registration failed during admin password reset — \
+                     force flag + envelope invalidation deferred to next opportunity"
+                );
+            }
+        } else if let Err(e) = self.user_storage.set_force_password_change(user_id).await {
+            tracing::warn!(
+                target: "audit",
+                event = "auth.admin_reset_force_flag_failed",
+                user_id = %user_id,
+                error = %e,
+                "set_force_password_change failed during admin password reset — \
+                 user will not be prompted to change from admin's temp password"
+            );
+        }
+
         // Invalidate all existing sessions so the user must re-login
         // with the new password.  Mirrors the behaviour of change_password().
         self.session_storage
             .revoke_all_user_sessions(user_id)
             .await?;
 
-        tracing::info!(user_id = %user_id, "Admin reset password — all sessions revoked");
+        // Evict the cached UserFlags row so the next authenticated
+        // request from this user (on their next session) sees the
+        // updated force_password_change value without waiting for
+        // the 30s TTL. The middleware
+        // `require_no_password_change_pending` reads from this cache
+        // — a stale FALSE would keep the API open to the admin's
+        // temp-password holder until the TTL rolled over.
+        self.user_flags_cache.invalidate(&user_id).await;
+
+        tracing::info!(
+            target: "audit",
+            event = "auth.admin_reset_password",
+            user_id = %user_id,
+            opaque_wired = self.opaque_repo.is_some(),
+            "👮🏻‍♂️ Admin reset password — sessions revoked, force-change flag set"
+        );
         Ok(())
     }
 
@@ -2949,17 +3323,56 @@ impl AuthApplicationService {
         };
 
         let provider_name = oidc.provider_name().to_string();
-        // Check email_verified - only if email is present in claims, and email verification is required.
-        if self.require_verified_email()
-            && let Some(email) = &claims.email
-        {
-            let verified = claims.email_verified.unwrap_or(false);
-            if !verified {
-                tracing::warn!(
-                    "OIDC login rejected: email not verified (provider: {}, email: {})",
-                    provider_name,
-                    email
+        // Email-verification gate. The operator flag
+        // `OXICLOUD_REQUIRE_VERIFIED_EMAIL` is the master switch — an
+        // operator who opts out is telling us they trust the configured
+        // IdP end-to-end (e.g. corporate SSO where the directory already
+        // vets identities out-of-band). Both rejection reasons collapse
+        // to the same "flag off → accept" behaviour so the operator
+        // lever means what it says.
+        //
+        // Two distinct signals are audit-logged even in the accept path
+        // so operators can spot risky IdP behaviour after the fact:
+        //
+        //   Some(false)  → IdP is ACTIVELY asserting the email is
+        //                  unverified. Riskier than absence: it's the
+        //                  first-login takeover primitive (attacker
+        //                  types victim's address into an IdP-with-no-
+        //                  verify). Emit at info-level either way; the
+        //                  reject branch adds `oidc.callback_rejected`,
+        //                  the accept branch adds
+        //                  `oidc.email_unverified_accepted` so operators
+        //                  running with the flag off can still see the
+        //                  underlying risky signal in the audit log.
+        //   None         → IdP simply doesn't publish the claim.
+        //                  Weaker signal; rejected only when the flag
+        //                  is on. No audit line on the accept branch
+        //                  (the absence of a signal is not itself a
+        //                  signal — logging it would just be noise).
+        //
+        // We only evaluate when an email is present in the claims —
+        // no email → nothing to verify (the JIT path synthesises a
+        // placeholder later).
+        if let Some(email) = &claims.email {
+            let must_verify = self.require_verified_email();
+            let (reject, reason) = match (claims.email_verified, must_verify) {
+                (Some(true), _) => (false, None),
+                (Some(false), true) => (true, Some("idp_asserts_unverified")),
+                (Some(false), false) => (false, Some("idp_asserts_unverified_flag_off")),
+                (None, true) => (true, Some("claim_absent_and_required")),
+                (None, false) => (false, None),
+            };
+            if let Some(reason) = reason {
+                tracing::info!(
+                    target: "audit",
+                    event = if reject { "oidc.callback_rejected" } else { "oidc.email_unverified_accepted" },
+                    reason = reason,
+                    provider = %provider_name,
+                    email = %email,
+                    "👮🏻‍♂️ OIDC callback: email-verification signal"
                 );
+            }
+            if reject {
                 return Err(DomainError::new(
                     ErrorKind::AccessDenied,
                     "OIDC",
@@ -3195,12 +3608,14 @@ impl AuthApplicationService {
         }
         self.session_storage.create_session(session).await?;
 
+        let force_password_change = self.read_force_password_change(user.id()).await;
         let auth_response = AuthResponseDto {
             user: UserDto::from(user),
             access_token,
             refresh_token,
             token_type: "Bearer".to_string(),
             expires_in: self.token_service.refresh_token_expiry_secs(),
+            force_password_change,
         };
 
         // 7. Store auth response behind a one-time exchange code (Fix #4: no tokens in URL)
@@ -3262,4 +3677,198 @@ impl AuthApplicationService {
 fn base64_url_encode(input: &[u8]) -> String {
     use base64::Engine;
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(input)
+}
+
+// ── Phase 4 gate: end-to-end service-level integration test ─────────────
+//
+// The repo layer proves `is_migrated` returns the right bool
+// (`opaque_pg_repository.rs::is_migrated_tracks_mark_and_clear_state_transitions`).
+// This module proves the WIRING between `is_migrated` and `login()` —
+// that a mark_migrated actually flips a subsequent legacy login from
+// success to `OpaqueLoginRequired`-shaped `AccessDenied`. Without
+// this test, the field / builder / gate could rot independently
+// (silent field rename, missing `.with_opaque_repo` call in the
+// factory, etc.) and only surface when an operator actually rolls
+// out the substrate.
+//
+// Runs against the real test DB (same `oxicloud_test` guard as the
+// other integration_tests modules). Gated on `all(test, integration_tests)`
+// so the module compiles ONLY during `cargo test --cfg integration_tests`:
+// a plain library build strips it, keeping `#[test]`-only imports from
+// tripping the unused-imports lint. Mirrors the pattern in
+// `folder_service::cascade_hook_integration_tests`.
+#[cfg(all(test, integration_tests))]
+mod phase4_gate_integration_tests {
+    use super::*;
+    use crate::application::ports::opaque_ports::OpaqueRepositoryPort;
+    use crate::infrastructure::repositories::pg::{
+        OpaquePgRepository, SessionPgRepository, UserPgRepository,
+    };
+    use crate::infrastructure::services::jwt_service::JwtTokenService;
+    use crate::infrastructure::services::password_hasher::Argon2PasswordHasher;
+    use crate::integration_test_support::{ensure_clean_test_db, test_db_url};
+    use sqlx::postgres::PgPoolOptions;
+    use std::path::PathBuf;
+
+    /// Assemble a minimal `AuthApplicationService` wired with the
+    /// real repos + a real (fast-KSF) password hasher against the
+    /// integration test DB. Only what `login()` and the Phase 4
+    /// gate touch — no lifecycle dispatcher, no magic-link repo,
+    /// no OIDC. Returns the service, a handle to the concrete
+    /// OPAQUE repo (so the test can call `mark_migrated` /
+    /// `clear_registration` directly), and the pool for seeding.
+    async fn build_service() -> (
+        AuthApplicationService,
+        Arc<OpaquePgRepository>,
+        Arc<sqlx::PgPool>,
+        Arc<Argon2PasswordHasher>,
+    ) {
+        let pool = Arc::new(
+            PgPoolOptions::new()
+                .max_connections(4)
+                .connect(&test_db_url())
+                .await
+                .expect("connect to integration-test PostgreSQL"),
+        );
+        ensure_clean_test_db(&pool).await;
+
+        let user_repo = Arc::new(UserPgRepository::new(pool.clone()));
+        let session_repo = Arc::new(SessionPgRepository::new(pool.clone()));
+        // Fast Argon2 so this test finishes in ms rather than seconds.
+        // Real deployments run at the OXICLOUD_HASH_* values; the gate
+        // logic under test doesn't care about hash cost.
+        let hasher = Arc::new(Argon2PasswordHasher::new(8, 1, 1));
+        let token = Arc::new(JwtTokenService::new(
+            "test-secret-do-not-use-in-prod-minimum-32-chars".to_string(),
+            3600,
+            86400,
+        ));
+        let opaque_repo = Arc::new(OpaquePgRepository::new(pool.clone()));
+
+        let svc = AuthApplicationService::new(
+            user_repo,
+            session_repo,
+            hasher.clone(),
+            token,
+            PathBuf::from("/tmp"),
+        )
+        .with_opaque_repo(opaque_repo.clone());
+
+        (svc, opaque_repo, pool, hasher)
+    }
+
+    /// Seed a user with a password hash + verified email — the
+    /// minimum shape `login()` accepts. `email_verified_at` set so
+    /// the (default-off) `require_verified_email` gate doesn't
+    /// interfere with the Phase 4 branch we're isolating.
+    async fn seed_user_with_password(
+        pool: &sqlx::PgPool,
+        hasher: &Argon2PasswordHasher,
+        email: &str,
+        password: &str,
+    ) -> uuid::Uuid {
+        use crate::application::ports::auth_ports::PasswordHasherPort;
+
+        let id = uuid::Uuid::new_v4();
+        let hash = hasher.hash_password(password).await.expect("hash password");
+        sqlx::query(
+            r#"
+            INSERT INTO auth.users (
+                id, username, email, password_hash, role,
+                storage_quota_bytes, storage_used_bytes,
+                created_at, updated_at, active,
+                email_verified_at
+            ) VALUES (
+                $1, NULL, $2, $3, 'user'::auth.userrole,
+                0, 0, NOW(), NOW(), TRUE, NOW()
+            )
+            "#,
+        )
+        .bind(id)
+        .bind(email)
+        .bind(hash)
+        .execute(pool)
+        .await
+        .expect("seed test user");
+        id
+    }
+
+    /// The full Phase 4 gate lifecycle: legacy login works, marking
+    /// migrated flips subsequent legacy logins to the `OpaqueLoginRequired`
+    /// shape, and admin-reset (`clear_registration`) re-opens legacy.
+    ///
+    /// The single test covers all three transitions so a regression
+    /// in any leg (missing `with_opaque_repo`, wrong error message,
+    /// clear-not-nulling-migrated-at) fails one assertion instead of
+    /// three separate tests reporting the same drift.
+    #[tokio::test]
+    async fn login_flow_across_mark_migrated_and_clear_registration() {
+        let (svc, opaque_repo, pool, hasher) = build_service().await;
+        let email = format!("phase4-{}@example.invalid", uuid::Uuid::new_v4());
+        let user_id = seed_user_with_password(&pool, &hasher, &email, "s3cret-passphrase").await;
+
+        // Baseline — no envelope, no migration mark → legacy works.
+        svc.login(crate::application::dtos::user_dto::LoginDto {
+            username: email.clone(),
+            password: "s3cret-passphrase".to_string(),
+        })
+        .await
+        .expect("baseline legacy login must succeed");
+
+        // Simulate a successful OPAQUE handshake landing.
+        opaque_repo
+            .mark_migrated(user_id)
+            .await
+            .expect("mark migrated");
+
+        // Now the Phase 4 gate fires: same credentials, same call,
+        // but AccessDenied with the exact message the handler layer
+        // remaps to `403 OpaqueLoginRequired`.
+        let refused = svc
+            .login(crate::application::dtos::user_dto::LoginDto {
+                username: email.clone(),
+                password: "s3cret-passphrase".to_string(),
+            })
+            .await
+            .expect_err("legacy login must be refused post-migration");
+        assert_eq!(
+            refused.kind,
+            ErrorKind::AccessDenied,
+            "gate must return AccessDenied"
+        );
+        assert_eq!(
+            refused.message, "Password login refused: this account has migrated to OPAQUE",
+            "message must match what the handler remaps to `OpaqueLoginRequired` — \
+             change either both sides at once or the handler stops recognising it"
+        );
+
+        // Wrong password on a migrated user MUST return the same
+        // shape as any other wrong-password (`Invalid credentials`),
+        // NOT the OPAQUE-migrated message — the gate lives AFTER the
+        // password check specifically so an attacker without the
+        // password learns nothing about migration state.
+        let wrong = svc
+            .login(crate::application::dtos::user_dto::LoginDto {
+                username: email.clone(),
+                password: "wrong-password".to_string(),
+            })
+            .await
+            .expect_err("wrong password must still fail");
+        assert_eq!(wrong.message, "Invalid credentials");
+
+        // Admin-side password reset (clear_registration NULLs
+        // opaque_migrated_at atomically) must re-open the fallback —
+        // otherwise the admin-reset user is locked out (envelope
+        // gone, gate still refusing).
+        opaque_repo
+            .clear_registration(user_id)
+            .await
+            .expect("clear registration");
+        svc.login(crate::application::dtos::user_dto::LoginDto {
+            username: email,
+            password: "s3cret-passphrase".to_string(),
+        })
+        .await
+        .expect("legacy login must succeed again after admin clear_registration");
+    }
 }

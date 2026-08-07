@@ -36,6 +36,12 @@
         "subject": "{{inviter}} 在 OxiCloud 上與您分享了一個{{kind}}",
         "body": "{{inviter_full}} 在 OxiCloud 上與您分享了一個{{kind}}。\n\n開啟 OxiCloud 檢視您的新分享:\n{{login_link}}\n\n您可能還有來自 {{inviter}} 的其他新分享 — 登入以檢視所有與您分享的項目。\n\n— OxiCloud\n\n您收到此訊息是因為您擁有 OxiCloud 帳戶且分享通知偏好已開啟。您可以在個人資料中關閉它(當有人與我分享時透過電子郵件通知我)。"
       }
+    },
+    "security": {
+      "password_changed": {
+        "subject": "您的 OxiCloud 密碼已變更",
+        "body": "您好，\n\n您的 OxiCloud 密碼剛剛於 {{timestamp}} (UTC) 從 IP 位址 {{ip}} 被變更。\n\n如果是您本人操作,無需採取任何行動 — 可以忽略此訊息。\n\n如果不是您本人操作,請立即聯絡您的管理員。可能有人取得了您帳號的存取權限。\n\n— OxiCloud"
+      }
     }
   },
   "server_status": {

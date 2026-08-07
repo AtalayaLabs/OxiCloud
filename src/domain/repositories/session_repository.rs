@@ -52,6 +52,22 @@ pub trait SessionRepository: Send + Sync + 'static {
     /// Revokes all sessions for a user
     async fn revoke_all_user_sessions(&self, user_id: Uuid) -> SessionRepositoryResult<u64>;
 
+    /// Revokes every session for `user_id` EXCEPT the one identified by
+    /// `keep_session_id`. Classic "password change" pattern: log the
+    /// user out from every OTHER device, but keep the current device's
+    /// session alive so the SPA can complete follow-up work (e.g. OPAQUE
+    /// envelope re-registration) without a session-death race.
+    ///
+    /// Returns the count of revoked rows (excluding the kept one).
+    /// If `keep_session_id` doesn't belong to `user_id` (defensive),
+    /// the WHERE clause still matches nothing to revoke on that row —
+    /// no cross-user side effect.
+    async fn revoke_other_user_sessions(
+        &self,
+        user_id: Uuid,
+        keep_session_id: Uuid,
+    ) -> SessionRepositoryResult<u64>;
+
     /// Revokes all sessions in a token family (theft response)
     async fn revoke_session_family(&self, family_id: Uuid) -> SessionRepositoryResult<u64>;
 

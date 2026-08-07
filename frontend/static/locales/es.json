@@ -36,6 +36,12 @@
         "subject": "{{inviter}} ha compartido un {{kind}} contigo en OxiCloud",
         "body": "{{inviter_full}} ha compartido un {{kind}} contigo en OxiCloud.\n\nAbre OxiCloud para ver tu nuevo recurso compartido:\n{{login_link}}\n\nPuede que tengas más recursos compartidos nuevos de {{inviter}} — inicia sesión para ver todos tus elementos compartidos.\n\n— OxiCloud\n\nRecibes este mensaje porque tienes una cuenta de OxiCloud y la preferencia de notificación de recursos compartidos está activada. Puedes desactivarla en tu perfil (Enviarme un correo cuando alguien comparta conmigo)."
       }
+    },
+    "security": {
+      "password_changed": {
+        "subject": "Se cambió su contraseña de OxiCloud",
+        "body": "Hola,\n\nSu contraseña de OxiCloud acaba de cambiarse el {{timestamp}} (UTC) desde la dirección IP {{ip}}.\n\nSi fue usted, no se requiere ninguna acción — puede ignorar este mensaje.\n\nSi NO fue usted, contacte a su administrador inmediatamente. Alguien pudo haber obtenido acceso a su cuenta.\n\n— OxiCloud"
+      }
     }
   },
   "server_status": {

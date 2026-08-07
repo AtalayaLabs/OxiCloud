@@ -1648,6 +1648,181 @@ impl Default for OidcConfig {
     }
 }
 
+/// OPAQUE aPAKE configuration (RFC 9807, Phase 0 substrate).
+///
+/// OPAQUE is a zero-knowledge password-authenticated key exchange: the
+/// passphrase never leaves the client. This struct carries the runtime
+/// knobs the server needs (mode, ciphersuite version, persisted
+/// [`ServerSetup`] blob) plus the client-side KSF params the SPA reads
+/// out of `/api/health` to configure its Argon2.
+///
+/// **The KSF params are client-side.** RFC 9807 runs Argon2 on the client
+/// before the OPRF exchange; the server never invokes it. The params live
+/// here so the operator has one source of truth and the SPA can fetch
+/// them at page load — changing them requires re-registration for
+/// affected users.
+#[derive(Debug, Clone)]
+pub struct OpaqueConfig {
+    /// Runtime mode gate. See
+    /// [`crate::infrastructure::services::opaque_service::OpaqueMode`]
+    /// for the state-machine and the phase-plan mapping.
+    ///
+    /// Env: `OXICLOUD_AUTH_OPAQUE_MODE` (`off` | `migrate` | `opaque_only`).
+    /// Default: `off`.
+    pub mode: crate::infrastructure::services::opaque_service::OpaqueMode,
+    /// Base64-encoded [`opaque_ke::ServerSetup`] blob. Generated once
+    /// per deployment and persisted verbatim — rotating this invalidates
+    /// every user's registration. Runbook: on first boot with
+    /// `OXICLOUD_AUTH_OPAQUE_MODE != off`, if this is unset, print a fatal
+    /// message with a fresh setup for the operator to paste into their
+    /// env, then exit.
+    ///
+    /// Env: `OXICLOUD_AUTH_OPAQUE_SERVER_SETUP`. No default.
+    pub server_setup_b64: Option<String>,
+    /// Ciphersuite version stamped into `auth.users.opaque_ciphersuite_version`
+    /// on registration. Bumping this without changing the actual
+    /// ciphersuite type alias in the service module is meaningless;
+    /// bumping this WITH a type change invalidates all envelopes.
+    ///
+    /// Env: not exposed. Compile-time constant, currently `1`.
+    pub ciphersuite_version: i16,
+    /// Client-side Argon2id memory cost in KiB. Published to the SPA so
+    /// the client can construct a matching `argon2::Argon2` before
+    /// running `ClientRegistration::start` / `ClientLogin::start`.
+    ///
+    /// **The KSF runs client-side, twice per login** (once each in
+    /// OPAQUE's `start` and `finish` steps), inside a synchronous WASM
+    /// call on the main thread. So the interactive login latency the
+    /// user perceives is roughly `2 × Argon2(memory, iterations)`.
+    ///
+    /// Default: `47104` KiB (46 MiB) — matches the OWASP recommendation
+    /// for interactive password-based KDF. Rationale in
+    /// `docs/config/authentication.md § OPAQUE — KSF parameters`.
+    ///
+    /// Env: `OXICLOUD_AUTH_OPAQUE_KSF_MEMORY_KIB`.
+    pub ksf_memory_kib: u32,
+    /// Client-side Argon2id iteration count.
+    ///
+    /// Env: `OXICLOUD_AUTH_OPAQUE_KSF_ITERATIONS`. Default: `1`
+    /// (OWASP recommendation for interactive auth).
+    pub ksf_iterations: u32,
+    /// Client-side Argon2id parallelism (lanes).
+    ///
+    /// Env: `OXICLOUD_AUTH_OPAQUE_KSF_PARALLELISM`. Default: `1`
+    /// (OWASP recommendation). Higher values only help on multi-core
+    /// hardware and hurt single-core / older mobile devices.
+    pub ksf_parallelism: u32,
+}
+
+impl Default for OpaqueConfig {
+    fn default() -> Self {
+        Self {
+            mode: crate::infrastructure::services::opaque_service::OpaqueMode::Off,
+            server_setup_b64: None,
+            ciphersuite_version: 1,
+            // OWASP recommended interactive-auth Argon2id parameters
+            // (2024 password-storage cheat sheet): 46 MiB / 1 iter /
+            // 1 lane. Keeps interactive login usable on older /
+            // low-end / mobile devices where a heavier memory budget
+            // either takes tens of seconds OR fails to allocate WASM
+            // heap outright (iOS Safari + old Android WebView cap).
+            // Full rationale in docs/config/authentication.md.
+            //
+            // Changing these values does NOT invalidate existing
+            // envelopes — the KSF params are effectively baked into
+            // the envelope at register time. Silent-migration
+            // re-mints under the current params on the user's next
+            // password change.
+            ksf_memory_kib: 47_104,
+            ksf_iterations: 1,
+            ksf_parallelism: 1,
+        }
+    }
+}
+
+impl OpaqueConfig {
+    /// Load OPAQUE configuration from environment variables. Mirrors the
+    /// pattern used by [`OidcConfig::from_env`] — every field falls back
+    /// to the [`Default`] impl when unset, so the config is safe to
+    /// construct even in `Off` mode.
+    pub fn from_env() -> Self {
+        use std::env;
+        let mut cfg = Self::default();
+        if let Ok(v) = env::var("OXICLOUD_AUTH_OPAQUE_MODE") {
+            match crate::infrastructure::services::opaque_service::OpaqueMode::parse(&v) {
+                Some(m) => cfg.mode = m,
+                None => {
+                    tracing::warn!(
+                        target: "oxicloud::config",
+                        value = %v,
+                        "OXICLOUD_AUTH_OPAQUE_MODE has an unrecognised value — keeping default (off). \
+                         Accepted: off | migrate | opaque_only"
+                    );
+                }
+            }
+        }
+        if let Ok(v) = env::var("OXICLOUD_AUTH_OPAQUE_SERVER_SETUP") {
+            cfg.server_setup_b64 = Some(v);
+        }
+        if let Ok(v) = env::var("OXICLOUD_AUTH_OPAQUE_KSF_MEMORY_KIB")
+            && let Ok(n) = v.parse::<u32>()
+        {
+            cfg.ksf_memory_kib = n;
+        }
+        if let Ok(v) = env::var("OXICLOUD_AUTH_OPAQUE_KSF_ITERATIONS")
+            && let Ok(n) = v.parse::<u32>()
+        {
+            cfg.ksf_iterations = n;
+        }
+        if let Ok(v) = env::var("OXICLOUD_AUTH_OPAQUE_KSF_PARALLELISM")
+            && let Ok(n) = v.parse::<u32>()
+        {
+            cfg.ksf_parallelism = n;
+        }
+        cfg
+    }
+
+    /// Runtime mode after cross-checking against the auth-method allowlist.
+    ///
+    /// OPAQUE is fundamentally a **password** mechanism — its only reason
+    /// to exist is to replace `POST /api/auth/login`. An operator running
+    /// OIDC-only or magic-link-only (`OXICLOUD_AUTH_METHODS=oidc` or
+    /// `=magic_link`) has no password path for OPAQUE to shadow; any
+    /// non-`Off` mode would be a no-op that still nagged them for
+    /// `OXICLOUD_AUTH_OPAQUE_SERVER_SETUP` at boot.
+    ///
+    /// This helper resolves the misconfig quietly: if password isn't in
+    /// the allowlist AND OPAQUE mode is non-`Off`, we downgrade to `Off`
+    /// and emit an audit-channel INFO explaining why (so it shows up in
+    /// operator log tailing without being a startup warning that fails
+    /// health checks). Every OPAQUE-facing caller — the DI factory, the
+    /// endpoint router, the migration hook — MUST read this and never
+    /// touch `self.mode` directly.
+    pub fn effective_mode(
+        &self,
+        auth: &AuthConfig,
+    ) -> crate::infrastructure::services::opaque_service::OpaqueMode {
+        use crate::infrastructure::services::opaque_service::OpaqueMode;
+        if self.mode == OpaqueMode::Off {
+            return OpaqueMode::Off;
+        }
+        if !auth.is_method_allowed(AuthMethod::Password) {
+            tracing::info!(
+                target: "audit",
+                event = "opaque.mode_downgraded",
+                reason = "password_auth_disabled",
+                configured_mode = ?self.mode,
+                "OXICLOUD_AUTH_OPAQUE_MODE is configured but password auth is disabled \
+                 via OXICLOUD_AUTH_METHODS — treating OPAQUE as off. \
+                 OPAQUE only replaces the password login path; enable password \
+                 in OXICLOUD_AUTH_METHODS to make this setting take effect."
+            );
+            return OpaqueMode::Off;
+        }
+        self.mode
+    }
+}
+
 impl OidcConfig {
     /// Load OIDC configuration from environment variables only
     pub fn from_env() -> Self {
@@ -2338,6 +2513,10 @@ pub struct AppConfig {
     pub database: DatabaseConfig,
     /// Authentication configuration
     pub auth: AuthConfig,
+    /// OPAQUE (RFC 9807) zero-knowledge password auth configuration.
+    /// Substrate only in Phase 0 — endpoints are inert until
+    /// `OXICLOUD_AUTH_OPAQUE_MODE != off`.
+    pub opaque: OpaqueConfig,
     /// Feature configuration
     pub features: FeaturesConfig,
     /// OIDC configuration
@@ -2406,6 +2585,7 @@ impl Default for AppConfig {
             storage_entries: Vec::new(),
             database: DatabaseConfig::default(),
             auth: AuthConfig::default(),
+            opaque: OpaqueConfig::default(),
             features: FeaturesConfig::default(),
             oidc: OidcConfig::default(),
             wopi: WopiConfig::default(),
@@ -3448,6 +3628,11 @@ impl AppConfig {
             }
         }
 
+        // OPAQUE aPAKE — env-driven substrate wired via its own loader so the
+        // AppConfig::from_env body doesn't have to know the internals of the
+        // new mode enum / KSF param triple. See `OpaqueConfig::from_env`.
+        config.opaque = OpaqueConfig::from_env();
+
         config
     }
 
@@ -4165,6 +4350,68 @@ mod tests {
             let pairs = parse_encryption_pair_list("t", K1_B64).unwrap();
             let parser_fp = pairs[0].fingerprint_short().unwrap();
             assert_eq!(cli_fp, parser_fp);
+        }
+    }
+
+    // ── OPAQUE effective-mode cross-check ────────────────────────────────
+    //
+    // OPAQUE is fundamentally a password mechanism; enabling its mode when
+    // password auth is disabled would be a no-op that still nagged
+    // operators for `OXICLOUD_AUTH_OPAQUE_SERVER_SETUP` at boot. The
+    // `effective_mode` helper resolves that quietly by downgrading to
+    // Off + emitting an audit log, and these tests pin the truth table.
+
+    fn auth_with_methods(methods: Vec<AuthMethod>) -> AuthConfig {
+        AuthConfig {
+            allowed_auth_methods: methods,
+            ..AuthConfig::default()
+        }
+    }
+
+    #[test]
+    fn effective_mode_stays_off_when_configured_off() {
+        use crate::infrastructure::services::opaque_service::OpaqueMode;
+        let opaque = OpaqueConfig::default(); // mode = Off
+        let auth = auth_with_methods(vec![AuthMethod::Password]);
+        assert_eq!(opaque.effective_mode(&auth), OpaqueMode::Off);
+    }
+
+    #[test]
+    fn effective_mode_passes_through_when_password_allowed() {
+        use crate::infrastructure::services::opaque_service::OpaqueMode;
+        for mode in [OpaqueMode::Migrate, OpaqueMode::OpaqueOnly] {
+            let opaque = OpaqueConfig {
+                mode,
+                ..OpaqueConfig::default()
+            };
+            // Empty allowlist means "all methods allowed" per the existing
+            // convention, so password is implicitly in.
+            let empty_auth = auth_with_methods(vec![]);
+            assert_eq!(opaque.effective_mode(&empty_auth), mode);
+            // Explicit allowlist including Password.
+            let with_password = auth_with_methods(vec![AuthMethod::Password]);
+            assert_eq!(opaque.effective_mode(&with_password), mode);
+            // Multi-method allowlist including Password.
+            let mixed = auth_with_methods(vec![AuthMethod::Password, AuthMethod::MagicLink]);
+            assert_eq!(opaque.effective_mode(&mixed), mode);
+        }
+    }
+
+    #[test]
+    fn effective_mode_downgrades_to_off_when_password_disabled() {
+        use crate::infrastructure::services::opaque_service::OpaqueMode;
+        for mode in [OpaqueMode::Migrate, OpaqueMode::OpaqueOnly] {
+            let opaque = OpaqueConfig {
+                mode,
+                ..OpaqueConfig::default()
+            };
+            // Magic-link-only deployment — no password path for OPAQUE
+            // to shadow, so effective mode must be Off regardless of the
+            // configured value. The audit log line is a side effect we
+            // don't try to assert on (tracing capture would be overkill
+            // for this straightforward truth table).
+            let magic_only = auth_with_methods(vec![AuthMethod::MagicLink]);
+            assert_eq!(opaque.effective_mode(&magic_only), OpaqueMode::Off);
         }
     }
 }

@@ -36,6 +36,12 @@
         "subject": "{{inviter}} hat einen {{kind}} mit Ihnen auf OxiCloud geteilt",
         "body": "{{inviter_full}} hat einen {{kind}} mit Ihnen auf OxiCloud geteilt.\n\nÖffnen Sie OxiCloud, um Ihre neue Freigabe zu sehen:\n{{login_link}}\n\nMöglicherweise gibt es weitere neue Freigaben von {{inviter}} — melden Sie sich an, um alle Ihre freigegebenen Elemente zu sehen.\n\n— OxiCloud\n\nSie erhalten diese Nachricht, weil Sie ein OxiCloud-Konto haben und die Benachrichtigung über Freigaben aktiviert ist. Sie können sie in Ihrem Profil deaktivieren (Per E-Mail benachrichtigen, wenn jemand mit mir teilt)."
       }
+    },
+    "security": {
+      "password_changed": {
+        "subject": "Ihr OxiCloud-Passwort wurde geändert",
+        "body": "Hallo,\n\nIhr OxiCloud-Passwort wurde soeben am {{timestamp}} (UTC) von der IP-Adresse {{ip}} geändert.\n\nWenn Sie das waren, ist keine Aktion erforderlich — Sie können diese Nachricht ignorieren.\n\nWenn Sie das NICHT waren, wenden Sie sich sofort an Ihren Administrator. Möglicherweise hat jemand Zugriff auf Ihr Konto erhalten.\n\n— OxiCloud"
+      }
     }
   },
   "server_status": {

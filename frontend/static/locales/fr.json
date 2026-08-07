@@ -36,6 +36,12 @@
         "subject": "{{inviter}} a partagé un {{kind}} avec vous sur OxiCloud",
         "body": "{{inviter_full}} a partagé un {{kind}} avec vous sur OxiCloud.\n\nOuvrez OxiCloud pour voir votre nouveau partage :\n{{login_link}}\n\nVous avez peut-être d'autres nouveaux partages de {{inviter}} — connectez-vous pour voir tous vos éléments partagés.\n\n— OxiCloud\n\nVous recevez ce message parce que vous avez un compte OxiCloud et que la préférence de notification de partage est activée. Vous pouvez la désactiver dans votre profil (M'avertir par e-mail quand quelqu'un partage avec moi)."
       }
+    },
+    "security": {
+      "password_changed": {
+        "subject": "Votre mot de passe OxiCloud a été modifié",
+        "body": "Bonjour,\n\nVotre mot de passe OxiCloud vient d'être modifié le {{timestamp}} (UTC) depuis l'adresse IP {{ip}}.\n\nSi c'était vous, aucune action n'est nécessaire — vous pouvez ignorer ce message.\n\nSi ce n'était PAS vous, contactez immédiatement votre administrateur. Quelqu'un a peut-être obtenu accès à votre compte.\n\n— OxiCloud"
+      }
     }
   },
   "server_status": {

@@ -72,6 +72,42 @@ pub struct UserDto {
     /// `frontend/src/lib/stores/preferences.svelte.ts`). Always present
     /// on the wire; empty bag is `{}`, never `null`.
     pub ui_preferences: serde_json::Value,
+    /// Mirrors `auth.users.force_password_change_at_next_login`. Set
+    /// TRUE by the admin password-reset flow (see
+    /// `AuthApplicationService::admin_reset_password`) and cleared by
+    /// a successful self-service `POST /api/auth/change-password`.
+    ///
+    /// Populated only by the `/api/auth/me` handler and the login
+    /// response minter (via a distinct code path). `From<User>` — used
+    /// by admin listings, share-recipient responses, group-member DTOs,
+    /// etc. — leaves it at `false`. The flag is a per-session-account
+    /// concern (does *this* user need to change their password before
+    /// they can proceed?), not a general user attribute worth
+    /// surfacing on every list row.
+    ///
+    /// The load-bearing consumer is the SPA's session store: on
+    /// startup and after every refresh, `/me` returns the current
+    /// flag value and the SPA's nav-guard blocks navigation to
+    /// anything but the change-password surface until it flips
+    /// back to false. Backend enforcement is separate (see the
+    /// `require_no_password_change_pending` middleware) — this DTO
+    /// field is what the SPA reads to render the mandatory-mode UI.
+    #[serde(default)]
+    pub force_password_change: bool,
+    /// TRUE when the account has a local Argon2id `password_hash` on
+    /// file. Distinct from `auth_provider`: an SSO-linked account
+    /// (auth_provider != "local") can ALSO carry a local password if
+    /// it was set at signup or later — a hybrid posture. The SPA
+    /// gates the profile page's change-password card on this flag,
+    /// so hybrid users can rotate their local password even though
+    /// they normally sign in via SSO.
+    ///
+    /// Populated only by the `/api/auth/me` handler. `From<User>` in
+    /// this file leaves it `false` — other UserDto emitters (admin
+    /// listings, share-recipient responses, group members) do not
+    /// need to surface per-user credential state.
+    #[serde(default)]
+    pub has_password: bool,
 }
 
 /// Compact row returned by the paginated admin user table.
@@ -93,6 +129,35 @@ pub struct AdminUserSummaryDto {
     pub active: bool,
     pub auth_provider: String,
     pub is_external: bool,
+    /// TRUE when the user has a server-verifiable password on file
+    /// (`password_hash IS NOT NULL`). The admin table uses this
+    /// alongside `oidc_provider` and `opaque_registered` to render
+    /// the user's full capability set: a `password` chip lights up
+    /// here, an OIDC provider name renders the SSO badge, an
+    /// envelope-on-file flips the OPAQUE chip. A user with none of
+    /// the three is passwordless (magic-link only — the SPA renders
+    /// a distinct `passwordless` chip in that case). Admin-only
+    /// exposure — see the DTO doc for why this isn't on `UserDto`.
+    #[serde(default)]
+    pub has_password: bool,
+    /// Mirrors `UserListEntry::opaque_registered` — TRUE when the user
+    /// has an OPAQUE envelope on file. Surfaced on the admin table so
+    /// operators can see per-user rollout progress during the
+    /// migration window. **Admin-only exposure**: this field is NOT
+    /// on `UserDto` — putting it there would leak adoption status
+    /// through every user-directory-adjacent endpoint (share targets,
+    /// group members, invite listings). `#[serde(default)]` keeps
+    /// older SPA builds tolerant of the added field.
+    #[serde(default)]
+    pub opaque_registered: bool,
+    /// Mirrors `UserListEntry::opaque_migrated` — TRUE when the user
+    /// has completed at least one successful OPAQUE login. Distinct
+    /// from `opaque_registered`: an admin can invalidate the envelope
+    /// (`clear_registration`) leaving the user registered=false but
+    /// with a historical migrated=true; the SPA's admin table shows
+    /// both so this operational nuance is visible.
+    #[serde(default)]
+    pub opaque_migrated: bool,
 }
 
 impl From<UserListEntry> for AdminUserSummaryDto {
@@ -108,6 +173,9 @@ impl From<UserListEntry> for AdminUserSummaryDto {
             active: entry.active,
             auth_provider: entry.oidc_provider.unwrap_or_else(|| "local".to_string()),
             is_external: entry.is_external,
+            has_password: entry.has_password,
+            opaque_registered: entry.opaque_registered,
+            opaque_migrated: entry.opaque_migrated,
         }
     }
 }
@@ -122,6 +190,11 @@ impl From<User> for UserDto {
         // entity before the move.
         let role = format!("{}", user.role());
         let can_edit_image = !user.is_oidc_user();
+        // has_password is derivable from the entity — read before the
+        // move. Cheap (bool from Option::is_some), no extra DB round-
+        // trip, so From<User> can populate it uniformly rather than
+        // leaving it false and requiring per-call-site backfill.
+        let has_password = user.has_password();
         let p = user.into_parts();
         Self {
             id: p.id.to_string(),
@@ -145,6 +218,14 @@ impl From<User> for UserDto {
             preferred_locale: p.preferred_locale,
             notify_on_share: p.notify_on_share,
             ui_preferences: p.ui_preferences,
+            // Defaults to false. The `/me` handler + the login-response
+            // minter populate this via a distinct code path (a
+            // repo read that goes through the auth service's cache);
+            // admin listings and other UserDto consumers deliberately
+            // leave it false — the flag is per-session-account state,
+            // not a general user attribute.
+            force_password_change: false,
+            has_password,
         }
     }
 }
@@ -267,6 +348,23 @@ pub struct AuthResponseDto {
     pub refresh_token: String,
     pub token_type: String,
     pub expires_in: i64,
+    /// When `true`, the caller must be routed to the change-password
+    /// flow before any other action. Set on the login response for
+    /// users whose `auth.users.force_password_change_at_next_login`
+    /// column is TRUE — the admin password-reset flow flips that
+    /// column atomically alongside `clear_registration` so admin-set
+    /// passwords remain temporary until the user picks their own.
+    /// Cleared by a successful `POST /api/auth/change-password`.
+    ///
+    /// SPA policy: if this is `true`, redirect to `/settings/password`
+    /// (or the equivalent) immediately after the login handler settles.
+    /// Backend does not gate any endpoints on this flag — it's a
+    /// soft-enforcement signal; a client that ignores it keeps its
+    /// session, but the responsibility falls on the SPA to route
+    /// correctly. Backend enforcement (session scope claim) is a
+    /// possible follow-up if the soft path proves insufficient.
+    #[serde(default)]
+    pub force_password_change: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

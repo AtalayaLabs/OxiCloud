@@ -163,7 +163,21 @@
 			}
 			session.setUser(data.user);
 			postRegisterNotice = null;
-			await goto(resolve(redirectTarget), { replaceState: true });
+			// When the backend flags `force_password_change` the user's
+			// current credential is an admin-set temporary password;
+			// route them to the profile page (`?forcePasswordChange=1`
+			// lights up an in-page banner) instead of the requested
+			// destination. The redirect target is preserved as `next`
+			// so the profile flow can bounce back after they pick a
+			// real password.
+			if (data.force_password_change) {
+				const next = encodeURIComponent(redirectTarget);
+				await goto(resolve(`/profile?forcePasswordChange=1&next=${next}`), {
+					replaceState: true
+				});
+			} else {
+				await goto(resolve(redirectTarget), { replaceState: true });
+			}
 		} catch (err) {
 			if (err instanceof ApiError && err.errorType === 'EmailNotVerified') {
 				// Server auto-sent a verification magic-link on the

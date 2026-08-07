@@ -216,11 +216,40 @@ export interface User {
 	 * delete it from the bag.
 	 */
 	ui_preferences: Record<string, unknown>;
+	/**
+	 * Mirrors `auth.users.force_password_change_at_next_login`. Only
+	 * populated by `GET /api/auth/me` (see the backend UserDto doc for
+	 * why other UserDto call-sites default to false). When true, the
+	 * SPA MUST lock navigation to the password-change surface — the
+	 * root layout's guard + the backend's `require_no_password_change_pending`
+	 * middleware together enforce this. Optional on the wire because
+	 * older backend builds omit it and `#[serde(default)]` maps
+	 * missing → `false`.
+	 */
+	force_password_change?: boolean;
+	/**
+	 * TRUE when the account has a local Argon2id `password_hash` on
+	 * file. Distinct from `auth_provider`: an SSO-linked account can
+	 * ALSO carry a local password (hybrid posture — SSO for daily
+	 * login, local password as fallback). The profile page's
+	 * change-password card gates on this flag rather than on
+	 * `auth_provider === 'local'` so hybrid users can rotate their
+	 * local credential. Optional on the wire for older-backend
+	 * compatibility; missing → `false` (safe default: hide the card).
+	 */
+	has_password?: boolean;
 }
 
 /** Fields rendered by the paginated admin table. Full account details remain
  * available from the detail endpoint; this shape keeps avatars and preference
- * documents off every listing page. */
+ * documents off every listing page.
+ *
+ * The two OPAQUE flags below are ADMIN-ONLY signals: they surface per-user
+ * OPAQUE rollout progress in the admin table. The backend deliberately keeps
+ * them off `UserDto` (`/api/auth/me`, share-recipient DTOs, group members)
+ * so a non-admin can't enumerate the adoption set through third-party
+ * endpoints. Both optional on the wire — older backend builds omit them and
+ * `#[serde(default)]` maps missing → `false`. */
 export type AdminUserSummary = Pick<
 	User,
 	| 'id'
@@ -233,7 +262,24 @@ export type AdminUserSummary = Pick<
 	| 'active'
 	| 'auth_provider'
 	| 'is_external'
->;
+> & {
+	/** TRUE = user has a server-verifiable password on file (legacy or
+	 * admin-set). Combined with `opaque_registered` and `auth_provider`,
+	 * the admin table derives the full auth capability set — a user with
+	 * `has_password=false`, `opaque_registered=false` AND
+	 * `auth_provider === 'local'` is passwordless (magic-link only,
+	 * which is the default for externals). */
+	has_password?: boolean;
+	/** TRUE = user has an OPAQUE envelope on file (Phase 2 silent migration
+	 * succeeded, or the user completed a manual re-registration). */
+	opaque_registered?: boolean;
+	/** TRUE = user has completed at least one successful OPAQUE login.
+	 * Distinct from `opaque_registered` — the envelope may have been
+	 * cleared by an admin reset while a stale migrated=true remains as
+	 * historical signal (backend clears both atomically today, but the
+	 * two-flag shape keeps the option open for a future policy split). */
+	opaque_migrated?: boolean;
+};
 
 export interface AdminUsersPage {
 	total: number;
@@ -246,6 +292,21 @@ export interface AuthResponse {
 	refresh_token: string;
 	token_type: string;
 	expires_in: number;
+	/**
+	 * Mirrors `auth.users.force_password_change_at_next_login` — set
+	 * TRUE by the admin password-reset flow (see backend
+	 * `OpaquePgRepository::clear_registration`) so admin-picked
+	 * passwords stay temporary until the user changes them. When true,
+	 * the SPA's post-login handler must route to `/settings/security`
+	 * (or the equivalent change-password surface) instead of the
+	 * user's home. Cleared server-side by a successful
+	 * `POST /api/auth/change-password`.
+	 *
+	 * Optional on the wire because the backend `#[serde(default)]`s
+	 * to `false` — older clients / non-login endpoints hitting this
+	 * type won't nil-deref.
+	 */
+	force_password_change?: boolean;
 }
 
 /**

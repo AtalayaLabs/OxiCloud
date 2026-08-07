@@ -776,6 +776,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         let auth_public = auth_public_routes().with_state(app_state.clone());
         // Protected auth routes (/me, /change-password, /logout) — require auth + CSRF
         let auth_protected = auth_protected_routes()
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                require_no_password_change_pending_layer,
+            ))
             .layer(axum::middleware::from_fn(csrf_middleware))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
@@ -784,12 +788,51 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .with_state(app_state.clone());
         // App password management routes — require auth + CSRF
         let app_pw_protected = app_password_handler::app_password_routes()
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                require_no_password_change_pending_layer,
+            ))
             .layer(axum::middleware::from_fn(csrf_middleware))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 auth_middleware,
             ))
             .with_state(app_state.clone());
+        // OPAQUE aPAKE routes — nested under DISTINCT sub-prefixes
+        // so axum doesn't cross-apply middleware between the two
+        // branches (`.nest("/api/auth", A).nest("/api/auth", B)`
+        // composes their layers on shared prefixes; distinct
+        // prefixes avoid that entirely).
+        //
+        // Handlers return 503 `OpaqueDisabled` when the substrate
+        // isn't wired (mode=off / password auth disabled); the mode
+        // gate lives in the DI factory, so mounting unconditionally
+        // is safe.
+        let opaque_register_protected =
+            oxicloud::interfaces::api::handlers::opaque_auth_handler::opaque_register_routes()
+                .layer(axum::middleware::from_fn_with_state(
+                    app_state.clone(),
+                    require_no_password_change_pending_layer,
+                ))
+                .layer(axum::middleware::from_fn(csrf_middleware))
+                .layer(axum::middleware::from_fn_with_state(
+                    app_state.clone(),
+                    auth_middleware,
+                ))
+                .with_state(app_state.clone());
+        let opaque_login_public =
+            oxicloud::interfaces::api::handlers::opaque_auth_handler::opaque_login_routes()
+                .layer(axum::middleware::from_fn_with_state(
+                    login_limiter.clone(),
+                    rate_limit_login,
+                ))
+                .with_state(app_state.clone());
+        // OPAQUE aPAKE — public params (KSF + ciphersuite) — GET,
+        // no rate limit, SPA fetches once at page load. Distinct
+        // mount so no login limiter attaches to a non-login read.
+        let opaque_params_public =
+            oxicloud::interfaces::api::handlers::opaque_auth_handler::opaque_params_routes()
+                .with_state(app_state.clone());
         // One-time setup route — public, rate-limited like register
         let setup_router = setup_route()
             .layer(axum::middleware::from_fn_with_state(
@@ -804,6 +847,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             device_auth_handler::device_auth_public_routes().with_state(app_state.clone());
         // Protected endpoints: /api/auth/device/verify, /api/auth/device/devices
         let device_protected = device_auth_handler::device_auth_protected_routes()
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                require_no_password_change_pending_layer,
+            ))
             .layer(axum::middleware::from_fn(csrf_middleware))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
@@ -813,6 +860,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         // Protected API routes — require valid JWT token
         let protected_api = api_routes
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                require_no_password_change_pending_layer,
+            ))
             .layer(axum::middleware::from_fn(csrf_middleware))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
@@ -826,8 +877,22 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         // surface to a principal kind that can do nothing with it. The
         // `require_internal_user_layer` runs AFTER auth (tower order:
         // later .layer() = outermost = runs first).
-        use oxicloud::interfaces::middleware::user::require_internal_user_layer;
+        //
+        // `require_no_password_change_pending_layer` is layered on
+        // every authenticated /api/* subtree so an admin-set temp
+        // password cannot be used against files / WebDAV / CalDAV /
+        // admin from any non-SPA client. The layer allowlists /me,
+        // change-password, and logout internally so the SPA can
+        // complete the reset flow — see the middleware doc for the
+        // allowlist and its rationale.
+        use oxicloud::interfaces::middleware::user::{
+            require_internal_user_layer, require_no_password_change_pending_layer,
+        };
         let caldav_protected = caldav_router
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                require_no_password_change_pending_layer,
+            ))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 require_internal_user_layer,
@@ -839,6 +904,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         let carddav_protected = carddav_router
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
+                require_no_password_change_pending_layer,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
                 require_internal_user_layer,
             ))
             .layer(axum::middleware::from_fn_with_state(
@@ -846,6 +915,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 auth_middleware,
             ));
         let webdav_protected = webdav_router
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                require_no_password_change_pending_layer,
+            ))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 require_internal_user_layer,
@@ -895,6 +968,26 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .nest(
                 "/api/auth",
                 app_pw_protected.layer(access_log!("http::api::auth")),
+            )
+            // OPAQUE aPAKE — session-required register endpoints
+            // (mounted under a distinct sub-prefix so auth+CSRF
+            // don't bleed into the sibling login mount).
+            .nest(
+                "/api/auth/opaque/register",
+                opaque_register_protected.layer(access_log!("http::api::auth")),
+            )
+            // OPAQUE aPAKE — public login endpoints (KE1 + KE3).
+            // Rate-limit shared with legacy login above.
+            .nest(
+                "/api/auth/opaque/login",
+                opaque_login_public.layer(access_log!("http::api::auth")),
+            )
+            // OPAQUE aPAKE — public params publish. No rate limit
+            // (static config read); distinct sub-prefix from login
+            // for the same middleware-composition reason.
+            .nest(
+                "/api/auth/opaque",
+                opaque_params_public.layer(access_log!("http::api::auth")),
             )
             // One-time setup endpoint — public, rate-limited
             .nest("/api", setup_router.layer(access_log!("http::api")))

@@ -1,7 +1,12 @@
 <script lang="ts">
 	import { errorToast } from '$lib/utils/errors';
 	import { relativeTimeAgo } from '$lib/utils/time';
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
+	import { goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
+	import type { Pathname } from '$app/types';
+	import { page } from '$app/state';
+	import { ApiError } from '$lib/api/client';
 	import {
 		changePassword,
 		createAppPassword,
@@ -13,7 +18,7 @@
 		type AppPassword,
 		type ProfilePatch
 	} from '$lib/api/endpoints/profile';
-	import { getOidcProviders } from '$lib/api/endpoints/auth';
+	import { fetchMe, getOidcProviders } from '$lib/api/endpoints/auth';
 	import { SUPPORTED_LOCALES, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
 	import { confirmDialog } from '$lib/stores/dialogs.svelte';
@@ -66,7 +71,48 @@
 	const usernameClaimed = $derived(!!session.user?.username);
 	const isAdmin = $derived(session.user?.role === 'admin');
 	const canEditImage = $derived(session.user?.can_edit_image === true && isLocal);
-	const showPasswordCard = $derived(isLocal && passwordLoginEnabled);
+	// Show the change-password card when the user CAN change their
+	// local password: they have `password_hash` on file AND the
+	// deployment offers password login (backend `change_password`
+	// refuses on either count — see `AuthApplicationService::change_password`).
+	// Distinct from the OLD `isLocal && passwordLoginEnabled` gate,
+	// which refused any SSO-linked account regardless of whether they
+	// carried a local password. Hybrid accounts (OIDC + local
+	// password) are a legitimate posture and MUST be able to rotate
+	// their local credential; the new gate lets them, and the backend
+	// refusal covers the pure-SSO case where has_password is false.
+	const showPasswordCard = $derived((session.user?.has_password ?? false) && passwordLoginEnabled);
+
+	/**
+	 * Mandatory change-password mode. TRUE when the backend has
+	 * flagged the account (`session.mustChangePassword`) OR the URL
+	 * carries `?forcePasswordChange=1` (arrived here from the login
+	 * form / layout guard). Either signal locks the page into a
+	 * single-purpose form: banner + password card only, other cards
+	 * hidden. The URL param is a belt-and-braces alongside the store
+	 * — a stale-tab session that lost the flag momentarily still
+	 * shows the mandatory UI if the URL says so, and the layout guard
+	 * will bounce a non-flagged user back off `/profile` naturally.
+	 */
+	const forceModeQueryParam = $derived(page.url.searchParams.get('forcePasswordChange') === '1');
+	const mandatoryMode = $derived(session.mustChangePassword || forceModeQueryParam);
+	/**
+	 * Destination to bounce back to after a successful change. Only
+	 * consulted in mandatory mode; caller-supplied via `?next=<encoded>`
+	 * (added by the layout guard). Falls back to `/files` — the
+	 * standard SPA landing point — when absent or when the value
+	 * isn't a same-origin path (`startsWith('/')`).
+	 */
+	const nextAfterChange = $derived.by(() => {
+		const raw = page.url.searchParams.get('next');
+		if (!raw) return '/files';
+		try {
+			const decoded = decodeURIComponent(raw);
+			return decoded.startsWith('/') ? decoded : '/files';
+		} catch {
+			return '/files';
+		}
+	});
 
 	const storagePct = $derived(
 		session.user && session.user.storage_quota_bytes > 0
@@ -161,17 +207,71 @@
 			);
 			return;
 		}
+		if (newPw === currentPw) {
+			// Fast client-side reject — the backend also enforces this
+			// (400 `PasswordUnchanged`) but the SPA can save the round-
+			// trip. Load-bearing in mandatory mode: silently accepting
+			// same-as-current would clear the force flag without a real
+			// rotation, defeating the "temporary password" pattern.
+			ui.notify(
+				t('profile.password_unchanged', 'New password must differ from the current one.'),
+				'error'
+			);
+			return;
+		}
 		savingPassword = true;
 		try {
 			await changePassword(currentPw, newPw);
 			currentPw = newPw = confirmPw = '';
 			ui.notify(t('profile.password_updated', 'Password updated'), 'success');
+
+			// If we're in mandatory mode, the backend just cleared the
+			// force flag AND revoked all sessions. Refresh the session
+			// so the layout guard lifts, then bounce to the intended
+			// destination the layout captured on entry. Refresh order
+			// matters: goto() before the session refresh would race
+			// the layout's `mustChangePassword` derived and re-redirect
+			// us right back to /profile.
+			if (mandatoryMode) {
+				try {
+					const me = await fetchMe();
+					if (me) session.setUser(me);
+				} catch {
+					/* stale session state is recoverable — the next request refreshes it */
+				}
+				await goto(resolve(nextAfterChange as Pathname), { replaceState: true });
+			}
 		} catch (err) {
-			errorToast(err);
+			// Remap the backend's `PasswordUnchanged` error_type to a
+			// specific, translatable message — the generic errorToast
+			// would show the raw server string. Every other error
+			// path still flows through errorToast.
+			if (err instanceof ApiError && err.errorType === 'PasswordUnchanged') {
+				ui.notify(
+					t('profile.password_unchanged', 'New password must differ from the current one.'),
+					'error'
+				);
+			} else {
+				errorToast(err);
+			}
 		} finally {
 			savingPassword = false;
 		}
 	}
+
+	// In mandatory mode, focus the current-password input as soon as
+	// the DOM is ready so the user can type without scrolling / clicking
+	// around to find the form. `tick()` waits for the reactive render;
+	// the null-check tolerates the (rare) case where the form isn't
+	// mounted yet on first paint.
+	onMount(async () => {
+		if (!mandatoryMode) return;
+		await tick();
+		const el = document.querySelector<HTMLInputElement>(
+			'[data-testid="profile-current-password-input"]'
+		);
+		el?.focus();
+	});
 
 	// ── Avatar edit panel ──────────────────────────────────────────────────
 	function openAvatarEdit() {
@@ -304,8 +404,40 @@
 
 <svelte:head><title>{t('nav.profile', 'Profile')} · OxiCloud</title></svelte:head>
 
-<main class="profile">
+<main class="profile" class:profile--mandatory={mandatoryMode}>
 	<h1>{t('nav.profile', 'Profile')}</h1>
+
+	{#if mandatoryMode}
+		<!--
+			Mandatory-mode banner. Rendered above every other section
+			whenever `session.mustChangePassword` is TRUE or the URL
+			carries `?forcePasswordChange=1`. Explains WHY the user
+			landed here (an admin picked a temporary password) and
+			what they need to do (rotate before continuing). Backend
+			also refuses every non-allowlisted endpoint with 403
+			PasswordChangeRequired — so a user who dismisses the
+			banner via URL manipulation still can't reach any file /
+			DAV / admin endpoint until the change lands.
+		-->
+		<div
+			class="mandatory-banner"
+			role="alert"
+			data-testid="profile-mandatory-change-password-banner"
+		>
+			<Icon name="shield-alt" />
+			<div class="mandatory-banner__body">
+				<strong>
+					{t('profile.mandatory_change_title', 'Please change your password to continue.')}
+				</strong>
+				<p>
+					{t(
+						'profile.mandatory_change_body',
+						'An administrator has set a temporary password for your account. Choose your own password below before you can access the rest of the application.'
+					)}
+				</p>
+			</div>
+		</div>
+	{/if}
 
 	{#if session.user}
 		<!-- Avatar / identity -->
@@ -738,7 +870,7 @@
 
 		<!-- Change password -->
 		{#if showPasswordCard}
-			<form class="card" data-testid="profile-password-form" onsubmit={savePassword}>
+			<form class="card password-card" data-testid="profile-password-form" onsubmit={savePassword}>
 				<h2><Icon name="key" /> {t('profile.change_password', 'Change Password')}</h2>
 				<label>
 					<span>{t('profile.current_password', 'Current Password')}</span>
@@ -798,6 +930,40 @@
 		background: var(--color-bg-surface);
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-lg);
+	}
+
+	/*
+	 * Mandatory-mode: hide every card except the identity header
+	 * (`.avatar-card` keeps context — who am I?) and the password
+	 * form. Backend blocks non-allowlisted endpoints with 403 anyway;
+	 * this is the UX side of that lock so the user sees exactly one
+	 * form to fill in. Ergonomically loud banner + a single card.
+	 */
+	.profile--mandatory :global(.card):not(.avatar-card, .password-card) {
+		display: none;
+	}
+
+	.mandatory-banner {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.75rem;
+		padding: 1rem 1.25rem;
+		background: var(--color-bg-warning-subtle, var(--color-bg-surface));
+		border: 1px solid var(--color-border-warning, var(--color-border));
+		border-left: 4px solid var(--color-accent-warning, var(--color-accent));
+		border-radius: var(--radius-md, var(--radius-lg));
+		color: var(--color-text);
+	}
+
+	.mandatory-banner__body strong {
+		display: block;
+		margin-bottom: 0.25rem;
+	}
+
+	.mandatory-banner__body p {
+		margin: 0;
+		font-size: 0.9rem;
+		color: var(--color-text-muted);
 	}
 
 	.card h2 {

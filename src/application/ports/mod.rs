@@ -18,6 +18,7 @@ pub mod file_ports;
 pub mod folder_ports;
 pub mod inbound;
 pub mod music_ports;
+pub mod opaque_ports;
 pub mod outbound;
 pub mod plugin_ports;
 pub mod recent_ports;

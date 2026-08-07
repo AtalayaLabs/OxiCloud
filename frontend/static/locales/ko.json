@@ -36,6 +36,12 @@
         "subject": "{{inviter}}님이 OxiCloud에서 {{kind}}을(를) 공유했습니다",
         "body": "{{inviter_full}}님이 OxiCloud에서 {{kind}}을(를) 공유했습니다.\n\n새 공유 항목을 확인하려면 OxiCloud를 여세요:\n{{login_link}}\n\n{{inviter}}님이 추가로 공유한 항목이 있을 수 있습니다 — 로그인하여 공유받은 모든 항목을 확인하세요.\n\n— OxiCloud\n\nOxiCloud 계정이 있고 공유 알림 기본 설정이 켜져 있어 이 메시지를 받았습니다. 프로필에서 끌 수 있습니다(다른 사람이 나에게 공유할 때 이메일로 알림 받기)."
       }
+    },
+    "security": {
+      "password_changed": {
+        "subject": "OxiCloud 비밀번호가 변경되었습니다",
+        "body": "안녕하세요,\n\n귀하의 OxiCloud 비밀번호가 방금 {{timestamp}} (UTC)에 IP 주소 {{ip}}에서 변경되었습니다.\n\n본인이 변경한 것이라면 별도의 조치가 필요하지 않습니다 — 이 메시지를 무시하셔도 됩니다.\n\n본인이 변경한 것이 아니라면 즉시 관리자에게 연락하십시오. 누군가 귀하의 계정에 접근했을 수 있습니다.\n\n— OxiCloud"
+      }
     }
   },
   "server_status": {

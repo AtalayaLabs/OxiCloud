@@ -38,6 +38,15 @@ pub struct UserFlags {
     pub role: UserRole,
     pub is_external: bool,
     pub active: bool,
+    /// Mirrors `auth.users.force_password_change_at_next_login`. TRUE
+    /// after an admin password-reset; the `require_no_password_change_pending`
+    /// middleware refuses every authenticated endpoint except the
+    /// change-password / me / logout / refresh allowlist while it's set.
+    /// Cached alongside the other flags so per-request enforcement
+    /// doesn't add a DB round-trip. Eagerly invalidated by
+    /// `admin_reset_password` (flip to TRUE) and `change_password`
+    /// (flip to FALSE) so the gate lifts within one round-trip.
+    pub force_password_change: bool,
 }
 
 #[derive(Debug, Clone)]

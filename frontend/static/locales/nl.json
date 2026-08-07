@@ -36,6 +36,12 @@
         "subject": "{{inviter}} heeft een {{kind}} met je gedeeld op OxiCloud",
         "body": "{{inviter_full}} heeft een {{kind}} met je gedeeld op OxiCloud.\n\nOpen OxiCloud om je nieuwe gedeelde item te bekijken:\n{{login_link}}\n\nMisschien heb je nog meer nieuwe gedeelde items van {{inviter}} — meld je aan om al je gedeelde items te zien.\n\n— OxiCloud\n\nJe ontvangt dit bericht omdat je een OxiCloud-account hebt en je voorkeur voor deelmeldingen aanstaat. Je kunt het uitzetten in je profiel (Stuur me een e-mail wanneer iemand iets met mij deelt)."
       }
+    },
+    "security": {
+      "password_changed": {
+        "subject": "Uw OxiCloud-wachtwoord is gewijzigd",
+        "body": "Hallo,\n\nUw OxiCloud-wachtwoord is zojuist gewijzigd op {{timestamp}} (UTC) vanaf IP-adres {{ip}}.\n\nAls u dit was, is er geen actie nodig — u kunt dit bericht negeren.\n\nAls u dit NIET was, neem dan onmiddellijk contact op met uw beheerder. Iemand kan toegang hebben verkregen tot uw account.\n\n— OxiCloud"
+      }
     }
   },
   "server_status": {

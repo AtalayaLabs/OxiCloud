@@ -65,6 +65,14 @@ export default defineConfig({
       // Enable the WASM plugin runtime so the admin Plugins tab is exercisable
       // (the suite installs the example hello plugin fixture).
       OXICLOUD_ENABLE_PLUGINS: 'true',
+      // Explicitly disable OPAQUE for the SPA coverage suite. The Hurl API
+      // suite (tests/common/server.env) exercises the OPAQUE substrate; this
+      // suite is scoped to SPA UI coverage and doesn't need the ~200 KiB
+      // WASM bundle nor the boot-time substrate init. Blank the two OPAQUE
+      // env vars inherited from commonEnv so the DI factory takes the
+      // `effective_mode == Off` short-circuit path.
+      OXICLOUD_AUTH_OPAQUE_MODE: 'off',
+      OXICLOUD_AUTH_OPAQUE_SERVER_SETUP: '',
     },
   },
 });

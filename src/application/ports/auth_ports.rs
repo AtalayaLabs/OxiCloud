@@ -363,6 +363,16 @@ pub trait SessionStoragePort: Send + Sync + 'static {
     /// Revokes all sessions of a user
     async fn revoke_all_user_sessions(&self, user_id: Uuid) -> Result<u64, DomainError>;
 
+    /// Revokes every session of a user EXCEPT `keep_session_id`.
+    /// Classic "password change" pattern: kills OTHER devices' sessions
+    /// while keeping the caller's current session alive so the SPA can
+    /// complete follow-up work without a session-death race.
+    async fn revoke_other_user_sessions(
+        &self,
+        user_id: Uuid,
+        keep_session_id: Uuid,
+    ) -> Result<u64, DomainError>;
+
     /// Revokes all sessions in a token family (used when replay of a revoked token is detected)
     async fn revoke_session_family(&self, family_id: Uuid) -> Result<u64, DomainError>;
 
