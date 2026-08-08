@@ -1,4 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// vi.mock runs BEFORE all imports; vi.hoisted gives us a shared
+// binding that both the mock factory and per-test setup can mutate.
+// Reset in each test's beforeEach so tests don't leak state.
+const dpopState = vi.hoisted(() => ({ proof: 'proof.value.here' as string | null }));
+vi.mock('$lib/auth/dpop-proof', async () => {
+	const actual =
+		await vi.importActual<typeof import('$lib/auth/dpop-proof')>('$lib/auth/dpop-proof');
+	return {
+		...actual,
+		buildDpopProof: vi.fn(async () => dpopState.proof)
+	};
+});
+
 import { createApiFetch } from './client';
 
 const ORIGIN = 'https://cloud.example';
@@ -126,6 +140,104 @@ describe('createApiFetch — 401 refresh/retry parity', () => {
 		expect(res.status).toBe(200);
 		expect(await res.json()).toEqual({ id: 'u1' });
 		expect(rawFetch).toHaveBeenCalledTimes(3);
+	});
+});
+
+describe('createApiFetch — DPoP header injection + nonce challenge', () => {
+	beforeEach(() => {
+		dpopState.proof = 'proof.value.here';
+	});
+
+	it('attaches a DPoP header on same-origin requests', async () => {
+		const rawFetch = vi.fn().mockResolvedValue(jsonResponse(200, {}));
+		const apiFetch = createApiFetch({
+			rawFetch,
+			onSessionExpired: () => {},
+			origin: ORIGIN
+		});
+
+		await apiFetch(`${ORIGIN}/api/files`);
+		const [, init] = rawFetch.mock.calls[0];
+		const hdrs = new Headers((init as RequestInit)?.headers ?? {});
+		expect(hdrs.get('DPoP')).toBe('proof.value.here');
+	});
+
+	it('does NOT attach a DPoP header on cross-origin requests', async () => {
+		const rawFetch = vi.fn().mockResolvedValue(jsonResponse(200, {}));
+		const apiFetch = createApiFetch({
+			rawFetch,
+			onSessionExpired: () => {},
+			origin: ORIGIN
+		});
+
+		await apiFetch('https://third-party.example/api/thing');
+		const [, init] = rawFetch.mock.calls[0];
+		const hdrs = new Headers((init as RequestInit)?.headers ?? {});
+		expect(hdrs.get('DPoP')).toBeNull();
+	});
+
+	it('skips the DPoP header when the keypair is unavailable (fail-open)', async () => {
+		dpopState.proof = null;
+		const rawFetch = vi.fn().mockResolvedValue(jsonResponse(200, {}));
+		const apiFetch = createApiFetch({
+			rawFetch,
+			onSessionExpired: () => {},
+			origin: ORIGIN
+		});
+
+		const res = await apiFetch(`${ORIGIN}/api/files`);
+		expect(res.status).toBe(200);
+		const [, init] = rawFetch.mock.calls[0];
+		const hdrs = new Headers((init as RequestInit)?.headers ?? {});
+		expect(hdrs.get('DPoP')).toBeNull();
+	});
+
+	it('retries once on a use_dpop_nonce challenge (harvests nonce, rebuilds proof)', async () => {
+		const challenge = new Response(null, {
+			status: 401,
+			headers: {
+				'WWW-Authenticate': 'DPoP error="use_dpop_nonce"',
+				'DPoP-Nonce': 'srv-fresh'
+			}
+		});
+		const rawFetch = vi
+			.fn()
+			.mockResolvedValueOnce(challenge)
+			.mockResolvedValueOnce(jsonResponse(200, { ok: true }));
+		const apiFetch = createApiFetch({
+			rawFetch,
+			onSessionExpired: () => {},
+			origin: ORIGIN
+		});
+
+		const res = await apiFetch(`${ORIGIN}/api/files`);
+		expect(res.status).toBe(200);
+		expect(rawFetch).toHaveBeenCalledTimes(2); // original + one retry
+	});
+
+	it('does not loop when the retry ALSO returns use_dpop_nonce', async () => {
+		// Use an auth-primitive path so the outer 401-refresh path is
+		// bypassed — this test is scoped to the DPoP inner retry
+		// only. `mockResolvedValue` (not `Once`) so we can COUNT how
+		// many times the interceptor called through — it must be
+		// exactly 2 (original + one retry), never 3.
+		const challenge = new Response(null, {
+			status: 401,
+			headers: {
+				'WWW-Authenticate': 'DPoP error="use_dpop_nonce"',
+				'DPoP-Nonce': 'srv-fresh'
+			}
+		});
+		const rawFetch = vi.fn().mockResolvedValue(challenge);
+		const apiFetch = createApiFetch({
+			rawFetch,
+			onSessionExpired: () => {},
+			origin: ORIGIN
+		});
+
+		const res = await apiFetch(`${ORIGIN}/api/auth/login`);
+		expect(res.status).toBe(401);
+		expect(rawFetch).toHaveBeenCalledTimes(2);
 	});
 });
 

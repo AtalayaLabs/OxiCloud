@@ -19,6 +19,11 @@
 
 import { getCsrfHeaders } from './csrf';
 import { updateFromHeader } from '$lib/stores/serverStatus.svelte';
+import {
+	buildDpopProof,
+	isDpopNonceChallenge,
+	updateNonceFromResponse
+} from '$lib/auth/dpop-proof';
 
 /**
  * Name of the response header the server stamps while a
@@ -94,7 +99,7 @@ export function createApiFetch(deps: ApiClientDeps): FetchFn {
 		if (refreshInFlight) return refreshInFlight;
 		refreshInFlight = (async () => {
 			try {
-				const r = await rawFetch(REFRESH_ENDPOINT, {
+				const r = await dpopFetch(REFRESH_ENDPOINT, {
 					method: 'POST',
 					credentials: 'same-origin',
 					headers: { 'Content-Type': 'application/json', ...getCsrfHeaders() },
@@ -110,9 +115,56 @@ export function createApiFetch(deps: ApiClientDeps): FetchFn {
 		return refreshInFlight;
 	}
 
+	/**
+	 * Wrap the raw fetch with DPoP proof injection + nonce challenge/retry.
+	 *
+	 *   1. Build proof for the request's method + canonical URL (no query).
+	 *   2. Attach as `DPoP` header. Fail-open if the keypair is unavailable
+	 *      (browser without SubtleCrypto / IndexedDB) — we simply skip the
+	 *      header and let the request go through unbound; server-side
+	 *      middleware exempts unbound sessions.
+	 *   3. After response, harvest a fresh `DPoP-Nonce` if the server sent
+	 *      one, so the NEXT request has the current nonce.
+	 *   4. If the response is a nonce challenge (`401 use_dpop_nonce`),
+	 *      REBUILD the proof with the just-received nonce and retry ONCE.
+	 *      A second challenge on the retry is a bug — surface it as a real
+	 *      401 rather than looping.
+	 *
+	 * Cross-origin requests skip DPoP entirely (privacy — don't leak the
+	 * user's public key to third parties). Request bodies are consumed at
+	 * most once during retry: `init.body` is passed by reference, and the
+	 * only mutating step is `Headers`; a caller-supplied `ReadableStream`
+	 * body would need `duplex: 'half'`, which they'd already have to opt
+	 * into for cross-origin CORS anyway.
+	 */
+	async function dpopFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+		const origin = deps.origin ?? globalThis.location?.origin ?? 'http://localhost';
+		const urlStr = urlString(input as RequestInfo | URL);
+		if (isCrossOrigin(urlStr, origin)) return rawFetch(input, init);
+
+		const method = init?.method ?? 'GET';
+		const withProof = async (): Promise<Response> => {
+			const proof = await buildDpopProof(method, urlStr);
+			const initWithProof: RequestInit = proof
+				? { ...init, headers: mergeHeader(init?.headers, 'DPoP', proof) }
+				: (init ?? {});
+			const res = await rawFetch(input, initWithProof);
+			updateNonceFromResponse(res);
+			return res;
+		};
+
+		const first = await withProof();
+		if (!isDpopNonceChallenge(first)) return first;
+		// `updateNonceFromResponse` already stored the fresh nonce
+		// carried on this 401; the next `buildDpopProof` will pick it
+		// up. If the RETRY also produces `use_dpop_nonce`, surface it
+		// — infinite retry would mask a server-side nonce bug.
+		return withProof();
+	}
+
 	const apiFetch: FetchFn = async (input, init) => {
 		const origin = deps.origin ?? globalThis.location?.origin ?? 'http://localhost';
-		const response = await rawFetch(input, init);
+		const response = await dpopFetch(input, init);
 		// Server-status header piggyback — the server stamps
 		// `x-server-status` on every response while a maintenance
 		// event is in progress (see middleware::server_status). Read
@@ -168,12 +220,27 @@ export function createApiFetch(deps: ApiClientDeps): FetchFn {
 			}
 			throw new Error('Session expired');
 		}
-		const retryResponse = await rawFetch(input, init);
+		// Retry through dpopFetch (not rawFetch directly) so the
+		// post-refresh request also carries a valid DPoP proof —
+		// otherwise a session bound to a keypair would 401 again on
+		// the retry with `dpop_missing`.
+		const retryResponse = await dpopFetch(input, init);
 		updateFromHeader(retryResponse.headers.get(SERVER_STATUS_HEADER));
 		return retryResponse;
 	};
 
 	return apiFetch;
+}
+
+/**
+ * Merge a single header into an existing `HeadersInit` (`Headers`, plain
+ * object, or array-of-pairs), returning a fresh `Headers` so the caller's
+ * init isn't mutated. Preserves case-insensitivity via the `Headers` API.
+ */
+function mergeHeader(base: HeadersInit | undefined, name: string, value: string): Headers {
+	const merged = new Headers(base ?? {});
+	merged.set(name, value);
+	return merged;
 }
 
 // ── Default singleton ──────────────────────────────────────────────────────
