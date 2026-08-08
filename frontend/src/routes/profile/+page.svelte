@@ -502,7 +502,8 @@
 		}
 	}
 
-	async function onConnectSso() {
+	async function onConnectSso(e: SubmitEvent) {
+		e.preventDefault();
 		ssoBusy = true;
 		try {
 			const url = await startOidcLink();
@@ -517,7 +518,8 @@
 		}
 	}
 
-	async function onDisconnectSso() {
+	async function onDisconnectSso(e: SubmitEvent) {
+		e.preventDefault();
 		const ok = await confirmDialog({
 			title: t('profile.sso_disconnect_confirm_title', 'Disconnect Single Sign-On?'),
 			message: t(
@@ -1069,8 +1071,8 @@
 			email-match on link, no-alternative-auth refusal on unlink.
 		-->
 		{#if canConnectSso}
-			<section class="card sso-card" data-testid="profile-sso-connect-card">
-				<h2><Icon name="key" /> {t('profile.sso_connect_title', 'Connect Single Sign-On')}</h2>
+			<form class="card sso-card" data-testid="profile-sso-connect-card" onsubmit={onConnectSso}>
+				<h2><Icon name="link" /> {t('profile.sso_connect_title', 'Connect Single Sign-On')}</h2>
 				<p>
 					{t(
 						'profile.sso_connect_description',
@@ -1078,22 +1080,21 @@
 						'Link your account to {{provider}} so you can sign in with SSO instead of your password.'
 					)}
 				</p>
-				<button
-					type="button"
-					data-testid="profile-sso-connect-btn"
-					onclick={onConnectSso}
-					disabled={ssoBusy}
-				>
+				<button type="submit" data-testid="profile-sso-connect-btn" disabled={ssoBusy}>
 					{t(
 						'profile.sso_connect_button',
 						{ provider: oidcProviderName },
 						'Connect with {{provider}}'
 					)}
 				</button>
-			</section>
+			</form>
 		{:else if canDisconnectSso}
-			<section class="card sso-card" data-testid="profile-sso-disconnect-card">
-				<h2><Icon name="key" /> {t('profile.sso_disconnect_title', 'Single Sign-On')}</h2>
+			<form
+				class="card sso-card"
+				data-testid="profile-sso-disconnect-card"
+				onsubmit={onDisconnectSso}
+			>
+				<h2><Icon name="link" /> {t('profile.sso_disconnect_title', 'Single Sign-On')}</h2>
 				<p>
 					{t(
 						'profile.sso_disconnect_description',
@@ -1101,16 +1102,10 @@
 						'Your account is connected to {{provider}}. Disconnecting will require you to sign in with your password from now on.'
 					)}
 				</p>
-				<button
-					type="button"
-					class="btn-danger"
-					data-testid="profile-sso-disconnect-btn"
-					onclick={onDisconnectSso}
-					disabled={ssoBusy}
-				>
+				<button type="submit" data-testid="profile-sso-disconnect-btn" disabled={ssoBusy}>
 					{t('profile.sso_disconnect_button', 'Disconnect Single Sign-On')}
 				</button>
-			</section>
+			</form>
 		{/if}
 	{:else}
 		<p>{t('common.loading', 'Loading…')}</p>
