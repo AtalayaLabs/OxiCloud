@@ -355,7 +355,8 @@ impl User {
         // only fires on inconsistent partial state.
         if federation_issuer.is_some() != federation_subject.is_some() {
             return Err(UserError::ValidationError(
-                "federation_issuer and federation_subject must both be set or both be None".to_string(),
+                "federation_issuer and federation_subject must both be set or both be None"
+                    .to_string(),
             ));
         }
         // If either field is set, federation_kind MUST also be set — the

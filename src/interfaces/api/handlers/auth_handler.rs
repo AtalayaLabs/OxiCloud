@@ -51,6 +51,10 @@ pub fn auth_protected_routes() -> Router<Arc<AppState>> {
         .route("/change-password", put(change_password))
         .route("/upgrade-to-internal", post(upgrade_to_internal))
         .route("/logout", post(logout))
+        // Self-service OIDC identity linking — see
+        // docs/plan/oidc-account-linking.md.
+        .route("/oidc/link/start", post(oidc_link_start))
+        .route("/oidc/unlink", post(oidc_unlink))
 }
 
 /// Rate-limited auth routes, split out so main.rs can apply per-endpoint
@@ -1380,6 +1384,91 @@ pub async fn oidc_authorize(
     Ok(Redirect::temporary(&authorize_url))
 }
 
+/// Start a self-service OIDC linking flow for the currently-authenticated
+/// user. Returns the authorize URL for the SPA to `window.location`
+/// navigate to. Callback lands on the standard `/api/auth/oidc/callback`
+/// which dispatches to the link branch based on the state cache's
+/// `intent` field. See docs/plan/oidc-account-linking.md.
+#[utoipa::path(
+    post,
+    path = "/api/auth/oidc/link/start",
+    responses(
+        (status = 200, description = "Authorize URL to navigate the user to", body = serde_json::Value),
+        (status = 401, description = "Not authenticated"),
+        (status = 404, description = "OIDC not enabled"),
+        (status = 409, description = "User is already linked — unlink first"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "auth"
+)]
+pub async fn oidc_link_start(
+    State(state): State<Arc<AppState>>,
+    CurrentUserId(user_id): CurrentUserId,
+) -> Result<impl IntoResponse, AppError> {
+    let auth_service = state
+        .auth_service
+        .as_ref()
+        .ok_or_else(|| AppError::internal_error("Auth service not configured"))?;
+    let auth_app = &auth_service.auth_application_service;
+
+    if !auth_app.oidc_enabled() {
+        return Err(AppError::new(
+            StatusCode::NOT_FOUND,
+            "OIDC is not enabled",
+            "OidcDisabled",
+        ));
+    }
+
+    let authorize_url = auth_app.prepare_oidc_link(user_id).await?;
+
+    Ok(Json(serde_json::json!({
+        "authorize_url": authorize_url,
+    })))
+}
+
+/// Unlink the current user's OIDC identity. Refuses when the user has
+/// no other credential (password / OPAQUE) — see plan doc for the
+/// no-alternative-auth guard rationale.
+#[utoipa::path(
+    post,
+    path = "/api/auth/oidc/unlink",
+    responses(
+        (status = 200, description = "OIDC identity unlinked (or was already unlinked)"),
+        (status = 401, description = "Not authenticated"),
+        (status = 403, description = "Refused — user has no other credential and would be locked out"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "auth"
+)]
+pub async fn oidc_unlink(
+    State(state): State<Arc<AppState>>,
+    CurrentUserId(user_id): CurrentUserId,
+) -> Result<impl IntoResponse, AppError> {
+    let auth_service = state
+        .auth_service
+        .as_ref()
+        .ok_or_else(|| AppError::internal_error("Auth service not configured"))?;
+
+    // Translate the app-service's generic AccessDenied refusal into a
+    // stable machine-readable `error_type` the SPA can switch on to
+    // render the "set a password first" affordance. The app service
+    // already emits the audit line with reason=no_alternative_auth;
+    // this hop maps the domain error to a wire contract.
+    match auth_service
+        .auth_application_service
+        .unlink_oidc(user_id)
+        .await
+    {
+        Ok(()) => Ok(StatusCode::OK),
+        Err(e) if e.kind == crate::domain::errors::ErrorKind::AccessDenied => Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            e.message.clone(),
+            "NoAlternativeAuth",
+        )),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Handle the OIDC provider callback.
 ///
 /// Validates the `state` / PKCE / nonce, exchanges the code for tokens, then
@@ -1468,6 +1557,30 @@ pub async fn oidc_callback(
                 )
                 .await,
             )
+        }
+        // Self-service link flow completion — redirect the user back
+        // to their profile with a query-param signal the SPA reads on
+        // mount to render a toast + strip the param via history.
+        // See docs/plan/oidc-account-linking.md § UX flow — link.
+        OidcCallbackResult::LinkCompleted { user_id } => {
+            let config = auth_app.oidc_config().unwrap();
+            let frontend_url = config.frontend_url.trim_end_matches('/');
+            let redirect_url = format!("{}/profile?linked=1", frontend_url);
+            tracing::info!(
+                user_id = %user_id,
+                "OIDC link completed, redirecting to /profile?linked=1"
+            );
+            Ok(Redirect::temporary(&redirect_url).into_response())
+        }
+        OidcCallbackResult::LinkRefused { reason } => {
+            let config = auth_app.oidc_config().unwrap();
+            let frontend_url = config.frontend_url.trim_end_matches('/');
+            let redirect_url = format!("{}/profile?link_error={}", frontend_url, reason);
+            tracing::info!(
+                reason = reason,
+                "OIDC link refused, redirecting to /profile?link_error"
+            );
+            Ok(Redirect::temporary(&redirect_url).into_response())
         }
     }
 }

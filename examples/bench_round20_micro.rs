@@ -321,7 +321,10 @@ fn section_a2() {
     let a = a2_after(user.clone());
     assert_eq!(b.image, a.image, "A2 image differs");
     assert_eq!(b.email, a.email, "A2 email differs");
-    assert_eq!(b.federation_issuer, a.federation_issuer, "A2 federation_issuer differs");
+    assert_eq!(
+        b.federation_issuer, a.federation_issuer,
+        "A2 federation_issuer differs"
+    );
     assert_eq!(
         b.can_edit_image, a.can_edit_image,
         "A2 can_edit_image differs"

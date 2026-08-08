@@ -179,10 +179,13 @@ wait_for_http "$base_url/ready" 120
 log "Server is ready."
 
 # ── 5. Run the OIDC Hurl suite ─────────────────────────────────────────────
+# Order matters: oidc.hurl bootstraps the admin and JIT-provisions the
+# `oidc_user` federated principal that link_unlink.hurl then reuses.
 log "Running OIDC Hurl tests..."
 hurl --variables-file "$OIDC_DIR/test.env" \
      --file-root "$REPO_ROOT/tests" \
      --test --jobs 1 \
-     "$OIDC_DIR/oidc.hurl"
+     "$OIDC_DIR/oidc.hurl" \
+     "$OIDC_DIR/link_unlink.hurl"
 
 log "OIDC tests passed."

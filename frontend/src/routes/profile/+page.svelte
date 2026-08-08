@@ -18,7 +18,7 @@
 		type AppPassword,
 		type ProfilePatch
 	} from '$lib/api/endpoints/profile';
-	import { fetchMe, getOidcProviders } from '$lib/api/endpoints/auth';
+	import { fetchMe, getOidcProviders, startOidcLink, unlinkOidc } from '$lib/api/endpoints/auth';
 	import { SUPPORTED_LOCALES, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
 	import { confirmDialog } from '$lib/stores/dialogs.svelte';
@@ -50,6 +50,12 @@
 
 	let avatarBusy = $state(false);
 	let passwordLoginEnabled = $state(true);
+	// OIDC providers snapshot for the SSO link/unlink card. Populated
+	// on mount; determines whether we render the "Connect SSO" card
+	// (requires oidcEnabled) and what display label to show.
+	let oidcEnabled = $state(false);
+	let oidcProviderName = $state<string>('SSO');
+	let ssoBusy = $state(false);
 
 	// Avatar edit panel.
 	let avatarEditOpen = $state(false);
@@ -82,6 +88,22 @@
 	// their local credential; the new gate lets them, and the backend
 	// refusal covers the pure-SSO case where has_password is false.
 	const showPasswordCard = $derived((session.user?.has_password ?? false) && passwordLoginEnabled);
+
+	// SSO card gates — see docs/plan/oidc-account-linking.md.
+	// Connect: only when OIDC is enabled AND the user isn't already linked.
+	// Disconnect: only when currently OIDC-linked AND the user has an
+	// alternative auth method (password or OPAQUE-registered) — else
+	// unlinking would lock them out.
+	const canConnectSso = $derived(oidcEnabled && !session.user?.federation_kind);
+	// Show the disconnect button whenever the user is OIDC-linked.
+	// The backend guard (`AuthApplicationService::unlink_oidc`) is the
+	// source of truth for the "no alternative auth" refusal — it also
+	// checks `opaque_registered`, which isn't exposed on UserDto today
+	// (deliberately kept off `/api/auth/me` to avoid leaking OPAQUE
+	// adoption status through user-directory endpoints). The UI shows
+	// the button unconditionally and surfaces the backend's 403 as a
+	// user-facing "set a password first" prompt.
+	const canDisconnectSso = $derived(session.user?.federation_kind === 'oidc');
 
 	/**
 	 * Mandatory change-password mode. TRUE when the backend has
@@ -396,10 +418,138 @@
 			// Only an explicit `false` hides the password card; an absent flag
 			// (no OIDC configured) leaves local password login available.
 			if (providers.password_login_enabled === false) passwordLoginEnabled = false;
+			// Capture OIDC state for the SSO link/unlink card. `provider_name`
+			// is the display label the FE renders in the "Connected to X"
+			// affordance.
+			oidcEnabled = providers.enabled === true;
+			if (typeof providers.provider_name === 'string' && providers.provider_name.length > 0) {
+				oidcProviderName = providers.provider_name;
+			}
 		} catch {
 			/* leave password login enabled */
 		}
+
+		// Toast handling for the OIDC-link callback redirect. The
+		// backend redirects here with `?linked=1` on success or
+		// `?link_error=<reason>` on refusal (see plan doc for the
+		// stable reason keys). Show a translated toast and strip the
+		// query params via history.replaceState so a page reload
+		// doesn't re-fire the toast.
+		const params = page.url.searchParams;
+		const linked = params.get('linked');
+		const linkError = params.get('link_error');
+		if (linked === '1') {
+			ui.notify(t('profile.sso_linked_success', 'Single sign-on connected successfully.'), 'info');
+			// Session's federation_kind may still be stale from before
+			// the round-trip; re-fetch to pick up the fresh columns
+			// (federation_kind should now be 'oidc').
+			try {
+				const me = await fetchMe();
+				if (me) session.user = me;
+			} catch {
+				/* stale session is recoverable — next request refreshes */
+			}
+		} else if (linkError) {
+			// Map the stable reason keys to translated messages. Falls
+			// back to a generic message for keys we don't recognise
+			// (forward-compatible with new refusal reasons).
+			const msg = ssoLinkErrorMessage(linkError);
+			ui.notify(msg, 'error');
+		}
+		if (linked !== null || linkError !== null) {
+			const stripped = new URL(page.url);
+			stripped.searchParams.delete('linked');
+			stripped.searchParams.delete('link_error');
+			window.history.replaceState(
+				window.history.state,
+				'',
+				stripped.pathname + stripped.search + stripped.hash
+			);
+		}
 	});
+
+	function ssoLinkErrorMessage(key: string): string {
+		// Keys match the `reason` field of `federation.link_refused`
+		// audit events — see docs/plan/oidc-account-linking.md.
+		switch (key) {
+			case 'email_mismatch':
+				return t(
+					'profile.sso_link_error_email_mismatch',
+					"The email from your SSO provider doesn't match your OxiCloud account email."
+				);
+			case 'email_not_provided':
+				return t(
+					'profile.sso_link_error_email_not_provided',
+					"Your SSO provider didn't return an email address, so we can't verify the link."
+				);
+			case 'already_linked_elsewhere':
+				return t(
+					'profile.sso_link_error_already_linked_elsewhere',
+					'This SSO identity is already linked to a different OxiCloud account.'
+				);
+			case 'already_linked':
+				return t(
+					'profile.sso_link_error_already_linked',
+					'Your account is already linked to a different SSO identity. Disconnect first.'
+				);
+			case 'session_expired':
+				return t(
+					'profile.sso_link_error_session_expired',
+					'Your session expired during the SSO round-trip. Please sign in again.'
+				);
+			default:
+				return t('profile.sso_link_error_generic', 'SSO link failed. Please try again.');
+		}
+	}
+
+	async function onConnectSso() {
+		ssoBusy = true;
+		try {
+			const url = await startOidcLink();
+			// Full-page navigation so the browser leaves the SPA and
+			// hits the IdP; the callback lands back on /profile via
+			// the extended callback dispatch. `goto()` would stay in
+			// the SPA and never leave.
+			window.location.assign(url);
+		} catch (err) {
+			ssoBusy = false;
+			errorToast(err);
+		}
+	}
+
+	async function onDisconnectSso() {
+		const ok = await confirmDialog({
+			title: t('profile.sso_disconnect_confirm_title', 'Disconnect Single Sign-On?'),
+			message: t(
+				'profile.sso_disconnect_confirm_message',
+				"You'll only be able to sign in with your password or OPAQUE credential after this."
+			),
+			confirmText: t('profile.sso_disconnect_confirm_button', 'Disconnect'),
+			danger: true
+		});
+		if (!ok) return;
+		ssoBusy = true;
+		try {
+			await unlinkOidc();
+			const me = await fetchMe();
+			if (me) session.user = me;
+			ui.notify(t('profile.sso_unlinked_success', 'Single sign-on disconnected.'), 'info');
+		} catch (err) {
+			if (err instanceof ApiError && err.errorType === 'AccessDenied') {
+				ui.notify(
+					t(
+						'profile.sso_unlink_no_alt_auth',
+						'Set a password first — otherwise you would be locked out.'
+					),
+					'error'
+				);
+			} else {
+				errorToast(err);
+			}
+		} finally {
+			ssoBusy = false;
+		}
+	}
 </script>
 
 <svelte:head><title>{t('nav.profile', 'Profile')} · OxiCloud</title></svelte:head>
@@ -906,6 +1056,61 @@
 					{t('profile.update_password', 'Update Password')}
 				</button>
 			</form>
+		{/if}
+
+		<!--
+			OIDC identity link / unlink card. See
+			docs/plan/oidc-account-linking.md § UX flow.
+
+			Two mutually-exclusive states: Connect (no federation yet) or
+			Disconnect (currently OIDC-linked). The Connect button
+			navigates to the IdP; the Disconnect button unlinks and
+			refreshes the session. Backend enforces safety checks —
+			email-match on link, no-alternative-auth refusal on unlink.
+		-->
+		{#if canConnectSso}
+			<section class="card sso-card" data-testid="profile-sso-connect-card">
+				<h2><Icon name="key" /> {t('profile.sso_connect_title', 'Connect Single Sign-On')}</h2>
+				<p>
+					{t(
+						'profile.sso_connect_description',
+						{ provider: oidcProviderName },
+						'Link your account to {{provider}} so you can sign in with SSO instead of your password.'
+					)}
+				</p>
+				<button
+					type="button"
+					data-testid="profile-sso-connect-btn"
+					onclick={onConnectSso}
+					disabled={ssoBusy}
+				>
+					{t(
+						'profile.sso_connect_button',
+						{ provider: oidcProviderName },
+						'Connect with {{provider}}'
+					)}
+				</button>
+			</section>
+		{:else if canDisconnectSso}
+			<section class="card sso-card" data-testid="profile-sso-disconnect-card">
+				<h2><Icon name="key" /> {t('profile.sso_disconnect_title', 'Single Sign-On')}</h2>
+				<p>
+					{t(
+						'profile.sso_disconnect_description',
+						{ provider: oidcProviderName },
+						'Your account is connected to {{provider}}. Disconnecting will require you to sign in with your password from now on.'
+					)}
+				</p>
+				<button
+					type="button"
+					class="btn-danger"
+					data-testid="profile-sso-disconnect-btn"
+					onclick={onDisconnectSso}
+					disabled={ssoBusy}
+				>
+					{t('profile.sso_disconnect_button', 'Disconnect Single Sign-On')}
+				</button>
+			</section>
 		{/if}
 	{:else}
 		<p>{t('common.loading', 'Loading…')}</p>

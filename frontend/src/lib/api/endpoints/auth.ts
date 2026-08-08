@@ -379,6 +379,51 @@ export interface LogoutResult {
 	postLogoutUrl?: string;
 }
 
+/**
+ * Start the self-service OIDC linking flow. Returns the authorize URL
+ * the caller should full-page navigate to (`window.location.assign`).
+ * The IdP round-trip lands on `/api/auth/oidc/callback` which
+ * dispatches to the link branch and redirects to
+ * `/profile?linked=1` (success) or `/profile?link_error=<reason>`
+ * (safety-check refusal). See docs/plan/oidc-account-linking.md.
+ */
+export async function startOidcLink(): Promise<string> {
+	const res = await apiFetch('/api/auth/oidc/link/start', {
+		method: 'POST',
+		credentials: 'same-origin',
+		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
+		body: '{}'
+	});
+	if (!res.ok) {
+		const { errorType, message } = await parseErrorBody(res);
+		throw new ApiError(res.status, res.statusText, '/api/auth/oidc/link/start', errorType, message);
+	}
+	const body = (await res.json()) as { authorize_url?: string };
+	if (typeof body.authorize_url !== 'string' || body.authorize_url.length === 0) {
+		throw new Error('malformed link/start response: missing authorize_url');
+	}
+	return body.authorize_url;
+}
+
+/**
+ * Detach the currently-authenticated user's OIDC identity. Refuses
+ * (403 with `error_type: "AccessDenied"`) when the user has no other
+ * credential (password / OPAQUE) and would be locked out. Callers
+ * should offer the "set a password first" affordance in that case.
+ */
+export async function unlinkOidc(): Promise<void> {
+	const res = await apiFetch('/api/auth/oidc/unlink', {
+		method: 'POST',
+		credentials: 'same-origin',
+		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
+		body: '{}'
+	});
+	if (!res.ok) {
+		const { errorType, message } = await parseErrorBody(res);
+		throw new ApiError(res.status, res.statusText, '/api/auth/oidc/unlink', errorType, message);
+	}
+}
+
 export async function logout(): Promise<LogoutResult> {
 	const res = await apiFetch('/api/auth/logout', {
 		method: 'POST',

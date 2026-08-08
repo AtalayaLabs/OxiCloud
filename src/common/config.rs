@@ -1628,6 +1628,15 @@ pub struct OidcConfig {
     pub disable_password_login: bool,
     /// OIDC provider display name (shown in UI)
     pub provider_name: String,
+    /// When TRUE (default), an OIDC login whose subject doesn't match
+    /// any existing user AUTO-LINKS to the local user with the same
+    /// verified email address (if any). Requires `email_verified=true`
+    /// from the IdP. See docs/plan/oidc-account-linking.md § Auto-link.
+    ///
+    /// Set FALSE for compliance postures that require explicit consent
+    /// for every OIDC linkage. Self-service link flow still works
+    /// regardless of this flag.
+    pub auto_link_email_match: bool,
 }
 
 impl Default for OidcConfig {
@@ -1644,6 +1653,7 @@ impl Default for OidcConfig {
             admin_groups: String::new(),
             disable_password_login: false,
             provider_name: "SSO".to_string(),
+            auto_link_email_match: true,
         }
     }
 }
@@ -1851,6 +1861,9 @@ impl OidcConfig {
         }
         if let Ok(v) = env::var("OXICLOUD_OIDC_AUTO_PROVISION") {
             cfg.auto_provision = v.parse::<bool>().unwrap_or(true);
+        }
+        if let Ok(v) = env::var("OXICLOUD_OIDC_AUTO_LINK_EMAIL_MATCH") {
+            cfg.auto_link_email_match = v.parse::<bool>().unwrap_or(true);
         }
         if let Ok(v) = env::var("OXICLOUD_OIDC_ADMIN_GROUPS") {
             cfg.admin_groups = v;
@@ -3431,6 +3444,9 @@ impl AppConfig {
         }
         if let Ok(v) = env::var("OXICLOUD_OIDC_AUTO_PROVISION") {
             config.oidc.auto_provision = v.parse::<bool>().unwrap_or(true);
+        }
+        if let Ok(v) = env::var("OXICLOUD_OIDC_AUTO_LINK_EMAIL_MATCH") {
+            config.oidc.auto_link_email_match = v.parse::<bool>().unwrap_or(true);
         }
         if let Ok(v) = env::var("OXICLOUD_OIDC_ADMIN_GROUPS") {
             config.oidc.admin_groups = v;

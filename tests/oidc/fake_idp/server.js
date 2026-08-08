@@ -76,6 +76,14 @@ const BCL_EVENT = 'http://schemas.openid.net/event/backchannel-logout';
 // claims() callback.
 let emailVerifiedState = true;
 
+// Runtime-swappable email — normally the pinned TEST_USER_EMAIL, but
+// the OIDC-account-linking Hurl suite flips it via
+// `POST /control/set-email` to test the auto-link + self-service-link
+// safety checks: email mismatch refusal, +alias normalization
+// equivalence, etc. Reset by `POST /control/reset-email` (or by
+// setting to the pinned value explicitly).
+let emailOverride = null;
+
 // Pre-generate the signing keypair. oidc-provider v9 accepts private
 // JWKs via configuration.jwks and exports the public halves at
 // /jwks.json; keeping our own reference to the private key means we
@@ -163,7 +171,7 @@ const configuration = {
       async claims() {
         return {
           sub: TEST_USER_SUB,
-          email: TEST_USER_EMAIL,
+          email: emailOverride ?? TEST_USER_EMAIL,
           email_verified: emailVerifiedState,
           name: TEST_USER_NAME,
           given_name: TEST_USER_GIVEN_NAME,
@@ -248,6 +256,34 @@ async function handleControl(req, res) {
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     return res.end(JSON.stringify({ email_verified: false }));
+  }
+  // Swap the IdP-returned email to test the OIDC-account-linking
+  // safety checks (email match, +alias normalization, mismatch refusal).
+  // Body: `{ email: "alice@example.com" }` — or `null`/`""` to reset
+  // to the pinned TEST_USER_EMAIL.
+  if (req.method === 'POST' && url.pathname === '/control/set-email') {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed = {};
+    try {
+      parsed = body ? JSON.parse(body) : {};
+    } catch {
+      res.statusCode = 400;
+      res.setHeader('content-type', 'application/json');
+      return res.end(JSON.stringify({ error: 'invalid_json' }));
+    }
+    emailOverride =
+      parsed.email && typeof parsed.email === 'string' && parsed.email.length > 0
+        ? parsed.email
+        : null;
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    return res.end(
+      JSON.stringify({
+        email: emailOverride ?? TEST_USER_EMAIL,
+        overridden: emailOverride !== null,
+      }),
+    );
   }
   if (req.method === 'POST' && url.pathname === '/control/backchannel-logout') {
     // Body shape: `{ sub?: string, sid?: string }`. Optional so the test

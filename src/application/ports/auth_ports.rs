@@ -193,6 +193,43 @@ pub trait UserStoragePort: Send + Sync + 'static {
         new_issuer: &str,
     ) -> Result<(), DomainError>;
 
+    /// Attach a federation identity to a user row that currently has
+    /// none. Used by the self-service link flow and the auto-link
+    /// branch of the OIDC callback. See
+    /// docs/plan/oidc-account-linking.md.
+    ///
+    /// Enforces at the DB layer via the
+    /// `idx_users_federation` UNIQUE index: if this triple is already
+    /// bound to a DIFFERENT user, returns `AlreadyExists`. The caller
+    /// (app service) translates that to a `already_linked_elsewhere`
+    /// audit reason and a user-facing refusal.
+    ///
+    /// Does NOT overwrite an already-linked identity — the current
+    /// user must be unlinked first. This is a "first link" primitive
+    /// only; the app service's higher-level `link_oidc` orchestrates
+    /// the pre-checks (idempotent-if-same / refuse-if-different).
+    async fn link_federation_identity(
+        &self,
+        user_id: Uuid,
+        kind: &str,
+        issuer: &str,
+        subject: &str,
+    ) -> Result<(), DomainError>;
+
+    /// Scalar `opaque_envelope IS NOT NULL` for the user. Used by the
+    /// unlink refusal guard (a user with an OPAQUE envelope still has
+    /// a working direct login even after OIDC unlink). Avoids
+    /// dragging the full envelope bytes across the wire for a bool.
+    async fn is_opaque_registered(&self, user_id: Uuid) -> Result<bool, DomainError>;
+
+    /// Detach the current federation identity from a user row: set all
+    /// three federation columns to NULL. The `has_password` or
+    /// `opaque_registered` fallback guard lives at the app service
+    /// layer — this method is a mechanical UPDATE.
+    ///
+    /// Idempotent: calling on an already-unlinked user is a no-op.
+    async fn unlink_federation_identity(&self, user_id: Uuid) -> Result<(), DomainError>;
+
     /// Lists users by role (e.g., "admin" or "user")
     async fn list_users_by_role(&self, role: &str) -> Result<Vec<User>, DomainError>;
 

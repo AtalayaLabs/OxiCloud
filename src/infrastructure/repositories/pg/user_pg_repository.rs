@@ -1402,6 +1402,105 @@ impl UserStoragePort for UserPgRepository {
         Ok(())
     }
 
+    async fn link_federation_identity(
+        &self,
+        user_id: Uuid,
+        kind: &str,
+        issuer: &str,
+        subject: &str,
+    ) -> Result<(), DomainError> {
+        // Guarded UPDATE: only proceed when the row currently has NO
+        // federation identity. Prevents accidental identity overwrite —
+        // callers wanting to replace an existing link must go through
+        // unlink first. Silent no-op on already-linked rows is WRONG
+        // because it would swallow the intent; instead we return an
+        // error the app service translates to `already_linked`.
+        //
+        // Uniqueness enforcement lives on `idx_users_federation`
+        // (UNIQUE(kind, issuer, subject) WHERE federation_kind IS NOT
+        // NULL). If this triple is already bound to a DIFFERENT user,
+        // the UPDATE succeeds row-count = 0 (the WHERE constrains us to
+        // rows for THIS user_id) — but the following INSERT-shaped
+        // UPDATE approach doesn't trigger the unique index; we rely on
+        // the app service having pre-checked via
+        // `get_user_by_federation_subject`. If that pre-check races
+        // with a concurrent link (rare), the second call surfaces
+        // `AlreadyExists` from sqlx via `map_sqlx_error`.
+        let result = sqlx::query(
+            r#"
+            UPDATE auth.users
+               SET federation_kind    = $2,
+                   federation_issuer  = $3,
+                   federation_subject = $4,
+                   updated_at         = NOW()
+             WHERE id = $1
+               AND federation_kind IS NULL
+            "#,
+        )
+        .bind(user_id)
+        .bind(kind)
+        .bind(issuer)
+        .bind(subject)
+        .execute(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)
+        .map_err(DomainError::from)?;
+
+        if result.rows_affected() == 0 {
+            // Either the user doesn't exist OR they already have a
+            // federation identity attached. The app service should have
+            // already validated user existence + link state; being here
+            // usually means a concurrent link race.
+            return Err(DomainError::already_exists(
+                "User",
+                "user is already linked to a federation identity",
+            ));
+        }
+        Ok(())
+    }
+
+    async fn is_opaque_registered(&self, user_id: Uuid) -> Result<bool, DomainError> {
+        // Scalar `IS NOT NULL` check — the envelope is a few hundred
+        // bytes of ciphertext; we don't want to fetch it just to
+        // examine presence. `fetch_optional` returns None if the user
+        // doesn't exist (caller treats missing as "not registered").
+        let row: Option<(bool,)> = sqlx::query_as(
+            r#"
+            SELECT (opaque_envelope IS NOT NULL)
+              FROM auth.users
+             WHERE id = $1
+            "#,
+        )
+        .bind(user_id)
+        .fetch_optional(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)
+        .map_err(DomainError::from)?;
+        Ok(row.map(|(v,)| v).unwrap_or(false))
+    }
+
+    async fn unlink_federation_identity(&self, user_id: Uuid) -> Result<(), DomainError> {
+        // Idempotent: unlinking an already-unlinked user is a zero-row
+        // UPDATE. App service's `no_alternative_auth` refusal guard
+        // runs BEFORE this — the DB layer just moves the columns.
+        sqlx::query(
+            r#"
+            UPDATE auth.users
+               SET federation_kind    = NULL,
+                   federation_issuer  = NULL,
+                   federation_subject = NULL,
+                   updated_at         = NOW()
+             WHERE id = $1
+            "#,
+        )
+        .bind(user_id)
+        .execute(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)
+        .map_err(DomainError::from)?;
+        Ok(())
+    }
+
     async fn list_users_by_role(&self, role: &str) -> Result<Vec<User>, DomainError> {
         UserRepository::list_users_by_role(self, role)
             .await
@@ -1574,7 +1673,10 @@ mod integration_tests {
         assert_eq!(page[0].storage_quota_bytes, 10_737_418_240);
         assert_eq!(page[1].username, None);
         assert!(page[1].is_external);
-        assert_eq!(page[1].federation_issuer.as_deref(), Some("integration-idp"));
+        assert_eq!(
+            page[1].federation_issuer.as_deref(),
+            Some("integration-idp")
+        );
 
         let internal = UserRepository::list_user_summaries(&repo, 10, 0, false)
             .await

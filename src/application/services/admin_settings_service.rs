@@ -53,6 +53,10 @@ impl AdminSettingsService {
             ("OXICLOUD_OIDC_CLIENT_SECRET", "client_secret"),
             ("OXICLOUD_OIDC_SCOPES", "scopes"),
             ("OXICLOUD_OIDC_AUTO_PROVISION", "auto_provision"),
+            (
+                "OXICLOUD_OIDC_AUTO_LINK_EMAIL_MATCH",
+                "auto_link_email_match",
+            ),
             ("OXICLOUD_OIDC_ADMIN_GROUPS", "admin_groups"),
             (
                 "OXICLOUD_OIDC_DISABLE_PASSWORD_LOGIN",
@@ -94,6 +98,9 @@ impl AdminSettingsService {
         }
         if std::env::var("OXICLOUD_OIDC_AUTO_PROVISION").is_ok() {
             config.auto_provision = e.auto_provision;
+        }
+        if std::env::var("OXICLOUD_OIDC_AUTO_LINK_EMAIL_MATCH").is_ok() {
+            config.auto_link_email_match = e.auto_link_email_match;
         }
         if std::env::var("OXICLOUD_OIDC_ADMIN_GROUPS").is_ok() {
             config.admin_groups = e.admin_groups.clone();
@@ -141,6 +148,10 @@ impl AdminSettingsService {
                 .get("oidc.provider_name")
                 .cloned()
                 .unwrap_or(d.provider_name),
+            auto_link_email_match: db
+                .get("oidc.auto_link_email_match")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.auto_link_email_match),
         };
 
         // Env vars override DB
