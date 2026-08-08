@@ -84,6 +84,17 @@ let emailVerifiedState = true;
 // setting to the pinned value explicitly).
 let emailOverride = null;
 
+// Runtime-swappable sub (subject / accountId) — normally TEST_USER_SUB,
+// overridable via `POST /control/set-sub` to test the OIDC-linking
+// scenarios that need a fresh, not-yet-known federated identity:
+// self-service link happy path, +alias normalization link, auto-link
+// happy path, auto-link refusal (verified=false). The set-sub endpoint
+// ALSO clears the OP's session cookies in the response — otherwise
+// the next authorize dance would reuse the previously-established
+// session bound to the OLD sub and skip the login prompt (where the
+// new sub gets bound). Reset by POSTing an empty/null body.
+let subOverride = null;
+
 // Pre-generate the signing keypair. oidc-provider v9 accepts private
 // JWKs via configuration.jwks and exports the public halves at
 // /jwks.json; keeping our own reference to the private key means we
@@ -162,7 +173,8 @@ const configuration = {
   },
 
   async findAccount(_ctx, sub) {
-    if (sub !== TEST_USER_SUB) return undefined;
+    const currentSub = subOverride ?? TEST_USER_SUB;
+    if (sub !== currentSub) return undefined;
     return {
       accountId: sub,
       // Return EVERY claim the OIDC client could ask for. The provider
@@ -170,7 +182,7 @@ const configuration = {
       // a granted scope are dropped from the ID token / userinfo.
       async claims() {
         return {
-          sub: TEST_USER_SUB,
+          sub: currentSub,
           email: emailOverride ?? TEST_USER_EMAIL,
           email_verified: emailVerifiedState,
           name: TEST_USER_NAME,
@@ -256,6 +268,52 @@ async function handleControl(req, res) {
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     return res.end(JSON.stringify({ email_verified: false }));
+  }
+  // Swap the IdP-returned sub (accountId) to test the OIDC-linking
+  // scenarios that need a fresh, not-yet-known identity: self-service
+  // link happy path, +alias normalization link, auto-link happy path,
+  // auto-link refusal (email_verified=false).
+  //
+  // Body: `{ sub: "sub-link-happy" }` — or `null`/`""` to reset to
+  // the pinned TEST_USER_SUB.
+  //
+  // ALSO clears the OP's session cookies via Set-Cookie in the
+  // response. Without this, the next authorize dance from the same
+  // Hurl file (same cookie jar) would reuse the previously-established
+  // session — bound to the OLD sub — and skip the login prompt where
+  // the new sub gets bound. Panva/node-oidc-provider defaults for the
+  // session/grant/interaction cookies are documented in
+  // https://github.com/panva/node-oidc-provider/blob/main/docs/README.md#cookies
+  // — we clear the ones the client-side cookie jar can hold.
+  if (req.method === 'POST' && url.pathname === '/control/set-sub') {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed = {};
+    try {
+      parsed = body ? JSON.parse(body) : {};
+    } catch {
+      res.statusCode = 400;
+      res.setHeader('content-type', 'application/json');
+      return res.end(JSON.stringify({ error: 'invalid_json' }));
+    }
+    subOverride =
+      parsed.sub && typeof parsed.sub === 'string' && parsed.sub.length > 0
+        ? parsed.sub
+        : null;
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.setHeader('Set-Cookie', [
+      '_session=; Path=/; Max-Age=0; HttpOnly',
+      '_session.legacy=; Path=/; Max-Age=0; HttpOnly',
+      '_grant=; Path=/; Max-Age=0; HttpOnly',
+      '_interaction=; Path=/; Max-Age=0; HttpOnly',
+    ]);
+    return res.end(
+      JSON.stringify({
+        sub: subOverride ?? TEST_USER_SUB,
+        overridden: subOverride !== null,
+      }),
+    );
   }
   // Swap the IdP-returned email to test the OIDC-account-linking
   // safety checks (email match, +alias normalization, mismatch refusal).
@@ -406,14 +464,14 @@ async function handleAuto(req, res) {
     return provider.interactionFinished(
       req,
       res,
-      { login: { accountId: TEST_USER_SUB } },
+      { login: { accountId: subOverride ?? TEST_USER_SUB } },
       { mergeWithLastSubmission: false },
     );
   }
 
   if (name === 'consent') {
     const grant = new provider.Grant({
-      accountId: TEST_USER_SUB,
+      accountId: subOverride ?? TEST_USER_SUB,
       clientId: params.client_id,
     });
     if (params.scope) grant.addOIDCScope(params.scope);
