@@ -2263,7 +2263,11 @@ impl AuthApplicationService {
                 "dpop_jkt must be a 43-character base64url SHA-256 thumbprint (RFC 7638)",
             )
         })?;
-        match self.session_storage.bind_dpop_jkt(session_id, &validated).await {
+        match self
+            .session_storage
+            .bind_dpop_jkt(session_id, &validated)
+            .await
+        {
             Ok(()) => {
                 tracing::info!(
                     target: "audit",

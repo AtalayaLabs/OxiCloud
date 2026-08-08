@@ -10,6 +10,8 @@ pub mod compression_service;
 pub mod consistency_batch_service;
 pub mod db_pool_monitor;
 pub mod dedup_service;
+pub mod dpop_nonce_service;
+pub mod dpop_verifier;
 pub mod drives_consistency_service;
 pub mod encrypted_blob_backend;
 pub mod entry_backend;

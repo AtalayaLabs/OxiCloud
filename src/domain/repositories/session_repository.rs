@@ -121,9 +121,5 @@ pub trait SessionRepository: Send + Sync + 'static {
     /// downgrade guard from `docs/plan/dpop.md` — an attacker who has
     /// stolen the cookie of a bound session cannot re-bind to their
     /// own key.
-    async fn bind_dpop_jkt(
-        &self,
-        session_id: Uuid,
-        dpop_jkt: &str,
-    ) -> SessionRepositoryResult<()>;
+    async fn bind_dpop_jkt(&self, session_id: Uuid, dpop_jkt: &str) -> SessionRepositoryResult<()>;
 }

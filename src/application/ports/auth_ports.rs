@@ -479,11 +479,7 @@ pub trait SessionStoragePort: Send + Sync + 'static {
     /// redemption). Fails with `AlreadyExists` if the session already
     /// carries a thumbprint (anti-downgrade invariant, see
     /// `docs/plan/dpop.md`).
-    async fn bind_dpop_jkt(
-        &self,
-        session_id: Uuid,
-        dpop_jkt: &str,
-    ) -> Result<(), DomainError>;
+    async fn bind_dpop_jkt(&self, session_id: Uuid, dpop_jkt: &str) -> Result<(), DomainError>;
 }
 
 // ============================================================================

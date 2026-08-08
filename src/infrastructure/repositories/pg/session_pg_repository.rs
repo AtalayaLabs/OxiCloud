@@ -469,11 +469,7 @@ impl SessionRepository for SessionPgRepository {
         Ok(result.rows_affected())
     }
 
-    async fn bind_dpop_jkt(
-        &self,
-        session_id: Uuid,
-        dpop_jkt: &str,
-    ) -> SessionRepositoryResult<()> {
+    async fn bind_dpop_jkt(&self, session_id: Uuid, dpop_jkt: &str) -> SessionRepositoryResult<()> {
         // `WHERE dpop_jkt IS NULL` enforces the immutability invariant
         // at the SQL level — a bound session's UPDATE affects 0 rows
         // and we surface `DpopAlreadyBound`. Also guards against a
@@ -648,11 +644,7 @@ impl SessionStoragePort for SessionPgRepository {
             .map_err(DomainError::from)
     }
 
-    async fn bind_dpop_jkt(
-        &self,
-        session_id: Uuid,
-        dpop_jkt: &str,
-    ) -> Result<(), DomainError> {
+    async fn bind_dpop_jkt(&self, session_id: Uuid, dpop_jkt: &str) -> Result<(), DomainError> {
         SessionRepository::bind_dpop_jkt(self, session_id, dpop_jkt)
             .await
             .map_err(DomainError::from)

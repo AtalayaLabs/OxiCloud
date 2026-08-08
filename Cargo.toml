@@ -63,6 +63,10 @@ rand_core = { version = "0.6", features = ["std", "getrandom"] }
 # changing it invalidates every user's registration record, plan a
 # migration before touching. `argon2` feature gates the memory-hard KSF.
 opaque-ke = { version = "3", features = ["argon2"] }
+# DPoP (RFC 9449) proof verification — ECDSA P-256 signatures. Transitive
+# via jsonwebtoken's rust_crypto feature; declared here for direct use in
+# `infrastructure::services::dpop_verifier`.
+p256 = { version = "0.13", features = ["ecdsa"] }
 quick-xml = "0.41.0"
 dotenvy = "0.15.7"
 moka = { version = "0.12.15", features = ["future", "sync"] }

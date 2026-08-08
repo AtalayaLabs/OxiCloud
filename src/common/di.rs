@@ -2102,6 +2102,9 @@ impl AppServiceFactory {
             opaque_service,
             opaque_repo,
             opaque_login_exchange,
+            dpop_nonce_service: Arc::new(
+                crate::infrastructure::services::dpop_nonce_service::DpopNonceService::new(),
+            ),
             nextcloud: nextcloud_services,
             admin_settings_service: None,
             storage_settings_service: None,
@@ -2874,6 +2877,12 @@ pub struct AppState {
     pub opaque_login_exchange: Option<
         Arc<crate::infrastructure::services::opaque_login_exchange::OpaqueLoginExchange>,
     >,
+    /// DPoP nonce pool. Always populated (even in `dpop_mode = off`)
+    /// so switching mode via env-flip needs no restart-time wiring
+    /// change. Cheap-to-construct in-memory moka cache; unused paths
+    /// pay only allocation cost at boot.
+    pub dpop_nonce_service:
+        Arc<crate::infrastructure::services::dpop_nonce_service::DpopNonceService>,
     pub nextcloud: Option<NextcloudServices>,
     pub admin_settings_service: Option<Arc<AdminSettingsService>>,
     /// WASM plugin management (list/install/toggle/remove), backing the admin

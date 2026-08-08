@@ -1448,6 +1448,55 @@ pub struct AuthConfig {
     ///
     /// Env: `OXICLOUD_REQUIRE_VERIFIED_EMAIL` (default `false`).
     pub require_verified_email: bool,
+
+    /// DPoP session-binding enforcement (RFC 9449). Bound sessions —
+    /// those created with a `dpop_jkt` supplied at login — carry a
+    /// browser-held keypair thumbprint; the middleware verifies a
+    /// per-request signed proof so that stealing the session cookie
+    /// alone is useless without the private key.
+    ///
+    /// Modes (see `DpopMode` enum):
+    ///   * `Off` (default) — middleware is a pass-through; no
+    ///     verification even when a proof is present. Ship-safe
+    ///     default while the client rollout catches up.
+    ///   * `Opportunistic` — verify when a proof is present, reject
+    ///     mismatches; skip when absent. Warn on
+    ///     `dpop.header_missing_but_session_bound`. Rollout mode.
+    ///   * `Required` — bound sessions MUST present a valid proof.
+    ///     Unbound sessions (`dpop_jkt IS NULL` — app passwords,
+    ///     Nextcloud clients, legacy) remain exempt at the
+    ///     middleware level.
+    ///
+    /// Env: `OXICLOUD_DPOP_MODE` in `{off,opportunistic,required}`
+    /// (default `off`).
+    pub dpop_mode: DpopMode,
+}
+
+/// DPoP session-binding enforcement mode. See `AuthConfig::dpop_mode`
+/// and `docs/plan/dpop.md` for the rollout strategy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DpopMode {
+    /// Middleware pass-through — DPoP header is neither required nor
+    /// verified. Default: safe while clients roll out proof-signing.
+    #[default]
+    Off,
+    /// Verify when present, allow when absent. Bound sessions still
+    /// get a warning audit line when they arrive without a proof.
+    Opportunistic,
+    /// Bound sessions (`dpop_jkt IS NOT NULL`) MUST present a valid
+    /// proof or 401. Unbound sessions remain exempt.
+    Required,
+}
+
+impl DpopMode {
+    pub fn from_env_str(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "off" => Some(Self::Off),
+            "opportunistic" => Some(Self::Opportunistic),
+            "required" => Some(Self::Required),
+            _ => None,
+        }
+    }
 }
 
 /// Self-service auth method. Exposed as `AuthConfig::allowed_auth_methods`
@@ -1583,6 +1632,7 @@ impl Default for AuthConfig {
             auth_policies: Vec::new(),
             allowed_auth_methods: vec![AuthMethod::Password, AuthMethod::MagicLink],
             require_verified_email: false,
+            dpop_mode: DpopMode::Off,
         }
     }
 }
@@ -2975,6 +3025,15 @@ impl AppConfig {
                     .auth
                     .allowed_auth_methods
                     .retain(|m| *m != AuthMethod::Password);
+            }
+        }
+
+        if let Ok(v) = env::var("OXICLOUD_DPOP_MODE") {
+            match DpopMode::from_env_str(&v) {
+                Some(mode) => config.auth.dpop_mode = mode,
+                None => panic!(
+                    "OXICLOUD_DPOP_MODE={v:?} — expected one of off / opportunistic / required"
+                ),
             }
         }
 

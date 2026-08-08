@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod auth;
 pub mod csrf;
+pub mod dpop;
 pub mod locale;
 pub mod rate_limit;
 pub mod server_status;

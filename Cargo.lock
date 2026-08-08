@@ -4490,6 +4490,7 @@ dependencies = [
  "nom-exif",
  "opaque-ke",
  "ort",
+ "p256",
  "pdf-extract",
  "percent-encoding",
  "quick-xml 0.41.0",
