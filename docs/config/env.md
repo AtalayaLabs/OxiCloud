@@ -62,6 +62,14 @@ OPAQUE (RFC 9807) is a zero-knowledge password-authenticated key exchange: the p
 | `OXICLOUD_AUTH_OPAQUE_KSF_ITERATIONS` | `1` | Client-side Argon2id iteration count (OWASP interactive-auth recommendation). |
 | `OXICLOUD_AUTH_OPAQUE_KSF_PARALLELISM` | `1` | Client-side Argon2id parallelism lanes (OWASP recommendation). Higher only helps on multi-core hardware and can hurt single-core / older mobile devices. |
 
+### DPoP — session cookie binding (RFC 9449)
+
+DPoP cryptographically binds a session cookie to a browser-held ECDSA keypair (P-256, non-extractable via `SubtleCrypto`). Every request carries a signed proof the middleware verifies against the session's binding. Closes the info-stealer replay threat: a cookie copied to another machine is useless without the private key. Non-browser clients (Nextcloud sync via app passwords, CLI via device-authorization) never bind and are exempted at the middleware regardless of mode. See `docs/plan/dpop.md` for the full rollout plan.
+
+| Variable | Default | Description |
+|---|---|---|
+| `OXICLOUD_DPOP_MODE` | `off` | Enforcement mode. `off` = middleware pass-through (default, ship-safe). `opportunistic` = verify when a proof is present, log `dpop.header_missing_but_session_bound` audit when absent on a bound session, but allow the request through (rollout mode — catches client bugs). `required` = bound sessions MUST present a valid proof or 401. Unbound sessions always exempt. Recommended rollout: `off` → `opportunistic` for 2-4 weeks → `required`. For DPoP to be meaningful, cookies must be `Secure` (`OXICLOUD_COOKIE_SECURE=true` in production over HTTPS) and reverse-proxy `X-Forwarded-Proto` / `X-Forwarded-Host` must reach the app so the `htu` claim canonicalises correctly. |
+
 ### Rate Limiting & Account Lockout
 
 | Variable | Default | Description |
