@@ -1509,14 +1509,35 @@ pub async fn oidc_callback(
 
     tracing::info!("OIDC callback received with code");
 
-    // Exchange code, validate state/nonce/PKCE, authenticate user
-    let result = auth_app
+    // Exchange code, validate state/nonce/PKCE, authenticate user.
+    // Any Err path (expired state on refresh, consumed code on replay,
+    // anti-takeover email refusal, etc.) is caught below and turned
+    // into a redirect to /login?login_error=<key> — a JSON 4xx here
+    // would render as raw JSON in the browser since the caller is
+    // mid-navigation from the IdP, not the SPA. The SPA login page
+    // renders localized copy per key.
+    let result = match auth_app
         .oidc_callback(&query.code, &query.state, &state.locale_registry)
         .await
-        .map_err(|e| {
+    {
+        Ok(r) => r,
+        Err(e) => {
             tracing::error!("OIDC callback failed: {}", e);
-            AppError::from(e)
-        })?;
+            let config = auth_app.oidc_config().unwrap();
+            let frontend_url = config.frontend_url.trim_end_matches('/');
+            // AccessDenied covers the CSRF/state/code/nonce validation
+            // failures (the common "refresh replayed a consumed state"
+            // case). Everything else is bucketed as a generic callback
+            // failure — operators dig into the log line above for the
+            // specifics; end-users only need "try again" guidance.
+            let reason = match e.kind {
+                crate::domain::errors::ErrorKind::AccessDenied => "callback_denied",
+                _ => "callback_failed",
+            };
+            let redirect_url = format!("{}/login?login_error={}", frontend_url, reason);
+            return Ok(Redirect::temporary(&redirect_url).into_response());
+        }
+    };
 
     match result {
         OidcCallbackResult::WebLogin { exchange_code } => {
@@ -1582,26 +1603,22 @@ pub async fn oidc_callback(
             );
             Ok(Redirect::temporary(&redirect_url).into_response())
         }
-        // Map each auto-link refusal reason to a distinct stable
-        // CamelCase `error_type`. The SPA switches on this to render
-        // targeted copy (contact-admin vs. verify-email-at-IdP vs.
-        // already-linked-elsewhere) rather than a generic error toast.
-        // Status stays 409 (CONFLICT) — semantically an existing user
-        // blocks the auto-provision path.
+        // Redirect the browser back to the login page with a
+        // machine-readable reason on the query string, mirroring the
+        // LinkRefused → `/profile?link_error=<reason>` pattern above.
+        // The browser is mid-redirect from the IdP; returning a 409
+        // JSON body would leave the user staring at raw JSON. The SPA
+        // login page reads `?login_error=<reason>` on mount, renders a
+        // localized notice, and strips the param via history.replaceState.
         OidcCallbackResult::AutoLinkRefused { reason } => {
-            let error_type = match reason {
-                "auto_link_disabled" => "AutoLinkDisabled",
-                "auto_link_email_not_verified" => "AutoLinkEmailNotVerified",
-                "already_linked_elsewhere" => "AutoLinkAlreadyLinkedElsewhere",
-                _ => "AutoLinkRefused",
-            };
-            Err(AppError::new(
-                StatusCode::CONFLICT,
-                "OIDC login blocked — a local account with this email already exists. \
-                 Contact your administrator, or sign in with your existing credentials \
-                 and connect SSO from your profile.",
-                error_type,
-            ))
+            let config = auth_app.oidc_config().unwrap();
+            let frontend_url = config.frontend_url.trim_end_matches('/');
+            let redirect_url = format!("{}/login?login_error={}", frontend_url, reason);
+            tracing::info!(
+                reason = reason,
+                "OIDC auto-link refused, redirecting to /login?login_error"
+            );
+            Ok(Redirect::temporary(&redirect_url).into_response())
         }
     }
 }

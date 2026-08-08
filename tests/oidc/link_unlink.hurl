@@ -40,9 +40,12 @@
 #        (iss, sub) miss but email matches admin, so it auto-
 #        links + logs admin in.
 #     2. Auto-link refused — email_verified=false. Callback
-#        returns HTTP 409 with error_type "AutoLinkEmailNotVerified"
-#        (one of three distinct auto-link refusal error_types —
-#        see auth_handler.rs AutoLinkRefused arm).
+#        redirects the browser to
+#        /login?login_error=auto_link_email_not_verified so the
+#        SPA login page can render a localized notice. Sibling
+#        of the /profile?link_error=<reason> redirect used by
+#        the self-service link flow. See auth_handler.rs
+#        AutoLinkRefused arm.
 #
 #   [OIDC-only user]
 #    10. `oidc_user` unlink refused (would lock them out) with
@@ -512,19 +515,18 @@ HTTP 200
 
 
 # Follow the whole OIDC dance. Hurl's location: true follows 3xx
-# up to the callback; the callback returns 409 (non-3xx) and
-# location follow stops. The final response is what we assert on.
+# up to the callback; the callback redirects to /login with a
+# machine-readable reason on the query string, and the SPA login
+# page lands at 200 (index.html fallback). Assert on URL, since
+# that's the load-bearing wire contract the SPA reads on mount.
 GET {{base_url}}/api/auth/oidc/authorize
 [Options]
 location: true
 location-trusted: true
 
-HTTP 409
+HTTP 200
 [Asserts]
-# Distinct CamelCase key per auto-link refusal reason — the SPA
-# switches on this to render "verify your email at the IdP" copy
-# rather than the generic contact-admin fallback.
-jsonpath "$.error_type" == "AutoLinkEmailNotVerified"
+url matches "^http://localhost:8087/login\\?login_error=auto_link_email_not_verified$"
 
 
 # Belt-and-braces invariant: admin's row is still un-linked
