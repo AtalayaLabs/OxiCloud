@@ -21,8 +21,19 @@ test('favorite, view, and unfavorite a folder', async ({ page }) => {
   await page.goto('/files');
   await expect(page.getByTestId(name)).toBeVisible({ timeout: 15_000 });
   await page.getByTestId(name).click({ button: 'right' });
+  // The context-menu `favorite` click is fire-and-forget in the SPA
+  // (closeContext() runs before the POST) — the test's next
+  // navigation can race the write. Wait for the actual POST to
+  // land before going to /favorites so the list-fetch there sees
+  // the new row committed. The batch test doesn't need this because
+  // it queues 2 POSTs sequentially, which naturally gives the first
+  // one time to commit.
+  const favorited = page.waitForResponse(
+    (r) => r.url().includes('/api/favorites') && r.request().method() === 'POST' && r.ok()
+  );
   await page.getByTestId('files-ctx-favorite-item').click();
   await expect(page.getByTestId('files-context-menu')).toHaveCount(0);
+  await favorited;
 
   await page.goto('/favorites');
   const row = page.getByTestId(name);

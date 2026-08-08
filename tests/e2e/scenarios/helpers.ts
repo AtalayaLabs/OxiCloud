@@ -98,22 +98,61 @@ export async function seedAdmin(baseURL: string, admin = TEST_ADMIN): Promise<vo
 }
 
 /**
- * Authenticate the page's browser context via the API, so a subsequent
- * `page.goto()` loads already signed in — no UI clicks. Selector-independent,
- * which keeps it robust while the SPA login markup is still in flux.
+ * Authenticate the page's browser context, ready for subsequent
+ * `page.goto()` calls to load already-signed-in.
  *
- * `POST /api/auth/login` is CSRF-exempt and sets the auth cookies on the
- * context's (shared) cookie jar, so `page.request` here authenticates the
- * page too. Use this at the top of any spec that needs an authenticated app
- * (and in the codegen recorder, so you record post-login flows).
+ * Uses the SPA's real login flow (`page.goto('/login')` → fill form
+ * → submit) rather than a bare `POST /api/auth/login`, so this works
+ * correctly under both auth modes the test env supports:
+ *
+ *   * `OXICLOUD_AUTH_OPAQUE_MODE=off` — SPA does legacy login,
+ *     server accepts.
+ *   * `OXICLOUD_AUTH_OPAQUE_MODE=migrate` — first login legacy-
+ *     succeeds + silently mints an OPAQUE envelope (Phase 2 hook);
+ *     every subsequent login the SPA detects the envelope via
+ *     `/api/auth/opaque/login/lookup` and does the full KE1/KE3
+ *     OPAQUE handshake. Legacy `POST /api/auth/login` would 403
+ *     with `opaque_migrated_use_opaque` (Phase 4) from the second
+ *     login on — that's what the old bare-POST apiLogin used to
+ *     hit as soon as OPAQUE went from `off` to `migrate`.
+ *   * `OXICLOUD_DPOP_MODE=required` — the SPA computes and sends
+ *     `dpop_jkt` in the login body; the session is created bound.
+ *     A bare-POST wouldn't include it, so subsequent requests
+ *     wouldn't get DPoP-signed. Going through the SPA keeps the
+ *     end-to-end flow honest.
+ *
+ * Overhead vs the old direct POST: ~200-500 ms per test to load
+ * `/login`, submit, and wait for the post-login redirect. Runs
+ * once per test (from `beforeEach`), so the total suite tax is
+ * modest and the coverage payoff is real.
  */
 export async function apiLogin(page: Page, admin = TEST_ADMIN): Promise<void> {
-  const res = await page.request.post('/api/auth/login', {
-    data: { username: admin.username, password: admin.password },
-  });
-  if (!res.ok()) {
-    throw new Error(`apiLogin failed: ${res.status()} ${await res.text()}`);
+  // Idempotence check — many specs' beforeEach + test body both call
+  // apiLogin; the old bare-POST version was a no-op on a live
+  // session, and callers depend on that. Under UI-driven login,
+  // navigating to /login when already authenticated triggers the
+  // SPA's layout guard to redirect away → the login form never
+  // renders → the fill() below times out. Probe /api/auth/me FIRST:
+  // 2xx means we're already signed in as SOMEONE. If that's the
+  // right admin, no-op; otherwise fall through to a fresh login.
+  const probe = await page.request.get('/api/auth/me').catch(() => null);
+  if (probe?.ok()) {
+    const body = (await probe.json().catch(() => ({}))) as { username?: string };
+    if (body.username === admin.username) return;
   }
+
+  await page.goto('/login');
+  await page.locator('[data-testid="login-username-input"]').fill(admin.username);
+  await page.locator('[data-testid="login-password-input"]').fill(admin.password);
+  await page.locator('[data-testid="login-submit-btn"]').click();
+  // Post-login the SPA's `goto(redirectTarget)` sends the user
+  // to `/files` (default) or a `?redirect=` target. Match the
+  // default with a glob — the same shape `uiLogin` uses in
+  // `spa/coverage-helpers.ts` and that Playwright handles well
+  // under SvelteKit's client-side navigation. The 15s ceiling
+  // covers the OPAQUE-post-migration path: WASM load + KE1 +
+  // KE3 + Argon2id.
+  await page.waitForURL('**/files**', { timeout: 15_000 });
 }
 
 /**

@@ -456,7 +456,6 @@ export async function startOidcLink(): Promise<string> {
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: '{}'
 	});
-<<<<<<< HEAD
 	if (!res.ok) {
 		const { errorType, message } = await parseErrorBody(res);
 		throw new ApiError(res.status, res.statusText, '/api/auth/oidc/link/start', errorType, message);
@@ -515,8 +514,13 @@ export async function logout(): Promise<LogoutResult> {
 		try {
 			const { clearKeypair } = await import('$lib/auth/dpop');
 			const { clearNonce } = await import('$lib/auth/dpop-proof');
+			const { broadcastSessionCleared } = await import('$lib/auth/session-broadcast');
 			await clearKeypair();
 			clearNonce();
+			// Notify every OTHER tab of this origin that the session is
+			// gone — Gate 8 cross-tab UX. Tabs that were sitting idle
+			// don't have to wait for their next 401 to notice.
+			broadcastSessionCleared();
 		} catch (err) {
 			console.debug('dpop: cleanup failed during logout', err);
 		}

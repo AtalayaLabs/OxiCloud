@@ -9,6 +9,7 @@
 	import DialogHost from '$lib/components/DialogHost.svelte';
 	import Toaster from '$lib/components/Toaster.svelte';
 	import { setPasswordChangeRequiredHandler } from '$lib/api/client';
+	import { onSessionCleared } from '$lib/auth/session-broadcast';
 	import { session } from '$lib/stores/session.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { hashUrlToPath } from '$lib/utils/hashRedirect';
@@ -61,6 +62,24 @@
 	});
 
 	onMount(async () => {
+		// Cross-tab logout — when ANOTHER tab logs out, wipe our
+		// session store and bounce to /login synchronously. Without
+		// this the natural 401-on-next-request path still catches
+		// it, just with visible delay for an idle tab. See
+		// `docs/plan/dpop.md` Gate 8.
+		//
+		// The cleanup closure returned by `onSessionCleared` is
+		// intentionally not wired to `onDestroy` — the root layout
+		// only unmounts on hot-reload, and a leaked BroadcastChannel
+		// there is far cheaper than the risk of missing an
+		// invalidation event during teardown.
+		onSessionCleared(() => {
+			session.reset();
+			// `replaceState: true` so the back button doesn't return
+			// the user to the now-dead protected page they were on.
+			void goto(resolve('/login'), { replaceState: true });
+		});
+
 		await killLegacyServiceWorker();
 
 		// The instant HTML boot splash has done its job — the app is mounted, so
