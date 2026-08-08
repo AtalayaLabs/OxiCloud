@@ -159,7 +159,13 @@ export function createApiFetch(deps: ApiClientDeps): FetchFn {
 
 		const refreshed = await refresh();
 		if (!refreshed) {
-			onSessionExpired();
+			// Suppress the session-expired divert while a logout POST
+			// is in flight — see `logoutInProgress` above. Without this
+			// gate the ambient 401 race cancels the pending logout and
+			// swallows its `post_logout_url` response body.
+			if (!logoutInProgress) {
+				onSessionExpired();
+			}
 			throw new Error('Session expired');
 		}
 		const retryResponse = await rawFetch(input, init);
@@ -181,6 +187,24 @@ let sessionExpiredHandler: () => void = () => {
 /** Wire the real session-expired behaviour (clear store + redirect) at startup. */
 export function setSessionExpiredHandler(fn: () => void): void {
 	sessionExpiredHandler = fn;
+}
+
+// Logout-in-progress gate. Set to true by the logout endpoint wrapper
+// (endpoints/auth.ts) for the duration of the POST /api/auth/logout
+// call; reset in its `finally`. While set, `sessionExpiredHandler`
+// is suppressed — an ambient 401 during the logout window is expected
+// (the backend clears cookies and revokes the session as part of the
+// logout response, so any in-flight fetch racing the logout will 401),
+// and firing the handler would navigate to `/login?source=session_expired`
+// mid-flight, cancelling the logout POST before we get its response
+// body. Since the response body carries `post_logout_url` (the IdP's
+// end_session_endpoint URL for OIDC-linked sessions), losing it means
+// the browser never redirects to the IdP and the SSO session persists.
+// See AppShell.svelte::onLogout for the caller-side counterpart.
+let logoutInProgress = false;
+
+export function setLogoutInProgress(value: boolean): void {
+	logoutInProgress = value;
 }
 
 // Same shape as `sessionExpiredHandler` — mutable so the app can install

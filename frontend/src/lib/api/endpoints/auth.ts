@@ -3,7 +3,7 @@
  * primitives here intentionally bypass it (see client.ts) so a 401 surfaces as
  * a genuine failure to the caller.
  */
-import { ApiError, apiFetch } from '$lib/api/client';
+import { ApiError, apiFetch, setLogoutInProgress } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type { AuthResponse, User } from '$lib/api/types';
 
@@ -425,17 +425,32 @@ export async function unlinkOidc(): Promise<void> {
 }
 
 export async function logout(): Promise<LogoutResult> {
-	const res = await apiFetch('/api/auth/logout', {
-		method: 'POST',
-		credentials: 'same-origin',
-		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: '{}'
-	});
-	if (!res.ok) return {};
+	// Gate the session-expired handler for the duration of this call.
+	// The backend revokes the session + clears cookies as part of the
+	// logout response, so any in-flight fetch racing us will 401. Without
+	// the gate, that ambient 401 would trigger a navigation to
+	// `/login?source=session_expired`, cancel the pending logout POST,
+	// and swallow the `post_logout_url` response body — leaving the SSO
+	// session live on the IdP because we never navigate to its
+	// end_session_endpoint. See client.ts `logoutInProgress` for details.
+	setLogoutInProgress(true);
 	try {
-		const body = (await res.json()) as { post_logout_url?: unknown };
-		return typeof body?.post_logout_url === 'string' ? { postLogoutUrl: body.post_logout_url } : {};
-	} catch {
-		return {};
+		const res = await apiFetch('/api/auth/logout', {
+			method: 'POST',
+			credentials: 'same-origin',
+			headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
+			body: '{}'
+		});
+		if (!res.ok) return {};
+		try {
+			const body = (await res.json()) as { post_logout_url?: unknown };
+			return typeof body?.post_logout_url === 'string'
+				? { postLogoutUrl: body.post_logout_url }
+				: {};
+		} catch {
+			return {};
+		}
+	} finally {
+		setLogoutInProgress(false);
 	}
 }
