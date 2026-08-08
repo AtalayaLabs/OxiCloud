@@ -319,6 +319,11 @@
 					'auth.login_error_already_linked_elsewhere',
 					'A local account with this email already exists and is linked to a different SSO identity. Contact your administrator.'
 				);
+			case 'email_ambiguous':
+				return t(
+					'auth.login_error_email_ambiguous',
+					'Multiple local accounts match this email address. Contact your administrator to resolve.'
+				);
 			case 'callback_denied':
 				return t(
 					'auth.login_error_callback_denied',

@@ -498,6 +498,76 @@ impl UserRepository for UserPgRepository {
         ))
     }
 
+    /// Returns every user whose email normalizes to `normalized_email`.
+    ///
+    /// Looks up against `auth.users.identity_lookup_email`, a stored
+    /// GENERATED column populated by PostgreSQL from the same
+    /// normalization `common::text::normalize_email_for_link` applies
+    /// on the caller side. See migration
+    /// 20261011000000_users_normalized_email_index.sql — the b-tree
+    /// index on that column makes this an O(log n) probe.
+    async fn list_users_by_normalized_email(
+        &self,
+        normalized_email: &str,
+    ) -> UserRepositoryResult<Vec<User>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                id, username, email, password_hash, role::text as role_text,
+                storage_quota_bytes, storage_used_bytes,
+                created_at, updated_at, last_login_at, active,
+                federation_kind, federation_issuer, federation_subject, image, is_external,
+                given_name, family_name, email_verified_at, preferred_locale, notify_on_share,
+                ui_preferences
+            FROM auth.users
+            WHERE identity_lookup_email = $1
+            "#,
+        )
+        .bind(normalized_email)
+        .fetch_all(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)?;
+
+        let users = rows
+            .into_iter()
+            .map(|row| {
+                let role_str: Option<String> = row.try_get("role_text").unwrap_or(None);
+                let role = match role_str.as_deref() {
+                    Some("admin") => UserRole::Admin,
+                    _ => UserRole::User,
+                };
+                User::from_data_full(
+                    row.get("id"),
+                    row.get("username"),
+                    row.get("email"),
+                    row.get("password_hash"),
+                    role,
+                    row.get("storage_quota_bytes"),
+                    row.get("storage_used_bytes"),
+                    row.get("created_at"),
+                    row.get("updated_at"),
+                    row.get("last_login_at"),
+                    row.get("active"),
+                    row.get::<Option<String>, _>("federation_kind")
+                        .as_deref()
+                        .and_then(crate::domain::entities::user::FederationKind::parse),
+                    row.get("federation_issuer"),
+                    row.get("federation_subject"),
+                    row.get("image"),
+                    row.get("is_external"),
+                    row.get("given_name"),
+                    row.get("family_name"),
+                    row.get("email_verified_at"),
+                    row.get("preferred_locale"),
+                    row.get("notify_on_share"),
+                    row.get::<serde_json::Value, _>("ui_preferences"),
+                )
+            })
+            .collect();
+
+        Ok(users)
+    }
+
     /// Batch loads users by id in one query (avoids N+1 for group-
     /// recipient expansion). Missing ids are silently skipped — the
     /// caller treats absent rows as "no such recipient", same as
@@ -1246,6 +1316,15 @@ impl UserStoragePort for UserPgRepository {
 
     async fn get_user_by_email(&self, email: &str) -> Result<User, DomainError> {
         UserRepository::get_user_by_email(self, email)
+            .await
+            .map_err(DomainError::from)
+    }
+
+    async fn list_users_by_normalized_email(
+        &self,
+        normalized_email: &str,
+    ) -> Result<Vec<User>, DomainError> {
+        UserRepository::list_users_by_normalized_email(self, normalized_email)
             .await
             .map_err(DomainError::from)
     }

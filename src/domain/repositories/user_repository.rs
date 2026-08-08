@@ -107,6 +107,24 @@ pub trait UserRepository: Send + Sync + 'static {
     /// Gets a user by email
     async fn get_user_by_email(&self, email: &str) -> UserRepositoryResult<User>;
 
+    /// Returns every user whose email normalizes to `normalized_email`.
+    ///
+    /// Normalization matches `common::text::normalize_email_for_link` —
+    /// lowercase + strip `+alias` sub-addressing — so
+    /// `Alice+work@Example.com` and `alice@example.com` collapse to the
+    /// same key. Used by the OIDC auto-link decision tree to detect
+    /// ambiguity: two local rows normalizing to the IdP-returned email
+    /// means we can't safely pick one to auto-link, and the callback
+    /// must refuse (`email_ambiguous`).
+    ///
+    /// Caller passes the already-normalized value; the SQL applies the
+    /// same normalization to the stored side symmetrically so casing
+    /// and `+alias` differences on either side collapse.
+    async fn list_users_by_normalized_email(
+        &self,
+        normalized_email: &str,
+    ) -> UserRepositoryResult<Vec<User>>;
+
     /// Updates an existing user
     async fn update_user(&self, user: User) -> UserRepositoryResult<User>;
 

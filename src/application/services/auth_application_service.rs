@@ -3844,26 +3844,38 @@ impl AuthApplicationService {
             }
             Err(_) => {
                 // User doesn't exist by federation subject — try to
-                // match by email. Two possible outcomes:
-                //   * Email matches an existing local user AND the
-                //     auto-link decision tree accepts → auto-link,
-                //     yield the linked user (falls through to session
-                //     mint below).
-                //   * Email matches AND auto-link refuses (config off,
-                //     email not verified, already linked elsewhere) →
-                //     return "contact admin" error (self-service link
-                //     flow remains available).
-                //   * No email match → JIT provision (existing branch).
-                //
-                // NOTE (MVP scope): exact-match lookup only. If OxiCloud
-                // stores `alice+work@example.com` but the IdP returns
-                // `alice@example.com`, the exact match misses even
-                // though they normalise to the same value. The user
-                // falls through to the "contact admin" refusal and can
-                // self-serve via the profile link flow.
-                let matched_user = self.user_storage.get_user_by_email(&oidc_email).await.ok();
+                // match by email under the same normalization the
+                // self-service link flow uses (lowercase + strip
+                // `+alias`). Three possible outcomes:
+                //   * 0 matches → JIT provision (existing branch).
+                //   * 1 match  → run the auto-link decision tree.
+                //   * >1 match → refuse `email_ambiguous`. Two local
+                //     rows collapsing to the same normalized email
+                //     (`alice@example.com` + `alice+work@example.com`)
+                //     mean we can't safely pick one to auto-link;
+                //     admin must resolve.
+                let normalized = crate::common::text::normalize_email_for_link(&oidc_email);
+                let candidates = self
+                    .user_storage
+                    .list_users_by_normalized_email(&normalized)
+                    .await
+                    .unwrap_or_default();
 
-                if let Some(matched) = matched_user {
+                if candidates.len() > 1 {
+                    tracing::info!(
+                        target: "audit",
+                        event = "federation.auto_link_refused",
+                        reason = "email_ambiguous",
+                        normalized_email = %normalized,
+                        candidate_count = candidates.len(),
+                        "🔗 auto-link refused — multiple local users normalize to the IdP email",
+                    );
+                    return Ok(OidcCallbackResult::AutoLinkRefused {
+                        reason: "email_ambiguous",
+                    });
+                }
+
+                if let Some(matched) = candidates.into_iter().next() {
                     // Auto-link decision tree — see
                     // docs/plan/oidc-account-linking.md § Auto-link.
                     let can_auto_link = oidc_config.auto_link_email_match

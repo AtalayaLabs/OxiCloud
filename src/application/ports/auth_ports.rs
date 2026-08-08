@@ -109,6 +109,14 @@ pub trait UserStoragePort: Send + Sync + 'static {
     /// Gets a user by email
     async fn get_user_by_email(&self, email: &str) -> Result<User, DomainError>;
 
+    /// Returns every user whose email normalizes to `normalized_email`
+    /// (see `UserRepository::list_users_by_normalized_email` for the
+    /// full contract and the auto-link ambiguity-detection use case).
+    async fn list_users_by_normalized_email(
+        &self,
+        normalized_email: &str,
+    ) -> Result<Vec<User>, DomainError>;
+
     /// Updates an existing user
     async fn update_user(&self, user: User) -> Result<User, DomainError>;
 

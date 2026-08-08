@@ -1610,6 +1610,11 @@ pub async fn oidc_callback(
         // JSON body would leave the user staring at raw JSON. The SPA
         // login page reads `?login_error=<reason>` on mount, renders a
         // localized notice, and strips the param via history.replaceState.
+        //
+        // Reasons currently emitted (see auth_application_service.rs
+        // auto-link decision tree): auto_link_disabled,
+        // auto_link_email_not_verified, already_linked_elsewhere,
+        // email_ambiguous.
         OidcCallbackResult::AutoLinkRefused { reason } => {
             let config = auth_app.oidc_config().unwrap();
             let frontend_url = config.frontend_url.trim_end_matches('/');

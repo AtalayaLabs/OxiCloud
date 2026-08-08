@@ -47,18 +47,18 @@
 #        the self-service link flow. See auth_handler.rs
 #        AutoLinkRefused arm.
 #
+#     3. Auto-link refused — email_ambiguous. Admin creates a
+#        second local user whose email `admin+work@example.com`
+#        normalizes to the same key as admin's `admin@example.com`.
+#        The fake IdP then returns `admin@example.com` for a fresh
+#        sub; auto-link's normalized fan-out finds >1 candidate
+#        and refuses via /login?login_error=email_ambiguous.
+#        Cleans up the second user afterwards so subsequent
+#        scenarios aren't affected.
+#
 #   [OIDC-only user]
 #    10. `oidc_user` unlink refused (would lock them out) with
 #        error_type NoAlternativeAuth.
-#
-# NOT covered (backend gap; not a Hurl gap):
-#   3. Auto-link refused — email_ambiguous. The current
-#      auto-link path uses `get_user_by_email` (exact match),
-#      not a normalized-email lookup. It CAN'T see two rows
-#      normalizing to the same value, so the ambiguity branch
-#      in the plan doc is unreachable from wire input. Needs a
-#      `list_users_by_normalized_email` repo method before
-#      Hurl can exercise it — separate PR.
 #
 # NOT covered (config gap; would need a second server boot):
 #   4. Auto-link disabled by OXICLOUD_OIDC_AUTO_LINK_EMAIL_MATCH=false.
@@ -566,7 +566,107 @@ HTTP 200
 
 
 # ═════════════════════════════════════════════════════════════
-# Step 11 (Scenario 10) — Unlink refused for the OIDC-only user.
+# Step 11 (Scenario 3) — Auto-link refused, email_ambiguous.
+# ═════════════════════════════════════════════════════════════
+# Create a second local user whose email normalizes to admin's.
+# `admin@example.com` and `alice+work@admin_example.com` don't
+# collide; we need `admin+work@example.com` — same local base
+# and same domain as admin. Then the fake IdP returns
+# `admin@example.com` (verified) for a fresh sub. The auto-link
+# decision tree's list_users_by_normalized_email finds 2
+# candidates → refuses `email_ambiguous` → callback redirects to
+# /login?login_error=email_ambiguous. Both local rows survive
+# untouched (no auto-link happens on either).
+#
+# Cleanup at the tail deletes the second user so subsequent
+# scenarios see the same starting state (admin unlinked, no
+# stray federation candidates).
+# ═════════════════════════════════════════════════════════════
+
+
+# Create the collider. `autolink_csrf_token` from Step 9 is still
+# valid — admin session cookies haven't rotated since (Step 10's
+# refused callback set no new cookies).
+POST {{base_url}}/api/admin/users
+Content-Type: application/json
+X-CSRF-Token: {{autolink_csrf_token}}
+{
+  "username": "admin_alias",
+  "email": "admin+work@example.com",
+  "password": "TestPassword1!",
+  "role": "user"
+}
+
+HTTP 201
+[Captures]
+alias_user_id: jsonpath "$.id"
+
+
+# Point the fake IdP at a fresh sub with admin's email. Both
+# admin@example.com and admin+work@example.com normalize to
+# admin@example.com — auto-link must see both and refuse.
+POST {{oidc_issuer}}/control/set-sub
+Content-Type: application/json
+{ "sub": "sub-ambiguous" }
+
+HTTP 200
+
+
+POST {{oidc_issuer}}/control/set-email
+Content-Type: application/json
+{ "email": "{{email}}" }
+
+HTTP 200
+
+
+GET {{base_url}}/api/auth/oidc/authorize
+[Options]
+location: true
+location-trusted: true
+
+HTTP 200
+[Asserts]
+url matches "^http://localhost:8087/login\\?login_error=email_ambiguous$"
+
+
+# Belt-and-braces invariant: neither admin nor admin_alias got
+# federation columns populated. The refusal fires BEFORE
+# link_federation_identity.
+GET {{base_url}}/api/auth/me
+
+HTTP 200
+[Asserts]
+jsonpath "$.federation_kind" not exists
+
+
+# Cleanup — delete the collider so later scenarios see the same
+# initial state. Uses the current admin session cookies + CSRF.
+DELETE {{base_url}}/api/admin/users/{{alias_user_id}}
+X-CSRF-Token: {{autolink_csrf_token}}
+
+HTTP *
+[Asserts]
+status < 400
+
+
+# Reset IdP back to defaults before the oidc_user re-login step
+# (which needs the real TEST_USER_SUB + oidc@example.com).
+POST {{oidc_issuer}}/control/set-sub
+Content-Type: application/json
+{}
+
+HTTP 200
+
+
+POST {{oidc_issuer}}/control/set-email
+Content-Type: application/json
+{}
+
+HTTP 200
+
+
+# ═════════════════════════════════════════════════════════════
+# Step 12 (Scenario 10) — Unlink refused for the OIDC-only user.
 # ═════════════════════════════════════════════════════════════
 # Fresh OIDC login as `oidc_user` (the JIT-provisioned
 # federated principal from oidc.hurl). Uses the reset default

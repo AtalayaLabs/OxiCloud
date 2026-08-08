@@ -453,8 +453,10 @@
 			// Map the stable reason keys to translated messages. Falls
 			// back to a generic message for keys we don't recognise
 			// (forward-compatible with new refusal reasons).
+			// 10 s dwell (vs the 4 s default) — the copy is long enough
+			// that the default vanishes before the user finishes reading.
 			const msg = ssoLinkErrorMessage(linkError);
-			ui.notify(msg, 'error');
+			ui.notify(msg, 'error', 10000);
 		}
 		if (linked !== null || linkError !== null) {
 			const stripped = new URL(page.url);
@@ -537,13 +539,14 @@
 			if (me) session.user = me;
 			ui.notify(t('profile.sso_unlinked_success', 'Single sign-on disconnected.'), 'info');
 		} catch (err) {
-			if (err instanceof ApiError && err.errorType === 'AccessDenied') {
+			if (err instanceof ApiError && err.errorType === 'NoAlternativeAuth') {
 				ui.notify(
 					t(
 						'profile.sso_unlink_no_alt_auth',
 						'Set a password first — otherwise you would be locked out.'
 					),
-					'error'
+					'error',
+					10000
 				);
 			} else {
 				errorToast(err);
