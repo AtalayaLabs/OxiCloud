@@ -40,8 +40,9 @@
 #        (iss, sub) miss but email matches admin, so it auto-
 #        links + logs admin in.
 #     2. Auto-link refused — email_verified=false. Callback
-#        returns HTTP 409 with error_type "Already Exists" (the
-#        "contact admin to link your OIDC identity" refusal).
+#        returns HTTP 409 with error_type "AutoLinkEmailNotVerified"
+#        (one of three distinct auto-link refusal error_types —
+#        see auth_handler.rs AutoLinkRefused arm).
 #
 #   [OIDC-only user]
 #    10. `oidc_user` unlink refused (would lock them out) with
@@ -491,12 +492,10 @@ HTTP 200
 # "contact admin to link your OIDC identity" text that surfaces
 # in the SPA login form's error toast.
 #
-# NOTE: `error_type` here is "Already Exists" (with a space)
-# because it comes from `ErrorKind::as_str()`, not from a
-# handler-set stable key. The auto-link refusal branch is
-# reusing the generic AlreadyExists mapping — a follow-up
-# could give it a dedicated `error_type` like
-# `AutoLinkEmailNotVerified` for the SPA to switch on.
+# The handler maps each auto-link refusal reason to a distinct
+# CamelCase error_type — AutoLinkDisabled /
+# AutoLinkEmailNotVerified / AutoLinkAlreadyLinkedElsewhere —
+# so the SPA can render targeted copy per refusal reason.
 # ═════════════════════════════════════════════════════════════
 
 
@@ -522,7 +521,10 @@ location-trusted: true
 
 HTTP 409
 [Asserts]
-jsonpath "$.error_type" == "Already Exists"
+# Distinct CamelCase key per auto-link refusal reason — the SPA
+# switches on this to render "verify your email at the IdP" copy
+# rather than the generic contact-admin fallback.
+jsonpath "$.error_type" == "AutoLinkEmailNotVerified"
 
 
 # Belt-and-braces invariant: admin's row is still un-linked

@@ -56,6 +56,14 @@ pub enum OidcCallbackResult {
     /// `/profile?link_error=<reason>` redirect. See
     /// docs/plan/oidc-account-linking.md § Safety checks.
     LinkRefused { reason: &'static str },
+    /// Auto-link decision refused during the OIDC LOGIN callback path
+    /// (existing local user matched by email but the decision tree
+    /// rejected). `reason` is one of `auto_link_disabled`,
+    /// `auto_link_email_not_verified`, `already_linked_elsewhere`;
+    /// the handler maps each to a distinct CamelCase `error_type`
+    /// on the 409 response so the login page can switch on it.
+    /// See docs/plan/oidc-account-linking.md § Auto-link.
+    AutoLinkRefused { reason: &'static str },
 }
 
 /// Outcome of a successful magic-link redemption. The auth tokens are
@@ -3877,14 +3885,15 @@ impl AuthApplicationService {
                             reason = reason,
                             "🔗 auto-link refused",
                         );
-                        return Err(DomainError::new(
-                            ErrorKind::AlreadyExists,
-                            "OIDC",
-                            format!(
-                                "A user with email '{}' already exists. Contact admin to link your OIDC identity.",
-                                oidc_email
-                            ),
-                        ));
+                        // Ok(AutoLinkRefused) rather than Err(AlreadyExists)
+                        // so the handler can map each reason to a distinct
+                        // stable CamelCase error_type (AutoLinkDisabled /
+                        // AutoLinkEmailNotVerified / AutoLinkAlreadyLinked-
+                        // Elsewhere). Bubbling as a generic AlreadyExists
+                        // would collapse all three reasons into "Already
+                        // Exists" on the wire and leave the SPA without a
+                        // switch arm for user-facing copy.
+                        return Ok(OidcCallbackResult::AutoLinkRefused { reason });
                     }
 
                     // All checks passed — commit the auto-link, re-fetch

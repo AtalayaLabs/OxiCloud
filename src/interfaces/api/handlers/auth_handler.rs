@@ -1582,6 +1582,27 @@ pub async fn oidc_callback(
             );
             Ok(Redirect::temporary(&redirect_url).into_response())
         }
+        // Map each auto-link refusal reason to a distinct stable
+        // CamelCase `error_type`. The SPA switches on this to render
+        // targeted copy (contact-admin vs. verify-email-at-IdP vs.
+        // already-linked-elsewhere) rather than a generic error toast.
+        // Status stays 409 (CONFLICT) — semantically an existing user
+        // blocks the auto-provision path.
+        OidcCallbackResult::AutoLinkRefused { reason } => {
+            let error_type = match reason {
+                "auto_link_disabled" => "AutoLinkDisabled",
+                "auto_link_email_not_verified" => "AutoLinkEmailNotVerified",
+                "already_linked_elsewhere" => "AutoLinkAlreadyLinkedElsewhere",
+                _ => "AutoLinkRefused",
+            };
+            Err(AppError::new(
+                StatusCode::CONFLICT,
+                "OIDC login blocked — a local account with this email already exists. \
+                 Contact your administrator, or sign in with your existing credentials \
+                 and connect SSO from your profile.",
+                error_type,
+            ))
+        }
     }
 }
 
