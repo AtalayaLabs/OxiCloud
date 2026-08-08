@@ -132,6 +132,7 @@ impl From<DomainError> for AppError {
             ErrorKind::QuotaExceeded => StatusCode::INSUFFICIENT_STORAGE,
             ErrorKind::Conflict => StatusCode::CONFLICT,
             ErrorKind::PreconditionFailed => StatusCode::PRECONDITION_FAILED,
+            ErrorKind::SyncTokenExpired => StatusCode::INSUFFICIENT_STORAGE,
         };
 
         Self {

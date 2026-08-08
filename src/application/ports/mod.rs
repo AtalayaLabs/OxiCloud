@@ -5,6 +5,7 @@ pub mod blob_storage_ports;
 pub mod cache_ports;
 pub mod calendar_ports;
 pub mod carddav_ports;
+pub mod change_log_port;
 pub mod chunked_upload_ports;
 pub mod compression_ports;
 pub mod content_index_ports;

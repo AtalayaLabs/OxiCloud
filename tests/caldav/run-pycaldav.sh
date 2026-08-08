@@ -79,6 +79,13 @@ set -a
 source "$COMMON/server.env"
 OXICLOUD_SERVER_PORT=$SERVER_PORT
 OXICLOUD_STORAGE_PATH="$CALDAV_DIR/storage"
+# Small on purpose: makes the RFC 6578 row-cap retention path
+# (test_sync_collection.py's expiry test) deterministically
+# reachable by generating a handful of changes, instead of waiting
+# out a real time-based retention window. Harmless to every other
+# test in this suite — none of them generate anywhere near 5
+# change-log rows on a single collection.
+OXICLOUD_SYNC_LOG_MAX_ROWS_PER_COLLECTION=5
 set +a
 
 # Wipe storage between runs so a stale run doesn't leak into fresh state.
@@ -192,6 +199,12 @@ log "Running pytest suite in $CALDAV_DIR/"
 export OXICLOUD_CALDAV_URL="$base_url/caldav/"
 export OXICLOUD_CALDAV_USERNAME="$username"
 export OXICLOUD_CALDAV_APP_PASSWORD="$APP_PASSWORD"
+# Admin JWT minted in step 3 above (used there to mint the app
+# password) — also needed by test_sync_collection.py's
+# retention/expiry test, which triggers the admin-only
+# `POST /api/admin/jobs/sync_log_retention/trigger` endpoint. App
+# passwords / DAV Basic Auth don't satisfy `require_admin`.
+export OXICLOUD_ADMIN_JWT="$JWT"
 
 cd "$CALDAV_DIR"
 # `--show-capture=no` hides pytest's "Captured log setup/call" section

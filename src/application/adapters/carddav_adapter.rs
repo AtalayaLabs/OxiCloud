@@ -11,6 +11,7 @@ use quick_xml::{
  */
 use std::io::{BufReader, Read, Write};
 
+use crate::application::adapters::sync_collection_xml;
 use crate::application::adapters::webdav_adapter::{
     PropFindRequest, PropFindType, QualifiedName, Result, WebDavAdapter, WebDavError,
 };
@@ -688,7 +689,6 @@ impl CardDavAdapter {
         Ok(())
     }
 
-    /// Generate response for contacts (for REPORT)
     /// REPORT `<D:multistatus>` opening tag (DAV + CardDAV namespaces).
     /// Streaming emitters call this once, then
     /// [`Self::write_contacts_report_page`] per cursor page, then
@@ -736,15 +736,34 @@ impl CardDavAdapter {
         Ok(())
     }
 
+    /// Generate response for contacts (for REPORT).
+    ///
+    /// `deleted_hrefs` renders each as an RFC 6578 §3.7
+    /// `<D:status>HTTP/1.1 404 Not Found</D:status>` sub-response instead
+    /// of a `<D:propstat>` block, and `sync_token` (when `Some`) renders
+    /// as a trailing `<D:sync-token>` — both empty/`None` for the
+    /// addressbook-query / addressbook-multiget report types, which
+    /// don't use either.
     pub fn generate_contacts_response<W: Write>(
         writer: W,
         contacts: &[ContactDto],
         report: &CardDavReportType,
         base_href: &str,
+        deleted_hrefs: &[String],
+        sync_token: Option<&str>,
     ) -> Result<()> {
         let mut xml_writer = Writer::new(writer);
         Self::write_report_multistatus_start(&mut xml_writer)?;
         Self::write_contacts_report_page(&mut xml_writer, contacts, report, base_href)?;
+
+        for href in deleted_hrefs {
+            sync_collection_xml::write_deleted_response(&mut xml_writer, "D:", href)?;
+        }
+
+        if let Some(token) = sync_token {
+            sync_collection_xml::write_sync_token(&mut xml_writer, "D:", token)?;
+        }
+
         Self::write_carddav_multistatus_end(&mut xml_writer)
     }
 

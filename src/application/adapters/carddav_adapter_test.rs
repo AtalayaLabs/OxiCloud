@@ -503,6 +503,8 @@ mod tests {
             &contacts,
             &report,
             "/carddav/ab-001",
+            &[],
+            None,
         );
 
         assert!(
@@ -531,6 +533,8 @@ mod tests {
             &contacts,
             &report,
             "/carddav/ab-001",
+            &[],
+            None,
         );
 
         assert!(

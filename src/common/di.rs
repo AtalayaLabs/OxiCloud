@@ -632,6 +632,13 @@ impl AppServiceFactory {
         // File metadata repository — EXIF/media metadata for images
         let file_metadata_repository = Arc::new(FileMetadataRepository::new(db_pool.clone()));
 
+        // Sync-collection change log — RFC 6578 incremental WebDAV sync.
+        let folder_sync_change_repository = Arc::new(
+            crate::infrastructure::repositories::pg::FolderSyncChangePgRepository::new(
+                db_pool.clone(),
+            ),
+        );
+
         tracing::info!(
             "Repository services initialized with 100% blob storage model (PG metadata + DedupService blobs)"
         );
@@ -644,6 +651,7 @@ impl AppServiceFactory {
             file_metadata_repository,
             i18n_repository,
             trash_repository,
+            folder_sync_change_repository,
         }
     }
 
@@ -814,6 +822,15 @@ impl AppServiceFactory {
             self.config.search_cache.max_bytes,
         )));
 
+        let webdav_sync_collection_service = Arc::new(
+            crate::application::services::webdav_sync_collection_service::WebdavSyncCollectionService::new(
+                repos.folder_sync_change_repository.clone(),
+                repos.folder_repository.clone(),
+                repos.file_read_repository.clone(),
+                authz.clone(),
+            ),
+        );
+
         tracing::info!("Application services initialized");
 
         ApplicationServices {
@@ -835,6 +852,7 @@ impl AppServiceFactory {
             recent_service: None,    // Configured later with create_recent_service
             audio_metadata_service: core.audio_metadata_service.clone(),
             media_metadata_service: core.media_metadata_service.clone(),
+            webdav_sync_collection_service,
         }
     }
 
@@ -1290,6 +1308,47 @@ impl AppServiceFactory {
         tracing::info!("Tree-ETag flush service initialized");
     }
 
+    /// Registers the RFC 6578 `sync-collection` change-log retention sweep
+    /// with the periodic-job scheduler (requires database). Always on
+    /// (WebDAV isn't an optional feature in this server, so its sync-log
+    /// housekeeping isn't either). Uses its own repository instance bound
+    /// to `maintenance_pool` so the periodic DELETE never competes with
+    /// request-path queries on the primary pool.
+    async fn start_sync_log_retention_job(
+        &self,
+        maintenance_pool: &Arc<PgPool>,
+        core: &CoreServices,
+    ) {
+        let folder_change_log = Arc::new(
+            crate::infrastructure::repositories::pg::FolderSyncChangePgRepository::new(
+                maintenance_pool.clone(),
+            ),
+        );
+        let calendar_change_log = Arc::new(
+            crate::infrastructure::repositories::pg::CalendarSyncChangePgRepository::new(
+                maintenance_pool.clone(),
+            ),
+        );
+        let contact_change_log = Arc::new(
+            crate::infrastructure::repositories::pg::ContactSyncChangePgRepository::new(
+                maintenance_pool.clone(),
+            ),
+        );
+        Arc::new(
+            crate::infrastructure::services::sync_log_retention_service::SyncLogRetentionService::new(
+                folder_change_log,
+                calendar_change_log,
+                contact_change_log,
+                self.config.storage.sync_log_retention_days,
+                self.config.storage.sync_log_retention_sweep_interval_hours,
+                self.config.storage.sync_log_max_rows_per_collection,
+            ),
+        )
+        .register(&core.job_registry)
+        .await;
+        tracing::info!("Sync-log retention service registered");
+    }
+
     /// Start the primary-pool saturation watchdog (Finding #3). Logs a WARN as
     /// the user-facing pool approaches exhaustion — the early signal for raising
     /// `max_connections` or chasing a slow query before tail latency cliffs.
@@ -1709,6 +1768,9 @@ impl AppServiceFactory {
 
             self.start_tree_etag_flush_job(&maintenance_pool);
 
+            self.start_sync_log_retention_job(&maintenance_pool, &core)
+                .await;
+
             self.start_db_pool_monitor(&pool);
 
             self.start_content_index_job(&maintenance_pool, &core, content_index);
@@ -2117,8 +2179,10 @@ impl AppServiceFactory {
             grant_cleanup_service,
             calendar_service: None,
             calendar_use_case: None,
+            caldav_sync_collection_service: None,
             addressbook_use_case: None,
             contact_use_case: None,
+            carddav_sync_collection_service: None,
             music_service: None,
             wopi_token_service: None,
             wopi_lock_service: None,
@@ -2452,13 +2516,29 @@ impl AppServiceFactory {
                     event_repo,
                 )
             );
+            let calendar_sync_change_repo = Arc::new(
+                crate::infrastructure::repositories::pg::CalendarSyncChangePgRepository::new(
+                    pool.clone(),
+                ),
+            );
             let calendar_service = Arc::new(
                 crate::application::services::calendar_service::CalendarService::new(
-                    calendar_storage,
+                    calendar_storage.clone(),
                     authorization.clone(),
                 ),
             );
             app_state.calendar_use_case = Some(calendar_service as Arc<CalendarService>);
+
+            // RFC 6578 sync-collection — dedicated service (mirrors
+            // CarddavSyncCollectionService below), fixing the previous
+            // inconsistency of CalendarService owning this inline.
+            app_state.caldav_sync_collection_service = Some(Arc::new(
+                crate::application::services::caldav_sync_collection_service::CaldavSyncCollectionService::new(
+                    calendar_sync_change_repo,
+                    calendar_storage,
+                    authorization.clone(),
+                ),
+            ));
 
             // CardDAV
             let address_book_repo: Arc<AddressBookPgRepository> = Arc::new(
@@ -2475,7 +2555,7 @@ impl AppServiceFactory {
             let contact_storage = Arc::new(
                 crate::infrastructure::adapters::contact_storage_adapter::ContactStorageAdapter::new(
                     address_book_repo,
-                    contact_repo,
+                    contact_repo.clone(),
                     group_repo,
                 ),
             );
@@ -2483,6 +2563,22 @@ impl AppServiceFactory {
                 Arc::new(ContactService::new(contact_storage, authorization.clone()));
             app_state.addressbook_use_case = Some(contact_service.clone());
             app_state.contact_use_case = Some(contact_service);
+
+            // RFC 6578 sync-collection — dedicated service (mirrors
+            // WebdavSyncCollectionService), holding its own change-log repo
+            // plus the raw contact repo for resolving Created/Updated rows.
+            let contact_sync_change_repo = Arc::new(
+                crate::infrastructure::repositories::pg::ContactSyncChangePgRepository::new(
+                    pool.clone(),
+                ),
+            );
+            app_state.carddav_sync_collection_service = Some(Arc::new(
+                crate::application::services::carddav_sync_collection_service::CarddavSyncCollectionService::new(
+                    contact_sync_change_repo,
+                    contact_repo.clone(),
+                    authorization.clone(),
+                ),
+            ));
 
             tracing::info!("CalDAV and CardDAV services initialized with PostgreSQL repositories");
         }
@@ -2780,6 +2876,9 @@ pub struct RepositoryServices {
     pub file_metadata_repository: Arc<FileMetadataRepository>,
     pub i18n_repository: Arc<FileSystemI18nService>,
     pub trash_repository: Option<Arc<TrashDbRepository>>,
+    /// RFC 6578 `sync-collection` change log for WebDAV files/folders.
+    pub folder_sync_change_repository:
+        Arc<crate::infrastructure::repositories::pg::FolderSyncChangePgRepository>,
 }
 
 /// Container for application services
@@ -2806,6 +2905,11 @@ pub struct ApplicationServices {
     pub recent_service: Option<Arc<RecentService>>,
     pub audio_metadata_service: Option<Arc<AudioMetadataService>>,
     pub media_metadata_service: Arc<MediaMetadataService>,
+    /// RFC 6578 `sync-collection` REPORT — real incremental sync for
+    /// WebDAV files/folders (plain WebDAV + NextCloud surfaces).
+    pub webdav_sync_collection_service: Arc<
+        crate::application::services::webdav_sync_collection_service::WebdavSyncCollectionService,
+    >,
 }
 
 /// Container for authentication services
@@ -2901,8 +3005,20 @@ pub struct AppState {
     >,
     pub calendar_service: Option<Arc<CalendarService>>,
     pub calendar_use_case: Option<Arc<CalendarService>>,
+    /// RFC 6578 `sync-collection` REPORT — real incremental sync for
+    /// CalDAV events. Separate service (mirrors
+    /// `carddav_sync_collection_service`) rather than folded into
+    /// `CalendarService` — see `CaldavSyncCollectionService`'s doc comment.
+    pub caldav_sync_collection_service:
+        Option<Arc<crate::application::services::caldav_sync_collection_service::CaldavSyncCollectionService>>,
     pub addressbook_use_case: Option<Arc<ContactService>>,
     pub contact_use_case: Option<Arc<ContactService>>,
+    /// RFC 6578 `sync-collection` REPORT — real incremental sync for
+    /// CardDAV contacts. Separate service (mirrors
+    /// `webdav_sync_collection_service`) rather than folded into
+    /// `ContactService` — see `CarddavSyncCollectionService`'s doc comment.
+    pub carddav_sync_collection_service:
+        Option<Arc<crate::application::services::carddav_sync_collection_service::CarddavSyncCollectionService>>,
     pub music_service: Option<Arc<MusicService>>,
     pub wopi_token_service:
         Option<Arc<crate::application::services::wopi_token_service::WopiTokenService>>,

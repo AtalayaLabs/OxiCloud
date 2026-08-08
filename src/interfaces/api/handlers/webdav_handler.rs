@@ -26,6 +26,7 @@ use crate::application::dtos::display_helpers::intern_display;
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::application::ports::authorization_ports::AuthorizationEngine;
+use crate::application::ports::change_log_port::SyncChange;
 use crate::application::ports::file_ports::FileRetrievalUseCase;
 use crate::application::ports::file_ports::{FileManagementUseCase, FileUploadUseCase};
 use crate::application::ports::folder_ports::FolderUseCase;
@@ -33,7 +34,9 @@ use crate::application::ports::storage_ports::StorageUsagePort;
 use crate::application::services::file_retrieval_service::FileRetrievalService;
 use crate::application::services::file_upload_service::FileUploadService;
 use crate::application::services::folder_service::FolderService;
+use crate::application::services::webdav_sync_collection_service::WebdavSyncMember;
 use crate::common::di::AppState;
+use crate::domain::entities::sync_token::SyncToken;
 use crate::domain::repositories::drive_repository::DriveRepository;
 use crate::domain::services::authorization::{Permission, Resource, Subject};
 use crate::infrastructure::services::path_resolver_service::ResolvedResource;
@@ -69,8 +72,9 @@ const PATH_SEGMENT_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b':')
     .remove(b'@');
 
-/// Percent-encode a single URI path segment (folder/file name).
-/// Percent-encode a full slash-separated path, encoding each segment individually.
+/// Percent-encode a full slash-separated path, encoding each segment
+/// individually — also safe for a single segment (folder/file name),
+/// which just has no `/` to split on.
 pub(crate) fn encode_uri_path(path: &str) -> String {
     use std::fmt::Write as _;
     // `utf8_percent_encode` returns a `Display` adapter, so write each encoded
@@ -419,6 +423,7 @@ async fn handle_webdav_dispatch(
         "COPY" => handle_copy(state, req, path).await,
         "PROPFIND" => handle_propfind(state, req, path).await,
         "PROPPATCH" => handle_proppatch(state, req, path).await,
+        "REPORT" => handle_report(state, req, path).await,
         "LOCK" => handle_lock(state, req, path).await,
         "UNLOCK" => handle_unlock(state, req, path).await,
         _ => Err(AppError::method_not_allowed(format!(
@@ -444,7 +449,7 @@ async fn handle_options(_path: String) -> Result<Response<Body>, AppError> {
         .header(HEADER_DAV, "1, 2") // Class 1 and 2 WebDAV support
         .header(
             header::ALLOW,
-            "OPTIONS, GET, HEAD, PUT, PATCH, DELETE, PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK",
+            "OPTIONS, GET, HEAD, PUT, PATCH, DELETE, PROPFIND, PROPPATCH, REPORT, MKCOL, COPY, MOVE, LOCK, UNLOCK",
         )
         .body(Body::empty())
         .unwrap())
@@ -909,6 +914,236 @@ async fn build_streaming_propfind_response(
         .status(StatusCode::MULTI_STATUS)
         .header(header::CONTENT_TYPE, "application/xml; charset=utf-8")
         .body(Body::from_stream(stream))
+        .unwrap())
+}
+
+/**
+ * Handles REPORT requests (currently: RFC 6578 sync-collection).
+ *
+ * Real incremental sync for ordinary folder collections, backed by
+ * `storage.folder_sync_changes` (`WebdavSyncCollectionService`): an
+ * absent/empty client `sync-token` renders a full listing (paired with a
+ * freshly minted token); a present token renders only what changed,
+ * including RFC 6578 §3.7 404 sub-responses for removed members.
+ *
+ * The synthetic multi-drive root (`path.is_empty()`, no real
+ * `storage.folders` row to log against — see
+ * `migrations/20261001000000_folder_sync_changes.sql`'s header) is out of
+ * scope for this phase and keeps the old full-listing-every-call
+ * behavior with a fake timestamp token.
+ *
+ * @param state The application state containing service dependencies
+ * @param req   The HTTP request containing the REPORT XML body
+ * @param path  The requested collection path
+ * @return HTTP response: 207 multistatus + trailing `<D:sync-token>`,
+ *         or 507 if the client's token predates the retention window
+ */
+async fn handle_report(
+    state: Arc<AppState>,
+    req: Request<Body>,
+    path: String,
+) -> Result<Response<Body>, AppError> {
+    let user = extract_user(&req)?;
+    let folder_service = &state.applications.folder_service;
+    let file_retrieval_service = &state.applications.file_retrieval_service;
+    let sync_service = &state.applications.webdav_sync_collection_service;
+
+    // RFC 6578 doesn't define a Depth semantic of its own; this server
+    // reuses PROPFIND's Depth cap (only Depth: 1 children are listed —
+    // deeper reports need a client-side recursive fetch, same as PROPFIND).
+    let depth = req
+        .headers()
+        .get("Depth")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("1")
+        .to_string();
+    if depth == "infinity" {
+        return Err(AppError::forbidden(
+            "sync-collection Depth: infinity is not supported",
+        ));
+    }
+
+    let client_path = extract_webdav_path(req.uri());
+    let base_href = if client_path.is_empty() || client_path == "/" {
+        "/webdav/".to_string()
+    } else {
+        format!("/webdav/{}/", encode_uri_path(&client_path))
+    };
+
+    let body_bytes = body::to_bytes(req.into_body(), MAX_XML_BODY)
+        .await
+        .map_err(|e| AppError::bad_request(format!("Failed to read request body: {}", e)))?;
+
+    let sync_req = WebDavAdapter::parse_sync_collection(body_bytes.reader())
+        .map_err(|e| AppError::bad_request(format!("Failed to parse REPORT: {}", e)))?;
+
+    let scope = resolve_webdav_scope_or_405(&state, user.id, &path).await?;
+    let drive_id = scope.drive_id;
+    let path = scope.db_path;
+
+    // Resolve the target — must be a collection (folder), drive root included.
+    let folder_id: Option<String> = if path.is_empty() {
+        None
+    } else if let Some(resolver) = &state.path_resolver {
+        match resolver.resolve_path_in_drive(&path, drive_id).await {
+            Ok(ResolvedResource::Folder(f)) => {
+                // No authz check here by design — AGENTS.md reserves
+                // ownership/permission checks for the application service
+                // layer. `sync_service.mint_initial_token`/
+                // `list_changes_with_perms` below both re-check
+                // `Resource::Folder(collection_id)` before touching the
+                // change log, same as the `else` branch a few lines down
+                // which never had a check here either.
+                Uuid::parse_str(&f.id)
+                    .map_err(|_| AppError::not_found(format!("Resource not found: {}", path)))?;
+                Some(f.id)
+            }
+            Ok(ResolvedResource::File(_)) => {
+                return Err(AppError::conflict(
+                    "sync-collection REPORT target must be a collection",
+                ));
+            }
+            Err(_) => {
+                return Err(AppError::not_found(format!("Resource not found: {}", path)));
+            }
+        }
+    } else {
+        let f = folder_service
+            .get_folder_by_path(&path, drive_id)
+            .await
+            .map_err(|_| AppError::not_found(format!("Resource not found: {}", path)))?;
+        Some(f.id)
+    };
+    let fid_ref = folder_id.as_deref();
+
+    // Real collection UUID → real change log. The synthetic multi-drive
+    // root (`folder_id: None`) falls through to the old full-listing path.
+    let collection_id = folder_id.as_deref().and_then(|id| Uuid::parse_str(id).ok());
+
+    let (subfolders, files, deleted, sync_token): (
+        Vec<FolderDto>,
+        Vec<FileDto>,
+        Vec<String>,
+        String,
+    ) = if let Some(collection_id) = collection_id {
+        let requested_token = match sync_req.sync_token.as_deref() {
+            Some(raw) => Some(
+                SyncToken::parse_for_collection(raw, collection_id)
+                    .map_err(|e| AppError::bad_request(format!("Invalid sync-token: {e}")))?,
+            ),
+            None => None,
+        };
+
+        if depth != "1" {
+            // Depth:0 just refreshes the token — no children rendered,
+            // same as this handler's pre-existing behavior.
+            let new_token = sync_service
+                .mint_initial_token(collection_id, user.id)
+                .await?;
+            (Vec::new(), Vec::new(), Vec::new(), new_token.to_string())
+        } else {
+            match requested_token {
+                None => {
+                    let subfolders = folder_service
+                        .list_folders_with_perms(fid_ref, user.id)
+                        .await
+                        .map_err(|e| {
+                            AppError::internal_error(format!("Failed to list folders: {}", e))
+                        })?;
+                    let files = file_retrieval_service
+                        .list_files_with_perms(fid_ref, user.id)
+                        .await
+                        .map_err(|e| {
+                            AppError::internal_error(format!("Failed to list files: {}", e))
+                        })?;
+                    let new_token = sync_service
+                        .mint_initial_token(collection_id, user.id)
+                        .await?;
+                    (subfolders, files, Vec::new(), new_token.to_string())
+                }
+                Some(token) => {
+                    let delta = sync_service
+                        .list_changes_with_perms(collection_id, Some(token), user.id)
+                        .await?;
+                    let mut subfolders = Vec::new();
+                    let mut files = Vec::new();
+                    let mut deleted = Vec::new();
+                    for change in delta.changes {
+                        match change {
+                            SyncChange::Upserted(WebdavSyncMember::Folder(f)) => subfolders.push(f),
+                            SyncChange::Upserted(WebdavSyncMember::File(f)) => files.push(f),
+                            SyncChange::Deleted {
+                                href_hint,
+                                is_collection,
+                                ..
+                            } => {
+                                let mut href =
+                                    format!("{}{}", base_href, encode_uri_path(&href_hint));
+                                if is_collection {
+                                    href.push('/');
+                                }
+                                deleted.push(href);
+                            }
+                        }
+                    }
+                    (subfolders, files, deleted, delta.new_token.to_string())
+                }
+            }
+        }
+    } else {
+        let (subfolders, files) = if depth == "1" {
+            let subfolders = folder_service
+                .list_folders_with_perms(fid_ref, user.id)
+                .await
+                .map_err(|e| AppError::internal_error(format!("Failed to list folders: {}", e)))?;
+            let files = file_retrieval_service
+                .list_files_with_perms(fid_ref, user.id)
+                .await
+                .map_err(|e| AppError::internal_error(format!("Failed to list files: {}", e)))?;
+            (subfolders, files)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        // Freshly minted per response — no real collection id to scope
+        // a change-log token against for the synthetic root (see the
+        // doc comment above).
+        let sync_token = format!(
+            "http://oxicloud.local/ns/sync/{}",
+            Utc::now().timestamp_millis()
+        );
+        (subfolders, files, Vec::new(), sync_token)
+    };
+
+    let subfolders: Vec<(FolderDto, String)> = subfolders
+        .into_iter()
+        .map(|f| {
+            let href = format!("{}{}/", base_href, encode_uri_path(&f.name));
+            (f, href)
+        })
+        .collect();
+    let files: Vec<(FileDto, String)> = files
+        .into_iter()
+        .map(|f| {
+            let href = format!("{}{}", base_href, encode_uri_path(&f.name));
+            (f, href)
+        })
+        .collect();
+
+    let mut response_body = Vec::new();
+    WebDavAdapter::generate_sync_collection_response(
+        &mut response_body,
+        &subfolders,
+        &files,
+        &deleted,
+        &sync_req.request,
+        &sync_token,
+    )
+    .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
+
+    Ok(Response::builder()
+        .status(StatusCode::MULTI_STATUS)
+        .header(header::CONTENT_TYPE, "application/xml; charset=utf-8")
+        .body(Body::from(response_body))
         .unwrap())
 }
 

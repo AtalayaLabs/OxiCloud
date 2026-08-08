@@ -170,8 +170,15 @@ async fn buffered_report(
     let t0 = Instant::now();
     let contacts = fetch_all_dtos(repo, book_id).await;
     let mut out = Vec::with_capacity(contacts.len() * 256);
-    CardDavAdapter::generate_contacts_response(&mut out, &contacts, &report_shape(), base_href)
-        .expect("generate");
+    CardDavAdapter::generate_contacts_response(
+        &mut out,
+        &contacts,
+        &report_shape(),
+        base_href,
+        &[],
+        None,
+    )
+    .expect("generate");
     (t0.elapsed().as_secs_f64() * 1e3, out)
 }
 

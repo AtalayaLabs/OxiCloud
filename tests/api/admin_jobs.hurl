@@ -67,40 +67,44 @@ Authorization: Bearer {{admin_token}}
 
 HTTP 200
 [Asserts]
-# Names — the four scheduler tenants.
+# Names — the five scheduler tenants.
 jsonpath "$[*].name" contains "trash_cleanup"
 jsonpath "$[*].name" contains "usage_reconcile"
 jsonpath "$[*].name" contains "dedup_gc"
 jsonpath "$[*].name" contains "grant_cleanup"
+jsonpath "$[*].name" contains "sync_log_retention"
 
 # Scheduled jobs' interval_ms values, in whatever order:
-#   TrashCleanup    → 24 h = 86_400_000 ms
-#   GrantCleanup    → 24 h = 86_400_000 ms
-#   StorageReconcile → 600 s = 600_000 ms
+#   TrashCleanup       → 24 h  = 86_400_000 ms
+#   GrantCleanup       → 24 h  = 86_400_000 ms
+#   StorageReconcile   → 600 s = 600_000 ms
+#   SyncLogRetention   → 1 h   = 3_600_000 ms (default sweep interval)
 # Recursive descent collects all interval_ms values across the
 # array; `contains` doesn't care about order.
 jsonpath "$..interval_ms" contains 86400000
 jsonpath "$..interval_ms" contains 600000
+jsonpath "$..interval_ms" contains 3600000
 
 # On-demand job (`dedup_gc`) has no interval_ms field, so the
-# total count of interval_ms values is 3, not 4. Combined with
-# the four-name check above, this pins the on-demand-omission
+# total count of interval_ms values is 4, not 5. Combined with
+# the five-name check above, this pins the on-demand-omission
 # behaviour without hitting the single-match filter trap.
-jsonpath "$..interval_ms" count == 3
+jsonpath "$..interval_ms" count == 4
 
 # Every entry carries a `running` bool — same aggregate primitive.
-# Count matches the registered-tenant count: 4 Part 1 periodics
-# (trash_cleanup, usage_reconcile, dedup_gc, grant_cleanup) + 5
-# Part 2 recoverables (drives_consistency, folders_consistency,
-# files_consistency, blobs_consistency, backend_consistency —
-# wrapped by RecoverableAdapter so they appear here alongside the
-# periodics) + 1 coordinator (consistency_batch — a plain
-# JobHandler that dispatches every registered `*_consistency`) +
-# 2 on-demand admin ops (backend_migration — the readonly-mode +
-# cutover backend swap; backend_rotate — K3, in-place per-blob
-# format normalisation, no readonly).
+# Count matches the registered-tenant count: 5 Part 1 periodics
+# (trash_cleanup, usage_reconcile, dedup_gc, grant_cleanup,
+# sync_log_retention) + 5 Part 2 recoverables (drives_consistency,
+# folders_consistency, files_consistency, blobs_consistency,
+# backend_consistency — wrapped by RecoverableAdapter so they
+# appear here alongside the periodics) + 1 coordinator
+# (consistency_batch — a plain JobHandler that dispatches every
+# registered `*_consistency`) + 2 on-demand admin ops
+# (backend_migration — the readonly-mode + cutover backend swap;
+# backend_rotate — K3, in-place per-blob format normalisation, no
+# readonly).
 # Bump when a new tenant registers.
-jsonpath "$..running" count == 12
+jsonpath "$..running" count == 13
 jsonpath "$[*].name" contains "drives_consistency"
 jsonpath "$[*].name" contains "folders_consistency"
 jsonpath "$[*].name" contains "files_consistency"

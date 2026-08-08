@@ -50,6 +50,7 @@ pub mod search_index;
 pub mod share_unlock_cookie;
 pub mod smtp_email_sender;
 pub mod swappable_blob_backend;
+pub mod sync_log_retention_service;
 pub mod thumbnail_service;
 #[cfg(test)]
 mod thumbnail_service_test;

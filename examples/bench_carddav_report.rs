@@ -394,7 +394,7 @@ fn run_before(contacts: &[ContactDto], report: &CardDavReportType, base_href: &s
 /// NEW production path.
 fn run_after(contacts: &[ContactDto], report: &CardDavReportType, base_href: &str) -> Vec<u8> {
     let mut out = Vec::new();
-    CardDavAdapter::generate_contacts_response(&mut out, contacts, report, base_href)
+    CardDavAdapter::generate_contacts_response(&mut out, contacts, report, base_href, &[], None)
         .expect("AFTER XML generation failed");
     out
 }

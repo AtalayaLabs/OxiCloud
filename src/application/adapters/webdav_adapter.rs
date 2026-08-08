@@ -1,3 +1,4 @@
+use crate::application::adapters::sync_collection_xml;
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
 use chrono::Utc;
@@ -151,6 +152,17 @@ impl PropFindRequest {
             }),
         }
     }
+}
+
+/// Parsed RFC 6578 `<D:sync-collection>` REPORT request.
+#[derive(Debug)]
+pub struct SyncCollectionRequest {
+    /// `None` for an initial sync (empty/absent `<D:sync-token/>`).
+    pub sync_token: Option<String>,
+    /// Reuses `PropFindRequest`'s prop-selection semantics (allprop /
+    /// propname / prop) — sync-collection's `<D:prop>` block means the
+    /// same thing PROPFIND's does.
+    pub request: PropFindRequest,
 }
 
 /// WebDAV property value
@@ -475,6 +487,106 @@ impl WebDavAdapter {
             "quota-available-bytes" => quota.is_some_and(|(_, available)| available.is_some()),
             _ => false,
         }
+    }
+
+    /// Parse an RFC 6578 `<D:sync-collection>` REPORT request.
+    ///
+    /// `sync_token` is `None` for an initial sync (empty or absent
+    /// `<D:sync-token/>`) — the caller (`webdav_handler.rs::handle_report`)
+    /// renders a full listing for that case and an incremental delta via
+    /// `WebdavSyncCollectionService` when a token is present. The raw
+    /// string here is parsed into a structured `SyncToken`
+    /// (`domain/entities/sync_token.rs`) by the caller, not by this
+    /// function — this parser only extracts the wire-format XML.
+    pub fn parse_sync_collection<R: Read>(reader: R) -> Result<SyncCollectionRequest> {
+        let mut xml_reader = Reader::from_reader(BufReader::new(reader));
+        xml_reader.config_mut().trim_text(true);
+
+        let mut buffer = Vec::new();
+        let mut in_prop = false;
+        let mut in_sync_token = false;
+        let mut in_allprop = false;
+        let mut in_propname = false;
+        let mut props = Vec::new();
+        let mut sync_token = String::new();
+        let mut ns_map = std::collections::HashMap::<String, String>::new();
+
+        loop {
+            match xml_reader.read_event_into(&mut buffer) {
+                Ok(Event::Start(ref e)) => {
+                    Self::check_attribute_cap(e)?;
+                    Self::collect_ns_decls(e, &mut ns_map);
+                    let name = e.name();
+                    let name_str = std::str::from_utf8(name.as_ref()).unwrap_or("");
+
+                    if name_str == "prop" || name_str.ends_with(":prop") {
+                        in_prop = true;
+                    } else if name_str == "sync-token" || name_str.ends_with(":sync-token") {
+                        in_sync_token = true;
+                    } else if name_str == "allprop" || name_str.ends_with(":allprop") {
+                        in_allprop = true;
+                    } else if name_str == "propname" || name_str.ends_with(":propname") {
+                        in_propname = true;
+                    } else if in_prop {
+                        let qname = Self::resolve_name(name_str, &ns_map);
+                        props.push(qname);
+                    }
+                }
+                Ok(Event::Text(e)) if in_sync_token => {
+                    sync_token.push_str(&e.decode().unwrap_or_default());
+                }
+                Ok(Event::End(ref e)) => {
+                    let name = e.name();
+                    let name_str = std::str::from_utf8(name.as_ref()).unwrap_or("");
+
+                    if name_str == "prop" || name_str.ends_with(":prop") {
+                        in_prop = false;
+                    } else if name_str == "sync-token" || name_str.ends_with(":sync-token") {
+                        in_sync_token = false;
+                    } else if name_str == "allprop" || name_str.ends_with(":allprop") {
+                        in_allprop = false;
+                    } else if name_str == "propname" || name_str.ends_with(":propname") {
+                        in_propname = false;
+                    }
+                }
+                Ok(Event::Empty(ref e)) => {
+                    Self::check_attribute_cap(e)?;
+                    Self::collect_ns_decls(e, &mut ns_map);
+                    let name = e.name();
+                    let name_str = std::str::from_utf8(name.as_ref()).unwrap_or("");
+
+                    if name_str == "allprop" || name_str.ends_with(":allprop") {
+                        in_allprop = true;
+                    } else if name_str == "propname" || name_str.ends_with(":propname") {
+                        in_propname = true;
+                    } else if in_prop {
+                        let qname = Self::resolve_name(name_str, &ns_map);
+                        props.push(qname);
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(e) => return Err(WebDavError::XmlError(e)),
+                _ => (),
+            }
+            buffer.clear();
+        }
+
+        let prop_find_type = if in_allprop {
+            PropFindType::AllProp
+        } else if in_propname {
+            PropFindType::PropName
+        } else {
+            PropFindType::Prop(props)
+        };
+
+        Ok(SyncCollectionRequest {
+            sync_token: if sync_token.is_empty() {
+                None
+            } else {
+                Some(sync_token)
+            },
+            request: PropFindRequest { prop_find_type },
+        })
     }
 
     fn file_prop_is_known(prop: &QualifiedName) -> bool {
@@ -1583,6 +1695,106 @@ impl WebDavAdapter {
         dead_props: &[(QualifiedName, Option<String>)],
     ) -> Result<()> {
         Self::write_file_response_with_dead_props(writer, file, request, href, dead_props)
+    }
+
+    /// Generate the RFC 6578 §3.7 sync-collection response for the
+    /// plain-file WebDAV surface: a `<D:multistatus>` listing either the
+    /// full current membership (initial sync, no prior token) or the
+    /// incremental delta since the client's `sync-token` (real incremental
+    /// sync, backed by `storage.folder_sync_changes` — see
+    /// `WebdavSyncCollectionService`), followed by a trailing
+    /// `<D:sync-token>`. `deleted` renders each removed member as an RFC
+    /// 6578 §3.7 `<D:response>` carrying `<D:status>HTTP/1.1 404 Not
+    /// Found</D:status>` instead of a `<D:propstat>` block.
+    ///
+    /// `subfolders`/`files`/`deleted` all take already-encoded hrefs —
+    /// encoding is the handler's job (see `encode_uri_path` in
+    /// `webdav_handler.rs`), matching how every other `write_*_entry*`
+    /// caller in this module is fed pre-built hrefs.
+    pub fn generate_sync_collection_response<W: Write>(
+        writer: W,
+        subfolders: &[(FolderDto, String)],
+        files: &[(FileDto, String)],
+        deleted: &[String],
+        request: &PropFindRequest,
+        sync_token: &str,
+    ) -> Result<()> {
+        let mut xml_writer = Writer::new(writer);
+
+        xml_writer.write_event(Event::Start(
+            BytesStart::new("D:multistatus").with_attributes([("xmlns:D", "DAV:")]),
+        ))?;
+
+        for (subfolder, href) in subfolders {
+            Self::write_folder_entry(&mut xml_writer, subfolder, request, href)?;
+        }
+        for (file, href) in files {
+            Self::write_file_entry(&mut xml_writer, file, request, href)?;
+        }
+        for href in deleted {
+            sync_collection_xml::write_deleted_response(&mut xml_writer, "D:", href)?;
+        }
+
+        sync_collection_xml::write_sync_token(&mut xml_writer, "D:", sync_token)?;
+
+        xml_writer.write_event(Event::End(BytesEnd::new("D:multistatus")))?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod sync_collection_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn parse_sync_collection_initial_request_has_no_token() {
+        let xml = br#"<?xml version="1.0" encoding="utf-8"?>
+<D:sync-collection xmlns:D="DAV:">
+  <D:sync-token/>
+  <D:sync-level>1</D:sync-level>
+  <D:prop>
+    <D:getetag/>
+    <D:getcontentlength/>
+  </D:prop>
+</D:sync-collection>"#;
+
+        let parsed = WebDavAdapter::parse_sync_collection(Cursor::new(xml)).expect("parse");
+        assert!(parsed.sync_token.is_none());
+        match parsed.request.prop_find_type {
+            PropFindType::Prop(props) => assert_eq!(props.len(), 2),
+            other => panic!("Expected Prop, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_sync_collection_with_prior_token() {
+        let xml = br#"<?xml version="1.0" encoding="utf-8"?>
+<D:sync-collection xmlns:D="DAV:">
+  <D:sync-token>http://oxicloud.local/ns/sync/12345</D:sync-token>
+  <D:prop><D:getetag/></D:prop>
+</D:sync-collection>"#;
+
+        let parsed = WebDavAdapter::parse_sync_collection(Cursor::new(xml)).expect("parse");
+        assert_eq!(
+            parsed.sync_token.as_deref(),
+            Some("http://oxicloud.local/ns/sync/12345")
+        );
+    }
+
+    #[test]
+    fn parse_sync_collection_allprop() {
+        let xml = br#"<?xml version="1.0" encoding="utf-8"?>
+<D:sync-collection xmlns:D="DAV:">
+  <D:sync-token/>
+  <D:allprop/>
+</D:sync-collection>"#;
+
+        let parsed = WebDavAdapter::parse_sync_collection(Cursor::new(xml)).expect("parse");
+        assert!(matches!(
+            parsed.request.prop_find_type,
+            PropFindType::AllProp
+        ));
     }
 }
 

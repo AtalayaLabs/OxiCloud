@@ -45,6 +45,12 @@ pub enum ErrorKind {
     /// HTTP 412. Distinct from `Conflict` (409): this is specifically
     /// "the state you thought you were writing against has moved."
     PreconditionFailed,
+    /// A `sync-token` (RFC 6578) predates the server's change-log
+    /// retention window — the client must discard local state and
+    /// restart with a fresh initial sync. Maps to HTTP 507, distinct
+    /// from `QuotaExceeded` (also 507, but for storage-space
+    /// exhaustion) so audit readers can tell the two 507 causes apart.
+    SyncTokenExpired,
 }
 
 impl ErrorKind {
@@ -65,6 +71,7 @@ impl ErrorKind {
             ErrorKind::QuotaExceeded => "Quota Exceeded",
             ErrorKind::Conflict => "Conflict",
             ErrorKind::PreconditionFailed => "Precondition Failed",
+            ErrorKind::SyncTokenExpired => "Sync Token Expired",
         }
     }
 }
@@ -207,6 +214,18 @@ impl DomainError {
     pub fn precondition_failed<S: Into<String>>(entity_type: &'static str, message: S) -> Self {
         Self {
             kind: ErrorKind::PreconditionFailed,
+            entity_type,
+            entity_id: None,
+            message: message.into(),
+            source: None,
+        }
+    }
+
+    /// Creates a sync-token-expired error (RFC 6578 §3.6 — client's
+    /// token predates the change-log retention window).
+    pub fn sync_token_expired<S: Into<String>>(entity_type: &'static str, message: S) -> Self {
+        Self {
+            kind: ErrorKind::SyncTokenExpired,
             entity_type,
             entity_id: None,
             message: message.into(),

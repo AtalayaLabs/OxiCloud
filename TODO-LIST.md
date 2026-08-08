@@ -109,7 +109,8 @@ This document contains the task list for the development of OxiCloud, a minimali
 - [x] Test compatibility with standard clients
 - [x] Optimize WebDAV performance
 - [ ] Implement Range Requests (RFC 7233) for resumable transfers
-- [ ] Support partial file updates with HTTP PATCH for bandwidth efficiency
+- [x] Support partial file updates with HTTP PATCH for bandwidth efficiency (RFC 5789, `X-Update-Range` header)
+- [x] Implement sync-collection REPORT (RFC 6578) for incremental change discovery — WebDAV files/folders (incl. NextCloud surface), CalDAV events, CardDAV contacts, backed by a durable change-log
 
 ### Sync Client
 - [ ] Design client architecture in Rust
@@ -260,7 +261,7 @@ This document contains the task list for the development of OxiCloud, a minimali
   - [ ] Add synchronization profiles
   - [ ] Develop synchronization by file types
 - [ ] Develop delta synchronization
-  - [ ] Implement incremental change transfer
+  - [x] Implement incremental change transfer (RFC 6578 sync-collection REPORT — WebDAV/CalDAV/CardDAV)
   - [ ] Add differential compression
   - [ ] Implement intelligent retransmission
 

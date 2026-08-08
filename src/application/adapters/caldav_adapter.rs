@@ -12,6 +12,7 @@ use quick_xml::{
 use std::io::{BufReader, Read, Write};
 use uuid::Uuid;
 
+use crate::application::adapters::sync_collection_xml;
 use crate::application::adapters::webdav_adapter::{
     PropFindRequest, PropFindType, QualifiedName, Result, WebDavAdapter, WebDavError,
 };
@@ -1246,12 +1247,21 @@ impl CalDavAdapter {
         Ok(())
     }
 
-    /// Generate a response for calendar events
+    /// Generate a response for calendar events.
+    ///
+    /// `deleted_hrefs` renders each as an RFC 6578 §3.7
+    /// `<D:status>HTTP/1.1 404 Not Found</D:status>` sub-response instead
+    /// of a `<D:propstat>` block, and `sync_token` (when `Some`) renders
+    /// as a trailing `<D:sync-token>` — both empty/`None` for the
+    /// calendar-query / calendar-multiget report types, which don't use
+    /// either.
     pub fn generate_calendar_events_response<W: Write>(
         writer: W,
         events: &[CalendarEventDto],
         request: &CalDavReportType,
         base_href: &str,
+        deleted_hrefs: &[String],
+        sync_token: Option<&str>,
     ) -> Result<()> {
         let mut xml_writer = Writer::new(writer);
 
@@ -1262,6 +1272,14 @@ impl CalDavAdapter {
         // `write_report_page`, which the streaming emitters reuse
         // page by page.
         Self::write_report_page(&mut xml_writer, events, request, base_href)?;
+
+        for href in deleted_hrefs {
+            sync_collection_xml::write_deleted_response(&mut xml_writer, "D:", href)?;
+        }
+
+        if let Some(token) = sync_token {
+            sync_collection_xml::write_sync_token(&mut xml_writer, "D:", token)?;
+        }
 
         Self::write_caldav_multistatus_end(&mut xml_writer)?;
 
