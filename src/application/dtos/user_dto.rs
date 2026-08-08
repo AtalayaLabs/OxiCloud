@@ -456,6 +456,14 @@ pub struct CurrentUser {
     pub email: Arc<str>,
     #[schema(value_type = String)]
     pub role: SmolStr,
+    /// DPoP session-binding thumbprint threaded from the JWT's
+    /// RFC 9449 §5 `cnf.jkt` claim. `None` for unbound sessions
+    /// (app passwords, NC clients, pre-DPoP). The DPoP middleware
+    /// reads it to enforce "bound → proof required" from an
+    /// already-validated token — no session-row lookup on the
+    /// hot path (see `docs/plan/dpop.md` Gate 9).
+    #[serde(skip)]
+    pub dpop_jkt: Option<String>,
 }
 
 // ============================================================================

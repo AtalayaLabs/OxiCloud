@@ -36,9 +36,25 @@ const JSON_HEADERS = { 'Content-Type': 'application/json' };
  * a 401 here just means "not logged in" and must not trigger the global
  * refresh-and-redirect (which would bounce the app in a refresh loop on the
  * unauthenticated initial load). Returns null when unauthenticated.
+ *
+ * Attaches a DPoP proof manually — under `OXICLOUD_DPOP_MODE=required` a
+ * BOUND session that presents no proof gets 401'd by the middleware
+ * (Gate 9), and this probe fires on every SPA bootstrap for authenticated
+ * users. Without the proof, the session load loop would always land in
+ * "not logged in" on fresh page loads even though cookies are still valid.
+ * Failure to build a proof (no keypair, missing WebCrypto) falls back to a
+ * headerless request — the server still accepts it for unbound sessions.
  */
 export async function fetchMe(): Promise<User | null> {
-	const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
+	let dpop: string | null = null;
+	try {
+		const { buildDpopProof } = await import('$lib/auth/dpop-proof');
+		dpop = await buildDpopProof('GET', `${location.origin}/api/auth/me`);
+	} catch {
+		/* proof unavailable → send without header; unbound sessions still accept */
+	}
+	const headers: HeadersInit = dpop ? { DPoP: dpop } : {};
+	const res = await fetch('/api/auth/me', { credentials: 'same-origin', headers });
 	if (res.status === 401) return null;
 	if (!res.ok) throw new Error(`/api/auth/me failed: ${res.status}`);
 	return (await res.json()) as User;

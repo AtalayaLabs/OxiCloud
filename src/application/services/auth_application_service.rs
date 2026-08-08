@@ -1051,8 +1051,37 @@ impl AuthApplicationService {
         // (benches/ROUND12.md §2, 4.45x).
         user.register_login();
 
-        // Generate tokens using the injected token service
-        let access_token = self.token_service.generate_access_token(&user)?;
+        // Validate DPoP thumbprint FIRST — the same validated value
+        // has to flow into both the JWT `cnf.jkt` claim (RFC 9449 §5)
+        // and the session row's `dpop_jkt` column. Reject-before-mint
+        // avoids issuing a token whose confirmation-key would be
+        // rejected by the very next request's DPoP middleware.
+        let validated_jkt = match dpop_jkt.as_deref() {
+            Some(jkt) => Some(validate_dpop_jkt(jkt).map_err(|e| {
+                tracing::info!(
+                    target: "audit",
+                    event = "auth.dpop_bind_rejected",
+                    reason = "malformed_thumbprint",
+                    user_id = %user.id(),
+                    "🔐 DPoP bind rejected: {}", e,
+                );
+                DomainError::new(
+                    ErrorKind::InvalidInput,
+                    "Auth",
+                    "dpop_jkt must be a 43-character base64url SHA-256 thumbprint (RFC 7638)",
+                )
+            })?),
+            None => None,
+        };
+
+        // Generate tokens using the injected token service. The
+        // access token carries the `cnf.jkt` binding when present,
+        // so the DPoP middleware can enforce "bound → proof required"
+        // straight from the already-validated JWT — no session-row
+        // lookup on the hot path.
+        let access_token = self
+            .token_service
+            .generate_access_token(&user, validated_jkt.as_deref())?;
 
         let refresh_token = self.token_service.generate_refresh_token();
 
@@ -1068,22 +1097,8 @@ impl AuthApplicationService {
             self.token_service.refresh_token_expiry_days(),
             Uuid::new_v4(),
         );
-        if let Some(jkt) = dpop_jkt {
-            let validated = validate_dpop_jkt(&jkt).map_err(|e| {
-                tracing::info!(
-                    target: "audit",
-                    event = "auth.dpop_bind_rejected",
-                    reason = "malformed_thumbprint",
-                    user_id = %user.id(),
-                    "🔐 DPoP bind rejected: {}", e,
-                );
-                DomainError::new(
-                    ErrorKind::InvalidInput,
-                    "Auth",
-                    "dpop_jkt must be a 43-character base64url SHA-256 thumbprint (RFC 7638)",
-                )
-            })?;
-            session = session.with_dpop_jkt(validated);
+        if let Some(jkt) = validated_jkt {
+            session = session.with_dpop_jkt(jkt);
         }
 
         self.session_storage.create_session(session).await?;
@@ -1330,7 +1345,12 @@ impl AuthApplicationService {
         user.mark_email_verified();
         self.user_storage.mark_email_verified(user.id()).await?;
 
-        let access_token = self.token_service.generate_access_token(&user)?;
+        // Magic-link redemption is a GET redirect — no way to
+        // thread `dpop_jkt` into a GET body. Session is minted
+        // unbound; the SPA calls `POST /api/auth/dpop/bind`
+        // post-redirect to bind it (see Gate 3). Token accordingly
+        // ships without `cnf.jkt`.
+        let access_token = self.token_service.generate_access_token(&user, None)?;
         let refresh_token = self.token_service.generate_refresh_token();
         let session = Session::new(
             user.id(),
@@ -1416,6 +1436,11 @@ impl AuthApplicationService {
             username: std::sync::Arc::from(user.username().unwrap_or("")),
             email: std::sync::Arc::from(user.email()),
             role: smol_str::SmolStr::new_static(user.role().as_str()),
+            // `verify_credentials` is only called from paths that
+            // don't need per-session DPoP context (admin/setup
+            // flows); the DPoP middleware never reads CurrentUser
+            // populated by this method. Leaving None is safe.
+            dpop_jkt: None,
         })
     }
 
@@ -1474,8 +1499,14 @@ impl AuthApplicationService {
             ));
         }
 
-        // Generate new tokens
-        let access_token = self.token_service.generate_access_token(&user)?;
+        // Generate new tokens. Inherit the DPoP binding from the
+        // parent session so the refreshed access token carries the
+        // same `cnf.jkt` — otherwise every refresh would silently
+        // downgrade to unbound and the next request would 401 under
+        // Gate 9 enforcement (see Gate 7).
+        let access_token = self
+            .token_service
+            .generate_access_token(&user, session.dpop_jkt())?;
         let new_refresh_token = self.token_service.generate_refresh_token();
 
         // New session inherits the family_id so reuse of any ancestor triggers
@@ -4233,8 +4264,13 @@ impl AuthApplicationService {
             });
         }
 
-        // 6. Issue internal tokens (same as regular login)
-        let access_token = self.token_service.generate_access_token(&user)?;
+        // 6. Issue internal tokens (same as regular login). OIDC
+        // callback is a GET redirect — no way to thread `dpop_jkt`
+        // through the browser's redirect chain. Session is minted
+        // unbound; the SPA calls `POST /api/auth/dpop/bind` post-
+        // redirect to bind it (see Gate 3). Token accordingly ships
+        // without `cnf.jkt`.
+        let access_token = self.token_service.generate_access_token(&user, None)?;
         let refresh_token = self.token_service.generate_refresh_token();
 
         let mut session = Session::new(

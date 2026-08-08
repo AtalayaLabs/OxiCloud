@@ -226,6 +226,7 @@ async fn opaque_login(
     base: &str,
     username: &str,
     password: &str,
+    dpop_jkt: Option<&str>,
 ) -> Result<(String, String), String> {
     // Fetch server params so client-side Argon2 matches. Per Phase B
     // the envelope's OWN KSF is authoritative for that user (via
@@ -295,10 +296,19 @@ async fn opaque_login(
     // URL_SAFE_NO_PAD on the wire — matches what the SPA sends and
     // what the server's handler prefers (accepts both, but this is
     // the canonical form).
-    let ke3_body = json!({
+    // Include `dpopJkt` when set so the server binds the session
+    // to the browser-held (well, test-held) keypair via Gate 3.
+    // Downstream scenarios can then exercise bound-session paths.
+    let mut ke3_body = json!({
         "exchangeId": ke1.exchange_id,
         "finishLoginRequest": B64_URL_NO_PAD.encode(login_finish.message.serialize()),
     });
+    if let Some(jkt) = dpop_jkt {
+        ke3_body
+            .as_object_mut()
+            .unwrap()
+            .insert("dpopJkt".to_string(), json!(jkt));
+    }
     let ke3_res = http
         .post(format!("{base}/api/auth/opaque/login/ke3"))
         .json(&ke3_body)
@@ -412,26 +422,19 @@ async fn main() -> ExitCode {
         Err(e) => return fail(format!("build reqwest client: {e}")),
     };
 
-    // ── 1. Log in via OPAQUE (session created unbound — Gate 3
-    //       requires the client to send `dpop_jkt` in the login
-    //       body; this helper doesn't, so we get the fail-open
-    //       unbound path). Bind support gets tested via
-    //       `POST /api/auth/dpop/bind` in a later gate.
+    // ── 1. Mint the persistent keypair FIRST, compute its JWK
+    //       thumbprint, then log in via OPAQUE passing that
+    //       thumbprint so the resulting session is bound (Gate 3).
+    //       That way subsequent scenarios exercise the bound-path
+    //       enforcement Gate 9 lit up: bound session + missing
+    //       proof → 401, wrong-jkt proof → 401 `jkt_mismatch`.
     //
     //       OPAQUE (not legacy) because `opaque-hurl-helper`
     //       migrates `admin` earlier in `run.sh`, after which
     //       legacy login 403s with Phase-4 refusal — and once
-    //       OPAQUE-only mode ships (`docs/plan/opaque-only.md`)
-    //       there IS no legacy path anyway.
-    let (access, _refresh) = match opaque_login(&http, base, &username, &password).await {
-        Ok(t) => t,
-        Err(e) => return fail(e),
-    };
-
+    //       OPAQUE-only mode ships there IS no legacy path anyway.
     let keys = KeyBundle::fresh();
     let jkt = {
-        // Compute expected thumbprint for logging — server ignores
-        // at this gate but future scenarios will compare.
         let canonical = format!(
             r#"{{"crv":"P-256","kty":"EC","x":"{}","y":"{}"}}"#,
             keys.jwk_x_b64, keys.jwk_y_b64
@@ -439,6 +442,12 @@ async fn main() -> ExitCode {
         B64_URL_NO_PAD.encode(Sha256::digest(canonical.as_bytes()))
     };
     eprintln!("dpop-hurl-helper: keypair jkt={jkt}");
+
+    let (access, _refresh) = match opaque_login(&http, base, &username, &password, Some(&jkt)).await
+    {
+        Ok(t) => t,
+        Err(e) => return fail(e),
+    };
 
     let mut nonce: Option<String> = None;
 
@@ -670,19 +679,70 @@ async fn main() -> ExitCode {
     }
     eprintln!("dpop-hurl-helper: scenario 8 (malformed) ✓");
 
-    // ── Scenario 9: no proof at all on a bound-if-required path.
-    //    In opportunistic mode this passes through; in required
-    //    mode the session is unbound (`dpop_jkt IS NULL`) so it
-    //    STILL passes through. Server-side gate 9 will flip this
-    //    once session-context enforcement lands.
+    // ── Scenario 9: bound session with NO proof — Gate 9
+    //    enforcement. Under `required` mode this must 401 with a
+    //    `use_dpop_nonce` challenge (server treats missing proof
+    //    on a bound session the same shape as a nonce-challenge
+    //    to nudge the client back onto the DPoP path). Under
+    //    `opportunistic` mode this would 200 with only a warning
+    //    audit line. Test env pins `required` (see
+    //    `tests/common/server.env`).
     let res_no_proof = match http.get(&url).bearer_auth(&access).send().await {
         Ok(r) => r,
         Err(e) => return fail(format!("no_proof send: {e}")),
     };
-    if let Err(e) = expect_status("no_proof_unbound_session", &res_no_proof, 200) {
+    if let Err(e) = expect_status("no_proof_bound_session_required", &res_no_proof, 401) {
         return fail(e);
     }
-    eprintln!("dpop-hurl-helper: scenario 9 (no proof, unbound session → pass) ✓");
+    eprintln!("dpop-hurl-helper: scenario 9 (no proof, bound session, required → 401) ✓");
+
+    // ── Scenario 10: bound session, valid proof shape but signed
+    //    by a DIFFERENT keypair than the session was bound to.
+    //    Verifier fires `jkt_mismatch` → 401. The classic attacker
+    //    scenario: cookie stolen, attacker mints their own DPoP
+    //    keypair, valid proof shape but wrong key.
+    let rogue_keys = KeyBundle {
+        signing_key: {
+            let mut bytes = [0u8; 32];
+            for (i, b) in bytes.iter_mut().enumerate() {
+                *b = ((i as u8).wrapping_mul(41)).wrapping_add(7);
+            }
+            SigningKey::from_bytes(&bytes.into()).expect("valid P-256 scalar")
+        },
+        jwk_x_b64: String::new(),
+        jwk_y_b64: String::new(),
+    };
+    // Rebuild x/y for the rogue key.
+    let rogue_enc = rogue_keys
+        .signing_key
+        .verifying_key()
+        .to_encoded_point(false);
+    let rogue_keys = KeyBundle {
+        signing_key: rogue_keys.signing_key,
+        jwk_x_b64: B64_URL_NO_PAD.encode(rogue_enc.x().unwrap()),
+        jwk_y_b64: B64_URL_NO_PAD.encode(rogue_enc.y().unwrap()),
+    };
+    let rogue_proof = build_proof(
+        &rogue_keys,
+        "GET",
+        &url,
+        nonce.as_deref(),
+        &ProofOverrides::default(),
+    );
+    let res_rogue = match http
+        .get(&url)
+        .bearer_auth(&access)
+        .header("DPoP", rogue_proof)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return fail(format!("rogue-key send: {e}")),
+    };
+    if let Err(e) = expect_status("wrong_jkt_bound_session", &res_rogue, 401) {
+        return fail(e);
+    }
+    eprintln!("dpop-hurl-helper: scenario 10 (bound session + wrong-jkt proof → 401) ✓");
 
     eprintln!("dpop-hurl-helper: all scenarios passed");
     ExitCode::SUCCESS

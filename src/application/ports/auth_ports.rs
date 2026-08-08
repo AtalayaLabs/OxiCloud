@@ -57,6 +57,12 @@ pub struct TokenClaims {
     pub email: Arc<str>,
     /// User role
     pub role: String,
+    /// RFC 9449 §5 confirmation-key thumbprint — the JWK thumbprint
+    /// of the DPoP keypair this session was bound to at login. `None`
+    /// for unbound sessions (app passwords, NC clients, pre-DPoP).
+    /// The DPoP middleware reads it from the already-validated token
+    /// (no DB round trip) to enforce "bound session → proof required".
+    pub dpop_jkt: Option<String>,
 }
 
 /// Port for JWT token operations.
@@ -64,8 +70,19 @@ pub struct TokenClaims {
 /// This trait abstracts token generation and validation, allowing the domain
 /// layer to remain independent of specific JWT implementations.
 pub trait TokenServicePort: Send + Sync + 'static {
-    /// Generate an access token for a user
-    fn generate_access_token(&self, user: &User) -> Result<String, DomainError>;
+    /// Generate an access token for a user.
+    ///
+    /// `dpop_jkt` — if `Some`, the token carries an RFC 9449 §5
+    /// `cnf.jkt` claim binding it to the browser-held keypair whose
+    /// public JWK hashes to this thumbprint. Callers pass
+    /// `session.dpop_jkt()` from the Session being minted; unbound
+    /// sessions (app passwords, NC clients, pre-DPoP) pass `None`
+    /// and get a plain token the middleware exempts from DPoP.
+    fn generate_access_token(
+        &self,
+        user: &User,
+        dpop_jkt: Option<&str>,
+    ) -> Result<String, DomainError>;
 
     /// Validate a token and extract its claims.
     ///

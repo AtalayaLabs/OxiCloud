@@ -96,7 +96,7 @@ pub async fn require_dpop_layer(
     // No authenticated user → pass through (upstream auth layer
     // already handled or will handle the 401). We only concern
     // ourselves with proof-carrying requests on authenticated paths.
-    let Some(_current_user) = request.extensions().get::<Arc<CurrentUser>>() else {
+    let Some(current_user) = request.extensions().get::<Arc<CurrentUser>>().cloned() else {
         return next.run(request).await;
     };
 
@@ -106,14 +106,44 @@ pub async fn require_dpop_layer(
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
 
-    // GATE 5 SCOPE: session-level `dpop_jkt` lookup is deferred (see
-    // module docstring). For opportunistic mode:
-    //   - proof present → verify with expected_jkt=None (accept any
-    //     jkt shape; still catches malformed/bad-sig/wrong-htu bugs)
-    //   - proof absent → pass through, no warning yet
-    // For required mode: same for now — Gate 9 flips to real
-    // per-session enforcement once session context is wired.
+    // Gate 9 enforcement — the session's binding (from the JWT's
+    // `cnf.jkt` claim, populated at token mint time from
+    // `session.dpop_jkt`) tells us whether a proof is REQUIRED:
+    //
+    //   * unbound session (`dpop_jkt IS NONE`) — proof optional.
+    //     Covers app passwords, NC clients, pre-DPoP sessions.
+    //   * bound session — proof MANDATORY in required mode; a
+    //     warning-only signal in opportunistic mode so operators
+    //     can spot stale SPA versions before flipping enforcement.
+    let expected_jkt = current_user.dpop_jkt.as_deref();
     let Some(proof) = dpop_header else {
+        match (mode, expected_jkt) {
+            (DpopMode::Required, Some(_)) => {
+                tracing::info!(
+                    target: "audit",
+                    event = "dpop.verify_failed",
+                    reason = "proof_missing_on_bound_session",
+                    caller_id = %current_user.id,
+                    path = %request.uri().path(),
+                    "👮🏻‍♂️ DPoP required: bound session request has no proof",
+                );
+                return nonce_challenge_response(&nonce_service);
+            }
+            (DpopMode::Opportunistic, Some(_)) => {
+                // Warning-only — telemetry for the rollout window.
+                // Emit the signal so operators can decide when to
+                // flip default to `required`; the request still
+                // completes so old clients don't break.
+                tracing::info!(
+                    target: "audit",
+                    event = "dpop.header_missing_but_session_bound",
+                    caller_id = %current_user.id,
+                    path = %request.uri().path(),
+                    "⚠️  DPoP: bound session sent request without a proof",
+                );
+            }
+            _ => { /* unbound session or off mode — nothing to do */ }
+        }
         let response = next.run(request).await;
         return stamp_current_nonce(response, &nonce_service);
     };
@@ -136,7 +166,14 @@ pub async fn require_dpop_layer(
         htm: &method,
         htu: &htu,
         now_secs,
-        expected_jkt: None, // Session-level pin comes in a later gate
+        // Gate 9: pin to the session's binding when present. The
+        // verifier returns `JktMismatch` if the proof's public
+        // key thumbprint doesn't match — an attacker who stole a
+        // bound cookie AND generated their own DPoP keypair fails
+        // here. `None` means the session was minted unbound so
+        // any well-formed proof passes the jkt check (still gets
+        // htm/htu/nonce/replay verification).
+        expected_jkt,
     };
     match verify_proof(&proof, &ctx) {
         Ok(verified) => {

@@ -342,6 +342,9 @@ pub async fn handle_oidc_login_completion(
         username: std::sync::Arc::from(username),
         email: std::sync::Arc::from(user_dto.email.as_str()),
         role: smol_str::SmolStr::new(&user_dto.role),
+        // NC login-flow-v2 mints an app password — no browser, no
+        // WebCrypto, always unbound. DPoP middleware exempts.
+        dpop_jkt: None,
     };
 
     let drives = match state
@@ -553,6 +556,9 @@ pub async fn handle_drive_pick(
         username: std::sync::Arc::from(username.as_str()),
         email: std::sync::Arc::from(user_dto.email.as_str()),
         role: smol_str::SmolStr::new(&user_dto.role),
+        // NC login-flow-v2 mints an app password — no browser, no
+        // WebCrypto, always unbound. DPoP middleware exempts.
+        dpop_jkt: None,
     };
 
     let _folder = match state
