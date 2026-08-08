@@ -19,18 +19,33 @@ const BACKEND = process.env.OXICLOUD_BACKEND ?? 'http://localhost:8086';
 // by default so normal dev/release builds carry no instrumentation overhead.
 const COVERAGE = process.env.COVERAGE === '1';
 
+// `changeOrigin: true` rewrites the `Host` header to match the backend's
+// authority (localhost:8086) so the backend answers as if the request
+// arrived natively. But DPoP's `htu` claim is bound to what the browser
+// sees (localhost:5173) — a bare rewrite makes the server compute
+// `htu = http://localhost:8086/api/…` and fire `dpop.verify_failed
+// reason=wrong_htu` on every request. Set `X-Forwarded-*` so the DPoP
+// middleware (which mirrors production reverse-proxy behaviour) can
+// reconstruct the browser-visible URL. Same reasoning that applies to
+// nginx/Cloudflare in front of the deployment applies to Vite in dev.
+const DEV_ORIGIN_HEADERS = {
+	'X-Forwarded-Proto': 'http',
+	'X-Forwarded-Host': 'localhost:5173'
+};
+const p = (target: string) => ({ target, changeOrigin: true, headers: DEV_ORIGIN_HEADERS });
+
 const proxy = {
-	'/api': { target: BACKEND, changeOrigin: true },
-	'/locales': { target: BACKEND, changeOrigin: true },
-	'/.well-known': { target: BACKEND, changeOrigin: true },
-	'/remote.php': { target: BACKEND, changeOrigin: true },
-	'/ocs': { target: BACKEND, changeOrigin: true },
-	'/status.php': { target: BACKEND, changeOrigin: true },
-	'/webdav': { target: BACKEND, changeOrigin: true },
-	'/caldav': { target: BACKEND, changeOrigin: true },
-	'/carddav': { target: BACKEND, changeOrigin: true },
-	'/wopi': { target: BACKEND, changeOrigin: true },
-	'/magic': { target: BACKEND, changeOrigin: true }
+	'/api': p(BACKEND),
+	'/locales': p(BACKEND),
+	'/.well-known': p(BACKEND),
+	'/remote.php': p(BACKEND),
+	'/ocs': p(BACKEND),
+	'/status.php': p(BACKEND),
+	'/webdav': p(BACKEND),
+	'/caldav': p(BACKEND),
+	'/carddav': p(BACKEND),
+	'/wopi': p(BACKEND),
+	'/magic': p(BACKEND)
 };
 
 export default defineConfig({
