@@ -2105,6 +2105,9 @@ impl AppServiceFactory {
             dpop_nonce_service: Arc::new(
                 crate::infrastructure::services::dpop_nonce_service::DpopNonceService::new(),
             ),
+            dpop_replay_cache: Arc::new(
+                crate::infrastructure::services::dpop_replay_cache::DpopReplayCache::new(),
+            ),
             nextcloud: nextcloud_services,
             admin_settings_service: None,
             storage_settings_service: None,
@@ -2883,6 +2886,10 @@ pub struct AppState {
     /// pay only allocation cost at boot.
     pub dpop_nonce_service:
         Arc<crate::infrastructure::services::dpop_nonce_service::DpopNonceService>,
+    /// DPoP replay cache — nonce-scoped `jti` dedup. Same lifecycle
+    /// as `dpop_nonce_service` (always populated, cheap at boot).
+    pub dpop_replay_cache:
+        Arc<crate::infrastructure::services::dpop_replay_cache::DpopReplayCache>,
     pub nextcloud: Option<NextcloudServices>,
     pub admin_settings_service: Option<Arc<AdminSettingsService>>,
     /// WASM plugin management (list/install/toggle/remove), backing the admin

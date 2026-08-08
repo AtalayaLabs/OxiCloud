@@ -29,7 +29,11 @@
 //! Clients cache it; the next request presents it and skips the
 //! challenge round trip.
 //!
-//! Replay detection (jti-per-nonce) is Gate 6; not wired yet.
+//! Replay detection: after nonce validation succeeds, the
+//! `(nonce, jti)` pair is recorded in a moka LRU. A second proof
+//! carrying the same `(nonce, jti)` — the classic replay window —
+//! fires `dpop.replay_detected` and returns 401 with the standard
+//! `invalid_dpop_proof` error shape.
 
 use axum::extract::{OriginalUri, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
@@ -87,6 +91,7 @@ pub async fn require_dpop_layer(
         return next.run(request).await;
     }
     let nonce_service = state.dpop_nonce_service.clone();
+    let replay_cache = state.dpop_replay_cache.clone();
 
     // No authenticated user → pass through (upstream auth layer
     // already handled or will handle the 401). We only concern
@@ -139,7 +144,7 @@ pub async fn require_dpop_layer(
             // present, it MUST be in our live pool. Absent → OK on
             // the bootstrap request, but the challenge below MUST
             // still fire so the very next request carries a nonce.
-            match verified.nonce.as_deref() {
+            let live_nonce = match verified.nonce.as_deref() {
                 Some(n) if !nonce_service.is_valid(n) => {
                     tracing::info!(
                         target: "audit",
@@ -159,8 +164,29 @@ pub async fn require_dpop_layer(
                     // the nonce path immediately.
                     return nonce_challenge_response(&nonce_service);
                 }
-                _ => {}
+                Some(n) => n,
+            };
+
+            // Replay guard — nonce-scoped `jti` dedup. Runs AFTER
+            // nonce validity so we don't populate the cache with
+            // entries against a nonce that would 401 anyway (waste
+            // of pool space; also lets an attacker probe expired
+            // nonces without pressuring the cache).
+            if !replay_cache.check_and_record(live_nonce, &verified.jti) {
+                tracing::info!(
+                    target: "audit",
+                    event = "dpop.replay_detected",
+                    method = %method,
+                    htu = %htu,
+                    jti = %verified.jti,
+                    "👮🏻‍♂️ DPoP proof replayed — same (nonce, jti) seen twice",
+                );
+                return dpop_verification_failed_response(
+                    DpopVerifyError::SignatureInvalid, // shape-only; audit line carries truth
+                    &nonce_service,
+                );
             }
+
             let response = next.run(request).await;
             stamp_current_nonce(response, &nonce_service)
         }
