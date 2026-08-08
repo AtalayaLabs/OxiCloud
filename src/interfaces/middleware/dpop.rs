@@ -49,6 +49,83 @@ use crate::infrastructure::services::dpop_verifier::{
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::CurrentUser;
 
+/// Content-serving GETs the browser fetches directly from `<a href>`,
+/// `<img src>`, `<video src>`, `<a download>` — no JS in the loop, so
+/// there's no way to attach a DPoP proof (the fetch interceptor never
+/// runs). Exempt them from the "bound session missing proof" hard
+/// enforcement so the SPA can still show thumbnails, play videos, and
+/// download files after DPoP=required flips on.
+///
+/// Security posture: an attacker with a stolen cookie can GET these
+/// URLs BUT ONLY if they already know a specific 128-bit UUID.
+/// Every listing / discovery endpoint (`GET /api/folders/<id>/children`,
+/// `/search`, `/api/files/by-hash`, `/api/photos`, …) still requires
+/// DPoP because it's called via `apiFetch`. So a bare stolen cookie
+/// gives the attacker "download the exact IDs you already know" —
+/// effectively nothing without prior knowledge.
+///
+/// Proofs that ARE sent on these paths (e.g. an image preloader that
+/// went through `apiFetch` and blob'd) still get fully verified —
+/// this only bypasses the missing-proof reject, not the verifier
+/// itself.
+///
+/// Long-term Option B (signed short-lived URL tokens) would let us
+/// remove this allowlist entirely; tracked as a separate task.
+fn is_content_serve_get(method: &axum::http::Method, path: &str) -> bool {
+    if method != axum::http::Method::GET {
+        return false;
+    }
+    // Note: `path` is nest-stripped by axum (`/api` prefix removed by
+    // the `/api` nest), so we match against the inner segment.
+    // `/files/<uuid>` (download / inline)
+    // `/files/<uuid>/thumbnail/<size>` (thumbnails)
+    // `/folders/<uuid>/download` (zip download)
+    // `/photos/<uuid>/preview` (photo preview, if present)
+    matches_content_path(path)
+}
+
+fn matches_content_path(path: &str) -> bool {
+    // Segment-based matching keeps this cheap and readable — no regex
+    // dep, no leading-slash surprises. Every content endpoint has an
+    // opaque UUID at position 2, so we match on the shape rather than
+    // the specific id. The UUID check is what disambiguates
+    // `/files/<uuid>` (content) from `/files/by-hash` (a listing
+    // endpoint that MUST stay behind DPoP for anti-enumeration).
+    let mut segs = path.trim_start_matches('/').split('/');
+    let (Some(root), Some(id), rest_first) = (segs.next(), segs.next(), segs.next()) else {
+        return false;
+    };
+    if !looks_like_uuid(id) {
+        return false;
+    }
+    match (root, rest_first) {
+        // /files/<uuid> — download / inline
+        ("files", None) => true,
+        // /files/<uuid>/thumbnail/... — thumbnails
+        ("files", Some("thumbnail")) => true,
+        // /folders/<uuid>/download — zip
+        ("folders", Some("download")) => true,
+        // /photos/<uuid>/preview — photo preview (best-effort match;
+        // adds no risk if the endpoint doesn't exist server-side)
+        ("photos", Some("preview")) => true,
+        _ => false,
+    }
+}
+
+/// Cheap UUID-shape check: 36 chars, hyphens at positions 8, 13, 18,
+/// 23, everything else hex. Not a full parse (nothing here needs the
+/// bytes) — just enough to distinguish `<uuid>` from named endpoints
+/// like `by-hash`, `upload`, `search`.
+fn looks_like_uuid(s: &str) -> bool {
+    if s.len() != 36 {
+        return false;
+    }
+    s.bytes().enumerate().all(|(i, b)| match i {
+        8 | 13 | 18 | 23 => b == b'-',
+        _ => b.is_ascii_hexdigit(),
+    })
+}
+
 /// Resolve the request's external `(scheme, host)` — what the client
 /// sees the URL as, which is what its DPoP proof's `htu` was built
 /// from. Behind a reverse proxy, the internal request scheme +
@@ -118,7 +195,9 @@ pub async fn require_dpop_layer(
     let expected_jkt = current_user.dpop_jkt.as_deref();
     let Some(proof) = dpop_header else {
         match (mode, expected_jkt) {
-            (DpopMode::Required, Some(_)) => {
+            (DpopMode::Required, Some(_))
+                if !is_content_serve_get(request.method(), request.uri().path()) =>
+            {
                 tracing::info!(
                     target: "audit",
                     event = "dpop.verify_failed",
@@ -361,5 +440,68 @@ mod tests {
             external_scheme_host(&h),
             ("http".to_owned(), "localhost".to_owned())
         );
+    }
+
+    // Content-serve allowlist — the paths browsers fetch directly
+    // from anchors / img / video without JS in the loop. Under
+    // `required` mode + bound session, missing-proof must NOT reject
+    // these or the SPA breaks (downloads, thumbnails, video streaming
+    // all silently 401).
+
+    fn get(path: &str) -> bool {
+        is_content_serve_get(&axum::http::Method::GET, path)
+    }
+    fn post(path: &str) -> bool {
+        is_content_serve_get(&axum::http::Method::POST, path)
+    }
+
+    #[test]
+    fn content_serve_matches_file_download() {
+        assert!(get("/files/8f8e4390-1234-4a5b-8c9d-abcdef012345"));
+    }
+
+    #[test]
+    fn content_serve_matches_thumbnail() {
+        assert!(get("/files/8f8e4390-1234-4a5b-8c9d-abcdef012345/thumbnail/icon"));
+        assert!(get("/files/8f8e4390-1234-4a5b-8c9d-abcdef012345/thumbnail/large"));
+    }
+
+    #[test]
+    fn content_serve_matches_folder_zip() {
+        assert!(get("/folders/8f8e4390-1234-4a5b-8c9d-abcdef012345/download"));
+    }
+
+    #[test]
+    fn content_serve_matches_photo_preview() {
+        assert!(get("/photos/8f8e4390-1234-4a5b-8c9d-abcdef012345/preview"));
+    }
+
+    #[test]
+    fn content_serve_rejects_non_get() {
+        // Attacker with stolen cookie can't mutate — POST/DELETE
+        // to the SAME url still requires DPoP.
+        assert!(!post("/files/8f8e4390-1234-4a5b-8c9d-abcdef012345"));
+        assert!(!is_content_serve_get(
+            &axum::http::Method::DELETE,
+            "/files/8f8e4390-1234-4a5b-8c9d-abcdef012345"
+        ));
+    }
+
+    #[test]
+    fn content_serve_rejects_listing_endpoints() {
+        // Discovery endpoints (children, by-hash, search) MUST NOT be
+        // allowlisted — that's the whole security argument. Attacker
+        // needs to already know the UUID; can't enumerate.
+        assert!(!get("/folders/8f8e4390-1234-4a5b-8c9d-abcdef012345/children"));
+        assert!(!get("/files/by-hash"));
+        assert!(!get("/search"));
+        assert!(!get("/auth/me"));
+    }
+
+    #[test]
+    fn content_serve_rejects_root_or_id_only() {
+        assert!(!get("/"));
+        assert!(!get("/files"));
+        assert!(!get("/folders"));
     }
 }
