@@ -1483,7 +1483,15 @@ impl AuthApplicationService {
         // new one happen in ONE transaction (`rotate_session`) — this path
         // used to pay two BEGIN/COMMIT pairs per refresh, and DAV clients
         // rotate constantly (benches/ROUND12.md §4).
-        let new_session = Session::new(
+        //
+        // The DPoP binding travels with the family: if the parent session
+        // was bound to a browser-held keypair, the refreshed session MUST
+        // be bound to the same one (see `docs/plan/dpop.md` Gate 7). Same
+        // browser → same key → same jkt. Skipping this would let a
+        // refresh silently downgrade the session to unbound, and every
+        // subsequent request would fail DPoP verification once required
+        // mode enforces per-session binding.
+        let mut new_session = Session::new(
             user.id(),
             new_refresh_token.clone(),
             None,
@@ -1491,6 +1499,9 @@ impl AuthApplicationService {
             self.token_service.refresh_token_expiry_days(),
             session.family_id(),
         );
+        if let Some(jkt) = session.dpop_jkt() {
+            new_session = new_session.with_dpop_jkt(jkt.to_string());
+        }
 
         self.session_storage
             .rotate_session(session.id(), new_session)

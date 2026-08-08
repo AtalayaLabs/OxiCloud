@@ -456,6 +456,7 @@ export async function startOidcLink(): Promise<string> {
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: '{}'
 	});
+<<<<<<< HEAD
 	if (!res.ok) {
 		const { errorType, message } = await parseErrorBody(res);
 		throw new ApiError(res.status, res.statusText, '/api/auth/oidc/link/start', errorType, message);
@@ -503,6 +504,23 @@ export async function logout(): Promise<LogoutResult> {
 			headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 			body: '{}'
 		});
+
+		// Wipe DPoP browser state so the next login mints a fresh
+		// keypair — no correlation across the logout boundary is
+		// desirable (a new session is a new identity from the
+		// per-request-signature standpoint). Runs UNCONDITIONALLY of
+		// the logout HTTP status: even if the server call failed,
+		// the user's intent was to log out, and leaving a stale
+		// keypair around would confuse the next login's bind step.
+		try {
+			const { clearKeypair } = await import('$lib/auth/dpop');
+			const { clearNonce } = await import('$lib/auth/dpop-proof');
+			await clearKeypair();
+			clearNonce();
+		} catch (err) {
+			console.debug('dpop: cleanup failed during logout', err);
+		}
+
 		if (!res.ok) return {};
 		try {
 			const body = (await res.json()) as { post_logout_url?: unknown };
