@@ -66,14 +66,19 @@ export default defineConfig({
       // Verbose startup so a CI webServer-readiness timeout shows where the
       // server stalls (DB connect, migrations, bind) instead of nothing.
       RUST_LOG: 'info,oxicloud=debug,sqlx=warn,tower_http=info',
-      // OPAQUE + DPoP are inherited from `../common/server.env`:
+      // OPAQUE + DPoP inherited from `../common/server.env`:
       //   OXICLOUD_AUTH_OPAQUE_MODE=migrate  (Phase 2 silent-migration
       //     on first legacy login, Phase 4 refusal thereafter)
-      //   OXICLOUD_DPOP_MODE=required        (verify every proof; unbound
-      //     sessions still exempt per Gate 5 design)
-      // Testing under the production shape catches breakage where the
-      // SPA's fetch interceptor or the migration hook regresses in
-      // ways that only surface in a real browser + real crypto.
+      //   OXICLOUD_DPOP_MODE=required        (verify every proof;
+      //     unbound sessions still exempt per Gate 5 design)
+      //
+      // Known failure surfaces under `DPOP=required`:
+      //   * Node-side `page.request.*` helpers can't sign proofs
+      //     → 401 on state-changing calls. Task #47 rewrites those
+      //     through `page.evaluate` so signing happens in-browser.
+      //   * Browser-direct content GETs (img src, a href, video src)
+      //     also can't sign — Gate C content-serve allowlist in
+      //     `middleware/dpop.rs` exempts the known paths.
     },
   },
 });

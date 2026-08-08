@@ -73,6 +73,27 @@ export default defineConfig({
       // `effective_mode == Off` short-circuit path.
       OXICLOUD_AUTH_OPAQUE_MODE: 'off',
       OXICLOUD_AUTH_OPAQUE_SERVER_SETUP: '',
+      // DPoP `opportunistic` — SPA browser flows still exercise the
+      // full wire protocol (proof signing + server verification +
+      // nonce challenge/retry + replay cache). The only weakening
+      // vs production `required` is that BOUND session + MISSING
+      // proof gets a warning-only pass instead of 401.
+      //
+      // Why not required: Node-side `page.request.*` test helpers
+      // (apiCreateFolder, apiAdminCreateUser, apiUploadFile, …)
+      // can't sign DPoP proofs because the browser's keypair is
+      // non-extractable by design. Under `required`, every helper
+      // POST/PUT/DELETE 401s and most tests fail at beforeEach.
+      //
+      // The missing-proof-on-bound-session enforcement IS covered
+      // end-to-end by `dpop-hurl-helper` scenario 9 under
+      // `tests/api/run.sh` (which keeps required from server.env),
+      // so global enforcement coverage is preserved.
+      //
+      // Task #47 tracks rewriting the helpers through page.evaluate
+      // so they can sign proofs in-browser. Once landed, this
+      // override goes and Playwright runs production-shape.
+      OXICLOUD_DPOP_MODE: 'opportunistic',
     },
   },
 });

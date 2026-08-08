@@ -142,17 +142,38 @@ export async function apiLogin(page: Page, admin = TEST_ADMIN): Promise<void> {
   }
 
   await page.goto('/login');
-  await page.locator('[data-testid="login-username-input"]').fill(admin.username);
-  await page.locator('[data-testid="login-password-input"]').fill(admin.password);
-  await page.locator('[data-testid="login-submit-btn"]').click();
+  // Wait for the SPA's boot probes (`getOidcProviders` +
+  // `getAuthStatus` in `login/+page.svelte::onMount`) to complete
+  // BEFORE touching the form. Otherwise the boot `$effect` fires
+  // MID-FILL — when `booting` flips from true to false, the
+  // auto-focus effect steals focus back to the identifier input,
+  // and any remaining characters of the password-fill land in
+  // the username field. Symptom: username="adminTestPassword1!",
+  // password="", submit-button shows "Send sign-in link" → SPA
+  // fires magic-link/send with the concatenated identifier and
+  // login never completes.
+  //
+  // `networkidle` waits for the network to have no more than 0
+  // requests in flight for 500 ms. By that point providers
+  // + status have landed and `booting = false` has already
+  // stabilised → the auto-focus effect fired ONCE (harmlessly,
+  // before we touch the form), never again during our fills.
+  await page.waitForLoadState('networkidle');
+  await page.getByTestId('login-username-input').fill(admin.username);
+  await page.getByTestId('login-password-input').fill(admin.password);
+  await page.getByTestId('login-submit-btn').click();
   // Post-login the SPA's `goto(redirectTarget)` sends the user
-  // to `/files` (default) or a `?redirect=` target. Match the
-  // default with a glob — the same shape `uiLogin` uses in
-  // `spa/coverage-helpers.ts` and that Playwright handles well
-  // under SvelteKit's client-side navigation. The 15s ceiling
-  // covers the OPAQUE-post-migration path: WASM load + KE1 +
-  // KE3 + Argon2id.
-  await page.waitForURL('**/files**', { timeout: 15_000 });
+  // to `/files` (default) or a `?redirect=` target — OR to
+  // `/profile?forcePasswordChange=1` when the backend has stamped
+  // `force_password_change_at_next_login=true` on this account
+  // (usually because a prior admin-reset test flipped it). Match
+  // any post-login destination that ISN'T `/login` itself. The
+  // 15s ceiling covers the OPAQUE-post-migration path: WASM load
+  // + KE1 + KE3 + Argon2id.
+  await page.waitForURL((url) => !url.pathname.startsWith('/login'), {
+    timeout: 15_000,
+    waitUntil: 'commit'
+  });
 }
 
 /**

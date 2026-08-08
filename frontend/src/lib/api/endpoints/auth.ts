@@ -46,15 +46,38 @@ const JSON_HEADERS = { 'Content-Type': 'application/json' };
  * headerless request — the server still accepts it for unbound sessions.
  */
 export async function fetchMe(): Promise<User | null> {
-	let dpop: string | null = null;
+	// Build + sign a DPoP proof, send with the header, harvest any
+	// `DPoP-Nonce` off the response into the shared client cache
+	// (so the NEXT apiFetch call reuses it — no wasted round trip).
+	// Handle the `use_dpop_nonce` challenge inline: the first request
+	// per fresh session has no cached nonce, and Gate 9 required-mode
+	// middleware 401-challenges a bound session's very first proof so
+	// the client picks up a fresh nonce. Without this retry, `/api/auth/me`
+	// on a fresh page load would always 401 → SPA thinks user isn't
+	// logged in → stuck on /login even though cookies are valid.
+	//
+	// Falls back to a plain fetch when the DPoP module is unavailable
+	// (SubtleCrypto disabled, IndexedDB blocked): unbound sessions
+	// still authenticate; bound sessions in required mode won't, but
+	// that's the fail-open contract from `docs/plan/dpop.md`.
+	let dpopMod: typeof import('$lib/auth/dpop-proof') | null = null;
 	try {
-		const { buildDpopProof } = await import('$lib/auth/dpop-proof');
-		dpop = await buildDpopProof('GET', `${location.origin}/api/auth/me`);
+		dpopMod = await import('$lib/auth/dpop-proof');
 	} catch {
-		/* proof unavailable → send without header; unbound sessions still accept */
+		/* no dpop module → plain fetch */
 	}
-	const headers: HeadersInit = dpop ? { DPoP: dpop } : {};
-	const res = await fetch('/api/auth/me', { credentials: 'same-origin', headers });
+	const url = `${location.origin}/api/auth/me`;
+	const send = async (): Promise<Response> => {
+		const proof = dpopMod ? await dpopMod.buildDpopProof('GET', url).catch(() => null) : null;
+		const headers: HeadersInit = proof ? { DPoP: proof } : {};
+		const r = await fetch('/api/auth/me', { credentials: 'same-origin', headers });
+		if (dpopMod) dpopMod.updateNonceFromResponse(r);
+		return r;
+	};
+	let res = await send();
+	// One retry on nonce challenge — mirror the apiFetch interceptor.
+	// A second challenge on the retry is a server bug; surface the 401.
+	if (dpopMod && dpopMod.isDpopNonceChallenge(res)) res = await send();
 	if (res.status === 401) return null;
 	if (!res.ok) throw new Error(`/api/auth/me failed: ${res.status}`);
 	return (await res.json()) as User;
