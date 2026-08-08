@@ -222,6 +222,7 @@ See the [OIDC configuration guide](/config/oidc) for details.
 | `OXICLOUD_OIDC_SCOPES` | `openid profile email` | Requested scopes |
 | `OXICLOUD_OIDC_FRONTEND_URL` | `http://localhost:8086` | Frontend URL to redirect to after login |
 | `OXICLOUD_OIDC_AUTO_PROVISION` | `true` | Auto-create users on first SSO login (JIT provisioning) |
+| `OXICLOUD_OIDC_AUTO_LINK_EMAIL_MATCH` | `true` | When subject-lookup misses on an OIDC login BUT the IdP-returned email (with `email_verified=true`) matches an existing local user (after `+alias` normalization), auto-link the OIDC identity to that user instead of refusing. Refuses on ambiguity (>1 local user normalises to same email) or if the matched user is already linked to a different identity. Safe under single-IdP trust model (admin chose the IdP); unsafe for future multi-IdP federation. Set `false` for postures requiring explicit consent for every link. See [OIDC account linking plan](../plan/oidc-account-linking.md). |
 | `OXICLOUD_OIDC_ADMIN_GROUPS` | — | Comma-separated OIDC groups that grant admin role |
 | `OXICLOUD_OIDC_DISABLE_PASSWORD_LOGIN` | `false` | **DEPRECATED** — emits boot warning; slated for removal in next major release. Use `OXICLOUD_AUTH_METHODS=oidc` (and optionally `OXICLOUD_AUTH_POLICIES=auto_redirect_if_standalone_oidc` for server-side `/login` redirect) instead. Still removes `password` from the effective allowlist when set to `true` — kept working so upgrading deployments don't break. |
 | `OXICLOUD_OIDC_PROVIDER_NAME` | `SSO` | Display name for the provider shown in UI |

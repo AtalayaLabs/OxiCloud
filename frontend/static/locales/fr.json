@@ -564,7 +564,15 @@
     "magic_hint": "Pas de mot de passe ? Saisissez votre adresse e-mail et nous vous enverrons un lien de connexion à usage unique.",
     "magic_unavailable": "La connexion par e-mail n'est pas disponible sur ce serveur.",
     "passwords_match": "Les mots de passe correspondent",
-    "sign_in": "Se connecter"
+    "sign_in": "Se connecter",
+    "login_error_title": "Échec de la connexion",
+    "login_error_back_to_login": "Retour à la connexion",
+    "login_error_auto_link_disabled": "Ce serveur ne relie pas automatiquement les comptes SSO. Connectez-vous avec vos identifiants existants, puis reliez SSO depuis votre profil.",
+    "login_error_auto_link_email_not_verified": "Votre fournisseur SSO n'a pas confirmé votre adresse e-mail. Vérifiez votre e-mail chez votre fournisseur d'identité, puis réessayez.",
+    "login_error_already_linked_elsewhere": "Un compte local avec cette adresse e-mail existe déjà et est relié à une autre identité SSO. Contactez votre administrateur.",
+    "login_error_callback_denied": "Votre lien de connexion a expiré ou a déjà été utilisé. Veuillez réessayer.",
+    "login_error_callback_failed": "La connexion SSO n'a pas pu se terminer. Veuillez réessayer.",
+    "login_error_generic": "La connexion SSO a été refusée. Veuillez réessayer."
   },
   "storage": {
     "title": "Stockage",
@@ -1009,7 +1017,18 @@
     "photo_save_failed": "Failed to save photo",
     "photo_no_file": "Please select a file first",
     "photo_managed_by_oidc": "Photo managed by your identity provider.",
-    "password_mismatch": "Les mots de passe ne correspondent pas"
+    "password_mismatch": "Les mots de passe ne correspondent pas",
+    "sso_connect_title": "Connecter l'authentification unique",
+    "sso_connect_description": "Reliez votre compte à {{provider}} pour vous connecter via SSO au lieu du mot de passe.",
+    "sso_connect_button": "Se connecter avec {{provider}}",
+    "sso_disconnect_title": "Authentification unique",
+    "sso_disconnect_description": "Votre compte est connecté à {{provider}}. Le déconnecter vous obligera à utiliser votre mot de passe pour vous connecter.",
+    "sso_disconnect_button": "Déconnecter l'authentification unique",
+    "sso_disconnect_confirm_title": "Déconnecter l'authentification unique ?",
+    "sso_disconnect_confirm_message": "Vous ne pourrez plus vous connecter qu'avec votre mot de passe ou vos identifiants OPAQUE.",
+    "sso_disconnect_confirm_button": "Déconnecter",
+    "sso_unlinked_success": "Authentification unique déconnectée.",
+    "sso_unlink_no_alt_auth": "Définissez d'abord un mot de passe — sinon vous seriez verrouillé hors de votre compte."
   },
   "upload": {
     "uploading": "Téléchargement en cours...",

@@ -81,16 +81,16 @@ pub trait SessionRepository: Send + Sync + 'static {
     async fn revoke_sessions_by_oidc_sid(&self, sid: &str) -> SessionRepositoryResult<Vec<Uuid>>;
 
     /// Revokes every session belonging to the user identified by
-    /// `(oidc_provider, oidc_subject)`.
+    /// `(federation_issuer, federation_subject)`.
     ///
     /// Fallback path for the Back-Channel Logout handler when the IdP
     /// omits `sid` from the logout_token — coarser than sid-based
     /// revocation (kills the user's other devices too). Returns the
     /// user id of the affected account, or `None` if no matching user.
-    async fn revoke_user_sessions_by_oidc_subject(
+    async fn revoke_user_sessions_by_federation_subject(
         &self,
-        oidc_provider: &str,
-        oidc_subject: &str,
+        issuer: &str,
+        subject: &str,
     ) -> SessionRepositoryResult<Option<Uuid>>;
 
     /// Deletes expired sessions

@@ -282,12 +282,13 @@ impl UserRepository for UserPgRepository {
                             id, username, email, password_hash, role,
                             storage_quota_bytes, storage_used_bytes,
                             created_at, updated_at, last_login_at, active,
-                            oidc_provider, oidc_subject, image, is_external,
+                            federation_kind, federation_issuer, federation_subject,
+                            image, is_external,
                             given_name, family_name, email_verified_at,
                             preferred_locale, notify_on_share, ui_preferences
                         ) VALUES (
                             $1, $2, $3, $4, $5::auth.userrole, $6, $7, $8, $9, $10, $11,
-                            $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+                            $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
                         )
                         RETURNING *
                         "#,
@@ -303,8 +304,9 @@ impl UserRepository for UserPgRepository {
                 .bind(user_clone.updated_at())
                 .bind(user_clone.last_login_at())
                 .bind(user_clone.is_active())
-                .bind(user_clone.oidc_provider())
-                .bind(user_clone.oidc_subject())
+                .bind(user_clone.federation_kind().map(|k| k.as_str()))
+                .bind(user_clone.federation_issuer())
+                .bind(user_clone.federation_subject())
                 .bind(user_clone.image())
                 .bind(user_clone.is_external())
                 .bind(user_clone.given_name())
@@ -339,7 +341,7 @@ impl UserRepository for UserPgRepository {
                 id, username, email, password_hash, role::text as role_text,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, oidc_subject, image, is_external,
+                federation_kind, federation_issuer, federation_subject, image, is_external,
                 given_name, family_name, email_verified_at, preferred_locale, notify_on_share,
                 ui_preferences
             FROM auth.users
@@ -370,8 +372,11 @@ impl UserRepository for UserPgRepository {
             row.get("updated_at"),
             row.get("last_login_at"),
             row.get("active"),
-            row.get("oidc_provider"),
-            row.get("oidc_subject"),
+            row.get::<Option<String>, _>("federation_kind")
+                .as_deref()
+                .and_then(crate::domain::entities::user::FederationKind::parse),
+            row.get("federation_issuer"),
+            row.get("federation_subject"),
             row.get("image"),
             row.get("is_external"),
             row.get("given_name"),
@@ -391,7 +396,7 @@ impl UserRepository for UserPgRepository {
                 id, username, email, password_hash, role::text as role_text,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, oidc_subject, image, is_external,
+                federation_kind, federation_issuer, federation_subject, image, is_external,
                 given_name, family_name, email_verified_at, preferred_locale, notify_on_share,
                 ui_preferences
             FROM auth.users
@@ -422,8 +427,11 @@ impl UserRepository for UserPgRepository {
             row.get("updated_at"),
             row.get("last_login_at"),
             row.get("active"),
-            row.get("oidc_provider"),
-            row.get("oidc_subject"),
+            row.get::<Option<String>, _>("federation_kind")
+                .as_deref()
+                .and_then(crate::domain::entities::user::FederationKind::parse),
+            row.get("federation_issuer"),
+            row.get("federation_subject"),
             row.get("image"),
             row.get("is_external"),
             row.get("given_name"),
@@ -443,7 +451,7 @@ impl UserRepository for UserPgRepository {
                 id, username, email, password_hash, role::text as role_text,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, oidc_subject, image, is_external,
+                federation_kind, federation_issuer, federation_subject, image, is_external,
                 given_name, family_name, email_verified_at, preferred_locale, notify_on_share,
                 ui_preferences
             FROM auth.users
@@ -474,8 +482,11 @@ impl UserRepository for UserPgRepository {
             row.get("updated_at"),
             row.get("last_login_at"),
             row.get("active"),
-            row.get("oidc_provider"),
-            row.get("oidc_subject"),
+            row.get::<Option<String>, _>("federation_kind")
+                .as_deref()
+                .and_then(crate::domain::entities::user::FederationKind::parse),
+            row.get("federation_issuer"),
+            row.get("federation_subject"),
             row.get("image"),
             row.get("is_external"),
             row.get("given_name"),
@@ -485,6 +496,76 @@ impl UserRepository for UserPgRepository {
             row.get("notify_on_share"),
             row.get::<serde_json::Value, _>("ui_preferences"),
         ))
+    }
+
+    /// Returns every user whose email normalizes to `normalized_email`.
+    ///
+    /// Looks up against `auth.users.identity_lookup_email`, a stored
+    /// GENERATED column populated by PostgreSQL from the same
+    /// normalization `common::text::normalize_email_for_link` applies
+    /// on the caller side. See migration
+    /// 20261011000000_users_normalized_email_index.sql — the b-tree
+    /// index on that column makes this an O(log n) probe.
+    async fn list_users_by_normalized_email(
+        &self,
+        normalized_email: &str,
+    ) -> UserRepositoryResult<Vec<User>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                id, username, email, password_hash, role::text as role_text,
+                storage_quota_bytes, storage_used_bytes,
+                created_at, updated_at, last_login_at, active,
+                federation_kind, federation_issuer, federation_subject, image, is_external,
+                given_name, family_name, email_verified_at, preferred_locale, notify_on_share,
+                ui_preferences
+            FROM auth.users
+            WHERE identity_lookup_email = $1
+            "#,
+        )
+        .bind(normalized_email)
+        .fetch_all(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)?;
+
+        let users = rows
+            .into_iter()
+            .map(|row| {
+                let role_str: Option<String> = row.try_get("role_text").unwrap_or(None);
+                let role = match role_str.as_deref() {
+                    Some("admin") => UserRole::Admin,
+                    _ => UserRole::User,
+                };
+                User::from_data_full(
+                    row.get("id"),
+                    row.get("username"),
+                    row.get("email"),
+                    row.get("password_hash"),
+                    role,
+                    row.get("storage_quota_bytes"),
+                    row.get("storage_used_bytes"),
+                    row.get("created_at"),
+                    row.get("updated_at"),
+                    row.get("last_login_at"),
+                    row.get("active"),
+                    row.get::<Option<String>, _>("federation_kind")
+                        .as_deref()
+                        .and_then(crate::domain::entities::user::FederationKind::parse),
+                    row.get("federation_issuer"),
+                    row.get("federation_subject"),
+                    row.get("image"),
+                    row.get("is_external"),
+                    row.get("given_name"),
+                    row.get("family_name"),
+                    row.get("email_verified_at"),
+                    row.get("preferred_locale"),
+                    row.get("notify_on_share"),
+                    row.get::<serde_json::Value, _>("ui_preferences"),
+                )
+            })
+            .collect();
+
+        Ok(users)
     }
 
     /// Batch loads users by id in one query (avoids N+1 for group-
@@ -512,7 +593,7 @@ impl UserRepository for UserPgRepository {
                 id, username, email, password_hash, role::text as role_text,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, oidc_subject, is_external,
+                federation_kind, federation_issuer, federation_subject, is_external,
                 given_name, family_name, email_verified_at, preferred_locale, notify_on_share
             FROM auth.users
             WHERE id = ANY($1)
@@ -544,8 +625,11 @@ impl UserRepository for UserPgRepository {
                     row.get("updated_at"),
                     row.get("last_login_at"),
                     row.get("active"),
-                    row.get("oidc_provider"),
-                    row.get("oidc_subject"),
+                    row.get::<Option<String>, _>("federation_kind")
+                        .as_deref()
+                        .and_then(crate::domain::entities::user::FederationKind::parse),
+                    row.get("federation_issuer"),
+                    row.get("federation_subject"),
                     None, // image — not projected (notification-recipient path)
                     row.get("is_external"),
                     row.get("given_name"),
@@ -693,7 +777,7 @@ impl UserRepository for UserPgRepository {
                 id, username, email, password_hash, role::text as role_text,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, oidc_subject, image, is_external,
+                federation_kind, federation_issuer, federation_subject, image, is_external,
                 given_name, family_name, email_verified_at, preferred_locale, notify_on_share,
                 ui_preferences
             FROM auth.users
@@ -731,8 +815,11 @@ impl UserRepository for UserPgRepository {
                     row.get("updated_at"),
                     row.get("last_login_at"),
                     row.get("active"),
-                    row.get("oidc_provider"),
-                    row.get("oidc_subject"),
+                    row.get::<Option<String>, _>("federation_kind")
+                        .as_deref()
+                        .and_then(crate::domain::entities::user::FederationKind::parse),
+                    row.get("federation_issuer"),
+                    row.get("federation_subject"),
                     row.get("image"),
                     row.get("is_external"),
                     row.get("given_name"),
@@ -766,6 +853,7 @@ impl UserRepository for UserPgRepository {
                 Option<chrono::DateTime<chrono::Utc>>,
                 bool,
                 Option<String>,
+                Option<String>,
                 bool,
                 bool,
                 bool,
@@ -780,13 +868,15 @@ impl UserRepository for UserPgRepository {
             // pays. `has_password` on the password_hash column tells
             // the admin table whether a server-verifiable password is
             // on file; combined with the two OPAQUE flags and
-            // oidc_provider, the SPA derives the full "capability
-            // set" per user (password / OPAQUE / SSO / passwordless).
+            // federation_kind / federation_issuer, the SPA derives the
+            // full "capability set" per user (password / OPAQUE / SSO /
+            // passwordless).
             r#"
             SELECT
                 id, username, email, role::text,
                 storage_quota_bytes, storage_used_bytes,
-                last_login_at, active, oidc_provider, is_external,
+                last_login_at, active,
+                federation_kind, federation_issuer, is_external,
                 (password_hash IS NOT NULL)       AS has_password,
                 (opaque_envelope IS NOT NULL)     AS opaque_registered,
                 (opaque_migrated_at IS NOT NULL)  AS opaque_migrated
@@ -815,7 +905,8 @@ impl UserRepository for UserPgRepository {
                     storage_used_bytes,
                     last_login_at,
                     active,
-                    oidc_provider,
+                    federation_kind,
+                    federation_issuer,
                     is_external,
                     has_password,
                     opaque_registered,
@@ -833,7 +924,8 @@ impl UserRepository for UserPgRepository {
                     storage_used_bytes,
                     last_login_at,
                     active,
-                    oidc_provider,
+                    federation_kind,
+                    federation_issuer,
                     is_external,
                     has_password,
                     opaque_registered,
@@ -856,7 +948,7 @@ impl UserRepository for UserPgRepository {
                 id, username, email, password_hash, role::text as role_text,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, oidc_subject, image, is_external,
+                federation_kind, federation_issuer, federation_subject, image, is_external,
                 given_name, family_name, email_verified_at, preferred_locale, notify_on_share,
                 ui_preferences
             FROM auth.users
@@ -894,8 +986,11 @@ impl UserRepository for UserPgRepository {
                     row.get("updated_at"),
                     row.get("last_login_at"),
                     row.get("active"),
-                    row.get("oidc_provider"),
-                    row.get("oidc_subject"),
+                    row.get::<Option<String>, _>("federation_kind")
+                        .as_deref()
+                        .and_then(crate::domain::entities::user::FederationKind::parse),
+                    row.get("federation_issuer"),
+                    row.get("federation_subject"),
                     row.get("image"),
                     row.get("is_external"),
                     row.get("given_name"),
@@ -999,7 +1094,7 @@ impl UserRepository for UserPgRepository {
                 id, username, email, password_hash, role::text as role_text,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, oidc_subject, image, is_external,
+                federation_kind, federation_issuer, federation_subject, image, is_external,
                 given_name, family_name, email_verified_at, preferred_locale, notify_on_share,
                 ui_preferences
             FROM auth.users
@@ -1034,8 +1129,11 @@ impl UserRepository for UserPgRepository {
                     row.get("updated_at"),
                     row.get("last_login_at"),
                     row.get("active"),
-                    row.get("oidc_provider"),
-                    row.get("oidc_subject"),
+                    row.get::<Option<String>, _>("federation_kind")
+                        .as_deref()
+                        .and_then(crate::domain::entities::user::FederationKind::parse),
+                    row.get("federation_issuer"),
+                    row.get("federation_subject"),
                     row.get("image"),
                     row.get("is_external"),
                     row.get("given_name"),
@@ -1068,7 +1166,7 @@ impl UserRepository for UserPgRepository {
     }
 
     /// Finds a user by OIDC provider + subject pair
-    async fn get_user_by_oidc_subject(
+    async fn get_user_by_federation_subject(
         &self,
         provider: &str,
         subject: &str,
@@ -1079,11 +1177,11 @@ impl UserRepository for UserPgRepository {
                 id, username, email, password_hash, role::text as role_text,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, oidc_subject, image, is_external,
+                federation_kind, federation_issuer, federation_subject, image, is_external,
                 given_name, family_name, email_verified_at, preferred_locale, notify_on_share,
                 ui_preferences
             FROM auth.users
-            WHERE oidc_provider = $1 AND oidc_subject = $2
+            WHERE federation_issuer = $1 AND federation_subject = $2
             "#,
         )
         .bind(provider)
@@ -1110,8 +1208,11 @@ impl UserRepository for UserPgRepository {
             row.get("updated_at"),
             row.get("last_login_at"),
             row.get("active"),
-            row.get("oidc_provider"),
-            row.get("oidc_subject"),
+            row.get::<Option<String>, _>("federation_kind")
+                .as_deref()
+                .and_then(crate::domain::entities::user::FederationKind::parse),
+            row.get("federation_issuer"),
+            row.get("federation_subject"),
             row.get("image"),
             row.get("is_external"),
             row.get("given_name"),
@@ -1215,6 +1316,15 @@ impl UserStoragePort for UserPgRepository {
 
     async fn get_user_by_email(&self, email: &str) -> Result<User, DomainError> {
         UserRepository::get_user_by_email(self, email)
+            .await
+            .map_err(DomainError::from)
+    }
+
+    async fn list_users_by_normalized_email(
+        &self,
+        normalized_email: &str,
+    ) -> Result<Vec<User>, DomainError> {
+        UserRepository::list_users_by_normalized_email(self, normalized_email)
             .await
             .map_err(DomainError::from)
     }
@@ -1343,6 +1453,133 @@ impl UserStoragePort for UserPgRepository {
         Ok(())
     }
 
+    async fn rebind_federation_issuer(
+        &self,
+        user_id: Uuid,
+        new_issuer: &str,
+    ) -> Result<(), DomainError> {
+        // Same `IS DISTINCT FROM` guard as sync_oidc_login_profile: this
+        // fires on every OIDC login, so the common already-migrated case
+        // must be a zero-write no-op. Only actually flips the column
+        // when the stored value is stale (legacy display label vs the
+        // real issuer URL from the id_token's `iss` claim).
+        sqlx::query(
+            r#"
+            UPDATE auth.users
+            SET federation_issuer = $2,
+                updated_at = NOW()
+            WHERE id = $1
+              AND federation_issuer IS DISTINCT FROM $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(new_issuer)
+        .execute(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)
+        .map_err(DomainError::from)?;
+        Ok(())
+    }
+
+    async fn link_federation_identity(
+        &self,
+        user_id: Uuid,
+        kind: &str,
+        issuer: &str,
+        subject: &str,
+    ) -> Result<(), DomainError> {
+        // Guarded UPDATE: only proceed when the row currently has NO
+        // federation identity. Prevents accidental identity overwrite —
+        // callers wanting to replace an existing link must go through
+        // unlink first. Silent no-op on already-linked rows is WRONG
+        // because it would swallow the intent; instead we return an
+        // error the app service translates to `already_linked`.
+        //
+        // Uniqueness enforcement lives on `idx_users_federation`
+        // (UNIQUE(kind, issuer, subject) WHERE federation_kind IS NOT
+        // NULL). If this triple is already bound to a DIFFERENT user,
+        // the UPDATE succeeds row-count = 0 (the WHERE constrains us to
+        // rows for THIS user_id) — but the following INSERT-shaped
+        // UPDATE approach doesn't trigger the unique index; we rely on
+        // the app service having pre-checked via
+        // `get_user_by_federation_subject`. If that pre-check races
+        // with a concurrent link (rare), the second call surfaces
+        // `AlreadyExists` from sqlx via `map_sqlx_error`.
+        let result = sqlx::query(
+            r#"
+            UPDATE auth.users
+               SET federation_kind    = $2,
+                   federation_issuer  = $3,
+                   federation_subject = $4,
+                   updated_at         = NOW()
+             WHERE id = $1
+               AND federation_kind IS NULL
+            "#,
+        )
+        .bind(user_id)
+        .bind(kind)
+        .bind(issuer)
+        .bind(subject)
+        .execute(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)
+        .map_err(DomainError::from)?;
+
+        if result.rows_affected() == 0 {
+            // Either the user doesn't exist OR they already have a
+            // federation identity attached. The app service should have
+            // already validated user existence + link state; being here
+            // usually means a concurrent link race.
+            return Err(DomainError::already_exists(
+                "User",
+                "user is already linked to a federation identity",
+            ));
+        }
+        Ok(())
+    }
+
+    async fn is_opaque_registered(&self, user_id: Uuid) -> Result<bool, DomainError> {
+        // Scalar `IS NOT NULL` check — the envelope is a few hundred
+        // bytes of ciphertext; we don't want to fetch it just to
+        // examine presence. `fetch_optional` returns None if the user
+        // doesn't exist (caller treats missing as "not registered").
+        let row: Option<(bool,)> = sqlx::query_as(
+            r#"
+            SELECT (opaque_envelope IS NOT NULL)
+              FROM auth.users
+             WHERE id = $1
+            "#,
+        )
+        .bind(user_id)
+        .fetch_optional(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)
+        .map_err(DomainError::from)?;
+        Ok(row.map(|(v,)| v).unwrap_or(false))
+    }
+
+    async fn unlink_federation_identity(&self, user_id: Uuid) -> Result<(), DomainError> {
+        // Idempotent: unlinking an already-unlinked user is a zero-row
+        // UPDATE. App service's `no_alternative_auth` refusal guard
+        // runs BEFORE this — the DB layer just moves the columns.
+        sqlx::query(
+            r#"
+            UPDATE auth.users
+               SET federation_kind    = NULL,
+                   federation_issuer  = NULL,
+                   federation_subject = NULL,
+                   updated_at         = NOW()
+             WHERE id = $1
+            "#,
+        )
+        .bind(user_id)
+        .execute(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)
+        .map_err(DomainError::from)?;
+        Ok(())
+    }
+
     async fn list_users_by_role(&self, role: &str) -> Result<Vec<User>, DomainError> {
         UserRepository::list_users_by_role(self, role)
             .await
@@ -1367,12 +1604,12 @@ impl UserStoragePort for UserPgRepository {
             .map_err(DomainError::from)
     }
 
-    async fn get_user_by_oidc_subject(
+    async fn get_user_by_federation_subject(
         &self,
         provider: &str,
         subject: &str,
     ) -> Result<User, DomainError> {
-        UserRepository::get_user_by_oidc_subject(self, provider, subject)
+        UserRepository::get_user_by_federation_subject(self, provider, subject)
             .await
             .map_err(DomainError::from)
     }
@@ -1441,7 +1678,7 @@ mod integration_tests {
                 id, username, email, password_hash, role,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, is_external
+                federation_issuer, is_external
             ) VALUES (
                 $1, $2, $3, NULL, $4::auth.userrole,
                 $5, 0,
@@ -1515,7 +1752,10 @@ mod integration_tests {
         assert_eq!(page[0].storage_quota_bytes, 10_737_418_240);
         assert_eq!(page[1].username, None);
         assert!(page[1].is_external);
-        assert_eq!(page[1].oidc_provider.as_deref(), Some("integration-idp"));
+        assert_eq!(
+            page[1].federation_issuer.as_deref(),
+            Some("integration-idp")
+        );
 
         let internal = UserRepository::list_user_summaries(&repo, 10, 0, false)
             .await

@@ -112,9 +112,7 @@ fn git_status() {
     // built this artifact" is load-bearing (release provenance,
     // release-note automation).
     if env::var("CI").is_ok() {
-        println!(
-            "cargo:warning=OxiCloud built with git hash: {git_hash} and branch: {git_branch}"
-        );
+        println!("cargo:warning=OxiCloud built with git hash: {git_hash} and branch: {git_branch}");
     }
 }
 

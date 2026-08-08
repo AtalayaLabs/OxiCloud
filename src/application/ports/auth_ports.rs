@@ -109,6 +109,14 @@ pub trait UserStoragePort: Send + Sync + 'static {
     /// Gets a user by email
     async fn get_user_by_email(&self, email: &str) -> Result<User, DomainError>;
 
+    /// Returns every user whose email normalizes to `normalized_email`
+    /// (see `UserRepository::list_users_by_normalized_email` for the
+    /// full contract and the auto-link ambiguity-detection use case).
+    async fn list_users_by_normalized_email(
+        &self,
+        normalized_email: &str,
+    ) -> Result<Vec<User>, DomainError>;
+
     /// Updates an existing user
     async fn update_user(&self, user: User) -> Result<User, DomainError>;
 
@@ -179,6 +187,57 @@ pub trait UserStoragePort: Send + Sync + 'static {
         image: Option<&str>,
     ) -> Result<(), DomainError>;
 
+    /// Federation-identity Phase B lazy rebind: overwrite `federation_issuer`
+    /// on a specific user row. Called when an OIDC login's id_token `iss`
+    /// claim proves the stored value (typically a legacy display label) is
+    /// out of sync with the true issuer URL. Guarded (`IS DISTINCT FROM`)
+    /// so calling with the current value is a zero-write no-op.
+    ///
+    /// Audit signal for the rebind lives at the caller (auth service) —
+    /// this repo method just moves the column value.
+    async fn rebind_federation_issuer(
+        &self,
+        user_id: Uuid,
+        new_issuer: &str,
+    ) -> Result<(), DomainError>;
+
+    /// Attach a federation identity to a user row that currently has
+    /// none. Used by the self-service link flow and the auto-link
+    /// branch of the OIDC callback. See
+    /// docs/plan/oidc-account-linking.md.
+    ///
+    /// Enforces at the DB layer via the
+    /// `idx_users_federation` UNIQUE index: if this triple is already
+    /// bound to a DIFFERENT user, returns `AlreadyExists`. The caller
+    /// (app service) translates that to a `already_linked_elsewhere`
+    /// audit reason and a user-facing refusal.
+    ///
+    /// Does NOT overwrite an already-linked identity — the current
+    /// user must be unlinked first. This is a "first link" primitive
+    /// only; the app service's higher-level `link_oidc` orchestrates
+    /// the pre-checks (idempotent-if-same / refuse-if-different).
+    async fn link_federation_identity(
+        &self,
+        user_id: Uuid,
+        kind: &str,
+        issuer: &str,
+        subject: &str,
+    ) -> Result<(), DomainError>;
+
+    /// Scalar `opaque_envelope IS NOT NULL` for the user. Used by the
+    /// unlink refusal guard (a user with an OPAQUE envelope still has
+    /// a working direct login even after OIDC unlink). Avoids
+    /// dragging the full envelope bytes across the wire for a bool.
+    async fn is_opaque_registered(&self, user_id: Uuid) -> Result<bool, DomainError>;
+
+    /// Detach the current federation identity from a user row: set all
+    /// three federation columns to NULL. The `has_password` or
+    /// `opaque_registered` fallback guard lives at the app service
+    /// layer — this method is a mechanical UPDATE.
+    ///
+    /// Idempotent: calling on an already-unlinked user is a no-op.
+    async fn unlink_federation_identity(&self, user_id: Uuid) -> Result<(), DomainError>;
+
     /// Lists users by role (e.g., "admin" or "user")
     async fn list_users_by_role(&self, role: &str) -> Result<Vec<User>, DomainError>;
 
@@ -194,10 +253,14 @@ pub trait UserStoragePort: Send + Sync + 'static {
     /// Changes a user's password
     async fn change_password(&self, user_id: Uuid, password_hash: &str) -> Result<(), DomainError>;
 
-    /// Finds a user by OIDC provider + subject pair
-    async fn get_user_by_oidc_subject(
+    /// Finds a user by federation (issuer, subject) pair. Historically
+    /// called for OIDC lookups (the only federation kind in-tree at rename
+    /// time); after Phase B/C of the federation-identity rename the
+    /// caller passes the true `iss` URL rather than a display label. See
+    /// `docs/plan/ocm.md § Schema rename` for the transition.
+    async fn get_user_by_federation_subject(
         &self,
-        provider: &str,
+        issuer: &str,
         subject: &str,
     ) -> Result<User, DomainError>;
 
@@ -234,6 +297,15 @@ pub struct OidcTokenSet {
 #[derive(Debug, Clone)]
 pub struct OidcIdClaims {
     pub sub: String,
+    /// The validated `iss` claim from the id_token. Equal to
+    /// `discovery.issuer` (the validator enforces `iss == discovery.issuer`,
+    /// so this is a safe echo of the authoritative issuer URL).
+    ///
+    /// Load-bearing for the federation-identity Phase B lazy-rebind: the
+    /// app service compares this against `user.federation_issuer` and
+    /// updates the row when the stored value is still a legacy display
+    /// label (see docs/plan/ocm.md § Rename PR — Phase B).
+    pub iss: String,
     pub email: Option<String>,
     pub email_verified: Option<bool>,
     pub preferred_username: Option<String>,
@@ -271,6 +343,17 @@ pub struct OidcLogoutClaims {
     /// JWT identifier — used by the app service to prevent replay of the
     /// same logout_token within the token's freshness window.
     pub jti: Option<String>,
+    /// The validated `iss` claim from the logout_token — echoed from
+    /// `discovery.issuer` (the validator enforces `iss == discovery.issuer`,
+    /// so this is a safe echo of the authoritative issuer URL).
+    ///
+    /// Load-bearing for the sub-based revocation path (BCL without sid):
+    /// the app service passes this to
+    /// `revoke_user_sessions_by_federation_subject(issuer, sub)`, and the
+    /// pg impl matches on `auth.users.federation_issuer` — which post
+    /// Phase B stores the iss URL, NOT the display label. Passing the
+    /// display label (via `oidc.provider_name()`) misses every row.
+    pub iss: String,
 }
 
 /// Port for OIDC operations — implemented in infrastructure layer
@@ -383,12 +466,12 @@ pub trait SessionStoragePort: Send + Sync + 'static {
 
     /// OIDC Back-Channel Logout fallback when the IdP didn't supply a `sid`:
     /// revoke every session belonging to the user identified by
-    /// `(oidc_provider, oidc_subject)`. Returns the affected user id, or
-    /// `None` if we don't know that user.
-    async fn revoke_user_sessions_by_oidc_subject(
+    /// `(federation_issuer, federation_subject)`. Returns the affected
+    /// user id, or `None` if we don't know that user.
+    async fn revoke_user_sessions_by_federation_subject(
         &self,
-        oidc_provider: &str,
-        oidc_subject: &str,
+        issuer: &str,
+        subject: &str,
     ) -> Result<Option<Uuid>, DomainError>;
 }
 

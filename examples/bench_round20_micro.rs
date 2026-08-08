@@ -255,7 +255,7 @@ struct BenchUserDto {
     id: String,
     username: Option<String>,
     email: String,
-    auth_provider: String,
+    federation_issuer: String,
     image: Option<String>,
     can_edit_image: bool,
     given_name: Option<String>,
@@ -271,7 +271,7 @@ fn a2_before(user: &BenchUser) -> BenchUserDto {
         id: user.id.to_string(),
         username: user.username.as_deref().map(str::to_string),
         email: user.email.clone(),
-        auth_provider: user.oidc_provider.as_deref().unwrap_or("local").to_string(),
+        federation_issuer: user.oidc_provider.as_deref().unwrap_or("local").to_string(),
         image: user.image.as_deref().map(|s| s.to_string()),
         can_edit_image: user.oidc_provider.is_none(),
         given_name: user.given_name.as_deref().map(str::to_string),
@@ -288,7 +288,7 @@ fn a2_after(user: BenchUser) -> BenchUserDto {
         id: user.id.to_string(),
         username: user.username,
         email: user.email,
-        auth_provider: user.oidc_provider.unwrap_or_else(|| "local".to_string()),
+        federation_issuer: user.oidc_provider.unwrap_or_else(|| "local".to_string()),
         image: user.image,
         can_edit_image,
         given_name: user.given_name,
@@ -321,7 +321,10 @@ fn section_a2() {
     let a = a2_after(user.clone());
     assert_eq!(b.image, a.image, "A2 image differs");
     assert_eq!(b.email, a.email, "A2 email differs");
-    assert_eq!(b.auth_provider, a.auth_provider, "A2 auth_provider differs");
+    assert_eq!(
+        b.federation_issuer, a.federation_issuer,
+        "A2 federation_issuer differs"
+    );
     assert_eq!(
         b.can_edit_image, a.can_edit_image,
         "A2 can_edit_image differs"

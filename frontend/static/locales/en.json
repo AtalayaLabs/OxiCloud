@@ -727,7 +727,15 @@
     "sign_in": "Sign in",
     "signing_in": "Signing in…",
     "sending": "Sending…",
-    "toggle_password": "Show password"
+    "toggle_password": "Show password",
+    "login_error_title": "Sign-in failed",
+    "login_error_back_to_login": "Back to login",
+    "login_error_auto_link_disabled": "This server does not auto-link SSO accounts. Sign in with your existing credentials, then connect SSO from your profile.",
+    "login_error_auto_link_email_not_verified": "Your SSO provider did not confirm your email address. Verify your email at your identity provider, then try again.",
+    "login_error_already_linked_elsewhere": "A local account with this email already exists and is linked to a different SSO identity. Contact your administrator.",
+    "login_error_callback_denied": "Your sign-in link expired or was already used. Please try signing in again.",
+    "login_error_callback_failed": "SSO sign-in couldn't complete. Please try again.",
+    "login_error_generic": "SSO sign-in was refused. Please try again."
   },
   "storage": {
     "title": "Storage",
@@ -1370,7 +1378,18 @@
     "language": "Language",
     "language_auto": "Automatic",
     "password_mismatch": "Passwords do not match",
-    "saved": "Profile saved"
+    "saved": "Profile saved",
+    "sso_connect_title": "Connect Single Sign-On",
+    "sso_connect_description": "Link your account to {{provider}} so you can sign in with SSO instead of your password.",
+    "sso_connect_button": "Connect with {{provider}}",
+    "sso_disconnect_title": "Single Sign-On",
+    "sso_disconnect_description": "Your account is connected to {{provider}}. Disconnecting will require you to sign in with your password from now on.",
+    "sso_disconnect_button": "Disconnect Single Sign-On",
+    "sso_disconnect_confirm_title": "Disconnect Single Sign-On?",
+    "sso_disconnect_confirm_message": "You'll only be able to sign in with your password or OPAQUE credential after this.",
+    "sso_disconnect_confirm_button": "Disconnect",
+    "sso_unlinked_success": "Single sign-on disconnected.",
+    "sso_unlink_no_alt_auth": "Set a password first — otherwise you would be locked out."
   },
   "upload": {
     "uploading": "Uploading...",

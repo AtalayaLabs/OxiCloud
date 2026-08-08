@@ -25,7 +25,36 @@ pub struct UserDto {
     pub updated_at: DateTime<Utc>,
     pub last_login_at: Option<DateTime<Utc>>,
     pub active: bool,
-    pub auth_provider: String,
+    /// Which trust chain minted this user's federation identity —
+    /// `"oidc" | "ocm" | "magic_link"` — or `None` for pure local
+    /// users. Load-bearing for "is this user OIDC?"-shape predicates:
+    /// use `federation_kind == "oidc"` rather than string-scraping
+    /// `federation_issuer`. Serialized only when populated.
+    ///
+    /// Mirrors `auth.users.federation_kind` verbatim — same name at
+    /// DB, entity, and wire layers so there's no translation to reason
+    /// about. See docs/plan/ocm.md § Identity & auth model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub federation_kind: Option<String>,
+    /// The authority that mints this user's `federation_subject` —
+    /// issuer URL for OIDC (id_token `iss` claim), peer domain for
+    /// OCM, `null` for local users (password / OPAQUE only).
+    ///
+    /// Renamed from `auth_provider` (which was a `String` with the
+    /// sentinel `"local"` for non-federated users, and a human-readable
+    /// label like `"MockSSO"` before Phase B). This shape mirrors the
+    /// `auth.users.federation_issuer` column directly: nullable when
+    /// there's no federation involved. FE predicates for "is this user
+    /// federated?" should read `federation_kind`, not
+    /// string-compare this value.
+    ///
+    /// When populated, FE code that wants a friendly display label
+    /// looks this value up against `OidcProviderInfoDto.issuer →
+    /// provider_name` to render the deployment's configured display
+    /// name; falls back to the raw issuer for foreign IdPs / legacy
+    /// rows still holding a pre-Phase-B label.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub federation_issuer: Option<String>,
     pub image: Option<String>,
     pub can_edit_image: bool,
     /// `true` for grant-only external recipients (magic-link, OIDC-only,
@@ -95,8 +124,8 @@ pub struct UserDto {
     #[serde(default)]
     pub force_password_change: bool,
     /// TRUE when the account has a local Argon2id `password_hash` on
-    /// file. Distinct from `auth_provider`: an SSO-linked account
-    /// (auth_provider != "local") can ALSO carry a local password if
+    /// file. Distinct from `federation_kind`: an OIDC-linked account
+    /// (`federation_kind == "oidc"`) can ALSO carry a local password if
     /// it was set at signup or later — a hybrid posture. The SPA
     /// gates the profile page's change-password card on this flag,
     /// so hybrid users can rotate their local password even though
@@ -127,11 +156,16 @@ pub struct AdminUserSummaryDto {
     pub storage_used_bytes: i64,
     pub last_login_at: Option<DateTime<Utc>>,
     pub active: bool,
-    pub auth_provider: String,
+    /// See `UserDto::federation_kind` — same semantics, same wire spelling.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub federation_kind: Option<String>,
+    /// See `UserDto::federation_issuer` — same semantics, same wire spelling.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub federation_issuer: Option<String>,
     pub is_external: bool,
     /// TRUE when the user has a server-verifiable password on file
     /// (`password_hash IS NOT NULL`). The admin table uses this
-    /// alongside `oidc_provider` and `opaque_registered` to render
+    /// alongside `federation_issuer` and `opaque_registered` to render
     /// the user's full capability set: a `password` chip lights up
     /// here, an OIDC provider name renders the SSO badge, an
     /// envelope-on-file flips the OPAQUE chip. A user with none of
@@ -171,7 +205,8 @@ impl From<UserListEntry> for AdminUserSummaryDto {
             storage_used_bytes: entry.storage_used_bytes,
             last_login_at: entry.last_login_at,
             active: entry.active,
-            auth_provider: entry.oidc_provider.unwrap_or_else(|| "local".to_string()),
+            federation_kind: entry.federation_kind,
+            federation_issuer: entry.federation_issuer,
             is_external: entry.is_external,
             has_password: entry.has_password,
             opaque_registered: entry.opaque_registered,
@@ -207,8 +242,11 @@ impl From<User> for UserDto {
             updated_at: p.updated_at,
             last_login_at: p.last_login_at,
             active: p.active,
-            // Some(provider) moves the String; None still allocates "local".
-            auth_provider: p.oidc_provider.unwrap_or_else(|| "local".to_string()),
+            // NULL on both fields for local users (no federation wired).
+            // FE predicates use `!!federation_kind` for "is federated?" —
+            // no "local" sentinel string; the null tells the whole story.
+            federation_kind: p.federation_kind.map(|k| k.as_str().to_string()),
+            federation_issuer: p.federation_issuer,
             image: p.image,
             can_edit_image,
             is_external: p.is_external,
@@ -467,6 +505,22 @@ pub struct OidcExchangeDto {
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct OidcProviderInfoDto {
     pub enabled: bool,
+    /// The authoritative issuer URL for THIS deployment's OIDC config —
+    /// same value that lands on `auth.users.federation_issuer` for
+    /// users JIT-provisioned via this IdP.
+    ///
+    /// Populated so the frontend can resolve display: when
+    /// `UserDto.federation_issuer` equals this `issuer`, render
+    /// `provider_name` as the human-friendly label (avoids showing raw
+    /// issuer URLs like `https://sso.example.com/realms/main` in the
+    /// admin badge / profile view). Falls back to the raw issuer when
+    /// there's no match — happens for legacy rows not yet lazy-rebound,
+    /// or (future) users linked to a different IdP than the currently
+    /// configured one.
+    ///
+    /// Empty string when OIDC is disabled on this deployment.
+    #[serde(default)]
+    pub issuer: String,
     pub provider_name: String,
     pub authorize_endpoint: String,
     pub password_login_enabled: bool,

@@ -213,8 +213,14 @@ async fn user_provisioning_response(
         vec!["users"]
     };
 
-    // Determine backend based on auth provider
-    let backend = if user_dto.auth_provider.to_lowercase().contains("oidc") {
+    // Determine backend based on federation kind. Historically checked
+    // `auth_provider.to_lowercase().contains("oidc")` which happened to
+    // work when the DTO field held a display label containing "oidc"
+    // (e.g. "OIDC-Google") — but broke silently when the label was
+    // "MockSSO" or, post Phase B of the federation-identity rename, when
+    // the field became an issuer URL that doesn't contain "oidc". The
+    // kind field is the load-bearing signal.
+    let backend = if user_dto.federation_kind.as_deref() == Some("oidc") {
         "OIDC"
     } else {
         "Database"

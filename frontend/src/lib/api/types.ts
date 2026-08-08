@@ -191,7 +191,24 @@ export interface User {
 	updated_at: string;
 	last_login_at?: string | null;
 	active: boolean;
-	auth_provider: string;
+	/**
+	 * Which trust chain minted this user's federation identity. `null`
+	 * (omitted from wire) for local users (password / OPAQUE only).
+	 * `"oidc" | "ocm" | "magic_link"` for federated users. Predicate:
+	 * `!user.federation_kind` = local; `user.federation_kind === 'oidc'`
+	 * = OIDC user. Mirrors `auth.users.federation_kind` verbatim.
+	 */
+	federation_kind?: 'oidc' | 'ocm' | 'magic_link';
+	/**
+	 * Authority that minted this user's OIDC/OCM identity — issuer URL
+	 * for OIDC (id_token `iss`), peer domain for OCM. `null` (omitted)
+	 * for local users. FE that wants a friendly display label maps this
+	 * against `OidcProviders.issuer → provider_name` when they match;
+	 * shows the raw value otherwise. Renamed from the historical
+	 * `auth_provider` (which held a display label pre-Phase-B and a
+	 * `"local"` sentinel for non-federated users — both are gone).
+	 */
+	federation_issuer?: string;
 	image?: string | null;
 	can_edit_image: boolean;
 	is_external: boolean;
@@ -229,13 +246,14 @@ export interface User {
 	force_password_change?: boolean;
 	/**
 	 * TRUE when the account has a local Argon2id `password_hash` on
-	 * file. Distinct from `auth_provider`: an SSO-linked account can
-	 * ALSO carry a local password (hybrid posture — SSO for daily
-	 * login, local password as fallback). The profile page's
-	 * change-password card gates on this flag rather than on
-	 * `auth_provider === 'local'` so hybrid users can rotate their
-	 * local credential. Optional on the wire for older-backend
-	 * compatibility; missing → `false` (safe default: hide the card).
+	 * file. Distinct from `federation_kind`: an OIDC-linked account
+	 * (`federation_kind === 'oidc'`) can ALSO carry a local password
+	 * (hybrid posture — SSO for daily login, local password as
+	 * fallback). The profile page's change-password card gates on this
+	 * flag rather than on the federation shape so hybrid users can
+	 * rotate their local credential. Optional on the wire for older-
+	 * backend compatibility; missing → `false` (safe default: hide the
+	 * card).
 	 */
 	has_password?: boolean;
 }
@@ -260,15 +278,16 @@ export type AdminUserSummary = Pick<
 	| 'storage_used_bytes'
 	| 'last_login_at'
 	| 'active'
-	| 'auth_provider'
+	| 'federation_kind'
+	| 'federation_issuer'
 	| 'is_external'
 > & {
 	/** TRUE = user has a server-verifiable password on file (legacy or
-	 * admin-set). Combined with `opaque_registered` and `auth_provider`,
+	 * admin-set). Combined with `opaque_registered` and `federation_kind`,
 	 * the admin table derives the full auth capability set — a user with
 	 * `has_password=false`, `opaque_registered=false` AND
-	 * `auth_provider === 'local'` is passwordless (magic-link only,
-	 * which is the default for externals). */
+	 * `federation_kind === undefined` (no federation) is passwordless
+	 * (magic-link only, which is the default for externals). */
 	has_password?: boolean;
 	/** TRUE = user has an OPAQUE envelope on file (Phase 2 silent migration
 	 * succeeded, or the user completed a manual re-registration). */

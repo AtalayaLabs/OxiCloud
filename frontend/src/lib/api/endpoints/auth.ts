@@ -3,7 +3,7 @@
  * primitives here intentionally bypass it (see client.ts) so a 401 surfaces as
  * a genuine failure to the caller.
  */
-import { ApiError, apiFetch } from '$lib/api/client';
+import { ApiError, apiFetch, setLogoutInProgress } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type { AuthResponse, User } from '$lib/api/types';
 
@@ -379,18 +379,78 @@ export interface LogoutResult {
 	postLogoutUrl?: string;
 }
 
-export async function logout(): Promise<LogoutResult> {
-	const res = await apiFetch('/api/auth/logout', {
+/**
+ * Start the self-service OIDC linking flow. Returns the authorize URL
+ * the caller should full-page navigate to (`window.location.assign`).
+ * The IdP round-trip lands on `/api/auth/oidc/callback` which
+ * dispatches to the link branch and redirects to
+ * `/profile?linked=1` (success) or `/profile?link_error=<reason>`
+ * (safety-check refusal). See docs/plan/oidc-account-linking.md.
+ */
+export async function startOidcLink(): Promise<string> {
+	const res = await apiFetch('/api/auth/oidc/link/start', {
 		method: 'POST',
 		credentials: 'same-origin',
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: '{}'
 	});
-	if (!res.ok) return {};
+	if (!res.ok) {
+		const { errorType, message } = await parseErrorBody(res);
+		throw new ApiError(res.status, res.statusText, '/api/auth/oidc/link/start', errorType, message);
+	}
+	const body = (await res.json()) as { authorize_url?: string };
+	if (typeof body.authorize_url !== 'string' || body.authorize_url.length === 0) {
+		throw new Error('malformed link/start response: missing authorize_url');
+	}
+	return body.authorize_url;
+}
+
+/**
+ * Detach the currently-authenticated user's OIDC identity. Refuses
+ * (403 with `error_type: "AccessDenied"`) when the user has no other
+ * credential (password / OPAQUE) and would be locked out. Callers
+ * should offer the "set a password first" affordance in that case.
+ */
+export async function unlinkOidc(): Promise<void> {
+	const res = await apiFetch('/api/auth/oidc/unlink', {
+		method: 'POST',
+		credentials: 'same-origin',
+		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
+		body: '{}'
+	});
+	if (!res.ok) {
+		const { errorType, message } = await parseErrorBody(res);
+		throw new ApiError(res.status, res.statusText, '/api/auth/oidc/unlink', errorType, message);
+	}
+}
+
+export async function logout(): Promise<LogoutResult> {
+	// Gate the session-expired handler for the duration of this call.
+	// The backend revokes the session + clears cookies as part of the
+	// logout response, so any in-flight fetch racing us will 401. Without
+	// the gate, that ambient 401 would trigger a navigation to
+	// `/login?source=session_expired`, cancel the pending logout POST,
+	// and swallow the `post_logout_url` response body — leaving the SSO
+	// session live on the IdP because we never navigate to its
+	// end_session_endpoint. See client.ts `logoutInProgress` for details.
+	setLogoutInProgress(true);
 	try {
-		const body = (await res.json()) as { post_logout_url?: unknown };
-		return typeof body?.post_logout_url === 'string' ? { postLogoutUrl: body.post_logout_url } : {};
-	} catch {
-		return {};
+		const res = await apiFetch('/api/auth/logout', {
+			method: 'POST',
+			credentials: 'same-origin',
+			headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
+			body: '{}'
+		});
+		if (!res.ok) return {};
+		try {
+			const body = (await res.json()) as { post_logout_url?: unknown };
+			return typeof body?.post_logout_url === 'string'
+				? { postLogoutUrl: body.post_logout_url }
+				: {};
+		} catch {
+			return {};
+		}
+	} finally {
+		setLogoutInProgress(false);
 	}
 }

@@ -80,6 +80,8 @@ use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
         handlers::auth_handler::oidc_callback,
         handlers::auth_handler::oidc_exchange,
         handlers::auth_handler::oidc_backchannel_logout,
+        handlers::auth_handler::oidc_link_start,
+        handlers::auth_handler::oidc_unlink,
         // File handlers (free functions — see file_handler.rs for why)
         handlers::file_handler::list_files_query,
         handlers::file_handler::upload_file_with_thumbnails,

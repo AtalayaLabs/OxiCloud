@@ -42,6 +42,28 @@ pub enum OidcCallbackResult {
         user_id: Uuid,
         username: String,
     },
+    /// Self-service link flow completed — the OIDC identity was
+    /// attached to the already-authenticated user. Handler redirects
+    /// the browser to `/profile?linked=1` (or `?link_error=<reason>`
+    /// on the `LinkRefused` variant below).
+    ///
+    /// The user's existing session cookies remain valid (no new session
+    /// is minted for the link flow — the user was already logged in
+    /// when they started).
+    LinkCompleted { user_id: Uuid },
+    /// Self-service link refused by a safety check. `reason` is the
+    /// stable enum-shaped key the handler surfaces on the
+    /// `/profile?link_error=<reason>` redirect. See
+    /// docs/plan/oidc-account-linking.md § Safety checks.
+    LinkRefused { reason: &'static str },
+    /// Auto-link decision refused during the OIDC LOGIN callback path
+    /// (existing local user matched by email but the decision tree
+    /// rejected). `reason` is one of `auto_link_disabled`,
+    /// `auto_link_email_not_verified`, `already_linked_elsewhere`;
+    /// the handler maps each to a distinct CamelCase `error_type`
+    /// on the 409 response so the login page can switch on it.
+    /// See docs/plan/oidc-account-linking.md § Auto-link.
+    AutoLinkRefused { reason: &'static str },
 }
 
 /// Outcome of a successful magic-link redemption. The auth tokens are
@@ -93,6 +115,21 @@ pub struct MagicLinkRedemption {
     pub resource_id: Option<Uuid>,
 }
 
+/// Why an OIDC flow was initiated — dispatched on at callback time.
+///
+/// `Login` (default) → normal login: JIT-provision or match existing
+/// user, mint OxiCloud session.
+///
+/// `Link { user_id }` → self-service identity link
+/// (`POST /api/auth/oidc/link/start`). The callback runs safety checks
+/// and, on success, UPDATEs `federation_*` on the ALREADY-LOGGED-IN
+/// user's row. See docs/plan/oidc-account-linking.md.
+#[derive(Clone)]
+enum FlowIntent {
+    Login,
+    Link { user_id: Uuid },
+}
+
 /// Tracks a pending OIDC authorization flow (CSRF + PKCE + nonce)
 #[derive(Clone)]
 struct PendingOidcFlow {
@@ -102,6 +139,10 @@ struct PendingOidcFlow {
     /// page. On successful callback the flow will mint an app-password and
     /// complete the Nextcloud login flow instead of issuing internal JWTs.
     nc_flow_token: Option<String>,
+    /// What the callback should DO with a successful IdP response.
+    /// Defaults to `Login` for every existing flow-mint call site;
+    /// self-service linking sets `Link { user_id }`.
+    intent: FlowIntent,
 }
 
 /// Tracks a pending one-time token exchange after successful OIDC callback
@@ -560,8 +601,9 @@ impl AuthApplicationService {
             dto.email.clone(),
             dto.username.clone(),
             password_hash,
-            None,
-            None,
+            None, // federation_kind: local password registration
+            None, // federation_issuer
+            None, // federation_subject
             role,
             quota,
             false,
@@ -662,8 +704,9 @@ impl AuthApplicationService {
             email,
             Some(username.clone()),
             Some(password_hash),
-            None,
-            None,
+            None, // federation_kind: setup admin is local
+            None, // federation_issuer
+            None, // federation_subject
             role,
             quota,
             false,
@@ -1514,16 +1557,19 @@ impl AuthApplicationService {
             self.backchannel_logout_jti_seen.insert(jti.clone(), ());
         }
 
-        let provider_name = oidc.provider_name().to_string();
-
         // Resolve which sessions to revoke.
         let affected_user_ids: Vec<Uuid> = if let Some(sid) = claims.sid.as_ref() {
             self.session_storage
                 .revoke_sessions_by_oidc_sid(sid)
                 .await?
         } else if let Some(sub) = claims.sub.as_ref() {
+            // Pass claims.iss (the id_token's real issuer URL from the
+            // logout_token), NOT the OIDC service's provider_name
+            // display label. Post Phase B of the federation-identity
+            // rename, `auth.users.federation_issuer` stores the iss
+            // URL — matching on the display label misses every row.
             self.session_storage
-                .revoke_user_sessions_by_oidc_subject(&provider_name, sub)
+                .revoke_user_sessions_by_federation_subject(&claims.iss, sub)
                 .await?
                 .into_iter()
                 .collect()
@@ -2810,8 +2856,9 @@ impl AuthApplicationService {
                 email,
                 Some(dto.username.clone()),
                 Some(password_hash),
-                None,
-                None,
+                None, // federation_kind: admin-created external, no federation link yet
+                None, // federation_issuer
+                None, // federation_subject
                 UserRole::User,
                 0,
                 true,
@@ -2821,8 +2868,9 @@ impl AuthApplicationService {
                 email,
                 Some(dto.username.clone()),
                 Some(password_hash),
-                None,
-                None,
+                None, // federation_kind: admin-created local user
+                None, // federation_issuer
+                None, // federation_subject
                 role,
                 quota,
                 false,
@@ -3147,6 +3195,7 @@ impl AuthApplicationService {
                 pkce_verifier,
                 nonce: nonce.clone(),
                 nc_flow_token: None,
+                intent: FlowIntent::Login,
             },
         );
 
@@ -3161,6 +3210,296 @@ impl AuthApplicationService {
         );
 
         Ok(authorize_url)
+    }
+
+    /// Prepare an OIDC authorize flow for the SELF-SERVICE LINK path.
+    /// Same PKCE + nonce dance as `prepare_oidc_authorize`, but the
+    /// pending-flow entry carries `FlowIntent::Link { user_id }` so the
+    /// callback branches to the link handler instead of the login one.
+    ///
+    /// The caller MUST have already authenticated the user (this method
+    /// takes user_id from the current session context). See
+    /// docs/plan/oidc-account-linking.md § UX flow — link.
+    pub async fn prepare_oidc_link(&self, user_id: Uuid) -> Result<String, DomainError> {
+        let oidc = self.oidc_service().ok_or_else(|| {
+            DomainError::new(
+                ErrorKind::InternalError,
+                "OIDC",
+                "OIDC service not configured",
+            )
+        })?;
+
+        // Anti-scope-creep pre-check: refuse if the user is already
+        // linked. Callers get an immediate error rather than round-
+        // tripping through the IdP just to be refused at callback time.
+        // (The callback still re-checks — this is a UX shortcut, not
+        // the source of truth.)
+        let user = self.user_storage.get_user_by_id(user_id).await?;
+        if user.federation_kind().is_some() {
+            return Err(DomainError::new(
+                ErrorKind::AlreadyExists,
+                "Federation",
+                "This user is already linked to a federation identity. \
+                 Unlink first before re-linking.",
+            ));
+        }
+
+        use rand_core::{OsRng, RngCore};
+        use sha2::{Digest, Sha256};
+
+        let mut state_bytes = [0u8; 32];
+        OsRng.fill_bytes(&mut state_bytes);
+        let state_token = hex::encode(state_bytes);
+
+        let mut nonce_bytes = [0u8; 32];
+        OsRng.fill_bytes(&mut nonce_bytes);
+        let nonce = hex::encode(nonce_bytes);
+
+        let mut verifier_bytes = [0u8; 32];
+        OsRng.fill_bytes(&mut verifier_bytes);
+        let pkce_verifier = base64_url_encode(&verifier_bytes);
+        let pkce_challenge = {
+            let hash = Sha256::digest(pkce_verifier.as_bytes());
+            base64_url_encode(&hash)
+        };
+
+        self.pending_oidc_flows.insert(
+            state_token.clone(),
+            PendingOidcFlow {
+                pkce_verifier,
+                nonce: nonce.clone(),
+                nc_flow_token: None,
+                intent: FlowIntent::Link { user_id },
+            },
+        );
+
+        let authorize_url = oidc
+            .get_authorize_url(&state_token, &nonce, &pkce_challenge)
+            .await?;
+
+        tracing::info!(
+            target: "audit",
+            event = "federation.link_started",
+            user_id = %user_id,
+            "🔗 self-service OIDC link flow initiated"
+        );
+
+        Ok(authorize_url)
+    }
+
+    /// Detach the current OIDC identity from a user. Refuses if the
+    /// user has no other authentication credential — otherwise the
+    /// user would lock themselves out of their own account.
+    ///
+    /// "Other credential" = local password OR OPAQUE envelope on file.
+    /// Magic-link doesn't count as a safe fallback: the OIDC-master
+    /// rule refuses magic-link for OIDC-linked users, so its behavior
+    /// FLIPS after unlink, creating surprise; and it depends on SMTP
+    /// wiring which may not be present. See
+    /// docs/plan/oidc-account-linking.md § Unlink refusal.
+    /// Run the safety checks + UPDATE for the self-service link flow.
+    /// Called from `oidc_callback` when `FlowIntent::Link { user_id }`
+    /// was set at flow-start time. Returns `OidcCallbackResult` variants
+    /// that the handler translates to a redirect (LinkCompleted →
+    /// `/profile?linked=1`, LinkRefused → `/profile?link_error=<key>`).
+    ///
+    /// Safety checks (all refusals are wire-visible as `link_error=`):
+    /// - Session valid — target user exists (state's user_id points to
+    ///   a real row). If not, `session_expired`.
+    /// - IdP provided an email — else `email_not_provided`.
+    /// - Emails match under normalize_email_for_link — else
+    ///   `email_mismatch`.
+    /// - Identity `(kind, iss, sub)` not already linked to a DIFFERENT
+    ///   user — else `already_linked_elsewhere`.
+    /// - Current user isn't already linked to a DIFFERENT identity —
+    ///   else `already_linked`. Same identity → idempotent success.
+    async fn complete_oidc_link(
+        &self,
+        user_id: Uuid,
+        claims: &OidcIdClaims,
+    ) -> Result<OidcCallbackResult, DomainError> {
+        use crate::common::text::normalize_email_for_link;
+
+        // 1. Session validity — the target user must still exist.
+        let user = match self.user_storage.get_user_by_id(user_id).await {
+            Ok(u) => u,
+            Err(_) => {
+                tracing::info!(
+                    target: "audit",
+                    event = "federation.link_refused",
+                    user_id = %user_id,
+                    reason = "session_expired",
+                    "🔗 link refused — target user not found (session may have ended)",
+                );
+                return Ok(OidcCallbackResult::LinkRefused {
+                    reason: "session_expired",
+                });
+            }
+        };
+
+        // 2. IdP must provide an email — without it we can't verify
+        //    ownership.
+        let idp_email = match claims.email.as_ref() {
+            Some(e) => e,
+            None => {
+                tracing::info!(
+                    target: "audit",
+                    event = "federation.link_refused",
+                    user_id = %user_id,
+                    reason = "email_not_provided",
+                    "🔗 link refused — IdP did not return an email claim",
+                );
+                return Ok(OidcCallbackResult::LinkRefused {
+                    reason: "email_not_provided",
+                });
+            }
+        };
+
+        // 3. Email match under +alias normalization.
+        if normalize_email_for_link(idp_email) != normalize_email_for_link(user.email()) {
+            tracing::info!(
+                target: "audit",
+                event = "federation.link_refused",
+                user_id = %user_id,
+                reason = "email_mismatch",
+                oxicloud_email_normalized = %normalize_email_for_link(user.email()),
+                idp_email_normalized = %normalize_email_for_link(idp_email),
+                "🔗 link refused — IdP email doesn't match OxiCloud user email",
+            );
+            return Ok(OidcCallbackResult::LinkRefused {
+                reason: "email_mismatch",
+            });
+        }
+
+        // 4. Idempotent-if-same / refuse-if-different: check the current
+        //    user's link state before we touch it.
+        match (
+            user.federation_kind(),
+            user.federation_issuer(),
+            user.federation_subject(),
+        ) {
+            (None, None, None) => {
+                // Fresh — proceed to link.
+            }
+            (Some(kind), Some(iss), Some(sub))
+                if kind.as_str() == "oidc" && iss == claims.iss && sub == claims.sub =>
+            {
+                // Same identity → idempotent no-op success.
+                tracing::info!(
+                    target: "audit",
+                    event = "federation.link_completed",
+                    user_id = %user_id,
+                    reason = "idempotent_repeat",
+                    federation_issuer = %claims.iss,
+                    federation_subject = %claims.sub,
+                    "🔗 link no-op — user already linked to this same identity",
+                );
+                return Ok(OidcCallbackResult::LinkCompleted { user_id });
+            }
+            _ => {
+                tracing::info!(
+                    target: "audit",
+                    event = "federation.link_refused",
+                    user_id = %user_id,
+                    reason = "already_linked",
+                    "🔗 link refused — user already linked to a different identity; unlink first",
+                );
+                return Ok(OidcCallbackResult::LinkRefused {
+                    reason: "already_linked",
+                });
+            }
+        }
+
+        // 5. Identity not already linked to a DIFFERENT user. The
+        //    UNIQUE(kind, issuer, subject) index would catch this at
+        //    UPDATE time via link_federation_identity's AlreadyExists
+        //    error, but we pre-check to emit a clean audit line and
+        //    avoid the "AlreadyExists on user" confusion in the
+        //    downstream error mapping.
+        if let Ok(other) = self
+            .user_storage
+            .get_user_by_federation_subject(&claims.iss, &claims.sub)
+            .await
+            && other.id() != user_id
+        {
+            tracing::info!(
+                target: "audit",
+                event = "federation.link_refused",
+                user_id = %user_id,
+                other_user_id = %other.id(),
+                reason = "already_linked_elsewhere",
+                "🔗 link refused — this OIDC identity is already linked to a different OxiCloud user",
+            );
+            return Ok(OidcCallbackResult::LinkRefused {
+                reason: "already_linked_elsewhere",
+            });
+        }
+
+        // All checks passed — commit the link.
+        self.user_storage
+            .link_federation_identity(user_id, "oidc", &claims.iss, &claims.sub)
+            .await?;
+
+        tracing::info!(
+            target: "audit",
+            event = "federation.link_completed",
+            user_id = %user_id,
+            federation_kind = "oidc",
+            federation_issuer = %claims.iss,
+            federation_subject = %claims.sub,
+            "🔗 self-service OIDC link completed",
+        );
+
+        Ok(OidcCallbackResult::LinkCompleted { user_id })
+    }
+
+    pub async fn unlink_oidc(&self, user_id: Uuid) -> Result<(), DomainError> {
+        let user = self.user_storage.get_user_by_id(user_id).await?;
+
+        // Idempotent: unlinking an already-unlinked user is a success.
+        if user.federation_kind().is_none() {
+            tracing::info!(
+                target: "audit",
+                event = "federation.unlinked",
+                user_id = %user_id,
+                already_unlinked = true,
+                "🔗 unlink no-op — user was not linked"
+            );
+            return Ok(());
+        }
+
+        // The guard. `has_password` reads password_hash.is_some();
+        // `opaque_registered` needs a separate lookup because the User
+        // entity doesn't carry that flag today. We do that as a
+        // targeted query rather than dragging the full opaque_envelope
+        // column across the wire.
+        let opaque_registered = self.user_storage.is_opaque_registered(user_id).await?;
+        if !user.has_password() && !opaque_registered {
+            tracing::info!(
+                target: "audit",
+                event = "federation.unlink_refused",
+                user_id = %user_id,
+                reason = "no_alternative_auth",
+                "👮🏻‍♂️ unlink refused — user has no password/OPAQUE fallback"
+            );
+            return Err(DomainError::new(
+                ErrorKind::AccessDenied,
+                "Federation",
+                "Cannot unlink — set a password first, or you will be locked out.",
+            ));
+        }
+
+        self.user_storage
+            .unlink_federation_identity(user_id)
+            .await?;
+
+        tracing::info!(
+            target: "audit",
+            event = "federation.unlinked",
+            user_id = %user_id,
+            "🔗 OIDC identity unlinked"
+        );
+        Ok(())
     }
 
     /// Prepare an OIDC authorization flow for a Nextcloud Login Flow v2 session.
@@ -3206,6 +3545,7 @@ impl AuthApplicationService {
                 pkce_verifier,
                 nonce: nonce.clone(),
                 nc_flow_token: Some(nc_flow_token.to_string()),
+                intent: FlowIntent::Login,
             },
         );
 
@@ -3261,8 +3601,12 @@ impl AuthApplicationService {
                 ));
             }
         };
-        let (pkce_verifier, nonce, nc_flow_token) =
-            (flow.pkce_verifier, flow.nonce, flow.nc_flow_token);
+        let (pkce_verifier, nonce, nc_flow_token, intent) = (
+            flow.pkce_verifier,
+            flow.nonce,
+            flow.nc_flow_token,
+            flow.intent,
+        );
 
         // Clone the Arc and config out of the RwLock so we don't hold the lock across await points
         let (oidc, oidc_config) = {
@@ -3321,6 +3665,20 @@ impl AuthApplicationService {
         } else {
             claims
         };
+
+        // ────────────────────────────────────────────────────────────
+        // Flow-intent dispatch — if this callback was initiated by
+        // the self-service link path (`POST /api/auth/oidc/link/start`),
+        // divert here BEFORE the login-specific processing (email
+        // verification gate / JIT / session mint). Login stays on the
+        // fall-through path. See docs/plan/oidc-account-linking.md.
+        // ────────────────────────────────────────────────────────────
+        if let FlowIntent::Link {
+            user_id: target_user_id,
+        } = intent
+        {
+            return self.complete_oidc_link(target_user_id, &claims).await;
+        }
 
         let provider_name = oidc.provider_name().to_string();
         // Email-verification gate. The operator flag
@@ -3392,13 +3750,63 @@ impl AuthApplicationService {
             .clone()
             .unwrap_or_else(|| format!("{}@oidc.local", oidc_username));
 
-        // 5. Look up existing user by OIDC subject
-        let user = match self
+        // 5. Look up existing user by OIDC subject.
+        //
+        // Two-step lookup implements the Phase B lazy-rebind of the
+        // federation-identity rename (docs/plan/ocm.md § Phase B):
+        //   1. Canonical lookup keyed on the id_token's real `iss` claim.
+        //      Post-migration this is what every fresh JIT row uses.
+        //   2. Legacy fallback keyed on the OXICLOUD_OIDC_PROVIDER_NAME
+        //      display label. Fires for rows minted before the rename.
+        //      If the fallback hits, the row is rebound to the real iss
+        //      before this branch returns — first login after upgrade
+        //      self-heals the user; no admin action needed.
+        // If both miss, JIT provisioning kicks in below and writes the
+        // canonical value from the start.
+        let canonical = self
             .user_storage
-            .get_user_by_oidc_subject(&provider_name, &claims.sub)
-            .await
-        {
+            .get_user_by_federation_subject(&claims.iss, &claims.sub)
+            .await;
+        let lookup_result = match canonical {
+            Ok(u) => Ok(u),
+            // Only fall through to the legacy lookup if the canonical one
+            // said "not found" — treat all OTHER errors as fatal to avoid
+            // masking DB failures with a lookup that would probably fail
+            // the same way. NotFound is the only benign case here.
+            Err(e) if e.kind == ErrorKind::NotFound => {
+                self.user_storage
+                    .get_user_by_federation_subject(&provider_name, &claims.sub)
+                    .await
+            }
+            Err(e) => Err(e),
+        };
+        let user = match lookup_result {
             Ok(mut existing_user) => {
+                // Lazy-rebind: if the row's stored issuer doesn't match
+                // the real iss claim, update it now. Covers the legacy-
+                // label case (fallback hit) AND any drift accumulated
+                // during Phase A when JIT was still writing labels.
+                // rebind_federation_issuer is a guarded UPDATE — same-value
+                // no-op costs nothing.
+                if existing_user.federation_issuer() != Some(claims.iss.as_str()) {
+                    let old = existing_user
+                        .federation_issuer()
+                        .map(str::to_string)
+                        .unwrap_or_default();
+                    self.user_storage
+                        .rebind_federation_issuer(existing_user.id(), &claims.iss)
+                        .await?;
+                    tracing::info!(
+                        target: "audit",
+                        event = "federation.issuer_rebound",
+                        reason = "lazy_backfill",
+                        user_id = %existing_user.id(),
+                        federation_kind = "oidc",
+                        old_issuer = %old,
+                        new_issuer = %claims.iss,
+                        "🔗 federation_issuer rebound from legacy label to true iss URL",
+                    );
+                }
                 // User exists — dispatch login BEFORE register_login() so
                 // hooks observe `last_login_at = None` on the very first
                 // login (see tip #1 in the trait docstring).
@@ -3435,138 +3843,229 @@ impl AuthApplicationService {
                 existing_user
             }
             Err(_) => {
-                // User doesn't exist — try to match by email
-                let matched_user = self.user_storage.get_user_by_email(&oidc_email).await.ok();
+                // User doesn't exist by federation subject — try to
+                // match by email under the same normalization the
+                // self-service link flow uses (lowercase + strip
+                // `+alias`). Three possible outcomes:
+                //   * 0 matches → JIT provision (existing branch).
+                //   * 1 match  → run the auto-link decision tree.
+                //   * >1 match → refuse `email_ambiguous`. Two local
+                //     rows collapsing to the same normalized email
+                //     (`alice@example.com` + `alice+work@example.com`)
+                //     mean we can't safely pick one to auto-link;
+                //     admin must resolve.
+                let normalized = crate::common::text::normalize_email_for_link(&oidc_email);
+                let candidates = self
+                    .user_storage
+                    .list_users_by_normalized_email(&normalized)
+                    .await
+                    .unwrap_or_default();
 
-                if let Some(_existing) = matched_user {
-                    // Email match but no OIDC link — for security, don't auto-link
-                    return Err(DomainError::new(
-                        ErrorKind::AlreadyExists,
-                        "OIDC",
-                        format!(
-                            "A user with email '{}' already exists. Contact admin to link your OIDC identity.",
-                            oidc_email
-                        ),
-                    ));
+                if candidates.len() > 1 {
+                    tracing::info!(
+                        target: "audit",
+                        event = "federation.auto_link_refused",
+                        reason = "email_ambiguous",
+                        normalized_email = %normalized,
+                        candidate_count = candidates.len(),
+                        "🔗 auto-link refused — multiple local users normalize to the IdP email",
+                    );
+                    return Ok(OidcCallbackResult::AutoLinkRefused {
+                        reason: "email_ambiguous",
+                    });
                 }
 
-                // No match — JIT provision if enabled
-                if !oidc_config.auto_provision {
-                    return Err(DomainError::new(
-                        ErrorKind::AccessDenied,
-                        "OIDC",
-                        "Auto-provisioning is disabled. Contact admin to create your account.",
-                    ));
-                }
+                if let Some(matched) = candidates.into_iter().next() {
+                    // Auto-link decision tree — see
+                    // docs/plan/oidc-account-linking.md § Auto-link.
+                    let can_auto_link = oidc_config.auto_link_email_match
+                        && claims.email_verified == Some(true)
+                        && matched.federation_kind().is_none();
 
-                // Determine role from OIDC groups
-                let role = self.map_oidc_role(&claims.groups, &oidc_config);
+                    if !can_auto_link {
+                        let reason = if !oidc_config.auto_link_email_match {
+                            "auto_link_disabled"
+                        } else if claims.email_verified != Some(true) {
+                            "auto_link_email_not_verified"
+                        } else {
+                            "already_linked_elsewhere"
+                        };
+                        tracing::info!(
+                            target: "audit",
+                            event = "federation.auto_link_refused",
+                            user_id = %matched.id(),
+                            reason = reason,
+                            "🔗 auto-link refused",
+                        );
+                        // Ok(AutoLinkRefused) rather than Err(AlreadyExists)
+                        // so the handler can map each reason to a distinct
+                        // stable CamelCase error_type (AutoLinkDisabled /
+                        // AutoLinkEmailNotVerified / AutoLinkAlreadyLinked-
+                        // Elsewhere). Bubbling as a generic AlreadyExists
+                        // would collapse all three reasons into "Already
+                        // Exists" on the wire and leave the SPA without a
+                        // switch arm for user-facing copy.
+                        return Ok(OidcCallbackResult::AutoLinkRefused { reason });
+                    }
 
-                let quota = self.capped_quota(&role);
-
-                // Sanitize username: if it looks like an email, extract the local part
-                // (some OIDC providers like Keycloak use email as the preferred username)
-                let base_username = if oidc_username.contains('@') {
-                    oidc_username.split('@').next().unwrap_or(&oidc_username)
+                    // All checks passed — commit the auto-link, re-fetch
+                    // to observe the fresh federation columns, then run
+                    // the same login-side effects as the "existing user"
+                    // arm above (lifecycle dispatch, register_login,
+                    // avatar/verification sync).
+                    self.user_storage
+                        .link_federation_identity(matched.id(), "oidc", &claims.iss, &claims.sub)
+                        .await?;
+                    tracing::info!(
+                        target: "audit",
+                        event = "federation.auto_linked",
+                        reason = "email_match_verified",
+                        user_id = %matched.id(),
+                        federation_kind = "oidc",
+                        federation_issuer = %claims.iss,
+                        federation_subject = %claims.sub,
+                        "🔗 OIDC identity auto-linked to existing local user via verified email match",
+                    );
+                    let mut linked_user = self.user_storage.get_user_by_id(matched.id()).await?;
+                    if let Some(lc) = &self.user_lifecycle {
+                        lc.dispatch_login(&linked_user).await;
+                    }
+                    linked_user.register_login();
+                    linked_user.set_image(claims.picture.clone());
+                    linked_user.mark_email_verified();
+                    self.user_storage
+                        .sync_oidc_login_profile(linked_user.id(), claims.picture.as_deref())
+                        .await?;
+                    // Yield the linked user — same shape as the
+                    // Ok(existing_user) arm's tail expression.
+                    linked_user
                 } else {
-                    &oidc_username
-                };
+                    // No email match — JIT provision (existing behavior).
+                    if !oidc_config.auto_provision {
+                        return Err(DomainError::new(
+                            ErrorKind::AccessDenied,
+                            "OIDC",
+                            "Auto-provisioning is disabled. Contact admin to create your account.",
+                        ));
+                    }
 
-                // Filter to valid username characters only, then truncate to 32 chars
-                let mut username = base_username
-                    .chars()
-                    .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
-                    .take(32)
-                    .collect::<String>();
+                    // Determine role from OIDC groups
+                    let role = self.map_oidc_role(&claims.groups, &oidc_config);
 
-                // Filter helper: removes any chars that are not valid in a username
-                let filter_username_chars = |s: &str| {
-                    s.chars()
+                    let quota = self.capped_quota(&role);
+
+                    // Sanitize username: if it looks like an email, extract the local part
+                    // (some OIDC providers like Keycloak use email as the preferred username)
+                    let base_username = if oidc_username.contains('@') {
+                        oidc_username.split('@').next().unwrap_or(&oidc_username)
+                    } else {
+                        &oidc_username
+                    };
+
+                    // Filter to valid username characters only, then truncate to 32 chars
+                    let mut username = base_username
+                        .chars()
                         .filter(|c| {
                             c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == '.'
                         })
                         .take(32)
-                        .collect::<String>()
-                };
+                        .collect::<String>();
 
-                // Ensure minimum length (the padding suffix must also be filtered)
-                if username.len() < 3 {
-                    let filtered_sub = filter_username_chars(&claims.sub);
-                    username = format!("user_{}", &filtered_sub[..filtered_sub.len().min(8)]);
-                }
+                    // Filter helper: removes any chars that are not valid in a username
+                    let filter_username_chars = |s: &str| {
+                        s.chars()
+                            .filter(|c| {
+                                c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == '.'
+                            })
+                            .take(32)
+                            .collect::<String>()
+                    };
 
-                // Check for username collision
-                if self
-                    .user_storage
-                    .get_user_by_username(&username)
-                    .await
-                    .is_ok()
-                {
-                    let filtered_sub = filter_username_chars(&claims.sub);
-                    let suffix = &filtered_sub[..filtered_sub.len().min(4)];
-                    username = format!("{}_{}", &username[..username.len().min(27)], suffix);
-                }
+                    // Ensure minimum length (the padding suffix must also be filtered)
+                    if username.len() < 3 {
+                        let filtered_sub = filter_username_chars(&claims.sub);
+                        username = format!("user_{}", &filtered_sub[..filtered_sub.len().min(8)]);
+                    }
 
-                let mut new_user = User::new(
-                    oidc_email,
-                    Some(username.clone()),
-                    None,
-                    Some(provider_name.clone()),
-                    Some(claims.sub.clone()),
-                    role,
-                    quota,
-                    false,
-                )
-                .map_err(|e| {
-                    DomainError::new(
-                        ErrorKind::InvalidInput,
-                        "OIDC",
-                        format!("Failed to create OIDC user: {}", e),
+                    // Check for username collision
+                    if self
+                        .user_storage
+                        .get_user_by_username(&username)
+                        .await
+                        .is_ok()
+                    {
+                        let filtered_sub = filter_username_chars(&claims.sub);
+                        let suffix = &filtered_sub[..filtered_sub.len().min(4)];
+                        username = format!("{}_{}", &username[..username.len().min(27)], suffix);
+                    }
+
+                    let mut new_user = User::new(
+                        oidc_email,
+                        Some(username.clone()),
+                        None,
+                        Some(crate::domain::entities::user::FederationKind::Oidc),
+                        // Phase B canonical value: the id_token's real `iss`
+                        // claim (validated to equal discovery.issuer in
+                        // OidcService). No more display-label writes at JIT —
+                        // legacy rows are fixed via lazy rebind in the
+                        // existing-user branch above.
+                        Some(claims.iss.clone()),
+                        Some(claims.sub.clone()),
+                        role,
+                        quota,
+                        false,
                     )
-                })?;
-                new_user.set_image(claims.picture.clone());
-                new_user.set_given_name(claims.given_name.clone());
-                new_user.set_family_name(claims.family_name.clone());
-                // PR C: provision the user's preferred_locale from the
-                // OIDC `locale` claim AT JIT ONLY. Subsequent logins
-                // never re-apply this — a UI-driven choice ("I prefer
-                // English even though my IdP says fr-CA") must not be
-                // silently overwritten on the next sign-in. We validate
-                // the claim against the registry so an obscure or
-                // malformed code (e.g. `klingon`, `fr-FR-x-private`)
-                // doesn't end up stored only to fail at render time;
-                // unresolvable claims fall through to NULL → server
-                // default.
-                if let Some(claim) = claims.locale.as_deref()
-                    && let Some(canonical) = locale_registry.parse(claim)
-                {
-                    new_user.set_preferred_locale(Some(canonical.as_str().to_string()));
+                    .map_err(|e| {
+                        DomainError::new(
+                            ErrorKind::InvalidInput,
+                            "OIDC",
+                            format!("Failed to create OIDC user: {}", e),
+                        )
+                    })?;
+                    new_user.set_image(claims.picture.clone());
+                    new_user.set_given_name(claims.given_name.clone());
+                    new_user.set_family_name(claims.family_name.clone());
+                    // PR C: provision the user's preferred_locale from the
+                    // OIDC `locale` claim AT JIT ONLY. Subsequent logins
+                    // never re-apply this — a UI-driven choice ("I prefer
+                    // English even though my IdP says fr-CA") must not be
+                    // silently overwritten on the next sign-in. We validate
+                    // the claim against the registry so an obscure or
+                    // malformed code (e.g. `klingon`, `fr-FR-x-private`)
+                    // doesn't end up stored only to fail at render time;
+                    // unresolvable claims fall through to NULL → server
+                    // default.
+                    if let Some(claim) = claims.locale.as_deref()
+                        && let Some(canonical) = locale_registry.parse(claim)
+                    {
+                        new_user.set_preferred_locale(Some(canonical.as_str().to_string()));
+                    }
+                    // PR 23: the OIDC callback rejected any caller upstream
+                    // whose `email_verified` claim wasn't true, so users
+                    // reaching this branch have an IdP-vetted email. Stamp
+                    // the verification at JIT-create time.
+                    new_user.mark_email_verified();
+
+                    let created_user = self.user_storage.create_user(new_user).await?;
+
+                    // Lifecycle: created (audit + home-folder provisioning) +
+                    // login (no register_login() for a fresh OIDC user means
+                    // `last_login_at` is naturally None → first-login detection
+                    // works). PersonalDriveLifecycleHook creates the home folder.
+                    if let Some(lc) = &self.user_lifecycle {
+                        lc.dispatch_created(&created_user).await;
+                        lc.dispatch_login(&created_user).await;
+                    }
+
+                    tracing::info!(
+                        "OIDC user provisioned: {} (provider: {}, sub: {})",
+                        created_user.id(),
+                        provider_name,
+                        claims.sub
+                    );
+
+                    created_user
                 }
-                // PR 23: the OIDC callback rejected any caller upstream
-                // whose `email_verified` claim wasn't true, so users
-                // reaching this branch have an IdP-vetted email. Stamp
-                // the verification at JIT-create time.
-                new_user.mark_email_verified();
-
-                let created_user = self.user_storage.create_user(new_user).await?;
-
-                // Lifecycle: created (audit + home-folder provisioning) +
-                // login (no register_login() for a fresh OIDC user means
-                // `last_login_at` is naturally None → first-login detection
-                // works). PersonalDriveLifecycleHook creates the home folder.
-                if let Some(lc) = &self.user_lifecycle {
-                    lc.dispatch_created(&created_user).await;
-                    lc.dispatch_login(&created_user).await;
-                }
-
-                tracing::info!(
-                    "OIDC user provisioned: {} (provider: {}, sub: {})",
-                    created_user.id(),
-                    provider_name,
-                    claims.sub
-                );
-
-                created_user
             }
         };
 

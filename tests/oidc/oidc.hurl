@@ -215,12 +215,15 @@ oidc_user_id: jsonpath "$.id"
 [Asserts]
 jsonpath "$.username" == "oidc_user"
 jsonpath "$.email"    == "oidc@example.com"
-# `auth_provider` stores the OIDC provider's display name (set via
-# OXICLOUD_OIDC_PROVIDER_NAME in tests/common/server-with-oidc.env),
-# NOT a generic "oidc" tag. A locally registered admin would have
-# this field as something like "local". The distinct value here is
-# what proves JIT provisioning landed via OIDC, not setup.hurl.
-jsonpath "$.auth_provider" == "MockSSO"
+# Post the federation-identity rename (docs/plan/ocm.md § Schema
+# rename) UserDto exposes federation_kind + federation_issuer as
+# separate nullable fields. Local users have both null; OIDC users
+# get kind="oidc" and issuer=<the id_token iss claim URL>. For
+# the fake IdP (tests/oidc/fake_idp/server.js) that URL is the
+# issuer published in its discovery document, which matches
+# `oidc_issuer` from test.env.
+jsonpath "$.federation_kind"   == "oidc"
+jsonpath "$.federation_issuer" == "{{oidc_issuer}}"
 # Full claim round-trip — the fake IdP (tests/oidc/fake_idp/server.js)
 # pins these values and OxiCloud must persist each one verbatim during
 # JIT provisioning (see auth_application_service.rs around line 2257).

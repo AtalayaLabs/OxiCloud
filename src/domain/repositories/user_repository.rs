@@ -45,7 +45,8 @@ pub struct UserListEntry {
     pub storage_used_bytes: i64,
     pub last_login_at: Option<DateTime<Utc>>,
     pub active: bool,
-    pub oidc_provider: Option<String>,
+    pub federation_kind: Option<String>,
+    pub federation_issuer: Option<String>,
     pub is_external: bool,
     /// TRUE when `auth.users.password_hash IS NOT NULL` — user has a
     /// server-verifiable password on file (legacy or admin-set).
@@ -53,7 +54,7 @@ pub struct UserListEntry {
     /// envelope): a fully-migrated user carries BOTH — password for
     /// the fallback / operator flows, envelope for the actual login.
     /// A user with `has_password = false AND !opaque_registered AND
-    /// oidc_provider IS NULL` is passwordless — the only path in is
+    /// federation_issuer IS NULL` is passwordless — the only path in is
     /// via magic-link (or, for externals, whatever grant they hold).
     pub has_password: bool,
     /// TRUE when `auth.users.opaque_envelope IS NOT NULL` — the user
@@ -105,6 +106,24 @@ pub trait UserRepository: Send + Sync + 'static {
 
     /// Gets a user by email
     async fn get_user_by_email(&self, email: &str) -> UserRepositoryResult<User>;
+
+    /// Returns every user whose email normalizes to `normalized_email`.
+    ///
+    /// Normalization matches `common::text::normalize_email_for_link` —
+    /// lowercase + strip `+alias` sub-addressing — so
+    /// `Alice+work@Example.com` and `alice@example.com` collapse to the
+    /// same key. Used by the OIDC auto-link decision tree to detect
+    /// ambiguity: two local rows normalizing to the IdP-returned email
+    /// means we can't safely pick one to auto-link, and the callback
+    /// must refuse (`email_ambiguous`).
+    ///
+    /// Caller passes the already-normalized value; the SQL applies the
+    /// same normalization to the stored side symmetrically so casing
+    /// and `+alias` differences on either side collapse.
+    async fn list_users_by_normalized_email(
+        &self,
+        normalized_email: &str,
+    ) -> UserRepositoryResult<Vec<User>>;
 
     /// Updates an existing user
     async fn update_user(&self, user: User) -> UserRepositoryResult<User>;
@@ -173,10 +192,10 @@ pub trait UserRepository: Send + Sync + 'static {
     /// Deletes a user
     async fn delete_user(&self, user_id: Uuid) -> UserRepositoryResult<()>;
 
-    /// Finds a user by OIDC provider + subject pair
-    async fn get_user_by_oidc_subject(
+    /// Finds a user by federation (issuer, subject) pair.
+    async fn get_user_by_federation_subject(
         &self,
-        provider: &str,
+        issuer: &str,
         subject: &str,
     ) -> UserRepositoryResult<User>;
 
