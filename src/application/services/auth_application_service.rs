@@ -560,8 +560,9 @@ impl AuthApplicationService {
             dto.email.clone(),
             dto.username.clone(),
             password_hash,
-            None,
-            None,
+            None, // federation_kind: local password registration
+            None, // federation_issuer
+            None, // federation_subject
             role,
             quota,
             false,
@@ -662,8 +663,9 @@ impl AuthApplicationService {
             email,
             Some(username.clone()),
             Some(password_hash),
-            None,
-            None,
+            None, // federation_kind: setup admin is local
+            None, // federation_issuer
+            None, // federation_subject
             role,
             quota,
             false,
@@ -1523,7 +1525,7 @@ impl AuthApplicationService {
                 .await?
         } else if let Some(sub) = claims.sub.as_ref() {
             self.session_storage
-                .revoke_user_sessions_by_oidc_subject(&provider_name, sub)
+                .revoke_user_sessions_by_federation_subject(&provider_name, sub)
                 .await?
                 .into_iter()
                 .collect()
@@ -2810,8 +2812,9 @@ impl AuthApplicationService {
                 email,
                 Some(dto.username.clone()),
                 Some(password_hash),
-                None,
-                None,
+                None, // federation_kind: admin-created external, no federation link yet
+                None, // federation_issuer
+                None, // federation_subject
                 UserRole::User,
                 0,
                 true,
@@ -2821,8 +2824,9 @@ impl AuthApplicationService {
                 email,
                 Some(dto.username.clone()),
                 Some(password_hash),
-                None,
-                None,
+                None, // federation_kind: admin-created local user
+                None, // federation_issuer
+                None, // federation_subject
                 role,
                 quota,
                 false,
@@ -3395,7 +3399,7 @@ impl AuthApplicationService {
         // 5. Look up existing user by OIDC subject
         let user = match self
             .user_storage
-            .get_user_by_oidc_subject(&provider_name, &claims.sub)
+            .get_user_by_federation_subject(&provider_name, &claims.sub)
             .await
         {
             Ok(mut existing_user) => {
@@ -3511,6 +3515,14 @@ impl AuthApplicationService {
                     oidc_email,
                     Some(username.clone()),
                     None,
+                    Some(crate::domain::entities::user::FederationKind::Oidc),
+                    // TODO Phase B: `provider_name` still carries the
+                    // OXICLOUD_OIDC_PROVIDER_NAME display label instead
+                    // of the true `iss` URL. Lazy-rebind on subsequent
+                    // logins converts the row (see docs/plan/ocm.md
+                    // § Rename PR — Phase B). First-login value is the
+                    // label for backwards compatibility with existing
+                    // rows.
                     Some(provider_name.clone()),
                     Some(claims.sub.clone()),
                     role,

@@ -282,12 +282,13 @@ impl UserRepository for UserPgRepository {
                             id, username, email, password_hash, role,
                             storage_quota_bytes, storage_used_bytes,
                             created_at, updated_at, last_login_at, active,
-                            oidc_provider, oidc_subject, image, is_external,
+                            federation_kind, federation_issuer, federation_subject,
+                            image, is_external,
                             given_name, family_name, email_verified_at,
                             preferred_locale, notify_on_share, ui_preferences
                         ) VALUES (
                             $1, $2, $3, $4, $5::auth.userrole, $6, $7, $8, $9, $10, $11,
-                            $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+                            $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
                         )
                         RETURNING *
                         "#,
@@ -303,8 +304,9 @@ impl UserRepository for UserPgRepository {
                 .bind(user_clone.updated_at())
                 .bind(user_clone.last_login_at())
                 .bind(user_clone.is_active())
-                .bind(user_clone.oidc_provider())
-                .bind(user_clone.oidc_subject())
+                .bind(user_clone.federation_kind().map(|k| k.as_str()))
+                .bind(user_clone.federation_issuer())
+                .bind(user_clone.federation_subject())
                 .bind(user_clone.image())
                 .bind(user_clone.is_external())
                 .bind(user_clone.given_name())
@@ -339,7 +341,7 @@ impl UserRepository for UserPgRepository {
                 id, username, email, password_hash, role::text as role_text,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, oidc_subject, image, is_external,
+                federation_kind, federation_issuer, federation_subject, image, is_external,
                 given_name, family_name, email_verified_at, preferred_locale, notify_on_share,
                 ui_preferences
             FROM auth.users
@@ -370,8 +372,11 @@ impl UserRepository for UserPgRepository {
             row.get("updated_at"),
             row.get("last_login_at"),
             row.get("active"),
-            row.get("oidc_provider"),
-            row.get("oidc_subject"),
+            row.get::<Option<String>, _>("federation_kind")
+                .as_deref()
+                .and_then(crate::domain::entities::user::FederationKind::parse),
+            row.get("federation_issuer"),
+            row.get("federation_subject"),
             row.get("image"),
             row.get("is_external"),
             row.get("given_name"),
@@ -391,7 +396,7 @@ impl UserRepository for UserPgRepository {
                 id, username, email, password_hash, role::text as role_text,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, oidc_subject, image, is_external,
+                federation_kind, federation_issuer, federation_subject, image, is_external,
                 given_name, family_name, email_verified_at, preferred_locale, notify_on_share,
                 ui_preferences
             FROM auth.users
@@ -422,8 +427,11 @@ impl UserRepository for UserPgRepository {
             row.get("updated_at"),
             row.get("last_login_at"),
             row.get("active"),
-            row.get("oidc_provider"),
-            row.get("oidc_subject"),
+            row.get::<Option<String>, _>("federation_kind")
+                .as_deref()
+                .and_then(crate::domain::entities::user::FederationKind::parse),
+            row.get("federation_issuer"),
+            row.get("federation_subject"),
             row.get("image"),
             row.get("is_external"),
             row.get("given_name"),
@@ -443,7 +451,7 @@ impl UserRepository for UserPgRepository {
                 id, username, email, password_hash, role::text as role_text,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, oidc_subject, image, is_external,
+                federation_kind, federation_issuer, federation_subject, image, is_external,
                 given_name, family_name, email_verified_at, preferred_locale, notify_on_share,
                 ui_preferences
             FROM auth.users
@@ -474,8 +482,11 @@ impl UserRepository for UserPgRepository {
             row.get("updated_at"),
             row.get("last_login_at"),
             row.get("active"),
-            row.get("oidc_provider"),
-            row.get("oidc_subject"),
+            row.get::<Option<String>, _>("federation_kind")
+                .as_deref()
+                .and_then(crate::domain::entities::user::FederationKind::parse),
+            row.get("federation_issuer"),
+            row.get("federation_subject"),
             row.get("image"),
             row.get("is_external"),
             row.get("given_name"),
@@ -512,7 +523,7 @@ impl UserRepository for UserPgRepository {
                 id, username, email, password_hash, role::text as role_text,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, oidc_subject, is_external,
+                federation_kind, federation_issuer, federation_subject, is_external,
                 given_name, family_name, email_verified_at, preferred_locale, notify_on_share
             FROM auth.users
             WHERE id = ANY($1)
@@ -544,8 +555,11 @@ impl UserRepository for UserPgRepository {
                     row.get("updated_at"),
                     row.get("last_login_at"),
                     row.get("active"),
-                    row.get("oidc_provider"),
-                    row.get("oidc_subject"),
+                    row.get::<Option<String>, _>("federation_kind")
+                        .as_deref()
+                        .and_then(crate::domain::entities::user::FederationKind::parse),
+                    row.get("federation_issuer"),
+                    row.get("federation_subject"),
                     None, // image — not projected (notification-recipient path)
                     row.get("is_external"),
                     row.get("given_name"),
@@ -693,7 +707,7 @@ impl UserRepository for UserPgRepository {
                 id, username, email, password_hash, role::text as role_text,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, oidc_subject, image, is_external,
+                federation_kind, federation_issuer, federation_subject, image, is_external,
                 given_name, family_name, email_verified_at, preferred_locale, notify_on_share,
                 ui_preferences
             FROM auth.users
@@ -731,8 +745,11 @@ impl UserRepository for UserPgRepository {
                     row.get("updated_at"),
                     row.get("last_login_at"),
                     row.get("active"),
-                    row.get("oidc_provider"),
-                    row.get("oidc_subject"),
+                    row.get::<Option<String>, _>("federation_kind")
+                        .as_deref()
+                        .and_then(crate::domain::entities::user::FederationKind::parse),
+                    row.get("federation_issuer"),
+                    row.get("federation_subject"),
                     row.get("image"),
                     row.get("is_external"),
                     row.get("given_name"),
@@ -780,13 +797,13 @@ impl UserRepository for UserPgRepository {
             // pays. `has_password` on the password_hash column tells
             // the admin table whether a server-verifiable password is
             // on file; combined with the two OPAQUE flags and
-            // oidc_provider, the SPA derives the full "capability
+            // federation_issuer, the SPA derives the full "capability
             // set" per user (password / OPAQUE / SSO / passwordless).
             r#"
             SELECT
                 id, username, email, role::text,
                 storage_quota_bytes, storage_used_bytes,
-                last_login_at, active, oidc_provider, is_external,
+                last_login_at, active, federation_issuer, is_external,
                 (password_hash IS NOT NULL)       AS has_password,
                 (opaque_envelope IS NOT NULL)     AS opaque_registered,
                 (opaque_migrated_at IS NOT NULL)  AS opaque_migrated
@@ -815,7 +832,7 @@ impl UserRepository for UserPgRepository {
                     storage_used_bytes,
                     last_login_at,
                     active,
-                    oidc_provider,
+                    federation_issuer,
                     is_external,
                     has_password,
                     opaque_registered,
@@ -833,7 +850,7 @@ impl UserRepository for UserPgRepository {
                     storage_used_bytes,
                     last_login_at,
                     active,
-                    oidc_provider,
+                    federation_issuer,
                     is_external,
                     has_password,
                     opaque_registered,
@@ -856,7 +873,7 @@ impl UserRepository for UserPgRepository {
                 id, username, email, password_hash, role::text as role_text,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, oidc_subject, image, is_external,
+                federation_kind, federation_issuer, federation_subject, image, is_external,
                 given_name, family_name, email_verified_at, preferred_locale, notify_on_share,
                 ui_preferences
             FROM auth.users
@@ -894,8 +911,11 @@ impl UserRepository for UserPgRepository {
                     row.get("updated_at"),
                     row.get("last_login_at"),
                     row.get("active"),
-                    row.get("oidc_provider"),
-                    row.get("oidc_subject"),
+                    row.get::<Option<String>, _>("federation_kind")
+                        .as_deref()
+                        .and_then(crate::domain::entities::user::FederationKind::parse),
+                    row.get("federation_issuer"),
+                    row.get("federation_subject"),
                     row.get("image"),
                     row.get("is_external"),
                     row.get("given_name"),
@@ -999,7 +1019,7 @@ impl UserRepository for UserPgRepository {
                 id, username, email, password_hash, role::text as role_text,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, oidc_subject, image, is_external,
+                federation_kind, federation_issuer, federation_subject, image, is_external,
                 given_name, family_name, email_verified_at, preferred_locale, notify_on_share,
                 ui_preferences
             FROM auth.users
@@ -1034,8 +1054,11 @@ impl UserRepository for UserPgRepository {
                     row.get("updated_at"),
                     row.get("last_login_at"),
                     row.get("active"),
-                    row.get("oidc_provider"),
-                    row.get("oidc_subject"),
+                    row.get::<Option<String>, _>("federation_kind")
+                        .as_deref()
+                        .and_then(crate::domain::entities::user::FederationKind::parse),
+                    row.get("federation_issuer"),
+                    row.get("federation_subject"),
                     row.get("image"),
                     row.get("is_external"),
                     row.get("given_name"),
@@ -1068,7 +1091,7 @@ impl UserRepository for UserPgRepository {
     }
 
     /// Finds a user by OIDC provider + subject pair
-    async fn get_user_by_oidc_subject(
+    async fn get_user_by_federation_subject(
         &self,
         provider: &str,
         subject: &str,
@@ -1079,11 +1102,11 @@ impl UserRepository for UserPgRepository {
                 id, username, email, password_hash, role::text as role_text,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, oidc_subject, image, is_external,
+                federation_kind, federation_issuer, federation_subject, image, is_external,
                 given_name, family_name, email_verified_at, preferred_locale, notify_on_share,
                 ui_preferences
             FROM auth.users
-            WHERE oidc_provider = $1 AND oidc_subject = $2
+            WHERE federation_issuer = $1 AND federation_subject = $2
             "#,
         )
         .bind(provider)
@@ -1110,8 +1133,11 @@ impl UserRepository for UserPgRepository {
             row.get("updated_at"),
             row.get("last_login_at"),
             row.get("active"),
-            row.get("oidc_provider"),
-            row.get("oidc_subject"),
+            row.get::<Option<String>, _>("federation_kind")
+                .as_deref()
+                .and_then(crate::domain::entities::user::FederationKind::parse),
+            row.get("federation_issuer"),
+            row.get("federation_subject"),
             row.get("image"),
             row.get("is_external"),
             row.get("given_name"),
@@ -1367,12 +1393,12 @@ impl UserStoragePort for UserPgRepository {
             .map_err(DomainError::from)
     }
 
-    async fn get_user_by_oidc_subject(
+    async fn get_user_by_federation_subject(
         &self,
         provider: &str,
         subject: &str,
     ) -> Result<User, DomainError> {
-        UserRepository::get_user_by_oidc_subject(self, provider, subject)
+        UserRepository::get_user_by_federation_subject(self, provider, subject)
             .await
             .map_err(DomainError::from)
     }
@@ -1441,7 +1467,7 @@ mod integration_tests {
                 id, username, email, password_hash, role,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, is_external
+                federation_issuer, is_external
             ) VALUES (
                 $1, $2, $3, NULL, $4::auth.userrole,
                 $5, 0,
@@ -1515,7 +1541,7 @@ mod integration_tests {
         assert_eq!(page[0].storage_quota_bytes, 10_737_418_240);
         assert_eq!(page[1].username, None);
         assert!(page[1].is_external);
-        assert_eq!(page[1].oidc_provider.as_deref(), Some("integration-idp"));
+        assert_eq!(page[1].federation_issuer.as_deref(), Some("integration-idp"));
 
         let internal = UserRepository::list_user_summaries(&repo, 10, 0, false)
             .await

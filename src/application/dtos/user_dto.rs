@@ -131,7 +131,7 @@ pub struct AdminUserSummaryDto {
     pub is_external: bool,
     /// TRUE when the user has a server-verifiable password on file
     /// (`password_hash IS NOT NULL`). The admin table uses this
-    /// alongside `oidc_provider` and `opaque_registered` to render
+    /// alongside `federation_issuer` and `opaque_registered` to render
     /// the user's full capability set: a `password` chip lights up
     /// here, an OIDC provider name renders the SSO badge, an
     /// envelope-on-file flips the OPAQUE chip. A user with none of
@@ -171,7 +171,7 @@ impl From<UserListEntry> for AdminUserSummaryDto {
             storage_used_bytes: entry.storage_used_bytes,
             last_login_at: entry.last_login_at,
             active: entry.active,
-            auth_provider: entry.oidc_provider.unwrap_or_else(|| "local".to_string()),
+            auth_provider: entry.federation_issuer.unwrap_or_else(|| "local".to_string()),
             is_external: entry.is_external,
             has_password: entry.has_password,
             opaque_registered: entry.opaque_registered,
@@ -208,7 +208,7 @@ impl From<User> for UserDto {
             last_login_at: p.last_login_at,
             active: p.active,
             // Some(provider) moves the String; None still allocates "local".
-            auth_provider: p.oidc_provider.unwrap_or_else(|| "local".to_string()),
+            auth_provider: p.federation_issuer.unwrap_or_else(|| "local".to_string()),
             image: p.image,
             can_edit_image,
             is_external: p.is_external,

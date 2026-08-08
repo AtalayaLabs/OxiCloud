@@ -225,12 +225,18 @@ impl MagicLinkInviteService {
 
         // External users are created without a username or password.
         // `password_hash IS NULL` is the canonical no-password marker.
+        //
+        // federation_kind stays None in Phase A of the federation-identity
+        // rename — magic-link externals get their `federation_kind` stamp
+        // in a future PR when the invite handler is refactored to opt into
+        // the composable federation model. Behaviour is unchanged today.
         let mut user = User::new(
             normalised_email.to_string(),
             None,
             None,
-            None,
-            None,
+            None, // federation_kind
+            None, // federation_issuer
+            None, // federation_subject
             UserRole::User,
             0,
             true,
@@ -1006,15 +1012,21 @@ mod tests {
     use crate::domain::entities::user::{User, UserRole};
 
     fn user(password: Option<&str>, oidc: Option<(&str, &str)>) -> User {
-        let (provider, subject) = match oidc {
-            Some((p, s)) => (Some(p.to_string()), Some(s.to_string())),
-            None => (None, None),
+        use crate::domain::entities::user::FederationKind;
+        let (kind, issuer, subject) = match oidc {
+            Some((p, s)) => (
+                Some(FederationKind::Oidc),
+                Some(p.to_string()),
+                Some(s.to_string()),
+            ),
+            None => (None, None, None),
         };
         User::new(
             "test@example.com".to_string(),
             None,
             password.map(str::to_string),
-            provider,
+            kind,
+            issuer,
             subject,
             UserRole::User,
             0,

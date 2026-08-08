@@ -110,8 +110,9 @@ mod tests {
             "alice@example.com".to_string(),
             Some("alice".to_string()),
             None,
-            None,
-            None,
+            None, // federation_kind
+            None, // federation_issuer
+            None, // federation_subject
             UserRole::User,
             0,
             false,
@@ -152,8 +153,9 @@ mod tests {
             "bob@example.com".to_string(),
             None,
             None,
-            None,
-            None,
+            None, // federation_kind
+            None, // federation_issuer
+            None, // federation_subject
             UserRole::User,
             0,
             false,

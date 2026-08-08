@@ -28,6 +28,62 @@ impl std::fmt::Display for UserRole {
     }
 }
 
+/// The trust chain that owns a user's identity. NULL on `auth.users`
+/// means "pure local user, no external federation" — the common case for
+/// password/OPAQUE accounts.
+///
+/// See `docs/plan/ocm.md § Identity & auth model` for the full model
+/// including the `(federation_kind, federation_issuer, federation_subject)`
+/// composite identity key.
+///
+/// - `Oidc`: authenticated via an OIDC provider; `federation_issuer` =
+///   the id_token `iss` claim, `federation_subject` = the `sub` claim.
+///   Note: legacy rows may still hold the OXICLOUD_OIDC_PROVIDER_NAME
+///   display label as `federation_issuer` until Phase B of the rename
+///   backfills them to real issuer URLs.
+/// - `Ocm`: OCM 1.1 federated principal (future — `docs/plan/ocm.md`).
+///   `federation_issuer` = peer domain, `federation_subject` = federated
+///   address (e.g. `alice@remote.example.com`).
+/// - `MagicLink`: external invitee whose only auth is mailbox
+///   possession. Both `federation_issuer` and `federation_subject`
+///   remain NULL for this kind — the identity is the local `email`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FederationKind {
+    MagicLink,
+    Ocm,
+    Oidc,
+}
+
+impl FederationKind {
+    /// Canonical DB / wire spelling — matches the CHECK constraint on
+    /// `auth.users.federation_kind`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FederationKind::MagicLink => "magic_link",
+            FederationKind::Ocm => "ocm",
+            FederationKind::Oidc => "oidc",
+        }
+    }
+
+    /// Parse the DB / wire spelling. Returns `None` for anything other
+    /// than the three canonical values — the CHECK constraint on the
+    /// column and the enum variants are the source of truth.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "magic_link" => Some(FederationKind::MagicLink),
+            "ocm" => Some(FederationKind::Ocm),
+            "oidc" => Some(FederationKind::Oidc),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for FederationKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Authorization-relevant account flags, fetched without the heavyweight
 /// profile columns. The full user row drags `image` along — a data URI of
 /// up to 512 KiB — which per-request guards (`require_internal_user`,
@@ -72,8 +128,12 @@ pub struct User {
     updated_at: DateTime<Utc>,
     last_login_at: Option<DateTime<Utc>>,
     active: bool,
-    oidc_provider: Option<String>,
-    oidc_subject: Option<String>,
+    /// Which trust chain minted the (issuer, subject) pair. `None` on
+    /// pure local users (password/OPAQUE). See [`FederationKind`] for the
+    /// three federation flavours.
+    federation_kind: Option<FederationKind>,
+    federation_issuer: Option<String>,
+    federation_subject: Option<String>,
     image: Option<String>,
     /// TRUE = grant-only external recipient (magic-link, OIDC-only, OCM
     /// federated). FALSE = storage-owning internal user. Hooks that
@@ -161,8 +221,9 @@ pub struct UserParts {
     pub updated_at: DateTime<Utc>,
     pub last_login_at: Option<DateTime<Utc>>,
     pub active: bool,
-    pub oidc_provider: Option<String>,
-    pub oidc_subject: Option<String>,
+    pub federation_kind: Option<FederationKind>,
+    pub federation_issuer: Option<String>,
+    pub federation_subject: Option<String>,
     pub image: Option<String>,
     pub is_external: bool,
     pub given_name: Option<String>,
@@ -190,8 +251,9 @@ impl User {
             updated_at,
             last_login_at,
             active,
-            oidc_provider,
-            oidc_subject,
+            federation_kind,
+            federation_issuer,
+            federation_subject,
             image,
             is_external,
             given_name,
@@ -213,8 +275,9 @@ impl User {
             updated_at,
             last_login_at,
             active,
-            oidc_provider,
-            oidc_subject,
+            federation_kind,
+            federation_issuer,
+            federation_subject,
             image,
             is_external,
             given_name,
@@ -230,7 +293,7 @@ impl User {
     ///
     /// One unified constructor for every kind of user (internal, OIDC-linked,
     /// external). The credential slots and the `is_external` marker are all
-    /// caller-controlled — what makes a user "OIDC" is `oidc_subject =
+    /// caller-controlled — what makes a user "OIDC" is `federation_subject =
     /// Some(_)`, what makes them "external" is `is_external = true`. There
     /// are no hidden sentinel values; an absent credential is `None`.
     ///
@@ -239,7 +302,7 @@ impl User {
     /// * `username` — optional handle (2-64 chars, no `@`)
     /// * `password_hash` — pre-hashed via PasswordHasherPort, or `None` if
     ///   the user has no password yet (magic-link or OIDC bootstrap)
-    /// * `oidc_provider`, `oidc_subject` — both `Some` when the user is
+    /// * `federation_issuer`, `federation_subject` — both `Some` when the user is
     ///   linked to an external IdP, both `None` otherwise
     /// * `role` — `Admin` is rejected when `is_external = true` (mirrors the
     ///   `users_external_not_admin` DB CHECK constraint)
@@ -251,8 +314,9 @@ impl User {
         email: String,
         username: Option<String>,
         password_hash: Option<String>,
-        oidc_provider: Option<String>,
-        oidc_subject: Option<String>,
+        federation_kind: Option<FederationKind>,
+        federation_issuer: Option<String>,
+        federation_subject: Option<String>,
         role: UserRole,
         storage_quota_bytes: i64,
         is_external: bool,
@@ -280,12 +344,26 @@ impl User {
                 "External users must have storage_quota_bytes = 0".to_string(),
             ));
         }
-        // OIDC linkage is all-or-nothing: both provider and subject set,
-        // or neither. The DB has a UNIQUE index on (provider, subject)
-        // WHERE both non-NULL; partial state would corrupt that.
-        if oidc_provider.is_some() != oidc_subject.is_some() {
+        // Federation linkage is all-or-nothing: both issuer and subject set,
+        // or neither. The DB has a UNIQUE index on
+        // (federation_kind, federation_issuer, federation_subject) WHERE
+        // federation_kind IS NOT NULL; partial state would corrupt that.
+        //
+        // For kinds that don't carry an authority-issued subject
+        // (MagicLink today — identity is the local email), both fields
+        // stay None even when `federation_kind` is set. The check below
+        // only fires on inconsistent partial state.
+        if federation_issuer.is_some() != federation_subject.is_some() {
             return Err(UserError::ValidationError(
-                "oidc_provider and oidc_subject must both be set or both be None".to_string(),
+                "federation_issuer and federation_subject must both be set or both be None".to_string(),
+            ));
+        }
+        // If either field is set, federation_kind MUST also be set — the
+        // schema keys anti-duplicate on the composite (kind, issuer,
+        // subject) and a NULL kind would defeat the uniqueness.
+        if federation_issuer.is_some() && federation_kind.is_none() {
+            return Err(UserError::ValidationError(
+                "federation_kind is required when federation_issuer/subject are set".to_string(),
             ));
         }
 
@@ -302,8 +380,9 @@ impl User {
             updated_at: now,
             last_login_at: None,
             active: true,
-            oidc_provider,
-            oidc_subject,
+            federation_kind,
+            federation_issuer,
+            federation_subject,
             image: None,
             is_external,
             given_name: None,
@@ -355,8 +434,9 @@ impl User {
             updated_at,
             last_login_at,
             active,
-            oidc_provider: None,
-            oidc_subject: None,
+            federation_kind: None,
+            federation_issuer: None,
+            federation_subject: None,
             image: None,
             // `from_data` is the minimal-args reconstruction path used by
             // tests and JWT-claim-based principal hydration (which doesn't
@@ -387,8 +467,9 @@ impl User {
         updated_at: DateTime<Utc>,
         last_login_at: Option<DateTime<Utc>>,
         active: bool,
-        oidc_provider: Option<String>,
-        oidc_subject: Option<String>,
+        federation_kind: Option<FederationKind>,
+        federation_issuer: Option<String>,
+        federation_subject: Option<String>,
         image: Option<String>,
         is_external: bool,
         given_name: Option<String>,
@@ -413,8 +494,9 @@ impl User {
             updated_at,
             last_login_at,
             active,
-            oidc_provider,
-            oidc_subject,
+            federation_kind,
+            federation_issuer,
+            federation_subject,
             image,
             is_external,
             given_name,
@@ -556,12 +638,16 @@ impl User {
         format!("{}…", &self.id.to_string()[..8])
     }
 
-    pub fn oidc_provider(&self) -> Option<&str> {
-        self.oidc_provider.as_deref()
+    pub fn federation_kind(&self) -> Option<FederationKind> {
+        self.federation_kind
     }
 
-    pub fn oidc_subject(&self) -> Option<&str> {
-        self.oidc_subject.as_deref()
+    pub fn federation_issuer(&self) -> Option<&str> {
+        self.federation_issuer.as_deref()
+    }
+
+    pub fn federation_subject(&self) -> Option<&str> {
+        self.federation_subject.as_deref()
     }
 
     pub fn image(&self) -> Option<&str> {
@@ -739,7 +825,7 @@ impl User {
 
     /// Returns true if this is an OIDC-only user (no password)
     pub fn is_oidc_user(&self) -> bool {
-        self.oidc_provider.is_some()
+        self.federation_issuer.is_some()
     }
 
     /// Returns true iff this user has any non-magic-link authentication
@@ -748,7 +834,7 @@ impl User {
     /// the negation of this; the `OXICLOUD_MAGIC_LINK_OPEN_TO_PASSWORD_USERS`
     /// flag widens the policy at the service layer (`magic_link_eligibility`).
     pub fn has_login_credential(&self) -> bool {
-        self.password_hash.is_some() || self.oidc_subject.is_some()
+        self.password_hash.is_some() || self.federation_subject.is_some()
     }
 
     /// Set the password hash. The new password must be hashed externally
@@ -891,9 +977,10 @@ mod tests {
             Utc::now(),
             None,
             true,
-            None,
-            None,
-            None,
+            None, // federation_kind
+            None, // federation_issuer
+            None, // federation_subject
+            None, // image
             false,
             given.map(str::to_string),
             family.map(str::to_string),

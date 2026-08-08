@@ -194,10 +194,14 @@ pub trait UserStoragePort: Send + Sync + 'static {
     /// Changes a user's password
     async fn change_password(&self, user_id: Uuid, password_hash: &str) -> Result<(), DomainError>;
 
-    /// Finds a user by OIDC provider + subject pair
-    async fn get_user_by_oidc_subject(
+    /// Finds a user by federation (issuer, subject) pair. Historically
+    /// called for OIDC lookups (the only federation kind in-tree at rename
+    /// time); after Phase B/C of the federation-identity rename the
+    /// caller passes the true `iss` URL rather than a display label. See
+    /// `docs/plan/ocm.md § Schema rename` for the transition.
+    async fn get_user_by_federation_subject(
         &self,
-        provider: &str,
+        issuer: &str,
         subject: &str,
     ) -> Result<User, DomainError>;
 
@@ -383,12 +387,12 @@ pub trait SessionStoragePort: Send + Sync + 'static {
 
     /// OIDC Back-Channel Logout fallback when the IdP didn't supply a `sid`:
     /// revoke every session belonging to the user identified by
-    /// `(oidc_provider, oidc_subject)`. Returns the affected user id, or
-    /// `None` if we don't know that user.
-    async fn revoke_user_sessions_by_oidc_subject(
+    /// `(federation_issuer, federation_subject)`. Returns the affected
+    /// user id, or `None` if we don't know that user.
+    async fn revoke_user_sessions_by_federation_subject(
         &self,
-        oidc_provider: &str,
-        oidc_subject: &str,
+        issuer: &str,
+        subject: &str,
     ) -> Result<Option<Uuid>, DomainError>;
 }
 

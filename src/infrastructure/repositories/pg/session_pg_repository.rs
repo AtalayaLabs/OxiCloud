@@ -390,12 +390,17 @@ impl SessionRepository for SessionPgRepository {
 
     /// Back-Channel Logout fallback — the IdP omitted `sid` in the
     /// logout_token, so we revoke every session belonging to the user
-    /// identified by (oidc_provider, oidc_subject). Users are looked up
-    /// through the existing auth.users columns.
-    async fn revoke_user_sessions_by_oidc_subject(
+    /// identified by (federation_issuer, federation_subject). Users are
+    /// looked up through auth.users; the query is federation-kind-agnostic
+    /// today (matches any user regardless of federation_kind) — an OCM
+    /// notification arriving here would find only OIDC users because that's
+    /// the only path that writes federation_issuer today, but the schema
+    /// admits OCM rows too, so this method may see multi-kind matches once
+    /// OCM lands. Restrict by federation_kind then if that becomes ambiguous.
+    async fn revoke_user_sessions_by_federation_subject(
         &self,
-        oidc_provider: &str,
-        oidc_subject: &str,
+        issuer: &str,
+        subject: &str,
     ) -> SessionRepositoryResult<Option<Uuid>> {
         // Two-step: look up the user first (deterministic error class if
         // the user is unknown), then revoke. Combining into a single
@@ -404,11 +409,11 @@ impl SessionRepository for SessionPgRepository {
         let user_row = sqlx::query(
             r#"
             SELECT id FROM auth.users
-            WHERE oidc_provider = $1 AND oidc_subject = $2
+            WHERE federation_issuer = $1 AND federation_subject = $2
             "#,
         )
-        .bind(oidc_provider)
-        .bind(oidc_subject)
+        .bind(issuer)
+        .bind(subject)
         .fetch_optional(&*self.pool)
         .await
         .map_err(Self::map_sqlx_error)?;
@@ -432,9 +437,9 @@ impl SessionRepository for SessionPgRepository {
 
         tracing::info!(
             target: "audit",
-            event = "oidc.backchannel_logout_by_sub",
-            oidc_provider = %oidc_provider,
-            oidc_subject = %oidc_subject,
+            event = "federation.backchannel_logout_by_sub",
+            federation_issuer = %issuer,
+            federation_subject = %subject,
             user_id = %user_id,
             revoked_count = result.rows_affected(),
             "👮🏻‍♂️ OIDC backchannel-logout revoked all user sessions by sub"
@@ -586,12 +591,12 @@ impl SessionStoragePort for SessionPgRepository {
             .map_err(DomainError::from)
     }
 
-    async fn revoke_user_sessions_by_oidc_subject(
+    async fn revoke_user_sessions_by_federation_subject(
         &self,
-        oidc_provider: &str,
-        oidc_subject: &str,
+        issuer: &str,
+        subject: &str,
     ) -> Result<Option<Uuid>, DomainError> {
-        SessionRepository::revoke_user_sessions_by_oidc_subject(self, oidc_provider, oidc_subject)
+        SessionRepository::revoke_user_sessions_by_federation_subject(self, issuer, subject)
             .await
             .map_err(DomainError::from)
     }

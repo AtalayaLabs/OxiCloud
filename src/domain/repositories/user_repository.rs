@@ -45,7 +45,7 @@ pub struct UserListEntry {
     pub storage_used_bytes: i64,
     pub last_login_at: Option<DateTime<Utc>>,
     pub active: bool,
-    pub oidc_provider: Option<String>,
+    pub federation_issuer: Option<String>,
     pub is_external: bool,
     /// TRUE when `auth.users.password_hash IS NOT NULL` — user has a
     /// server-verifiable password on file (legacy or admin-set).
@@ -53,7 +53,7 @@ pub struct UserListEntry {
     /// envelope): a fully-migrated user carries BOTH — password for
     /// the fallback / operator flows, envelope for the actual login.
     /// A user with `has_password = false AND !opaque_registered AND
-    /// oidc_provider IS NULL` is passwordless — the only path in is
+    /// federation_issuer IS NULL` is passwordless — the only path in is
     /// via magic-link (or, for externals, whatever grant they hold).
     pub has_password: bool,
     /// TRUE when `auth.users.opaque_envelope IS NOT NULL` — the user
@@ -173,10 +173,10 @@ pub trait UserRepository: Send + Sync + 'static {
     /// Deletes a user
     async fn delete_user(&self, user_id: Uuid) -> UserRepositoryResult<()>;
 
-    /// Finds a user by OIDC provider + subject pair
-    async fn get_user_by_oidc_subject(
+    /// Finds a user by federation (issuer, subject) pair.
+    async fn get_user_by_federation_subject(
         &self,
-        provider: &str,
+        issuer: &str,
         subject: &str,
     ) -> UserRepositoryResult<User>;
 
