@@ -85,29 +85,37 @@ fn is_content_serve_get(method: &axum::http::Method, path: &str) -> bool {
 }
 
 fn matches_content_path(path: &str) -> bool {
-    // Segment-based matching keeps this cheap and readable — no regex
-    // dep, no leading-slash surprises. Every content endpoint has an
-    // opaque UUID at position 2, so we match on the shape rather than
-    // the specific id. The UUID check is what disambiguates
+    // Collect segments into a fixed stack buffer, then match all
+    // allowed shapes as slice patterns — reads left-to-right like
+    // the paths themselves. Any path deeper than the buffer or not
+    // matching a listed shape falls through to `false`. No alloc,
+    // no regex, no leading-slash surprises.
+    //
+    // UUID guards (`if looks_like_uuid(id)`) disambiguate
     // `/files/<uuid>` (content) from `/files/by-hash` (a listing
     // endpoint that MUST stay behind DPoP for anti-enumeration).
-    let mut segs = path.trim_start_matches('/').split('/');
-    let (Some(root), Some(id), rest_first) = (segs.next(), segs.next(), segs.next()) else {
-        return false;
-    };
-    if !looks_like_uuid(id) {
-        return false;
+    // Plugin slugs aren't UUIDs so the SSE arm just accepts any
+    // segment there — the endpoint enforces its own admin AuthZ.
+    let mut buf: [&str; 6] = [""; 6];
+    let mut n = 0;
+    for seg in path.trim_start_matches('/').split('/') {
+        if n == buf.len() {
+            return false;
+        }
+        buf[n] = seg;
+        n += 1;
     }
-    match (root, rest_first) {
-        // /files/<uuid> — download / inline
-        ("files", None) => true,
-        // /files/<uuid>/thumbnail/... — thumbnails
-        ("files", Some("thumbnail")) => true,
-        // /folders/<uuid>/download — zip
-        ("folders", Some("download")) => true,
-        // /photos/<uuid>/preview — photo preview (best-effort match;
-        // adds no risk if the endpoint doesn't exist server-side)
-        ("photos", Some("preview")) => true,
+    match &buf[..n] {
+        // SSE: EventSource can't attach headers → cookie-only auth
+        // (RFC 9449 known gap for streaming). Same posture as content-
+        // serve — attacker still needs the exact target id.
+        ["admin", "plugins", _id, "logs", "stream"] => true,
+        // Content-serve GETs — browser fetches directly from
+        // `<a href>`, `img src`, `video src`, `<a download>`.
+        ["files", id] if looks_like_uuid(id) => true,
+        ["files", id, "thumbnail", _size] if looks_like_uuid(id) => true,
+        ["folders", id, "download"] if looks_like_uuid(id) => true,
+        ["photos", id, "preview"] if looks_like_uuid(id) => true,
         _ => false,
     }
 }
@@ -193,17 +201,44 @@ pub async fn require_dpop_layer(
     //     warning-only signal in opportunistic mode so operators
     //     can spot stale SPA versions before flipping enforcement.
     let expected_jkt = current_user.dpop_jkt.as_deref();
+    // Diagnostic fields shared by both branches — `referer` is
+    // usually the smoking gun for "which SPA page sent this?";
+    // `user_agent` helps distinguish SPA (`Mozilla/…`), Node-side
+    // Playwright helper (`node`), and legacy client (blank).
+    let req_method = request.method().to_string();
+    let req_path = request.uri().path().to_owned();
+    let req_referer = request
+        .headers()
+        .get("referer")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_owned();
+    let req_user_agent = request
+        .headers()
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_owned();
     let Some(proof) = dpop_header else {
         match (mode, expected_jkt) {
             (DpopMode::Required, Some(_))
                 if !is_content_serve_get(request.method(), request.uri().path()) =>
             {
+                // Distinct event name: `dpop.proof_missing` means
+                // no header was on the wire at all — no verification
+                // happened. `dpop.verify_failed` is reserved for
+                // proofs that WERE present but failed cryptographic
+                // or claim checks. Log aggregators key off `event`
+                // separately from `reason`, so the split matters.
                 tracing::info!(
                     target: "audit",
-                    event = "dpop.verify_failed",
+                    event = "dpop.proof_missing",
                     reason = "proof_missing_on_bound_session",
                     caller_id = %current_user.id,
-                    path = %request.uri().path(),
+                    method = %req_method,
+                    path = %req_path,
+                    referer = %req_referer,
+                    user_agent = %req_user_agent,
                     "👮🏻‍♂️ DPoP required: bound session request has no proof",
                 );
                 return nonce_challenge_response(&nonce_service);
@@ -217,7 +252,10 @@ pub async fn require_dpop_layer(
                     target: "audit",
                     event = "dpop.header_missing_but_session_bound",
                     caller_id = %current_user.id,
-                    path = %request.uri().path(),
+                    method = %req_method,
+                    path = %req_path,
+                    referer = %req_referer,
+                    user_agent = %req_user_agent,
                     "⚠️  DPoP: bound session sent request without a proof",
                 );
             }
@@ -503,5 +541,26 @@ mod tests {
         assert!(!get("/"));
         assert!(!get("/files"));
         assert!(!get("/folders"));
+    }
+
+    #[test]
+    fn content_serve_matches_plugin_log_sse_stream() {
+        // Server-Sent Events endpoint. Browser uses EventSource,
+        // which can't attach custom headers — cookie-only auth is
+        // the RFC 9449 known gap for streaming. Allowlisted.
+        assert!(get("/admin/plugins/com.example.hello/logs/stream"));
+        assert!(get("/admin/plugins/some-slug/logs/stream"));
+    }
+
+    #[test]
+    fn content_serve_rejects_other_admin_plugin_endpoints() {
+        // Only the SSE stream is allowlisted. Every other plugin
+        // endpoint (list, install, uninstall, config) stays behind
+        // DPoP for anti-enumeration and mutation protection.
+        assert!(!get("/admin/plugins"));
+        assert!(!get("/admin/plugins/some-slug"));
+        assert!(!get("/admin/plugins/some-slug/logs"));
+        assert!(!get("/admin/plugins/some-slug/config"));
+        assert!(!post("/admin/plugins/some-slug/logs/stream"));
     }
 }
