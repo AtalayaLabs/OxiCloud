@@ -37,7 +37,15 @@ function loadNonceOnce(): void {
 
 /** Update the nonce state from a fresh `DPoP-Nonce` response header. */
 export function updateNonceFromResponse(response: Response): void {
-	const fresh = response.headers.get('DPoP-Nonce');
+	updateNonceFromHeader(response.headers.get('DPoP-Nonce'));
+}
+
+/**
+ * Update the nonce state from a raw header value — for callers that
+ * don't have a `fetch` `Response` (e.g. the `XMLHttpRequest` upload
+ * path, which needs XHR for upload-progress events).
+ */
+export function updateNonceFromHeader(fresh: string | null): void {
 	if (!fresh || fresh === currentNonce) return;
 	currentNonce = fresh;
 	try {

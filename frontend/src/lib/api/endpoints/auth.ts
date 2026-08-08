@@ -64,15 +64,40 @@ export async function fetchMe(): Promise<User | null> {
  * Attempt a single token refresh (raw fetch, no interceptor). Returns whether
  * it succeeded. Used by the startup probe; mid-session refresh is handled
  * transparently by apiFetch for all other endpoints.
+ *
+ * Mirrors `fetchMe`'s DPoP handling: dynamic-imports the proof module and
+ * attaches a signed proof so a bound session under `required` mode can still
+ * refresh on page reload. Falls back to a headerless refresh if the module
+ * is unavailable (unbound sessions still succeed; bound sessions in required
+ * mode won't — the documented fail-open contract in `docs/plan/dpop.md`).
+ * Retries ONCE on a `use_dpop_nonce` challenge so the very first request
+ * after a page load can adopt the freshly-issued nonce.
  */
 export async function tryRefresh(): Promise<boolean> {
+	let dpopMod: typeof import('$lib/auth/dpop-proof') | null = null;
 	try {
-		const res = await fetch('/api/auth/refresh', {
+		dpopMod = await import('$lib/auth/dpop-proof');
+	} catch {
+		/* no dpop module → plain fetch */
+	}
+	const url = `${location.origin}/api/auth/refresh`;
+	const send = async (): Promise<Response> => {
+		const proof = dpopMod ? await dpopMod.buildDpopProof('POST', url).catch(() => null) : null;
+		const headers: HeadersInit = proof
+			? { ...JSON_HEADERS, ...getCsrfHeaders(), DPoP: proof }
+			: { ...JSON_HEADERS, ...getCsrfHeaders() };
+		const r = await fetch('/api/auth/refresh', {
 			method: 'POST',
 			credentials: 'same-origin',
-			headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
+			headers,
 			body: '{}'
 		});
+		if (dpopMod) dpopMod.updateNonceFromResponse(r);
+		return r;
+	};
+	try {
+		let res = await send();
+		if (dpopMod && dpopMod.isDpopNonceChallenge(res)) res = await send();
 		return res.ok;
 	} catch {
 		return false;

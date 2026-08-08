@@ -62,61 +62,120 @@ export async function uploadFile(folderId: string | null, file: File): Promise<v
  * Upload with progress reporting. `fetch` can't surface upload progress, so this
  * uses XHR; CSRF headers are attached the same way as {@link uploadFile}.
  * `onProgress` receives a fraction in [0, 1] (or NaN when length is unknown).
+ *
+ * DPoP proof is minted per attempt and attached as a `DPoP` header, mirroring
+ * the `apiFetch` interceptor — required for bound sessions under `required`
+ * mode (server 401s any state-changing call otherwise). Fresh `DPoP-Nonce`
+ * from the response is pushed into the shared nonce cache so the next
+ * request (through either apiFetch or another XHR) stays in sync. On a
+ * `use_dpop_nonce` challenge the upload is retried ONCE with the freshly-
+ * harvested nonce.
  */
-export function uploadFileWithProgress(
+export async function uploadFileWithProgress(
 	folderId: string | null,
 	file: File,
 	onProgress: (fraction: number) => void
 ): Promise<void> {
-	return new Promise((resolve, reject) => {
-		const form = new FormData();
-		if (folderId) form.append('folder_id', folderId);
-		form.append('file', file);
-		const xhr = new XMLHttpRequest();
-		xhr.open('POST', '/api/files/upload');
-		xhr.withCredentials = true;
-		for (const [k, v] of Object.entries(getCsrfHeaders())) xhr.setRequestHeader(k, v);
+	// Dynamic import — falls back to a headerless XHR if the DPoP module
+	// isn't loadable (SubtleCrypto disabled, IndexedDB blocked, etc.).
+	// Bound sessions in `required` mode still 401, but that's the fail-
+	// open contract already documented for other DPoP-aware raw callers
+	// (`fetchMe`).
+	let dpopMod: typeof import('$lib/auth/dpop-proof') | null = null;
+	try {
+		dpopMod = await import('$lib/auth/dpop-proof');
+	} catch {
+		/* no dpop module → plain XHR */
+	}
+	const url = `${location.origin}/api/files/upload`;
 
-		// Self-aborting watchdog so a stalled connection can never pin an upload
-		// slot forever (and leave a zombie XHR holding one of the browser's few
-		// per-host connections). While the body is uploading we reset the deadline
-		// on every progress tick — a slow but *moving* transfer is fine; once the
-		// body is fully sent we give the server a fixed window to respond. On a
-		// stall we `xhr.abort()`, which frees the connection immediately.
-		const SEND_STALL_MS = 30_000;
-		const RESPONSE_MS = 60_000;
-		let watchdog: ReturnType<typeof setTimeout>;
-		const arm = (ms: number) => {
-			clearTimeout(watchdog);
-			watchdog = setTimeout(() => xhr.abort(), ms);
-		};
+	const attempt = (): Promise<void> =>
+		new Promise((resolve, reject) => {
+			const form = new FormData();
+			if (folderId) form.append('folder_id', folderId);
+			form.append('file', file);
+			const xhr = new XMLHttpRequest();
+			xhr.open('POST', '/api/files/upload');
+			xhr.withCredentials = true;
+			for (const [k, v] of Object.entries(getCsrfHeaders())) xhr.setRequestHeader(k, v);
 
-		xhr.upload.onprogress = (e) => {
-			onProgress(e.lengthComputable ? e.loaded / e.total : NaN);
-			arm(SEND_STALL_MS);
-		};
-		xhr.upload.onload = () => arm(RESPONSE_MS); // body sent — wait for the server
-		xhr.onload = () => {
-			clearTimeout(watchdog);
-			if (xhr.status >= 200 && xhr.status < 300) resolve();
-			else {
-				// Flag quota so a batch can stop early instead of retrying every file.
-				const err = new Error(`upload failed: ${xhr.status}`) as Error & { isQuota?: boolean };
-				err.isQuota = xhr.status === 507;
-				reject(err);
+			// Self-aborting watchdog so a stalled connection can never pin an upload
+			// slot forever (and leave a zombie XHR holding one of the browser's few
+			// per-host connections). While the body is uploading we reset the deadline
+			// on every progress tick — a slow but *moving* transfer is fine; once the
+			// body is fully sent we give the server a fixed window to respond. On a
+			// stall we `xhr.abort()`, which frees the connection immediately.
+			const SEND_STALL_MS = 30_000;
+			const RESPONSE_MS = 60_000;
+			let watchdog: ReturnType<typeof setTimeout>;
+			const arm = (ms: number) => {
+				clearTimeout(watchdog);
+				watchdog = setTimeout(() => xhr.abort(), ms);
+			};
+
+			const doSend = (proof: string | null) => {
+				if (proof) xhr.setRequestHeader('DPoP', proof);
+				xhr.upload.onprogress = (e) => {
+					onProgress(e.lengthComputable ? e.loaded / e.total : NaN);
+					arm(SEND_STALL_MS);
+				};
+				xhr.upload.onload = () => arm(RESPONSE_MS); // body sent — wait for the server
+				xhr.onload = () => {
+					clearTimeout(watchdog);
+					// Sync the shared nonce cache from the response — the server
+					// rotates the nonce on every response, and other callers
+					// (apiFetch, fetchMe) share the same in-memory store.
+					if (dpopMod) dpopMod.updateNonceFromHeader(xhr.getResponseHeader('DPoP-Nonce'));
+					// Nonce challenge → surface a distinctive rejection so the outer
+					// retry can re-arm a fresh XHR (the current one has already
+					// consumed its request body).
+					if (xhr.status === 401 && /use_dpop_nonce/i.test(xhr.getResponseHeader('WWW-Authenticate') ?? '')) {
+						const err = new Error('dpop_nonce_challenge') as Error & { isNonceChallenge?: boolean };
+						err.isNonceChallenge = true;
+						reject(err);
+						return;
+					}
+					if (xhr.status >= 200 && xhr.status < 300) resolve();
+					else {
+						// Flag quota so a batch can stop early instead of retrying every file.
+						const err = new Error(`upload failed: ${xhr.status}`) as Error & { isQuota?: boolean };
+						err.isQuota = xhr.status === 507;
+						reject(err);
+					}
+				};
+				xhr.onerror = () => {
+					clearTimeout(watchdog);
+					reject(new Error('upload failed: network error'));
+				};
+				xhr.onabort = () => {
+					clearTimeout(watchdog);
+					reject(new Error('upload stalled — aborted'));
+				};
+				arm(SEND_STALL_MS);
+				xhr.send(form);
+			};
+
+			if (dpopMod) {
+				dpopMod
+					.buildDpopProof('POST', url)
+					.catch(() => null)
+					.then(doSend);
+			} else {
+				doSend(null);
 			}
-		};
-		xhr.onerror = () => {
-			clearTimeout(watchdog);
-			reject(new Error('upload failed: network error'));
-		};
-		xhr.onabort = () => {
-			clearTimeout(watchdog);
-			reject(new Error('upload stalled — aborted'));
-		};
-		arm(SEND_STALL_MS);
-		xhr.send(form);
-	});
+		});
+
+	try {
+		await attempt();
+	} catch (err) {
+		if ((err as { isNonceChallenge?: boolean } | null)?.isNonceChallenge) {
+			// Nonce was harvested by the failed attempt's onload; retry ONCE.
+			// A second challenge would loop, so any further failure surfaces.
+			await attempt();
+			return;
+		}
+		throw err;
+	}
 }
 
 export async function renameFile(fileId: string, name: string): Promise<void> {
