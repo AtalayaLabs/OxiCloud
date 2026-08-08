@@ -12,6 +12,13 @@ pub enum SessionRepositoryError {
 
     #[error("Timeout error: {0}")]
     Timeout(String),
+
+    /// Attempted to bind a DPoP thumbprint to a session that already
+    /// carries one. Immutable-per-session invariant (see
+    /// `docs/plan/dpop.md` — mutable bind would let an attacker
+    /// downgrade a bound session by binding to their own key).
+    #[error("Session already has a DPoP thumbprint")]
+    DpopAlreadyBound,
 }
 
 pub type SessionRepositoryResult<T> = Result<T, SessionRepositoryError>;
@@ -25,6 +32,11 @@ impl From<SessionRepositoryError> for DomainError {
                 DomainError::internal_error("Database", msg)
             }
             SessionRepositoryError::Timeout(msg) => DomainError::timeout("Database", msg),
+            SessionRepositoryError::DpopAlreadyBound => DomainError::new(
+                crate::common::errors::ErrorKind::AlreadyExists,
+                "Session",
+                "This session already has a DPoP thumbprint and cannot be re-bound",
+            ),
         }
     }
 }
@@ -95,4 +107,23 @@ pub trait SessionRepository: Send + Sync + 'static {
 
     /// Deletes expired sessions
     async fn delete_expired_sessions(&self) -> SessionRepositoryResult<u64>;
+
+    /// One-shot bind a DPoP JWK thumbprint (RFC 7638) to a session that
+    /// was created without one. Used by the post-redirect bind endpoint
+    /// (`POST /api/auth/dpop/bind`) for the OIDC and magic-link flows,
+    /// where the redemption is a GET and can't carry the thumbprint in
+    /// its request body.
+    ///
+    /// Enforces the immutability invariant at the SQL level with a
+    /// `WHERE dpop_jkt IS NULL` guard: if the row already carries a
+    /// thumbprint the UPDATE affects zero rows and we return
+    /// [`SessionRepositoryError::DpopAlreadyBound`]. That's the anti-
+    /// downgrade guard from `docs/plan/dpop.md` — an attacker who has
+    /// stolen the cookie of a bound session cannot re-bind to their
+    /// own key.
+    async fn bind_dpop_jkt(
+        &self,
+        session_id: Uuid,
+        dpop_jkt: &str,
+    ) -> SessionRepositoryResult<()>;
 }

@@ -537,6 +537,11 @@ pub struct OpaqueLoginKe3Dto {
     pub exchange_id: ExchangeId,
     #[serde(rename = "finishLoginRequest")]
     pub finish_login_request: String,
+    /// DPoP JWK thumbprint the client generated at page load. When
+    /// present, binds the new session to a browser-held keypair (RFC
+    /// 9449). Absent → session created unbound. See `docs/plan/dpop.md`.
+    #[serde(default, rename = "dpopJkt", alias = "dpop_jkt")]
+    pub dpop_jkt: Option<String>,
 }
 
 /// KE1: user lookup → envelope fetch → `ServerLogin::start` → stash
@@ -764,7 +769,7 @@ pub async fn login_ke3(
     // we don't want to have flipped the migration flag for a user
     // whose login didn't actually complete.
     let session = auth
-        .mint_session_for_authenticated_user(user)
+        .mint_session_for_authenticated_user(user, dto.dpop_jkt)
         .await
         .map_err(AppError::from)?;
 

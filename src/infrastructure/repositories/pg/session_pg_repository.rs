@@ -468,6 +468,48 @@ impl SessionRepository for SessionPgRepository {
 
         Ok(result.rows_affected())
     }
+
+    async fn bind_dpop_jkt(
+        &self,
+        session_id: Uuid,
+        dpop_jkt: &str,
+    ) -> SessionRepositoryResult<()> {
+        // `WHERE dpop_jkt IS NULL` enforces the immutability invariant
+        // at the SQL level — a bound session's UPDATE affects 0 rows
+        // and we surface `DpopAlreadyBound`. Also guards against a
+        // stolen cookie replaying the bind endpoint with the
+        // attacker's own thumbprint on an already-bound session.
+        let result = sqlx::query(
+            r#"
+            UPDATE auth.sessions
+            SET dpop_jkt = $2
+            WHERE id = $1 AND dpop_jkt IS NULL
+            "#,
+        )
+        .bind(session_id)
+        .bind(dpop_jkt)
+        .execute(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)?;
+
+        if result.rows_affected() == 0 {
+            // Distinguish "session gone" from "already bound" — the
+            // caller (bind endpoint) returns different HTTP shapes.
+            // A tiny extra SELECT here is worth the disambiguation
+            // because both cases are rare.
+            let row = sqlx::query("SELECT dpop_jkt FROM auth.sessions WHERE id = $1")
+                .bind(session_id)
+                .fetch_optional(&*self.pool)
+                .await
+                .map_err(Self::map_sqlx_error)?;
+            return match row {
+                None => Err(SessionRepositoryError::NotFound(session_id.to_string())),
+                Some(_) => Err(SessionRepositoryError::DpopAlreadyBound),
+            };
+        }
+
+        Ok(())
+    }
 }
 
 // Implementation of the storage port for the application layer
@@ -602,6 +644,16 @@ impl SessionStoragePort for SessionPgRepository {
         subject: &str,
     ) -> Result<Option<Uuid>, DomainError> {
         SessionRepository::revoke_user_sessions_by_federation_subject(self, issuer, subject)
+            .await
+            .map_err(DomainError::from)
+    }
+
+    async fn bind_dpop_jkt(
+        &self,
+        session_id: Uuid,
+        dpop_jkt: &str,
+    ) -> Result<(), DomainError> {
+        SessionRepository::bind_dpop_jkt(self, session_id, dpop_jkt)
             .await
             .map_err(DomainError::from)
     }

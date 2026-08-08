@@ -55,6 +55,7 @@ pub fn auth_protected_routes() -> Router<Arc<AppState>> {
         // docs/plan/oidc-account-linking.md.
         .route("/oidc/link/start", post(oidc_link_start))
         .route("/oidc/unlink", post(oidc_unlink))
+        .route("/dpop/bind", post(dpop_bind))
 }
 
 /// Rate-limited auth routes, split out so main.rs can apply per-endpoint
@@ -1005,6 +1006,75 @@ pub async fn logout(
     cookie_auth::append_clear_cookies(response.headers_mut());
     cookie_auth::append_clear_csrf_cookie(response.headers_mut());
     Ok(response)
+}
+
+/// Post-redirect DPoP bind DTO — only field is the JWK thumbprint.
+#[derive(Debug, serde::Deserialize, ToSchema)]
+pub struct DpopBindDto {
+    /// Base64url SHA-256 of the canonical public-key JWK (RFC 7638) —
+    /// exactly 43 characters, `[A-Za-z0-9_-]`.
+    #[serde(rename = "dpop_jkt", alias = "dpopJkt")]
+    pub dpop_jkt: String,
+}
+
+/// One-shot bind a DPoP JWK thumbprint to the caller's current session.
+///
+/// Purpose: post-redirect flows (OIDC callback, magic-link redemption)
+/// create the session before the SPA has a chance to send its DPoP
+/// keypair thumbprint. The SPA calls this endpoint immediately after
+/// the redirect lands, so the session graduates from unbound to bound
+/// before the first authenticated `/api/*` request.
+///
+/// Contract:
+///   * 200 on success — session now carries the thumbprint.
+///   * 400 if the thumbprint is malformed (wrong length / non-base64url).
+///   * 409 if the session already carries a thumbprint (anti-downgrade
+///         invariant per `docs/plan/dpop.md` — a bound session cannot be
+///         re-bound to a different key).
+///   * 401 if no session (auth middleware layer emits this).
+#[utoipa::path(
+    post,
+    path = "/api/auth/dpop/bind",
+    request_body = DpopBindDto,
+    responses(
+        (status = 200, description = "Thumbprint bound"),
+        (status = 400, description = "Malformed thumbprint"),
+        (status = 401, description = "Not authenticated"),
+        (status = 409, description = "Session already bound"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "auth"
+)]
+pub async fn dpop_bind(
+    State(state): State<Arc<AppState>>,
+    CurrentUserId(_user_id): CurrentUserId,
+    headers: HeaderMap,
+    Json(dto): Json<DpopBindDto>,
+) -> Result<StatusCode, AppError> {
+    let auth = state
+        .auth_service
+        .as_ref()
+        .ok_or_else(|| AppError::internal_error("Authentication service not configured"))?;
+
+    // The auth middleware validates the access token but doesn't
+    // expose the session id. Look it up via the refresh cookie —
+    // same shape logout uses. Refresh cookie is HttpOnly + SameSite,
+    // so an attacker who has the access token but not the refresh
+    // cookie (theft window: seconds between token mint and refresh
+    // cookie install) simply gets 400.
+    let refresh_token = cookie_auth::extract_cookie_value(&headers, cookie_auth::REFRESH_COOKIE)
+        .ok_or_else(|| AppError::unauthorized("Refresh cookie required to identify session"))?;
+    let session_id = auth
+        .auth_application_service
+        .get_session_id_by_refresh_token(&refresh_token)
+        .await?
+        .ok_or_else(|| AppError::unauthorized("Session not found"))?;
+
+    auth.auth_application_service
+        .bind_dpop_jkt_to_session(session_id, &dto.dpop_jkt)
+        .await?;
+
+    Ok(StatusCode::OK)
 }
 
 /// OIDC Back-Channel Logout 1.0 receiver.

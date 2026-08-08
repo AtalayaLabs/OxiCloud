@@ -167,7 +167,7 @@ describe('opaqueLogin', () => {
 				expires_in: 3600
 			})
 		);
-		const auth = await opaqueLogin('alice@example.com', 'pw', KSF);
+		const auth = await opaqueLogin('alice@example.com', 'pw', KSF, null);
 		expect(auth.access_token).toBe('at');
 
 		const [ke1Url, ke1Init] = f.mock.calls[0];
@@ -192,7 +192,7 @@ describe('opaqueLogin', () => {
 		// requires both paths look identical to the caller.
 		fin.mockReturnValueOnce(undefined);
 		f.mockResolvedValueOnce(okJson({ exchangeId: 'XID', loginResponse: 'RESP-L' }));
-		await expect(opaqueLogin('a@x.test', 'wrong', KSF)).rejects.toMatchObject({
+		await expect(opaqueLogin('a@x.test', 'wrong', KSF, null)).rejects.toMatchObject({
 			status: 401,
 			errorType: 'InvalidCredentials'
 		});
@@ -201,7 +201,7 @@ describe('opaqueLogin', () => {
 
 	it('bubbles up the server error_type on KE1 failure', async () => {
 		f.mockResolvedValueOnce(errJson(429, { error_type: 'RateLimited', message: 'slow down' }));
-		const err = await opaqueLogin('a@x.test', 'pw', KSF).then(
+		const err = await opaqueLogin('a@x.test', 'pw', KSF, null).then(
 			() => null,
 			(e) => e
 		);

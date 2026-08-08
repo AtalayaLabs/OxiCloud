@@ -473,6 +473,17 @@ pub trait SessionStoragePort: Send + Sync + 'static {
         issuer: &str,
         subject: &str,
     ) -> Result<Option<Uuid>, DomainError>;
+
+    /// One-shot bind a DPoP JWK thumbprint to a session that was created
+    /// without one (post-redirect flow — OIDC callback, magic-link
+    /// redemption). Fails with `AlreadyExists` if the session already
+    /// carries a thumbprint (anti-downgrade invariant, see
+    /// `docs/plan/dpop.md`).
+    async fn bind_dpop_jkt(
+        &self,
+        session_id: Uuid,
+        dpop_jkt: &str,
+    ) -> Result<(), DomainError>;
 }
 
 // ============================================================================

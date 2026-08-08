@@ -279,6 +279,13 @@ pub struct LoginDto {
     /// typed in the "Username or email" field as-is.
     pub username: String,
     pub password: String,
+    /// DPoP JWK thumbprint the client generated at page load. When
+    /// present, binds the new session to a browser-held keypair so
+    /// stealing the cookie without the private key is useless (RFC
+    /// 9449). Absent → session is created unbound (fail-open per the
+    /// `docs/plan/dpop.md` threat model). Malformed → 400.
+    #[serde(default, rename = "dpop_jkt", alias = "dpopJkt")]
+    pub dpop_jkt: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]

@@ -349,7 +349,14 @@ export async function opaqueRegister(
 export async function opaqueLogin(
 	userIdentifier: string,
 	password: string,
-	ksf: OpaqueKsfConfig
+	ksf: OpaqueKsfConfig,
+	/**
+	 * DPoP JWK thumbprint (RFC 7638) to bind the resulting session to
+	 * this browser's keypair. `null` → session created unbound (fail-
+	 * open per `docs/plan/dpop.md`; the caller in `endpoints/auth.ts`
+	 * already tried to compute the thumbprint and swallowed failures).
+	 */
+	dpopJkt: string | null
 ): Promise<AuthResponse> {
 	const client = await opaqueWasm();
 
@@ -402,7 +409,11 @@ export async function opaqueLogin(
 		method: 'POST',
 		credentials: 'same-origin',
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify({ exchangeId, finishLoginRequest })
+		body: JSON.stringify({
+			exchangeId,
+			finishLoginRequest,
+			...(dpopJkt ? { dpopJkt } : {})
+		})
 	});
 	if (!ke3Res.ok) {
 		const { errorType, message } = await parseErrorBody(ke3Res);

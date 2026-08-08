@@ -63,7 +63,65 @@ export async function tryRefresh(): Promise<boolean> {
 	}
 }
 
+/**
+ * Compute a DPoP JWK thumbprint for the current browser keypair, if
+ * WebCrypto + IndexedDB are available. Returned to callers as an
+ * optional string; a `null` return means the browser can't support
+ * DPoP, and login proceeds unbound (see `docs/plan/dpop.md` — fail-
+ * open per-session, immutable so bound sessions can't be downgraded).
+ *
+ * Any failure is swallowed to `null` — a DPoP hiccup MUST NOT block
+ * authentication. The unbound session is still functional, just not
+ * DPoP-protected against info-stealer replay.
+ */
+async function tryBindingThumbprint(): Promise<string | null> {
+	try {
+		const { ensureKeypair, computeJkt } = await import('$lib/auth/dpop');
+		const kp = await ensureKeypair();
+		return await computeJkt(kp.publicKey);
+	} catch (err) {
+		console.debug('dpop: keypair unavailable, logging in unbound', err);
+		return null;
+	}
+}
+
+/**
+ * Post-redirect DPoP bind — for OIDC callback and magic-link
+ * redemption pages, where the session was created before the SPA had
+ * a chance to send its thumbprint in the login body. Call once,
+ * fire-and-forget style: any failure (409 already bound, 400
+ * malformed, network error) is swallowed to `false` — the session
+ * either was already bound (no harm) or can't be bound now (fail-
+ * open per plan).
+ *
+ * Returns `true` when the bind succeeded, `false` otherwise. Callers
+ * typically ignore the return value; they might log it in dev.
+ */
+export async function bindDpopIfPossible(): Promise<boolean> {
+	const jkt = await tryBindingThumbprint();
+	if (!jkt) return false;
+	try {
+		const res = await apiFetch('/api/auth/dpop/bind', {
+			method: 'POST',
+			credentials: 'same-origin',
+			headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
+			body: JSON.stringify({ dpop_jkt: jkt })
+		});
+		return res.ok;
+	} catch (err) {
+		console.debug('dpop: bind endpoint call failed', err);
+		return false;
+	}
+}
+
 export async function login(emailOrUsername: string, password: string): Promise<AuthResponse> {
+	// Compute DPoP JKT ONCE per login attempt so both branches
+	// (OPAQUE and legacy) send the same value. Null = browser can't
+	// support DPoP (missing SubtleCrypto / IndexedDB / secure context)
+	// or a transient failure; the server accepts absent → session
+	// created unbound.
+	const dpopJkt = await tryBindingThumbprint();
+
 	// ── OPAQUE lookup (Phase 3) ────────────────────────────────────────
 	// Ask the server whether this identifier already has an OPAQUE
 	// envelope on file. If yes → use OPAQUE login (KE1/KE3). If no →
@@ -98,7 +156,7 @@ export async function login(emailOrUsername: string, password: string): Promise<
 		// per-envelope KSF storage (`ksf === null`), which preserves
 		// the pre-migration behaviour.
 		const ksf = lookup.ksf ?? (await opaqueKsfForClient());
-		const auth = await opaqueLogin(emailOrUsername, password, ksf);
+		const auth = await opaqueLogin(emailOrUsername, password, ksf, dpopJkt);
 
 		// Phase C: silent KSF rotation. If this envelope's KSF drifted
 		// from what the server currently publishes (operator retuned
@@ -131,7 +189,11 @@ export async function login(emailOrUsername: string, password: string): Promise<
 		method: 'POST',
 		credentials: 'same-origin',
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify({ username: emailOrUsername, password })
+		body: JSON.stringify({
+			username: emailOrUsername,
+			password,
+			...(dpopJkt ? { dpop_jkt: dpopJkt } : {})
+		})
 	});
 	if (!res.ok) {
 		// Surface the backend `error_type` so the login page can offer

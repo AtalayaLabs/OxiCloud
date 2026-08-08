@@ -28,6 +28,65 @@ use std::sync::RwLock;
 use std::time::Duration;
 use uuid::Uuid;
 
+/// Validate a client-supplied DPoP JWK thumbprint. RFC 7638 §3 produces
+/// a base64url-encoded SHA-256 (32 bytes → 43 base64url chars, no
+/// padding). We accept exactly that shape; anything else is a client
+/// bug or forgery attempt and gets rejected at the login boundary.
+///
+/// Returned string is the exact input on success — we don't
+/// canonicalise the thumbprint further (it IS the canonical form).
+fn validate_dpop_jkt(raw: &str) -> Result<String, &'static str> {
+    if raw.len() != 43 {
+        return Err("DPoP thumbprint must be 43 characters (base64url SHA-256)");
+    }
+    if !raw
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err("DPoP thumbprint contains non-base64url characters");
+    }
+    Ok(raw.to_string())
+}
+
+#[cfg(test)]
+mod dpop_jkt_tests {
+    use super::validate_dpop_jkt;
+
+    #[test]
+    fn accepts_well_formed_thumbprint() {
+        // 43 base64url chars — a real SHA-256 output shape
+        let jkt = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_ABCDE";
+        assert_eq!(validate_dpop_jkt(jkt).unwrap(), jkt);
+    }
+
+    #[test]
+    fn rejects_wrong_length() {
+        assert!(validate_dpop_jkt("").is_err());
+        assert!(validate_dpop_jkt("too-short").is_err());
+        assert!(
+            validate_dpop_jkt(&"a".repeat(44)).is_err(),
+            "44 chars must be rejected"
+        );
+    }
+
+    #[test]
+    fn rejects_padding() {
+        // 43-char string ending in `=` is still 43 chars but invalid
+        // base64url (padding never appears in URL_SAFE_NO_PAD).
+        let with_pad = format!("{}{}", "a".repeat(42), "=");
+        assert!(validate_dpop_jkt(&with_pad).is_err());
+    }
+
+    #[test]
+    fn rejects_standard_base64_alphabet() {
+        // `+` and `/` are standard base64 — url-safe uses `-` and `_`
+        let with_plus = format!("{}+", "a".repeat(42));
+        let with_slash = format!("{}/", "a".repeat(42));
+        assert!(validate_dpop_jkt(&with_plus).is_err());
+        assert!(validate_dpop_jkt(&with_slash).is_err());
+    }
+}
+
 /// Result of a successful OIDC callback. The handler layer inspects this to
 /// decide whether to redirect to the regular frontend or complete a Nextcloud
 /// Login Flow v2 session.
@@ -947,7 +1006,8 @@ impl AuthApplicationService {
         // handshake (Phase 1, `login/ke3`). Both paths converge here
         // so lifecycle + token + session-family semantics stay in
         // one place.
-        self.mint_session_for_authenticated_user(user).await
+        self.mint_session_for_authenticated_user(user, dto.dpop_jkt)
+            .await
     }
 
     /// Emit a fresh session for a user who has ALREADY been
@@ -973,6 +1033,7 @@ impl AuthApplicationService {
     pub async fn mint_session_for_authenticated_user(
         &self,
         mut user: crate::domain::entities::user::User,
+        dpop_jkt: Option<String>,
     ) -> Result<AuthResponseDto, DomainError> {
         // Lifecycle: dispatch login BEFORE register_login() so hooks
         // observing `last_login_at().is_none()` see "first ever login"
@@ -995,8 +1056,11 @@ impl AuthApplicationService {
 
         let refresh_token = self.token_service.generate_refresh_token();
 
-        // Save session — new login starts a new token family
-        let session = Session::new(
+        // Save session — new login starts a new token family. DPoP
+        // binding is set at INSERT time and immutable thereafter (see
+        // `docs/plan/dpop.md` — a mutable bind would let an attacker
+        // downgrade a bound session by re-binding to their own key).
+        let mut session = Session::new(
             user.id(),
             refresh_token.clone(),
             None, // IP (can be added from the HTTP layer)
@@ -1004,6 +1068,23 @@ impl AuthApplicationService {
             self.token_service.refresh_token_expiry_days(),
             Uuid::new_v4(),
         );
+        if let Some(jkt) = dpop_jkt {
+            let validated = validate_dpop_jkt(&jkt).map_err(|e| {
+                tracing::info!(
+                    target: "audit",
+                    event = "auth.dpop_bind_rejected",
+                    reason = "malformed_thumbprint",
+                    user_id = %user.id(),
+                    "🔐 DPoP bind rejected: {}", e,
+                );
+                DomainError::new(
+                    ErrorKind::InvalidInput,
+                    "Auth",
+                    "dpop_jkt must be a 43-character base64url SHA-256 thumbprint (RFC 7638)",
+                )
+            })?;
+            session = session.with_dpop_jkt(validated);
+        }
 
         self.session_storage.create_session(session).await?;
 
@@ -2149,6 +2230,59 @@ impl AuthApplicationService {
         {
             Ok(session) => Ok(Some(session.id())),
             Err(e) if e.kind == ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Bind a DPoP JWK thumbprint to an EXISTING session — the
+    /// post-redirect path for OIDC and magic-link, whose redemptions
+    /// are GET requests and can't thread the thumbprint through the
+    /// login body. The SPA calls this once, immediately after the
+    /// redirect lands, with the thumbprint it generated at page load.
+    ///
+    /// Emits `auth.dpop_bind_rejected` on validation failure or when
+    /// the caller tries to re-bind an already-bound session (anti-
+    /// downgrade guard). Emits `auth.dpop_bound` on the accept path
+    /// so operators can correlate binding events with sessions.
+    pub async fn bind_dpop_jkt_to_session(
+        &self,
+        session_id: Uuid,
+        dpop_jkt: &str,
+    ) -> Result<(), DomainError> {
+        let validated = validate_dpop_jkt(dpop_jkt).map_err(|e| {
+            tracing::info!(
+                target: "audit",
+                event = "auth.dpop_bind_rejected",
+                reason = "malformed_thumbprint",
+                session_id = %session_id,
+                "🔐 DPoP bind rejected: {}", e,
+            );
+            DomainError::new(
+                ErrorKind::InvalidInput,
+                "Auth",
+                "dpop_jkt must be a 43-character base64url SHA-256 thumbprint (RFC 7638)",
+            )
+        })?;
+        match self.session_storage.bind_dpop_jkt(session_id, &validated).await {
+            Ok(()) => {
+                tracing::info!(
+                    target: "audit",
+                    event = "auth.dpop_bound",
+                    session_id = %session_id,
+                    "🔐 DPoP thumbprint bound to session",
+                );
+                Ok(())
+            }
+            Err(e) if e.kind == ErrorKind::AlreadyExists => {
+                tracing::info!(
+                    target: "audit",
+                    event = "auth.dpop_bind_rejected",
+                    reason = "already_bound",
+                    session_id = %session_id,
+                    "🔐 DPoP bind rejected: session already bound",
+                );
+                Err(e)
+            }
             Err(e) => Err(e),
         }
     }
