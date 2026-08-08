@@ -53,9 +53,9 @@ impl SessionRepository for SessionPgRepository {
                         INSERT INTO auth.sessions (
                             id, user_id, refresh_token, expires_at,
                             ip_address, user_agent, created_at, revoked, family_id,
-                            oidc_id_token, oidc_sid
+                            oidc_id_token, oidc_sid, dpop_jkt
                         ) VALUES (
-                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
                         )
                         "#,
                 )
@@ -70,6 +70,7 @@ impl SessionRepository for SessionPgRepository {
                 .bind(session_clone.family_id())
                 .bind(session_clone.oidc_id_token())
                 .bind(session_clone.oidc_sid())
+                .bind(session_clone.dpop_jkt())
                 .execute(&mut **tx)
                 .await
                 .map_err(Self::map_sqlx_error)?;
@@ -115,7 +116,7 @@ impl SessionRepository for SessionPgRepository {
             SELECT
                 id, user_id, refresh_token, expires_at,
                 ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token, oidc_sid
+                oidc_id_token, oidc_sid, dpop_jkt
             FROM auth.sessions
             WHERE id = $1
             "#,
@@ -137,6 +138,7 @@ impl SessionRepository for SessionPgRepository {
             row.get("family_id"),
             row.get("oidc_id_token"),
             row.get("oidc_sid"),
+            row.get("dpop_jkt"),
         ))
     }
 
@@ -151,7 +153,7 @@ impl SessionRepository for SessionPgRepository {
             SELECT
                 id, user_id, refresh_token, expires_at,
                 ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token, oidc_sid
+                oidc_id_token, oidc_sid, dpop_jkt
             FROM auth.sessions
             WHERE refresh_token = $1
             "#,
@@ -173,6 +175,7 @@ impl SessionRepository for SessionPgRepository {
             row.get("family_id"),
             row.get("oidc_id_token"),
             row.get("oidc_sid"),
+            row.get("dpop_jkt"),
         ))
     }
 
@@ -186,7 +189,7 @@ impl SessionRepository for SessionPgRepository {
             SELECT
                 id, user_id, refresh_token, expires_at,
                 ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token, oidc_sid
+                oidc_id_token, oidc_sid, dpop_jkt
             FROM auth.sessions
             WHERE user_id = $1
             ORDER BY created_at DESC
@@ -212,6 +215,7 @@ impl SessionRepository for SessionPgRepository {
                     row.get("family_id"),
                     row.get("oidc_id_token"),
                     row.get("oidc_sid"),
+                    row.get("dpop_jkt"),
                 )
             })
             .collect();
@@ -496,9 +500,9 @@ impl SessionStoragePort for SessionPgRepository {
                         INSERT INTO auth.sessions (
                             id, user_id, refresh_token, expires_at,
                             ip_address, user_agent, created_at, revoked, family_id,
-                            oidc_id_token, oidc_sid
+                            oidc_id_token, oidc_sid, dpop_jkt
                         ) VALUES (
-                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
                         )
                         "#,
                 )
@@ -513,6 +517,7 @@ impl SessionStoragePort for SessionPgRepository {
                 .bind(session_clone.family_id())
                 .bind(session_clone.oidc_id_token())
                 .bind(session_clone.oidc_sid())
+                .bind(session_clone.dpop_jkt())
                 .execute(&mut **tx)
                 .await
                 .map_err(Self::map_sqlx_error)?;

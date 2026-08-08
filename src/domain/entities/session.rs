@@ -23,6 +23,16 @@ pub struct Session {
     /// BCL notification would revoke all of the user's sessions rather
     /// than just the one that logged out on the far end.
     oidc_sid: Option<String>,
+    /// DPoP JWK thumbprint (RFC 7638, base64url-encoded SHA-256) binding
+    /// this session to a browser-held keypair. `None` for app-password
+    /// / Nextcloud-client / pre-DPoP / unbound sessions — the DPoP
+    /// middleware exempts them (see `docs/plan/dpop.md`).
+    ///
+    /// Immutable per-session: set at construction time, never updated.
+    /// Downgrading a bound session by clearing the thumbprint would let
+    /// a stolen cookie replay without the private key — the whole point
+    /// of the binding is to prevent that.
+    dpop_jkt: Option<String>,
 }
 
 impl Session {
@@ -51,7 +61,23 @@ impl Session {
             family_id,
             oidc_id_token: None,
             oidc_sid: None,
+            dpop_jkt: None,
         }
+    }
+
+    /// Bind the session to a DPoP-Nonce browser keypair. Called by every
+    /// login handler when the client presented a well-formed thumbprint
+    /// in its login request. Absent → session stays unbound (fail-open).
+    ///
+    /// Immutable once set: this method panics if called on a session
+    /// that already has a thumbprint, so a callsite mistake can't
+    /// silently overwrite the binding.
+    pub fn with_dpop_jkt(mut self, jkt: String) -> Self {
+        if self.dpop_jkt.is_some() {
+            panic!("Session.dpop_jkt is immutable — call at construction time only");
+        }
+        self.dpop_jkt = Some(jkt);
+        self
     }
 
     /// Attach an OIDC ID token — call on sessions minted via the OIDC exchange.
@@ -85,6 +111,7 @@ impl Session {
         family_id: Uuid,
         oidc_id_token: Option<String>,
         oidc_sid: Option<String>,
+        dpop_jkt: Option<String>,
     ) -> Self {
         Self {
             id,
@@ -98,6 +125,7 @@ impl Session {
             family_id,
             oidc_id_token,
             oidc_sid,
+            dpop_jkt,
         }
     }
 
@@ -152,5 +180,63 @@ impl Session {
 
     pub fn oidc_sid(&self) -> Option<&str> {
         self.oidc_sid.as_deref()
+    }
+
+    pub fn dpop_jkt(&self) -> Option<&str> {
+        self.dpop_jkt.as_deref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fresh_session() -> Session {
+        Session::new(
+            Uuid::new_v4(),
+            "refresh-token".to_string(),
+            None,
+            None,
+            30,
+            Uuid::new_v4(),
+        )
+    }
+
+    #[test]
+    fn new_session_has_no_dpop_binding() {
+        assert_eq!(fresh_session().dpop_jkt(), None);
+    }
+
+    #[test]
+    fn with_dpop_jkt_stores_thumbprint() {
+        let s = fresh_session().with_dpop_jkt("abc123".to_string());
+        assert_eq!(s.dpop_jkt(), Some("abc123"));
+    }
+
+    #[test]
+    #[should_panic(expected = "Session.dpop_jkt is immutable")]
+    fn with_dpop_jkt_rejects_double_bind() {
+        fresh_session()
+            .with_dpop_jkt("first".to_string())
+            .with_dpop_jkt("second".to_string());
+    }
+
+    #[test]
+    fn from_raw_round_trips_dpop_jkt() {
+        let s = Session::from_raw(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "token".to_string(),
+            Utc::now(),
+            None,
+            None,
+            Utc::now(),
+            false,
+            Uuid::new_v4(),
+            None,
+            None,
+            Some("thumbprint-xyz".to_string()),
+        );
+        assert_eq!(s.dpop_jkt(), Some("thumbprint-xyz"));
     }
 }
