@@ -201,6 +201,15 @@ path = "src/bin/opaque-hurl-helper.rs"
 # release Dockerfile (nothing outside tests/ calls it).
 
 [[bin]]
+name = "dpop-hurl-helper"
+path = "src/bin/dpop-hurl-helper.rs"
+# Test-suite DPoP client — signs an ES256 proof per request, threads
+# the DPoP-Nonce challenge/retry loop, and covers the wire-protocol
+# scenarios Hurl can't express (per-request fresh jti/iat, replay
+# detection, malformed proofs, wrong htm/htu/alg/typ). Same
+# no-ship-in-release status as opaque-hurl-helper.
+
+[[bin]]
 name = "load-seed"
 path = "src/bin/load-seed.rs"
 # Test fixture seeder. Gated behind the empty `load_seed_bin` feature so

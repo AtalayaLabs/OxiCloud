@@ -248,4 +248,28 @@ OPAQUE_HELPER_USERNAME="$username" \
 OPAQUE_HELPER_PASSWORD="$password" \
   "$OPAQUE_HELPER_BIN" || die "OPAQUE crypto handshake failed"
 
+# ── 6. DPoP wire protocol — the parts Hurl can't drive ──────────────────
+# Each proof carries a fresh jti, current iat, htm/htu matching the
+# exact request, an ES256 signature, and a threaded nonce — none of
+# which a declarative .hurl template can compute. See
+# `src/bin/dpop-hurl-helper.rs` for the scenario matrix (happy path,
+# wrong htm/htu/alg/typ, stale nonce, replay, malformed, fail-open
+# when the session is unbound). Runs against the SAME server target
+# the OPAQUE helper used — but the server config must set
+# `OXICLOUD_DPOP_MODE=opportunistic` (or `required`) or the middleware
+# is a pass-through and every failure scenario silently 200s.
+DPOP_HELPER_BIN="$REPO_ROOT/target/$BUILD_TARGET/dpop-hurl-helper"
+if [[ ! -x "$DPOP_HELPER_BIN" ]]; then
+  log "Building dpop-hurl-helper ($BUILD_TARGET)..."
+  case "$BUILD_TARGET" in
+    debug)   (cd "$REPO_ROOT" && cargo build           --bin dpop-hurl-helper 2>&1 | tail -n 20) || die "dpop-hurl-helper build failed" ;;
+    release) (cd "$REPO_ROOT" && cargo build --release --bin dpop-hurl-helper 2>&1 | tail -n 20) || die "dpop-hurl-helper build failed" ;;
+  esac
+fi
+log "Running DPoP wire-protocol helper..."
+DPOP_HELPER_BASE_URL="$base_url" \
+DPOP_HELPER_USERNAME="$username" \
+DPOP_HELPER_PASSWORD="$password" \
+  "$DPOP_HELPER_BIN" || die "DPoP wire-protocol test failed"
+
 log "All tests passed."
