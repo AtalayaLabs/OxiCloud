@@ -783,6 +783,7 @@ impl UserRepository for UserPgRepository {
                 Option<chrono::DateTime<chrono::Utc>>,
                 bool,
                 Option<String>,
+                Option<String>,
                 bool,
                 bool,
                 bool,
@@ -797,13 +798,15 @@ impl UserRepository for UserPgRepository {
             // pays. `has_password` on the password_hash column tells
             // the admin table whether a server-verifiable password is
             // on file; combined with the two OPAQUE flags and
-            // federation_issuer, the SPA derives the full "capability
-            // set" per user (password / OPAQUE / SSO / passwordless).
+            // federation_kind / federation_issuer, the SPA derives the
+            // full "capability set" per user (password / OPAQUE / SSO /
+            // passwordless).
             r#"
             SELECT
                 id, username, email, role::text,
                 storage_quota_bytes, storage_used_bytes,
-                last_login_at, active, federation_issuer, is_external,
+                last_login_at, active,
+                federation_kind, federation_issuer, is_external,
                 (password_hash IS NOT NULL)       AS has_password,
                 (opaque_envelope IS NOT NULL)     AS opaque_registered,
                 (opaque_migrated_at IS NOT NULL)  AS opaque_migrated
@@ -832,6 +835,7 @@ impl UserRepository for UserPgRepository {
                     storage_used_bytes,
                     last_login_at,
                     active,
+                    federation_kind,
                     federation_issuer,
                     is_external,
                     has_password,
@@ -850,6 +854,7 @@ impl UserRepository for UserPgRepository {
                     storage_used_bytes,
                     last_login_at,
                     active,
+                    federation_kind,
                     federation_issuer,
                     is_external,
                     has_password,
@@ -1362,6 +1367,34 @@ impl UserStoragePort for UserPgRepository {
         )
         .bind(user_id)
         .bind(image)
+        .execute(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)
+        .map_err(DomainError::from)?;
+        Ok(())
+    }
+
+    async fn rebind_federation_issuer(
+        &self,
+        user_id: Uuid,
+        new_issuer: &str,
+    ) -> Result<(), DomainError> {
+        // Same `IS DISTINCT FROM` guard as sync_oidc_login_profile: this
+        // fires on every OIDC login, so the common already-migrated case
+        // must be a zero-write no-op. Only actually flips the column
+        // when the stored value is stale (legacy display label vs the
+        // real issuer URL from the id_token's `iss` claim).
+        sqlx::query(
+            r#"
+            UPDATE auth.users
+            SET federation_issuer = $2,
+                updated_at = NOW()
+            WHERE id = $1
+              AND federation_issuer IS DISTINCT FROM $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(new_issuer)
         .execute(&*self.pool)
         .await
         .map_err(Self::map_sqlx_error)

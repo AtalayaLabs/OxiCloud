@@ -73,7 +73,7 @@ struct FullUserDto {
     updated_at: DateTime<Utc>,
     last_login_at: Option<DateTime<Utc>>,
     active: bool,
-    auth_provider: String,
+    federation_issuer: String,
     image: Option<String>,
     can_edit_image: bool,
     is_external: bool,
@@ -100,7 +100,7 @@ impl FullUserDto {
             storage_used_bytes: self.storage_used_bytes,
             last_login_at: self.last_login_at,
             active: self.active,
-            auth_provider: self.auth_provider.clone(),
+            federation_issuer: self.federation_issuer.clone(),
             is_external: self.is_external,
         }
     }
@@ -117,7 +117,7 @@ struct SummaryUserDto {
     storage_used_bytes: i64,
     last_login_at: Option<DateTime<Utc>>,
     active: bool,
-    auth_provider: String,
+    federation_issuer: String,
     is_external: bool,
 }
 
@@ -270,7 +270,7 @@ async fn load_full(pool: &PgPool) -> Vec<FullUserDto> {
                 updated_at: row.get("updated_at"),
                 last_login_at: row.get("last_login_at"),
                 active: row.get("active"),
-                auth_provider: oidc_provider.unwrap_or_else(|| "local".to_owned()),
+                federation_issuer: oidc_provider.unwrap_or_else(|| "local".to_owned()),
                 image: row.get("image"),
                 can_edit_image,
                 is_external: row.get("is_external"),
@@ -312,7 +312,7 @@ async fn load_summary(pool: &PgPool) -> Vec<SummaryUserDto> {
         storage_used_bytes: row.get("storage_used_bytes"),
         last_login_at: row.get("last_login_at"),
         active: row.get("active"),
-        auth_provider: row
+        federation_issuer: row
             .get::<Option<String>, _>("oidc_provider")
             .unwrap_or_else(|| "local".to_owned()),
         is_external: row.get("is_external"),

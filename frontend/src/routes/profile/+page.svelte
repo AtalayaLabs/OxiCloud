@@ -66,8 +66,8 @@
 	let creatingPw = $state(false);
 	let autoExpanded = $state(false);
 
-	const isOidc = $derived(!!session.user?.auth_provider && session.user.auth_provider !== 'local');
-	const isLocal = $derived(!isOidc);
+	const isOidc = $derived(session.user?.federation_kind === 'oidc');
+	const isLocal = $derived(!session.user?.federation_kind);
 	const usernameClaimed = $derived(!!session.user?.username);
 	const isAdmin = $derived(session.user?.role === 'admin');
 	const canEditImage = $derived(session.user?.can_edit_image === true && isLocal);

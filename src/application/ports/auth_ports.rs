@@ -179,6 +179,20 @@ pub trait UserStoragePort: Send + Sync + 'static {
         image: Option<&str>,
     ) -> Result<(), DomainError>;
 
+    /// Federation-identity Phase B lazy rebind: overwrite `federation_issuer`
+    /// on a specific user row. Called when an OIDC login's id_token `iss`
+    /// claim proves the stored value (typically a legacy display label) is
+    /// out of sync with the true issuer URL. Guarded (`IS DISTINCT FROM`)
+    /// so calling with the current value is a zero-write no-op.
+    ///
+    /// Audit signal for the rebind lives at the caller (auth service) —
+    /// this repo method just moves the column value.
+    async fn rebind_federation_issuer(
+        &self,
+        user_id: Uuid,
+        new_issuer: &str,
+    ) -> Result<(), DomainError>;
+
     /// Lists users by role (e.g., "admin" or "user")
     async fn list_users_by_role(&self, role: &str) -> Result<Vec<User>, DomainError>;
 
@@ -238,6 +252,15 @@ pub struct OidcTokenSet {
 #[derive(Debug, Clone)]
 pub struct OidcIdClaims {
     pub sub: String,
+    /// The validated `iss` claim from the id_token. Equal to
+    /// `discovery.issuer` (the validator enforces `iss == discovery.issuer`,
+    /// so this is a safe echo of the authoritative issuer URL).
+    ///
+    /// Load-bearing for the federation-identity Phase B lazy-rebind: the
+    /// app service compares this against `user.federation_issuer` and
+    /// updates the row when the stored value is still a legacy display
+    /// label (see docs/plan/ocm.md § Rename PR — Phase B).
+    pub iss: String,
     pub email: Option<String>,
     pub email_verified: Option<bool>,
     pub preferred_username: Option<String>,
@@ -275,6 +298,17 @@ pub struct OidcLogoutClaims {
     /// JWT identifier — used by the app service to prevent replay of the
     /// same logout_token within the token's freshness window.
     pub jti: Option<String>,
+    /// The validated `iss` claim from the logout_token — echoed from
+    /// `discovery.issuer` (the validator enforces `iss == discovery.issuer`,
+    /// so this is a safe echo of the authoritative issuer URL).
+    ///
+    /// Load-bearing for the sub-based revocation path (BCL without sid):
+    /// the app service passes this to
+    /// `revoke_user_sessions_by_federation_subject(issuer, sub)`, and the
+    /// pg impl matches on `auth.users.federation_issuer` — which post
+    /// Phase B stores the iss URL, NOT the display label. Passing the
+    /// display label (via `oidc.provider_name()`) misses every row.
+    pub iss: String,
 }
 
 /// Port for OIDC operations — implemented in infrastructure layer

@@ -441,6 +441,63 @@ churn):
 - OCM notification handler translates peer messages into local state
   transitions (create/delete grant, update state column).
 
+## Future — multi-federation per user (account linking)
+
+The current schema is strictly 1:1 — one `auth.users` row carries ONE
+`(federation_kind, federation_issuer, federation_subject)` triple.
+Scenarios where this breaks:
+
+- **Multi-IdP link** — Alice logs in via Google today, later wants to
+  also link her corporate Keycloak (same person, two auth paths).
+- **OIDC ↔ OCM identity overlap** — Bob has a local OIDC-provisioned
+  account AND colleagues share to him via OCM at
+  `bob@theircloud.example.com`. Different trust chains → two rows.
+  His "shared with me" view splits across both identities.
+- **IdP migration** — Company switches SSO issuer; the old row is
+  orphaned, new logins mint a fresh row. All grants belong to the
+  ghost.
+- **Genuine multi-account** — some IdPs let one person hold multiple
+  accounts (different `sub`). Different identities per OIDC spec —
+  CORRECTLY two users. This case wants NO merging.
+
+The interesting split: (1)-(3) benefit from merging; (4) must stay
+separate. Merging is inherently user-driven, not automatic (auto-link
+would misbehave on case 4). Ship OCM WITHOUT this and add it when a
+real user asks — every product I've seen shipped account linking as a
+distinct feature (Nextcloud, GitHub) precisely so it can have its own
+UX design.
+
+Evolution path (documented so it's not lost, NOT for OCM MVP):
+
+```sql
+CREATE TABLE auth.user_federations (
+    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id            UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    federation_kind    TEXT NOT NULL,
+    federation_issuer  TEXT NOT NULL,
+    federation_subject TEXT NOT NULL,
+    linked_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    linked_by          UUID REFERENCES auth.users(id),
+    is_primary         BOOLEAN NOT NULL DEFAULT FALSE,
+    UNIQUE (federation_kind, federation_issuer, federation_subject),
+    UNIQUE (user_id, is_primary) DEFERRABLE
+);
+```
+
+Migration: one row per existing `auth.users` with `federation_kind
+IS NOT NULL`, `is_primary=true`, `linked_by=user_id` (self-owned).
+Then drop the three columns from `auth.users` after a backward-compat
+window (view unions the two representations).
+
+Impact on existing code: anti-duplicate lookup, BCL revocation, JIT
+provisioning, lazy rebind — all move to JOINs on `user_federations`.
+The `get_user_by_federation_subject` repo method is the single
+touchpoint; downstream callers don't change.
+
+Ships when demand appears — probably alongside a "Connect another
+account" settings page. Documented here so the OCM 1:1 shape is a
+KNOWN LIMITATION, not an oversight.
+
 ## Future — merge with a generic grant-request workflow
 
 `ocm.inbound_shares.state` is a purpose-specific state machine for the

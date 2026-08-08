@@ -938,7 +938,7 @@
 	}
 	/** OIDC/SSO-provisioned account (no local password to reset). */
 	function isOidcUser(u: AdminUserSummary): boolean {
-		return !!u.auth_provider && u.auth_provider !== 'local';
+		return u.federation_kind === 'oidc';
 	}
 	/** Used-quota percentage (0 when unlimited) for the per-user progress bar. */
 	function quotaPct(u: AdminUserSummary): number {
@@ -2667,7 +2667,7 @@
 									Auth-capability chip set — ADMIN-ONLY (fields
 									scoped to `AdminUserSummaryDto`; never on
 									`UserDto`). Any user carries ZERO OR MORE of:
-									  * SSO/OIDC — `auth_provider !== 'local'`,
+									  * SSO/OIDC — `federation_kind === 'oidc'`,
 									    identity delegated to the IdP; label is
 									    the provider name.
 									  * password — `has_password` — server has a
@@ -2684,9 +2684,9 @@
 									    awaiting their welcome magic-link.
 								-->
 								{#if isOidcUser(u)}
-									<span class="badge badge--oidc" title={u.auth_provider}>
+									<span class="badge badge--oidc" title={u.federation_issuer}>
 										<Icon name="key" />
-										<span class="badge__label">{u.auth_provider}</span>
+										<span class="badge__label">{u.federation_issuer}</span>
 									</span>
 								{/if}
 								{#if u.has_password}

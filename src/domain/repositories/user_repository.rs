@@ -45,6 +45,7 @@ pub struct UserListEntry {
     pub storage_used_bytes: i64,
     pub last_login_at: Option<DateTime<Utc>>,
     pub active: bool,
+    pub federation_kind: Option<String>,
     pub federation_issuer: Option<String>,
     pub is_external: bool,
     /// TRUE when `auth.users.password_hash IS NOT NULL` — user has a

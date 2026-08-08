@@ -1294,6 +1294,7 @@ pub async fn oidc_providers(
     if !auth_app.oidc_enabled() {
         return Ok(Json(OidcProviderInfoDto {
             enabled: false,
+            issuer: String::new(),
             provider_name: String::new(),
             authorize_endpoint: String::new(),
             password_login_enabled,
@@ -1305,8 +1306,31 @@ pub async fn oidc_providers(
 
     let config = auth_app.oidc_config().unwrap();
 
+    // Prefer the DISCOVERY document's issuer — that's what
+    // OidcService uses to validate id_tokens AND what lands on
+    // `auth.users.federation_issuer` at JIT provisioning / lazy
+    // rebind. The config's `issuer_url` is only what the operator
+    // typed to point at discovery; the discovery document publishes
+    // the authoritative value (may differ by trailing slash, host
+    // casing, etc). **Cache-only lookup on purpose** — this
+    // endpoint is PUBLIC + UNAUTHENTICATED, so triggering an IdP
+    // HTTP fetch per request is a DoS amplifier (attacker at N req/s
+    // → we hit the IdP at N req/s, and the cache only stores on
+    // success so a degraded IdP means every call retries). On cold
+    // cache (before the first real OIDC flow warms it), fall back to
+    // the operator-typed `config.issuer_url`. In practice the cache
+    // is warm within seconds of the first login; the fallback only
+    // shows during that window and is only wrong if the IdP
+    // publishes an issuer that differs from the URL used to fetch
+    // discovery (rare in normal deployments).
+    let issuer = auth_app
+        .oidc_service()
+        .and_then(|svc| svc.cached_issuer())
+        .unwrap_or_else(|| config.issuer_url.clone());
+
     Ok(Json(OidcProviderInfoDto {
         enabled: true,
+        issuer,
         provider_name: config.provider_name.clone(),
         authorize_endpoint: "/api/auth/oidc/authorize".to_string(),
         password_login_enabled,

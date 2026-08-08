@@ -1516,16 +1516,19 @@ impl AuthApplicationService {
             self.backchannel_logout_jti_seen.insert(jti.clone(), ());
         }
 
-        let provider_name = oidc.provider_name().to_string();
-
         // Resolve which sessions to revoke.
         let affected_user_ids: Vec<Uuid> = if let Some(sid) = claims.sid.as_ref() {
             self.session_storage
                 .revoke_sessions_by_oidc_sid(sid)
                 .await?
         } else if let Some(sub) = claims.sub.as_ref() {
+            // Pass claims.iss (the id_token's real issuer URL from the
+            // logout_token), NOT the OIDC service's provider_name
+            // display label. Post Phase B of the federation-identity
+            // rename, `auth.users.federation_issuer` stores the iss
+            // URL — matching on the display label misses every row.
             self.session_storage
-                .revoke_user_sessions_by_federation_subject(&provider_name, sub)
+                .revoke_user_sessions_by_federation_subject(&claims.iss, sub)
                 .await?
                 .into_iter()
                 .collect()
@@ -3396,13 +3399,63 @@ impl AuthApplicationService {
             .clone()
             .unwrap_or_else(|| format!("{}@oidc.local", oidc_username));
 
-        // 5. Look up existing user by OIDC subject
-        let user = match self
+        // 5. Look up existing user by OIDC subject.
+        //
+        // Two-step lookup implements the Phase B lazy-rebind of the
+        // federation-identity rename (docs/plan/ocm.md § Phase B):
+        //   1. Canonical lookup keyed on the id_token's real `iss` claim.
+        //      Post-migration this is what every fresh JIT row uses.
+        //   2. Legacy fallback keyed on the OXICLOUD_OIDC_PROVIDER_NAME
+        //      display label. Fires for rows minted before the rename.
+        //      If the fallback hits, the row is rebound to the real iss
+        //      before this branch returns — first login after upgrade
+        //      self-heals the user; no admin action needed.
+        // If both miss, JIT provisioning kicks in below and writes the
+        // canonical value from the start.
+        let canonical = self
             .user_storage
-            .get_user_by_federation_subject(&provider_name, &claims.sub)
-            .await
-        {
+            .get_user_by_federation_subject(&claims.iss, &claims.sub)
+            .await;
+        let lookup_result = match canonical {
+            Ok(u) => Ok(u),
+            // Only fall through to the legacy lookup if the canonical one
+            // said "not found" — treat all OTHER errors as fatal to avoid
+            // masking DB failures with a lookup that would probably fail
+            // the same way. NotFound is the only benign case here.
+            Err(e) if e.kind == ErrorKind::NotFound => {
+                self.user_storage
+                    .get_user_by_federation_subject(&provider_name, &claims.sub)
+                    .await
+            }
+            Err(e) => Err(e),
+        };
+        let user = match lookup_result {
             Ok(mut existing_user) => {
+                // Lazy-rebind: if the row's stored issuer doesn't match
+                // the real iss claim, update it now. Covers the legacy-
+                // label case (fallback hit) AND any drift accumulated
+                // during Phase A when JIT was still writing labels.
+                // rebind_federation_issuer is a guarded UPDATE — same-value
+                // no-op costs nothing.
+                if existing_user.federation_issuer() != Some(claims.iss.as_str()) {
+                    let old = existing_user
+                        .federation_issuer()
+                        .map(str::to_string)
+                        .unwrap_or_default();
+                    self.user_storage
+                        .rebind_federation_issuer(existing_user.id(), &claims.iss)
+                        .await?;
+                    tracing::info!(
+                        target: "audit",
+                        event = "federation.issuer_rebound",
+                        reason = "lazy_backfill",
+                        user_id = %existing_user.id(),
+                        federation_kind = "oidc",
+                        old_issuer = %old,
+                        new_issuer = %claims.iss,
+                        "🔗 federation_issuer rebound from legacy label to true iss URL",
+                    );
+                }
                 // User exists — dispatch login BEFORE register_login() so
                 // hooks observe `last_login_at = None` on the very first
                 // login (see tip #1 in the trait docstring).
@@ -3516,14 +3569,12 @@ impl AuthApplicationService {
                     Some(username.clone()),
                     None,
                     Some(crate::domain::entities::user::FederationKind::Oidc),
-                    // TODO Phase B: `provider_name` still carries the
-                    // OXICLOUD_OIDC_PROVIDER_NAME display label instead
-                    // of the true `iss` URL. Lazy-rebind on subsequent
-                    // logins converts the row (see docs/plan/ocm.md
-                    // § Rename PR — Phase B). First-login value is the
-                    // label for backwards compatibility with existing
-                    // rows.
-                    Some(provider_name.clone()),
+                    // Phase B canonical value: the id_token's real `iss`
+                    // claim (validated to equal discovery.issuer in
+                    // OidcService). No more display-label writes at JIT —
+                    // legacy rows are fixed via lazy rebind in the
+                    // existing-user branch above.
+                    Some(claims.iss.clone()),
                     Some(claims.sub.clone()),
                     role,
                     quota,

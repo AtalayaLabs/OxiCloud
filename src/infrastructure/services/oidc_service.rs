@@ -180,6 +180,39 @@ impl OidcService {
         }
     }
 
+    /// Authoritative issuer URL from the IdP's discovery document —
+    /// **cache-only, non-async, non-blocking**. Returns `Some(issuer)`
+    /// when discovery has been fetched successfully before AND is not
+    /// expired; returns `None` otherwise (cold cache OR expired without
+    /// re-fetch).
+    ///
+    /// Deliberately does NOT trigger a network fetch — this is the
+    /// accessor that public endpoints (`/api/auth/oidc/providers`)
+    /// use, and driving IdP HTTP off every unauthenticated request is
+    /// a DoS amplifier. The cache gets warmed as a side-effect of
+    /// every real OIDC flow (authorize / callback / login /
+    /// validate_id_token all call `get_discovery`), so within seconds
+    /// of the first legit login this returns `Some`.
+    ///
+    /// Callers that need the definitive answer (validate_id_token, JIT
+    /// provisioning) should keep going through the async
+    /// discovery-fetching path. Callers that need a display hint
+    /// (providers endpoint) MUST use this non-async path and fall back
+    /// to a config value when it returns `None`.
+    pub fn cached_issuer(&self) -> Option<String> {
+        // try_read is non-blocking; if the cache write lock is held
+        // (extremely rare, only during a discovery refresh), we return
+        // None rather than block on public traffic.
+        let cache = self.discovery.try_read().ok()?;
+        cache.as_ref().and_then(|cached| {
+            if cached.is_expired() {
+                None
+            } else {
+                Some(cached.value.issuer.clone())
+            }
+        })
+    }
+
     /// Fetch and cache the OIDC discovery document (TTL: 1 hour)
     async fn get_discovery(&self) -> Result<OidcDiscovery, DomainError> {
         // Check cache first (return cached value only if not expired)
@@ -495,6 +528,13 @@ impl OidcServicePort for OidcService {
 
         Ok(OidcIdClaims {
             sub: claims.sub,
+            // Safe echo: jsonwebtoken::decode with
+            // `validation.set_issuer(&[&discovery.issuer])` above already
+            // enforced iss == discovery.issuer, so the discovery value
+            // IS the validated iss claim. The caller (auth service uses
+            // it for Phase B lazy-rebind) can trust this without a
+            // second validation pass.
+            iss: discovery.issuer.clone(),
             email: claims.email,
             email_verified: claims.email_verified,
             preferred_username: claims.preferred_username,
@@ -510,6 +550,11 @@ impl OidcServicePort for OidcService {
 
     async fn fetch_user_info(&self, access_token: &str) -> Result<OidcIdClaims, DomainError> {
         let discovery = self.get_discovery().await?;
+        // Capture issuer before we move `userinfo_endpoint` out below.
+        // Same rationale as validate_id_token: discovery.issuer IS the
+        // authoritative iss for this deployment; fetch_user_info is only
+        // called after a successful token exchange with this same issuer.
+        let iss = discovery.issuer.clone();
 
         let userinfo_url = discovery.userinfo_endpoint.ok_or_else(|| {
             DomainError::new(
@@ -551,6 +596,7 @@ impl OidcServicePort for OidcService {
 
         Ok(OidcIdClaims {
             sub: info.sub,
+            iss,
             email: info.email,
             email_verified: info.email_verified,
             preferred_username: info.preferred_username,
@@ -741,6 +787,7 @@ impl OidcServicePort for OidcService {
             sub: claims.sub,
             sid: claims.sid,
             jti: claims.jti,
+            iss: claims.iss,
         })
     }
 }
