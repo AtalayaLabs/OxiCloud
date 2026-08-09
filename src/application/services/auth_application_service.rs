@@ -1544,6 +1544,21 @@ impl AuthApplicationService {
         if let Some(jkt) = session.dpop_jkt() {
             new_session = new_session.with_dpop_jkt(jkt.to_string());
         }
+        // Carry over the OIDC provenance so RP-initiated logout still
+        // works after a refresh. Without this, an OIDC session rotates
+        // into a row with `oidc_id_token = NULL` on the very first
+        // refresh (which apiFetch triggers transparently on any 401),
+        // and the `/api/auth/logout` handler then has no `id_token_hint`
+        // to build the IdP's `end_session_endpoint` URL — user gets a
+        // local-only logout and stays signed in on the IdP.
+        // `oidc_sid` follows the same rule so Back-Channel Logout can
+        // still target this device via the IdP's sid claim after refresh.
+        if let Some(id_token) = session.oidc_id_token() {
+            new_session = new_session.with_oidc_id_token(id_token.to_string());
+        }
+        if let Some(sid) = session.oidc_sid() {
+            new_session = new_session.with_oidc_sid(sid.to_string());
+        }
 
         self.session_storage
             .rotate_session(session.id(), new_session)
