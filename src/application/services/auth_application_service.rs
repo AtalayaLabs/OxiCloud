@@ -2962,14 +2962,13 @@ impl AuthApplicationService {
     pub async fn admin_list_sessions_with_perms<A: AuthorizationEngine>(
         &self,
         authorization: &A,
-        caller_id: Uuid,
-        caller_dpop_jkt: Option<&str>,
+        caller: crate::application::dtos::session_dto::SessionCaller<'_>,
         user_id_filter: Option<Uuid>,
         include_revoked: bool,
         limit: i64,
         offset: i64,
     ) -> Result<Vec<crate::application::dtos::session_dto::SessionSummaryDto>, DomainError> {
-        self.require_admin_caller(authorization, caller_id).await?;
+        self.require_admin_caller(authorization, caller.id).await?;
         let sessions = self
             .session_storage
             .list_sessions_paginated(user_id_filter, include_revoked, limit, offset)
@@ -2979,7 +2978,7 @@ impl AuthApplicationService {
             .map(|s| {
                 crate::application::dtos::session_dto::SessionSummaryDto::from_session(
                     s,
-                    caller_dpop_jkt,
+                    caller.dpop_jkt,
                 )
             })
             .collect())
@@ -2994,10 +2993,10 @@ impl AuthApplicationService {
     pub async fn admin_revoke_session_with_perms<A: AuthorizationEngine>(
         &self,
         authorization: &A,
-        caller_id: Uuid,
+        caller: crate::application::dtos::session_dto::SessionCaller<'_>,
         session_id: Uuid,
     ) -> Result<(), DomainError> {
-        self.require_admin_caller(authorization, caller_id).await?;
+        self.require_admin_caller(authorization, caller.id).await?;
         // Resolve target user for the audit line before revocation —
         // once the session row is revoked the user_id is still readable
         // but the ORDER is stable this way.
@@ -3011,7 +3010,7 @@ impl AuthApplicationService {
         tracing::info!(
             target: "audit",
             event = "admin.session_revoked",
-            caller_id = %caller_id,
+            caller_id = %caller.id,
             session_id = %session_id,
             target_user_id = target_user_id.map(|u| u.to_string()).unwrap_or_default(),
             "👮🏻‍♂️ Admin revoked session",

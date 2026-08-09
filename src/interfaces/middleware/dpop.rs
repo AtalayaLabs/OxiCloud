@@ -412,5 +412,4 @@ mod tests {
             ("http".to_owned(), "localhost".to_owned())
         );
     }
-
 }

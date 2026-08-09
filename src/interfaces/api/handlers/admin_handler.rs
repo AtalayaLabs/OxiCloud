@@ -18,9 +18,9 @@ use crate::application::dtos::plugin_dto::{
 use crate::application::dtos::settings_dto::{
     AdminCreateUserDto, AdminResetPasswordDto, DashboardStatsDto, DriveKindUsageDto,
     ListSessionsQueryDto, ListUsersQueryDto, MigrationStateDto, SaveOidcSettingsDto,
-    SaveStorageSettingsDto,
-    SendSmtpTestDto, SmtpInfoDto, SmtpTestResultDto, StartMigrationDto, TestOidcConnectionDto,
-    TestStorageConnectionDto, UpdateUserActiveDto, UpdateUserQuotaDto, UpdateUserRoleDto,
+    SaveStorageSettingsDto, SendSmtpTestDto, SmtpInfoDto, SmtpTestResultDto, StartMigrationDto,
+    TestOidcConnectionDto, TestStorageConnectionDto, UpdateUserActiveDto, UpdateUserQuotaDto,
+    UpdateUserRoleDto,
 };
 use crate::application::dtos::user_dto::{AdminUserSummaryDto, UserDto};
 use crate::application::ports::authorization_ports::AuthorizationEngine;
@@ -1238,20 +1238,23 @@ pub async fn list_sessions(
         None => None,
     };
 
-    // Pass the caller's DPoP thumbprint so the DTO can flag which
-    // row is the admin's own current session (`is_current = true`).
-    // Rendered as a "this is you" badge — prevents the admin from
-    // accidentally revoking the session they're clicking from.
-    // `None` when the admin is unbound (rare — legacy / migration
-    // window sessions), in which case no row highlights.
-    let caller_jkt = auth_user.dpop_jkt.as_deref();
+    // Pass the caller's DPoP thumbprint through the SessionCaller
+    // wrapper so the DTO can flag which row is the admin's own
+    // current session (`is_current = true`). Rendered as a "this
+    // is you" badge — prevents accidentally revoking the session
+    // the click came from. `None` when the admin is unbound (rare
+    // — legacy / migration-window sessions), in which case no row
+    // highlights.
+    let caller = crate::application::dtos::session_dto::SessionCaller {
+        id: auth_user.id,
+        dpop_jkt: auth_user.dpop_jkt.as_deref(),
+    };
 
     let sessions = auth
         .auth_application_service
         .admin_list_sessions_with_perms(
             state.authorization.as_ref(),
-            auth_user.id,
-            caller_jkt,
+            caller,
             user_id_filter,
             include_revoked,
             limit,
@@ -1293,8 +1296,12 @@ pub async fn revoke_session(
         .as_ref()
         .ok_or_else(|| AppError::internal_error("Auth service not configured"))?;
 
+    let caller = crate::application::dtos::session_dto::SessionCaller {
+        id: auth_user.id,
+        dpop_jkt: auth_user.dpop_jkt.as_deref(),
+    };
     auth.auth_application_service
-        .admin_revoke_session_with_perms(state.authorization.as_ref(), auth_user.id, session_id)
+        .admin_revoke_session_with_perms(state.authorization.as_ref(), caller, session_id)
         .await
         .map_err(AppError::from)?;
 

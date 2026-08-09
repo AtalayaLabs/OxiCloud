@@ -21,6 +21,29 @@ use uuid::Uuid;
 
 use crate::domain::entities::session::Session;
 
+/// Authenticated-caller context — the caller's identity + session-
+/// bound signals a service method might key off. Constructed at the
+/// handler boundary from `AuthUser` and passed through unchanged;
+/// keeps service signatures flat instead of accumulating parallel
+/// `caller_id`, `caller_jkt`, `caller_ip` parameters. Every
+/// caller-context field lives here, one place to extend.
+///
+/// Not admin-specific — any handler that needs caller context can
+/// build one from `AuthUser`. Admin methods just happen to be the
+/// first callers (sessions panel's `is_current` comparison and
+/// audit lines).
+#[derive(Debug, Clone)]
+pub struct SessionCaller<'a> {
+    /// AuthZ subject — used by `require_admin_caller` and audit lines.
+    pub id: Uuid,
+    /// Caller's own DPoP thumbprint from the JWT `cnf.jkt` claim.
+    /// Enables the sessions panel's "you are here" highlight
+    /// ([`SessionSummaryDto::is_current`]) — `None` when the caller
+    /// logged in via an unbound path (legacy password without DPoP,
+    /// pre-bind OIDC redirect, etc.).
+    pub dpop_jkt: Option<&'a str>,
+}
+
 /// Wire shape for `GET /api/admin/sessions`. Contains everything the
 /// admin table renders and **nothing the raw session entity would
 /// leak** (refresh token, OIDC ID-token, full DPoP thumbprint).
@@ -75,9 +98,7 @@ impl SessionSummaryDto {
         let is_revoked = s.is_revoked();
         let is_expired = s.is_expired();
         let jkt = s.dpop_jkt().map(|s| s.to_owned());
-        let dpop_jkt_prefix = jkt
-            .as_ref()
-            .map(|t| t.chars().take(8).collect::<String>());
+        let dpop_jkt_prefix = jkt.as_ref().map(|t| t.chars().take(8).collect::<String>());
         let is_current = match (jkt.as_deref(), caller_jkt) {
             (Some(row), Some(caller)) => row == caller,
             _ => false,

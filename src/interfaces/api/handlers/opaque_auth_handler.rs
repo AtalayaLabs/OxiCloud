@@ -770,8 +770,11 @@ pub async fn login_ke3(
     // `user_agent` land populated instead of NULL (admin panel would
     // otherwise render "—"). Both are per-session and only refresh
     // on rotation, matching the login pattern.
-    let client_ip =
-        crate::interfaces::middleware::trusted_proxy::client_ip_from_parts(&headers, Some(peer), false);
+    let client_ip = crate::interfaces::middleware::trusted_proxy::client_ip_from_parts(
+        &headers,
+        Some(peer),
+        false,
+    );
     let user_agent = headers
         .get(axum::http::header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
