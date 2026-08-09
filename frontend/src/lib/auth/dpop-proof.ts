@@ -55,6 +55,33 @@ export function updateNonceFromHeader(fresh: string | null): void {
 	}
 }
 
+/**
+ * Read the one-shot `oxicloud_dpop_nonce` cookie the backend stamps on
+ * every login-success response (POST OPAQUE/legacy AND 302 OIDC/magic-
+ * link), seed the local nonce cache with it, then clear the cookie so a
+ * later flow can't reuse a stale value.
+ *
+ * Call at SPA boot AND from any client-side login-success path
+ * (`session.setUser()`). The cookie is set by the server unconditionally
+ * on login when `dpop_mode != off`; if the client lacks DPoP support this
+ * call is a harmless no-op (the seeded nonce is never used).
+ *
+ * SameSite=Strict + non-HttpOnly on the server side — see
+ * `cookie_auth::maybe_append_dpop_nonce_cookie` in the backend.
+ */
+export function seedNonceFromCookie(): void {
+	if (typeof document === 'undefined') return;
+	const match = document.cookie.split('; ').find((row) => row.startsWith('oxicloud_dpop_nonce='));
+	if (!match) return;
+	const value = match.split('=')[1] ?? '';
+	if (value) updateNonceFromHeader(value);
+	// Single-shot: expire the cookie so a stale value can't confuse a
+	// later flow (or, worse, land in the DPoP proof after the nonce has
+	// rotated server-side past its pool TTL). Path + SameSite must match
+	// the set-cookie for the browser to accept the deletion.
+	document.cookie = 'oxicloud_dpop_nonce=; SameSite=Strict; Path=/; Max-Age=0';
+}
+
 /** Wipe the current nonce — called on logout so a new session bootstraps fresh. */
 export function clearNonce(): void {
 	currentNonce = null;

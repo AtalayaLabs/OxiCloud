@@ -9,6 +9,7 @@
 import { bindDpopIfPossible, fetchMe, tryRefresh } from '$lib/api/endpoints/auth';
 import { setLogoutInProgress } from '$lib/api/client';
 import { hasSessionHint } from '$lib/api/csrf';
+import { seedNonceFromCookie } from '$lib/auth/dpop-proof';
 import { drives } from '$lib/stores/drives.svelte';
 import type { User } from '$lib/api/types';
 import { ensureActiveUser } from '$lib/utils/localStoragePrefs';
@@ -95,6 +96,13 @@ class SessionStore {
 		// `AUTH_PRIMITIVES`, but the /me + /drives + … fetches the app
 		// fires post-login would all abort with "Session terminated".
 		setLogoutInProgress(false);
+		// Consume the one-shot `oxicloud_dpop_nonce` cookie the login
+		// response set. For POST logins (OPAQUE, legacy, magic-link
+		// SPA-side, OIDC exchange) this is where the seed lands — the
+		// hooks.client boot pass fires too early (before any login).
+		// Redirect-flow logins are seeded at boot; both paths are safe
+		// to double-run (idempotent, cookie is single-shot).
+		seedNonceFromCookie();
 	}
 
 	/**

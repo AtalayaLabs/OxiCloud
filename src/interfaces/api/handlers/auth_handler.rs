@@ -439,6 +439,14 @@ pub async fn login(
                 state.core.config.auth.refresh_token_expiry_secs,
             );
             cookie_auth::append_csrf_cookie(response.headers_mut(), auth_response.expires_in);
+            // Seed the SPA's DPoP-nonce cache so the first bound request
+            // after login doesn't eat a `use_dpop_nonce` challenge → retry.
+            // No-op when `dpop_mode = off`.
+            cookie_auth::maybe_append_dpop_nonce_cookie(
+                response.headers_mut(),
+                &state.dpop_nonce_service,
+                state.core.config.auth.dpop_mode,
+            );
 
             // Diagnostic: warn when Secure cookies are set but the request
             // arrived over plain HTTP, the browser will reject them (#241).
@@ -604,6 +612,12 @@ pub async fn refresh_token(
         state.core.config.auth.refresh_token_expiry_secs,
     );
     cookie_auth::append_csrf_cookie(response.headers_mut(), auth_response.expires_in);
+    // Seed the SPA's DPoP-nonce cache — see the login handler above.
+    cookie_auth::maybe_append_dpop_nonce_cookie(
+        response.headers_mut(),
+        &state.dpop_nonce_service,
+        state.core.config.auth.dpop_mode,
+    );
     Ok(response)
 }
 
@@ -1797,6 +1811,12 @@ pub async fn oidc_exchange(
         state.core.config.auth.refresh_token_expiry_secs,
     );
     cookie_auth::append_csrf_cookie(response.headers_mut(), auth_response.expires_in);
+    // Seed the SPA's DPoP-nonce cache — see the login handler above.
+    cookie_auth::maybe_append_dpop_nonce_cookie(
+        response.headers_mut(),
+        &state.dpop_nonce_service,
+        state.core.config.auth.dpop_mode,
+    );
     Ok(response)
 }
 

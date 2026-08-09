@@ -582,6 +582,17 @@ fn build_success_response(state: &Arc<AppState>, redemption: MagicLinkRedemption
         state.core.config.auth.refresh_token_expiry_secs,
     );
     cookie_auth::append_csrf_cookie(response.headers_mut(), redemption.auth.expires_in);
+    // Seed the SPA's DPoP-nonce cache so the first bound request after
+    // the redirect (typically the `bindDpopIfPossible` POST or the layout's
+    // `session.load()` probe) has a valid nonce and doesn't eat a
+    // `use_dpop_nonce` challenge → retry cycle. Cookie survives the 302
+    // follow (Set-Cookie is applied by the browser across redirects,
+    // unlike other response headers). No-op when `dpop_mode = off`.
+    cookie_auth::maybe_append_dpop_nonce_cookie(
+        response.headers_mut(),
+        &state.dpop_nonce_service,
+        state.core.config.auth.dpop_mode,
+    );
     // Clear the request-challenge cookie — it's single-use and we don't
     // want a stale value on the browser confusing a later flow.
     cookie_auth::append_clear_magic_request_cookie(response.headers_mut());

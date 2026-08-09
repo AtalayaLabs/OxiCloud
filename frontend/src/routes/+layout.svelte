@@ -8,7 +8,7 @@
 	import AppShell from '$lib/components/AppShell.svelte';
 	import DialogHost from '$lib/components/DialogHost.svelte';
 	import Toaster from '$lib/components/Toaster.svelte';
-	import { setPasswordChangeRequiredHandler } from '$lib/api/client';
+	import { isLogoutInProgress, setPasswordChangeRequiredHandler } from '$lib/api/client';
 	import { onSessionCleared } from '$lib/auth/session-broadcast';
 	import { session } from '$lib/stores/session.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
@@ -74,6 +74,17 @@
 		// there is far cheaper than the risk of missing an
 		// invalidation event during teardown.
 		onSessionCleared(() => {
+			// A BroadcastChannel dispatches to every OTHER instance
+			// on the same channel — including OTHER instances in the
+			// SAME tab (the API only skips the exact sender instance,
+			// not the whole tab). So `broadcastSessionCleared()` fired
+			// from `logout()` on this tab re-enters here. When THIS
+			// tab initiated the logout, `AppShell.onLogout` has already
+			// navigated to `/login?source=logged_out`; running the bare
+			// `/login` goto below would clobber the query string (Ed's
+			// missing "Successfully signed out" banner). Only handle
+			// broadcasts from OTHER tabs.
+			if (isLogoutInProgress()) return;
 			session.reset();
 			// `replaceState: true` so the back button doesn't return
 			// the user to the now-dead protected page they were on.
@@ -163,6 +174,15 @@
 	// protected routes. Runs client-side only (ssr=false).
 	$effect(() => {
 		if (!ready) return;
+		// During an explicit logout `AppShell.onLogout` has already picked
+		// the destination (`/login?source=logged_out`) and issued the
+		// navigation. `session.reset()` inside that flow flips
+		// `session.isAuthenticated` to false, which fires THIS effect
+		// reactively — if we don't bail, we race the pending goto with a
+		// `/login?redirect=<current path>` nav and last-write-wins clobbers
+		// the "signed out" banner (Ed's report: URL landed as
+		// `?redirect=%2Ffiles%2F…` instead of `?source=logged_out`).
+		if (isLogoutInProgress()) return;
 		const path = page.url.pathname;
 		if (session.isAuthenticated || isPublic(path)) return;
 

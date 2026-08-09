@@ -301,6 +301,13 @@ export function setLogoutInProgress(value: boolean): void {
 	logoutInProgress = value;
 }
 
+/** Read-only view of the gate — used by cross-tab handlers to distinguish
+ * OUR logout (already handled by AppShell.onLogout with source=logged_out)
+ * from ANOTHER tab's logout (which needs a bare redirect). */
+export function isLogoutInProgress(): boolean {
+	return logoutInProgress;
+}
+
 // Same shape as `sessionExpiredHandler` — mutable so the app can install
 // the real behaviour post-mount, and a fallback for the (rare) case
 // where no handler is wired yet (bootstrap, tests). The fallback does
