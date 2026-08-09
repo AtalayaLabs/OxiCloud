@@ -21,6 +21,7 @@ vi.mock('$app/navigation', () => ({ goto }));
 vi.mock('$app/state', () => ({ page: pageState }));
 vi.mock('$lib/stores/session.svelte', () => ({ session }));
 vi.mock('$lib/api/endpoints/auth', () => ({
+	bindDpopIfPossible: vi.fn().mockResolvedValue(false),
 	exchangeOidcCode: vi.fn(),
 	fetchMe: vi.fn(),
 	getOidcProviders: vi.fn(),

@@ -424,8 +424,26 @@
 	// avoids stealing focus from something else during the loading
 	// splash; the input-ref guard covers the render-order case where
 	// the effect fires before the DOM has the target.
+	//
+	// `activeElement` guard: if the user (or Playwright's `.fill()`, or
+	// browser autofill) already has focus in a form field, don't yank
+	// it away. Concrete bug this prevents: boot probes are slow → user
+	// types their email into the (initially unfocused) input → probes
+	// finish → `booting` flips false → this effect fires and refocuses
+	// the input, which resets the caret and can concatenate subsequent
+	// keystrokes onto the wrong field if the user was mid-tab. Mode-
+	// swap re-runs still refocus correctly because the old form's
+	// inputs unmount first, resetting `activeElement` to `<body>`.
 	$effect(() => {
 		if (booting) return;
+		const active = document.activeElement;
+		if (
+			active &&
+			active !== document.body &&
+			(active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')
+		) {
+			return;
+		}
 		const target =
 			mode === 'login'
 				? loginIdentifierInput
