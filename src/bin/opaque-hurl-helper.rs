@@ -402,6 +402,8 @@ async fn main() -> ExitCode {
         Err(e) => return fail(format!("/api/admin/sessions network: {e}")),
     }
 
-    eprintln!("opaque-hurl-helper: OK — register + login + /me + admin sessions origin=opaque for '{username}'");
+    eprintln!(
+        "opaque-hurl-helper: OK — register + login + /me + admin sessions origin=opaque for '{username}'"
+    );
     ExitCode::from(EXIT_OK)
 }

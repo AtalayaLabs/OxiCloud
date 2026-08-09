@@ -240,6 +240,23 @@ use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
         handlers::admin_handler::cancel_job,
         handlers::admin_handler::list_job_runs,
         handlers::admin_handler::get_job_run,
+        // Admin sessions panel — list + revoke. Function names lack
+        // the `_admin_` suffix; the `/api/admin/` prefix comes from
+        // the router mount, not the handler name.
+        handlers::admin_handler::list_sessions,
+        handlers::admin_handler::revoke_session,
+        // OPAQUE aPAKE endpoints — full register + login handshake
+        // (`docs/plan/opaque-only.md`). Public routes; the register/*
+        // pair is session-authenticated (the SPA already has a
+        // legacy-login bearer before it enrolls an envelope, per the
+        // Phase 2 silent-migration flow), the login/* triplet is not
+        // (they ARE the login).
+        handlers::opaque_auth_handler::opaque_params,
+        handlers::opaque_auth_handler::register_start,
+        handlers::opaque_auth_handler::register_finish,
+        handlers::opaque_auth_handler::login_lookup,
+        handlers::opaque_auth_handler::login_ke1,
+        handlers::opaque_auth_handler::login_ke3,
         // Grant / ReBAC handlers (free functions)
         handlers::grant_handler::create_grant,
         handlers::grant_handler::revoke_grant,
@@ -306,6 +323,25 @@ use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
             SystemStatus,
             OidcProviderInfoDto,
             OidcExchangeDto,
+            // Admin sessions panel — wire shape for `/api/admin/sessions`.
+            // `SessionOrigin` is the discriminated enum for the `origin`
+            // field, so it must ship separately for consumers to type
+            // the union.
+            crate::application::dtos::session_dto::SessionSummaryDto,
+            crate::domain::entities::session::SessionOrigin,
+            // OPAQUE aPAKE — request/response shapes for every step in
+            // the register + login handshake. Base64url-wrapped OPRF /
+            // AKE payloads; see docs/plan/opaque-only.md for the wire
+            // grammar. `OpaqueParamsResponse` is the /params publish.
+            handlers::opaque_auth_handler::OpaqueRegisterStartDto,
+            handlers::opaque_auth_handler::OpaqueRegisterStartResponse,
+            handlers::opaque_auth_handler::OpaqueRegisterFinishDto,
+            handlers::opaque_auth_handler::OpaqueLookupDto,
+            handlers::opaque_auth_handler::OpaqueLookupResponse,
+            handlers::opaque_auth_handler::OpaqueLoginKe1Dto,
+            handlers::opaque_auth_handler::OpaqueLoginKe1Response,
+            handlers::opaque_auth_handler::OpaqueLoginKe3Dto,
+            handlers::opaque_auth_handler::OpaqueParamsResponse,
             // Share schemas
             ShareDto,
             CreateShareDto,
