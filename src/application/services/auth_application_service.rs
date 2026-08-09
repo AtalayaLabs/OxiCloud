@@ -4495,6 +4495,7 @@ mod phase4_gate_integration_tests {
         svc.login(crate::application::dtos::user_dto::LoginDto {
             username: email.clone(),
             password: "s3cret-passphrase".to_string(),
+            dpop_jkt: None,
         })
         .await
         .expect("baseline legacy login must succeed");
@@ -4512,6 +4513,7 @@ mod phase4_gate_integration_tests {
             .login(crate::application::dtos::user_dto::LoginDto {
                 username: email.clone(),
                 password: "s3cret-passphrase".to_string(),
+                dpop_jkt: None,
             })
             .await
             .expect_err("legacy login must be refused post-migration");
@@ -4535,6 +4537,7 @@ mod phase4_gate_integration_tests {
             .login(crate::application::dtos::user_dto::LoginDto {
                 username: email.clone(),
                 password: "wrong-password".to_string(),
+                dpop_jkt: None,
             })
             .await
             .expect_err("wrong password must still fail");
@@ -4551,6 +4554,7 @@ mod phase4_gate_integration_tests {
         svc.login(crate::application::dtos::user_dto::LoginDto {
             username: email,
             password: "s3cret-passphrase".to_string(),
+            dpop_jkt: None,
         })
         .await
         .expect("legacy login must succeed again after admin clear_registration");

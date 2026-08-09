@@ -500,13 +500,19 @@ mod tests {
 
     #[test]
     fn content_serve_matches_thumbnail() {
-        assert!(get("/files/8f8e4390-1234-4a5b-8c9d-abcdef012345/thumbnail/icon"));
-        assert!(get("/files/8f8e4390-1234-4a5b-8c9d-abcdef012345/thumbnail/large"));
+        assert!(get(
+            "/files/8f8e4390-1234-4a5b-8c9d-abcdef012345/thumbnail/icon"
+        ));
+        assert!(get(
+            "/files/8f8e4390-1234-4a5b-8c9d-abcdef012345/thumbnail/large"
+        ));
     }
 
     #[test]
     fn content_serve_matches_folder_zip() {
-        assert!(get("/folders/8f8e4390-1234-4a5b-8c9d-abcdef012345/download"));
+        assert!(get(
+            "/folders/8f8e4390-1234-4a5b-8c9d-abcdef012345/download"
+        ));
     }
 
     #[test]
@@ -530,7 +536,9 @@ mod tests {
         // Discovery endpoints (children, by-hash, search) MUST NOT be
         // allowlisted — that's the whole security argument. Attacker
         // needs to already know the UUID; can't enumerate.
-        assert!(!get("/folders/8f8e4390-1234-4a5b-8c9d-abcdef012345/children"));
+        assert!(!get(
+            "/folders/8f8e4390-1234-4a5b-8c9d-abcdef012345/children"
+        ));
         assert!(!get("/files/by-hash"));
         assert!(!get("/search"));
         assert!(!get("/auth/me"));
