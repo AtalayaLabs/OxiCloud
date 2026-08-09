@@ -1113,6 +1113,21 @@ impl AuthApplicationService {
             origin,
         );
         if let Some(jkt) = validated_jkt {
+            // Success-path audit — records the bind so operators can
+            // correlate a session_id in the panel with the exact moment
+            // it acquired its DPoP thumbprint. Emitted BEFORE the move
+            // (`with_dpop_jkt` consumes `jkt`) so the prefix is safe.
+            // See `docs/plan/dpop.md` §Gate 10.
+            let jkt_prefix: String = jkt.chars().take(8).collect();
+            tracing::info!(
+                target: "audit",
+                event = "dpop.bound_at_login",
+                session_id = %session.id(),
+                user_id = %session.user_id(),
+                origin = origin.as_str(),
+                jkt_prefix = %jkt_prefix,
+                "🔒 DPoP session bound at login"
+            );
             session = session.with_dpop_jkt(jkt);
         }
 
@@ -2324,8 +2339,11 @@ impl AuthApplicationService {
     ///
     /// Emits `auth.dpop_bind_rejected` on validation failure or when
     /// the caller tries to re-bind an already-bound session (anti-
-    /// downgrade guard). Emits `auth.dpop_bound` on the accept path
-    /// so operators can correlate binding events with sessions.
+    /// downgrade guard). Emits `dpop.bound_at_login` (with
+    /// `method = "post_redirect_bind"`) on the accept path so operators
+    /// can correlate binding events with sessions — same event name as
+    /// the POST-flow bind at `mint_session_for_authenticated_user`, per
+    /// `docs/plan/dpop.md` §Gate 10.
     pub async fn bind_dpop_jkt_to_session(
         &self,
         session_id: Uuid,
@@ -2351,11 +2369,22 @@ impl AuthApplicationService {
             .await
         {
             Ok(()) => {
+                // Same event as the POST-flow bind at
+                // `mint_session_for_authenticated_user`; `method` is the
+                // constant `"post_redirect_bind"` because this path is
+                // exclusively OIDC-callback + magic-link redemption (both
+                // create the session unbound and hand off to this
+                // endpoint post-redirect — see `docs/plan/dpop.md`
+                // Gate 3). Consumers can `origin`-join with the session
+                // row to disambiguate if they need finer granularity.
+                let jkt_prefix: String = validated.chars().take(8).collect();
                 tracing::info!(
                     target: "audit",
-                    event = "auth.dpop_bound",
+                    event = "dpop.bound_at_login",
                     session_id = %session_id,
-                    "🔐 DPoP thumbprint bound to session",
+                    method = "post_redirect_bind",
+                    jkt_prefix = %jkt_prefix,
+                    "🔒 DPoP session bound at login (post-redirect)"
                 );
                 Ok(())
             }
