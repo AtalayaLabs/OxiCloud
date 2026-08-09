@@ -22,6 +22,7 @@
 	} from '$lib/api/endpoints/auth';
 	import { i18n, SUPPORTED_LOCALES, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
 	import { session } from '$lib/stores/session.svelte';
+	import { hasSessionHint } from '$lib/api/csrf';
 
 	type Mode = 'login' | 'register' | 'setup';
 	let mode = $state<Mode>('login');
@@ -409,11 +410,13 @@
 		}
 
 		// 2) Existing-session probe: if already authenticated, skip the form.
-		//    Skipped when we KNOW the session is gone (explicit logout or
-		//    interceptor-detected expiry) — probing would 401, the
-		//    interceptor would retry via /refresh (also 401), and the
-		//    sessionExpiredHandler would clobber this landing.
-		if (!skipExistingSessionProbe) {
+		//    Skipped when we KNOW the session is gone: explicit logout /
+		//    interceptor-detected expiry (both set `skipExistingSessionProbe`),
+		//    OR the CSRF hint cookie is absent (fresh browser, no cookies at
+		//    all — a probe would just 401). Probing anyway would trip the
+		//    apiFetch → 401 → refresh → 401 → sessionExpiredHandler chain
+		//    that clobbers whatever notice we're about to paint.
+		if (!skipExistingSessionProbe && hasSessionHint()) {
 			try {
 				const me = await fetchMe();
 				if (me) {

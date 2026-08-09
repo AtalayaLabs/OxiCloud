@@ -8,6 +8,7 @@
  */
 import { bindDpopIfPossible, fetchMe, tryRefresh } from '$lib/api/endpoints/auth';
 import { setLogoutInProgress } from '$lib/api/client';
+import { hasSessionHint } from '$lib/api/csrf';
 import { drives } from '$lib/stores/drives.svelte';
 import type { User } from '$lib/api/types';
 import { ensureActiveUser } from '$lib/utils/localStoragePrefs';
@@ -41,6 +42,16 @@ class SessionStore {
 	 */
 	async load(): Promise<User | null> {
 		if (this.loaded) return this.user;
+		// No JS-visible session hint ⇒ nothing to probe. The server sets
+		// `oxicloud_csrf` alongside the HttpOnly session cookies and clears
+		// it on logout, so a missing hint means no session. Skips the
+		// doomed 2× /me + /refresh burst that would otherwise fire on
+		// every first landing / post-logout re-mount with no cookies.
+		if (!hasSessionHint()) {
+			this.user = null;
+			this.loaded = true;
+			return null;
+		}
 		try {
 			let me = await fetchMe();
 			if (!me && (await tryRefresh())) {
