@@ -94,6 +94,13 @@ export default defineConfig({
       // so they can sign proofs in-browser. Once landed, this
       // override goes and Playwright runs production-shape.
       OXICLOUD_DPOP_MODE: 'opportunistic',
+      // Explicitly clear OXICLOUD_METRICS_LISTEN so a developer's
+      // `.env` value (typical: `127.0.0.1:9090`) doesn't leak in via
+      // the parent-process env Playwright merges here — the test
+      // server would collide with the developer's own running
+      // instance on that port and main.rs would hard-fail. Empty
+      // string is the config-parser's "disabled" sentinel.
+      OXICLOUD_METRICS_LISTEN: '',
     },
   },
 });

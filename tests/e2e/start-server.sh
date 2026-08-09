@@ -36,5 +36,30 @@ mark "spawning test database…"
 bash "$REPO_ROOT/tests/common/spawn-db.sh"
 mark "database ready; starting server…"
 
-# Replace the shell with the server process so Playwright's PID tracking works.
-exec "$@"
+# Point `--config` at an INTENTIONALLY EMPTY file. Two reasons:
+#
+#   1. Blocks the fallback `dotenvy::dotenv()` probe of `$CWD/.env`
+#      in main.rs — otherwise a developer's local `.env`
+#      (typical: `OXICLOUD_METRICS_LISTEN=127.0.0.1:9090`) leaks
+#      into the test server via CWD auto-load and clashes with
+#      anything the dev is already running.
+#
+#   2. An empty file has nothing to override — so every var
+#      Playwright loaded into `webServer.env` from server.env AND
+#      every per-suite override on top (SERVER_PORT, STORAGE_PATH,
+#      RUST_LOG, OPAQUE_MODE, DPOP_MODE, …) reaches the server
+#      intact. We can't use `--config server.env` here because
+#      `dotenvy::from_filename_override` would clobber Playwright's
+#      per-suite overrides for the keys it shares with the file.
+#
+# See tests/common/empty.env for the header explaining this.
+CONFIG_PATH="$REPO_ROOT/tests/common/empty.env"
+
+# `cargo run` needs `--` to separate cargo's own flags from the
+# binary's — a direct-binary invocation takes them raw. First arg
+# tells us which we're in.
+if [[ "${1:-}" == "cargo" ]]; then
+  exec "$@" -- --config "$CONFIG_PATH"
+else
+  exec "$@" --config "$CONFIG_PATH"
+fi
