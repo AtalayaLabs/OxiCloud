@@ -34,7 +34,7 @@ features:
     details: Edit documents in Collabora Online or OnlyOffice directly in the browser.
   - icon: 🔐
     title: Security First
-    details: JWT + Argon2id, OIDC/SSO (Keycloak, Authentik, Azure AD), role-based access, shared links.
+    details: JWT + DPoP + Opaque (Argon2id), OIDC/SSO (Keycloak, Authentik, Azure AD), role-based access, shared links.
   - icon: 🌍
     title: 14 Languages
     details: EN, ES, DE, FR, IT, PT, NL, ZH, JA, KO, AR, HI, FA, RU — and growing.
