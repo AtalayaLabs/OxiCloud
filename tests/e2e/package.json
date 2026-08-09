@@ -4,10 +4,6 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "pretest": "bash ../common/spawn-db.sh",
-    "test": "FORCE_COLOR=true npx playwright test scenarios/01-home-and-login.spec.ts scenarios/02-folder-management.spec.ts",
-    "posttest": "bash ../common/stop-db.sh",
-    "test:containers": "OXICLOUD_E2E_CONTAINERS=1 FORCE_COLOR=true npx playwright test -c playwright.containers.config.ts",
     "build:spa": "cd ../../frontend && COVERAGE=1 VITE_E2E=1 npm run build",
     "test:coverage": "FORCE_COLOR=true npx playwright test -c playwright.coverage.config.ts",
     "coverage:report": "node coverage-report.cjs e2e",
