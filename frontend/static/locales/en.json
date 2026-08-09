@@ -734,6 +734,7 @@
     "login_error_auto_link_disabled": "This server does not auto-link SSO accounts. Sign in with your existing credentials, then connect SSO from your profile.",
     "login_error_auto_link_email_not_verified": "Your SSO provider did not confirm your email address. Verify your email at your identity provider, then try again.",
     "login_error_already_linked_elsewhere": "A local account with this email already exists and is linked to a different SSO identity. Contact your administrator.",
+    "login_error_email_ambiguous": "Multiple local accounts match this email address. Contact your administrator to resolve.",
     "login_error_callback_denied": "Your sign-in link expired or was already used. Please try signing in again.",
     "login_error_callback_failed": "SSO sign-in couldn't complete. Please try again.",
     "login_error_generic": "SSO sign-in was refused. Please try again."
