@@ -221,6 +221,31 @@ DPoP (RFC 9449) closes this gap by binding the session to a browser-held private
 - After 2-4 weeks of clean opportunistic-mode telemetry, flip default to `required` in a later release. Pre-existing app-password / legacy sessions with `dpop_jkt IS NULL` still work; they're exempt at the middleware.
 - **Documentation deliverable**: operator guide entry explaining the flag, the modes, the observability signals, the upgrade path.
 
+## Gate C — Content-serve + streaming allowlist (browser-direct GETs)
+
+Discovered during the `required`-mode rollout: some SPA endpoints are fetched by the **browser itself**, not by JS via `fetch()`. These paths have no JS in the loop to sign a DPoP proof:
+
+- `<img src>` — thumbnails, photo previews.
+- `<a href download>` — file downloads, folder ZIP downloads.
+- `<a href>` — file inline previews.
+- `EventSource` — streaming endpoints (RFC 9449 known gap: `EventSource` cannot set custom request headers, only cookies).
+
+Without a carve-out, flipping to `DPOP=required` breaks all of these on bound sessions. Ships a middleware allowlist keyed on `(method, path)` that exempts these specific shapes from the missing-proof reject:
+
+- `GET /api/files/{uuid}` — download / inline
+- `GET /api/files/{uuid}/thumbnail/{size}` — thumbnails
+- `GET /api/folders/{uuid}/download` — zip
+- `GET /api/photos/{uuid}/preview` — preview (best-effort; adds no risk if the endpoint doesn't exist)
+- `GET /api/admin/plugins/{id}/logs/stream` — plugin log tail SSE
+
+The allowlist exempts ONLY the missing-proof reject. Proofs that ARE sent on these paths (e.g. an SPA image preloader that went through `apiFetch` and blob'd) still get fully verified.
+
+**Security posture (accepted trade-off).** An attacker with a stolen cookie can GET one of these URLs *if and only if* they already know a specific 128-bit UUID. Every listing / discovery endpoint (`/api/folders/{id}/children`, `/api/photos`, `/api/files/by-hash`, `/search`, …) still requires a DPoP proof — those go through `apiFetch`. So a bare stolen cookie gives the attacker "download the exact IDs you already know" — effectively nothing without prior knowledge. Plugin log SSE additionally has admin-only AuthZ at the handler.
+
+**Refactor pending (near-term).** The allowlist currently lives in the DPoP middleware as a slice-pattern matcher over path segments (`matches_content_path` in `src/interfaces/middleware/dpop.rs`). Cleaner: split the router — exempt routes on one sub-router without the `require_dpop_layer`, protected routes with it, merge. Declares exemption next to the route registration rather than centrally in the matcher; deletes the matcher and its 9 tests. Effort: 0.5 day. Behaviour-preserving.
+
+**Long-term evolution (Option B).** See Deferred to Phase 2 — signed short-lived URL tokens replace the allowlist entirely.
+
 ## Gate 10 — Observability + admin UX
 
 - **Audit events** (all with `target: "audit"`):
@@ -240,6 +265,7 @@ DPoP (RFC 9449) closes this gap by binding the session to a browser-held private
 - **Native Nextcloud client support** — no `SubtleCrypto`; would need embedded ECDSA + secure keystore (Android Keystore / iOS Keychain / OS keyring). Substantially larger project; the current Basic-Auth-over-app-password path stays unchanged.
 - **Attested keys via WebAuthn** — bind to TPM / Secure Enclave. Blocks the login-time-compromised-browser attack. Major UX shift (per-request user gesture unless resident-key + silent-assertion flows mature).
 - **Detect DPoP capability on upstream IdP** — parse `.well-known/openid-configuration`, warn at boot when `dpop_signing_alg_values_supported` is absent. Half-day of work, orthogonal to this plan, worth its own tiny PR.
+- **Signed short-lived URL tokens for content-serve paths (Option B, replaces Gate C)**. The SPA (through `apiFetch`, so DPoP-verified) mints a per-user, per-URL token like `?dl_token=<sig>` for each browser-direct URL; the server accepts EITHER a valid DPoP proof OR a valid short-lived token (~5 min TTL, HMAC over `(user_id, path, expiry)`). Attacker with a stolen cookie loses the ability to GET any content path because tokens are user-scoped and expire fast — removes the "known UUID = downloadable" trade-off Gate C accepts today. Retires the Gate C allowlist entirely (plus its router-split follow-up). Effort: ~2-3 person-days (token mint endpoint + verifier middleware + SPA URL rewriter for `<img src>`/`<a href>`/EventSource URLs).
 
 ---
 
@@ -259,8 +285,9 @@ DPoP (RFC 9449) closes this gap by binding the session to a browser-held private
 | 7 — Refresh + logout | 1 day |
 | 8 — Multi-tab | 0.5 day |
 | 9 — Rollout | 0 (calendar time, no engineering work) |
+| C — Content-serve + streaming allowlist | 0.5 day (shipped alongside Gate 9) |
 | 10 — Observability + admin UX | 1 day |
-| **Total (Phase 1)** | **~11.5 person-days** |
+| **Total (Phase 1)** | **~12 person-days** |
 
 ## Risks worth naming
 
