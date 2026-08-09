@@ -785,7 +785,13 @@ pub async fn login_ke3(
     // we don't want to have flipped the migration flag for a user
     // whose login didn't actually complete.
     let session = auth
-        .mint_session_for_authenticated_user(user, dto.dpop_jkt, Some(client_ip), user_agent)
+        .mint_session_for_authenticated_user(
+            user,
+            dto.dpop_jkt,
+            Some(client_ip),
+            user_agent,
+            crate::domain::entities::session::SessionOrigin::Opaque,
+        )
         .await
         .map_err(AppError::from)?;
 

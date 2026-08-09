@@ -19,7 +19,7 @@ use serde::Serialize;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use crate::domain::entities::session::Session;
+use crate::domain::entities::session::{Session, SessionOrigin};
 
 /// Authenticated-caller context — the caller's identity + session-
 /// bound signals a service method might key off. Constructed at the
@@ -69,10 +69,17 @@ pub struct SessionSummaryDto {
     /// Whether this row is currently usable — `!revoked && expires_at > now()`.
     /// Kept server-side so the SPA doesn't drift if the browser clock is off.
     pub is_active: bool,
-    /// OIDC session identifier when the login came through OIDC and the
-    /// IdP emitted `sid` — otherwise `None`. Useful when an operator is
-    /// correlating with the upstream IdP's session log.
-    pub oidc_sid: Option<String>,
+    // NOTE: no `oidc_sid` / `oidc_sid_prefix` field. The IdP-emitted
+    // sid identifies the row's upstream session and stays server-side
+    // (used by Back-Channel Logout matching). Exposing even a prefix
+    // earns no operator utility over what `id` / `created_at` /
+    // `ip_address` / `user_agent` already give. `origin` below answers
+    // "how did this session start?" cleanly.
+    /// How the session was minted — see [`SessionOrigin`]. Set at
+    /// INSERT time by the login handler and carried over on refresh
+    /// (rotation doesn't change how the user first authenticated).
+    /// Drives the admin panel's origin column + filter.
+    pub origin: SessionOrigin,
     /// `true` when this row IS the caller's currently-active session —
     /// set by the service layer by comparing the row's `dpop_jkt` with
     /// the caller's own bound thumbprint. Lets the admin panel flag
@@ -114,7 +121,7 @@ impl SessionSummaryDto {
             dpop_jkt_prefix,
             is_revoked,
             is_active: !is_revoked && !is_expired,
-            oidc_sid: s.oidc_sid().map(str::to_owned),
+            origin: s.origin(),
             is_current,
         }
     }
@@ -133,6 +140,7 @@ mod tests {
             Some("Mozilla/5.0".to_string()),
             30,
             Uuid::new_v4(),
+            crate::domain::entities::session::SessionOrigin::Password,
         );
         if revoked {
             s.revoke();
@@ -141,6 +149,55 @@ mod tests {
             s = s.with_dpop_jkt(k.to_string());
         }
         s
+    }
+
+    fn oidc_session(sid: &str) -> Session {
+        Session::from_raw(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "rt".to_string(),
+            Utc::now() + Duration::days(30),
+            None,
+            None,
+            Utc::now(),
+            false,
+            Uuid::new_v4(),
+            Some("dummy.id.token".to_string()),
+            Some(sid.to_string()),
+            None,
+            crate::domain::entities::session::SessionOrigin::Oidc,
+        )
+    }
+
+    #[test]
+    fn dto_never_leaks_oidc_sid() {
+        // The IdP-emitted `sid` uniquely correlates the row to a real
+        // user's live IdP session and MUST stay server-side (used by
+        // Back-Channel Logout matching, never useful to an admin
+        // viewing sessions). Not even a prefix — see the DTO comment.
+        let full_sid = "8aa711b3-7438-cb35-4089-71a202e12285";
+        let dto = SessionSummaryDto::from(oidc_session(full_sid));
+        let json = serde_json::to_string(&dto).unwrap();
+        assert!(
+            !json.contains(full_sid),
+            "oidc_sid must never appear in the wire shape (not even a prefix): {json}"
+        );
+        assert!(
+            !json.contains("oidc_sid"),
+            "the `oidc_sid` key MUST NOT appear in the DTO shape: {json}"
+        );
+    }
+
+    #[test]
+    fn dto_never_leaks_oidc_id_token() {
+        // The id_token itself must NEVER surface — it's a JWT carrying
+        // user claims + a valid `id_token_hint` for RP-initiated logout.
+        let dto = SessionSummaryDto::from(oidc_session("sid-1"));
+        let json = serde_json::to_string(&dto).unwrap();
+        assert!(
+            !json.contains("dummy.id.token"),
+            "oidc_id_token must never appear in the wire shape: {json}"
+        );
     }
 
     #[test]
@@ -200,6 +257,7 @@ mod tests {
             None,
             None,
             None,
+            crate::domain::entities::session::SessionOrigin::Unknown,
         );
         let dto = SessionSummaryDto::from(s);
         assert!(!dto.is_active);

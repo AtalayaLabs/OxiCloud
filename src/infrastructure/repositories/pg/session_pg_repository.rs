@@ -53,9 +53,9 @@ impl SessionRepository for SessionPgRepository {
                         INSERT INTO auth.sessions (
                             id, user_id, refresh_token, expires_at,
                             ip_address, user_agent, created_at, revoked, family_id,
-                            oidc_id_token, oidc_sid, dpop_jkt
+                            oidc_id_token, oidc_sid, dpop_jkt, origin
                         ) VALUES (
-                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
                         )
                         "#,
                 )
@@ -71,6 +71,7 @@ impl SessionRepository for SessionPgRepository {
                 .bind(session_clone.oidc_id_token())
                 .bind(session_clone.oidc_sid())
                 .bind(session_clone.dpop_jkt())
+                .bind(session_clone.origin().as_str())
                 .execute(&mut **tx)
                 .await
                 .map_err(Self::map_sqlx_error)?;
@@ -116,7 +117,7 @@ impl SessionRepository for SessionPgRepository {
             SELECT
                 id, user_id, refresh_token, expires_at,
                 ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token, oidc_sid, dpop_jkt
+                oidc_id_token, oidc_sid, dpop_jkt, origin
             FROM auth.sessions
             WHERE id = $1
             "#,
@@ -139,6 +140,7 @@ impl SessionRepository for SessionPgRepository {
             row.get("oidc_id_token"),
             row.get("oidc_sid"),
             row.get("dpop_jkt"),
+            crate::domain::entities::session::SessionOrigin::from_str(row.get("origin")),
         ))
     }
 
@@ -153,7 +155,7 @@ impl SessionRepository for SessionPgRepository {
             SELECT
                 id, user_id, refresh_token, expires_at,
                 ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token, oidc_sid, dpop_jkt
+                oidc_id_token, oidc_sid, dpop_jkt, origin
             FROM auth.sessions
             WHERE refresh_token = $1
             "#,
@@ -176,6 +178,7 @@ impl SessionRepository for SessionPgRepository {
             row.get("oidc_id_token"),
             row.get("oidc_sid"),
             row.get("dpop_jkt"),
+            crate::domain::entities::session::SessionOrigin::from_str(row.get("origin")),
         ))
     }
 
@@ -189,7 +192,7 @@ impl SessionRepository for SessionPgRepository {
             SELECT
                 id, user_id, refresh_token, expires_at,
                 ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token, oidc_sid, dpop_jkt
+                oidc_id_token, oidc_sid, dpop_jkt, origin
             FROM auth.sessions
             WHERE user_id = $1
             ORDER BY created_at DESC
@@ -216,6 +219,7 @@ impl SessionRepository for SessionPgRepository {
                     row.get("oidc_id_token"),
                     row.get("oidc_sid"),
                     row.get("dpop_jkt"),
+                    crate::domain::entities::session::SessionOrigin::from_str(row.get("origin")),
                 )
             })
             .collect();
@@ -244,7 +248,7 @@ impl SessionRepository for SessionPgRepository {
             SELECT
                 id, user_id, refresh_token, expires_at,
                 ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token, oidc_sid, dpop_jkt
+                oidc_id_token, oidc_sid, dpop_jkt, origin
             FROM auth.sessions
             WHERE ($1::uuid IS NULL OR user_id = $1)
               AND ($2 OR (revoked = false AND expires_at > NOW()))
@@ -276,6 +280,7 @@ impl SessionRepository for SessionPgRepository {
                     row.get("oidc_id_token"),
                     row.get("oidc_sid"),
                     row.get("dpop_jkt"),
+                    crate::domain::entities::session::SessionOrigin::from_str(row.get("origin")),
                 )
             })
             .collect();
@@ -598,9 +603,9 @@ impl SessionStoragePort for SessionPgRepository {
                         INSERT INTO auth.sessions (
                             id, user_id, refresh_token, expires_at,
                             ip_address, user_agent, created_at, revoked, family_id,
-                            oidc_id_token, oidc_sid, dpop_jkt
+                            oidc_id_token, oidc_sid, dpop_jkt, origin
                         ) VALUES (
-                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
                         )
                         "#,
                 )
@@ -616,6 +621,7 @@ impl SessionStoragePort for SessionPgRepository {
                 .bind(session_clone.oidc_id_token())
                 .bind(session_clone.oidc_sid())
                 .bind(session_clone.dpop_jkt())
+                .bind(session_clone.origin().as_str())
                 .execute(&mut **tx)
                 .await
                 .map_err(Self::map_sqlx_error)?;

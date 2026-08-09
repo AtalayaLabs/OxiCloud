@@ -1,6 +1,62 @@
 use chrono::{DateTime, Duration, Utc};
 use uuid::Uuid;
 
+/// How a session was originally minted. Set at INSERT by the login
+/// handler; carried over on refresh (a rotation doesn't change how the
+/// user first authenticated). Stored as `text` server-side with a CHECK
+/// constraint — see `migrations/20261013000000_sessions_origin.sql`.
+///
+/// `serde(rename_all = "snake_case")` so the wire values match the
+/// column values one-to-one: `password | opaque | magic_link | oidc |
+/// unknown`. `Unknown` is the fallback for pre-migration rows and any
+/// future login path that hasn't been taught to stamp an origin yet.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionOrigin {
+    Password,
+    Opaque,
+    MagicLink,
+    Oidc,
+    /// RFC 8628 device authorization grant — CLI, TV apps, headless
+    /// clients that can't run a WebCrypto keypair. Always unbound at
+    /// the DPoP middleware. Distinct origin because admin operators
+    /// want to know "this login came from a headless device flow", not
+    /// conflate it with browser password entry.
+    Device,
+    Unknown,
+}
+
+impl SessionOrigin {
+    /// Wire / column string form. Kept out of `Display` to avoid
+    /// accidental use in log lines where the Debug form is fine.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Password => "password",
+            Self::Opaque => "opaque",
+            Self::MagicLink => "magic_link",
+            Self::Oidc => "oidc",
+            Self::Device => "device",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// Parse from the column string. Any unrecognised value maps to
+    /// `Unknown` — matches the CHECK constraint's failure mode
+    /// (impossible on well-behaved writes, defensive on load).
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "password" => Self::Password,
+            "opaque" => Self::Opaque,
+            "magic_link" => Self::MagicLink,
+            "oidc" => Self::Oidc,
+            "device" => Self::Device,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Session {
     id: Uuid,
@@ -33,9 +89,14 @@ pub struct Session {
     /// a stolen cookie replay without the private key — the whole point
     /// of the binding is to prevent that.
     dpop_jkt: Option<String>,
+    /// How this row was minted — see [`SessionOrigin`]. Required at
+    /// construction so a callsite can't forget to record it (the
+    /// admin sessions panel filters on this).
+    origin: SessionOrigin,
 }
 
 impl Session {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         user_id: Uuid,
         refresh_token: String,
@@ -43,6 +104,7 @@ impl Session {
         user_agent: Option<String>,
         expires_in_days: i64,
         family_id: Uuid,
+        origin: SessionOrigin,
     ) -> Self {
         if refresh_token.is_empty() {
             panic!("Session refresh_token cannot be empty");
@@ -62,6 +124,7 @@ impl Session {
             oidc_id_token: None,
             oidc_sid: None,
             dpop_jkt: None,
+            origin,
         }
     }
 
@@ -112,6 +175,7 @@ impl Session {
         oidc_id_token: Option<String>,
         oidc_sid: Option<String>,
         dpop_jkt: Option<String>,
+        origin: SessionOrigin,
     ) -> Self {
         Self {
             id,
@@ -126,6 +190,7 @@ impl Session {
             oidc_id_token,
             oidc_sid,
             dpop_jkt,
+            origin,
         }
     }
 
@@ -185,6 +250,10 @@ impl Session {
     pub fn dpop_jkt(&self) -> Option<&str> {
         self.dpop_jkt.as_deref()
     }
+
+    pub fn origin(&self) -> SessionOrigin {
+        self.origin
+    }
 }
 
 #[cfg(test)]
@@ -199,6 +268,7 @@ mod tests {
             None,
             30,
             Uuid::new_v4(),
+            SessionOrigin::Unknown,
         )
     }
 
@@ -236,7 +306,24 @@ mod tests {
             None,
             None,
             Some("thumbprint-xyz".to_string()),
+            SessionOrigin::Unknown,
         );
         assert_eq!(s.dpop_jkt(), Some("thumbprint-xyz"));
+    }
+
+    #[test]
+    fn session_origin_round_trip_snake_case_strings() {
+        for o in [
+            SessionOrigin::Password,
+            SessionOrigin::Opaque,
+            SessionOrigin::MagicLink,
+            SessionOrigin::Oidc,
+            SessionOrigin::Device,
+            SessionOrigin::Unknown,
+        ] {
+            assert_eq!(SessionOrigin::from_str(o.as_str()), o);
+        }
+        // Unknown catches typos / drift-off-column-values.
+        assert_eq!(SessionOrigin::from_str("bogus"), SessionOrigin::Unknown);
     }
 }

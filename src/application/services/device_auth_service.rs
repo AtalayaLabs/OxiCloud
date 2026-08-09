@@ -191,6 +191,7 @@ impl DeviceAuthService {
             Some(format!("device:{}", dc.client_name())), // user_agent
             self.token_service.refresh_token_expiry_days(),
             Uuid::new_v4(),
+            crate::domain::entities::session::SessionOrigin::Device,
         );
         self.session_storage.create_session(session).await?;
 

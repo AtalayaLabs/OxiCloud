@@ -1011,7 +1011,13 @@ impl AuthApplicationService {
         // handshake (Phase 1, `login/ke3`). Both paths converge here
         // so lifecycle + token + session-family semantics stay in
         // one place.
-        self.mint_session_for_authenticated_user(user, dto.dpop_jkt, client_ip, user_agent)
+        self.mint_session_for_authenticated_user(
+            user,
+            dto.dpop_jkt,
+            client_ip,
+            user_agent,
+            crate::domain::entities::session::SessionOrigin::Password,
+        )
             .await
     }
 
@@ -1041,6 +1047,7 @@ impl AuthApplicationService {
         dpop_jkt: Option<String>,
         client_ip: Option<String>,
         user_agent: Option<String>,
+        origin: crate::domain::entities::session::SessionOrigin,
     ) -> Result<AuthResponseDto, DomainError> {
         // Lifecycle: dispatch login BEFORE register_login() so hooks
         // observing `last_login_at().is_none()` see "first ever login"
@@ -1103,6 +1110,7 @@ impl AuthApplicationService {
             user_agent,
             self.token_service.refresh_token_expiry_days(),
             Uuid::new_v4(),
+            origin,
         );
         if let Some(jkt) = validated_jkt {
             session = session.with_dpop_jkt(jkt);
@@ -1368,6 +1376,7 @@ impl AuthApplicationService {
             user_agent,
             self.token_service.refresh_token_expiry_days(),
             Uuid::new_v4(),
+            crate::domain::entities::session::SessionOrigin::MagicLink,
         );
         self.session_storage.create_session(session).await?;
 
@@ -1540,6 +1549,11 @@ impl AuthApplicationService {
             user_agent,
             self.token_service.refresh_token_expiry_days(),
             session.family_id(),
+            // A rotation doesn't change how the user first authenticated,
+            // so origin is inherited from the parent row. Also keeps the
+            // admin panel's origin column stable across the natural
+            // refresh cycle apiFetch triggers on every 401.
+            session.origin(),
         );
         if let Some(jkt) = session.dpop_jkt() {
             new_session = new_session.with_dpop_jkt(jkt.to_string());
@@ -4385,6 +4399,7 @@ impl AuthApplicationService {
             user_agent,
             self.token_service.refresh_token_expiry_days(),
             Uuid::new_v4(),
+            crate::domain::entities::session::SessionOrigin::Oidc,
         )
         .with_oidc_id_token(token_set.id_token.clone());
         // Bind the IdP's session identifier so Back-Channel Logout can

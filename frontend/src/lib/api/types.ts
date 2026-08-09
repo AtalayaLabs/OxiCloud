@@ -767,7 +767,6 @@ export interface SessionSummary {
 	dpop_jkt_prefix: string | null;
 	is_revoked: boolean;
 	is_active: boolean;
-	oidc_sid: string | null;
 	/** `true` when this row IS the admin's currently-active session —
 	 *  compared server-side by `dpop_jkt`. Panel uses this to warn
 	 *  before revoking ("this will log you out"). Always `false` when
