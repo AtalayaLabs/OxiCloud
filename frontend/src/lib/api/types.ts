@@ -256,6 +256,20 @@ export interface User {
 	 * card).
 	 */
 	has_password?: boolean;
+	/**
+	 * TRUE when the caller's current session is DPoP-bound (row's
+	 * `dpop_jkt IS NOT NULL`). Populated only by `/api/auth/me`; other
+	 * User-emitting endpoints leave it unset.
+	 *
+	 * The session store reads this to skip a redundant
+	 * `POST /api/auth/dpop/bind` call — the endpoint returns 409
+	 * `already_bound` on repeated attempts (anti-downgrade invariant)
+	 * and each rejection logs at audit INFO, so a naive "bind on
+	 * every load" pattern was cluttering the audit stream. We only
+	 * fire bind now when there's actual work to do (fresh OIDC /
+	 * magic-link session that landed unbound).
+	 */
+	is_dpop_bound?: boolean;
 }
 
 /** Fields rendered by the paginated admin table. Full account details remain

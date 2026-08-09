@@ -19,7 +19,7 @@ use crate::application::services::auth_application_service::{OidcCallbackResult,
 use crate::common::di::AppState;
 use crate::interfaces::api::cookie_auth;
 use crate::interfaces::errors::AppError;
-use crate::interfaces::middleware::auth::CurrentUserId;
+use crate::interfaces::middleware::auth::{AuthUser, CurrentUserId};
 use crate::interfaces::middleware::trusted_proxy::client_ip_from_parts;
 use serde::Deserialize;
 
@@ -620,8 +620,9 @@ pub async fn refresh_token(
 )]
 pub async fn get_current_user(
     State(state): State<Arc<AppState>>,
-    CurrentUserId(user_id): CurrentUserId,
+    auth_user: AuthUser,
 ) -> Result<impl IntoResponse, AppError> {
+    let user_id = auth_user.id;
     let auth_service = state
         .auth_service
         .as_ref()
@@ -656,6 +657,16 @@ pub async fn get_current_user(
     {
         user.force_password_change = flags.force_password_change;
     }
+
+    // Session-binding state — read from the JWT `cnf.jkt` claim
+    // (surfaced by the auth middleware into `CurrentUser.dpop_jkt`).
+    // Present ⇒ the session that minted this JWT was bound; absent ⇒
+    // the session is unbound and the SPA should call `/dpop/bind`
+    // to attach the browser's keypair (OIDC / magic-link redirect
+    // flow). Skips an otherwise-redundant `POST /dpop/bind` on every
+    // page load which would return 409 `already_bound` and litter
+    // the audit stream.
+    user.is_dpop_bound = auth_user.dpop_jkt.is_some();
 
     Ok((StatusCode::OK, Json(user)))
 }

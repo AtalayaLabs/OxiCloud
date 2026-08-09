@@ -50,12 +50,14 @@ class SessionStore {
 				// Post-redirect DPoP bind — catches OIDC / magic-link
 				// flows whose server-side callback creates the session
 				// UNBOUND (no way for the redirect to carry the JKT in
-				// the callback body). One-shot per SPA lifetime because
-				// `this.loaded` guard makes `load()` a singleton;
-				// server returns 409 if the session is already bound
-				// (harmless — result is swallowed). Fire-and-forget so
-				// a slow IndexedDB open doesn't stall the app boot.
-				void bindDpopIfPossible();
+				// the callback body). Gate on `is_dpop_bound` so we
+				// don't call the endpoint on every SPA load: password
+				// login already binds at session-mint time, so `/me`
+				// reports `true` on the very first request and skip
+				// avoids the 409 `already_bound` reject that would
+				// otherwise clutter the audit stream. Fire-and-forget
+				// so a slow IndexedDB open doesn't stall app boot.
+				if (me.is_dpop_bound === false) void bindDpopIfPossible();
 			} else this.user = null;
 		} catch {
 			this.user = null;

@@ -137,6 +137,21 @@ pub struct UserDto {
     /// need to surface per-user credential state.
     #[serde(default)]
     pub has_password: bool,
+    /// TRUE when the caller's current session carries a DPoP JWK
+    /// thumbprint (`session.dpop_jkt IS NOT NULL`). Sourced from the
+    /// caller's JWT `cnf.jkt` claim — `is_some()` means the session
+    /// was bound at token-mint time.
+    ///
+    /// Populated only by the `/api/auth/me` handler; other UserDto
+    /// emitters leave it `false`. The SPA reads this on `session.load()`
+    /// to skip a redundant `POST /api/auth/dpop/bind` call when the
+    /// session is already bound (which would 409 and log noisily under
+    /// the audit stream — see the `already_bound` reject). Only the
+    /// OIDC / magic-link redirect flows land here as `false` on first
+    /// visit; password login binds at session-mint time so the very
+    /// first `/me` after login already reports `true`.
+    #[serde(default)]
+    pub is_dpop_bound: bool,
 }
 
 /// Compact row returned by the paginated admin user table.
@@ -264,6 +279,11 @@ impl From<User> for UserDto {
             // not a general user attribute.
             force_password_change: false,
             has_password,
+            // Populated only by `/api/auth/me` — the handler overlays
+            // the caller's session's actual DPoP binding state after
+            // this `From<User>` runs. Other UserDto emitters leave
+            // this at `false` (they lack session context).
+            is_dpop_bound: false,
         }
     }
 }
