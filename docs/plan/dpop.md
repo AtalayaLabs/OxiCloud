@@ -221,7 +221,11 @@ DPoP (RFC 9449) closes this gap by binding the session to a browser-held private
 - After 2-4 weeks of clean opportunistic-mode telemetry, flip default to `required` in a later release. Pre-existing app-password / legacy sessions with `dpop_jkt IS NULL` still work; they're exempt at the middleware.
 - **Documentation deliverable**: operator guide entry explaining the flag, the modes, the observability signals, the upgrade path.
 
-## Gate C — Content-serve + streaming allowlist (browser-direct GETs)
+## Gate C — Content-serve + streaming allowlist (SUPERSEDED by Service Worker)
+
+**Status: retired.** A Service Worker at `frontend/src/service-worker.ts` now intercepts every same-origin `/api/*` request the browser initiates and attaches a DPoP proof — including `<img src>`, `<a href download>`, and `EventSource` streams that JS-space fetch can never touch. The middleware allowlist that this section documented has been deleted (`matches_content_path`, `is_content_serve_get`, `looks_like_uuid`, the enforcement branch, plus 9 tests). No exempt paths remain; the DPoP posture is uniform across the whole `/api/*` surface.
+
+Left in place for the historical rationale:
 
 Discovered during the `required`-mode rollout: some SPA endpoints are fetched by the **browser itself**, not by JS via `fetch()`. These paths have no JS in the loop to sign a DPoP proof:
 
@@ -242,9 +246,7 @@ The allowlist exempts ONLY the missing-proof reject. Proofs that ARE sent on the
 
 **Security posture (accepted trade-off).** An attacker with a stolen cookie can GET one of these URLs *if and only if* they already know a specific 128-bit UUID. Every listing / discovery endpoint (`/api/folders/{id}/children`, `/api/photos`, `/api/files/by-hash`, `/search`, …) still requires a DPoP proof — those go through `apiFetch`. So a bare stolen cookie gives the attacker "download the exact IDs you already know" — effectively nothing without prior knowledge. Plugin log SSE additionally has admin-only AuthZ at the handler.
 
-**Refactor pending (near-term).** The allowlist currently lives in the DPoP middleware as a slice-pattern matcher over path segments (`matches_content_path` in `src/interfaces/middleware/dpop.rs`). Cleaner: split the router — exempt routes on one sub-router without the `require_dpop_layer`, protected routes with it, merge. Declares exemption next to the route registration rather than centrally in the matcher; deletes the matcher and its 9 tests. Effort: 0.5 day. Behaviour-preserving.
-
-**Long-term evolution (Option B).** See Deferred to Phase 2 — signed short-lived URL tokens replace the allowlist entirely.
+**Refactor considered, superseded.** A split-router variant (exempt routes on one sub-router without `require_dpop_layer`) and a signed short-lived URL token variant (Option B) were both scoped in earlier revisions. Both are moot now that the Service Worker intercepts uniformly. Option B remains in the Deferred section as a fallback if SW registration ever needs to be optional.
 
 ## Gate 10 — Observability + admin UX
 
