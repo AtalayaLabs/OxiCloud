@@ -767,6 +767,12 @@ export interface SessionSummary {
 	dpop_jkt_prefix: string | null;
 	is_revoked: boolean;
 	is_active: boolean;
+	/** How this session was minted. `unknown` covers pre-migration
+	 *  rows and any origin the SPA doesn't yet render. Server enum
+	 *  is populated at INSERT (see `Session::new`) and copied on
+	 *  refresh. Snake_case wire values map to the labels rendered
+	 *  in the admin table. */
+	origin: 'password' | 'opaque' | 'magic_link' | 'oidc' | 'device' | 'unknown';
 	/** `true` when this row IS the admin's currently-active session —
 	 *  compared server-side by `dpop_jkt`. Panel uses this to warn
 	 *  before revoking ("this will log you out"). Always `false` when
@@ -779,4 +785,9 @@ export interface AdminSessionsPage {
 	sessions: SessionSummary[];
 	limit: number;
 	offset: number;
+	/** Access-token TTL in seconds — from `OXICLOUD_ACCESS_TOKEN_EXPIRY_SECS`
+	 *  server-side. The panel surfaces this in a "revoke takes effect within
+	 *  {N} seconds" notice because revoking flips the DB row (breaks refresh)
+	 *  but any in-flight JWT stays valid until its `exp`. */
+	access_token_expiry_secs: number;
 }

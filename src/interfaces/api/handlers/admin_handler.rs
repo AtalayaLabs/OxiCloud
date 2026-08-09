@@ -1263,10 +1263,18 @@ pub async fn list_sessions(
         .await
         .map_err(AppError::from)?;
 
+    // Also publish the current access-token TTL so the admin panel can
+    // render an honest "revoke takes effect within N seconds" warning
+    // above the table. Revoking a session flips the DB row (breaks the
+    // refresh path), but any in-flight JWT stays valid until its `exp`
+    // — which is `access_token_expiry_secs` from now. Showing this
+    // number keeps the UX honest instead of implying instant kill.
+    let access_token_expiry_secs = state.core.config.auth.access_token_expiry_secs;
     Ok(Json(serde_json::json!({
         "sessions": sessions,
         "limit": limit,
         "offset": offset,
+        "access_token_expiry_secs": access_token_expiry_secs,
     })))
 }
 

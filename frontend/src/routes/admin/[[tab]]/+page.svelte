@@ -861,6 +861,12 @@
 	let sessionsFilterUserId = $state<string>('');
 	let sessionsIncludeRevoked = $state(false);
 	let sessionRevokingId = $state<string | null>(null);
+	// Access-token TTL served alongside the sessions page — drives the
+	// "revoke takes effect within {N} seconds" warning. Revoke flips the
+	// DB row (breaks the refresh path), but a JWT already in flight
+	// stays valid until its `exp`. Populated on the first load, reused
+	// for every render — the value is server-config, not per-request.
+	let sessionsAccessTokenExpirySecs = $state<number | null>(null);
 
 	async function loadSessions() {
 		sessionsLoading = true;
@@ -872,6 +878,7 @@
 				limit: PAGE_SIZE
 			});
 			sessions = page.sessions;
+			sessionsAccessTokenExpirySecs = page.access_token_expiry_secs;
 		} catch (e) {
 			sessionsError = errorMessage(e);
 		} finally {
@@ -2996,10 +3003,26 @@
 		{#if sessionsError}
 			<p class="status status--error" data-testid="admin-sessions-error">{sessionsError}</p>
 		{:else}
+			{#if sessionsAccessTokenExpirySecs !== null}
+				<!-- Revoke-lag notice: revoke breaks the refresh path
+				     immediately, but a JWT already in flight stays valid
+				     until its `exp` (see docs/plan/dpop.md — access tokens
+				     are opaque to revocation between refreshes). Server
+				     publishes the current TTL so this text is honest
+				     rather than a hardcoded guess. -->
+				<p class="status status--info" role="note" data-testid="admin-sessions-revoke-lag-notice">
+					{t(
+						'admin.sessions.revoke_lag_notice',
+						{ secs: sessionsAccessTokenExpirySecs },
+						'Revoking a session breaks its refresh path immediately, but any JWT already in the browser stays valid for up to {{secs}} seconds until the next refresh attempt.'
+					)}
+				</p>
+			{/if}
 			<table class="table" data-testid="admin-sessions-table">
 				<thead>
 					<tr>
 						<th>{t('admin.sessions.col_user', 'User')}</th>
+						<th>{t('admin.sessions.col_origin', 'Origin')}</th>
 						<th>{t('admin.sessions.col_created', 'Created')}</th>
 						<th>{t('admin.sessions.col_expires', 'Expires')}</th>
 						<th>{t('admin.sessions.col_ip', 'IP')}</th>
@@ -3031,6 +3054,11 @@
 										</span>
 									{/if}
 								</div>
+							</td>
+							<td data-testid={`admin-sessions-origin-${s.id}`}>
+								<span class="badge badge--origin badge--origin-{s.origin}">
+									{t(`admin.sessions.origin.${s.origin}`, s.origin)}
+								</span>
 							</td>
 							<td>{new Date(s.created_at).toLocaleString()}</td>
 							<td>{new Date(s.expires_at).toLocaleString()}</td>
@@ -3088,7 +3116,7 @@
 					{/each}
 					{#if sessions.length === 0 && !sessionsLoading}
 						<tr>
-							<td colspan="8" class="muted">
+							<td colspan="9" class="muted">
 								{t('admin.sessions.empty', 'No sessions match the current filter.')}
 							</td>
 						</tr>

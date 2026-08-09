@@ -1120,6 +1120,7 @@
       "include_revoked": "Include revoked / expired",
       "refresh": "Refresh",
       "col_user": "User",
+      "col_origin": "Origin",
       "col_created": "Created",
       "col_expires": "Expires",
       "col_ip": "IP",
@@ -1135,7 +1136,16 @@
       "revoke": "Revoke",
       "empty": "No sessions match the current filter.",
       "revoke_self_confirm": "⚠️  This is YOUR current session. Revoking it will log YOU out immediately and you'll have to sign back in. Continue?",
-      "revoke_confirm": "Revoke this session? The next request from that browser will 401."
+      "revoke_confirm": "Revoke this session? The next request from that browser will 401.",
+      "revoke_lag_notice": "Revoking a session breaks its refresh path immediately, but any JWT already in the browser stays valid for up to {{secs}} seconds until the next refresh attempt.",
+      "origin": {
+        "password": "Password",
+        "opaque": "OPAQUE",
+        "magic_link": "Magic link",
+        "oidc": "SSO",
+        "device": "Device",
+        "unknown": "Unknown"
+      }
     },
     "settings_saved_ok": "Settings saved.",
     "smtp": "Email (SMTP)",

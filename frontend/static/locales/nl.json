@@ -848,6 +848,7 @@
       "include_revoked": "Ingetrokken / verlopen tonen",
       "refresh": "Vernieuwen",
       "col_user": "Gebruiker",
+      "col_origin": "Herkomst",
       "col_created": "Aangemaakt",
       "col_expires": "Verloopt",
       "col_ip": "IP",
@@ -863,7 +864,16 @@
       "revoke": "Intrekken",
       "empty": "Geen sessies komen overeen met het huidige filter.",
       "revoke_self_confirm": "⚠️  Dit is UW huidige sessie. Intrekken meldt u direct af en u moet opnieuw inloggen. Doorgaan?",
-      "revoke_confirm": "Deze sessie intrekken? Het volgende verzoek van die browser krijgt 401."
+      "revoke_confirm": "Deze sessie intrekken? Het volgende verzoek van die browser krijgt 401.",
+      "revoke_lag_notice": "Het intrekken van een sessie verbreekt onmiddellijk het vernieuwingspad, maar elke JWT die al in de browser aanwezig is, blijft geldig tot {{secs}} seconden, tot de volgende vernieuwingspoging.",
+      "origin": {
+        "password": "Wachtwoord",
+        "opaque": "OPAQUE",
+        "magic_link": "Magische link",
+        "oidc": "SSO",
+        "device": "Apparaat",
+        "unknown": "Onbekend"
+      }
     },
     "smtp_fail": "Verzenden mislukt.",
     "smtp_send": "Verzenden",

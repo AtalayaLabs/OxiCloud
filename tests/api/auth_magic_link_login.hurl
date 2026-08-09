@@ -144,6 +144,41 @@ HTTP 200
 [Asserts]
 jsonpath "$.email" == "{{email}}"
 jsonpath "$.username" == "{{username}}"
+[Captures]
+admin_user_id: jsonpath "$.id"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 7b — SessionOrigin stamping regression. Every login handler
+#           records HOW the session was minted; the admin panel
+#           surfaces that. This step proves TWO origins land
+#           correctly on the same account:
+#             * `password`   — from Steps 1-2 legacy /api/auth/login
+#             * `magic_link` — from Step 6 magic-link redemption
+#           A missing/drifted stamp (e.g. a handler forgetting to
+#           pass the SessionOrigin arg after a refactor) would
+#           surface here as `unknown` instead of the expected value.
+#
+#           `include_revoked=true` because Step 1 and Step 2 both
+#           create sessions and the second may have rotated the
+#           first out — we want ALL of admin's sessions in-frame.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/admin/sessions?user_id={{admin_user_id}}&include_revoked=true
+Authorization: Bearer {{alice_token}}
+
+HTTP 200
+[Asserts]
+# `body contains` rather than a jsonpath collection predicate because
+# Hurl unwraps single-element `[*]` results to scalars — see the same
+# pattern in tests/oidc/oidc.hurl Step 8b for the full reasoning.
+body contains "\"origin\":\"password\""
+body contains "\"origin\":\"magic_link\""
+# `access_token_expiry_secs` also served for the SPA's revoke-lag
+# notice. Belt-and-braces with tests/oidc/oidc.hurl Step 8b (same
+# handler, both suites verify the field ships so a shape change
+# would fail at least one of them).
+jsonpath "$.access_token_expiry_secs" isInteger
+jsonpath "$.access_token_expiry_secs" > 0
 
 
 # ─────────────────────────────────────────────────────────────

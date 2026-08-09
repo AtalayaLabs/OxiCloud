@@ -1018,7 +1018,7 @@ impl AuthApplicationService {
             user_agent,
             crate::domain::entities::session::SessionOrigin::Password,
         )
-            .await
+        .await
     }
 
     /// Emit a fresh session for a user who has ALREADY been

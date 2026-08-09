@@ -853,6 +853,7 @@
       "include_revoked": "Incluir revocadas / caducadas",
       "refresh": "Actualizar",
       "col_user": "Usuario",
+      "col_origin": "Origen",
       "col_created": "Creada",
       "col_expires": "Caduca",
       "col_ip": "IP",
@@ -868,7 +869,16 @@
       "revoke": "Revocar",
       "empty": "Ninguna sesión coincide con el filtro actual.",
       "revoke_self_confirm": "⚠️  Esta es SU sesión actual. Al revocarla se cerrará su sesión inmediatamente y tendrá que iniciar sesión de nuevo. ¿Continuar?",
-      "revoke_confirm": "¿Revocar esta sesión? La próxima petición desde ese navegador devolverá 401."
+      "revoke_confirm": "¿Revocar esta sesión? La próxima petición desde ese navegador devolverá 401.",
+      "revoke_lag_notice": "Revocar una sesión rompe su vía de renovación de inmediato, pero cualquier JWT ya presente en el navegador permanece válido hasta {{secs}} segundos, hasta el próximo intento de renovación.",
+      "origin": {
+        "password": "Contraseña",
+        "opaque": "OPAQUE",
+        "magic_link": "Enlace mágico",
+        "oidc": "SSO",
+        "device": "Dispositivo",
+        "unknown": "Desconocido"
+      }
     },
     "smtp_fail": "Fallo al enviar.",
     "smtp_send": "Enviar",

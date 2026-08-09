@@ -42,10 +42,14 @@ impl SessionOrigin {
         }
     }
 
-    /// Parse from the column string. Any unrecognised value maps to
-    /// `Unknown` — matches the CHECK constraint's failure mode
-    /// (impossible on well-behaved writes, defensive on load).
-    pub fn from_str(s: &str) -> Self {
+    /// Parse from the column / wire string. Any unrecognised value
+    /// maps to `Unknown` — matches the CHECK constraint's failure
+    /// mode (impossible on well-behaved writes, defensive on load).
+    /// Named `from_wire` (not `from_str`) to avoid shadowing the
+    /// standard `std::str::FromStr::from_str` trait method, which
+    /// would force us to pick a meaningless `Err` type when this
+    /// helper is intentionally infallible.
+    pub fn from_wire(s: &str) -> Self {
         match s {
             "password" => Self::Password,
             "opaque" => Self::Opaque,
@@ -321,9 +325,9 @@ mod tests {
             SessionOrigin::Device,
             SessionOrigin::Unknown,
         ] {
-            assert_eq!(SessionOrigin::from_str(o.as_str()), o);
+            assert_eq!(SessionOrigin::from_wire(o.as_str()), o);
         }
         // Unknown catches typos / drift-off-column-values.
-        assert_eq!(SessionOrigin::from_str("bogus"), SessionOrigin::Unknown);
+        assert_eq!(SessionOrigin::from_wire("bogus"), SessionOrigin::Unknown);
     }
 }

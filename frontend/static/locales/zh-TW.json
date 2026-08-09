@@ -831,6 +831,7 @@
       "include_revoked": "包含已撤銷 / 已過期",
       "refresh": "重新整理",
       "col_user": "使用者",
+      "col_origin": "來源",
       "col_created": "建立於",
       "col_expires": "過期於",
       "col_ip": "IP",
@@ -846,7 +847,16 @@
       "revoke": "撤銷",
       "empty": "沒有工作階段符合目前的篩選條件。",
       "revoke_self_confirm": "⚠️  這是您目前的工作階段。撤銷後將立即登出，您必須重新登入。要繼續嗎？",
-      "revoke_confirm": "撤銷此工作階段？該瀏覽器的下一次請求將回傳 401。"
+      "revoke_confirm": "撤銷此工作階段？該瀏覽器的下一次請求將回傳 401。",
+      "revoke_lag_notice": "撤銷工作階段會立即中斷其重新整理路徑，但瀏覽器中已存在的任何 JWT 在下次重新整理嘗試之前最多可保持有效 {{secs}} 秒。",
+      "origin": {
+        "password": "密碼",
+        "opaque": "OPAQUE",
+        "magic_link": "魔法連結",
+        "oidc": "SSO",
+        "device": "裝置",
+        "unknown": "未知"
+      }
     },
     "smtp_fail": "傳送失敗。",
     "smtp_send": "傳送",

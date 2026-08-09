@@ -140,7 +140,7 @@ impl SessionRepository for SessionPgRepository {
             row.get("oidc_id_token"),
             row.get("oidc_sid"),
             row.get("dpop_jkt"),
-            crate::domain::entities::session::SessionOrigin::from_str(row.get("origin")),
+            crate::domain::entities::session::SessionOrigin::from_wire(row.get("origin")),
         ))
     }
 
@@ -178,7 +178,7 @@ impl SessionRepository for SessionPgRepository {
             row.get("oidc_id_token"),
             row.get("oidc_sid"),
             row.get("dpop_jkt"),
-            crate::domain::entities::session::SessionOrigin::from_str(row.get("origin")),
+            crate::domain::entities::session::SessionOrigin::from_wire(row.get("origin")),
         ))
     }
 
@@ -219,7 +219,7 @@ impl SessionRepository for SessionPgRepository {
                     row.get("oidc_id_token"),
                     row.get("oidc_sid"),
                     row.get("dpop_jkt"),
-                    crate::domain::entities::session::SessionOrigin::from_str(row.get("origin")),
+                    crate::domain::entities::session::SessionOrigin::from_wire(row.get("origin")),
                 )
             })
             .collect();
@@ -280,7 +280,7 @@ impl SessionRepository for SessionPgRepository {
                     row.get("oidc_id_token"),
                     row.get("oidc_sid"),
                     row.get("dpop_jkt"),
-                    crate::domain::entities::session::SessionOrigin::from_str(row.get("origin")),
+                    crate::domain::entities::session::SessionOrigin::from_wire(row.get("origin")),
                 )
             })
             .collect();
