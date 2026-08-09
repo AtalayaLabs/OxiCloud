@@ -125,6 +125,22 @@ pub trait SessionRepository: Send + Sync + 'static {
     /// Deletes expired sessions
     async fn delete_expired_sessions(&self) -> SessionRepositoryResult<u64>;
 
+    /// Purge session rows whose `expires_at` is strictly older than
+    /// `cutoff` — i.e. long-expired rows the janitor drops after a
+    /// forensic window past the natural expiry (per
+    /// [[project_session_janitor_missing]]). Distinct from
+    /// `delete_expired_sessions` so callers can pick a policy:
+    ///   * `delete_expired_sessions` — everything past `NOW()`, aggressive
+    ///     (currently unused — the janitor prefers the delayed variant so
+    ///     ops have a trail before the row disappears);
+    ///   * `delete_sessions_expired_before(NOW() - 3 months)` — keeps a
+    ///     3-month audit window, the shape `SessionCleanupService` runs
+    ///     with. Returns the row count for the audit line.
+    async fn delete_sessions_expired_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> SessionRepositoryResult<u64>;
+
     /// One-shot bind a DPoP JWK thumbprint (RFC 7638) to a session that
     /// was created without one. Used by the post-redirect bind endpoint
     /// (`POST /api/auth/dpop/bind`) for the OIDC and magic-link flows,

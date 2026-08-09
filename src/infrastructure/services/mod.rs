@@ -50,6 +50,7 @@ pub mod recent_recording_hook;
 pub mod retry_blob_backend;
 pub mod s3_blob_backend;
 pub mod search_index;
+pub mod session_cleanup_service;
 pub mod share_unlock_cookie;
 pub mod smtp_email_sender;
 pub mod swappable_blob_backend;

@@ -534,6 +534,28 @@ impl SessionRepository for SessionPgRepository {
         Ok(result.rows_affected())
     }
 
+    async fn delete_sessions_expired_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> SessionRepositoryResult<u64> {
+        // Same shape as `delete_expired_sessions` but the caller picks the
+        // cutoff instead of it being pinned to NOW(). Lets the janitor
+        // keep a forensic window past the natural session expiry — see
+        // `SessionCleanupService` and [[project_session_janitor_missing]].
+        let result = sqlx::query(
+            r#"
+            DELETE FROM auth.sessions
+            WHERE expires_at < $1
+            "#,
+        )
+        .bind(cutoff)
+        .execute(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)?;
+
+        Ok(result.rows_affected())
+    }
+
     async fn bind_dpop_jkt(&self, session_id: Uuid, dpop_jkt: &str) -> SessionRepositoryResult<()> {
         // `WHERE dpop_jkt IS NULL` enforces the immutability invariant
         // at the SQL level — a bound session's UPDATE affects 0 rows
