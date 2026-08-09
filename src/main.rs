@@ -1392,6 +1392,19 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("Starting OxiCloud server on http://{}", addr);
 
+    // Opt-in Prometheus `/metrics` exporter on a separate listener.
+    // Installs the recorder BEFORE the main listener starts serving so
+    // the first request's counter increments are captured (recorder
+    // install is racy vs first emit — order matters).
+    if let Some(metrics_addr) = config.metrics_listen {
+        if let Err(err) = oxicloud::interfaces::metrics::spawn(metrics_addr).await {
+            // Fail loudly: operators asked for metrics; not surfacing
+            // this would hide a misconfigured scrape endpoint.
+            tracing::error!("Prometheus /metrics setup failed: {err}");
+            return Err(err);
+        }
+    }
+
     let socket = make_socket(&addr, reuse_port)?;
 
     let listener = tokio::net::TcpListener::from_std(socket.into())?;

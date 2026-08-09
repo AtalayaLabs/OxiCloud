@@ -134,6 +134,15 @@ toml = { version = "1.1.2", optional = true }
 file-rotate = { version = "0.7.6", optional = true }
 ort = { version = "2.0.0-rc.12", default-features = false, features = ["load-dynamic", "ndarray", "tracing", "api-24"], optional = true }
 ndarray = { version = "0.17.2", optional = true }
+# Prometheus /metrics exporter (opt-in via OXICLOUD_METRICS_LISTEN).
+# `metrics` is the abstract counter API — `counter!(name, "k" => v).increment(1)`
+# — and is a no-op when no recorder is installed (unset env var). The
+# `metrics-exporter-prometheus` crate registers a recorder and renders the
+# text-format /metrics scrape. Both re-export ordered voted versions that
+# agree on their `metrics-util` transitive dep — pin as a pair when
+# bumping either side.
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
 
 [features]
 default = []

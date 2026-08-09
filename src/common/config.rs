@@ -2533,6 +2533,16 @@ pub struct AppConfig {
     pub server_port: u16,
     /// Server host
     pub server_host: String,
+    /// Prometheus `/metrics` listener address, or `None` to disable.
+    ///
+    /// Env: `OXICLOUD_METRICS_LISTEN` (e.g. `127.0.0.1:9090`).
+    /// Unset / empty = no metrics recorder is installed and no
+    /// `/metrics` endpoint is bound (default). When set, a separate
+    /// axum listener on this address exposes the text-format scrape
+    /// — deliberately NOT merged into the main API so operators can
+    /// bind to loopback / a private interface without exposing
+    /// metrics publicly.
+    pub metrics_listen: Option<std::net::SocketAddr>,
     /// Cache configuration
     pub cache: CacheConfig,
     /// Timeout configuration
@@ -2660,6 +2670,7 @@ impl Default for AppConfig {
             search_cache: SearchCacheConfig::default(),
             plugins: PluginConfig::default(),
             faces: FacesConfig::default(),
+            metrics_listen: None,
         }
     }
 }
@@ -2689,6 +2700,22 @@ impl AppConfig {
 
         if let Ok(server_host) = env::var("OXICLOUD_SERVER_HOST") {
             config.server_host = server_host;
+        }
+
+        // Prometheus /metrics listener — opt-in, off by default. Empty
+        // string treated the same as unset (a common bare-word `=` shape
+        // in .env files). Parse failure is a fatal-shaped warning so
+        // operators don't silently ship without metrics they expected.
+        if let Ok(raw) = env::var("OXICLOUD_METRICS_LISTEN")
+            && !raw.trim().is_empty()
+        {
+            match raw.parse::<std::net::SocketAddr>() {
+                Ok(addr) => config.metrics_listen = Some(addr),
+                Err(err) => tracing::warn!(
+                    "OXICLOUD_METRICS_LISTEN={raw:?} is not a valid socket address ({err}) \
+                     — metrics endpoint will NOT be exposed"
+                ),
+            }
         }
 
         // Database configuration

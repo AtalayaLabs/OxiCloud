@@ -154,6 +154,7 @@ pub async fn require_dpop_layer(
                     user_agent = %req_user_agent,
                     "👮🏻‍♂️ DPoP required: bound session request has no proof",
                 );
+                metrics::counter!("oxicloud_dpop_proof_missing_total").increment(1);
                 return nonce_challenge_response(&nonce_service);
             }
             (DpopMode::Opportunistic, Some(_)) => {
@@ -171,6 +172,8 @@ pub async fn require_dpop_layer(
                     user_agent = %req_user_agent,
                     "⚠️  DPoP: bound session sent request without a proof",
                 );
+                metrics::counter!("oxicloud_dpop_header_missing_on_bound_session_total")
+                    .increment(1);
             }
             _ => { /* unbound session or off mode — nothing to do */ }
         }
@@ -221,6 +224,11 @@ pub async fn require_dpop_layer(
                         htu = %htu,
                         "👮🏻‍♂️ DPoP nonce stale — issuing challenge",
                     );
+                    metrics::counter!(
+                        "oxicloud_dpop_verify_failed_total",
+                        "reason" => "nonce_stale",
+                    )
+                    .increment(1);
                     return nonce_challenge_response(&nonce_service);
                 }
                 None => {
@@ -248,6 +256,7 @@ pub async fn require_dpop_layer(
                     jti = %verified.jti,
                     "👮🏻‍♂️ DPoP proof replayed — same (nonce, jti) seen twice",
                 );
+                metrics::counter!("oxicloud_dpop_replay_detected_total").increment(1);
                 return dpop_verification_failed_response(
                     DpopVerifyError::SignatureInvalid, // shape-only; audit line carries truth
                     &nonce_service,
@@ -266,6 +275,11 @@ pub async fn require_dpop_layer(
                 htu = %htu,
                 "👮🏻‍♂️ DPoP proof rejected",
             );
+            metrics::counter!(
+                "oxicloud_dpop_verify_failed_total",
+                "reason" => err.reason(),
+            )
+            .increment(1);
             dpop_verification_failed_response(err, &nonce_service)
         }
     }
@@ -290,9 +304,15 @@ fn stamp_current_nonce(
 /// WWW-Authenticate + DPoP-Nonce carrying a fresh nonce. The SPA
 /// fetch interceptor (Gate 4) auto-retries once with the new nonce
 /// so users don't experience a visible failure.
+///
+/// Central counter emission (`oxicloud_dpop_nonce_challenges_issued_total`)
+/// lives here rather than at each callsite — every challenge goes
+/// through this helper by construction, so one increment covers all
+/// three current paths (proof-missing, nonce-missing, nonce-stale).
 fn nonce_challenge_response(
     nonce_service: &crate::infrastructure::services::dpop_nonce_service::DpopNonceService,
 ) -> Response {
+    metrics::counter!("oxicloud_dpop_nonce_challenges_issued_total").increment(1);
     let mut resp = AppError::new(
         StatusCode::UNAUTHORIZED,
         "DPoP nonce required",
