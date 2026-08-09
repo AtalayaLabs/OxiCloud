@@ -427,9 +427,18 @@ export const SAMPLE_FILES = {
   png: (): SeedFile => ({
     name: 'pixel.png',
     mimeType: 'image/png',
-    // 1×1 transparent PNG.
+    // 1×1 transparent RGBA PNG. Regenerate with:
+    //   python3 -c "import struct,zlib,base64; \
+    //     c=lambda t,d: struct.pack('>I',len(d))+t+d+struct.pack('>I',zlib.crc32(t+d)); \
+    //     p=b'\x89PNG\r\n\x1a\n' + c(b'IHDR',struct.pack('>IIBBBBB',1,1,8,6,0,0,0)) \
+    //       + c(b'IDAT',zlib.compress(b'\x00\x00\x00\x00\x00')) + c(b'IEND',b''); \
+    //     print(base64.b64encode(p).decode())"
+    // The `image` crate rejects malformed IDAT CRCs even where ImageMagick's
+    // `identify` (without `-verbose`) stays silent, so the fixture must be
+    // strictly valid — an earlier drop-in from the wild had a corrupt IDAT
+    // CRC that broke every server-side thumbnail generation off this pixel.
     body: Buffer.from(
-      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=',
       'base64',
     ),
   }),

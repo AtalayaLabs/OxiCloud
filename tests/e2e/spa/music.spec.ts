@@ -148,8 +148,10 @@ test('add an audio track and drive the player', async ({ page }) => {
     .setInputFiles({
       name: 'cover.png',
       mimeType: 'image/png',
+      // 1×1 transparent RGBA PNG with valid CRCs — see the regenerate
+      // snippet in spa/helpers.ts under SAMPLE_FILES.png.
       buffer: Buffer.from(
-        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=',
         'base64',
       ),
     })
