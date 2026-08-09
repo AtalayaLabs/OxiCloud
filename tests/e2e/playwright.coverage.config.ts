@@ -7,10 +7,11 @@ import { loadEnv } from './load-env';
  * with Istanbul instrumentation via `COVERAGE=1`) and collects per-test
  * `window.__coverage__` into `.nyc_output/` for an nyc report.
  *
- * This is separate from `playwright.config.ts` (which exercises the legacy
- * `./static` vanilla frontend). The server here is a debug `cargo run` with
- * `OXICLOUD_STATIC_PATH=./static-dist`, so the SPA — not the legacy app — is
- * served on :8088.
+ * The server is a debug `cargo run` on port 8088 serving the instrumented
+ * SPA build. Production-shape end-to-end: OPAQUE + DPoP `required` are
+ * both inherited from `tests/common/server.env` — the previous legacy
+ * `./static` vanilla-frontend suite that overrode them off has been
+ * retired.
  *
  * Build the instrumented SPA first:
  *   (cd frontend && COVERAGE=1 VITE_E2E=1 npm run build)
@@ -38,7 +39,7 @@ export default defineConfig({
     testIdAttribute: 'data-testid',
     // NixOS (and distros where Playwright's bundled chromium can't run) need a
     // system chromium via PW_CHROMIUM_PATH. Unset → Playwright's bundled
-    // browser (CI). Mirrors playwright.containers.config.ts.
+    // browser (CI).
     launchOptions: process.env.PW_CHROMIUM_PATH
       ? { executablePath: process.env.PW_CHROMIUM_PATH }
       : {},
@@ -60,40 +61,23 @@ export default defineConfig({
       ...commonEnv,
       OXICLOUD_SERVER_PORT: '8088',
       OXICLOUD_STORAGE_PATH: './tests/e2e/storage-spa',
-      // Serve the instrumented SvelteKit build, not the legacy ./static app.
+      // Serve the instrumented SvelteKit build (there is no legacy
+      // ./static frontend anymore — retired with the scenarios
+      // suite).
       OXICLOUD_STATIC_PATH: './static-dist',
       // Enable the WASM plugin runtime so the admin Plugins tab is exercisable
       // (the suite installs the example hello plugin fixture).
       OXICLOUD_ENABLE_PLUGINS: 'true',
-      // Explicitly disable OPAQUE for the SPA coverage suite. The Hurl API
-      // suite (tests/common/server.env) exercises the OPAQUE substrate; this
-      // suite is scoped to SPA UI coverage and doesn't need the ~200 KiB
-      // WASM bundle nor the boot-time substrate init. Blank the two OPAQUE
-      // env vars inherited from commonEnv so the DI factory takes the
-      // `effective_mode == Off` short-circuit path.
-      OXICLOUD_AUTH_OPAQUE_MODE: 'off',
-      OXICLOUD_AUTH_OPAQUE_SERVER_SETUP: '',
-      // DPoP `opportunistic` — SPA browser flows still exercise the
-      // full wire protocol (proof signing + server verification +
-      // nonce challenge/retry + replay cache). The only weakening
-      // vs production `required` is that BOUND session + MISSING
-      // proof gets a warning-only pass instead of 401.
-      //
-      // Why not required: Node-side `page.request.*` test helpers
-      // (apiCreateFolder, apiAdminCreateUser, apiUploadFile, …)
-      // can't sign DPoP proofs because the browser's keypair is
-      // non-extractable by design. Under `required`, every helper
-      // POST/PUT/DELETE 401s and most tests fail at beforeEach.
-      //
-      // The missing-proof-on-bound-session enforcement IS covered
-      // end-to-end by `dpop-hurl-helper` scenario 9 under
-      // `tests/api/run.sh` (which keeps required from server.env),
-      // so global enforcement coverage is preserved.
-      //
-      // Task #47 tracks rewriting the helpers through page.evaluate
-      // so they can sign proofs in-browser. Once landed, this
-      // override goes and Playwright runs production-shape.
-      OXICLOUD_DPOP_MODE: 'opportunistic',
+      // OPAQUE + DPoP both inherit `migrate` and `required`
+      // respectively from `tests/common/server.env` — production-
+      // shape end-to-end. All specs in `spa/` drive the SPA through
+      // UI interactions (page.click / page.fill / page.goto), so
+      // every request lands as either an `apiFetch` call (page-
+      // context, signed inline) or a browser-initiated subresource
+      // (SW-signed via `service-worker.ts`). No Node-side
+      // `page.request.*` in this suite — the scenarios suite that
+      // needed those helpers was retired with the legacy vanilla
+      // frontend.
       // Explicitly clear OXICLOUD_METRICS_LISTEN so a developer's
       // `.env` value (typical: `127.0.0.1:9090`) doesn't leak in via
       // the parent-process env Playwright merges here — the test
