@@ -118,6 +118,19 @@ pub struct ListUsersQueryDto {
     pub summary: Option<bool>,
 }
 
+/// Query parameters for the admin sessions listing.
+///
+/// `user_id` is a String (not `Uuid`) because bad UUIDs need a clean
+/// 400 response — the handler parses and rejects malformed input.
+/// `include_revoked` defaults to `false` at the handler layer.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListSessionsQueryDto {
+    pub user_id: Option<String>,
+    pub include_revoked: Option<bool>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
 /// One row of the dashboard's quota panel — usage aggregate for a
 /// single drive kind. Unlimited caps are excluded from `capped_quota_bytes`
 /// and counted in `unlimited_count` so the panel can render the ratio

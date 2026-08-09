@@ -223,6 +223,66 @@ impl SessionRepository for SessionPgRepository {
         Ok(sessions)
     }
 
+    async fn list_sessions_paginated(
+        &self,
+        user_id_filter: Option<Uuid>,
+        include_revoked: bool,
+        limit: i64,
+        offset: i64,
+    ) -> SessionRepositoryResult<Vec<Session>> {
+        // Single SQL with nullable-user-id + include-revoked flag
+        // baked in as parameters, rather than four hand-forked
+        // queries. `$1::uuid IS NULL` short-circuits when no filter is
+        // set; `$2 OR (revoked = false AND expires_at > NOW())` folds
+        // the active-only rule into one predicate. Both branches use
+        // the same index (`idx_sessions_user_id`) on the filtered
+        // path, and a full table scan bounded by `LIMIT` on the
+        // unfiltered path — acceptable for an admin-triggered view
+        // that operators paginate through.
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                id, user_id, refresh_token, expires_at,
+                ip_address, user_agent, created_at, revoked, family_id,
+                oidc_id_token, oidc_sid, dpop_jkt
+            FROM auth.sessions
+            WHERE ($1::uuid IS NULL OR user_id = $1)
+              AND ($2 OR (revoked = false AND expires_at > NOW()))
+            ORDER BY created_at DESC
+            LIMIT $3 OFFSET $4
+            "#,
+        )
+        .bind(user_id_filter)
+        .bind(include_revoked)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)?;
+
+        let sessions = rows
+            .into_iter()
+            .map(|row| {
+                Session::from_raw(
+                    row.get("id"),
+                    row.get("user_id"),
+                    row.get("refresh_token"),
+                    row.get("expires_at"),
+                    row.get("ip_address"),
+                    row.get("user_agent"),
+                    row.get("created_at"),
+                    row.get("revoked"),
+                    row.get("family_id"),
+                    row.get("oidc_id_token"),
+                    row.get("oidc_sid"),
+                    row.get("dpop_jkt"),
+                )
+            })
+            .collect();
+
+        Ok(sessions)
+    }
+
     /// Revokes a specific session using a transaction
     async fn revoke_session(&self, session_id: Uuid) -> SessionRepositoryResult<()> {
         let id = session_id; // Copy for use in closure
@@ -648,5 +708,29 @@ impl SessionStoragePort for SessionPgRepository {
         SessionRepository::bind_dpop_jkt(self, session_id, dpop_jkt)
             .await
             .map_err(DomainError::from)
+    }
+
+    async fn get_session_by_id(&self, session_id: Uuid) -> Result<Session, DomainError> {
+        SessionRepository::get_session_by_id(self, session_id)
+            .await
+            .map_err(DomainError::from)
+    }
+
+    async fn list_sessions_paginated(
+        &self,
+        user_id_filter: Option<Uuid>,
+        include_revoked: bool,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Session>, DomainError> {
+        SessionRepository::list_sessions_paginated(
+            self,
+            user_id_filter,
+            include_revoked,
+            limit,
+            offset,
+        )
+        .await
+        .map_err(DomainError::from)
     }
 }

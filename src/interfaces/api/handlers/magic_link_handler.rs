@@ -148,6 +148,7 @@ struct RedeemQuery {
 )]
 async fn redeem_magic_link(
     State(state): State<Arc<AppState>>,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
     Path(token): Path<String>,
     Query(query): Query<RedeemQuery>,
     RequestLocale(locale): RequestLocale,
@@ -171,12 +172,26 @@ async fn redeem_magic_link(
         .map(|v| v == "1" || v == "true")
         .unwrap_or(false);
 
+    // Capture IP + UA for the newly minted session row (admin sessions
+    // panel renders these; NULLs would show as "—").
+    let client_ip = crate::interfaces::middleware::trusted_proxy::client_ip_from_parts(
+        &headers,
+        Some(peer),
+        false,
+    );
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
     match auth_svc
         .auth_application_service
         .redeem_magic_link(
             &token,
             incoming_challenge.as_deref(),
             cross_browser_confirmed,
+            Some(client_ip),
+            user_agent,
         )
         .await
     {

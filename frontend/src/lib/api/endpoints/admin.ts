@@ -6,6 +6,7 @@
 import { apiFetch, apiJson } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type {
+	AdminSessionsPage,
 	AdminUsersPage,
 	Drive,
 	DriveMember,
@@ -239,6 +240,39 @@ export async function deleteDriveAdmin(driveId: string): Promise<void> {
 		// 405 / 409 carry actionable messages from the backend; bubble them.
 		throw new Error(detail || `delete drive failed: ${res.status}`);
 	}
+}
+
+// ── Sessions (admin panel) ──────────────────────────────────────────────
+
+/** Options for {@link listAdminSessions}. */
+export interface ListSessionsOpts {
+	/** Narrow to one user's sessions; omit for cross-user listing. */
+	userId?: string;
+	/** Include revoked / expired rows. Default `false` (active-only UX). */
+	includeRevoked?: boolean;
+	/** Page size — server caps at 500. */
+	limit?: number;
+	/** Pagination offset. */
+	offset?: number;
+}
+
+/** Global sessions listing — `GET /api/admin/sessions`. */
+export function listAdminSessions(opts: ListSessionsOpts = {}): Promise<AdminSessionsPage> {
+	const params = new URLSearchParams();
+	if (opts.userId) params.set('user_id', opts.userId);
+	if (opts.includeRevoked) params.set('include_revoked', 'true');
+	if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+	if (opts.offset !== undefined) params.set('offset', String(opts.offset));
+	const qs = params.toString();
+	return apiJson<AdminSessionsPage>(`/api/admin/sessions${qs ? '?' + qs : ''}`, {
+		credentials: 'same-origin'
+	});
+}
+
+/** Revoke a session — `DELETE /api/admin/sessions/{id}`. Sets
+ * `revoked=true`; the row stays in the DB for audit visibility. */
+export function revokeAdminSession(sessionId: string): Promise<void> {
+	return mutate(`/api/admin/sessions/${encodeURIComponent(sessionId)}`, 'DELETE');
 }
 
 // ── Users ───────────────────────────────────────────────────────────────

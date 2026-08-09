@@ -734,3 +734,31 @@ export interface Finding {
 	detail: Record<string, unknown>;
 	created_at: string;
 }
+
+/**
+ * Admin sessions-panel row shape. Backend: `SessionSummaryDto` in
+ * `src/application/dtos/session_dto.rs`. Deliberately narrower than
+ * the DB row — the refresh token is never serialised, and the full
+ * DPoP thumbprint is truncated to an 8-char prefix so admins viewing
+ * other users' sessions can't exfiltrate the full binding fingerprint.
+ */
+export interface SessionSummary {
+	id: string;
+	user_id: string;
+	created_at: string;
+	expires_at: string;
+	ip_address: string | null;
+	user_agent: string | null;
+	is_bound: boolean;
+	dpop_jkt_prefix: string | null;
+	is_revoked: boolean;
+	is_active: boolean;
+	oidc_sid: string | null;
+}
+
+/** Wire response of `GET /api/admin/sessions`. */
+export interface AdminSessionsPage {
+	sessions: SessionSummary[];
+	limit: number;
+	offset: number;
+}

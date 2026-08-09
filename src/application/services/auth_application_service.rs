@@ -803,7 +803,12 @@ impl AuthApplicationService {
         Ok(UserDto::from(created_user))
     }
 
-    pub async fn login(&self, dto: LoginDto) -> Result<AuthResponseDto, DomainError> {
+    pub async fn login(
+        &self,
+        dto: LoginDto,
+        client_ip: Option<String>,
+        user_agent: Option<String>,
+    ) -> Result<AuthResponseDto, DomainError> {
         // Gate: policy may forbid password logins entirely (either the
         // legacy OIDC-only mode or the newer `OXICLOUD_AUTH_METHODS`
         // allowlist without `password`). Refuse BEFORE the user lookup
@@ -1006,7 +1011,7 @@ impl AuthApplicationService {
         // handshake (Phase 1, `login/ke3`). Both paths converge here
         // so lifecycle + token + session-family semantics stay in
         // one place.
-        self.mint_session_for_authenticated_user(user, dto.dpop_jkt)
+        self.mint_session_for_authenticated_user(user, dto.dpop_jkt, client_ip, user_agent)
             .await
     }
 
@@ -1034,6 +1039,8 @@ impl AuthApplicationService {
         &self,
         mut user: crate::domain::entities::user::User,
         dpop_jkt: Option<String>,
+        client_ip: Option<String>,
+        user_agent: Option<String>,
     ) -> Result<AuthResponseDto, DomainError> {
         // Lifecycle: dispatch login BEFORE register_login() so hooks
         // observing `last_login_at().is_none()` see "first ever login"
@@ -1092,8 +1099,8 @@ impl AuthApplicationService {
         let mut session = Session::new(
             user.id(),
             refresh_token.clone(),
-            None, // IP (can be added from the HTTP layer)
-            None, // User-Agent (can be added from the HTTP layer)
+            client_ip,
+            user_agent,
             self.token_service.refresh_token_expiry_days(),
             Uuid::new_v4(),
         );
@@ -1168,6 +1175,8 @@ impl AuthApplicationService {
         token: &str,
         incoming_challenge: Option<&str>,
         cross_browser_confirmed: bool,
+        client_ip: Option<String>,
+        user_agent: Option<String>,
     ) -> Result<MagicLinkRedeemResult, DomainError> {
         let repo = self.magic_link_repo.as_ref().ok_or_else(|| {
             DomainError::new(
@@ -1355,8 +1364,8 @@ impl AuthApplicationService {
         let session = Session::new(
             user.id(),
             refresh_token.clone(),
-            None,
-            None,
+            client_ip,
+            user_agent,
             self.token_service.refresh_token_expiry_days(),
             Uuid::new_v4(),
         );
@@ -1447,6 +1456,8 @@ impl AuthApplicationService {
     pub async fn refresh_token(
         &self,
         dto: RefreshTokenDto,
+        client_ip: Option<String>,
+        user_agent: Option<String>,
     ) -> Result<AuthResponseDto, DomainError> {
         // Get valid session
         let session = self
@@ -1525,8 +1536,8 @@ impl AuthApplicationService {
         let mut new_session = Session::new(
             user.id(),
             new_refresh_token.clone(),
-            None,
-            None,
+            client_ip,
+            user_agent,
             self.token_service.refresh_token_expiry_days(),
             session.family_id(),
         );
@@ -2932,6 +2943,78 @@ impl AuthApplicationService {
     }
 
     // ========================================================================
+    // Admin Session Management Methods
+    // ========================================================================
+    //
+    // AuthZ posture: /api/admin/* is already protected by a
+    // `require_admin` router layer (see
+    // `interfaces/api/routes.rs::admin_router`) — but every admin
+    // method here still calls `require_admin_caller` as a
+    // defense-in-depth check, matching the pattern
+    // `list_users_including_external_with_perms` established. If a
+    // handler is ever wired outside the /admin subtree, the AuthZ
+    // still holds.
+
+    /// List sessions for the admin panel. `user_id_filter = Some(uuid)`
+    /// narrows to one user; `None` returns cross-user. `include_revoked`
+    /// controls whether to show revoked / expired rows — default UX
+    /// hides them (checkbox to opt in for forensics).
+    pub async fn admin_list_sessions_with_perms<A: AuthorizationEngine>(
+        &self,
+        authorization: &A,
+        caller_id: Uuid,
+        user_id_filter: Option<Uuid>,
+        include_revoked: bool,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<crate::application::dtos::session_dto::SessionSummaryDto>, DomainError> {
+        self.require_admin_caller(authorization, caller_id).await?;
+        let sessions = self
+            .session_storage
+            .list_sessions_paginated(user_id_filter, include_revoked, limit, offset)
+            .await?;
+        Ok(sessions
+            .into_iter()
+            .map(crate::application::dtos::session_dto::SessionSummaryDto::from)
+            .collect())
+    }
+
+    /// Admin-driven session revocation. Sets `revoked = true` — the
+    /// row remains for audit visibility, but its refresh token is
+    /// dead and the next access-token refresh 401s naturally.
+    ///
+    /// Emits an audit line + counter increment so operators can trace
+    /// who killed which session and when.
+    pub async fn admin_revoke_session_with_perms<A: AuthorizationEngine>(
+        &self,
+        authorization: &A,
+        caller_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<(), DomainError> {
+        self.require_admin_caller(authorization, caller_id).await?;
+        // Resolve target user for the audit line before revocation —
+        // once the session row is revoked the user_id is still readable
+        // but the ORDER is stable this way.
+        let target_user_id = self
+            .session_storage
+            .get_session_by_id(session_id)
+            .await
+            .ok()
+            .map(|s| s.user_id());
+        self.session_storage.revoke_session(session_id).await?;
+        tracing::info!(
+            target: "audit",
+            event = "admin.session_revoked",
+            caller_id = %caller_id,
+            session_id = %session_id,
+            target_user_id = target_user_id.map(|u| u.to_string()).unwrap_or_default(),
+            "👮🏻‍♂️ Admin revoked session",
+        );
+        metrics::counter!("oxicloud_admin_session_revoked_total").increment(1);
+        Ok(())
+    }
+
+    // ========================================================================
     // Admin User Management Methods
     // ========================================================================
 
@@ -3753,6 +3836,8 @@ impl AuthApplicationService {
         code: &str,
         state: &str,
         locale_registry: &crate::common::locale::LocaleRegistry,
+        client_ip: Option<String>,
+        user_agent: Option<String>,
     ) -> Result<OidcCallbackResult, DomainError> {
         // 0. Validate CSRF state and retrieve PKCE verifier + nonce + optional NC token
         //    (entry is auto-expired by moka TTL — remove returns None if expired)
@@ -4276,8 +4361,8 @@ impl AuthApplicationService {
         let mut session = Session::new(
             user.id(),
             refresh_token.clone(),
-            None,
-            None,
+            client_ip,
+            user_agent,
             self.token_service.refresh_token_expiry_days(),
             Uuid::new_v4(),
         )
@@ -4492,11 +4577,15 @@ mod phase4_gate_integration_tests {
         let user_id = seed_user_with_password(&pool, &hasher, &email, "s3cret-passphrase").await;
 
         // Baseline — no envelope, no migration mark → legacy works.
-        svc.login(crate::application::dtos::user_dto::LoginDto {
-            username: email.clone(),
-            password: "s3cret-passphrase".to_string(),
-            dpop_jkt: None,
-        })
+        svc.login(
+            crate::application::dtos::user_dto::LoginDto {
+                username: email.clone(),
+                password: "s3cret-passphrase".to_string(),
+                dpop_jkt: None,
+            },
+            None,
+            None,
+        )
         .await
         .expect("baseline legacy login must succeed");
 
@@ -4510,11 +4599,15 @@ mod phase4_gate_integration_tests {
         // but AccessDenied with the exact message the handler layer
         // remaps to `403 OpaqueLoginRequired`.
         let refused = svc
-            .login(crate::application::dtos::user_dto::LoginDto {
-                username: email.clone(),
-                password: "s3cret-passphrase".to_string(),
-                dpop_jkt: None,
-            })
+            .login(
+                crate::application::dtos::user_dto::LoginDto {
+                    username: email.clone(),
+                    password: "s3cret-passphrase".to_string(),
+                    dpop_jkt: None,
+                },
+                None,
+                None,
+            )
             .await
             .expect_err("legacy login must be refused post-migration");
         assert_eq!(
@@ -4534,11 +4627,15 @@ mod phase4_gate_integration_tests {
         // password check specifically so an attacker without the
         // password learns nothing about migration state.
         let wrong = svc
-            .login(crate::application::dtos::user_dto::LoginDto {
-                username: email.clone(),
-                password: "wrong-password".to_string(),
-                dpop_jkt: None,
-            })
+            .login(
+                crate::application::dtos::user_dto::LoginDto {
+                    username: email.clone(),
+                    password: "wrong-password".to_string(),
+                    dpop_jkt: None,
+                },
+                None,
+                None,
+            )
             .await
             .expect_err("wrong password must still fail");
         assert_eq!(wrong.message, "Invalid credentials");
@@ -4551,11 +4648,15 @@ mod phase4_gate_integration_tests {
             .clear_registration(user_id)
             .await
             .expect("clear registration");
-        svc.login(crate::application::dtos::user_dto::LoginDto {
-            username: email,
-            password: "s3cret-passphrase".to_string(),
-            dpop_jkt: None,
-        })
+        svc.login(
+            crate::application::dtos::user_dto::LoginDto {
+                username: email,
+                password: "s3cret-passphrase".to_string(),
+                dpop_jkt: None,
+            },
+            None,
+            None,
+        )
         .await
         .expect("legacy login must succeed again after admin clear_registration");
     }

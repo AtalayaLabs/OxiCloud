@@ -18,6 +18,8 @@
 		installPlugin,
 		listPlugins,
 		listUsers,
+		listAdminSessions,
+		revokeAdminSession,
 		getUserAdmin,
 		migrationAction,
 		reextractAudioMetadata,
@@ -73,8 +75,10 @@
 		DriveMember,
 		DrivePolicies,
 		DrivePoliciesPartial,
+		SessionSummary,
 		User
 	} from '$lib/api/types';
+	import { shortUserAgent } from '$lib/utils/userAgent';
 	import { triggerJob } from '$lib/api/endpoints/adminJobs';
 	import { serverStatus } from '$lib/stores/serverStatus.svelte';
 	import AdminJobsPanel from '$lib/components/AdminJobsPanel.svelte';
@@ -177,6 +181,7 @@
 	type Tab =
 		| 'dashboard'
 		| 'users'
+		| 'sessions'
 		| 'drives'
 		| 'mounts'
 		| 'plugins'
@@ -188,6 +193,7 @@
 	const VALID_TABS: readonly Tab[] = [
 		'dashboard',
 		'users',
+		'sessions',
 		'drives',
 		'mounts',
 		'plugins',
@@ -221,6 +227,8 @@
 				return t('admin.dashboard', 'Dashboard');
 			case 'users':
 				return t('admin.users', 'Users');
+			case 'sessions':
+				return t('admin.sessions', 'Sessions');
 			case 'drives':
 				return t('admin.drives', 'Drives');
 			case 'mounts':
@@ -841,6 +849,56 @@
 	let resetPassword = $state('');
 	let resetError = $state<string | null>(null);
 	let resetting = $state(false);
+
+	// Sessions (admin panel — see task #52 / docs/plan/dpop.md Gate 10).
+	// Global cross-user listing by default; user-filter dropdown narrows.
+	// Active-only by default (hides revoked + expired); checkbox opts into
+	// showing everything for forensics. Revoke action mutates in place —
+	// the row is refetched to update `is_revoked` badge.
+	let sessions = $state<SessionSummary[]>([]);
+	let sessionsError = $state<string | null>(null);
+	let sessionsLoading = $state(false);
+	let sessionsFilterUserId = $state<string>('');
+	let sessionsIncludeRevoked = $state(false);
+	let sessionRevokingId = $state<string | null>(null);
+
+	async function loadSessions() {
+		sessionsLoading = true;
+		sessionsError = null;
+		try {
+			const page = await listAdminSessions({
+				userId: sessionsFilterUserId || undefined,
+				includeRevoked: sessionsIncludeRevoked,
+				limit: PAGE_SIZE
+			});
+			sessions = page.sessions;
+		} catch (e) {
+			sessionsError = errorMessage(e);
+		} finally {
+			sessionsLoading = false;
+		}
+	}
+
+	async function onRevokeSession(id: string) {
+		if (
+			!confirm(
+				t(
+					'admin.sessions.revoke_confirm',
+					'Revoke this session? The next request from that browser will 401.'
+				)
+			)
+		)
+			return;
+		sessionRevokingId = id;
+		try {
+			await revokeAdminSession(id);
+			await loadSessions();
+		} catch (e) {
+			sessionsError = errorMessage(e);
+		} finally {
+			sessionRevokingId = null;
+		}
+	}
 
 	// Plugins
 	let plugins = $state<PluginInfo[]>([]);
@@ -1581,6 +1639,7 @@
 	let loaded = $state<Record<Tab, boolean>>({
 		dashboard: false,
 		users: false,
+		sessions: false,
 		drives: false,
 		mounts: false,
 		plugins: false,
@@ -1595,6 +1654,7 @@
 		loaded[tab] = true;
 		if (tab === 'dashboard') void loadDashboard();
 		else if (tab === 'users') void loadUsers();
+		else if (tab === 'sessions') void loadSessions();
 		else if (tab === 'drives') void loadDrivesTab();
 		else if (tab === 'mounts') void loadMounts();
 		else if (tab === 'plugins') void loadPlugins();
@@ -2898,6 +2958,135 @@
 				>
 			</div>
 		{/if}
+	{:else if tab === 'sessions'}
+		<section class="admin-section" data-testid="admin-sessions-section">
+			<h2>{t('admin.sessions.title', 'Sessions')}</h2>
+			<p class="muted">
+				{t(
+					'admin.sessions.help',
+					'Active sign-in sessions across all users. A locked icon means the session is bound to a browser keypair (DPoP) — a stolen cookie alone cannot use it. Revoke to force the browser to re-authenticate on its next request.'
+				)}
+			</p>
+
+			<div class="admin-toolbar">
+				<label>
+					{t('admin.sessions.filter_user', 'User (UUID)')}:
+					<input
+						class="input"
+						type="text"
+						placeholder="00000000-…"
+						data-testid="admin-sessions-user-filter-input"
+						bind:value={sessionsFilterUserId}
+					/>
+				</label>
+				<label>
+					<input
+						type="checkbox"
+						data-testid="admin-sessions-include-revoked-checkbox"
+						bind:checked={sessionsIncludeRevoked}
+					/>
+					{t('admin.sessions.include_revoked', 'Include revoked / expired')}
+				</label>
+				<button
+					class="btn"
+					data-testid="admin-sessions-refresh-btn"
+					onclick={() => void loadSessions()}
+					disabled={sessionsLoading}
+				>
+					{sessionsLoading
+						? t('common.loading', 'Loading…')
+						: t('admin.sessions.refresh', 'Refresh')}
+				</button>
+			</div>
+
+			{#if sessionsError}
+				<div class="alert alert-error" data-testid="admin-sessions-error">
+					{sessionsError}
+				</div>
+			{/if}
+
+			<div class="table-wrap">
+				<table class="admin-table" data-testid="admin-sessions-table">
+					<thead>
+						<tr>
+							<th>{t('admin.sessions.col_user', 'User')}</th>
+							<th>{t('admin.sessions.col_created', 'Created')}</th>
+							<th>{t('admin.sessions.col_expires', 'Expires')}</th>
+							<th>{t('admin.sessions.col_ip', 'IP')}</th>
+							<th>{t('admin.sessions.col_user_agent', 'User agent')}</th>
+							<th>{t('admin.sessions.col_bound', 'Bound')}</th>
+							<th>{t('admin.sessions.col_status', 'Status')}</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each sessions as s (s.id)}
+							<tr
+								data-testid={`admin-sessions-row-${s.id}`}
+								class:muted={!s.is_active}
+							>
+								<td class="mono" title={s.user_id}>{s.user_id.slice(0, 8)}…</td>
+								<td>{new Date(s.created_at).toLocaleString()}</td>
+								<td>{new Date(s.expires_at).toLocaleString()}</td>
+								<td class="mono">{s.ip_address ?? '—'}</td>
+								<td class="truncate" title={s.user_agent ?? ''}>
+									{shortUserAgent(s.user_agent)}
+								</td>
+								<td>
+									{#if s.is_bound}
+										<span
+											title={t(
+												'admin.sessions.bound_tooltip',
+												{ prefix: s.dpop_jkt_prefix ?? '' },
+												'DPoP-bound (jkt {{prefix}}…)'
+											)}
+										>
+											🔒 {s.dpop_jkt_prefix ?? ''}
+										</span>
+									{:else}
+										<span class="muted">{t('admin.sessions.unbound', 'unbound')}</span>
+									{/if}
+								</td>
+								<td>
+									{#if s.is_revoked}
+										<span class="badge badge-danger">
+											{t('admin.sessions.revoked', 'revoked')}
+										</span>
+									{:else if !s.is_active}
+										<span class="badge">{t('admin.sessions.expired', 'expired')}</span>
+									{:else}
+										<span class="badge badge-ok">
+											{t('admin.sessions.active', 'active')}
+										</span>
+									{/if}
+								</td>
+								<td>
+									{#if !s.is_revoked}
+										<button
+											class="btn btn-danger btn-sm"
+											data-testid={`admin-sessions-revoke-btn-${s.id}`}
+											onclick={() => void onRevokeSession(s.id)}
+											disabled={sessionRevokingId === s.id}
+										>
+											{sessionRevokingId === s.id
+												? t('common.working', 'Working…')
+												: t('admin.sessions.revoke', 'Revoke')}
+										</button>
+									{/if}
+								</td>
+							</tr>
+						{/each}
+						{#if sessions.length === 0 && !sessionsLoading}
+							<tr>
+								<td colspan="8" class="muted">
+									{t('admin.sessions.empty', 'No sessions match the current filter.')}
+								</td>
+							</tr>
+						{/if}
+					</tbody>
+				</table>
+			</div>
+		</section>
 	{:else if tab === 'mounts'}
 		<section class="admin-section" data-testid="admin-mounts-section">
 			<h2>{t('admin.mounts.title', 'External File Mounts')}</h2>

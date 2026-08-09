@@ -393,10 +393,19 @@ pub async fn login(
         ));
     }
 
+    // Extract the User-Agent once — the audit lines already carry
+    // `client_ip` on the request-scope span; passing both to the
+    // service lets `create_session` capture them on the row so the
+    // admin panel can show *who logged in from where*.
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
     // Try the normal login process
     match auth_service
         .auth_application_service
-        .login(dto.clone())
+        .login(dto.clone(), Some(client_ip.clone()), user_agent.clone())
         .await
     {
         Ok(auth_response) => {
@@ -547,6 +556,7 @@ pub async fn login(
 )]
 pub async fn refresh_token(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Response, AppError> {
@@ -568,9 +578,19 @@ pub async fn refresh_token(
         refresh_token: refresh_tok,
     };
 
+    // Refresh rotates the session row — capture current IP + UA so the
+    // NEW row's `ip_address`/`user_agent` reflect the latest observed
+    // client (see `sessions.rotate_session`). Old row keeps its own
+    // capture from creation time.
+    let client_ip = client_ip_from_parts(&headers, Some(peer), false);
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
     let auth_response = auth_service
         .auth_application_service
-        .refresh_token(dto)
+        .refresh_token(dto, Some(client_ip), user_agent)
         .await?;
 
     tracing::info!("Token refresh successful, new token issued");
@@ -1560,6 +1580,8 @@ pub async fn oidc_unlink(
 )]
 pub async fn oidc_callback(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Query(query): Query<OidcCallbackQueryDto>,
 ) -> Result<impl IntoResponse, AppError> {
     let auth_service = state
@@ -1579,6 +1601,16 @@ pub async fn oidc_callback(
 
     tracing::info!("OIDC callback received with code");
 
+    // Capture IP + UA so the OIDC-minted session row lands populated
+    // (admin panel would otherwise show "—" for SSO logins). Callback
+    // is a browser-initiated GET after the IdP redirect, so peer is
+    // the browser and User-Agent is the browser's.
+    let client_ip = client_ip_from_parts(&headers, Some(peer), false);
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
     // Exchange code, validate state/nonce/PKCE, authenticate user.
     // Any Err path (expired state on refresh, consumed code on replay,
     // anti-takeover email refusal, etc.) is caught below and turned
@@ -1587,7 +1619,13 @@ pub async fn oidc_callback(
     // mid-navigation from the IdP, not the SPA. The SPA login page
     // renders localized copy per key.
     let result = match auth_app
-        .oidc_callback(&query.code, &query.state, &state.locale_registry)
+        .oidc_callback(
+            &query.code,
+            &query.state,
+            &state.locale_registry,
+            Some(client_ip),
+            user_agent,
+        )
         .await
     {
         Ok(r) => r,

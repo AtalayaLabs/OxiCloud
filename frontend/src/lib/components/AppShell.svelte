@@ -87,6 +87,12 @@
 			section: 'admin-users'
 		},
 		{
+			href: '/admin/sessions',
+			label: t('admin.sessions', 'Sessions'),
+			icon: 'key',
+			section: 'admin-sessions'
+		},
+		{
 			href: '/admin/drives',
 			label: t('admin.drives', 'Drives'),
 			icon: 'folder',

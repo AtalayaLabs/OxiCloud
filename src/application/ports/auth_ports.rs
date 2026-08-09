@@ -497,6 +497,24 @@ pub trait SessionStoragePort: Send + Sync + 'static {
     /// carries a thumbprint (anti-downgrade invariant, see
     /// `docs/plan/dpop.md`).
     async fn bind_dpop_jkt(&self, session_id: Uuid, dpop_jkt: &str) -> Result<(), DomainError>;
+
+    /// Fetch a single session by id. Used by admin surfaces that need
+    /// to resolve `target_user_id` for audit lines before a mutation.
+    /// Returns `NotFound` when the id doesn't match any row.
+    async fn get_session_by_id(&self, session_id: Uuid) -> Result<Session, DomainError>;
+
+    /// Paginated cross-user listing for the admin sessions panel.
+    /// `user_id_filter` narrows to a single user when `Some`; `None`
+    /// spans all users. `include_revoked = false` (the default UX)
+    /// returns only rows where `revoked = false AND expires_at > NOW()`.
+    /// Ordered newest first (`created_at DESC`).
+    async fn list_sessions_paginated(
+        &self,
+        user_id_filter: Option<Uuid>,
+        include_revoked: bool,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Session>, DomainError>;
 }
 
 // ============================================================================

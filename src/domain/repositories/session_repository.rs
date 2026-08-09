@@ -58,6 +58,23 @@ pub trait SessionRepository: Send + Sync + 'static {
     async fn get_sessions_by_user_id(&self, user_id: Uuid)
     -> SessionRepositoryResult<Vec<Session>>;
 
+    /// Paginated listing for the admin sessions panel. Cross-user by
+    /// default; `user_id_filter = Some(uuid)` narrows to one user.
+    /// `include_revoked = false` (the default UX) filters to sessions
+    /// that are BOTH non-revoked AND non-expired — what an operator
+    /// would call "active right now". `include_revoked = true` shows
+    /// everything for incident forensics.
+    ///
+    /// Ordered by `created_at DESC` — newest first, matching the
+    /// existing `get_sessions_by_user_id` convention.
+    async fn list_sessions_paginated(
+        &self,
+        user_id_filter: Option<Uuid>,
+        include_revoked: bool,
+        limit: i64,
+        offset: i64,
+    ) -> SessionRepositoryResult<Vec<Session>>;
+
     /// Revokes a specific session
     async fn revoke_session(&self, session_id: Uuid) -> SessionRepositoryResult<()>;
 
