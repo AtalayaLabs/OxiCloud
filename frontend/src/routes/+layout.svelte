@@ -82,6 +82,64 @@
 
 		await killLegacyServiceWorker();
 
+		// Register the DPoP-signing Service Worker (see
+		// `src/service-worker.ts`). It attaches a DPoP proof to every
+		// same-origin `/api/*` request the browser initiates on its
+		// own — `<img src>` thumbnails, `<a href download>` downloads,
+		// `EventSource` streams — replacing the server-side content
+		// allowlist (Gate C in `docs/plan/dpop.md`).
+		//
+		// `type: 'module'` matches SvelteKit's ESM output. Failure is
+		// swallowed to `console.debug`: unbound sessions and legacy
+		// browsers without SW support keep working; only bound sessions
+		// in `DPOP=required` mode see 401s on browser-direct URLs,
+		// which is the same failure mode as before this SW existed.
+		//
+		// AWAIT `navigator.serviceWorker.ready` before allowing the
+		// splash to lift on a first-ever visit. Without this, the SPA
+		// renders while the SW is still installing → thumbnails and
+		// downloads on that very first page load fire unsigned and
+		// 401. Second visit onward the SW is already installed, so
+		// `.ready` resolves in ~1ms — the wait is a one-shot cost per
+		// browser profile.
+		if ('serviceWorker' in navigator) {
+			void navigator.serviceWorker
+				.register('/service-worker.js', { type: 'module' })
+				.catch((err) => console.debug('DPoP service worker registration failed', err));
+			try {
+				await navigator.serviceWorker.ready;
+			} catch {
+				/* SW registration failed — unbound sessions still work;
+				   bound sessions in `required` mode see 401s on browser-
+				   direct URLs. Same fail-open shape as pre-SW. */
+			}
+			// Soft-reload once if we landed uncontrolled. Covers two
+			// cases the SW itself can't fix:
+			//   * First-ever visit — page loaded before any SW existed,
+			//     so `controller` is null even after `.ready`.
+			//   * Force-refresh (Cmd-Shift-R) — the browser deliberately
+			//     delivers the top-level document with no SW controller;
+			//     `clients.claim()` can't attach retroactively.
+			// A single reload brings the page under SW control.
+			//
+			// `sessionStorage` guard prevents an infinite loop when the
+			// reload doesn't fix it (SW registration is genuinely broken
+			// — bad URL, CSP block, quota). Cleared once `controller` is
+			// set so a LATER force-refresh in the same session can also
+			// self-heal (one reload per uncontrolled-landing).
+			const SW_RELOAD_KEY = 'sw-reload-once';
+			if (!navigator.serviceWorker.controller) {
+				if (!sessionStorage.getItem(SW_RELOAD_KEY)) {
+					sessionStorage.setItem(SW_RELOAD_KEY, '1');
+					location.reload();
+					return;
+				}
+				/* reload already attempted this session — give up gracefully */
+			} else {
+				sessionStorage.removeItem(SW_RELOAD_KEY);
+			}
+		}
+
 		// The instant HTML boot splash has done its job — the app is mounted, so
 		// the route (login renders immediately; protected routes show their own
 		// loading state) is already in the DOM behind it.
