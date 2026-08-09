@@ -2990,9 +2990,7 @@
 				disabled={sessionsLoading}
 			>
 				<Icon name="sync-alt" />
-				{sessionsLoading
-					? t('common.loading', 'Loading…')
-					: t('admin.sessions.refresh', 'Refresh')}
+				{sessionsLoading ? t('common.loading', 'Loading…') : t('admin.sessions.refresh', 'Refresh')}
 			</button>
 		</div>
 		{#if sessionsError}

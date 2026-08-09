@@ -41,10 +41,15 @@
  *     matches `docs/plan/dpop.md`).
  */
 
-import { buildDpopProof, isDpopNonceChallenge, updateNonceFromResponse } from '$lib/auth/dpop-proof';
+import {
+	buildDpopProof,
+	isDpopNonceChallenge,
+	updateNonceFromResponse
+} from '$lib/auth/dpop-proof';
 
-// eslint-disable-next-line @typescript-eslint/consistent-type-declarations
-declare const self: ServiceWorkerGlobalScope;
+// `self` is typed as `ServiceWorkerGlobalScope` via the
+// `/// <reference lib="webworker" />` directive above — no explicit
+// `declare const self` needed under the SvelteKit build context.
 
 const ORIGIN = self.location.origin;
 
