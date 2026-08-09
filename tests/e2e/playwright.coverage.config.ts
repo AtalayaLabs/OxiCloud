@@ -55,8 +55,8 @@ export default defineConfig({
     timeout: 600_000,
     reuseExistingServer: false,
     cwd: '../..',
-    stdout: 'inherit',
-    stderr: 'inherit',
+    stdout: 'pipe',
+    stderr: 'pipe',
     env: {
       ...commonEnv,
       OXICLOUD_SERVER_PORT: '8088',

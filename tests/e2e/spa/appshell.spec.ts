@@ -1,5 +1,5 @@
 import { test, expect } from './coverage-helpers';
-import { apiLogin, seedFilesAndFolders } from '../scenarios/helpers';
+import { apiLogin, seedFilesAndFolders } from './helpers';
 
 /**
  * AppShell chrome — global search box (suggestions + submit), notification

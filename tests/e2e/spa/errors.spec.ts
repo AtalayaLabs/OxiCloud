@@ -1,5 +1,5 @@
 import { test, expect } from './coverage-helpers';
-import { apiLogin, apiCreateFolder } from '../scenarios/helpers';
+import { apiLogin, apiCreateFolder } from './helpers';
 
 /**
  * Error-path coverage — drive the catch/error branches that the happy-path

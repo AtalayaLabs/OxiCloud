@@ -1,5 +1,5 @@
 import { test, expect } from './coverage-helpers';
-import { apiLogin, apiCreateFolder } from '../scenarios/helpers';
+import { apiLogin, apiCreateFolder } from './helpers';
 
 /**
  * Favorites route — favorite a folder from the files context menu, see it in

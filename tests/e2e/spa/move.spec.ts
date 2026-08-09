@@ -1,5 +1,5 @@
 import { test, expect } from './coverage-helpers';
-import { apiLogin, apiCreateFolder } from '../scenarios/helpers';
+import { apiLogin, apiCreateFolder } from './helpers';
 
 /**
  * MoveDialog coverage — move a folder into another via the context menu.

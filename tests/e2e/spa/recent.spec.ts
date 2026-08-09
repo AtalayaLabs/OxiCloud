@@ -1,5 +1,5 @@
 import { test, expect } from './coverage-helpers';
-import { apiLogin, apiCreateFolder, apiRecordRecent } from '../scenarios/helpers';
+import { apiLogin, apiCreateFolder, apiRecordRecent } from './helpers';
 
 /**
  * Recent route — populate it via the recents API (the SPA doesn't auto-record

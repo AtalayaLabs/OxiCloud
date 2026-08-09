@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { seedAdmin } from '../scenarios/helpers';
+import { seedAdmin } from './helpers';
 
 /**
  * Global setup for the SPA coverage suite:

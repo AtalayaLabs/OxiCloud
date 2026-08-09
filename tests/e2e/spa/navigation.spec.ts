@@ -1,5 +1,5 @@
 import { test, expect } from './coverage-helpers';
-import { apiLogin, seedFilesAndFolders } from '../scenarios/helpers';
+import { apiLogin, seedFilesAndFolders } from './helpers';
 
 /**
  * Loads every primary route while authenticated. Each route is its own test

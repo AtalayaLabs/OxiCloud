@@ -1,4 +1,4 @@
-import { seedAdmin } from './scenarios/helpers';
+import { seedAdmin } from './spa/helpers';
 
 /**
  * Legacy webServer flow only: seed the admin against the single server

@@ -1,5 +1,5 @@
 import { test, expect } from './coverage-helpers';
-import { apiLogin, apiCreateFolder, apiUploadFile } from '../scenarios/helpers';
+import { apiLogin, apiCreateFolder, apiUploadFile } from './helpers';
 
 /**
  * Search route — seed a uniquely-named file, query for it, then exercise the

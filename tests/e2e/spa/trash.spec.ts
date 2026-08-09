@@ -1,5 +1,5 @@
 import { test, expect } from './coverage-helpers';
-import { apiLogin, apiCreateFolder, apiTrashFolder } from '../scenarios/helpers';
+import { apiLogin, apiCreateFolder, apiTrashFolder } from './helpers';
 
 /**
  * Trash flow — restore and permanently delete items from /trash. The folder is

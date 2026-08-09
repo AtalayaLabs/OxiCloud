@@ -1,5 +1,5 @@
 import { test, expect } from './coverage-helpers';
-import { apiLogin, apiCreateFolder, apiUploadFile, SAMPLE_FILES } from '../scenarios/helpers';
+import { apiLogin, apiCreateFolder, apiUploadFile, SAMPLE_FILES } from './helpers';
 
 /**
  * Deeper files-page coverage (the largest source file): list/grid view toggle,

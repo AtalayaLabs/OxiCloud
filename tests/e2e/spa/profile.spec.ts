@@ -1,5 +1,5 @@
 import { test, expect } from './coverage-helpers';
-import { apiLogin } from '../scenarios/helpers';
+import { apiLogin } from './helpers';
 
 /**
  * Profile route — edit the profile, open the avatar panel, and generate an app

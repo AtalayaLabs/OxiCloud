@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { test, expect } from './coverage-helpers';
-import { apiLogin, apiCreateFolder, apiUploadFile } from '../scenarios/helpers';
+import { apiLogin, apiCreateFolder, apiUploadFile } from './helpers';
 
 /**
  * Music route — playlist lifecycle, the add-tracks dialog, and the audio player

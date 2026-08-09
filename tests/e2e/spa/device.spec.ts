@@ -1,5 +1,5 @@
 import { test, expect } from './coverage-helpers';
-import { apiLogin } from '../scenarios/helpers';
+import { apiLogin } from './helpers';
 
 /**
  * Device-pairing route — submit a (bogus) device code to exercise the lookup
