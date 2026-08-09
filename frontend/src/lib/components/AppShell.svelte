@@ -95,7 +95,7 @@
 		{
 			href: '/admin/drives',
 			label: t('admin.drives', 'Drives'),
-			icon: 'folder',
+			icon: 'hdd',
 			section: 'admin-drives'
 		},
 		{
@@ -107,7 +107,7 @@
 		{
 			href: '/admin/oidc',
 			label: t('admin.oidc', 'OIDC / SSO'),
-			icon: 'key',
+			icon: 'building-shield',
 			section: 'admin-oidc'
 		},
 		{

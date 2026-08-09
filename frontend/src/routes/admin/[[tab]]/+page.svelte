@@ -2677,14 +2677,15 @@
 						{@const pct = quotaPct(u)}
 						<tr>
 							<td>
-								<div class="user-cell">
-									<strong>
-										{u.username || u.email}
-										{#if isSelf(u)}
-											<span class="badge badge--self">{t('admin.you_badge', 'you')}</span>
-										{/if}
-									</strong>
-									<span class="muted">{u.email}</span>
+								<div class="user-vignette-cell">
+									<UserVignette
+										userId={u.id}
+										fallbackLabel={u.username || u.email}
+										fallbackSublabel={u.email}
+									/>
+									{#if isSelf(u)}
+										<span class="badge badge--self">{t('admin.you_badge', 'you')}</span>
+									{/if}
 								</div>
 							</td>
 							<td>
@@ -2964,148 +2965,139 @@
 			</div>
 		{/if}
 	{:else if tab === 'sessions'}
-		<section class="admin-section" data-testid="admin-sessions-section">
-			<h2>{t('admin.sessions.title', 'Sessions')}</h2>
-			<p class="muted">
-				{t(
-					'admin.sessions.help',
-					'Active sign-in sessions across all users. A locked icon means the session is bound to a browser keypair (DPoP) — a stolen cookie alone cannot use it. Revoke to force the browser to re-authenticate on its next request.'
-				)}
-			</p>
-
-			<div class="admin-toolbar">
-				<label>
-					{t('admin.sessions.filter_user', 'User (UUID)')}:
-					<input
-						class="input"
-						type="text"
-						placeholder="00000000-…"
-						data-testid="admin-sessions-user-filter-input"
-						bind:value={sessionsFilterUserId}
-					/>
-				</label>
-				<label>
-					<input
-						type="checkbox"
-						data-testid="admin-sessions-include-revoked-checkbox"
-						bind:checked={sessionsIncludeRevoked}
-					/>
-					{t('admin.sessions.include_revoked', 'Include revoked / expired')}
-				</label>
-				<button
-					class="btn"
-					data-testid="admin-sessions-refresh-btn"
-					onclick={() => void loadSessions()}
-					disabled={sessionsLoading}
-				>
-					{sessionsLoading
-						? t('common.loading', 'Loading…')
-						: t('admin.sessions.refresh', 'Refresh')}
-				</button>
-			</div>
-
-			{#if sessionsError}
-				<div class="alert alert-error" data-testid="admin-sessions-error">
-					{sessionsError}
-				</div>
-			{/if}
-
-			<div class="table-wrap">
-				<table class="admin-table" data-testid="admin-sessions-table">
-					<thead>
-						<tr>
-							<th>{t('admin.sessions.col_user', 'User')}</th>
-							<th>{t('admin.sessions.col_created', 'Created')}</th>
-							<th>{t('admin.sessions.col_expires', 'Expires')}</th>
-							<th>{t('admin.sessions.col_ip', 'IP')}</th>
-							<th>{t('admin.sessions.col_user_agent', 'User agent')}</th>
-							<th>{t('admin.sessions.col_bound', 'Bound')}</th>
-							<th>{t('admin.sessions.col_status', 'Status')}</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody>
-						{#each sessions as s (s.id)}
-							<tr
-								data-testid={`admin-sessions-row-${s.id}`}
-								class:muted={!s.is_active}
-								class:current-session={s.is_current}
-							>
-								<td class="mono" title={s.user_id}>
-									{s.user_id.slice(0, 8)}…
+		<div class="bar">
+			<label class="bar__filter">
+				{t('admin.sessions.filter_user', 'User (UUID)')}
+				<input
+					type="text"
+					placeholder="00000000-…"
+					data-testid="admin-sessions-user-filter-input"
+					bind:value={sessionsFilterUserId}
+				/>
+			</label>
+			<label class="bar__toggle">
+				<input
+					type="checkbox"
+					data-testid="admin-sessions-include-revoked-checkbox"
+					bind:checked={sessionsIncludeRevoked}
+				/>
+				{t('admin.sessions.include_revoked', 'Include revoked / expired')}
+			</label>
+			<button
+				class="btn"
+				data-testid="admin-sessions-refresh-btn"
+				onclick={() => void loadSessions()}
+				disabled={sessionsLoading}
+			>
+				<Icon name="sync-alt" />
+				{sessionsLoading
+					? t('common.loading', 'Loading…')
+					: t('admin.sessions.refresh', 'Refresh')}
+			</button>
+		</div>
+		{#if sessionsError}
+			<p class="status status--error" data-testid="admin-sessions-error">{sessionsError}</p>
+		{:else}
+			<table class="table" data-testid="admin-sessions-table">
+				<thead>
+					<tr>
+						<th>{t('admin.sessions.col_user', 'User')}</th>
+						<th>{t('admin.sessions.col_created', 'Created')}</th>
+						<th>{t('admin.sessions.col_expires', 'Expires')}</th>
+						<th>{t('admin.sessions.col_ip', 'IP')}</th>
+						<th>{t('admin.sessions.col_user_agent', 'User agent')}</th>
+						<th>{t('admin.sessions.col_bound', 'Bound')}</th>
+						<th>{t('admin.sessions.col_status', 'Status')}</th>
+						<th></th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each sessions as s (s.id)}
+						<tr
+							data-testid={`admin-sessions-row-${s.id}`}
+							class:muted={!s.is_active}
+							class:current-session={s.is_current}
+						>
+							<td>
+								<div class="user-vignette-cell">
+									<UserVignette userId={s.user_id} fallbackLabel={s.user_id} />
 									{#if s.is_current}
 										<span
-											class="badge badge-info"
+											class="badge badge--self"
 											title={t(
 												'admin.sessions.current_tooltip',
 												"This is the session you're using right now — revoking it will log you out."
 											)}
 										>
-											{t('admin.sessions.current', 'you')}
+											{t('admin.you_badge', 'you')}
 										</span>
 									{/if}
-								</td>
-								<td>{new Date(s.created_at).toLocaleString()}</td>
-								<td>{new Date(s.expires_at).toLocaleString()}</td>
-								<td class="mono">{s.ip_address ?? '—'}</td>
-								<td class="truncate" title={s.user_agent ?? ''}>
-									{shortUserAgent(s.user_agent)}
-								</td>
-								<td>
-									{#if s.is_bound}
-										<span
-											title={t(
-												'admin.sessions.bound_tooltip',
-												{ prefix: s.dpop_jkt_prefix ?? '' },
-												'DPoP-bound (jkt {{prefix}}…)'
-											)}
-										>
-											🔒 {s.dpop_jkt_prefix ?? ''}
-										</span>
-									{:else}
-										<span class="muted">{t('admin.sessions.unbound', 'unbound')}</span>
-									{/if}
-								</td>
-								<td>
-									{#if s.is_revoked}
-										<span class="badge badge-danger">
-											{t('admin.sessions.revoked', 'revoked')}
-										</span>
-									{:else if !s.is_active}
-										<span class="badge">{t('admin.sessions.expired', 'expired')}</span>
-									{:else}
-										<span class="badge badge-ok">
-											{t('admin.sessions.active', 'active')}
-										</span>
-									{/if}
-								</td>
-								<td>
-									{#if !s.is_revoked}
-										<button
-											class="btn btn-danger btn-sm"
-											data-testid={`admin-sessions-revoke-btn-${s.id}`}
-											onclick={() => void onRevokeSession(s.id, s.is_current)}
-											disabled={sessionRevokingId === s.id}
-										>
-											{sessionRevokingId === s.id
-												? t('common.working', 'Working…')
-												: t('admin.sessions.revoke', 'Revoke')}
-										</button>
-									{/if}
-								</td>
-							</tr>
-						{/each}
-						{#if sessions.length === 0 && !sessionsLoading}
-							<tr>
-								<td colspan="8" class="muted">
-									{t('admin.sessions.empty', 'No sessions match the current filter.')}
-								</td>
-							</tr>
-						{/if}
-					</tbody>
-				</table>
-			</div>
-		</section>
+								</div>
+							</td>
+							<td>{new Date(s.created_at).toLocaleString()}</td>
+							<td>{new Date(s.expires_at).toLocaleString()}</td>
+							<td class="mono">{s.ip_address ?? '—'}</td>
+							<td class="truncate" title={s.user_agent ?? ''}>
+								{shortUserAgent(s.user_agent)}
+							</td>
+							<td>
+								{#if s.is_bound}
+									<span
+										class="bound-cell"
+										title={t(
+											'admin.sessions.bound_tooltip',
+											{ prefix: s.dpop_jkt_prefix ?? '' },
+											'DPoP-bound (jkt {{prefix}}…)'
+										)}
+									>
+										<Icon name="lock" />
+										<span class="mono">{s.dpop_jkt_prefix ?? ''}</span>
+									</span>
+								{:else}
+									<span class="muted">{t('admin.sessions.unbound', 'unbound')}</span>
+								{/if}
+							</td>
+							<td>
+								{#if s.is_revoked}
+									<span class="badge badge--inactive">
+										{t('admin.sessions.revoked', 'revoked')}
+									</span>
+								{:else if !s.is_active}
+									<span class="badge badge--inactive">
+										{t('admin.sessions.expired', 'expired')}
+									</span>
+								{:else}
+									<span class="badge badge--active">
+										{t('admin.sessions.active', 'active')}
+									</span>
+								{/if}
+							</td>
+							<td>
+								{#if !s.is_revoked}
+									<button
+										class="icon-btn icon-btn--danger"
+										data-testid={`admin-sessions-revoke-btn-${s.id}`}
+										title={t('admin.sessions.revoke', 'Revoke')}
+										aria-label={t('admin.sessions.revoke', 'Revoke')}
+										onclick={() => void onRevokeSession(s.id, s.is_current)}
+										disabled={sessionRevokingId === s.id}
+									>
+										<Icon name="trash-alt" />
+									</button>
+								{/if}
+							</td>
+						</tr>
+					{/each}
+					{#if sessions.length === 0 && !sessionsLoading}
+						<tr>
+							<td colspan="8" class="muted">
+								{t('admin.sessions.empty', 'No sessions match the current filter.')}
+							</td>
+						</tr>
+					{/if}
+				</tbody>
+			</table>
+		{/if}
 	{:else if tab === 'mounts'}
 		<section class="admin-section" data-testid="admin-mounts-section">
 			<h2>{t('admin.mounts.title', 'External File Mounts')}</h2>
@@ -4167,10 +4159,10 @@
 
 <style>
 	/* Admin sessions panel — accent the caller's own row so revoking
-	   it can't happen by muscle memory. Left border + tinted bg pull
-	   the eye; JS confirms with an escalated message on top of that. */
-	.current-session {
-		background: var(--color-bg-accent-subtle, color-mix(in srgb, var(--color-accent) 8%, transparent));
+	   it can't happen by muscle memory. Left-border stripe matches how
+	   Users' table calls out the caller via the `you` badge; JS
+	   confirms with an escalated message on top of the visual cue. */
+	.current-session td:first-child {
 		border-left: 3px solid var(--color-accent);
 	}
 
@@ -5127,6 +5119,60 @@
 	.bar {
 		display: flex;
 		justify-content: flex-end;
+		align-items: center;
+		gap: var(--space-3, 0.75rem);
+		flex-wrap: wrap;
+	}
+
+	/* Sessions-panel toolbar items — filter input + include-revoked
+	   checkbox pushed to the left, refresh button anchored right. */
+	.bar__filter {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-2, 0.5rem);
+		margin-right: auto;
+		font-size: 0.875rem;
+	}
+
+	.bar__filter input {
+		padding: 0.375rem 0.5rem;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md, 4px);
+		background: var(--color-bg-input, var(--color-bg));
+		color: var(--color-text);
+		font-family: var(--font-mono, monospace);
+		font-size: 0.8125rem;
+		min-width: 20ch;
+	}
+
+	.bar__toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-2, 0.5rem);
+		font-size: 0.875rem;
+		cursor: pointer;
+	}
+
+	/* Admin table user cell — UserVignette (avatar + name + email)
+	   with the "you" badge parked to its right when this row belongs
+	   to the caller. Flex + gap keeps them shoulder-to-shoulder
+	   without collapsing on narrow columns. Shared across Users +
+	   Sessions tabs; both benefit from the same avatar/name/email
+	   presentation. */
+	.user-vignette-cell {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2, 0.5rem);
+		flex-wrap: wrap;
+	}
+
+	/* DPoP-bound cell: lock icon + short jkt prefix, kept tight so
+	   the column doesn't inflate on wide viewports. */
+	.bound-cell {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1, 0.25rem);
+		font-size: 0.8125rem;
 	}
 
 	.table {
@@ -5140,6 +5186,18 @@
 		padding: 0.5rem 0.625rem;
 		border-bottom: 1px solid var(--color-border);
 		font-size: 0.875rem;
+	}
+
+	/* Row hover highlight — covers Users / Sessions / Drives (every
+	   admin table renders through `.table`). Header rows and empty-
+	   state rows are excluded via `tbody` scoping. `transition` keeps
+	   the tint from feeling twitchy on fast pointer movement. */
+	.table tbody tr {
+		transition: background-color 120ms ease;
+	}
+
+	.table tbody tr:hover {
+		background-color: var(--color-bg-hover);
 	}
 
 	.user-cell {

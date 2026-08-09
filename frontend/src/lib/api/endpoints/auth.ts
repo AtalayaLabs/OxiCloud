@@ -171,6 +171,19 @@ export async function bindDpopIfPossible(): Promise<boolean> {
 			headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 			body: JSON.stringify({ dpop_jkt: jkt })
 		});
+		if (res.ok) {
+			// Bind attached the thumbprint to the SESSION row — but the
+			// browser is still carrying the JWT issued at OIDC callback
+			// / magic-link redemption BEFORE that bind, so its
+			// `cnf.jkt` claim is empty. Force a refresh cycle: the
+			// `rotate_session` path preserves the DPoP binding on the
+			// new row and mints a fresh JWT whose `cnf.jkt` reflects
+			// it. Without this, downstream code that keys off
+			// `CurrentUser::dpop_jkt` (admin sessions "is_current"
+			// highlight, DPoP verifier's expected_jkt lookup) sees
+			// None and treats the caller as unbound.
+			await tryRefresh();
+		}
 		return res.ok;
 	} catch (err) {
 		console.debug('dpop: bind endpoint call failed', err);
