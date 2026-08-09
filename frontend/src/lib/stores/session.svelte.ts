@@ -7,6 +7,7 @@
  * folder and land on the shared-with-me view.
  */
 import { bindDpopIfPossible, fetchMe, tryRefresh } from '$lib/api/endpoints/auth';
+import { setLogoutInProgress } from '$lib/api/client';
 import { drives } from '$lib/stores/drives.svelte';
 import type { User } from '$lib/api/types';
 import { ensureActiveUser } from '$lib/utils/localStoragePrefs';
@@ -77,6 +78,12 @@ class SessionStore {
 	setUser(user: User): void {
 		this.user = user;
 		ensureActiveUser(user.id);
+		// Any successful login clears the session-teardown gate. Without
+		// this, a logout → login within the same SPA session leaves the
+		// gate stuck at `true` — the login POST is exempted via
+		// `AUTH_PRIMITIVES`, but the /me + /drives + … fetches the app
+		// fires post-login would all abort with "Session terminated".
+		setLogoutInProgress(false);
 	}
 
 	/**

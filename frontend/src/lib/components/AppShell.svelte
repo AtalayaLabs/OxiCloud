@@ -524,7 +524,11 @@
 		// landing from `?source=session_expired` (auto-divert on 401 →
 		// refresh 401). The login page reads the flag, shows the success
 		// notice, and skips its existing-session probe.
-		await goto(resolve('/login?source=logged_out'));
+		// `resolve()` from `$app/paths` normalises a route-id (adds base
+		// path prefix); it does NOT accept a query string. Concatenate
+		// the `?source=logged_out` marker AFTER resolve so the login
+		// page's onMount branch actually sees it.
+		await goto(resolve('/login') + '?source=logged_out');
 	}
 </script>
 

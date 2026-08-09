@@ -35,7 +35,10 @@ const SERVER_STATUS_HEADER = 'x-server-status';
 
 const REFRESH_ENDPOINT = '/api/auth/refresh';
 
-/** Auth primitives — a 401 here is genuine, never an expired access token. */
+/** Auth primitives — a 401 here is genuine, never an expired access token.
+ * Also used by the session-teardown gate to exempt endpoints that must
+ * still fire during / immediately after a logout (the logout POST itself,
+ * and every login path a user might retry on the /login landing). */
 const AUTH_PRIMITIVES = [
 	'/api/auth/login',
 	'/api/auth/logout',
@@ -43,7 +46,11 @@ const AUTH_PRIMITIVES = [
 	'/api/auth/register',
 	'/api/auth/setup',
 	'/api/auth/oidc/',
-	'/api/auth/device/'
+	'/api/auth/device/',
+	'/api/auth/opaque/',
+	'/api/auth/magic-link/',
+	'/api/auth/status',
+	'/api/auth/dpop/'
 ];
 
 export type FetchFn = typeof fetch;
