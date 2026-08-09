@@ -1718,7 +1718,9 @@ async fn reextract_image_metadata(
     security(("bearerAuth" = [])),
     tag = "admin"
 )]
-async fn get_smtp_info(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse, AppError> {
+pub async fn get_smtp_info(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, AppError> {
     let smtp = &state.core.config.smtp;
     let info = SmtpInfoDto {
         enabled: smtp.is_enabled() && state.email_sender.is_some(),
@@ -1802,7 +1804,7 @@ struct CapturedEmailQuery {
     security(("bearerAuth" = [])),
     tag = "admin"
 )]
-async fn send_smtp_test(
+pub async fn send_smtp_test(
     State(state): State<Arc<AppState>>,
     auth_user: AuthUser,
     Json(dto): Json<SendSmtpTestDto>,

@@ -46,7 +46,7 @@ pub fn user_routes() -> Router<Arc<AppState>> {
     security(("bearerAuth" = [])),
     tag = "users",
 )]
-async fn get_user_profile(
+pub async fn get_user_profile(
     State(state): State<Arc<AppState>>,
     auth_user: AuthUser,
     Path(target_id): Path<Uuid>,

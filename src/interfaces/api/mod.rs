@@ -82,6 +82,15 @@ use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
         handlers::auth_handler::oidc_backchannel_logout,
         handlers::auth_handler::oidc_link_start,
         handlers::auth_handler::oidc_unlink,
+        // DPoP post-redirect bind (Gate 3), magic-link SEND (the
+        // outbound half of the passwordless flow — /magic/v1/{token}
+        // redemption is a browser redirect, not an API endpoint),
+        // profile edit (PATCH — the read is via /me), and the
+        // external-user upgrade path.
+        handlers::auth_handler::dpop_bind,
+        handlers::auth_handler::send_magic_link,
+        handlers::auth_handler::update_profile,
+        handlers::auth_handler::upgrade_to_internal,
         // File handlers (free functions — see file_handler.rs for why)
         handlers::file_handler::list_files_query,
         handlers::file_handler::upload_file_with_thumbnails,
@@ -125,6 +134,7 @@ use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
         handlers::chunked_upload_handler::cancel_upload,
         // Dedup handlers — all free functions for the same utoipa reason as chunked uploads.
         handlers::dedup_handler::check_hash,
+        handlers::dedup_handler::check_hashes_batch,
         handlers::dedup_handler::get_stats,
         handlers::dedup_handler::get_blob,
         handlers::dedup_handler::recalculate_stats,
@@ -135,6 +145,7 @@ use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
         handlers::trash_handler::restore_from_trash,
         handlers::trash_handler::delete_permanently,
         handlers::trash_handler::empty_trash,
+        handlers::trash_handler::empty_trash_for_drive,
         // Share handlers (free functions)
         handlers::share_handler::create_shared_link,
         handlers::share_handler::get_shared_link,
@@ -162,8 +173,29 @@ use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
         // Photos handler (free function)
         handlers::photos_handler::list_photos,
         handlers::photos_handler::list_photos_geo,
+        // People / face-clustering handlers — mounted only when
+        // `OXICLOUD_ENABLE_FACES` is on; each handler is defensive
+        // (`disabled()` returns 404 otherwise). All work is strictly
+        // caller-scoped by `PeopleService`.
+        handlers::people_handler::list_people,
+        handlers::people_handler::person_photos,
+        handlers::people_handler::rename_person,
+        handlers::people_handler::merge_people,
+        handlers::people_handler::recluster,
+        handlers::people_handler::delete_all,
+        handlers::people_handler::faces_for_file,
         // Drive handler (free function)
         handlers::drive_handler::list_drives,
+        handlers::drive_handler::delete_drive,
+        handlers::drive_handler::list_drive_members,
+        handlers::drive_handler::add_drive_member,
+        handlers::drive_handler::update_drive_member,
+        handlers::drive_handler::remove_drive_member,
+        handlers::drive_handler::update_drive_policies,
+        handlers::drive_handler::update_drive_quota,
+        // Users handler — public profile lookup (auth-required, but
+        // returns the callee's public view, not `/me`'s self-view).
+        handlers::users_handler::get_user_profile,
         // Batch handlers (free functions)
         handlers::batch_handler::move_files_batch,
         handlers::batch_handler::copy_files_batch,
@@ -240,6 +272,27 @@ use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
         handlers::admin_handler::cancel_job,
         handlers::admin_handler::list_job_runs,
         handlers::admin_handler::get_job_run,
+        handlers::admin_handler::pause_job,
+        handlers::admin_handler::list_job_run_findings,
+        handlers::admin_handler::purge_job_runs,
+        // Admin drive management — full CRUD on drives + membership,
+        // distinct from the user-facing /api/drives surface (admin can
+        // touch any drive; user can touch only those they're an owner
+        // of).
+        handlers::admin_handler::list_all_drives,
+        handlers::admin_handler::delete_drive_admin,
+        handlers::admin_handler::list_drive_members_admin,
+        handlers::admin_handler::add_drive_member_admin,
+        handlers::admin_handler::update_drive_member_admin,
+        handlers::admin_handler::remove_drive_member_admin,
+        // Admin SMTP diagnostics + backend rotation + user promotion.
+        // The two SMTP fns were pub-only-for-utoipa (private in-router
+        // helpers before this branch); see the handler for the
+        // read-only vs test-send semantics.
+        handlers::admin_handler::get_smtp_info,
+        handlers::admin_handler::send_smtp_test,
+        handlers::admin_handler::trigger_backend_rotate,
+        handlers::admin_handler::admin_promote_external_to_internal,
         // Admin sessions panel — list + revoke. Function names lack
         // the `_admin_` suffix; the `/api/admin/` prefix comes from
         // the router mount, not the handler name.
@@ -266,6 +319,7 @@ use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
         handlers::grant_handler::list_outgoing,
         handlers::grant_handler::list_my_shares,
         handlers::grant_handler::list_on_resource,
+        handlers::grant_handler::notify_grant_recipient,
         // Subject-group handlers (ReBAC named groups) — free functions
         handlers::subject_group_handler::create_group,
         handlers::subject_group_handler::list_groups,
@@ -342,6 +396,14 @@ use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
             handlers::opaque_auth_handler::OpaqueLoginKe1Response,
             handlers::opaque_auth_handler::OpaqueLoginKe3Dto,
             handlers::opaque_auth_handler::OpaqueParamsResponse,
+            // People / face-clustering — response DTOs published by the
+            // /api/people/* endpoints (list_people, faces_for_file), plus
+            // the two request bodies (rename, merge). Face indexing pipeline
+            // is documented in `face_indexing_service` + `onnx_face_analyzer`.
+            crate::application::dtos::people_dto::PersonDto,
+            crate::application::dtos::people_dto::FaceBoxDto,
+            handlers::people_handler::RenameBody,
+            handlers::people_handler::MergeBody,
             // Share schemas
             ShareDto,
             CreateShareDto,
