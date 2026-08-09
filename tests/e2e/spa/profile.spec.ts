@@ -1,5 +1,5 @@
 import { test, expect } from './coverage-helpers';
-import { apiLogin } from '../scenarios/helpers';
+import { apiLogin } from './helpers';
 
 /**
  * Profile route — edit the profile, open the avatar panel, and generate an app
@@ -39,7 +39,7 @@ test('open the avatar edit panel and upload an image', async ({ page }) => {
       name: 'avatar.png',
       mimeType: 'image/png',
       buffer: Buffer.from(
-        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=',
         'base64',
       ),
     })

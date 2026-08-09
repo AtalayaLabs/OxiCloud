@@ -1,5 +1,5 @@
 import { test, expect } from './coverage-helpers';
-import { apiLogin, apiCreateFolder } from '../scenarios/helpers';
+import { apiLogin, apiCreateFolder } from './helpers';
 
 /**
  * Shared route — create a public link via the share dialog, then view it in

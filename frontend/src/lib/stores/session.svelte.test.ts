@@ -8,7 +8,8 @@ const { fetchMeMock } = vi.hoisted(() => ({ fetchMeMock: vi.fn() }));
 
 vi.mock('$lib/api/endpoints/auth', () => ({
 	fetchMe: () => fetchMeMock(),
-	tryRefresh: vi.fn(async () => false)
+	tryRefresh: vi.fn(async () => false),
+	bindDpopIfPossible: vi.fn(async () => false)
 }));
 
 import { session } from './session.svelte';

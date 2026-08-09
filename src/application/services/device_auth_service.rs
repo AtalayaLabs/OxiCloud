@@ -175,8 +175,12 @@ impl DeviceAuthService {
         // Fetch user to generate tokens
         let user = self.user_storage.get_user_by_id(user_id).await?;
 
-        // Generate internal JWT access token + refresh token
-        let access_token = self.token_service.generate_access_token(&user)?;
+        // Generate internal JWT access token + refresh token. Device-
+        // authorization sessions (RFC 8628) are for CLI / TV / device
+        // clients that don't run WebCrypto — always unbound (`None`
+        // for the `dpop_jkt` param), which the DPoP middleware exempts
+        // from proof requirements. See `docs/plan/dpop.md` Gate 9.
+        let access_token = self.token_service.generate_access_token(&user, None)?;
         let refresh_token = self.token_service.generate_refresh_token();
 
         // Persist refresh token as a session
@@ -187,6 +191,7 @@ impl DeviceAuthService {
             Some(format!("device:{}", dc.client_name())), // user_agent
             self.token_service.refresh_token_expiry_days(),
             Uuid::new_v4(),
+            crate::domain::entities::session::SessionOrigin::Device,
         );
         self.session_storage.create_session(session).await?;
 

@@ -54,13 +54,19 @@ it('opens the user menu, exposing profile and admin links', async () => {
 	expect(screen.getByTestId('appshell-user-menu-admin-item')).toBeTruthy();
 });
 
-it('logs out: clears the session and redirects to /login', async () => {
+it('logs out: clears the session and redirects to /login?source=logged_out', async () => {
+	// The `?source=logged_out` query param is consumed by the login page
+	// onMount branch to (a) show the "Successfully signed out" banner and
+	// (b) skip the doomed post-logout /me + /refresh probes. A plain
+	// `/login` navigation regresses both — the banner disappears and the
+	// layout re-fires the probes on remount. See AppShell.onLogout for
+	// the full comment on why the query is necessary here.
 	m(logout).mockResolvedValue(undefined);
 	render(AppShell, { props: { children } });
 	await fireEvent.click(screen.getByTestId('appshell-user-menu-btn'));
 	await fireEvent.click(await screen.findByTestId('appshell-user-menu-logout-btn'));
 	await waitFor(() => expect(logout).toHaveBeenCalled());
-	await waitFor(() => expect(goto).toHaveBeenCalledWith('/login'));
+	await waitFor(() => expect(goto).toHaveBeenCalledWith('/login?source=logged_out'));
 	expect(session.user).toBeNull();
 });
 

@@ -89,7 +89,15 @@ jobs:
   migration-ordering:
     name: Migration ordering (new migrations postdate target branch)
     needs: changes
-    if: needs.changes.outputs.migrations == 'true'
+    # `github.base_ref` is only populated on `pull_request` events —
+    # on `push` triggers it collapses to an empty string, which makes
+    # every `origin/${BASE_REF}` ref resolve to literal `origin/` and
+    # the job fails with `fatal: Not a valid object name origin/`.
+    # The ordering check is a PR-diff check by construction (compare
+    # a proposed migration against the TARGET branch's tip), so
+    # scoping it to pull_request events is both correct and cheaper —
+    # push-only events don't need the double-fire either.
+    if: github.event_name == 'pull_request' && needs.changes.outputs.migrations == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout PR branch with full history

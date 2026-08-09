@@ -53,9 +53,9 @@ impl SessionRepository for SessionPgRepository {
                         INSERT INTO auth.sessions (
                             id, user_id, refresh_token, expires_at,
                             ip_address, user_agent, created_at, revoked, family_id,
-                            oidc_id_token, oidc_sid
+                            oidc_id_token, oidc_sid, dpop_jkt, origin
                         ) VALUES (
-                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
                         )
                         "#,
                 )
@@ -70,6 +70,8 @@ impl SessionRepository for SessionPgRepository {
                 .bind(session_clone.family_id())
                 .bind(session_clone.oidc_id_token())
                 .bind(session_clone.oidc_sid())
+                .bind(session_clone.dpop_jkt())
+                .bind(session_clone.origin().as_str())
                 .execute(&mut **tx)
                 .await
                 .map_err(Self::map_sqlx_error)?;
@@ -115,7 +117,7 @@ impl SessionRepository for SessionPgRepository {
             SELECT
                 id, user_id, refresh_token, expires_at,
                 ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token, oidc_sid
+                oidc_id_token, oidc_sid, dpop_jkt, origin
             FROM auth.sessions
             WHERE id = $1
             "#,
@@ -137,6 +139,8 @@ impl SessionRepository for SessionPgRepository {
             row.get("family_id"),
             row.get("oidc_id_token"),
             row.get("oidc_sid"),
+            row.get("dpop_jkt"),
+            crate::domain::entities::session::SessionOrigin::from_wire(row.get("origin")),
         ))
     }
 
@@ -151,7 +155,7 @@ impl SessionRepository for SessionPgRepository {
             SELECT
                 id, user_id, refresh_token, expires_at,
                 ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token, oidc_sid
+                oidc_id_token, oidc_sid, dpop_jkt, origin
             FROM auth.sessions
             WHERE refresh_token = $1
             "#,
@@ -173,6 +177,8 @@ impl SessionRepository for SessionPgRepository {
             row.get("family_id"),
             row.get("oidc_id_token"),
             row.get("oidc_sid"),
+            row.get("dpop_jkt"),
+            crate::domain::entities::session::SessionOrigin::from_wire(row.get("origin")),
         ))
     }
 
@@ -186,7 +192,7 @@ impl SessionRepository for SessionPgRepository {
             SELECT
                 id, user_id, refresh_token, expires_at,
                 ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token, oidc_sid
+                oidc_id_token, oidc_sid, dpop_jkt, origin
             FROM auth.sessions
             WHERE user_id = $1
             ORDER BY created_at DESC
@@ -212,6 +218,69 @@ impl SessionRepository for SessionPgRepository {
                     row.get("family_id"),
                     row.get("oidc_id_token"),
                     row.get("oidc_sid"),
+                    row.get("dpop_jkt"),
+                    crate::domain::entities::session::SessionOrigin::from_wire(row.get("origin")),
+                )
+            })
+            .collect();
+
+        Ok(sessions)
+    }
+
+    async fn list_sessions_paginated(
+        &self,
+        user_id_filter: Option<Uuid>,
+        include_revoked: bool,
+        limit: i64,
+        offset: i64,
+    ) -> SessionRepositoryResult<Vec<Session>> {
+        // Single SQL with nullable-user-id + include-revoked flag
+        // baked in as parameters, rather than four hand-forked
+        // queries. `$1::uuid IS NULL` short-circuits when no filter is
+        // set; `$2 OR (revoked = false AND expires_at > NOW())` folds
+        // the active-only rule into one predicate. Both branches use
+        // the same index (`idx_sessions_user_id`) on the filtered
+        // path, and a full table scan bounded by `LIMIT` on the
+        // unfiltered path — acceptable for an admin-triggered view
+        // that operators paginate through.
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                id, user_id, refresh_token, expires_at,
+                ip_address, user_agent, created_at, revoked, family_id,
+                oidc_id_token, oidc_sid, dpop_jkt, origin
+            FROM auth.sessions
+            WHERE ($1::uuid IS NULL OR user_id = $1)
+              AND ($2 OR (revoked = false AND expires_at > NOW()))
+            ORDER BY created_at DESC
+            LIMIT $3 OFFSET $4
+            "#,
+        )
+        .bind(user_id_filter)
+        .bind(include_revoked)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)?;
+
+        let sessions = rows
+            .into_iter()
+            .map(|row| {
+                Session::from_raw(
+                    row.get("id"),
+                    row.get("user_id"),
+                    row.get("refresh_token"),
+                    row.get("expires_at"),
+                    row.get("ip_address"),
+                    row.get("user_agent"),
+                    row.get("created_at"),
+                    row.get("revoked"),
+                    row.get("family_id"),
+                    row.get("oidc_id_token"),
+                    row.get("oidc_sid"),
+                    row.get("dpop_jkt"),
+                    crate::domain::entities::session::SessionOrigin::from_wire(row.get("origin")),
                 )
             })
             .collect();
@@ -464,6 +533,66 @@ impl SessionRepository for SessionPgRepository {
 
         Ok(result.rows_affected())
     }
+
+    async fn delete_sessions_expired_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> SessionRepositoryResult<u64> {
+        // Same shape as `delete_expired_sessions` but the caller picks the
+        // cutoff instead of it being pinned to NOW(). Lets the janitor
+        // keep a forensic window past the natural session expiry — see
+        // `SessionCleanupService` and [[project_session_janitor_missing]].
+        let result = sqlx::query(
+            r#"
+            DELETE FROM auth.sessions
+            WHERE expires_at < $1
+            "#,
+        )
+        .bind(cutoff)
+        .execute(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)?;
+
+        Ok(result.rows_affected())
+    }
+
+    async fn bind_dpop_jkt(&self, session_id: Uuid, dpop_jkt: &str) -> SessionRepositoryResult<()> {
+        // `WHERE dpop_jkt IS NULL` enforces the immutability invariant
+        // at the SQL level — a bound session's UPDATE affects 0 rows
+        // and we surface `DpopAlreadyBound`. Also guards against a
+        // stolen cookie replaying the bind endpoint with the
+        // attacker's own thumbprint on an already-bound session.
+        let result = sqlx::query(
+            r#"
+            UPDATE auth.sessions
+            SET dpop_jkt = $2
+            WHERE id = $1 AND dpop_jkt IS NULL
+            "#,
+        )
+        .bind(session_id)
+        .bind(dpop_jkt)
+        .execute(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)?;
+
+        if result.rows_affected() == 0 {
+            // Distinguish "session gone" from "already bound" — the
+            // caller (bind endpoint) returns different HTTP shapes.
+            // A tiny extra SELECT here is worth the disambiguation
+            // because both cases are rare.
+            let row = sqlx::query("SELECT dpop_jkt FROM auth.sessions WHERE id = $1")
+                .bind(session_id)
+                .fetch_optional(&*self.pool)
+                .await
+                .map_err(Self::map_sqlx_error)?;
+            return match row {
+                None => Err(SessionRepositoryError::NotFound(session_id.to_string())),
+                Some(_) => Err(SessionRepositoryError::DpopAlreadyBound),
+            };
+        }
+
+        Ok(())
+    }
 }
 
 // Implementation of the storage port for the application layer
@@ -496,9 +625,9 @@ impl SessionStoragePort for SessionPgRepository {
                         INSERT INTO auth.sessions (
                             id, user_id, refresh_token, expires_at,
                             ip_address, user_agent, created_at, revoked, family_id,
-                            oidc_id_token, oidc_sid
+                            oidc_id_token, oidc_sid, dpop_jkt, origin
                         ) VALUES (
-                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
                         )
                         "#,
                 )
@@ -513,6 +642,8 @@ impl SessionStoragePort for SessionPgRepository {
                 .bind(session_clone.family_id())
                 .bind(session_clone.oidc_id_token())
                 .bind(session_clone.oidc_sid())
+                .bind(session_clone.dpop_jkt())
+                .bind(session_clone.origin().as_str())
                 .execute(&mut **tx)
                 .await
                 .map_err(Self::map_sqlx_error)?;
@@ -599,5 +730,35 @@ impl SessionStoragePort for SessionPgRepository {
         SessionRepository::revoke_user_sessions_by_federation_subject(self, issuer, subject)
             .await
             .map_err(DomainError::from)
+    }
+
+    async fn bind_dpop_jkt(&self, session_id: Uuid, dpop_jkt: &str) -> Result<(), DomainError> {
+        SessionRepository::bind_dpop_jkt(self, session_id, dpop_jkt)
+            .await
+            .map_err(DomainError::from)
+    }
+
+    async fn get_session_by_id(&self, session_id: Uuid) -> Result<Session, DomainError> {
+        SessionRepository::get_session_by_id(self, session_id)
+            .await
+            .map_err(DomainError::from)
+    }
+
+    async fn list_sessions_paginated(
+        &self,
+        user_id_filter: Option<Uuid>,
+        include_revoked: bool,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Session>, DomainError> {
+        SessionRepository::list_sessions_paginated(
+            self,
+            user_id_filter,
+            include_revoked,
+            limit,
+            offset,
+        )
+        .await
+        .map_err(DomainError::from)
     }
 }

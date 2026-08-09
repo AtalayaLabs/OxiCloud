@@ -564,7 +564,8 @@
     "magic_hint": "Kein Passwort? Geben Sie Ihre E-Mail-Adresse ein und wir senden Ihnen einen einmaligen Anmeldelink.",
     "magic_unavailable": "Die Anmeldung per E-Mail ist auf diesem Server nicht verfügbar.",
     "passwords_match": "Passwörter stimmen überein",
-    "sign_in": "Anmelden"
+    "sign_in": "Anmelden",
+    "logged_out": "Erfolgreich abgemeldet."
   },
   "storage": {
     "title": "Speicher",
@@ -842,6 +843,38 @@
     "quotas": "Kontingente",
     "reset_pw_for": "Neues Passwort für",
     "role": "Rolle",
+    "sessions": {
+      "filter_user": "Benutzer (UUID)",
+      "include_revoked": "Widerrufene / abgelaufene einschließen",
+      "refresh": "Aktualisieren",
+      "col_user": "Benutzer",
+      "col_origin": "Herkunft",
+      "col_created": "Erstellt",
+      "col_expires": "Läuft ab",
+      "col_ip": "IP",
+      "col_user_agent": "User Agent",
+      "col_bound": "Gebunden",
+      "col_status": "Status",
+      "current_tooltip": "Dies ist die Sitzung, die Sie gerade nutzen — der Widerruf meldet Sie ab.",
+      "bound_tooltip": "DPoP-gebunden (jkt {{prefix}}…)",
+      "unbound": "ungebunden",
+      "revoked": "widerrufen",
+      "expired": "abgelaufen",
+      "active": "aktiv",
+      "revoke": "Widerrufen",
+      "empty": "Keine Sitzungen entsprechen dem aktuellen Filter.",
+      "revoke_self_confirm": "⚠️  Dies ist IHRE aktuelle Sitzung. Wenn Sie sie widerrufen, werden Sie sofort abgemeldet und müssen sich neu anmelden. Fortfahren?",
+      "revoke_confirm": "Diese Sitzung widerrufen? Die nächste Anfrage von diesem Browser erhält 401.",
+      "revoke_lag_notice": "Das Widerrufen einer Sitzung unterbricht den Refresh-Pfad sofort, aber ein bereits im Browser vorhandenes JWT bleibt bis zu {{secs}} Sekunden gültig, bis der nächste Refresh-Versuch erfolgt.",
+      "origin": {
+        "password": "Passwort",
+        "opaque": "OPAQUE",
+        "magic_link": "Magic Link",
+        "oidc": "SSO",
+        "device": "Gerät",
+        "unknown": "Unbekannt"
+      }
+    },
     "smtp_fail": "Senden fehlgeschlagen.",
     "smtp_send": "Senden",
     "smtp_test": "Test-E-Mail senden",

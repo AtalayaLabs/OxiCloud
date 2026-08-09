@@ -1,5 +1,5 @@
 import { test, expect } from './coverage-helpers';
-import { apiLogin, apiCreateFolder, apiUploadFile, SAMPLE_FILES } from '../scenarios/helpers';
+import { apiLogin, apiCreateFolder, apiUploadFile, SAMPLE_FILES } from './helpers';
 
 /**
  * Photos route — populate the grid with uploaded images, open the lightbox and

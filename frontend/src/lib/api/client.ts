@@ -19,6 +19,11 @@
 
 import { getCsrfHeaders } from './csrf';
 import { updateFromHeader } from '$lib/stores/serverStatus.svelte';
+import {
+	buildDpopProof,
+	isDpopNonceChallenge,
+	updateNonceFromResponse
+} from '$lib/auth/dpop-proof';
 
 /**
  * Name of the response header the server stamps while a
@@ -30,7 +35,10 @@ const SERVER_STATUS_HEADER = 'x-server-status';
 
 const REFRESH_ENDPOINT = '/api/auth/refresh';
 
-/** Auth primitives — a 401 here is genuine, never an expired access token. */
+/** Auth primitives — a 401 here is genuine, never an expired access token.
+ * Also used by the session-teardown gate to exempt endpoints that must
+ * still fire during / immediately after a logout (the logout POST itself,
+ * and every login path a user might retry on the /login landing). */
 const AUTH_PRIMITIVES = [
 	'/api/auth/login',
 	'/api/auth/logout',
@@ -38,7 +46,11 @@ const AUTH_PRIMITIVES = [
 	'/api/auth/register',
 	'/api/auth/setup',
 	'/api/auth/oidc/',
-	'/api/auth/device/'
+	'/api/auth/device/',
+	'/api/auth/opaque/',
+	'/api/auth/magic-link/',
+	'/api/auth/status',
+	'/api/auth/dpop/'
 ];
 
 export type FetchFn = typeof fetch;
@@ -94,7 +106,7 @@ export function createApiFetch(deps: ApiClientDeps): FetchFn {
 		if (refreshInFlight) return refreshInFlight;
 		refreshInFlight = (async () => {
 			try {
-				const r = await rawFetch(REFRESH_ENDPOINT, {
+				const r = await dpopFetch(REFRESH_ENDPOINT, {
 					method: 'POST',
 					credentials: 'same-origin',
 					headers: { 'Content-Type': 'application/json', ...getCsrfHeaders() },
@@ -110,9 +122,71 @@ export function createApiFetch(deps: ApiClientDeps): FetchFn {
 		return refreshInFlight;
 	}
 
+	/**
+	 * Wrap the raw fetch with DPoP proof injection + nonce challenge/retry.
+	 *
+	 *   1. Build proof for the request's method + canonical URL (no query).
+	 *   2. Attach as `DPoP` header. Fail-open if the keypair is unavailable
+	 *      (browser without SubtleCrypto / IndexedDB) — we simply skip the
+	 *      header and let the request go through unbound; server-side
+	 *      middleware exempts unbound sessions.
+	 *   3. After response, harvest a fresh `DPoP-Nonce` if the server sent
+	 *      one, so the NEXT request has the current nonce.
+	 *   4. If the response is a nonce challenge (`401 use_dpop_nonce`),
+	 *      REBUILD the proof with the just-received nonce and retry ONCE.
+	 *      A second challenge on the retry is a bug — surface it as a real
+	 *      401 rather than looping.
+	 *
+	 * Cross-origin requests skip DPoP entirely (privacy — don't leak the
+	 * user's public key to third parties). Request bodies are consumed at
+	 * most once during retry: `init.body` is passed by reference, and the
+	 * only mutating step is `Headers`; a caller-supplied `ReadableStream`
+	 * body would need `duplex: 'half'`, which they'd already have to opt
+	 * into for cross-origin CORS anyway.
+	 */
+	async function dpopFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+		const origin = deps.origin ?? globalThis.location?.origin ?? 'http://localhost';
+		const urlStr = urlString(input as RequestInfo | URL);
+		if (isCrossOrigin(urlStr, origin)) return rawFetch(input, init);
+
+		const method = init?.method ?? 'GET';
+		const withProof = async (): Promise<Response> => {
+			const proof = await buildDpopProof(method, urlStr);
+			const initWithProof: RequestInit = proof
+				? { ...init, headers: mergeHeader(init?.headers, 'DPoP', proof) }
+				: (init ?? {});
+			const res = await rawFetch(input, initWithProof);
+			updateNonceFromResponse(res);
+			return res;
+		};
+
+		const first = await withProof();
+		if (!isDpopNonceChallenge(first)) return first;
+		// `updateNonceFromResponse` already stored the fresh nonce
+		// carried on this 401; the next `buildDpopProof` will pick it
+		// up. If the RETRY also produces `use_dpop_nonce`, surface it
+		// — infinite retry would mask a server-side nonce bug.
+		return withProof();
+	}
+
 	const apiFetch: FetchFn = async (input, init) => {
 		const origin = deps.origin ?? globalThis.location?.origin ?? 'http://localhost';
-		const response = await rawFetch(input, init);
+		// Session-teardown short-circuit. While a logout is in flight (or
+		// the caller has already navigated to /login post-logout without
+		// re-authenticating), the session is dead — any subscriber-fired
+		// refresh (`session.load()` in the layout, a store `$effect` re-
+		// fetching its slice, an idle poll) would hit /me → 401 → refresh
+		// → 401 → sessionExpiredHandler and clobber the friendly
+		// "logged out" landing with `?source=session_expired`. Fail these
+		// fast with an AbortError so callers unwrap cleanly via their
+		// existing `.catch` blocks and no server hop occurs. The auth
+		// primitives themselves (notably `/api/auth/logout`) are exempt so
+		// the logout POST that FLIPPED the gate can still complete.
+		const urlStrEarly = urlString(input as RequestInfo | URL);
+		if (logoutInProgress && !bypassesRetry(urlStrEarly)) {
+			throw new DOMException('Session terminated', 'AbortError');
+		}
+		const response = await dpopFetch(input, init);
 		// Server-status header piggyback — the server stamps
 		// `x-server-status` on every response while a maintenance
 		// event is in progress (see middleware::server_status). Read
@@ -168,12 +242,27 @@ export function createApiFetch(deps: ApiClientDeps): FetchFn {
 			}
 			throw new Error('Session expired');
 		}
-		const retryResponse = await rawFetch(input, init);
+		// Retry through dpopFetch (not rawFetch directly) so the
+		// post-refresh request also carries a valid DPoP proof —
+		// otherwise a session bound to a keypair would 401 again on
+		// the retry with `dpop_missing`.
+		const retryResponse = await dpopFetch(input, init);
 		updateFromHeader(retryResponse.headers.get(SERVER_STATUS_HEADER));
 		return retryResponse;
 	};
 
 	return apiFetch;
+}
+
+/**
+ * Merge a single header into an existing `HeadersInit` (`Headers`, plain
+ * object, or array-of-pairs), returning a fresh `Headers` so the caller's
+ * init isn't mutated. Preserves case-insensitivity via the `Headers` API.
+ */
+function mergeHeader(base: HeadersInit | undefined, name: string, value: string): Headers {
+	const merged = new Headers(base ?? {});
+	merged.set(name, value);
+	return merged;
 }
 
 // ── Default singleton ──────────────────────────────────────────────────────
@@ -189,22 +278,34 @@ export function setSessionExpiredHandler(fn: () => void): void {
 	sessionExpiredHandler = fn;
 }
 
-// Logout-in-progress gate. Set to true by the logout endpoint wrapper
-// (endpoints/auth.ts) for the duration of the POST /api/auth/logout
-// call; reset in its `finally`. While set, `sessionExpiredHandler`
-// is suppressed — an ambient 401 during the logout window is expected
-// (the backend clears cookies and revokes the session as part of the
-// logout response, so any in-flight fetch racing the logout will 401),
-// and firing the handler would navigate to `/login?source=session_expired`
-// mid-flight, cancelling the logout POST before we get its response
-// body. Since the response body carries `post_logout_url` (the IdP's
-// end_session_endpoint URL for OIDC-linked sessions), losing it means
-// the browser never redirects to the IdP and the SSO session persists.
-// See AppShell.svelte::onLogout for the caller-side counterpart.
+// Session-teardown gate. Flipped ON by `AppShell::onLogout` immediately
+// BEFORE it calls `logout()` and left ON across the redirect to /login
+// (module state persists over SvelteKit soft nav — a hard reload wipes
+// it back to `false`, which is the correct default for a fresh session).
+// While set:
+//   1. `apiFetch` short-circuits every non-auth-primitive request with
+//      an `AbortError` — no server hop, no 401, no audit noise. Callers
+//      unwrap through their existing `.catch` blocks.
+//   2. On a 401 the `sessionExpiredHandler` divert is suppressed so it
+//      cannot clobber the friendly `/login?source=logged_out` landing
+//      with `?source=session_expired`.
+// Rule (1) alone would defeat the logout POST itself, so the auth
+// primitives (`/api/auth/logout`, `/api/auth/refresh`, …) are exempted
+// via `bypassesRetry`. Rule (2) additionally covers the tail-end race
+// where the logout response's `post_logout_url` matters for OIDC — an
+// ambient 401 mid-flight cannot cancel the pending POST and swallow
+// its body, which would leave the IdP session live.
 let logoutInProgress = false;
 
 export function setLogoutInProgress(value: boolean): void {
 	logoutInProgress = value;
+}
+
+/** Read-only view of the gate — used by cross-tab handlers to distinguish
+ * OUR logout (already handled by AppShell.onLogout with source=logged_out)
+ * from ANOTHER tab's logout (which needs a bare redirect). */
+export function isLogoutInProgress(): boolean {
+	return logoutInProgress;
 }
 
 // Same shape as `sessionExpiredHandler` — mutable so the app can install

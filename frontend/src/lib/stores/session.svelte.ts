@@ -6,7 +6,10 @@
  * routing: externals (magic-link / OIDC-only / OCM recipients) have no home
  * folder and land on the shared-with-me view.
  */
-import { fetchMe, tryRefresh } from '$lib/api/endpoints/auth';
+import { bindDpopIfPossible, fetchMe, tryRefresh } from '$lib/api/endpoints/auth';
+import { setLogoutInProgress } from '$lib/api/client';
+import { hasSessionHint } from '$lib/api/csrf';
+import { seedNonceFromCookie } from '$lib/auth/dpop-proof';
 import { drives } from '$lib/stores/drives.svelte';
 import type { User } from '$lib/api/types';
 import { ensureActiveUser } from '$lib/utils/localStoragePrefs';
@@ -40,13 +43,35 @@ class SessionStore {
 	 */
 	async load(): Promise<User | null> {
 		if (this.loaded) return this.user;
+		// No JS-visible session hint ⇒ nothing to probe. The server sets
+		// `oxicloud_csrf` alongside the HttpOnly session cookies and clears
+		// it on logout, so a missing hint means no session. Skips the
+		// doomed 2× /me + /refresh burst that would otherwise fire on
+		// every first landing / post-logout re-mount with no cookies.
+		if (!hasSessionHint()) {
+			this.user = null;
+			this.loaded = true;
+			return null;
+		}
 		try {
 			let me = await fetchMe();
 			if (!me && (await tryRefresh())) {
 				me = await fetchMe();
 			}
-			if (me) this.setUser(me);
-			else this.user = null;
+			if (me) {
+				this.setUser(me);
+				// Post-redirect DPoP bind — catches OIDC / magic-link
+				// flows whose server-side callback creates the session
+				// UNBOUND (no way for the redirect to carry the JKT in
+				// the callback body). Gate on `is_dpop_bound` so we
+				// don't call the endpoint on every SPA load: password
+				// login already binds at session-mint time, so `/me`
+				// reports `true` on the very first request and skip
+				// avoids the 409 `already_bound` reject that would
+				// otherwise clutter the audit stream. Fire-and-forget
+				// so a slow IndexedDB open doesn't stall app boot.
+				if (me.is_dpop_bound === false) void bindDpopIfPossible();
+			} else this.user = null;
 		} catch {
 			this.user = null;
 		}
@@ -65,6 +90,19 @@ class SessionStore {
 	setUser(user: User): void {
 		this.user = user;
 		ensureActiveUser(user.id);
+		// Any successful login clears the session-teardown gate. Without
+		// this, a logout → login within the same SPA session leaves the
+		// gate stuck at `true` — the login POST is exempted via
+		// `AUTH_PRIMITIVES`, but the /me + /drives + … fetches the app
+		// fires post-login would all abort with "Session terminated".
+		setLogoutInProgress(false);
+		// Consume the one-shot `oxicloud_dpop_nonce` cookie the login
+		// response set. For POST logins (OPAQUE, legacy, magic-link
+		// SPA-side, OIDC exchange) this is where the seed lands — the
+		// hooks.client boot pass fires too early (before any login).
+		// Redirect-flow logins are seeded at boot; both paths are safe
+		// to double-run (idempotent, cookie is single-shot).
+		seedNonceFromCookie();
 	}
 
 	/**
@@ -107,6 +145,17 @@ class SessionStore {
 		this.user = null;
 		this.homeFolderId = null;
 		this.homeFolderName = null;
+		// Mark the store as `loaded` so any subsequent `session.load()` —
+		// notably the login page's existing-session probe and the root
+		// layout's post-nav mount — short-circuits to `null` instead of
+		// re-probing `/api/auth/me`. After an explicit logout we know for
+		// a fact the session is gone; a probe would 401, the interceptor
+		// would retry via /refresh (also 401), and `sessionExpiredHandler`
+		// would divert to `/login?source=session_expired` — clobbering the
+		// nice "logged out" landing. On a hard nav (natural expiry path)
+		// module state is fresh and this flag is `false` again, so the
+		// probe still runs there.
+		this.loaded = true;
 	}
 }
 

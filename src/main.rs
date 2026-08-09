@@ -780,6 +780,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 app_state.clone(),
                 require_no_password_change_pending_layer,
             ))
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                require_dpop_layer,
+            ))
             .layer(axum::middleware::from_fn(csrf_middleware))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
@@ -791,6 +795,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 require_no_password_change_pending_layer,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                require_dpop_layer,
             ))
             .layer(axum::middleware::from_fn(csrf_middleware))
             .layer(axum::middleware::from_fn_with_state(
@@ -813,6 +821,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .layer(axum::middleware::from_fn_with_state(
                     app_state.clone(),
                     require_no_password_change_pending_layer,
+                ))
+                .layer(axum::middleware::from_fn_with_state(
+                    app_state.clone(),
+                    require_dpop_layer,
                 ))
                 .layer(axum::middleware::from_fn(csrf_middleware))
                 .layer(axum::middleware::from_fn_with_state(
@@ -851,6 +863,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 app_state.clone(),
                 require_no_password_change_pending_layer,
             ))
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                require_dpop_layer,
+            ))
             .layer(axum::middleware::from_fn(csrf_middleware))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
@@ -863,6 +879,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 require_no_password_change_pending_layer,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                require_dpop_layer,
             ))
             .layer(axum::middleware::from_fn(csrf_middleware))
             .layer(axum::middleware::from_fn_with_state(
@@ -885,6 +905,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         // change-password, and logout internally so the SPA can
         // complete the reset flow — see the middleware doc for the
         // allowlist and its rationale.
+        use oxicloud::interfaces::middleware::dpop::require_dpop_layer;
         use oxicloud::interfaces::middleware::user::{
             require_internal_user_layer, require_no_password_change_pending_layer,
         };
@@ -892,6 +913,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 require_no_password_change_pending_layer,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                require_dpop_layer,
             ))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
@@ -908,6 +933,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             ))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
+                require_dpop_layer,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
                 require_internal_user_layer,
             ))
             .layer(axum::middleware::from_fn_with_state(
@@ -918,6 +947,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 require_no_password_change_pending_layer,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                require_dpop_layer,
             ))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
@@ -1358,6 +1391,19 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     tracing::info!("Starting OxiCloud server on http://{}", addr);
+
+    // Opt-in Prometheus `/metrics` exporter on a separate listener.
+    // Installs the recorder BEFORE the main listener starts serving so
+    // the first request's counter increments are captured (recorder
+    // install is racy vs first emit — order matters).
+    if let Some(metrics_addr) = config.metrics_listen
+        && let Err(err) = oxicloud::interfaces::metrics::spawn(metrics_addr).await
+    {
+        // Fail loudly: operators asked for metrics; not surfacing
+        // this would hide a misconfigured scrape endpoint.
+        tracing::error!("Prometheus /metrics setup failed: {err}");
+        return Err(err);
+    }
 
     let socket = make_socket(&addr, reuse_port)?;
 

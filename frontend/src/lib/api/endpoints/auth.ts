@@ -3,7 +3,7 @@
  * primitives here intentionally bypass it (see client.ts) so a 401 surfaces as
  * a genuine failure to the caller.
  */
-import { ApiError, apiFetch, setLogoutInProgress } from '$lib/api/client';
+import { ApiError, apiFetch } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type { AuthResponse, User } from '$lib/api/types';
 
@@ -36,9 +36,48 @@ const JSON_HEADERS = { 'Content-Type': 'application/json' };
  * a 401 here just means "not logged in" and must not trigger the global
  * refresh-and-redirect (which would bounce the app in a refresh loop on the
  * unauthenticated initial load). Returns null when unauthenticated.
+ *
+ * Attaches a DPoP proof manually — under `OXICLOUD_DPOP_MODE=required` a
+ * BOUND session that presents no proof gets 401'd by the middleware
+ * (Gate 9), and this probe fires on every SPA bootstrap for authenticated
+ * users. Without the proof, the session load loop would always land in
+ * "not logged in" on fresh page loads even though cookies are still valid.
+ * Failure to build a proof (no keypair, missing WebCrypto) falls back to a
+ * headerless request — the server still accepts it for unbound sessions.
  */
 export async function fetchMe(): Promise<User | null> {
-	const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
+	// Build + sign a DPoP proof, send with the header, harvest any
+	// `DPoP-Nonce` off the response into the shared client cache
+	// (so the NEXT apiFetch call reuses it — no wasted round trip).
+	// Handle the `use_dpop_nonce` challenge inline: the first request
+	// per fresh session has no cached nonce, and Gate 9 required-mode
+	// middleware 401-challenges a bound session's very first proof so
+	// the client picks up a fresh nonce. Without this retry, `/api/auth/me`
+	// on a fresh page load would always 401 → SPA thinks user isn't
+	// logged in → stuck on /login even though cookies are valid.
+	//
+	// Falls back to a plain fetch when the DPoP module is unavailable
+	// (SubtleCrypto disabled, IndexedDB blocked): unbound sessions
+	// still authenticate; bound sessions in required mode won't, but
+	// that's the fail-open contract from `docs/plan/dpop.md`.
+	let dpopMod: typeof import('$lib/auth/dpop-proof') | null = null;
+	try {
+		dpopMod = await import('$lib/auth/dpop-proof');
+	} catch {
+		/* no dpop module → plain fetch */
+	}
+	const url = `${location.origin}/api/auth/me`;
+	const send = async (): Promise<Response> => {
+		const proof = dpopMod ? await dpopMod.buildDpopProof('GET', url).catch(() => null) : null;
+		const headers: HeadersInit = proof ? { DPoP: proof } : {};
+		const r = await fetch('/api/auth/me', { credentials: 'same-origin', headers });
+		if (dpopMod) dpopMod.updateNonceFromResponse(r);
+		return r;
+	};
+	let res = await send();
+	// One retry on nonce challenge — mirror the apiFetch interceptor.
+	// A second challenge on the retry is a server bug; surface the 401.
+	if (dpopMod && dpopMod.isDpopNonceChallenge(res)) res = await send();
 	if (res.status === 401) return null;
 	if (!res.ok) throw new Error(`/api/auth/me failed: ${res.status}`);
 	return (await res.json()) as User;
@@ -48,22 +87,118 @@ export async function fetchMe(): Promise<User | null> {
  * Attempt a single token refresh (raw fetch, no interceptor). Returns whether
  * it succeeded. Used by the startup probe; mid-session refresh is handled
  * transparently by apiFetch for all other endpoints.
+ *
+ * Mirrors `fetchMe`'s DPoP handling: dynamic-imports the proof module and
+ * attaches a signed proof so a bound session under `required` mode can still
+ * refresh on page reload. Falls back to a headerless refresh if the module
+ * is unavailable (unbound sessions still succeed; bound sessions in required
+ * mode won't — the documented fail-open contract in `docs/plan/dpop.md`).
+ * Retries ONCE on a `use_dpop_nonce` challenge so the very first request
+ * after a page load can adopt the freshly-issued nonce.
  */
 export async function tryRefresh(): Promise<boolean> {
+	let dpopMod: typeof import('$lib/auth/dpop-proof') | null = null;
 	try {
-		const res = await fetch('/api/auth/refresh', {
+		dpopMod = await import('$lib/auth/dpop-proof');
+	} catch {
+		/* no dpop module → plain fetch */
+	}
+	const url = `${location.origin}/api/auth/refresh`;
+	const send = async (): Promise<Response> => {
+		const proof = dpopMod ? await dpopMod.buildDpopProof('POST', url).catch(() => null) : null;
+		const headers: HeadersInit = proof
+			? { ...JSON_HEADERS, ...getCsrfHeaders(), DPoP: proof }
+			: { ...JSON_HEADERS, ...getCsrfHeaders() };
+		const r = await fetch('/api/auth/refresh', {
 			method: 'POST',
 			credentials: 'same-origin',
-			headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
+			headers,
 			body: '{}'
 		});
+		if (dpopMod) dpopMod.updateNonceFromResponse(r);
+		return r;
+	};
+	try {
+		let res = await send();
+		if (dpopMod && dpopMod.isDpopNonceChallenge(res)) res = await send();
 		return res.ok;
 	} catch {
 		return false;
 	}
 }
 
+/**
+ * Compute a DPoP JWK thumbprint for the current browser keypair, if
+ * WebCrypto + IndexedDB are available. Returned to callers as an
+ * optional string; a `null` return means the browser can't support
+ * DPoP, and login proceeds unbound (see `docs/plan/dpop.md` — fail-
+ * open per-session, immutable so bound sessions can't be downgraded).
+ *
+ * Any failure is swallowed to `null` — a DPoP hiccup MUST NOT block
+ * authentication. The unbound session is still functional, just not
+ * DPoP-protected against info-stealer replay.
+ */
+async function tryBindingThumbprint(): Promise<string | null> {
+	try {
+		const { ensureKeypair, computeJkt } = await import('$lib/auth/dpop');
+		const kp = await ensureKeypair();
+		return await computeJkt(kp.publicKey);
+	} catch (err) {
+		console.debug('dpop: keypair unavailable, logging in unbound', err);
+		return null;
+	}
+}
+
+/**
+ * Post-redirect DPoP bind — for OIDC callback and magic-link
+ * redemption pages, where the session was created before the SPA had
+ * a chance to send its thumbprint in the login body. Call once,
+ * fire-and-forget style: any failure (409 already bound, 400
+ * malformed, network error) is swallowed to `false` — the session
+ * either was already bound (no harm) or can't be bound now (fail-
+ * open per plan).
+ *
+ * Returns `true` when the bind succeeded, `false` otherwise. Callers
+ * typically ignore the return value; they might log it in dev.
+ */
+export async function bindDpopIfPossible(): Promise<boolean> {
+	const jkt = await tryBindingThumbprint();
+	if (!jkt) return false;
+	try {
+		const res = await apiFetch('/api/auth/dpop/bind', {
+			method: 'POST',
+			credentials: 'same-origin',
+			headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
+			body: JSON.stringify({ dpop_jkt: jkt })
+		});
+		if (res.ok) {
+			// Bind attached the thumbprint to the SESSION row — but the
+			// browser is still carrying the JWT issued at OIDC callback
+			// / magic-link redemption BEFORE that bind, so its
+			// `cnf.jkt` claim is empty. Force a refresh cycle: the
+			// `rotate_session` path preserves the DPoP binding on the
+			// new row and mints a fresh JWT whose `cnf.jkt` reflects
+			// it. Without this, downstream code that keys off
+			// `CurrentUser::dpop_jkt` (admin sessions "is_current"
+			// highlight, DPoP verifier's expected_jkt lookup) sees
+			// None and treats the caller as unbound.
+			await tryRefresh();
+		}
+		return res.ok;
+	} catch (err) {
+		console.debug('dpop: bind endpoint call failed', err);
+		return false;
+	}
+}
+
 export async function login(emailOrUsername: string, password: string): Promise<AuthResponse> {
+	// Compute DPoP JKT ONCE per login attempt so both branches
+	// (OPAQUE and legacy) send the same value. Null = browser can't
+	// support DPoP (missing SubtleCrypto / IndexedDB / secure context)
+	// or a transient failure; the server accepts absent → session
+	// created unbound.
+	const dpopJkt = await tryBindingThumbprint();
+
 	// ── OPAQUE lookup (Phase 3) ────────────────────────────────────────
 	// Ask the server whether this identifier already has an OPAQUE
 	// envelope on file. If yes → use OPAQUE login (KE1/KE3). If no →
@@ -98,7 +233,7 @@ export async function login(emailOrUsername: string, password: string): Promise<
 		// per-envelope KSF storage (`ksf === null`), which preserves
 		// the pre-migration behaviour.
 		const ksf = lookup.ksf ?? (await opaqueKsfForClient());
-		const auth = await opaqueLogin(emailOrUsername, password, ksf);
+		const auth = await opaqueLogin(emailOrUsername, password, ksf, dpopJkt);
 
 		// Phase C: silent KSF rotation. If this envelope's KSF drifted
 		// from what the server currently publishes (operator retuned
@@ -131,7 +266,11 @@ export async function login(emailOrUsername: string, password: string): Promise<
 		method: 'POST',
 		credentials: 'same-origin',
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify({ username: emailOrUsername, password })
+		body: JSON.stringify({
+			username: emailOrUsername,
+			password,
+			...(dpopJkt ? { dpop_jkt: dpopJkt } : {})
+		})
 	});
 	if (!res.ok) {
 		// Surface the backend `error_type` so the login page can offer
@@ -425,32 +564,44 @@ export async function unlinkOidc(): Promise<void> {
 }
 
 export async function logout(): Promise<LogoutResult> {
-	// Gate the session-expired handler for the duration of this call.
-	// The backend revokes the session + clears cookies as part of the
-	// logout response, so any in-flight fetch racing us will 401. Without
-	// the gate, that ambient 401 would trigger a navigation to
-	// `/login?source=session_expired`, cancel the pending logout POST,
-	// and swallow the `post_logout_url` response body — leaving the SSO
-	// session live on the IdP because we never navigate to its
-	// end_session_endpoint. See client.ts `logoutInProgress` for details.
-	setLogoutInProgress(true);
+	// The session-teardown gate (`setLogoutInProgress(true)`) is flipped
+	// by the CALLER (`AppShell::onLogout`) BEFORE this function runs, and
+	// left ON across the goto to /login. See `client.ts::logoutInProgress`
+	// for what the gate suppresses (short-circuits ambient fetches with
+	// AbortError + blocks the session-expired divert).
+	const res = await apiFetch('/api/auth/logout', {
+		method: 'POST',
+		credentials: 'same-origin',
+		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
+		body: '{}'
+	});
+
+	// Wipe DPoP browser state so the next login mints a fresh
+	// keypair — no correlation across the logout boundary is
+	// desirable (a new session is a new identity from the
+	// per-request-signature standpoint). Runs UNCONDITIONALLY of
+	// the logout HTTP status: even if the server call failed,
+	// the user's intent was to log out, and leaving a stale
+	// keypair around would confuse the next login's bind step.
 	try {
-		const res = await apiFetch('/api/auth/logout', {
-			method: 'POST',
-			credentials: 'same-origin',
-			headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-			body: '{}'
-		});
-		if (!res.ok) return {};
-		try {
-			const body = (await res.json()) as { post_logout_url?: unknown };
-			return typeof body?.post_logout_url === 'string'
-				? { postLogoutUrl: body.post_logout_url }
-				: {};
-		} catch {
-			return {};
-		}
-	} finally {
-		setLogoutInProgress(false);
+		const { clearKeypair } = await import('$lib/auth/dpop');
+		const { clearNonce } = await import('$lib/auth/dpop-proof');
+		const { broadcastSessionCleared } = await import('$lib/auth/session-broadcast');
+		await clearKeypair();
+		clearNonce();
+		// Notify every OTHER tab of this origin that the session is
+		// gone — Gate 8 cross-tab UX. Tabs that were sitting idle
+		// don't have to wait for their next 401 to notice.
+		broadcastSessionCleared();
+	} catch (err) {
+		console.debug('dpop: cleanup failed during logout', err);
+	}
+
+	if (!res.ok) return {};
+	try {
+		const body = (await res.json()) as { post_logout_url?: unknown };
+		return typeof body?.post_logout_url === 'string' ? { postLogoutUrl: body.post_logout_url } : {};
+	} catch {
+		return {};
 	}
 }

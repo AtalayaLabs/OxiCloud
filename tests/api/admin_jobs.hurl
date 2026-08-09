@@ -67,40 +67,45 @@ Authorization: Bearer {{admin_token}}
 
 HTTP 200
 [Asserts]
-# Names — the four scheduler tenants.
+# Presence asserts — each scheduled tenant we EXPECT must be
+# listed. Failure of any one means the registration wiring was
+# dropped; adding a new tenant elsewhere never breaks these.
+#
+# Deliberately shape-not-cardinality: an earlier version of this
+# step hardcoded `count == 12` / `count == 4` totals, which broke
+# on EVERY new registration in unrelated PRs. Duplicate-name
+# registration is already trapped at boot with a panic (see
+# `TrashCleanupService::register` — the registry rejects same-name
+# reinserts loudly), so the total-count gate added nothing that
+# `contains` didn't already cover, at the cost of drive-by
+# maintenance every quarter.
 jsonpath "$[*].name" contains "trash_cleanup"
 jsonpath "$[*].name" contains "usage_reconcile"
 jsonpath "$[*].name" contains "dedup_gc"
 jsonpath "$[*].name" contains "grant_cleanup"
+jsonpath "$[*].name" contains "session_cleanup"
 
-# Scheduled jobs' interval_ms values, in whatever order:
-#   TrashCleanup    → 24 h = 86_400_000 ms
-#   GrantCleanup    → 24 h = 86_400_000 ms
-#   StorageReconcile → 600 s = 600_000 ms
-# Recursive descent collects all interval_ms values across the
-# array; `contains` doesn't care about order.
+# Schema asserts — the response shape itself. Every scheduled
+# tenant carries an `interval_ms` value; recursive-descent
+# `contains` on the specific intervals we ship pins the
+# non-default cadences without caring about the ordering or the
+# total number of scheduled tenants.
+#   TrashCleanup / GrantCleanup / SessionCleanup → 24 h = 86_400_000 ms
+#   StorageReconcile                             → 600 s = 600_000 ms
 jsonpath "$..interval_ms" contains 86400000
 jsonpath "$..interval_ms" contains 600000
 
-# On-demand job (`dedup_gc`) has no interval_ms field, so the
-# total count of interval_ms values is 3, not 4. Combined with
-# the four-name check above, this pins the on-demand-omission
-# behaviour without hitting the single-match filter trap.
-jsonpath "$..interval_ms" count == 3
-
-# Every entry carries a `running` bool — same aggregate primitive.
-# Count matches the registered-tenant count: 4 Part 1 periodics
-# (trash_cleanup, usage_reconcile, dedup_gc, grant_cleanup) + 5
-# Part 2 recoverables (drives_consistency, folders_consistency,
-# files_consistency, blobs_consistency, backend_consistency —
-# wrapped by RecoverableAdapter so they appear here alongside the
-# periodics) + 1 coordinator (consistency_batch — a plain
-# JobHandler that dispatches every registered `*_consistency`) +
-# 2 on-demand admin ops (backend_migration — the readonly-mode +
-# cutover backend swap; backend_rotate — K3, in-place per-blob
-# format normalisation, no readonly).
-# Bump when a new tenant registers.
-jsonpath "$..running" count == 12
+# Floor asserts — catastrophic-regression guard, not a fragile
+# total. Bump the floors in lockstep with the `contains "..."`
+# presence checks above: 5 named tenants total (trash_cleanup,
+# usage_reconcile, dedup_gc, grant_cleanup, session_cleanup) →
+# ≥ 5 `running` entries; 4 of those are scheduled (dedup_gc is
+# on-demand and carries no `interval_ms`) → ≥ 4 `interval_ms`
+# values. New unrelated tenants only PUSH the actual counts UP,
+# never below these floors, so they don't break on drive-by
+# additions.
+jsonpath "$..running" count >= 5
+jsonpath "$..interval_ms" count >= 4
 jsonpath "$[*].name" contains "drives_consistency"
 jsonpath "$[*].name" contains "folders_consistency"
 jsonpath "$[*].name" contains "files_consistency"

@@ -564,7 +564,8 @@
     "magic_hint": "Sem senha? Digite seu e-mail e enviaremos um link de acesso único.",
     "magic_unavailable": "O acesso por e-mail não está disponível neste servidor.",
     "passwords_match": "As palavras-passe coincidem",
-    "sign_in": "Entrar"
+    "sign_in": "Entrar",
+    "logged_out": "Sessão terminada com sucesso."
   },
   "storage": {
     "title": "Armazenamento",
@@ -842,6 +843,38 @@
     "quotas": "Cotas",
     "reset_pw_for": "Nova senha para",
     "role": "Função",
+    "sessions": {
+      "filter_user": "Utilizador (UUID)",
+      "include_revoked": "Incluir revogadas / expiradas",
+      "refresh": "Atualizar",
+      "col_user": "Utilizador",
+      "col_origin": "Origem",
+      "col_created": "Criada",
+      "col_expires": "Expira",
+      "col_ip": "IP",
+      "col_user_agent": "Agente de utilizador",
+      "col_bound": "Vinculada",
+      "col_status": "Estado",
+      "current_tooltip": "Esta é a sessão que está a utilizar agora — revogá-la irá terminar a sua sessão.",
+      "bound_tooltip": "Vinculada por DPoP (jkt {{prefix}}…)",
+      "unbound": "não vinculada",
+      "revoked": "revogada",
+      "expired": "expirada",
+      "active": "ativa",
+      "revoke": "Revogar",
+      "empty": "Nenhuma sessão corresponde ao filtro atual.",
+      "revoke_self_confirm": "⚠️  Esta é a SUA sessão atual. Revogá-la irá terminar a sessão imediatamente e terá de iniciar sessão novamente. Continuar?",
+      "revoke_confirm": "Revogar esta sessão? O próximo pedido desse browser receberá 401.",
+      "revoke_lag_notice": "Revogar uma sessão interrompe imediatamente o seu caminho de renovação, mas qualquer JWT já presente no navegador permanece válido por até {{secs}} segundos, até à próxima tentativa de renovação.",
+      "origin": {
+        "password": "Palavra-passe",
+        "opaque": "OPAQUE",
+        "magic_link": "Ligação mágica",
+        "oidc": "SSO",
+        "device": "Dispositivo",
+        "unknown": "Desconhecido"
+      }
+    },
     "smtp_fail": "Falha no envio.",
     "smtp_send": "Enviar",
     "smtp_test": "Enviar e-mail de teste",

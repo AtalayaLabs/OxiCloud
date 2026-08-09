@@ -57,6 +57,12 @@ pub struct TokenClaims {
     pub email: Arc<str>,
     /// User role
     pub role: String,
+    /// RFC 9449 §5 confirmation-key thumbprint — the JWK thumbprint
+    /// of the DPoP keypair this session was bound to at login. `None`
+    /// for unbound sessions (app passwords, NC clients, pre-DPoP).
+    /// The DPoP middleware reads it from the already-validated token
+    /// (no DB round trip) to enforce "bound session → proof required".
+    pub dpop_jkt: Option<String>,
 }
 
 /// Port for JWT token operations.
@@ -64,8 +70,19 @@ pub struct TokenClaims {
 /// This trait abstracts token generation and validation, allowing the domain
 /// layer to remain independent of specific JWT implementations.
 pub trait TokenServicePort: Send + Sync + 'static {
-    /// Generate an access token for a user
-    fn generate_access_token(&self, user: &User) -> Result<String, DomainError>;
+    /// Generate an access token for a user.
+    ///
+    /// `dpop_jkt` — if `Some`, the token carries an RFC 9449 §5
+    /// `cnf.jkt` claim binding it to the browser-held keypair whose
+    /// public JWK hashes to this thumbprint. Callers pass
+    /// `session.dpop_jkt()` from the Session being minted; unbound
+    /// sessions (app passwords, NC clients, pre-DPoP) pass `None`
+    /// and get a plain token the middleware exempts from DPoP.
+    fn generate_access_token(
+        &self,
+        user: &User,
+        dpop_jkt: Option<&str>,
+    ) -> Result<String, DomainError>;
 
     /// Validate a token and extract its claims.
     ///
@@ -473,6 +490,31 @@ pub trait SessionStoragePort: Send + Sync + 'static {
         issuer: &str,
         subject: &str,
     ) -> Result<Option<Uuid>, DomainError>;
+
+    /// One-shot bind a DPoP JWK thumbprint to a session that was created
+    /// without one (post-redirect flow — OIDC callback, magic-link
+    /// redemption). Fails with `AlreadyExists` if the session already
+    /// carries a thumbprint (anti-downgrade invariant, see
+    /// `docs/plan/dpop.md`).
+    async fn bind_dpop_jkt(&self, session_id: Uuid, dpop_jkt: &str) -> Result<(), DomainError>;
+
+    /// Fetch a single session by id. Used by admin surfaces that need
+    /// to resolve `target_user_id` for audit lines before a mutation.
+    /// Returns `NotFound` when the id doesn't match any row.
+    async fn get_session_by_id(&self, session_id: Uuid) -> Result<Session, DomainError>;
+
+    /// Paginated cross-user listing for the admin sessions panel.
+    /// `user_id_filter` narrows to a single user when `Some`; `None`
+    /// spans all users. `include_revoked = false` (the default UX)
+    /// returns only rows where `revoked = false AND expires_at > NOW()`.
+    /// Ordered newest first (`created_at DESC`).
+    async fn list_sessions_paginated(
+        &self,
+        user_id_filter: Option<Uuid>,
+        include_revoked: bool,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Session>, DomainError>;
 }
 
 // ============================================================================

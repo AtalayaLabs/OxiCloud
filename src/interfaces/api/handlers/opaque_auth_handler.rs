@@ -537,6 +537,11 @@ pub struct OpaqueLoginKe3Dto {
     pub exchange_id: ExchangeId,
     #[serde(rename = "finishLoginRequest")]
     pub finish_login_request: String,
+    /// DPoP JWK thumbprint the client generated at page load. When
+    /// present, binds the new session to a browser-held keypair (RFC
+    /// 9449). Absent → session created unbound. See `docs/plan/dpop.md`.
+    #[serde(default, rename = "dpopJkt", alias = "dpop_jkt")]
+    pub dpop_jkt: Option<String>,
 }
 
 /// KE1: user lookup → envelope fetch → `ServerLogin::start` → stash
@@ -677,6 +682,8 @@ pub async fn login_ke1(
 )]
 pub async fn login_ke3(
     State(state): State<Arc<AppState>>,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
     Json(dto): Json<OpaqueLoginKe3Dto>,
 ) -> Result<impl IntoResponse, AppError> {
     let _svc = require_opaque_service(&state)?;
@@ -759,12 +766,32 @@ pub async fn login_ke3(
         invalid_credentials()
     })?;
 
+    // Capture client IP + User-Agent so `sessions.ip_address` /
+    // `user_agent` land populated instead of NULL (admin panel would
+    // otherwise render "—"). Both are per-session and only refresh
+    // on rotation, matching the login pattern.
+    let client_ip = crate::interfaces::middleware::trusted_proxy::client_ip_from_parts(
+        &headers,
+        Some(peer),
+        false,
+    );
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
     // Mint the session BEFORE stamping opaque_migrated_at — if the
     // session mint fails (rare, but not impossible under DB failure),
     // we don't want to have flipped the migration flag for a user
     // whose login didn't actually complete.
     let session = auth
-        .mint_session_for_authenticated_user(user)
+        .mint_session_for_authenticated_user(
+            user,
+            dto.dpop_jkt,
+            Some(client_ip),
+            user_agent,
+            crate::domain::entities::session::SessionOrigin::Opaque,
+        )
         .await
         .map_err(AppError::from)?;
 
@@ -808,6 +835,14 @@ pub async fn login_ke3(
         state.core.config.auth.refresh_token_expiry_secs,
     );
     cookie_auth::append_csrf_cookie(response.headers_mut(), session.expires_in);
+    // Seed the SPA's DPoP-nonce cache so the first bound request after
+    // login doesn't eat a `use_dpop_nonce` challenge → retry cycle.
+    // No-op when `dpop_mode = off`.
+    cookie_auth::maybe_append_dpop_nonce_cookie(
+        response.headers_mut(),
+        &state.dpop_nonce_service,
+        state.core.config.auth.dpop_mode,
+    );
     Ok(response)
 }
 

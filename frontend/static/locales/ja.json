@@ -564,7 +564,8 @@
     "magic_hint": "パスワードをお持ちでない方は、メールアドレスを入力するとワンタイムサインインリンクをお送りします。",
     "magic_unavailable": "このサーバーではメールでのサインインは利用できません。",
     "passwords_match": "Passwords match",
-    "sign_in": "サインイン"
+    "sign_in": "サインイン",
+    "logged_out": "サインアウトしました。"
   },
   "storage": {
     "title": "ストレージ",
@@ -842,6 +843,38 @@
     "quotas": "クォータ",
     "reset_pw_for": "新しいパスワード：",
     "role": "役割",
+    "sessions": {
+      "filter_user": "ユーザー (UUID)",
+      "include_revoked": "取り消し済み / 期限切れを含む",
+      "refresh": "更新",
+      "col_user": "ユーザー",
+      "col_origin": "由来",
+      "col_created": "作成日時",
+      "col_expires": "有効期限",
+      "col_ip": "IP",
+      "col_user_agent": "ユーザーエージェント",
+      "col_bound": "バインド",
+      "col_status": "状態",
+      "current_tooltip": "これは現在使用中のセッションです — 取り消すとサインアウトされます。",
+      "bound_tooltip": "DPoP にバインド済み (jkt {{prefix}}…)",
+      "unbound": "バインドなし",
+      "revoked": "取り消し済み",
+      "expired": "期限切れ",
+      "active": "有効",
+      "revoke": "取り消し",
+      "empty": "現在のフィルターに一致するセッションはありません。",
+      "revoke_self_confirm": "⚠️  これはあなたの現在のセッションです。取り消すと直ちにサインアウトされ、再度サインインが必要になります。続行しますか？",
+      "revoke_confirm": "このセッションを取り消しますか？ そのブラウザからの次のリクエストは 401 になります。",
+      "revoke_lag_notice": "セッションを取り消すと、リフレッシュ経路は直ちに切断されますが、ブラウザにすでに存在する JWT は次のリフレッシュ試行まで最大 {{secs}} 秒間有効なままです。",
+      "origin": {
+        "password": "パスワード",
+        "opaque": "OPAQUE",
+        "magic_link": "マジックリンク",
+        "oidc": "SSO",
+        "device": "デバイス",
+        "unknown": "不明"
+      }
+    },
     "smtp_fail": "送信に失敗しました。",
     "smtp_send": "送信",
     "smtp_test": "テストメールを送信",

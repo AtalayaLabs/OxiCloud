@@ -569,7 +569,8 @@
     "magic_hint": "¿Sin contraseña? Introduce tu correo electrónico y te enviaremos un enlace de inicio de sesión único.",
     "magic_unavailable": "El inicio de sesión por correo electrónico no está disponible en este servidor.",
     "passwords_match": "Las contraseñas coinciden",
-    "sign_in": "Iniciar sesión"
+    "sign_in": "Iniciar sesión",
+    "logged_out": "Sesión cerrada correctamente."
   },
   "storage": {
     "title": "Almacenamiento",
@@ -847,6 +848,38 @@
     "quotas": "Cuotas",
     "reset_pw_for": "Nueva contraseña para",
     "role": "Rol",
+    "sessions": {
+      "filter_user": "Usuario (UUID)",
+      "include_revoked": "Incluir revocadas / caducadas",
+      "refresh": "Actualizar",
+      "col_user": "Usuario",
+      "col_origin": "Origen",
+      "col_created": "Creada",
+      "col_expires": "Caduca",
+      "col_ip": "IP",
+      "col_user_agent": "Agente de usuario",
+      "col_bound": "Vinculada",
+      "col_status": "Estado",
+      "current_tooltip": "Esta es la sesión que está usando ahora mismo — al revocarla se cerrará su sesión.",
+      "bound_tooltip": "Vinculada con DPoP (jkt {{prefix}}…)",
+      "unbound": "no vinculada",
+      "revoked": "revocada",
+      "expired": "caducada",
+      "active": "activa",
+      "revoke": "Revocar",
+      "empty": "Ninguna sesión coincide con el filtro actual.",
+      "revoke_self_confirm": "⚠️  Esta es SU sesión actual. Al revocarla se cerrará su sesión inmediatamente y tendrá que iniciar sesión de nuevo. ¿Continuar?",
+      "revoke_confirm": "¿Revocar esta sesión? La próxima petición desde ese navegador devolverá 401.",
+      "revoke_lag_notice": "Revocar una sesión rompe su vía de renovación de inmediato, pero cualquier JWT ya presente en el navegador permanece válido hasta {{secs}} segundos, hasta el próximo intento de renovación.",
+      "origin": {
+        "password": "Contraseña",
+        "opaque": "OPAQUE",
+        "magic_link": "Enlace mágico",
+        "oidc": "SSO",
+        "device": "Dispositivo",
+        "unknown": "Desconocido"
+      }
+    },
     "smtp_fail": "Fallo al enviar.",
     "smtp_send": "Enviar",
     "smtp_test": "Enviar correo de prueba",

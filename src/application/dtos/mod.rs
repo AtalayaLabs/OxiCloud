@@ -20,6 +20,7 @@ pub mod playlist_dto;
 pub mod plugin_dto;
 pub mod recent_dto;
 pub mod search_dto;
+pub mod session_dto;
 pub mod settings_dto;
 pub mod share_dto;
 pub mod trash_dto;

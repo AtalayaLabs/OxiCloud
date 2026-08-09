@@ -8,7 +8,8 @@
 	import AppShell from '$lib/components/AppShell.svelte';
 	import DialogHost from '$lib/components/DialogHost.svelte';
 	import Toaster from '$lib/components/Toaster.svelte';
-	import { setPasswordChangeRequiredHandler } from '$lib/api/client';
+	import { isLogoutInProgress, setPasswordChangeRequiredHandler } from '$lib/api/client';
+	import { onSessionCleared } from '$lib/auth/session-broadcast';
 	import { session } from '$lib/stores/session.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { hashUrlToPath } from '$lib/utils/hashRedirect';
@@ -61,7 +62,94 @@
 	});
 
 	onMount(async () => {
+		// Cross-tab logout — when ANOTHER tab logs out, wipe our
+		// session store and bounce to /login synchronously. Without
+		// this the natural 401-on-next-request path still catches
+		// it, just with visible delay for an idle tab. See
+		// `docs/plan/dpop.md` Gate 8.
+		//
+		// The cleanup closure returned by `onSessionCleared` is
+		// intentionally not wired to `onDestroy` — the root layout
+		// only unmounts on hot-reload, and a leaked BroadcastChannel
+		// there is far cheaper than the risk of missing an
+		// invalidation event during teardown.
+		onSessionCleared(() => {
+			// A BroadcastChannel dispatches to every OTHER instance
+			// on the same channel — including OTHER instances in the
+			// SAME tab (the API only skips the exact sender instance,
+			// not the whole tab). So `broadcastSessionCleared()` fired
+			// from `logout()` on this tab re-enters here. When THIS
+			// tab initiated the logout, `AppShell.onLogout` has already
+			// navigated to `/login?source=logged_out`; running the bare
+			// `/login` goto below would clobber the query string (Ed's
+			// missing "Successfully signed out" banner). Only handle
+			// broadcasts from OTHER tabs.
+			if (isLogoutInProgress()) return;
+			session.reset();
+			// `replaceState: true` so the back button doesn't return
+			// the user to the now-dead protected page they were on.
+			void goto(resolve('/login'), { replaceState: true });
+		});
+
 		await killLegacyServiceWorker();
+
+		// Register the DPoP-signing Service Worker (see
+		// `src/service-worker.ts`). It attaches a DPoP proof to every
+		// same-origin `/api/*` request the browser initiates on its
+		// own — `<img src>` thumbnails, `<a href download>` downloads,
+		// `EventSource` streams — replacing the server-side content
+		// allowlist (Gate C in `docs/plan/dpop.md`).
+		//
+		// `type: 'module'` matches SvelteKit's ESM output. Failure is
+		// swallowed to `console.debug`: unbound sessions and legacy
+		// browsers without SW support keep working; only bound sessions
+		// in `DPOP=required` mode see 401s on browser-direct URLs,
+		// which is the same failure mode as before this SW existed.
+		//
+		// AWAIT `navigator.serviceWorker.ready` before allowing the
+		// splash to lift on a first-ever visit. Without this, the SPA
+		// renders while the SW is still installing → thumbnails and
+		// downloads on that very first page load fire unsigned and
+		// 401. Second visit onward the SW is already installed, so
+		// `.ready` resolves in ~1ms — the wait is a one-shot cost per
+		// browser profile.
+		if ('serviceWorker' in navigator) {
+			void navigator.serviceWorker
+				.register('/service-worker.js', { type: 'module' })
+				.catch((err) => console.debug('DPoP service worker registration failed', err));
+			try {
+				await navigator.serviceWorker.ready;
+			} catch {
+				/* SW registration failed — unbound sessions still work;
+				   bound sessions in `required` mode see 401s on browser-
+				   direct URLs. Same fail-open shape as pre-SW. */
+			}
+			// Soft-reload once if we landed uncontrolled. Covers two
+			// cases the SW itself can't fix:
+			//   * First-ever visit — page loaded before any SW existed,
+			//     so `controller` is null even after `.ready`.
+			//   * Force-refresh (Cmd-Shift-R) — the browser deliberately
+			//     delivers the top-level document with no SW controller;
+			//     `clients.claim()` can't attach retroactively.
+			// A single reload brings the page under SW control.
+			//
+			// `sessionStorage` guard prevents an infinite loop when the
+			// reload doesn't fix it (SW registration is genuinely broken
+			// — bad URL, CSP block, quota). Cleared once `controller` is
+			// set so a LATER force-refresh in the same session can also
+			// self-heal (one reload per uncontrolled-landing).
+			const SW_RELOAD_KEY = 'sw-reload-once';
+			if (!navigator.serviceWorker.controller) {
+				if (!sessionStorage.getItem(SW_RELOAD_KEY)) {
+					sessionStorage.setItem(SW_RELOAD_KEY, '1');
+					location.reload();
+					return;
+				}
+				/* reload already attempted this session — give up gracefully */
+			} else {
+				sessionStorage.removeItem(SW_RELOAD_KEY);
+			}
+		}
 
 		// The instant HTML boot splash has done its job — the app is mounted, so
 		// the route (login renders immediately; protected routes show their own
@@ -86,6 +174,15 @@
 	// protected routes. Runs client-side only (ssr=false).
 	$effect(() => {
 		if (!ready) return;
+		// During an explicit logout `AppShell.onLogout` has already picked
+		// the destination (`/login?source=logged_out`) and issued the
+		// navigation. `session.reset()` inside that flow flips
+		// `session.isAuthenticated` to false, which fires THIS effect
+		// reactively — if we don't bail, we race the pending goto with a
+		// `/login?redirect=<current path>` nav and last-write-wins clobbers
+		// the "signed out" banner (Ed's report: URL landed as
+		// `?redirect=%2Ffiles%2F…` instead of `?source=logged_out`).
+		if (isLogoutInProgress()) return;
 		const path = page.url.pathname;
 		if (session.isAuthenticated || isPublic(path)) return;
 

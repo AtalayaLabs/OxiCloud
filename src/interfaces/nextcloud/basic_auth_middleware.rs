@@ -203,11 +203,15 @@ pub async fn basic_auth_middleware(
             // `Arc<CurrentUser>` extension AND `NcSession.user` (the old
             // code built the struct, cloned it for the extension, then
             // moved the original — 2-3 String allocs per request).
+            // Nextcloud clients are always unbound — they authenticate
+            // with app passwords via Basic Auth, no WebCrypto, no DPoP.
+            // Middleware exempts unbound sessions per Gate 9 design.
             let current_user = Arc::new(CurrentUser {
                 id: user_id,
                 username: uname,
                 email,
                 role,
+                dpop_jkt: None,
             });
 
             // ── Resolve chroot from the Basic Auth drive marker ─────

@@ -4,7 +4,7 @@ import {
   apiLogin,
   apiSetHideDotfiles,
   apiTrashFolder,
-} from '../scenarios/helpers';
+} from './helpers';
 
 /**
  * Dotfile-hide filter — end-to-end coverage of the UI-only, per-user

@@ -719,6 +719,14 @@ impl ThumbnailService {
     /// Aspect-ratio-preserving target dimensions so the longest side equals
     /// `max_dim` (clamped to ≥1 to keep the SIMD resizer happy on extreme ratios).
     fn fit_dims(src_w: u32, src_h: u32, max_dim: u32) -> (u32, u32) {
+        // Never upsample. A sub-`max_dim` source (a favicon, a 1×1
+        // pixel, an avatar under the Icon size) is encoded at its
+        // original resolution — upscaling wastes bytes AND, on sources
+        // smaller than the convolution kernel's support radius,
+        // `fast_image_resize`'s Lanczos3/CatmullRom paths reject the
+        // resize outright, surfacing as `ImageError("...")` from
+        // `encode_thumbnail`.
+        let max_dim = max_dim.min(src_w.max(src_h));
         if src_w > src_h {
             let ratio = max_dim as f32 / src_w as f32;
             (max_dim, ((src_h as f32 * ratio) as u32).max(1))
@@ -761,16 +769,23 @@ impl ThumbnailService {
             filter
         };
 
-        let src = ImageRef::new(src_w, src_h, src_rgb, PixelType::U8x3)
-            .map_err(|e| ThumbnailError::ImageError(e.to_string()))?;
-        let mut dst = Image::new(dst_w, dst_h, PixelType::U8x3);
-        let opts = ResizeOptions::new().resize_alg(ResizeAlg::Convolution(filter));
-        Resizer::new()
-            .resize(&src, &mut dst, &opts)
-            .map_err(|e| ThumbnailError::ImageError(e.to_string()))?;
-
-        // The resized RGB8 plane feeds either codec from one buffer.
-        let resized = dst.into_vec();
+        // Skip Resizer when the target already matches the source. Two
+        // reasons: (1) `fit_dims` caps at source size so any src<=max_dim
+        // path lands here; (2) fast_image_resize's convolution kernels
+        // reject sources smaller than their support radius, so a 1×1
+        // pass-through would still fail even at src==dst.
+        let resized = if src_w == dst_w && src_h == dst_h {
+            src_rgb.to_vec()
+        } else {
+            let src = ImageRef::new(src_w, src_h, src_rgb, PixelType::U8x3)
+                .map_err(|e| ThumbnailError::ImageError(e.to_string()))?;
+            let mut dst = Image::new(dst_w, dst_h, PixelType::U8x3);
+            let opts = ResizeOptions::new().resize_alg(ResizeAlg::Convolution(filter));
+            Resizer::new()
+                .resize(&src, &mut dst, &opts)
+                .map_err(|e| ThumbnailError::ImageError(e.to_string()))?;
+            dst.into_vec()
+        };
         match format {
             ThumbnailFormat::Jpeg => {
                 let rgb = image::RgbImage::from_raw(dst_w, dst_h, resized).ok_or_else(|| {
@@ -1675,4 +1690,34 @@ pub struct ThumbnailStats {
     pub cached_thumbnails: usize,
     pub cache_size_bytes: usize,
     pub max_cache_bytes: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+
+    // A 1×1 transparent RGBA PNG — same fixture the E2E seed uploads.
+    // Verifies that `fit_dims` never upsamples and `encode_thumbnail`
+    // skips the convolution kernel for src==dst, both of which would
+    // otherwise surface as `ImageError` from every downstream size/
+    // format pair. Note: this base64 must be a valid PNG (correct chunk
+    // CRCs) — the `image` crate rejects malformed CRCs even where
+    // ImageMagick's `identify` is lenient. Regenerate with:
+    //   python3 -c "…" | pbcopy  # see tests/e2e/spa/helpers.ts for the snippet
+    const PIXEL_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=";
+
+    #[test]
+    fn render_thumbnail_handles_1x1_source_for_every_size_and_format() {
+        let png = B64.decode(PIXEL_PNG_B64).unwrap();
+        for &size in ThumbnailSize::all() {
+            for &format in &[ThumbnailFormat::Jpeg, ThumbnailFormat::Webp] {
+                let out = ThumbnailService::render_thumbnail_from_data(&png, size, format)
+                    .unwrap_or_else(|e| {
+                        panic!("render_thumbnail_from_data({size:?}, {format:?}) failed: {e}")
+                    });
+                assert!(!out.is_empty(), "empty output for {size:?} {format:?}");
+            }
+        }
+    }
 }

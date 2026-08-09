@@ -30,6 +30,20 @@ pub const CSRF_HEADER: &str = "x-csrf-token";
 /// the token row's `request_challenge` column. Limited to `/magic`
 /// so it only travels back on the redemption endpoint.
 pub const MAGIC_REQUEST_COOKIE: &str = "oxicloud_magic_request";
+/// One-shot **non-HttpOnly** cookie carrying a fresh `DPoP-Nonce` value
+/// on login-success responses (POST OPAQUE/legacy and 302 OIDC/magic-link
+/// redirects alike). The SPA reads it on mount and seeds the client-side
+/// nonce cache, so the very first bound request under `DPOP=required`
+/// doesn't have to eat a 401 `use_dpop_nonce` challenge before its retry
+/// succeeds. Short TTL: nonces rotate server-side every ~30 s, and this
+/// cookie is single-shot (cleared by the SPA after reading).
+pub const DPOP_NONCE_COOKIE: &str = "oxicloud_dpop_nonce";
+/// TTL for the DPoP-nonce hand-off cookie. 60 s is well within the
+/// server-side pool TTL, and if the SPA doesn't read it within a
+/// minute the client either lacks DPoP support (harmless waste) or
+/// is broken (a stale cookie doesn't hurt — the middleware challenge-
+/// retry still kicks in on first use).
+const DPOP_NONCE_COOKIE_MAX_AGE_SECS: i64 = 60;
 
 /// Whether the `Secure` flag should be set on cookies.
 ///
@@ -225,6 +239,36 @@ pub fn append_clear_magic_request_cookie(headers: &mut HeaderMap) {
     let secure = if cookie_secure() { "; Secure" } else { "" };
     let val = format!(
         "{MAGIC_REQUEST_COOKIE}=; HttpOnly; SameSite=Strict; Path=/magic; Max-Age=0{secure}",
+    );
+    if let Ok(hv) = HeaderValue::from_str(&val) {
+        headers.append(SET_COOKIE, hv);
+    }
+}
+
+/// Stamp the DPoP-nonce hand-off cookie alongside the auth cookies on
+/// any login-success response — but only when DPoP is actually enforced
+/// server-side, otherwise the cookie is dead weight the client would
+/// read and discard. Uses `state.dpop_nonce_service.current_or_rotate()`
+/// under the hood — the SAME nonce the middleware would stamp on any
+/// authenticated response, so a subsequent bound request presenting a
+/// proof with `nonce = <this value>` validates against the live pool
+/// without ever touching a `use_dpop_nonce` retry.
+///
+/// SameSite=Strict + Path=/: cookie only travels back to our origin, on
+/// any route the SPA might land on after login. Survives the 302 follow
+/// on OIDC / magic-link flows (Set-Cookie IS applied across redirects).
+pub fn maybe_append_dpop_nonce_cookie(
+    headers: &mut HeaderMap,
+    nonce_service: &crate::infrastructure::services::dpop_nonce_service::DpopNonceService,
+    dpop_mode: crate::common::config::DpopMode,
+) {
+    if matches!(dpop_mode, crate::common::config::DpopMode::Off) {
+        return;
+    }
+    let value = nonce_service.current_or_rotate();
+    let secure = if cookie_secure() { "; Secure" } else { "" };
+    let val = format!(
+        "{DPOP_NONCE_COOKIE}={value}; SameSite=Strict; Path=/; Max-Age={DPOP_NONCE_COOKIE_MAX_AGE_SECS}{secure}",
     );
     if let Ok(hv) = HeaderValue::from_str(&val) {
         headers.append(SET_COOKIE, hv);

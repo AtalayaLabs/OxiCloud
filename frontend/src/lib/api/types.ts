@@ -256,6 +256,20 @@ export interface User {
 	 * card).
 	 */
 	has_password?: boolean;
+	/**
+	 * TRUE when the caller's current session is DPoP-bound (row's
+	 * `dpop_jkt IS NOT NULL`). Populated only by `/api/auth/me`; other
+	 * User-emitting endpoints leave it unset.
+	 *
+	 * The session store reads this to skip a redundant
+	 * `POST /api/auth/dpop/bind` call — the endpoint returns 409
+	 * `already_bound` on repeated attempts (anti-downgrade invariant)
+	 * and each rejection logs at audit INFO, so a naive "bind on
+	 * every load" pattern was cluttering the audit stream. We only
+	 * fire bind now when there's actual work to do (fresh OIDC /
+	 * magic-link session that landed unbound).
+	 */
+	is_dpop_bound?: boolean;
 }
 
 /** Fields rendered by the paginated admin table. Full account details remain
@@ -733,4 +747,47 @@ export interface Finding {
 	resource_id?: string;
 	detail: Record<string, unknown>;
 	created_at: string;
+}
+
+/**
+ * Admin sessions-panel row shape. Backend: `SessionSummaryDto` in
+ * `src/application/dtos/session_dto.rs`. Deliberately narrower than
+ * the DB row — the refresh token is never serialised, and the full
+ * DPoP thumbprint is truncated to an 8-char prefix so admins viewing
+ * other users' sessions can't exfiltrate the full binding fingerprint.
+ */
+export interface SessionSummary {
+	id: string;
+	user_id: string;
+	created_at: string;
+	expires_at: string;
+	ip_address: string | null;
+	user_agent: string | null;
+	is_bound: boolean;
+	dpop_jkt_prefix: string | null;
+	is_revoked: boolean;
+	is_active: boolean;
+	/** How this session was minted. `unknown` covers pre-migration
+	 *  rows and any origin the SPA doesn't yet render. Server enum
+	 *  is populated at INSERT (see `Session::new`) and copied on
+	 *  refresh. Snake_case wire values map to the labels rendered
+	 *  in the admin table. */
+	origin: 'password' | 'opaque' | 'magic_link' | 'oidc' | 'device' | 'unknown';
+	/** `true` when this row IS the admin's currently-active session —
+	 *  compared server-side by `dpop_jkt`. Panel uses this to warn
+	 *  before revoking ("this will log you out"). Always `false` when
+	 *  the admin's own session is unbound. */
+	is_current: boolean;
+}
+
+/** Wire response of `GET /api/admin/sessions`. */
+export interface AdminSessionsPage {
+	sessions: SessionSummary[];
+	limit: number;
+	offset: number;
+	/** Access-token TTL in seconds — from `OXICLOUD_ACCESS_TOKEN_EXPIRY_SECS`
+	 *  server-side. The panel surfaces this in a "revoke takes effect within
+	 *  {N} seconds" notice because revoking flips the DB row (breaks refresh)
+	 *  but any in-flight JWT stays valid until its `exp`. */
+	access_token_expiry_secs: number;
 }

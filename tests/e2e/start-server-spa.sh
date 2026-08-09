@@ -36,5 +36,15 @@ mark "spawning test database…"
 bash "$REPO_ROOT/tests/common/spawn-db.sh"
 mark "database ready; starting server…"
 
-# Replace the shell with the server process so Playwright's PID tracking works.
-exec "$@"
+# Point `--config` at an INTENTIONALLY EMPTY file: blocks the
+# CWD `.env` fallback in main.rs (so developer envs don't leak
+# in) while overriding nothing (so every Playwright-set env var,
+# including per-suite DPOP/OPAQUE/plugin overrides, reaches the
+# server intact). See tests/common/empty.env and
+# tests/e2e/start-server.sh for the full rationale.
+CONFIG_PATH="$REPO_ROOT/tests/common/empty.env"
+if [[ "${1:-}" == "cargo" ]]; then
+  exec "$@" -- --config "$CONFIG_PATH"
+else
+  exec "$@" --config "$CONFIG_PATH"
+fi

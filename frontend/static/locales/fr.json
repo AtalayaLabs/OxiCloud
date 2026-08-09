@@ -572,7 +572,8 @@
     "login_error_already_linked_elsewhere": "Un compte local avec cette adresse e-mail existe déjà et est relié à une autre identité SSO. Contactez votre administrateur.",
     "login_error_callback_denied": "Votre lien de connexion a expiré ou a déjà été utilisé. Veuillez réessayer.",
     "login_error_callback_failed": "La connexion SSO n'a pas pu se terminer. Veuillez réessayer.",
-    "login_error_generic": "La connexion SSO a été refusée. Veuillez réessayer."
+    "login_error_generic": "La connexion SSO a été refusée. Veuillez réessayer.",
+    "logged_out": "Vous êtes déconnecté."
   },
   "storage": {
     "title": "Stockage",
@@ -853,6 +854,38 @@
     "quotas": "Quotas",
     "reset_pw_for": "Nouveau mot de passe pour",
     "role": "Rôle",
+    "sessions": {
+      "filter_user": "Utilisateur (UUID)",
+      "include_revoked": "Inclure les révoquées / expirées",
+      "refresh": "Actualiser",
+      "col_user": "Utilisateur",
+      "col_origin": "Origine",
+      "col_created": "Créée",
+      "col_expires": "Expire",
+      "col_ip": "IP",
+      "col_user_agent": "Agent utilisateur",
+      "col_bound": "Liée",
+      "col_status": "Statut",
+      "current_tooltip": "Il s'agit de la session que vous utilisez actuellement — la révoquer vous déconnectera.",
+      "bound_tooltip": "Liée par DPoP (jkt {{prefix}}…)",
+      "unbound": "non liée",
+      "revoked": "révoquée",
+      "expired": "expirée",
+      "active": "active",
+      "revoke": "Révoquer",
+      "empty": "Aucune session ne correspond au filtre actuel.",
+      "revoke_self_confirm": "⚠️  Il s'agit de VOTRE session actuelle. La révoquer vous déconnectera immédiatement et vous devrez vous reconnecter. Continuer ?",
+      "revoke_confirm": "Révoquer cette session ? La prochaine requête depuis ce navigateur renverra 401.",
+      "revoke_lag_notice": "La révocation d'une session coupe immédiatement son chemin de rafraîchissement, mais tout JWT déjà présent dans le navigateur reste valide pendant jusqu'à {{secs}} secondes, jusqu'à la prochaine tentative de rafraîchissement.",
+      "origin": {
+        "password": "Mot de passe",
+        "opaque": "OPAQUE",
+        "magic_link": "Lien magique",
+        "oidc": "SSO",
+        "device": "Appareil",
+        "unknown": "Inconnu"
+      }
+    },
     "smtp_fail": "Échec de l'envoi.",
     "smtp_send": "Envoyer",
     "smtp_test": "Envoyer l'e-mail de test",

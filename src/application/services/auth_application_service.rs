@@ -28,6 +28,65 @@ use std::sync::RwLock;
 use std::time::Duration;
 use uuid::Uuid;
 
+/// Validate a client-supplied DPoP JWK thumbprint. RFC 7638 §3 produces
+/// a base64url-encoded SHA-256 (32 bytes → 43 base64url chars, no
+/// padding). We accept exactly that shape; anything else is a client
+/// bug or forgery attempt and gets rejected at the login boundary.
+///
+/// Returned string is the exact input on success — we don't
+/// canonicalise the thumbprint further (it IS the canonical form).
+fn validate_dpop_jkt(raw: &str) -> Result<String, &'static str> {
+    if raw.len() != 43 {
+        return Err("DPoP thumbprint must be 43 characters (base64url SHA-256)");
+    }
+    if !raw
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err("DPoP thumbprint contains non-base64url characters");
+    }
+    Ok(raw.to_string())
+}
+
+#[cfg(test)]
+mod dpop_jkt_tests {
+    use super::validate_dpop_jkt;
+
+    #[test]
+    fn accepts_well_formed_thumbprint() {
+        // 43 base64url chars — a real SHA-256 output shape
+        let jkt = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_ABCDE";
+        assert_eq!(validate_dpop_jkt(jkt).unwrap(), jkt);
+    }
+
+    #[test]
+    fn rejects_wrong_length() {
+        assert!(validate_dpop_jkt("").is_err());
+        assert!(validate_dpop_jkt("too-short").is_err());
+        assert!(
+            validate_dpop_jkt(&"a".repeat(44)).is_err(),
+            "44 chars must be rejected"
+        );
+    }
+
+    #[test]
+    fn rejects_padding() {
+        // 43-char string ending in `=` is still 43 chars but invalid
+        // base64url (padding never appears in URL_SAFE_NO_PAD).
+        let with_pad = format!("{}{}", "a".repeat(42), "=");
+        assert!(validate_dpop_jkt(&with_pad).is_err());
+    }
+
+    #[test]
+    fn rejects_standard_base64_alphabet() {
+        // `+` and `/` are standard base64 — url-safe uses `-` and `_`
+        let with_plus = format!("{}+", "a".repeat(42));
+        let with_slash = format!("{}/", "a".repeat(42));
+        assert!(validate_dpop_jkt(&with_plus).is_err());
+        assert!(validate_dpop_jkt(&with_slash).is_err());
+    }
+}
+
 /// Result of a successful OIDC callback. The handler layer inspects this to
 /// decide whether to redirect to the regular frontend or complete a Nextcloud
 /// Login Flow v2 session.
@@ -744,7 +803,12 @@ impl AuthApplicationService {
         Ok(UserDto::from(created_user))
     }
 
-    pub async fn login(&self, dto: LoginDto) -> Result<AuthResponseDto, DomainError> {
+    pub async fn login(
+        &self,
+        dto: LoginDto,
+        client_ip: Option<String>,
+        user_agent: Option<String>,
+    ) -> Result<AuthResponseDto, DomainError> {
         // Gate: policy may forbid password logins entirely (either the
         // legacy OIDC-only mode or the newer `OXICLOUD_AUTH_METHODS`
         // allowlist without `password`). Refuse BEFORE the user lookup
@@ -947,7 +1011,14 @@ impl AuthApplicationService {
         // handshake (Phase 1, `login/ke3`). Both paths converge here
         // so lifecycle + token + session-family semantics stay in
         // one place.
-        self.mint_session_for_authenticated_user(user).await
+        self.mint_session_for_authenticated_user(
+            user,
+            dto.dpop_jkt,
+            client_ip,
+            user_agent,
+            crate::domain::entities::session::SessionOrigin::Password,
+        )
+        .await
     }
 
     /// Emit a fresh session for a user who has ALREADY been
@@ -973,6 +1044,10 @@ impl AuthApplicationService {
     pub async fn mint_session_for_authenticated_user(
         &self,
         mut user: crate::domain::entities::user::User,
+        dpop_jkt: Option<String>,
+        client_ip: Option<String>,
+        user_agent: Option<String>,
+        origin: crate::domain::entities::session::SessionOrigin,
     ) -> Result<AuthResponseDto, DomainError> {
         // Lifecycle: dispatch login BEFORE register_login() so hooks
         // observing `last_login_at().is_none()` see "first ever login"
@@ -990,20 +1065,71 @@ impl AuthApplicationService {
         // (benches/ROUND12.md §2, 4.45x).
         user.register_login();
 
-        // Generate tokens using the injected token service
-        let access_token = self.token_service.generate_access_token(&user)?;
+        // Validate DPoP thumbprint FIRST — the same validated value
+        // has to flow into both the JWT `cnf.jkt` claim (RFC 9449 §5)
+        // and the session row's `dpop_jkt` column. Reject-before-mint
+        // avoids issuing a token whose confirmation-key would be
+        // rejected by the very next request's DPoP middleware.
+        let validated_jkt = match dpop_jkt.as_deref() {
+            Some(jkt) => Some(validate_dpop_jkt(jkt).map_err(|e| {
+                tracing::info!(
+                    target: "audit",
+                    event = "auth.dpop_bind_rejected",
+                    reason = "malformed_thumbprint",
+                    user_id = %user.id(),
+                    "🔐 DPoP bind rejected: {}", e,
+                );
+                DomainError::new(
+                    ErrorKind::InvalidInput,
+                    "Auth",
+                    "dpop_jkt must be a 43-character base64url SHA-256 thumbprint (RFC 7638)",
+                )
+            })?),
+            None => None,
+        };
+
+        // Generate tokens using the injected token service. The
+        // access token carries the `cnf.jkt` binding when present,
+        // so the DPoP middleware can enforce "bound → proof required"
+        // straight from the already-validated JWT — no session-row
+        // lookup on the hot path.
+        let access_token = self
+            .token_service
+            .generate_access_token(&user, validated_jkt.as_deref())?;
 
         let refresh_token = self.token_service.generate_refresh_token();
 
-        // Save session — new login starts a new token family
-        let session = Session::new(
+        // Save session — new login starts a new token family. DPoP
+        // binding is set at INSERT time and immutable thereafter (see
+        // `docs/plan/dpop.md` — a mutable bind would let an attacker
+        // downgrade a bound session by re-binding to their own key).
+        let mut session = Session::new(
             user.id(),
             refresh_token.clone(),
-            None, // IP (can be added from the HTTP layer)
-            None, // User-Agent (can be added from the HTTP layer)
+            client_ip,
+            user_agent,
             self.token_service.refresh_token_expiry_days(),
             Uuid::new_v4(),
+            origin,
         );
+        if let Some(jkt) = validated_jkt {
+            // Success-path audit — records the bind so operators can
+            // correlate a session_id in the panel with the exact moment
+            // it acquired its DPoP thumbprint. Emitted BEFORE the move
+            // (`with_dpop_jkt` consumes `jkt`) so the prefix is safe.
+            // See `docs/plan/dpop.md` §Gate 10.
+            let jkt_prefix: String = jkt.chars().take(8).collect();
+            tracing::info!(
+                target: "audit",
+                event = "dpop.bound_at_login",
+                session_id = %session.id(),
+                user_id = %session.user_id(),
+                origin = origin.as_str(),
+                jkt_prefix = %jkt_prefix,
+                "🔒 DPoP session bound at login"
+            );
+            session = session.with_dpop_jkt(jkt);
+        }
 
         self.session_storage.create_session(session).await?;
 
@@ -1072,6 +1198,8 @@ impl AuthApplicationService {
         token: &str,
         incoming_challenge: Option<&str>,
         cross_browser_confirmed: bool,
+        client_ip: Option<String>,
+        user_agent: Option<String>,
     ) -> Result<MagicLinkRedeemResult, DomainError> {
         let repo = self.magic_link_repo.as_ref().ok_or_else(|| {
             DomainError::new(
@@ -1249,15 +1377,21 @@ impl AuthApplicationService {
         user.mark_email_verified();
         self.user_storage.mark_email_verified(user.id()).await?;
 
-        let access_token = self.token_service.generate_access_token(&user)?;
+        // Magic-link redemption is a GET redirect — no way to
+        // thread `dpop_jkt` into a GET body. Session is minted
+        // unbound; the SPA calls `POST /api/auth/dpop/bind`
+        // post-redirect to bind it (see Gate 3). Token accordingly
+        // ships without `cnf.jkt`.
+        let access_token = self.token_service.generate_access_token(&user, None)?;
         let refresh_token = self.token_service.generate_refresh_token();
         let session = Session::new(
             user.id(),
             refresh_token.clone(),
-            None,
-            None,
+            client_ip,
+            user_agent,
             self.token_service.refresh_token_expiry_days(),
             Uuid::new_v4(),
+            crate::domain::entities::session::SessionOrigin::MagicLink,
         );
         self.session_storage.create_session(session).await?;
 
@@ -1335,12 +1469,19 @@ impl AuthApplicationService {
             username: std::sync::Arc::from(user.username().unwrap_or("")),
             email: std::sync::Arc::from(user.email()),
             role: smol_str::SmolStr::new_static(user.role().as_str()),
+            // `verify_credentials` is only called from paths that
+            // don't need per-session DPoP context (admin/setup
+            // flows); the DPoP middleware never reads CurrentUser
+            // populated by this method. Leaving None is safe.
+            dpop_jkt: None,
         })
     }
 
     pub async fn refresh_token(
         &self,
         dto: RefreshTokenDto,
+        client_ip: Option<String>,
+        user_agent: Option<String>,
     ) -> Result<AuthResponseDto, DomainError> {
         // Get valid session
         let session = self
@@ -1393,8 +1534,14 @@ impl AuthApplicationService {
             ));
         }
 
-        // Generate new tokens
-        let access_token = self.token_service.generate_access_token(&user)?;
+        // Generate new tokens. Inherit the DPoP binding from the
+        // parent session so the refreshed access token carries the
+        // same `cnf.jkt` — otherwise every refresh would silently
+        // downgrade to unbound and the next request would 401 under
+        // Gate 9 enforcement (see Gate 7).
+        let access_token = self
+            .token_service
+            .generate_access_token(&user, session.dpop_jkt())?;
         let new_refresh_token = self.token_service.generate_refresh_token();
 
         // New session inherits the family_id so reuse of any ancestor triggers
@@ -1402,14 +1549,45 @@ impl AuthApplicationService {
         // new one happen in ONE transaction (`rotate_session`) — this path
         // used to pay two BEGIN/COMMIT pairs per refresh, and DAV clients
         // rotate constantly (benches/ROUND12.md §4).
-        let new_session = Session::new(
+        //
+        // The DPoP binding travels with the family: if the parent session
+        // was bound to a browser-held keypair, the refreshed session MUST
+        // be bound to the same one (see `docs/plan/dpop.md` Gate 7). Same
+        // browser → same key → same jkt. Skipping this would let a
+        // refresh silently downgrade the session to unbound, and every
+        // subsequent request would fail DPoP verification once required
+        // mode enforces per-session binding.
+        let mut new_session = Session::new(
             user.id(),
             new_refresh_token.clone(),
-            None,
-            None,
+            client_ip,
+            user_agent,
             self.token_service.refresh_token_expiry_days(),
             session.family_id(),
+            // A rotation doesn't change how the user first authenticated,
+            // so origin is inherited from the parent row. Also keeps the
+            // admin panel's origin column stable across the natural
+            // refresh cycle apiFetch triggers on every 401.
+            session.origin(),
         );
+        if let Some(jkt) = session.dpop_jkt() {
+            new_session = new_session.with_dpop_jkt(jkt.to_string());
+        }
+        // Carry over the OIDC provenance so RP-initiated logout still
+        // works after a refresh. Without this, an OIDC session rotates
+        // into a row with `oidc_id_token = NULL` on the very first
+        // refresh (which apiFetch triggers transparently on any 401),
+        // and the `/api/auth/logout` handler then has no `id_token_hint`
+        // to build the IdP's `end_session_endpoint` URL — user gets a
+        // local-only logout and stays signed in on the IdP.
+        // `oidc_sid` follows the same rule so Back-Channel Logout can
+        // still target this device via the IdP's sid claim after refresh.
+        if let Some(id_token) = session.oidc_id_token() {
+            new_session = new_session.with_oidc_id_token(id_token.to_string());
+        }
+        if let Some(sid) = session.oidc_sid() {
+            new_session = new_session.with_oidc_sid(sid.to_string());
+        }
 
         self.session_storage
             .rotate_session(session.id(), new_session)
@@ -2153,6 +2331,77 @@ impl AuthApplicationService {
         }
     }
 
+    /// Bind a DPoP JWK thumbprint to an EXISTING session — the
+    /// post-redirect path for OIDC and magic-link, whose redemptions
+    /// are GET requests and can't thread the thumbprint through the
+    /// login body. The SPA calls this once, immediately after the
+    /// redirect lands, with the thumbprint it generated at page load.
+    ///
+    /// Emits `auth.dpop_bind_rejected` on validation failure or when
+    /// the caller tries to re-bind an already-bound session (anti-
+    /// downgrade guard). Emits `dpop.bound_at_login` (with
+    /// `method = "post_redirect_bind"`) on the accept path so operators
+    /// can correlate binding events with sessions — same event name as
+    /// the POST-flow bind at `mint_session_for_authenticated_user`, per
+    /// `docs/plan/dpop.md` §Gate 10.
+    pub async fn bind_dpop_jkt_to_session(
+        &self,
+        session_id: Uuid,
+        dpop_jkt: &str,
+    ) -> Result<(), DomainError> {
+        let validated = validate_dpop_jkt(dpop_jkt).map_err(|e| {
+            tracing::info!(
+                target: "audit",
+                event = "auth.dpop_bind_rejected",
+                reason = "malformed_thumbprint",
+                session_id = %session_id,
+                "🔐 DPoP bind rejected: {}", e,
+            );
+            DomainError::new(
+                ErrorKind::InvalidInput,
+                "Auth",
+                "dpop_jkt must be a 43-character base64url SHA-256 thumbprint (RFC 7638)",
+            )
+        })?;
+        match self
+            .session_storage
+            .bind_dpop_jkt(session_id, &validated)
+            .await
+        {
+            Ok(()) => {
+                // Same event as the POST-flow bind at
+                // `mint_session_for_authenticated_user`; `method` is the
+                // constant `"post_redirect_bind"` because this path is
+                // exclusively OIDC-callback + magic-link redemption (both
+                // create the session unbound and hand off to this
+                // endpoint post-redirect — see `docs/plan/dpop.md`
+                // Gate 3). Consumers can `origin`-join with the session
+                // row to disambiguate if they need finer granularity.
+                let jkt_prefix: String = validated.chars().take(8).collect();
+                tracing::info!(
+                    target: "audit",
+                    event = "dpop.bound_at_login",
+                    session_id = %session_id,
+                    method = "post_redirect_bind",
+                    jkt_prefix = %jkt_prefix,
+                    "🔒 DPoP session bound at login (post-redirect)"
+                );
+                Ok(())
+            }
+            Err(e) if e.kind == ErrorKind::AlreadyExists => {
+                tracing::info!(
+                    target: "audit",
+                    event = "auth.dpop_bind_rejected",
+                    reason = "already_bound",
+                    session_id = %session_id,
+                    "🔐 DPoP bind rejected: session already bound",
+                );
+                Err(e)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     pub async fn get_user_flags(&self, user_id: Uuid) -> Result<UserFlags, DomainError> {
         // Single-flight: concurrent misses for the same user coalesce
         // into ONE storage lookup; errors are never cached (same herd
@@ -2749,6 +2998,83 @@ impl AuthApplicationService {
             .search_usernames(query, limit, false)
             .await?;
         Ok(names.into_iter().flatten().collect())
+    }
+
+    // ========================================================================
+    // Admin Session Management Methods
+    // ========================================================================
+    //
+    // AuthZ posture: /api/admin/* is already protected by a
+    // `require_admin` router layer (see
+    // `interfaces/api/routes.rs::admin_router`) — but every admin
+    // method here still calls `require_admin_caller` as a
+    // defense-in-depth check, matching the pattern
+    // `list_users_including_external_with_perms` established. If a
+    // handler is ever wired outside the /admin subtree, the AuthZ
+    // still holds.
+
+    /// List sessions for the admin panel. `user_id_filter = Some(uuid)`
+    /// narrows to one user; `None` returns cross-user. `include_revoked`
+    /// controls whether to show revoked / expired rows — default UX
+    /// hides them (checkbox to opt in for forensics).
+    pub async fn admin_list_sessions_with_perms<A: AuthorizationEngine>(
+        &self,
+        authorization: &A,
+        caller: crate::application::dtos::session_dto::SessionCaller<'_>,
+        user_id_filter: Option<Uuid>,
+        include_revoked: bool,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<crate::application::dtos::session_dto::SessionSummaryDto>, DomainError> {
+        self.require_admin_caller(authorization, caller.id).await?;
+        let sessions = self
+            .session_storage
+            .list_sessions_paginated(user_id_filter, include_revoked, limit, offset)
+            .await?;
+        Ok(sessions
+            .into_iter()
+            .map(|s| {
+                crate::application::dtos::session_dto::SessionSummaryDto::from_session(
+                    s,
+                    caller.dpop_jkt,
+                )
+            })
+            .collect())
+    }
+
+    /// Admin-driven session revocation. Sets `revoked = true` — the
+    /// row remains for audit visibility, but its refresh token is
+    /// dead and the next access-token refresh 401s naturally.
+    ///
+    /// Emits an audit line + counter increment so operators can trace
+    /// who killed which session and when.
+    pub async fn admin_revoke_session_with_perms<A: AuthorizationEngine>(
+        &self,
+        authorization: &A,
+        caller: crate::application::dtos::session_dto::SessionCaller<'_>,
+        session_id: Uuid,
+    ) -> Result<(), DomainError> {
+        self.require_admin_caller(authorization, caller.id).await?;
+        // Resolve target user for the audit line before revocation —
+        // once the session row is revoked the user_id is still readable
+        // but the ORDER is stable this way.
+        let target_user_id = self
+            .session_storage
+            .get_session_by_id(session_id)
+            .await
+            .ok()
+            .map(|s| s.user_id());
+        self.session_storage.revoke_session(session_id).await?;
+        tracing::info!(
+            target: "audit",
+            event = "admin.session_revoked",
+            caller_id = %caller.id,
+            session_id = %session_id,
+            target_user_id = target_user_id.map(|u| u.to_string()).unwrap_or_default(),
+            "👮🏻‍♂️ Admin revoked session",
+        );
+        metrics::counter!("oxicloud_admin_session_revoked_total").increment(1);
+        Ok(())
     }
 
     // ========================================================================
@@ -3573,6 +3899,8 @@ impl AuthApplicationService {
         code: &str,
         state: &str,
         locale_registry: &crate::common::locale::LocaleRegistry,
+        client_ip: Option<String>,
+        user_agent: Option<String>,
     ) -> Result<OidcCallbackResult, DomainError> {
         // 0. Validate CSRF state and retrieve PKCE verifier + nonce + optional NC token
         //    (entry is auto-expired by moka TTL — remove returns None if expired)
@@ -4084,17 +4412,23 @@ impl AuthApplicationService {
             });
         }
 
-        // 6. Issue internal tokens (same as regular login)
-        let access_token = self.token_service.generate_access_token(&user)?;
+        // 6. Issue internal tokens (same as regular login). OIDC
+        // callback is a GET redirect — no way to thread `dpop_jkt`
+        // through the browser's redirect chain. Session is minted
+        // unbound; the SPA calls `POST /api/auth/dpop/bind` post-
+        // redirect to bind it (see Gate 3). Token accordingly ships
+        // without `cnf.jkt`.
+        let access_token = self.token_service.generate_access_token(&user, None)?;
         let refresh_token = self.token_service.generate_refresh_token();
 
         let mut session = Session::new(
             user.id(),
             refresh_token.clone(),
-            None,
-            None,
+            client_ip,
+            user_agent,
             self.token_service.refresh_token_expiry_days(),
             Uuid::new_v4(),
+            crate::domain::entities::session::SessionOrigin::Oidc,
         )
         .with_oidc_id_token(token_set.id_token.clone());
         // Bind the IdP's session identifier so Back-Channel Logout can
@@ -4307,10 +4641,15 @@ mod phase4_gate_integration_tests {
         let user_id = seed_user_with_password(&pool, &hasher, &email, "s3cret-passphrase").await;
 
         // Baseline — no envelope, no migration mark → legacy works.
-        svc.login(crate::application::dtos::user_dto::LoginDto {
-            username: email.clone(),
-            password: "s3cret-passphrase".to_string(),
-        })
+        svc.login(
+            crate::application::dtos::user_dto::LoginDto {
+                username: email.clone(),
+                password: "s3cret-passphrase".to_string(),
+                dpop_jkt: None,
+            },
+            None,
+            None,
+        )
         .await
         .expect("baseline legacy login must succeed");
 
@@ -4324,10 +4663,15 @@ mod phase4_gate_integration_tests {
         // but AccessDenied with the exact message the handler layer
         // remaps to `403 OpaqueLoginRequired`.
         let refused = svc
-            .login(crate::application::dtos::user_dto::LoginDto {
-                username: email.clone(),
-                password: "s3cret-passphrase".to_string(),
-            })
+            .login(
+                crate::application::dtos::user_dto::LoginDto {
+                    username: email.clone(),
+                    password: "s3cret-passphrase".to_string(),
+                    dpop_jkt: None,
+                },
+                None,
+                None,
+            )
             .await
             .expect_err("legacy login must be refused post-migration");
         assert_eq!(
@@ -4347,10 +4691,15 @@ mod phase4_gate_integration_tests {
         // password check specifically so an attacker without the
         // password learns nothing about migration state.
         let wrong = svc
-            .login(crate::application::dtos::user_dto::LoginDto {
-                username: email.clone(),
-                password: "wrong-password".to_string(),
-            })
+            .login(
+                crate::application::dtos::user_dto::LoginDto {
+                    username: email.clone(),
+                    password: "wrong-password".to_string(),
+                    dpop_jkt: None,
+                },
+                None,
+                None,
+            )
             .await
             .expect_err("wrong password must still fail");
         assert_eq!(wrong.message, "Invalid credentials");
@@ -4363,10 +4712,15 @@ mod phase4_gate_integration_tests {
             .clear_registration(user_id)
             .await
             .expect("clear registration");
-        svc.login(crate::application::dtos::user_dto::LoginDto {
-            username: email,
-            password: "s3cret-passphrase".to_string(),
-        })
+        svc.login(
+            crate::application::dtos::user_dto::LoginDto {
+                username: email,
+                password: "s3cret-passphrase".to_string(),
+                dpop_jkt: None,
+            },
+            None,
+            None,
+        )
         .await
         .expect("legacy login must succeed again after admin clear_registration");
     }

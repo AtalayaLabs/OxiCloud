@@ -17,9 +17,10 @@ use crate::application::dtos::plugin_dto::{
 };
 use crate::application::dtos::settings_dto::{
     AdminCreateUserDto, AdminResetPasswordDto, DashboardStatsDto, DriveKindUsageDto,
-    ListUsersQueryDto, MigrationStateDto, SaveOidcSettingsDto, SaveStorageSettingsDto,
-    SendSmtpTestDto, SmtpInfoDto, SmtpTestResultDto, StartMigrationDto, TestOidcConnectionDto,
-    TestStorageConnectionDto, UpdateUserActiveDto, UpdateUserQuotaDto, UpdateUserRoleDto,
+    ListSessionsQueryDto, ListUsersQueryDto, MigrationStateDto, SaveOidcSettingsDto,
+    SaveStorageSettingsDto, SendSmtpTestDto, SmtpInfoDto, SmtpTestResultDto, StartMigrationDto,
+    TestOidcConnectionDto, TestStorageConnectionDto, UpdateUserActiveDto, UpdateUserQuotaDto,
+    UpdateUserRoleDto,
 };
 use crate::application::dtos::user_dto::{AdminUserSummaryDto, UserDto};
 use crate::application::ports::authorization_ports::AuthorizationEngine;
@@ -108,6 +109,11 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         .route("/users", post(create_user))
         .route("/users/{id}", get(get_user))
         .route("/users/{id}", delete(delete_user))
+        // Session management (DPoP admin panel — see docs/plan/dpop.md
+        // Gate 10). List is global cross-user with `?user_id=` narrow;
+        // revoke sets `revoked=true` (row stays for audit).
+        .route("/sessions", get(list_sessions))
+        .route("/sessions/{id}", delete(revoke_session))
         .route("/users/{id}/role", put(update_user_role))
         .route("/users/{id}/active", put(update_user_active))
         .route("/users/{id}/quota", put(update_user_quota))
@@ -1186,6 +1192,130 @@ pub async fn delete_user(
         Json(serde_json::json!({
             "message": "User deleted successfully"
         })),
+    ))
+}
+
+/// GET /api/admin/sessions?user_id=&include_revoked=&limit=&offset= — list sessions
+///
+/// Global cross-user listing by default. `user_id` narrows to one
+/// user; omit for cross-user. `include_revoked=true` opts into
+/// showing revoked / expired rows for forensics (default hides).
+/// Response is `{sessions, limit, offset}` — no total count (would
+/// require a second scan; the panel paginates on presence of
+/// exactly `limit` rows returned).
+#[utoipa::path(
+    get,
+    path = "/api/admin/sessions",
+    params(
+        ("user_id" = Option<String>, Query, description = "Narrow to one user (UUID); omit for cross-user"),
+        ("include_revoked" = Option<bool>, Query, description = "Include revoked + expired rows (default false — active only)"),
+        ("limit" = Option<i64>, Query, description = "Max rows to return (default 100, max 500)"),
+        ("offset" = Option<i64>, Query, description = "Pagination offset")
+    ),
+    responses(
+        (status = 200, description = "List of sessions"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn list_sessions(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+    Query(query): Query<ListSessionsQueryDto>,
+) -> Result<impl IntoResponse, AppError> {
+    let auth = state
+        .auth_service
+        .as_ref()
+        .ok_or_else(|| AppError::internal_error("Auth service not configured"))?;
+
+    let limit = query.limit.unwrap_or(100).min(500);
+    let offset = query.offset.unwrap_or(0);
+    let include_revoked = query.include_revoked.unwrap_or(false);
+    let user_id_filter = match query.user_id.as_deref() {
+        Some(s) => Some(Uuid::parse_str(s).map_err(|_| AppError::bad_request("Invalid user_id"))?),
+        None => None,
+    };
+
+    // Pass the caller's DPoP thumbprint through the SessionCaller
+    // wrapper so the DTO can flag which row is the admin's own
+    // current session (`is_current = true`). Rendered as a "this
+    // is you" badge — prevents accidentally revoking the session
+    // the click came from. `None` when the admin is unbound (rare
+    // — legacy / migration-window sessions), in which case no row
+    // highlights.
+    let caller = crate::application::dtos::session_dto::SessionCaller {
+        id: auth_user.id,
+        dpop_jkt: auth_user.dpop_jkt.as_deref(),
+    };
+
+    let sessions = auth
+        .auth_application_service
+        .admin_list_sessions_with_perms(
+            state.authorization.as_ref(),
+            caller,
+            user_id_filter,
+            include_revoked,
+            limit,
+            offset,
+        )
+        .await
+        .map_err(AppError::from)?;
+
+    // Also publish the current access-token TTL so the admin panel can
+    // render an honest "revoke takes effect within N seconds" warning
+    // above the table. Revoking a session flips the DB row (breaks the
+    // refresh path), but any in-flight JWT stays valid until its `exp`
+    // — which is `access_token_expiry_secs` from now. Showing this
+    // number keeps the UX honest instead of implying instant kill.
+    let access_token_expiry_secs = state.core.config.auth.access_token_expiry_secs;
+    Ok(Json(serde_json::json!({
+        "sessions": sessions,
+        "limit": limit,
+        "offset": offset,
+        "access_token_expiry_secs": access_token_expiry_secs,
+    })))
+}
+
+/// DELETE /api/admin/sessions/:id — revoke a session
+#[utoipa::path(
+    delete,
+    path = "/api/admin/sessions/{id}",
+    params(("id" = String, Path, description = "Session UUID")),
+    responses(
+        (status = 200, description = "Session revoked"),
+        (status = 400, description = "Invalid UUID"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+        (status = 404, description = "Session not found")
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn revoke_session(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let session_id = Uuid::parse_str(&id).map_err(|_| AppError::bad_request("Invalid UUID"))?;
+    let auth = state
+        .auth_service
+        .as_ref()
+        .ok_or_else(|| AppError::internal_error("Auth service not configured"))?;
+
+    let caller = crate::application::dtos::session_dto::SessionCaller {
+        id: auth_user.id,
+        dpop_jkt: auth_user.dpop_jkt.as_deref(),
+    };
+    auth.auth_application_service
+        .admin_revoke_session_with_perms(state.authorization.as_ref(), caller, session_id)
+        .await
+        .map_err(AppError::from)?;
+
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({ "message": "Session revoked" })),
     ))
 }
 

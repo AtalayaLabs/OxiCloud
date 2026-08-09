@@ -216,15 +216,6 @@ frontend-check: front-design
 front-test: fe-build-e2e
     cd tests/e2e && npm run test:coverage
 
-# Records against a throwaway container stack (its own Postgres + the OxiCloud
-# SPA). Each starting point is a file in tests/e2e/scenarios/codegen/ that sets
-# up state then calls page.pause(); drop a new *.spec.ts there to add one — this
-# menu discovers them automatically.
-
-# Interactive Playwright codegen — pick a starting point, then record
-front-codegen:
-    bash tests/e2e/scripts/codegen.sh
-
 # Frontend design-system guardrails — pure Node, no extra deps, run against the
 # SvelteKit frontend (frontend/). Locale completeness, dead-token report, and
 # brand-mark drift. For the full svelte-check/eslint/stylelint/prettier gate use

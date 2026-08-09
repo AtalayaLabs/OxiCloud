@@ -137,6 +137,21 @@ pub struct UserDto {
     /// need to surface per-user credential state.
     #[serde(default)]
     pub has_password: bool,
+    /// TRUE when the caller's current session carries a DPoP JWK
+    /// thumbprint (`session.dpop_jkt IS NOT NULL`). Sourced from the
+    /// caller's JWT `cnf.jkt` claim — `is_some()` means the session
+    /// was bound at token-mint time.
+    ///
+    /// Populated only by the `/api/auth/me` handler; other UserDto
+    /// emitters leave it `false`. The SPA reads this on `session.load()`
+    /// to skip a redundant `POST /api/auth/dpop/bind` call when the
+    /// session is already bound (which would 409 and log noisily under
+    /// the audit stream — see the `already_bound` reject). Only the
+    /// OIDC / magic-link redirect flows land here as `false` on first
+    /// visit; password login binds at session-mint time so the very
+    /// first `/me` after login already reports `true`.
+    #[serde(default)]
+    pub is_dpop_bound: bool,
 }
 
 /// Compact row returned by the paginated admin user table.
@@ -264,6 +279,11 @@ impl From<User> for UserDto {
             // not a general user attribute.
             force_password_change: false,
             has_password,
+            // Populated only by `/api/auth/me` — the handler overlays
+            // the caller's session's actual DPoP binding state after
+            // this `From<User>` runs. Other UserDto emitters leave
+            // this at `false` (they lack session context).
+            is_dpop_bound: false,
         }
     }
 }
@@ -279,6 +299,13 @@ pub struct LoginDto {
     /// typed in the "Username or email" field as-is.
     pub username: String,
     pub password: String,
+    /// DPoP JWK thumbprint the client generated at page load. When
+    /// present, binds the new session to a browser-held keypair so
+    /// stealing the cookie without the private key is useless (RFC
+    /// 9449). Absent → session is created unbound (fail-open per the
+    /// `docs/plan/dpop.md` threat model). Malformed → 400.
+    #[serde(default, rename = "dpop_jkt", alias = "dpopJkt")]
+    pub dpop_jkt: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
@@ -449,6 +476,14 @@ pub struct CurrentUser {
     pub email: Arc<str>,
     #[schema(value_type = String)]
     pub role: SmolStr,
+    /// DPoP session-binding thumbprint threaded from the JWT's
+    /// RFC 9449 §5 `cnf.jkt` claim. `None` for unbound sessions
+    /// (app passwords, NC clients, pre-DPoP). The DPoP middleware
+    /// reads it to enforce "bound → proof required" from an
+    /// already-validated token — no session-row lookup on the
+    /// hot path (see `docs/plan/dpop.md` Gate 9).
+    #[serde(skip)]
+    pub dpop_jkt: Option<String>,
 }
 
 // ============================================================================

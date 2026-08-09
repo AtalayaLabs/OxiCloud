@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { Page, expect } from '@playwright/test';
-import { test as base, TEST_ADMIN } from '../scenarios/helpers';
+import { test as base, TEST_ADMIN } from './helpers';
 
 /**
  * `test` for the SvelteKit SPA coverage suite. Extends the shared `test`

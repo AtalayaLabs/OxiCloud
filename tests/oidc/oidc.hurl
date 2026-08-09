@@ -267,6 +267,12 @@ HTTP 200
 [Captures]
 refreshed_access_token:  jsonpath "$.access_token"
 refreshed_refresh_token: jsonpath "$.refresh_token"
+# Also capture the ROTATED csrf token so Step 8c (logout POST) can
+# thread it into `X-CSRF-Token`. The refresh handler rotates all
+# three cookies including csrf — using `initial_csrf_token` here
+# would 403 at the CSRF middleware because it no longer matches
+# the (freshly-rotated) `oxicloud_csrf` cookie on the browser.
+refreshed_csrf_token:    cookie "oxicloud_csrf"
 [Asserts]
 jsonpath "$.user.username" == "oidc_user"
 jsonpath "$.access_token"  isString
@@ -291,6 +297,79 @@ GET {{base_url}}/api/auth/me
 HTTP 200
 [Asserts]
 jsonpath "$.username" == "oidc_user"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 8b — Admin sessions panel exposes `origin = "oidc"` and
+#           NEVER leaks the raw IdP `sid`. The oidc_user was JIT-
+#           provisioned admin by its `groups` claim (see Step 6),
+#           so /api/admin/sessions is reachable with the current
+#           cookies. Also asserts `access_token_expiry_secs` is
+#           served so the SPA can render the revoke-lag notice.
+#
+#           Regressions this pins:
+#             * origin column drops back to "unknown" on refresh
+#               (would break the panel filter for OIDC-only view);
+#             * DTO reintroduces `oidc_sid` (the anti-leak fix from
+#               dto_never_leaks_oidc_sid in session_dto.rs);
+#             * handler stops publishing the TTL (would silently
+#               kill the revoke-lag notice on the admin page).
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/admin/sessions?limit=25
+
+HTTP 200
+[Asserts]
+# At least our own OIDC session is here. `body contains` rather than a
+# jsonpath collection predicate because Hurl unwraps single-element
+# `$.sessions[*].origin` results to a scalar, and the deprecated
+# `includes` didn't handle that consistently either. Distinctive-enough
+# substring — a false positive would need `"origin":"oidc"` to appear
+# elsewhere in the SessionSummaryDto shape, which by construction it
+# doesn't.
+body contains "\"origin\":\"oidc\""
+# TTL surfaces for the SPA's revoke-lag notice.
+jsonpath "$.access_token_expiry_secs" isInteger
+jsonpath "$.access_token_expiry_secs" > 0
+# The raw IdP sid must never appear in the wire shape — not the key,
+# not even a prefix (see dto_never_leaks_oidc_sid unit test).
+body not contains "oidc_sid"
+# id_token is a JWT — three base64-url parts joined by `.`. A leak
+# would materialise as a long dotted token in the response body.
+# The fake IdP's issuer URL is a durable substring of every id_token
+# claim payload, so absence of that URL is a cheap "no id_token
+# leaked" proof.
+body not contains "{{oidc_issuer}}"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 8c — RP-initiated logout. Server MUST return
+#           `post_logout_url` on the /api/auth/logout response
+#           because the session's `oidc_id_token` is populated
+#           (both at OIDC-callback INSERT time AND — critically
+#           — after the Step 7 refresh which used to drop it).
+#           This is the regression that made "logout after OIDC
+#           login → refresh → logout" go through the local-only
+#           path, leaving the IdP session live.
+#
+#           The post_logout_url is the IdP's `end_session_endpoint`
+#           carrying `id_token_hint` + `post_logout_redirect_uri`.
+#           We assert its shape rather than following it (Step 9
+#           does a fresh OIDC login anyway).
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/auth/logout
+X-CSRF-Token: {{refreshed_csrf_token}}
+Content-Type: application/json
+{}
+
+HTTP 200
+[Asserts]
+jsonpath "$.post_logout_url" exists
+jsonpath "$.post_logout_url" matches "id_token_hint="
+jsonpath "$.post_logout_url" matches "post_logout_redirect_uri="
+# Cookie-clearing is covered by other tests
+# (`auth_session_lifecycle.hurl`); the point of THIS step is the
+# `post_logout_url` shape — proving the id_token carried across the
+# Step 7 refresh, which the bug we fixed used to drop.
 
 
 # ─────────────────────────────────────────────────────────────

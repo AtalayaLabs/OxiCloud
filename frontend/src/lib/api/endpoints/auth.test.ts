@@ -1,6 +1,19 @@
-import { it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('$lib/api/client', () => ({ apiFetch: vi.fn(), apiJson: vi.fn() }));
 vi.mock('$lib/api/csrf', () => ({ getCsrfHeaders: () => ({}) }));
+// Several probes (`fetchMe`, `tryRefresh`) run through the DPoP shim.
+// Default `proof = null` matches jsdom's missing WebCrypto keys — so
+// pre-existing suite behaviour is unchanged. Individual tests flip the
+// state to a non-null value to exercise the DPoP-attached path.
+const dpopState = vi.hoisted(() => ({ proof: null as string | null }));
+vi.mock('$lib/auth/dpop-proof', async () => {
+	const actual =
+		await vi.importActual<typeof import('$lib/auth/dpop-proof')>('$lib/auth/dpop-proof');
+	return {
+		...actual,
+		buildDpopProof: vi.fn(async () => dpopState.proof)
+	};
+});
 // Mock the OPAQUE WASM client so `login()`'s Phase 2 silent-migration
 // hook and Phase 3 lookup-then-login flip can exercise the wire path
 // (params + lookup + register or ke1/ke3 handshake) without touching
@@ -35,7 +48,10 @@ import { __resetOpaqueParamsCache } from './opaque';
 const f = apiFetch as unknown as ReturnType<typeof vi.fn>;
 const j = apiJson as unknown as ReturnType<typeof vi.fn>;
 // Several auth probes use the raw global fetch (NOT apiFetch) on purpose.
-const okRes = { ok: true, status: 200, json: async () => ({}) };
+// `headers: new Headers()` matches the real `fetch()` contract — several
+// probes (fetchMe, tryRefresh) run through the DPoP nonce-update shim,
+// which calls `response.headers.get('DPoP-Nonce')` on every reply.
+const okRes = { ok: true, status: 200, headers: new Headers(), json: async () => ({}) };
 beforeEach(() => {
 	vi.clearAllMocks();
 	// login() dynamically imports the OPAQUE client and calls
@@ -43,6 +59,9 @@ beforeEach(() => {
 	// module-level singleton. Reset it so each test's mock
 	// responses drive a fresh /params fetch.
 	__resetOpaqueParamsCache();
+	// Default: DPoP proof unavailable (matches jsdom's missing WebCrypto).
+	// DPoP-aware describe blocks below opt in by setting a proof value.
+	dpopState.proof = null;
 	f.mockResolvedValue(okRes);
 	j.mockResolvedValue({});
 	vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okRes));
@@ -63,16 +82,23 @@ it('exercises the auth endpoints (success paths)', async () => {
 	expect(fc + f.mock.calls.length).toBeGreaterThan(3);
 });
 it('fetchMe returns null when the probe is not ok', async () => {
+	// `headers: new Headers()` matches real `fetch()` — the DPoP-aware
+	// path calls `response.headers.get('DPoP-Nonce')` on every reply
+	// and would crash on a bare `{ok, status, json}` mock.
 	vi.stubGlobal(
 		'fetch',
-		vi.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({}) })
+		vi
+			.fn()
+			.mockResolvedValue({ ok: false, status: 401, headers: new Headers(), json: async () => ({}) })
 	);
 	await expect(auth.fetchMe()).resolves.toBeNull();
 });
 it('tryRefresh returns false when the refresh fails', async () => {
 	vi.stubGlobal(
 		'fetch',
-		vi.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({}) })
+		vi
+			.fn()
+			.mockResolvedValue({ ok: false, status: 401, headers: new Headers(), json: async () => ({}) })
 	);
 	await expect(auth.tryRefresh()).resolves.toBe(false);
 });
@@ -421,4 +447,90 @@ it('login returns AuthResponse even when silent-migration fails (non-fatal)', as
 	const authResponse = await auth.login('alice@example.com', 'pw');
 	expect(authResponse.access_token).toBe('at');
 	consoleSpy.mockRestore();
+});
+
+// ── tryRefresh — DPoP wiring ─────────────────────────────────────────
+//
+// Startup probe (raw `fetch`, NOT apiFetch) that must still authenticate
+// under `DPOP=required`: page reloads with a bound session + expired
+// access token would otherwise 401. Mirrors `fetchMe`'s DPoP handling:
+// dynamic-import proof module, attach `DPoP` header, harvest response
+// nonce into the shared cache, retry ONCE on `use_dpop_nonce`.
+//
+// Regression risks these tests guard:
+//   - Proof stops being attached → bound sessions can't refresh.
+//   - Nonce not harvested → the next request 401s with `nonce_missing`.
+//   - Second challenge loops (would burn cycles and mask a real server
+//     bug behind an infinite retry).
+describe('tryRefresh — DPoP wiring', () => {
+	const okRefreshRes = () => ({
+		ok: true,
+		status: 200,
+		headers: new Headers(),
+		json: async () => ({})
+	});
+	const nonceChallenge = () => ({
+		ok: false,
+		status: 401,
+		headers: new Headers({
+			'WWW-Authenticate': 'DPoP error="use_dpop_nonce"',
+			'DPoP-Nonce': 'srv-fresh'
+		}),
+		json: async () => ({})
+	});
+
+	beforeEach(() => {
+		// Opt into DPoP-attached behaviour for this block; individual
+		// tests can still flip it back to null to check the fail-open.
+		dpopState.proof = 'proof.abc';
+	});
+
+	it('attaches a DPoP header on the refresh POST', async () => {
+		const spy = vi.fn().mockResolvedValue(okRefreshRes());
+		vi.stubGlobal('fetch', spy);
+
+		const ok = await auth.tryRefresh();
+		expect(ok).toBe(true);
+
+		const [url, init] = spy.mock.calls[0];
+		expect(url).toBe('/api/auth/refresh');
+		const hdrs = new Headers((init as RequestInit).headers ?? {});
+		expect(hdrs.get('DPoP')).toBe('proof.abc');
+	});
+
+	it('sends no DPoP header when the proof module has no keypair (fail-open)', async () => {
+		dpopState.proof = null;
+		const spy = vi.fn().mockResolvedValue(okRefreshRes());
+		vi.stubGlobal('fetch', spy);
+
+		await auth.tryRefresh();
+
+		const [, init] = spy.mock.calls[0];
+		const hdrs = new Headers((init as RequestInit).headers ?? {});
+		expect(hdrs.get('DPoP')).toBeNull();
+	});
+
+	it('retries once on a use_dpop_nonce challenge, then succeeds', async () => {
+		const spy = vi
+			.fn()
+			.mockResolvedValueOnce(nonceChallenge())
+			.mockResolvedValueOnce(okRefreshRes());
+		vi.stubGlobal('fetch', spy);
+
+		const ok = await auth.tryRefresh();
+		expect(ok).toBe(true);
+		expect(spy).toHaveBeenCalledTimes(2);
+	});
+
+	it('does not loop when the retry ALSO returns use_dpop_nonce', async () => {
+		// A second challenge would indicate a server-side nonce bug;
+		// tryRefresh must surface it as a plain refresh failure rather
+		// than looping forever.
+		const spy = vi.fn().mockResolvedValue(nonceChallenge());
+		vi.stubGlobal('fetch', spy);
+
+		const ok = await auth.tryRefresh();
+		expect(ok).toBe(false);
+		expect(spy).toHaveBeenCalledTimes(2);
+	});
 });

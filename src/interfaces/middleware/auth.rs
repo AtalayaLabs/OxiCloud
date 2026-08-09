@@ -224,6 +224,7 @@ pub async fn auth_middleware(
                                 username: Arc::clone(&claims.username),
                                 email: Arc::clone(&claims.email),
                                 role,
+                                dpop_jkt: claims.dpop_jkt.clone(),
                             });
                             request.extensions_mut().insert(current_user);
                             tracing::Span::current()
@@ -267,11 +268,16 @@ pub async fn auth_middleware(
                                 "App password authentication successful for user: {}",
                                 uname
                             );
+                            // App-password sessions are always unbound —
+                            // they belong to NC clients / CLI / mobile
+                            // tools without WebCrypto. DPoP middleware
+                            // exempts them.
                             let current_user = Arc::new(CurrentUser {
                                 id: user_id,
                                 username: uname,
                                 email,
                                 role,
+                                dpop_jkt: None,
                             });
                             request.extensions_mut().insert(current_user);
                             tracing::Span::current()
@@ -341,6 +347,7 @@ pub async fn auth_middleware(
                                     username: Arc::clone(&claims.username),
                                     email: Arc::clone(&claims.email),
                                     role,
+                                    dpop_jkt: claims.dpop_jkt.clone(),
                                 });
                                 request.extensions_mut().insert(current_user);
                                 request.extensions_mut().insert(CookieAuthenticated);

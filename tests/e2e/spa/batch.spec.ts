@@ -1,5 +1,5 @@
 import { test, expect } from './coverage-helpers';
-import { apiLogin, apiCreateFolder } from '../scenarios/helpers';
+import { apiLogin, apiCreateFolder } from './helpers';
 
 /**
  * Batch selection bar — select-all then batch favorite / batch delete, each in

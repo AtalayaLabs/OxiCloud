@@ -1271,6 +1271,36 @@ impl AppServiceFactory {
         .await
     }
 
+    /// Registers the session-cleanup janitor with the scheduler.
+    ///
+    /// Purges rows in `auth.sessions` whose `expires_at` is older than
+    /// the janitor's retention window (currently 90 days, hardcoded —
+    /// see `SessionCleanupService::RETENTION_DAYS`). Runs on the
+    /// maintenance pool: the sweep is one bulk-DELETE per tick, but
+    /// keeping session-hygiene off the request pool matches every
+    /// other janitor in this file and prevents starvation surprises.
+    ///
+    /// Fills the gap called out in
+    /// `[[project_session_janitor_missing]]` — `delete_expired_sessions`
+    /// (and its cutoff-taking sibling) existed on the repo but nothing
+    /// was scheduling them, so `auth.sessions` bloated forever.
+    pub async fn create_session_cleanup_service(
+        &self,
+        maintenance_pool: &Arc<PgPool>,
+        core: &CoreServices,
+    ) -> Arc<crate::infrastructure::services::session_cleanup_service::SessionCleanupService> {
+        let session_repo = Arc::new(
+            crate::infrastructure::repositories::SessionPgRepository::new(maintenance_pool.clone()),
+        );
+        Arc::new(
+            crate::infrastructure::services::session_cleanup_service::SessionCleanupService::new(
+                session_repo,
+            ),
+        )
+        .register(&core.job_registry)
+        .await
+    }
+
     /// Starts the tree-ETag flush job (requires database).
     ///
     /// The statement triggers on `storage.files`/`storage.folders` only
@@ -1709,6 +1739,13 @@ impl AppServiceFactory {
 
             self.start_tree_etag_flush_job(&maintenance_pool);
 
+            // Session janitor — bulk-deletes `auth.sessions` rows past
+            // the retention window (90 days beyond `expires_at`). Runs
+            // once every 24h on the maintenance pool.
+            let _ = self
+                .create_session_cleanup_service(&maintenance_pool, &core)
+                .await;
+
             self.start_db_pool_monitor(&pool);
 
             self.start_content_index_job(&maintenance_pool, &core, content_index);
@@ -2102,6 +2139,12 @@ impl AppServiceFactory {
             opaque_service,
             opaque_repo,
             opaque_login_exchange,
+            dpop_nonce_service: Arc::new(
+                crate::infrastructure::services::dpop_nonce_service::DpopNonceService::new(),
+            ),
+            dpop_replay_cache: Arc::new(
+                crate::infrastructure::services::dpop_replay_cache::DpopReplayCache::new(),
+            ),
             nextcloud: nextcloud_services,
             admin_settings_service: None,
             storage_settings_service: None,
@@ -2874,6 +2917,16 @@ pub struct AppState {
     pub opaque_login_exchange: Option<
         Arc<crate::infrastructure::services::opaque_login_exchange::OpaqueLoginExchange>,
     >,
+    /// DPoP nonce pool. Always populated (even in `dpop_mode = off`)
+    /// so switching mode via env-flip needs no restart-time wiring
+    /// change. Cheap-to-construct in-memory moka cache; unused paths
+    /// pay only allocation cost at boot.
+    pub dpop_nonce_service:
+        Arc<crate::infrastructure::services::dpop_nonce_service::DpopNonceService>,
+    /// DPoP replay cache — nonce-scoped `jti` dedup. Same lifecycle
+    /// as `dpop_nonce_service` (always populated, cheap at boot).
+    pub dpop_replay_cache:
+        Arc<crate::infrastructure::services::dpop_replay_cache::DpopReplayCache>,
     pub nextcloud: Option<NextcloudServices>,
     pub admin_settings_service: Option<Arc<AdminSettingsService>>,
     /// WASM plugin management (list/install/toggle/remove), backing the admin

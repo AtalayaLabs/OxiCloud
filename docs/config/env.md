@@ -17,6 +17,7 @@ Most runtime variables use the `OXICLOUD_` prefix. A few build-time or allocator
 | `OXICLOUD_CHUNK_MAX_BYTES` | `104857600` | Maximum size of a single chunked-upload PUT in bytes (100 MB). Per-chunk cap, independent of `OXICLOUD_MAX_UPLOAD_SIZE` (whole-file cap). See [Storage Fine Tuning](./storage-fine-tuning.md). |
 | `OXICLOUD_CHUNK_DIR` | `{STORAGE_PATH}/.uploads` | Root directory for chunked-upload sessions (REST + NextCloud). Direct (non-chunked) uploads stream straight into the blob store and need no spool directory. Placement guidance: see [Storage Fine Tuning](./storage-fine-tuning.md). |
 | `OXICLOUD_REUSE_PORT` | `false` | Enable `SO_REUSEPORT` so multiple processes can share the same port. **Disabled by default** — a second accidental instance will fail with "address already in use". Enable only for deliberate multi-worker setups (process supervisor, rolling restart). Not supported on Windows. |
+| `OXICLOUD_METRICS_LISTEN` | (unset) | Prometheus `/metrics` listener address (e.g. `127.0.0.1:9090`, IPv6 allowed as `[::1]:9090`). **Unset = disabled**: no `/metrics` endpoint is bound and no metrics recorder is installed (zero runtime cost). When set, a separate HTTP listener on this address serves the text-format scrape. **Deliberately NOT merged into the main API** — no auth, CSRF, or DPoP layer in front. Bind to loopback or a private interface unless you intend to expose metrics publicly. Starter counters: `oxicloud_dpop_verify_failed_total{reason}`, `oxicloud_dpop_proof_missing_total`, `oxicloud_dpop_header_missing_on_bound_session_total`, `oxicloud_dpop_replay_detected_total`, `oxicloud_dpop_nonce_challenges_issued_total`. |
 
 ## Database
 
@@ -61,6 +62,14 @@ OPAQUE (RFC 9807) is a zero-knowledge password-authenticated key exchange: the p
 | `OXICLOUD_AUTH_OPAQUE_KSF_MEMORY_KIB` | `47104` | Client-side Argon2id memory cost in KiB (46 MiB — matches OWASP interactive-auth recommendation). Runs on the user's device during OPAQUE login/registration, TWICE per login. Distinct from `OXICLOUD_HASH_MEMORY_COST` (server-side legacy path). Bumping raises brute-force cost after a hypothetical envelope leak but also raises login latency and risks WASM heap OOM on low-memory devices — see `authentication.md § OPAQUE — KSF parameters` for the full rationale + per-device latency table. |
 | `OXICLOUD_AUTH_OPAQUE_KSF_ITERATIONS` | `1` | Client-side Argon2id iteration count (OWASP interactive-auth recommendation). |
 | `OXICLOUD_AUTH_OPAQUE_KSF_PARALLELISM` | `1` | Client-side Argon2id parallelism lanes (OWASP recommendation). Higher only helps on multi-core hardware and can hurt single-core / older mobile devices. |
+
+### DPoP — session cookie binding (RFC 9449)
+
+DPoP cryptographically binds a session cookie to a browser-held ECDSA keypair (P-256, non-extractable via `SubtleCrypto`). Every request carries a signed proof the middleware verifies against the session's binding. Closes the info-stealer replay threat: a cookie copied to another machine is useless without the private key. Non-browser clients (Nextcloud sync via app passwords, CLI via device-authorization) never bind and are exempted at the middleware regardless of mode. See `docs/plan/dpop.md` for the full rollout plan.
+
+| Variable | Default | Description |
+|---|---|---|
+| `OXICLOUD_DPOP_MODE` | `off` | Enforcement mode. `off` = middleware pass-through (default, ship-safe). `opportunistic` = verify when a proof is present, log `dpop.header_missing_but_session_bound` audit when absent on a bound session, but allow the request through (rollout mode — catches client bugs). `required` = bound sessions MUST present a valid proof or 401. Unbound sessions always exempt. Recommended rollout: `off` → `opportunistic` for 2-4 weeks → `required`. For DPoP to be meaningful, cookies must be `Secure` (`OXICLOUD_COOKIE_SECURE=true` in production over HTTPS) and reverse-proxy `X-Forwarded-Proto` / `X-Forwarded-Host` must reach the app so the `htu` claim canonicalises correctly. |
 
 ### Rate Limiting & Account Lockout
 

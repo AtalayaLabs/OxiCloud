@@ -4,6 +4,7 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { logout } from '$lib/api/endpoints/auth';
+	import { setLogoutInProgress } from '$lib/api/client';
 	import { searchResources } from '$lib/api/endpoints/search';
 	import { fileInlineUrl, deleteFile } from '$lib/api/endpoints/files';
 	import { deleteFolder } from '$lib/api/endpoints/folders';
@@ -87,9 +88,15 @@
 			section: 'admin-users'
 		},
 		{
+			href: '/admin/sessions',
+			label: t('admin.sessions', 'Sessions'),
+			icon: 'key',
+			section: 'admin-sessions'
+		},
+		{
 			href: '/admin/drives',
 			label: t('admin.drives', 'Drives'),
-			icon: 'folder',
+			icon: 'hdd',
 			section: 'admin-drives'
 		},
 		{
@@ -101,7 +108,7 @@
 		{
 			href: '/admin/oidc',
 			label: t('admin.oidc', 'OIDC / SSO'),
-			icon: 'key',
+			icon: 'building-shield',
 			section: 'admin-oidc'
 		},
 		{
@@ -488,6 +495,14 @@
 	}
 
 	async function onLogout() {
+		// Flip the session-teardown gate BEFORE the logout POST so every
+		// ambient/subscriber-fired fetch that fires between here and the
+		// /login mount short-circuits with AbortError instead of hitting
+		// the server (see `client.ts::logoutInProgress`). Left ON across
+		// the goto — module state persists over soft nav, so a stale
+		// reactive re-fetch during the transition still no-ops. A hard
+		// reload later (or the IdP round-trip below) wipes it naturally.
+		setLogoutInProgress(true);
 		let postLogoutUrl: string | undefined;
 		try {
 			({ postLogoutUrl } = await logout());
@@ -498,18 +513,18 @@
 			// Full-page navigation to the IdP end-session endpoint. Do NOT
 			// touch local session state first: `session.reset()` fires the
 			// layout $effect guard which races us with a competing
-			// `goto('/login?redirect=...')`, and any ambient in-flight
-			// fetch that 401s trips the sessionExpiredHandler with yet
-			// another navigation to `/login?source=session_expired`. Two
-			// or three concurrent navigations cancel each other and the
-			// browser stalls on the current page. The IdP round-trip lands
-			// us back on `/login` where the SPA reboots fresh from scratch —
+			// `goto('/login?redirect=...')`. The IdP round-trip lands us
+			// back on `/login` where the SPA reboots fresh from scratch —
 			// no local cleanup needed here.
 			window.location.replace(postLogoutUrl);
 			return;
 		}
 		session.reset();
-		await goto(resolve('/login'));
+		// `?source=logged_out` distinguishes the friendly explicit-logout
+		// landing from `?source=session_expired` (auto-divert on 401 →
+		// refresh 401). The login page reads the flag, shows the success
+		// notice, and skips its existing-session probe.
+		await goto(resolve('/login?source=logged_out'));
 	}
 </script>
 

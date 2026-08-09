@@ -564,7 +564,8 @@
     "magic_hint": "Geen wachtwoord? Voer uw e-mailadres in en we sturen u een eenmalige aanmeldlink.",
     "magic_unavailable": "Aanmelden per e-mail is niet beschikbaar op deze server.",
     "passwords_match": "Passwords match",
-    "sign_in": "Inloggen"
+    "sign_in": "Inloggen",
+    "logged_out": "Succesvol afgemeld."
   },
   "storage": {
     "title": "Opslag",
@@ -842,6 +843,38 @@
     "quotas": "Quota",
     "reset_pw_for": "Nieuw wachtwoord voor",
     "role": "Rol",
+    "sessions": {
+      "filter_user": "Gebruiker (UUID)",
+      "include_revoked": "Ingetrokken / verlopen tonen",
+      "refresh": "Vernieuwen",
+      "col_user": "Gebruiker",
+      "col_origin": "Herkomst",
+      "col_created": "Aangemaakt",
+      "col_expires": "Verloopt",
+      "col_ip": "IP",
+      "col_user_agent": "User agent",
+      "col_bound": "Gebonden",
+      "col_status": "Status",
+      "current_tooltip": "Dit is de sessie die u nu gebruikt — intrekken meldt u af.",
+      "bound_tooltip": "Gebonden met DPoP (jkt {{prefix}}…)",
+      "unbound": "niet gebonden",
+      "revoked": "ingetrokken",
+      "expired": "verlopen",
+      "active": "actief",
+      "revoke": "Intrekken",
+      "empty": "Geen sessies komen overeen met het huidige filter.",
+      "revoke_self_confirm": "⚠️  Dit is UW huidige sessie. Intrekken meldt u direct af en u moet opnieuw inloggen. Doorgaan?",
+      "revoke_confirm": "Deze sessie intrekken? Het volgende verzoek van die browser krijgt 401.",
+      "revoke_lag_notice": "Het intrekken van een sessie verbreekt onmiddellijk het vernieuwingspad, maar elke JWT die al in de browser aanwezig is, blijft geldig tot {{secs}} seconden, tot de volgende vernieuwingspoging.",
+      "origin": {
+        "password": "Wachtwoord",
+        "opaque": "OPAQUE",
+        "magic_link": "Magische link",
+        "oidc": "SSO",
+        "device": "Apparaat",
+        "unknown": "Onbekend"
+      }
+    },
     "smtp_fail": "Verzenden mislukt.",
     "smtp_send": "Verzenden",
     "smtp_test": "Test-e-mail verzenden",

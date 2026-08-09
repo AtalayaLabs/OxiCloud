@@ -1,5 +1,5 @@
 import { test, expect } from './coverage-helpers';
-import { apiLogin, apiCreateFolder, apiAdminCreateUser, apiCreateGroup } from '../scenarios/helpers';
+import { apiLogin, apiCreateFolder, apiAdminCreateUser, apiCreateGroup } from './helpers';
 
 /**
  * User-to-user sharing — create a second user, add them as a member through the

@@ -21,6 +21,7 @@ vi.mock('$app/navigation', () => ({ goto }));
 vi.mock('$app/state', () => ({ page: pageState }));
 vi.mock('$lib/stores/session.svelte', () => ({ session }));
 vi.mock('$lib/api/endpoints/auth', () => ({
+	bindDpopIfPossible: vi.fn().mockResolvedValue(false),
 	exchangeOidcCode: vi.fn(),
 	fetchMe: vi.fn(),
 	getOidcProviders: vi.fn(),
@@ -90,9 +91,18 @@ it('exchanges an oidc code on mount and redirects', async () => {
 });
 
 it('skips the form when already authenticated', async () => {
+	// The existing-session probe is gated on `hasSessionHint()` — no
+	// `oxicloud_csrf` cookie ⇒ probe is skipped and no `fetchMe` fires
+	// (see login/+page.svelte step 2 for the rationale). Plant the
+	// cookie the backend would have set on a live session so the
+	// probe path is exercised end-to-end here.
+	document.cookie = 'oxicloud_csrf=test-token; Path=/';
 	m(auth.fetchMe).mockResolvedValue({ id: '1' });
 	render(LoginPage);
 	await waitFor(() => expect(goto).toHaveBeenCalled());
+	// Clean up so the following tests don't inherit the hint and
+	// unexpectedly probe on their own boot.
+	document.cookie = 'oxicloud_csrf=; Path=/; Max-Age=0';
 });
 
 it('enters setup mode on a fresh install', async () => {

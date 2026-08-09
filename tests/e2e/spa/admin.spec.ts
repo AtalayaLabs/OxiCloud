@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { test, expect } from './coverage-helpers';
-import { apiLogin, apiAdminCreateUser } from '../scenarios/helpers';
+import { apiLogin, apiAdminCreateUser } from './helpers';
 
 const PLUGIN_ZIP = path.join(__dirname, '..', 'fixtures', 'plugin-hello.zip');
 

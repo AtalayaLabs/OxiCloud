@@ -360,6 +360,50 @@ async fn main() -> ExitCode {
         Err(e) => return fail(format!("/api/auth/me network: {e}")),
     }
 
-    eprintln!("opaque-hurl-helper: OK — register + login + /me round-trip for '{username}'");
+    // SessionOrigin regression pin. The OPAQUE mint path funnels
+    // through `mint_session_for_authenticated_user(_, _, _, _,
+    // SessionOrigin::Opaque)`; a refactor that dropped that arg or
+    // wired the wrong variant would surface here as `unknown` (or
+    // any other origin) in the admin panel's row list. We can't
+    // check this from Hurl because /api/auth/login refuses migrated
+    // OPAQUE accounts (Phase 4 gate) — the OPAQUE-minted bearer is
+    // the ONLY credential this helper has access to at this point,
+    // so the assertion has to live in the same binary.
+    //
+    // No user_id filter needed: the test DB carries a single user
+    // (admin) at this stage, and `include_revoked=true` guarantees
+    // the OPAQUE row is in-frame even if a follow-up test has
+    // rotated it. Cheap substring check on the JSON body — we don't
+    // need to parse the array because "opaque" is a distinctive
+    // enough string that a false positive would require an
+    // origin-shaped `"opaque"` elsewhere in the wire payload, which
+    // the SessionSummaryDto shape rules out by construction.
+    match http
+        .get(format!(
+            "{base}/api/admin/sessions?include_revoked=true&limit=100"
+        ))
+        .header("Authorization", format!("Bearer {}", auth.access_token))
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => match r.text().await {
+            Ok(body) if body.contains("\"origin\":\"opaque\"") => {}
+            Ok(body) => {
+                return fail(format!(
+                    "/api/admin/sessions: OPAQUE session not found in body — origin field missing or wrong variant. Body: {}",
+                    &body[..body.len().min(512)]
+                ));
+            }
+            Err(e) => return fail(format!("/api/admin/sessions body read: {e}")),
+        },
+        Ok(r) => {
+            return fail(format!("/api/admin/sessions: HTTP {}", r.status()));
+        }
+        Err(e) => return fail(format!("/api/admin/sessions network: {e}")),
+    }
+
+    eprintln!(
+        "opaque-hurl-helper: OK — register + login + /me + admin sessions origin=opaque for '{username}'"
+    );
     ExitCode::from(EXIT_OK)
 }

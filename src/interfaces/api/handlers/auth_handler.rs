@@ -19,7 +19,7 @@ use crate::application::services::auth_application_service::{OidcCallbackResult,
 use crate::common::di::AppState;
 use crate::interfaces::api::cookie_auth;
 use crate::interfaces::errors::AppError;
-use crate::interfaces::middleware::auth::CurrentUserId;
+use crate::interfaces::middleware::auth::{AuthUser, CurrentUserId};
 use crate::interfaces::middleware::trusted_proxy::client_ip_from_parts;
 use serde::Deserialize;
 
@@ -55,6 +55,7 @@ pub fn auth_protected_routes() -> Router<Arc<AppState>> {
         // docs/plan/oidc-account-linking.md.
         .route("/oidc/link/start", post(oidc_link_start))
         .route("/oidc/unlink", post(oidc_unlink))
+        .route("/dpop/bind", post(dpop_bind))
 }
 
 /// Rate-limited auth routes, split out so main.rs can apply per-endpoint
@@ -392,10 +393,19 @@ pub async fn login(
         ));
     }
 
+    // Extract the User-Agent once — the audit lines already carry
+    // `client_ip` on the request-scope span; passing both to the
+    // service lets `create_session` capture them on the row so the
+    // admin panel can show *who logged in from where*.
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
     // Try the normal login process
     match auth_service
         .auth_application_service
-        .login(dto.clone())
+        .login(dto.clone(), Some(client_ip.clone()), user_agent.clone())
         .await
     {
         Ok(auth_response) => {
@@ -429,6 +439,14 @@ pub async fn login(
                 state.core.config.auth.refresh_token_expiry_secs,
             );
             cookie_auth::append_csrf_cookie(response.headers_mut(), auth_response.expires_in);
+            // Seed the SPA's DPoP-nonce cache so the first bound request
+            // after login doesn't eat a `use_dpop_nonce` challenge → retry.
+            // No-op when `dpop_mode = off`.
+            cookie_auth::maybe_append_dpop_nonce_cookie(
+                response.headers_mut(),
+                &state.dpop_nonce_service,
+                state.core.config.auth.dpop_mode,
+            );
 
             // Diagnostic: warn when Secure cookies are set but the request
             // arrived over plain HTTP, the browser will reject them (#241).
@@ -546,6 +564,7 @@ pub async fn login(
 )]
 pub async fn refresh_token(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Response, AppError> {
@@ -567,9 +586,19 @@ pub async fn refresh_token(
         refresh_token: refresh_tok,
     };
 
+    // Refresh rotates the session row — capture current IP + UA so the
+    // NEW row's `ip_address`/`user_agent` reflect the latest observed
+    // client (see `sessions.rotate_session`). Old row keeps its own
+    // capture from creation time.
+    let client_ip = client_ip_from_parts(&headers, Some(peer), false);
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
     let auth_response = auth_service
         .auth_application_service
-        .refresh_token(dto)
+        .refresh_token(dto, Some(client_ip), user_agent)
         .await?;
 
     tracing::info!("Token refresh successful, new token issued");
@@ -583,6 +612,12 @@ pub async fn refresh_token(
         state.core.config.auth.refresh_token_expiry_secs,
     );
     cookie_auth::append_csrf_cookie(response.headers_mut(), auth_response.expires_in);
+    // Seed the SPA's DPoP-nonce cache — see the login handler above.
+    cookie_auth::maybe_append_dpop_nonce_cookie(
+        response.headers_mut(),
+        &state.dpop_nonce_service,
+        state.core.config.auth.dpop_mode,
+    );
     Ok(response)
 }
 
@@ -599,8 +634,9 @@ pub async fn refresh_token(
 )]
 pub async fn get_current_user(
     State(state): State<Arc<AppState>>,
-    CurrentUserId(user_id): CurrentUserId,
+    auth_user: AuthUser,
 ) -> Result<impl IntoResponse, AppError> {
+    let user_id = auth_user.id;
     let auth_service = state
         .auth_service
         .as_ref()
@@ -635,6 +671,16 @@ pub async fn get_current_user(
     {
         user.force_password_change = flags.force_password_change;
     }
+
+    // Session-binding state — read from the JWT `cnf.jkt` claim
+    // (surfaced by the auth middleware into `CurrentUser.dpop_jkt`).
+    // Present ⇒ the session that minted this JWT was bound; absent ⇒
+    // the session is unbound and the SPA should call `/dpop/bind`
+    // to attach the browser's keypair (OIDC / magic-link redirect
+    // flow). Skips an otherwise-redundant `POST /dpop/bind` on every
+    // page load which would return 409 `already_bound` and litter
+    // the audit stream.
+    user.is_dpop_bound = auth_user.dpop_jkt.is_some();
 
     Ok((StatusCode::OK, Json(user)))
 }
@@ -1005,6 +1051,75 @@ pub async fn logout(
     cookie_auth::append_clear_cookies(response.headers_mut());
     cookie_auth::append_clear_csrf_cookie(response.headers_mut());
     Ok(response)
+}
+
+/// Post-redirect DPoP bind DTO — only field is the JWK thumbprint.
+#[derive(Debug, serde::Deserialize, ToSchema)]
+pub struct DpopBindDto {
+    /// Base64url SHA-256 of the canonical public-key JWK (RFC 7638) —
+    /// exactly 43 characters, `[A-Za-z0-9_-]`.
+    #[serde(rename = "dpop_jkt", alias = "dpopJkt")]
+    pub dpop_jkt: String,
+}
+
+/// One-shot bind a DPoP JWK thumbprint to the caller's current session.
+///
+/// Purpose: post-redirect flows (OIDC callback, magic-link redemption)
+/// create the session before the SPA has a chance to send its DPoP
+/// keypair thumbprint. The SPA calls this endpoint immediately after
+/// the redirect lands, so the session graduates from unbound to bound
+/// before the first authenticated `/api/*` request.
+///
+/// Contract:
+///   * 200 on success — session now carries the thumbprint.
+///   * 400 if the thumbprint is malformed (wrong length / non-base64url).
+///   * 409 if the session already carries a thumbprint (anti-downgrade
+///         invariant per `docs/plan/dpop.md` — a bound session cannot be
+///         re-bound to a different key).
+///   * 401 if no session (auth middleware layer emits this).
+#[utoipa::path(
+    post,
+    path = "/api/auth/dpop/bind",
+    request_body = DpopBindDto,
+    responses(
+        (status = 200, description = "Thumbprint bound"),
+        (status = 400, description = "Malformed thumbprint"),
+        (status = 401, description = "Not authenticated"),
+        (status = 409, description = "Session already bound"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "auth"
+)]
+pub async fn dpop_bind(
+    State(state): State<Arc<AppState>>,
+    CurrentUserId(_user_id): CurrentUserId,
+    headers: HeaderMap,
+    Json(dto): Json<DpopBindDto>,
+) -> Result<StatusCode, AppError> {
+    let auth = state
+        .auth_service
+        .as_ref()
+        .ok_or_else(|| AppError::internal_error("Authentication service not configured"))?;
+
+    // The auth middleware validates the access token but doesn't
+    // expose the session id. Look it up via the refresh cookie —
+    // same shape logout uses. Refresh cookie is HttpOnly + SameSite,
+    // so an attacker who has the access token but not the refresh
+    // cookie (theft window: seconds between token mint and refresh
+    // cookie install) simply gets 400.
+    let refresh_token = cookie_auth::extract_cookie_value(&headers, cookie_auth::REFRESH_COOKIE)
+        .ok_or_else(|| AppError::unauthorized("Refresh cookie required to identify session"))?;
+    let session_id = auth
+        .auth_application_service
+        .get_session_id_by_refresh_token(&refresh_token)
+        .await?
+        .ok_or_else(|| AppError::unauthorized("Session not found"))?;
+
+    auth.auth_application_service
+        .bind_dpop_jkt_to_session(session_id, &dto.dpop_jkt)
+        .await?;
+
+    Ok(StatusCode::OK)
 }
 
 /// OIDC Back-Channel Logout 1.0 receiver.
@@ -1490,6 +1605,8 @@ pub async fn oidc_unlink(
 )]
 pub async fn oidc_callback(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Query(query): Query<OidcCallbackQueryDto>,
 ) -> Result<impl IntoResponse, AppError> {
     let auth_service = state
@@ -1509,6 +1626,16 @@ pub async fn oidc_callback(
 
     tracing::info!("OIDC callback received with code");
 
+    // Capture IP + UA so the OIDC-minted session row lands populated
+    // (admin panel would otherwise show "—" for SSO logins). Callback
+    // is a browser-initiated GET after the IdP redirect, so peer is
+    // the browser and User-Agent is the browser's.
+    let client_ip = client_ip_from_parts(&headers, Some(peer), false);
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
     // Exchange code, validate state/nonce/PKCE, authenticate user.
     // Any Err path (expired state on refresh, consumed code on replay,
     // anti-takeover email refusal, etc.) is caught below and turned
@@ -1517,7 +1644,13 @@ pub async fn oidc_callback(
     // mid-navigation from the IdP, not the SPA. The SPA login page
     // renders localized copy per key.
     let result = match auth_app
-        .oidc_callback(&query.code, &query.state, &state.locale_registry)
+        .oidc_callback(
+            &query.code,
+            &query.state,
+            &state.locale_registry,
+            Some(client_ip),
+            user_agent,
+        )
         .await
     {
         Ok(r) => r,
@@ -1678,6 +1811,12 @@ pub async fn oidc_exchange(
         state.core.config.auth.refresh_token_expiry_secs,
     );
     cookie_auth::append_csrf_cookie(response.headers_mut(), auth_response.expires_in);
+    // Seed the SPA's DPoP-nonce cache — see the login handler above.
+    cookie_auth::maybe_append_dpop_nonce_cookie(
+        response.headers_mut(),
+        &state.dpop_nonce_service,
+        state.core.config.auth.dpop_mode,
+    );
     Ok(response)
 }
 

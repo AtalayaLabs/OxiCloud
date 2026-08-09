@@ -45,6 +45,23 @@ struct JwtClaims {
     pub email: Arc<str>,
     /// User role for authorization checks
     pub role: String,
+    /// RFC 9449 §5 confirmation-key claim: JWK thumbprint of the
+    /// browser-held DPoP keypair the session was bound to at login.
+    /// `None` for unbound sessions (app passwords, Nextcloud clients,
+    /// pre-DPoP sessions). Populated at token mint time from
+    /// `session.dpop_jkt`; the DPoP middleware reads it to enforce
+    /// "bound session → proof required" without a DB round trip.
+    ///
+    /// Serialised as `{"cnf": {"jkt": "..."}}` to match RFC 9449.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cnf: Option<CnfClaim>,
+}
+
+/// RFC 9449 §5 confirmation-key wrapper. Only the `jkt` member is
+/// used today; future extensions (`x5t#S256`, etc.) would live here.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CnfClaim {
+    pub jkt: String,
 }
 
 impl From<JwtClaims> for TokenClaims {
@@ -64,6 +81,7 @@ impl From<JwtClaims> for TokenClaims {
             username: claims.username,
             email: claims.email,
             role: claims.role,
+            dpop_jkt: claims.cnf.map(|c| c.jkt),
         }
     }
 }
@@ -175,7 +193,11 @@ impl JwtTokenService {
 }
 
 impl TokenServicePort for JwtTokenService {
-    fn generate_access_token(&self, user: &User) -> Result<String, DomainError> {
+    fn generate_access_token(
+        &self,
+        user: &User,
+        dpop_jkt: Option<&str>,
+    ) -> Result<String, DomainError> {
         let now = Utc::now().timestamp();
 
         // Log information for debugging
@@ -194,6 +216,9 @@ impl TokenServicePort for JwtTokenService {
             username: Arc::from(user.username().unwrap_or("")),
             email: Arc::from(user.email()),
             role: user.role().as_str().to_string(),
+            cnf: dpop_jkt.map(|jkt| CnfClaim {
+                jkt: jkt.to_string(),
+            }),
         };
 
         // Log JWT claims for debugging
@@ -306,7 +331,7 @@ mod tests {
 
         let user = create_test_user();
         let token = service
-            .generate_access_token(&user)
+            .generate_access_token(&user, None)
             .expect("Should generate token");
 
         let claims = service
@@ -345,7 +370,7 @@ mod tests {
 
         let user = create_test_user();
         let token = service
-            .generate_access_token(&user)
+            .generate_access_token(&user, None)
             .expect("Should generate token");
 
         // First call: cache miss — performs full HMAC verification
@@ -372,7 +397,7 @@ mod tests {
             86400,
         );
         let token = service
-            .generate_access_token(&create_test_user())
+            .generate_access_token(&create_test_user(), None)
             .expect("Should generate token");
 
         // Miss populates the cache; hit must hand back the very same

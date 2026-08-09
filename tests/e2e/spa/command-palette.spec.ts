@@ -1,5 +1,5 @@
 import { test, expect } from './coverage-helpers';
-import { apiLogin } from '../scenarios/helpers';
+import { apiLogin } from './helpers';
 
 /**
  * Command palette — opens on Ctrl/Cmd+K, filters on typed input, and closes on

@@ -1,5 +1,5 @@
 import { test, expect } from './coverage-helpers';
-import { apiLogin, apiAdminCreateUser } from '../scenarios/helpers';
+import { apiLogin, apiAdminCreateUser } from './helpers';
 
 /**
  * Groups route — create a group, expand it, search members, rename, and delete

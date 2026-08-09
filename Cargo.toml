@@ -63,6 +63,10 @@ rand_core = { version = "0.6", features = ["std", "getrandom"] }
 # changing it invalidates every user's registration record, plan a
 # migration before touching. `argon2` feature gates the memory-hard KSF.
 opaque-ke = { version = "3", features = ["argon2"] }
+# DPoP (RFC 9449) proof verification — ECDSA P-256 signatures. Transitive
+# via jsonwebtoken's rust_crypto feature; declared here for direct use in
+# `infrastructure::services::dpop_verifier`.
+p256 = { version = "0.13", features = ["ecdsa"] }
 quick-xml = "0.41.0"
 dotenvy = "0.15.7"
 moka = { version = "0.12.15", features = ["future", "sync"] }
@@ -130,6 +134,15 @@ toml = { version = "1.1.2", optional = true }
 file-rotate = { version = "0.7.6", optional = true }
 ort = { version = "2.0.0-rc.12", default-features = false, features = ["load-dynamic", "ndarray", "tracing", "api-24"], optional = true }
 ndarray = { version = "0.17.2", optional = true }
+# Prometheus /metrics exporter (opt-in via OXICLOUD_METRICS_LISTEN).
+# `metrics` is the abstract counter API — `counter!(name, "k" => v).increment(1)`
+# — and is a no-op when no recorder is installed (unset env var). The
+# `metrics-exporter-prometheus` crate registers a recorder and renders the
+# text-format /metrics scrape. Both re-export ordered voted versions that
+# agree on their `metrics-util` transitive dep — pin as a pair when
+# bumping either side.
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
 
 [features]
 default = []
@@ -195,6 +208,15 @@ path = "src/bin/opaque-hurl-helper.rs"
 # after opaque_substrate.hurl to cover the parts Hurl can't (OPRF
 # blinding, AKE nonces are per-attempt-random). Not shipped in the
 # release Dockerfile (nothing outside tests/ calls it).
+
+[[bin]]
+name = "dpop-hurl-helper"
+path = "src/bin/dpop-hurl-helper.rs"
+# Test-suite DPoP client — signs an ES256 proof per request, threads
+# the DPoP-Nonce challenge/retry loop, and covers the wire-protocol
+# scenarios Hurl can't express (per-request fresh jti/iat, replay
+# detection, malformed proofs, wrong htm/htu/alg/typ). Same
+# no-ship-in-release status as opaque-hurl-helper.
 
 [[bin]]
 name = "load-seed"
