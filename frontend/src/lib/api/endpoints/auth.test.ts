@@ -35,7 +35,10 @@ import { __resetOpaqueParamsCache } from './opaque';
 const f = apiFetch as unknown as ReturnType<typeof vi.fn>;
 const j = apiJson as unknown as ReturnType<typeof vi.fn>;
 // Several auth probes use the raw global fetch (NOT apiFetch) on purpose.
-const okRes = { ok: true, status: 200, json: async () => ({}) };
+// `headers: new Headers()` matches the real `fetch()` contract — several
+// probes (fetchMe, tryRefresh) run through the DPoP nonce-update shim,
+// which calls `response.headers.get('DPoP-Nonce')` on every reply.
+const okRes = { ok: true, status: 200, headers: new Headers(), json: async () => ({}) };
 beforeEach(() => {
 	vi.clearAllMocks();
 	// login() dynamically imports the OPAQUE client and calls
@@ -63,16 +66,23 @@ it('exercises the auth endpoints (success paths)', async () => {
 	expect(fc + f.mock.calls.length).toBeGreaterThan(3);
 });
 it('fetchMe returns null when the probe is not ok', async () => {
+	// `headers: new Headers()` matches real `fetch()` — the DPoP-aware
+	// path calls `response.headers.get('DPoP-Nonce')` on every reply
+	// and would crash on a bare `{ok, status, json}` mock.
 	vi.stubGlobal(
 		'fetch',
-		vi.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({}) })
+		vi
+			.fn()
+			.mockResolvedValue({ ok: false, status: 401, headers: new Headers(), json: async () => ({}) })
 	);
 	await expect(auth.fetchMe()).resolves.toBeNull();
 });
 it('tryRefresh returns false when the refresh fails', async () => {
 	vi.stubGlobal(
 		'fetch',
-		vi.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({}) })
+		vi
+			.fn()
+			.mockResolvedValue({ ok: false, status: 401, headers: new Headers(), json: async () => ({}) })
 	);
 	await expect(auth.tryRefresh()).resolves.toBe(false);
 });

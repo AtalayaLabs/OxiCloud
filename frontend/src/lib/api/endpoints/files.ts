@@ -129,7 +129,10 @@ export async function uploadFileWithProgress(
 					// Nonce challenge → surface a distinctive rejection so the outer
 					// retry can re-arm a fresh XHR (the current one has already
 					// consumed its request body).
-					if (xhr.status === 401 && /use_dpop_nonce/i.test(xhr.getResponseHeader('WWW-Authenticate') ?? '')) {
+					if (
+						xhr.status === 401 &&
+						/use_dpop_nonce/i.test(xhr.getResponseHeader('WWW-Authenticate') ?? '')
+					) {
 						const err = new Error('dpop_nonce_challenge') as Error & { isNonceChallenge?: boolean };
 						err.isNonceChallenge = true;
 						reject(err);
