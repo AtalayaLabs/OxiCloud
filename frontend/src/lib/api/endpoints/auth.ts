@@ -3,7 +3,7 @@
  * primitives here intentionally bypass it (see client.ts) so a 401 surfaces as
  * a genuine failure to the caller.
  */
-import { ApiError, apiFetch, setLogoutInProgress } from '$lib/api/client';
+import { ApiError, apiFetch } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type { AuthResponse, User } from '$lib/api/types';
 
@@ -564,54 +564,44 @@ export async function unlinkOidc(): Promise<void> {
 }
 
 export async function logout(): Promise<LogoutResult> {
-	// Gate the session-expired handler for the duration of this call.
-	// The backend revokes the session + clears cookies as part of the
-	// logout response, so any in-flight fetch racing us will 401. Without
-	// the gate, that ambient 401 would trigger a navigation to
-	// `/login?source=session_expired`, cancel the pending logout POST,
-	// and swallow the `post_logout_url` response body — leaving the SSO
-	// session live on the IdP because we never navigate to its
-	// end_session_endpoint. See client.ts `logoutInProgress` for details.
-	setLogoutInProgress(true);
+	// The session-teardown gate (`setLogoutInProgress(true)`) is flipped
+	// by the CALLER (`AppShell::onLogout`) BEFORE this function runs, and
+	// left ON across the goto to /login. See `client.ts::logoutInProgress`
+	// for what the gate suppresses (short-circuits ambient fetches with
+	// AbortError + blocks the session-expired divert).
+	const res = await apiFetch('/api/auth/logout', {
+		method: 'POST',
+		credentials: 'same-origin',
+		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
+		body: '{}'
+	});
+
+	// Wipe DPoP browser state so the next login mints a fresh
+	// keypair — no correlation across the logout boundary is
+	// desirable (a new session is a new identity from the
+	// per-request-signature standpoint). Runs UNCONDITIONALLY of
+	// the logout HTTP status: even if the server call failed,
+	// the user's intent was to log out, and leaving a stale
+	// keypair around would confuse the next login's bind step.
 	try {
-		const res = await apiFetch('/api/auth/logout', {
-			method: 'POST',
-			credentials: 'same-origin',
-			headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-			body: '{}'
-		});
+		const { clearKeypair } = await import('$lib/auth/dpop');
+		const { clearNonce } = await import('$lib/auth/dpop-proof');
+		const { broadcastSessionCleared } = await import('$lib/auth/session-broadcast');
+		await clearKeypair();
+		clearNonce();
+		// Notify every OTHER tab of this origin that the session is
+		// gone — Gate 8 cross-tab UX. Tabs that were sitting idle
+		// don't have to wait for their next 401 to notice.
+		broadcastSessionCleared();
+	} catch (err) {
+		console.debug('dpop: cleanup failed during logout', err);
+	}
 
-		// Wipe DPoP browser state so the next login mints a fresh
-		// keypair — no correlation across the logout boundary is
-		// desirable (a new session is a new identity from the
-		// per-request-signature standpoint). Runs UNCONDITIONALLY of
-		// the logout HTTP status: even if the server call failed,
-		// the user's intent was to log out, and leaving a stale
-		// keypair around would confuse the next login's bind step.
-		try {
-			const { clearKeypair } = await import('$lib/auth/dpop');
-			const { clearNonce } = await import('$lib/auth/dpop-proof');
-			const { broadcastSessionCleared } = await import('$lib/auth/session-broadcast');
-			await clearKeypair();
-			clearNonce();
-			// Notify every OTHER tab of this origin that the session is
-			// gone — Gate 8 cross-tab UX. Tabs that were sitting idle
-			// don't have to wait for their next 401 to notice.
-			broadcastSessionCleared();
-		} catch (err) {
-			console.debug('dpop: cleanup failed during logout', err);
-		}
-
-		if (!res.ok) return {};
-		try {
-			const body = (await res.json()) as { post_logout_url?: unknown };
-			return typeof body?.post_logout_url === 'string'
-				? { postLogoutUrl: body.post_logout_url }
-				: {};
-		} catch {
-			return {};
-		}
-	} finally {
-		setLogoutInProgress(false);
+	if (!res.ok) return {};
+	try {
+		const body = (await res.json()) as { post_logout_url?: unknown };
+		return typeof body?.post_logout_url === 'string' ? { postLogoutUrl: body.post_logout_url } : {};
+	} catch {
+		return {};
 	}
 }

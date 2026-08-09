@@ -564,7 +564,8 @@
     "magic_hint": "Brak hasła? Wpisz swój adres e-mail, a wyślemy Ci jednorazowy link do logowania.",
     "magic_unavailable": "Logowanie e-mailem nie jest dostępne na tym serwerze.",
     "passwords_match": "Passwords match",
-    "sign_in": "Zaloguj się"
+    "sign_in": "Zaloguj się",
+    "logged_out": "Wylogowano pomyślnie."
   },
   "storage": {
     "title": "Pamięć masowa",

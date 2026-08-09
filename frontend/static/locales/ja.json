@@ -564,7 +564,8 @@
     "magic_hint": "パスワードをお持ちでない方は、メールアドレスを入力するとワンタイムサインインリンクをお送りします。",
     "magic_unavailable": "このサーバーではメールでのサインインは利用できません。",
     "passwords_match": "Passwords match",
-    "sign_in": "サインイン"
+    "sign_in": "サインイン",
+    "logged_out": "サインアウトしました。"
   },
   "storage": {
     "title": "ストレージ",

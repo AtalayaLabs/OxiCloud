@@ -564,7 +564,8 @@
     "magic_hint": "Geen wachtwoord? Voer uw e-mailadres in en we sturen u een eenmalige aanmeldlink.",
     "magic_unavailable": "Aanmelden per e-mail is niet beschikbaar op deze server.",
     "passwords_match": "Passwords match",
-    "sign_in": "Inloggen"
+    "sign_in": "Inloggen",
+    "logged_out": "Succesvol afgemeld."
   },
   "storage": {
     "title": "Opslag",

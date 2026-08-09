@@ -564,7 +564,8 @@
     "magic_hint": "沒有密碼？輸入您的電子郵件，我們將向您發送一次性登入連結。",
     "magic_unavailable": "此伺服器不支援電子郵件登入。",
     "passwords_match": "Passwords match",
-    "sign_in": "登入"
+    "sign_in": "登入",
+    "logged_out": "已成功登出。"
   },
   "storage": {
     "title": "儲存空間",

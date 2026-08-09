@@ -569,7 +569,8 @@
     "magic_hint": "¿Sin contraseña? Introduce tu correo electrónico y te enviaremos un enlace de inicio de sesión único.",
     "magic_unavailable": "El inicio de sesión por correo electrónico no está disponible en este servidor.",
     "passwords_match": "Las contraseñas coinciden",
-    "sign_in": "Iniciar sesión"
+    "sign_in": "Iniciar sesión",
+    "logged_out": "Sesión cerrada correctamente."
   },
   "storage": {
     "title": "Almacenamiento",

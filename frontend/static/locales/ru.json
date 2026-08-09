@@ -564,7 +564,8 @@
     "magic_hint": "Нет пароля? Введите ваш email, и мы пришлём вам одноразовую ссылку для входа.",
     "magic_unavailable": "Вход по электронной почте недоступен на этом сервере.",
     "passwords_match": "Passwords match",
-    "sign_in": "Вход"
+    "sign_in": "Вход",
+    "logged_out": "Вы успешно вышли."
   },
   "storage": {
     "title": "Хранилище",

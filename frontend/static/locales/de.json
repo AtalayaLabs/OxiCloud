@@ -564,7 +564,8 @@
     "magic_hint": "Kein Passwort? Geben Sie Ihre E-Mail-Adresse ein und wir senden Ihnen einen einmaligen Anmeldelink.",
     "magic_unavailable": "Die Anmeldung per E-Mail ist auf diesem Server nicht verfügbar.",
     "passwords_match": "Passwörter stimmen überein",
-    "sign_in": "Anmelden"
+    "sign_in": "Anmelden",
+    "logged_out": "Erfolgreich abgemeldet."
   },
   "storage": {
     "title": "Speicher",

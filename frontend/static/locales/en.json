@@ -724,6 +724,7 @@
     "passwords_match": "Passwords match",
     "register_error": "Registration failed",
     "session_expired": "Your session expired. Please sign in again.",
+    "logged_out": "Successfully signed out.",
     "sign_in": "Sign in",
     "signing_in": "Signing in…",
     "sending": "Sending…",

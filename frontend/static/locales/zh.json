@@ -564,7 +564,8 @@
     "magic_hint": "没有密码？输入您的邮箱，我们将向您发送一次性登录链接。",
     "magic_unavailable": "此服务器不支持邮箱登录。",
     "passwords_match": "Passwords match",
-    "sign_in": "登录"
+    "sign_in": "登录",
+    "logged_out": "已成功退出。"
   },
   "storage": {
     "title": "存储空间",

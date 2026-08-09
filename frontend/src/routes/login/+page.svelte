@@ -98,6 +98,16 @@
 	// immediately after so revisits / manual logouts don't re-show
 	// the stale message.
 	let sessionExpiredNotice = $state(false);
+	// One-shot "logged out" success banner, distinct from the
+	// session-expired one above. Triggered by AppShell::onLogout via
+	// `?source=logged_out`. Consumed on mount (URL stripped) so the
+	// notice never re-appears on reload.
+	let loggedOutNotice = $state(false);
+	// Also gates the existing-session probe below — after an explicit
+	// logout we know the session is dead; probing would 401 → refresh
+	// → 401 and clobber this landing with `?source=session_expired`
+	// via the interceptor.
+	let skipExistingSessionProbe = $state(false);
 	// One-shot notice populated from ?login_error=<key> on mount.
 	// Set by the OIDC callback's AutoLinkRefused redirect when the
 	// IdP-returned email matches an existing local account but the
@@ -345,8 +355,13 @@
 		//    Strip it from the URL so the banner never re-appears on
 		//    reloads / manual logout redirects. Uses history.replaceState
 		//    (no navigation, no scroll jump).
-		if (page.url.searchParams.get('source') === 'session_expired') {
-			sessionExpiredNotice = true;
+		const sourceParam = page.url.searchParams.get('source');
+		if (sourceParam === 'session_expired' || sourceParam === 'logged_out') {
+			if (sourceParam === 'session_expired') sessionExpiredNotice = true;
+			else loggedOutNotice = true;
+			// Either flag means we KNOW there's no live session — skip
+			// the existing-session probe further down.
+			skipExistingSessionProbe = true;
 			const stripped = new URL(page.url);
 			stripped.searchParams.delete('source');
 			window.history.replaceState(
@@ -394,15 +409,21 @@
 		}
 
 		// 2) Existing-session probe: if already authenticated, skip the form.
-		try {
-			const me = await fetchMe();
-			if (me) {
-				session.setUser(me);
-				await goto(resolve(redirectTarget), { replaceState: true });
-				return;
+		//    Skipped when we KNOW the session is gone (explicit logout or
+		//    interceptor-detected expiry) — probing would 401, the
+		//    interceptor would retry via /refresh (also 401), and the
+		//    sessionExpiredHandler would clobber this landing.
+		if (!skipExistingSessionProbe) {
+			try {
+				const me = await fetchMe();
+				if (me) {
+					session.setUser(me);
+					await goto(resolve(redirectTarget), { replaceState: true });
+					return;
+				}
+			} catch {
+				/* probe failed — show the login page */
 			}
-		} catch {
-			/* probe failed — show the login page */
 		}
 
 		// 3) Bootstrap probe: a fresh install (no admin) must be set up first.
@@ -523,6 +544,24 @@
 						aria-label={t('common.dismiss', 'Dismiss')}
 						data-testid="login-session-expired-dismiss-btn"
 						onclick={() => (sessionExpiredNotice = false)}>×</button
+					>
+				</div>
+			{/if}
+
+			{#if loggedOutNotice}
+				<div
+					class="auth-success auth-error--dismissible"
+					style="display: flex"
+					role="status"
+					data-testid="login-logged-out-notice"
+				>
+					<span>{t('auth.logged_out', 'Successfully signed out.')}</span>
+					<button
+						type="button"
+						class="auth-notice-dismiss"
+						aria-label={t('common.dismiss', 'Dismiss')}
+						data-testid="login-logged-out-dismiss-btn"
+						onclick={() => (loggedOutNotice = false)}>×</button
 					>
 				</div>
 			{/if}

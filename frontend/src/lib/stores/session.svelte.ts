@@ -119,6 +119,17 @@ class SessionStore {
 		this.user = null;
 		this.homeFolderId = null;
 		this.homeFolderName = null;
+		// Mark the store as `loaded` so any subsequent `session.load()` —
+		// notably the login page's existing-session probe and the root
+		// layout's post-nav mount — short-circuits to `null` instead of
+		// re-probing `/api/auth/me`. After an explicit logout we know for
+		// a fact the session is gone; a probe would 401, the interceptor
+		// would retry via /refresh (also 401), and `sessionExpiredHandler`
+		// would divert to `/login?source=session_expired` — clobbering the
+		// nice "logged out" landing. On a hard nav (natural expiry path)
+		// module state is fresh and this flag is `false` again, so the
+		// probe still runs there.
+		this.loaded = true;
 	}
 }
 

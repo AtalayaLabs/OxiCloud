@@ -564,7 +564,8 @@
     "magic_hint": "Sem senha? Digite seu e-mail e enviaremos um link de acesso único.",
     "magic_unavailable": "O acesso por e-mail não está disponível neste servidor.",
     "passwords_match": "As palavras-passe coincidem",
-    "sign_in": "Entrar"
+    "sign_in": "Entrar",
+    "logged_out": "Sessão terminada com sucesso."
   },
   "storage": {
     "title": "Armazenamento",

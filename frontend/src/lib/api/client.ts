@@ -164,6 +164,21 @@ export function createApiFetch(deps: ApiClientDeps): FetchFn {
 
 	const apiFetch: FetchFn = async (input, init) => {
 		const origin = deps.origin ?? globalThis.location?.origin ?? 'http://localhost';
+		// Session-teardown short-circuit. While a logout is in flight (or
+		// the caller has already navigated to /login post-logout without
+		// re-authenticating), the session is dead — any subscriber-fired
+		// refresh (`session.load()` in the layout, a store `$effect` re-
+		// fetching its slice, an idle poll) would hit /me → 401 → refresh
+		// → 401 → sessionExpiredHandler and clobber the friendly
+		// "logged out" landing with `?source=session_expired`. Fail these
+		// fast with an AbortError so callers unwrap cleanly via their
+		// existing `.catch` blocks and no server hop occurs. The auth
+		// primitives themselves (notably `/api/auth/logout`) are exempt so
+		// the logout POST that FLIPPED the gate can still complete.
+		const urlStrEarly = urlString(input as RequestInfo | URL);
+		if (logoutInProgress && !bypassesRetry(urlStrEarly)) {
+			throw new DOMException('Session terminated', 'AbortError');
+		}
 		const response = await dpopFetch(input, init);
 		// Server-status header piggyback — the server stamps
 		// `x-server-status` on every response while a maintenance
@@ -256,18 +271,23 @@ export function setSessionExpiredHandler(fn: () => void): void {
 	sessionExpiredHandler = fn;
 }
 
-// Logout-in-progress gate. Set to true by the logout endpoint wrapper
-// (endpoints/auth.ts) for the duration of the POST /api/auth/logout
-// call; reset in its `finally`. While set, `sessionExpiredHandler`
-// is suppressed — an ambient 401 during the logout window is expected
-// (the backend clears cookies and revokes the session as part of the
-// logout response, so any in-flight fetch racing the logout will 401),
-// and firing the handler would navigate to `/login?source=session_expired`
-// mid-flight, cancelling the logout POST before we get its response
-// body. Since the response body carries `post_logout_url` (the IdP's
-// end_session_endpoint URL for OIDC-linked sessions), losing it means
-// the browser never redirects to the IdP and the SSO session persists.
-// See AppShell.svelte::onLogout for the caller-side counterpart.
+// Session-teardown gate. Flipped ON by `AppShell::onLogout` immediately
+// BEFORE it calls `logout()` and left ON across the redirect to /login
+// (module state persists over SvelteKit soft nav — a hard reload wipes
+// it back to `false`, which is the correct default for a fresh session).
+// While set:
+//   1. `apiFetch` short-circuits every non-auth-primitive request with
+//      an `AbortError` — no server hop, no 401, no audit noise. Callers
+//      unwrap through their existing `.catch` blocks.
+//   2. On a 401 the `sessionExpiredHandler` divert is suppressed so it
+//      cannot clobber the friendly `/login?source=logged_out` landing
+//      with `?source=session_expired`.
+// Rule (1) alone would defeat the logout POST itself, so the auth
+// primitives (`/api/auth/logout`, `/api/auth/refresh`, …) are exempted
+// via `bypassesRetry`. Rule (2) additionally covers the tail-end race
+// where the logout response's `post_logout_url` matters for OIDC — an
+// ambient 401 mid-flight cannot cancel the pending POST and swallow
+// its body, which would leave the IdP session live.
 let logoutInProgress = false;
 
 export function setLogoutInProgress(value: boolean): void {

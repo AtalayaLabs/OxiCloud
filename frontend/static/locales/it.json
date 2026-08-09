@@ -564,7 +564,8 @@
     "magic_hint": "Niente password? Inserisci la tua email e ti invieremo un link di accesso monouso.",
     "magic_unavailable": "L'accesso tramite email non è disponibile su questo server.",
     "passwords_match": "Le password corrispondono",
-    "sign_in": "Accedi"
+    "sign_in": "Accedi",
+    "logged_out": "Disconnessione effettuata."
   },
   "storage": {
     "title": "Archiviazione",

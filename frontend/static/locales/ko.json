@@ -687,6 +687,7 @@
     "magic_sent": "해당 계정이 존재하면 로그인 링크가 전송되었습니다. 받은편지함을 확인하세요.",
     "register_error": "가입 실패",
     "session_expired": "세션이 만료되었습니다. 다시 로그인해 주세요.",
+    "logged_out": "로그아웃되었습니다.",
     "signing_in": "로그인 중…",
     "toggle_password": "비밀번호 표시"
   },
