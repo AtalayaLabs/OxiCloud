@@ -2963,6 +2963,7 @@ impl AuthApplicationService {
         &self,
         authorization: &A,
         caller_id: Uuid,
+        caller_dpop_jkt: Option<&str>,
         user_id_filter: Option<Uuid>,
         include_revoked: bool,
         limit: i64,
@@ -2975,7 +2976,12 @@ impl AuthApplicationService {
             .await?;
         Ok(sessions
             .into_iter()
-            .map(crate::application::dtos::session_dto::SessionSummaryDto::from)
+            .map(|s| {
+                crate::application::dtos::session_dto::SessionSummaryDto::from_session(
+                    s,
+                    caller_dpop_jkt,
+                )
+            })
             .collect())
     }
 

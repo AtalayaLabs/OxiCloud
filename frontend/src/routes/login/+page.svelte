@@ -9,6 +9,7 @@
 	import { onMount } from 'svelte';
 	import { ApiError } from '$lib/api/client';
 	import {
+		bindDpopIfPossible,
 		exchangeOidcCode,
 		fetchMe,
 		getAuthStatus,
@@ -378,6 +379,14 @@
 			const user = await exchangeOidcCode(oidcCode);
 			if (user) {
 				session.setUser(user);
+				// OIDC callback creates the session UNBOUND (redirect flow can't
+				// carry a JKT in the callback body). Post-redirect bind here
+				// attaches the browser keypair — one-shot, idempotent (server
+				// returns 409 if already bound). Awaited so subsequent requests
+				// under `DPOP=required` land with a bound session, not an
+				// unbound one that would 401 on the very next thumbnail. See
+				// `docs/plan/dpop.md` Gate 3.
+				await bindDpopIfPossible();
 				await goto(resolve(redirectTarget), { replaceState: true });
 				return;
 			}

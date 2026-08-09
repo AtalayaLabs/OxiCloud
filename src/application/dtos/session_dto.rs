@@ -50,16 +50,38 @@ pub struct SessionSummaryDto {
     /// IdP emitted `sid` — otherwise `None`. Useful when an operator is
     /// correlating with the upstream IdP's session log.
     pub oidc_sid: Option<String>,
+    /// `true` when this row IS the caller's currently-active session —
+    /// set by the service layer by comparing the row's `dpop_jkt` with
+    /// the caller's own bound thumbprint. Lets the admin panel flag
+    /// "revoking this cuts your own branch" so an admin doesn't
+    /// accidentally log themselves out. `false` when either side is
+    /// unbound (can't correlate) or when the jkts don't match.
+    pub is_current: bool,
 }
 
 impl From<Session> for SessionSummaryDto {
     fn from(s: Session) -> Self {
+        Self::from_session(s, None)
+    }
+}
+
+impl SessionSummaryDto {
+    /// Build the DTO with an optional `caller_jkt` used to compute
+    /// `is_current`. Pass the admin caller's DPoP thumbprint to have
+    /// the panel highlight the caller's own row; pass `None` when
+    /// the caller is unbound (no jkt = no correlation) or from
+    /// non-admin contexts.
+    pub fn from_session(s: Session, caller_jkt: Option<&str>) -> Self {
         let is_revoked = s.is_revoked();
         let is_expired = s.is_expired();
         let jkt = s.dpop_jkt().map(|s| s.to_owned());
         let dpop_jkt_prefix = jkt
             .as_ref()
             .map(|t| t.chars().take(8).collect::<String>());
+        let is_current = match (jkt.as_deref(), caller_jkt) {
+            (Some(row), Some(caller)) => row == caller,
+            _ => false,
+        };
         Self {
             id: s.id(),
             user_id: s.user_id(),
@@ -72,6 +94,7 @@ impl From<Session> for SessionSummaryDto {
             is_revoked,
             is_active: !is_revoked && !is_expired,
             oidc_sid: s.oidc_sid().map(str::to_owned),
+            is_current,
         }
     }
 }

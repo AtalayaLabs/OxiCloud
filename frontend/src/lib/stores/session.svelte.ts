@@ -6,7 +6,7 @@
  * routing: externals (magic-link / OIDC-only / OCM recipients) have no home
  * folder and land on the shared-with-me view.
  */
-import { fetchMe, tryRefresh } from '$lib/api/endpoints/auth';
+import { bindDpopIfPossible, fetchMe, tryRefresh } from '$lib/api/endpoints/auth';
 import { drives } from '$lib/stores/drives.svelte';
 import type { User } from '$lib/api/types';
 import { ensureActiveUser } from '$lib/utils/localStoragePrefs';
@@ -45,8 +45,18 @@ class SessionStore {
 			if (!me && (await tryRefresh())) {
 				me = await fetchMe();
 			}
-			if (me) this.setUser(me);
-			else this.user = null;
+			if (me) {
+				this.setUser(me);
+				// Post-redirect DPoP bind — catches OIDC / magic-link
+				// flows whose server-side callback creates the session
+				// UNBOUND (no way for the redirect to carry the JKT in
+				// the callback body). One-shot per SPA lifetime because
+				// `this.loaded` guard makes `load()` a singleton;
+				// server returns 409 if the session is already bound
+				// (harmless — result is swallowed). Fire-and-forget so
+				// a slow IndexedDB open doesn't stall the app boot.
+				void bindDpopIfPossible();
+			} else this.user = null;
 		} catch {
 			this.user = null;
 		}

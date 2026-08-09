@@ -1238,11 +1238,20 @@ pub async fn list_sessions(
         None => None,
     };
 
+    // Pass the caller's DPoP thumbprint so the DTO can flag which
+    // row is the admin's own current session (`is_current = true`).
+    // Rendered as a "this is you" badge — prevents the admin from
+    // accidentally revoking the session they're clicking from.
+    // `None` when the admin is unbound (rare — legacy / migration
+    // window sessions), in which case no row highlights.
+    let caller_jkt = auth_user.dpop_jkt.as_deref();
+
     let sessions = auth
         .auth_application_service
         .admin_list_sessions_with_perms(
             state.authorization.as_ref(),
             auth_user.id,
+            caller_jkt,
             user_id_filter,
             include_revoked,
             limit,

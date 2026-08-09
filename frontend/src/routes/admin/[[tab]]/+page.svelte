@@ -879,16 +879,21 @@
 		}
 	}
 
-	async function onRevokeSession(id: string) {
-		if (
-			!confirm(
-				t(
+	async function onRevokeSession(id: string, isCurrent: boolean) {
+		// Escalated warning for the caller's own session — revoking it
+		// bricks the tab (all subsequent requests 401 → nav-guard bounces
+		// to /login). A plain "are you sure" was too easy to click
+		// through by muscle memory on a table of revoke buttons.
+		const message = isCurrent
+			? t(
+					'admin.sessions.revoke_self_confirm',
+					"⚠️  This is YOUR current session. Revoking it will log YOU out immediately and you'll have to sign back in. Continue?"
+				)
+			: t(
 					'admin.sessions.revoke_confirm',
 					'Revoke this session? The next request from that browser will 401.'
-				)
-			)
-		)
-			return;
+				);
+		if (!confirm(message)) return;
 		sessionRevokingId = id;
 		try {
 			await revokeAdminSession(id);
@@ -3024,8 +3029,22 @@
 							<tr
 								data-testid={`admin-sessions-row-${s.id}`}
 								class:muted={!s.is_active}
+								class:current-session={s.is_current}
 							>
-								<td class="mono" title={s.user_id}>{s.user_id.slice(0, 8)}…</td>
+								<td class="mono" title={s.user_id}>
+									{s.user_id.slice(0, 8)}…
+									{#if s.is_current}
+										<span
+											class="badge badge-info"
+											title={t(
+												'admin.sessions.current_tooltip',
+												"This is the session you're using right now — revoking it will log you out."
+											)}
+										>
+											{t('admin.sessions.current', 'you')}
+										</span>
+									{/if}
+								</td>
 								<td>{new Date(s.created_at).toLocaleString()}</td>
 								<td>{new Date(s.expires_at).toLocaleString()}</td>
 								<td class="mono">{s.ip_address ?? '—'}</td>
@@ -3065,7 +3084,7 @@
 										<button
 											class="btn btn-danger btn-sm"
 											data-testid={`admin-sessions-revoke-btn-${s.id}`}
-											onclick={() => void onRevokeSession(s.id)}
+											onclick={() => void onRevokeSession(s.id, s.is_current)}
 											disabled={sessionRevokingId === s.id}
 										>
 											{sessionRevokingId === s.id
@@ -4147,6 +4166,14 @@
 </Modal>
 
 <style>
+	/* Admin sessions panel — accent the caller's own row so revoking
+	   it can't happen by muscle memory. Left border + tinted bg pull
+	   the eye; JS confirms with an escalated message on top of that. */
+	.current-session {
+		background: var(--color-bg-accent-subtle, color-mix(in srgb, var(--color-accent) 8%, transparent));
+		border-left: 3px solid var(--color-accent);
+	}
+
 	.logs-toolbar {
 		display: flex;
 		gap: var(--space-2);

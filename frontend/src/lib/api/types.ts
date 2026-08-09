@@ -754,6 +754,11 @@ export interface SessionSummary {
 	is_revoked: boolean;
 	is_active: boolean;
 	oidc_sid: string | null;
+	/** `true` when this row IS the admin's currently-active session —
+	 *  compared server-side by `dpop_jkt`. Panel uses this to warn
+	 *  before revoking ("this will log you out"). Always `false` when
+	 *  the admin's own session is unbound. */
+	is_current: boolean;
 }
 
 /** Wire response of `GET /api/admin/sessions`. */
