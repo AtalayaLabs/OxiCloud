@@ -1,6 +1,7 @@
 # DPoP (Demonstrating Proof-of-Possession) implementation plan
 
-**Status**: draft — not yet started.
+**Status**: **CLOSED — Phase 1 complete (2026-08-11).** All gates 1–10 + C shipped, including the post-Gate-10 nonce-cookie hand-off (Gate 5c, below). Deferred-to-Phase-2 items remain scoped for a future project when the underlying dependencies (IdP DPoP support, WebAuthn attestation UX, native NC client crypto) mature. This document stays as the reference for how each mechanism was designed and where it lives in the codebase — new work touching DPoP should cross-check against these gates before diverging.
+
 **Companion**: `docs/plan/opaque-only.md` (OPAQUE is orthogonal but complementary — OPAQUE authenticates the user, DPoP binds the resulting session to a specific browser).
 
 ## Motivation
@@ -147,6 +148,23 @@ DPoP (RFC 9449) closes this gap by binding the session to a browser-held private
 - **Test**: Rust unit test — issue nonce, verify accepts within window, rejects after expiry; issuing a fresh nonce doesn't invalidate the previous one until its own TTL.
 - **Why nonce eliminates client-clock dependence**: the nonce is generated at a server-known moment and expires by server clock. A proof carrying that nonce is provably "recent" from the server's own perspective, regardless of what the client's clock says. `iat` becomes advisory (useful for logs, ignored for freshness) unless the client hasn't yet received a nonce (the very first request).
 
+## Gate 5c — Nonce-cookie hand-off on login-success responses
+
+**Problem** — Gate 5b's challenge-and-retry flow means the FIRST bound request after every login eats a 401 `use_dpop_nonce` challenge before its retry lands. Under `DPOP=required` mode this is one useless round trip per session, per tab, on every login. Visible in the network tab as `/api/folders/…/ancestors 401 → 200`, and audible in the audit log as a `dpop.nonce_challenge_issued` on each bind ceremony.
+
+**The header approach doesn't work uniformly**. The middleware stamps `DPoP-Nonce` on every authenticated response, but login endpoints aren't authenticated — they mint the session, they aren't behind the DPoP layer. So the login response has no nonce header. Worse, two of the four login paths (OIDC callback, magic-link redemption) are HTTP 302 redirects: even if the redirect response carried the header, the browser drops response headers on the follow. Only `Set-Cookie` survives a redirect.
+
+**Design** — one-shot `oxicloud_dpop_nonce` cookie, stamped alongside the auth cookies on every login-success response:
+
+- **Server helper**: `cookie_auth::maybe_append_dpop_nonce_cookie(&mut headers, &nonce_service, dpop_mode)` — self-gated (no-op when `dpop_mode = off`), reads `nonce_service.current_or_rotate()`, sets the cookie with `SameSite=Strict; Path=/; Max-Age=60; non-HttpOnly` (client MUST read it).
+- **Stamped on**: legacy `/api/auth/login`, OPAQUE `/opaque/login/ke3`, OIDC `/oidc/exchange`, magic-link `/magic/v1/{token}` redemption, `/api/auth/setup`, `/api/auth/refresh`. Every path that mints or rotates a session.
+- **Client seed**: `seedNonceFromCookie()` in `$lib/auth/dpop-proof` — reads the cookie, calls `updateNonceFromHeader(value)`, clears the cookie so a stale value can't confuse a later flow. Called at SPA boot (`hooks.client.ts::init`) for redirect-flow logins, AND at `session.setUser()` for POST-flow logins (SPA already booted).
+- **Short TTL**: 60 s. Well within the server-side nonce pool TTL (5 min); if the SPA doesn't consume it in a minute the client either lacks DPoP support (harmless — non-HttpOnly cookie just sits there) or is broken (a stale cookie doesn't hurt — the middleware challenge-retry still kicks in).
+
+**Result** — first bound request after login lands with a valid nonce → no 401, no retry. When `dpop_mode = off` server-side, the helper is a no-op and no cookie is set. When the client lacks DPoP support, the seed call reads the cookie into an in-memory cache that's never consulted — dead bytes, no harm.
+
+**Why not a prime probe (`HEAD /api/auth/dpop/nonce`)** — considered, rejected: (a) adds a network round trip after every login, worse than the current 401-retry it was replacing; (b) doesn't help redirect flows without a matching client-side handler post-mount anyway; (c) the cookie approach handles POST and redirect uniformly with zero extra requests.
+
 ## Gate 6 — Replay cache (nonce-scoped)
 
 - Moka `Cache<(String /* nonce */, String /* jti */), ()>` with TTL = 5 minutes (matches max nonce lifetime).
@@ -282,6 +300,7 @@ The allowlist exempts ONLY the missing-proof reject. Proofs that ARE sent on the
 | 4 — Fetch interceptor (nonce-aware) | 1 day |
 | 5 — Server verifier + middleware | 2 days |
 | 5b — DPoP-Nonce service | 1 day |
+| 5c — Nonce-cookie hand-off on login | 0.5 day (added post-Gate-10 as a first-post-login-request-401 fix) |
 | 6 — Replay cache | 0.5 day |
 | 6b — DPoP hurl-helper binary | 1.5 days |
 | 7 — Refresh + logout | 1 day |
@@ -313,9 +332,12 @@ The allowlist exempts ONLY the missing-proof reject. Proofs that ARE sent on the
 
 ## Success criteria (Phase 1 complete)
 
-- All four login paths bind a keypair thumbprint to the new session.
-- Every `/api/*` request from an SPA session carries a valid DPoP proof (verified in `required` mode).
-- App-password sessions (`dpop_jkt IS NULL`) continue to work — no regression for Nextcloud sync clients.
-- Copying the session cookie to `curl` on another machine reproducibly fails with 401.
-- Audit stream contains actionable telemetry for verify failures, replay attempts, nonce challenges.
-- Documentation in `docs/config/authentication.md` explains the modes, the flag, and the rollout guidance for operators.
+All met as of 2026-08-11:
+
+- ✅ All four login paths bind a keypair thumbprint to the new session.
+- ✅ Every `/api/*` request from an SPA session carries a valid DPoP proof (verified in `required` mode).
+- ✅ App-password sessions (`dpop_jkt IS NULL`) continue to work — no regression for Nextcloud sync clients.
+- ✅ Copying the session cookie to `curl` on another machine reproducibly fails with 401.
+- ✅ Audit stream contains actionable telemetry for verify failures, replay attempts, nonce challenges — plus `dpop.bound_at_login` success events (Gate 10 refinement).
+- ✅ Documentation in `docs/config/authentication.md` explains the modes, the flag, and the rollout guidance for operators.
+- ✅ First bound request after login lands nonce-primed (Gate 5c cookie hand-off) — no `use_dpop_nonce` 401 → retry cycle on every login.
