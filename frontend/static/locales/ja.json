@@ -153,14 +153,14 @@
     "manage_shares": "共有の管理",
     "no_shares": "まだシェアはありません",
     "playback_error": "再生に失敗しました",
-    "private": "Private",
-    "public": "Public",
+    "private": "プライベート",
+    "public": "公開",
     "read_only": "読み取り専用",
-    "remove": "Remove",
+    "remove": "削除",
     "remove_share": "共有を削除する",
     "set_cover": "セットカバー",
     "share_with_user": "ユーザーIDまたはメールアドレス",
-    "toggle_public": "Visibility",
+    "toggle_public": "可視性",
     "track_removed": "トラックが削除されました",
     "prev": "前へ",
     "add_selected": "選択したものを追加",
@@ -214,10 +214,10 @@
     "delete_permanently": "完全に削除",
     "empty_trash": "ゴミ箱を空にする",
     "open_parent_folder": "親フォルダへ移動",
-    "add": "Add",
-    "apply": "Apply",
-    "clear": "Clear",
-    "remove": "Remove"
+    "add": "追加",
+    "apply": "適用",
+    "clear": "クリア",
+    "remove": "削除"
   },
   "user_menu": {
     "appearance": "外観",
@@ -265,8 +265,8 @@
     "linkNamePlaceholder": "リンク名 (オプション)",
     "newLink": "新しいリンク",
     "noExpiry": "有効期限なし",
-    "pending": "Pending",
-    "people": "People",
+    "pending": "保留中",
+    "people": "人物",
     "publicLinks": "パブリックリンク",
     "role": {
       "canEdit": "編集可能",
@@ -284,7 +284,7 @@
     "folders": "フォルダ",
     "link_name": "リンク名 (オプション)",
     "notifyByEmail": "メールで通知",
-    "revoke": "Remove",
+    "revoke": "削除",
     "role_label": "役割",
     "col_shared_by": "共有者",
     "col_shared": "共有日時",
@@ -309,7 +309,7 @@
       "coalesced": "{{n}} 最近すでに通知されています。",
       "rateLimited": "{{n}} レート制限に達しました - 後で試してください。",
       "sent": "{{n}} メールで通知されます。",
-      "skipped": "{{n}} skipped (no email / opted out)."
+      "skipped": "{{n}} 件をスキップしました (メールなし / 配信停止)。"
     },
     "passwordPrompt": "パスワードを設定します。",
     "passwordPrompt_clear": "新しいパスワード (削除するには空白):",
@@ -513,8 +513,8 @@
     "uploaded_skipped": "{{ok}} アップロード · {{skipped}} スキップ (通常のファイルではない)",
     "upload_failed": "アップロードに失敗しました",
     "uploading": "アップロード中…",
-    "uploading_file": "Uploading {{name}}…",
-    "uploading_n": "Uploading {{done}}/{{total}} files…"
+    "uploading_file": "{{name}} をアップロード中…",
+    "uploading_n": "{{done}}/{{total}} ファイルをアップロード中…"
   },
   "dialogs": {
     "rename_folder": "フォルダ名を変更",
@@ -1166,7 +1166,6 @@
     "storage_size": "保存済み",
     "storage_test": "テスト",
     "storage_backend_audit": "バックエンドの一貫性",
-    "storage_backend_audit_triggered": "backend_consistency が `{{name}}` に対してトリガーされました — [ジョブ] タブで確認してください。",
     "time_day_ago": "{{n}} 日前",
     "time_hour_ago": "{{n}} 時間前",
     "time_just_now": "ちょうど今",
@@ -1181,9 +1180,6 @@
     "gen_key": "キーの生成",
     "gen_key_warning": "このキーは安全に保管してください。紛失すると、暗号化されたデータは回復不能に失われます。",
     "jobs": {
-      "tab": "求人",
-      "title": "求人",
-      "hint": "このセクションは、内部ジョブ (定期ジョブとオンデマンド ジョブ) に関するものです。整合性チェックは読み取り専用なので、いつでも安全に実行できます。",
       "run_all_consistency": "すべての整合性チェックを実行する",
       "run_deep": "深く走る",
       "run_deep_hint": "低速な亜種 (BLOB 再ハッシュ、ビットロット検出) も実行します。",
@@ -1215,11 +1211,10 @@
       "findings_title": "調査結果",
       "no_runs": "まだ実行はありません。",
       "no_findings": "検出結果はありません - 正常に実行されました。",
-      "none_registered": "求人は登録されていません。",
       "on_demand": "オンデマンド",
-      "every_h": "every {{n}} h",
-      "every_min": "every {{n}} min",
-      "every_sec": "every {{n}} s",
+      "every_h": "{{n}} 時間ごと",
+      "every_min": "{{n}} 分ごと",
+      "every_sec": "{{n}} 秒ごと",
       "outcome_ok": "わかりました",
       "outcome_err": "エラー",
       "outcome_issues": "問題",
@@ -1229,11 +1224,10 @@
       "notices_present_tooltip": "情報的な調査結果 — アクションは必要ありません。詳細については展開してください。",
       "purge": "古い実行をパージする",
       "purge_hint": "選択した保持期間よりも古い、完了および失敗した実行履歴を削除します。親の実行とともに検出結果は低下します。非ターミナル実行は常に保存されます。",
-      "purge_title": "古いジョブ履歴を消去する",
       "purge_body": "選択した日数より古い、完了および失敗した実行履歴を削除します。親の実行とともに検出結果は低下します。非ターミナル実行 (実行中、一時停止、キャンセル要求) は常に保持されます。",
       "purge_days_label": "保存期間 (日)",
       "purge_confirm": "パージ",
-      "purge_done": "{{n}} old run(s) purged (retention {{days}} days)",
+      "purge_done": "{{n}} 件の古い実行を削除しました (保持 {{days}} 日)",
       "state_running": "走っている",
       "never": "一度もない",
       "just_now": "ちょうど今",
@@ -1245,11 +1239,16 @@
       "cancel_requested": "キャンセルが要求されました — {{name}} 次の安全な境界で一時停止します",
       "cancel_noop": "キャンセルするものはありません — {{name}} は実行されていません",
       "progress_exact_tooltip": "{{pct}} ({{scanned}} / {{total}})",
-      "progress_approx_tooltip": "{{pct}} ({{scanned}} / {{total}} — approximate, backend proxy)"
+      "progress_approx_tooltip": "{{pct}} ({{scanned}} / {{total}} — 概算、バックエンドプロキシ)",
+      "tab": "バックグラウンドタスク",
+      "title": "バックグラウンドタスク",
+      "hint": "このセクションは内部のバックグラウンドタスク（定期的およびオンデマンド）に関するものです。整合性チェックはいつでも安全に実行できます — 読み取り専用です。",
+      "none_registered": "登録されているバックグラウンドタスクはありません。",
+      "purge_title": "古いタスク履歴を削除"
     },
     "oidc": "OIDC / SSO",
-    "oidc_discover": "Test / discover",
-    "reextract_done": "{{processed}}/{{total}} processed · {{failed}} failed",
+    "oidc_discover": "テスト / 検出",
+    "reextract_done": "{{processed}}/{{total}} 処理済み · {{failed}} 失敗",
     "sessions": {
       "filter_user": "ユーザー (UUID)",
       "include_revoked": "取り消し済み / 期限切れを含む",
@@ -1281,7 +1280,8 @@
         "device": "デバイス",
         "unknown": "不明"
       }
-    }
+    },
+    "storage_backend_audit_triggered": "backend_consistency が `{{name}}` に対して開始されました — バックグラウンドタスクタブで確認してください。"
   },
   "profile": {
     "page_title": "プロフィール",
@@ -1359,14 +1359,14 @@
     "error_revoke": "失効に失敗しました",
     "edit_photo": "写真を編集する",
     "photo_tab_url": "URL",
-    "photo_tab_upload": "Upload",
+    "photo_tab_upload": "アップロード",
     "photo_url_placeholder": "https://example.com/photo.jpg",
-    "photo_url_hint": "https://, http://, or data:image/…;base64,… accepted",
+    "photo_url_hint": "https://、http://、data:image/…;base64,… を受け付けます",
     "photo_choose_file": "写真を選択してください (PNG、JPEG、WebP)",
     "photo_resize_note": "512 × 512 ピクセルより大きい画像は自動的にサイズ変更されます。",
     "photo_save": "写真を保存",
     "photo_remove": "写真を削除",
-    "photo_cancel": "Cancel",
+    "photo_cancel": "キャンセル",
     "photo_save_failed": "写真の保存に失敗しました",
     "photo_no_file": "最初にファイルを選択してください",
     "photo_managed_by_oidc": "ID プロバイダーによって管理されている写真。",
@@ -1394,7 +1394,7 @@
     "uploading": "アップロード中...",
     "files": "ファイル",
     "complete": "{{count}} / {{total}} アップロード済み",
-    "files_counter": "{{completed}} / {{total}} files"
+    "files_counter": "{{completed}} / {{total}} ファイル"
   },
   "storage_quota_exceeded": "ストレージ容量を超過しました",
   "sharedwithme": {
@@ -1439,7 +1439,7 @@
     "create_dialog_title": "新規グループ",
     "edit_dialog_title": "グループ名を変更",
     "name_label": "名前",
-    "name_placeholder": "engineering",
+    "name_placeholder": "エンジニアリング",
     "description_label": "説明（任意）",
     "members_section": "メンバー",
     "add_member_placeholder": "ユーザーまたはグループを追加…",
@@ -1495,12 +1495,12 @@
     "passwordLinks": "パスワードで保護されたリンク"
   },
   "sort": {
-    "asc": "ascending",
-    "desc": "descending",
+    "asc": "昇順",
+    "desc": "降順",
     "direction": "ソート方向"
   },
   "notif": {
-    "errorTitle": "Error",
+    "errorTitle": "エラー",
     "searchError": "検索実行エラー",
     "cleanupCompleted": "クリーンアップが完了しました",
     "cleanupCompletedBody": "最近のファイル履歴が消去されました",
@@ -1584,7 +1584,7 @@
   "common": {
     "add": "追加",
     "cancel": "キャンセル",
-    "clear": "Clear",
+    "clear": "クリア",
     "close": "閉じる",
     "confirm": "確認",
     "copy": "コピー",
@@ -1596,7 +1596,7 @@
     "next": "次へ",
     "no": "なし",
     "previous": "前へ",
-    "remove": "Remove",
+    "remove": "削除",
     "rename": "名前を変更",
     "save": "保存",
     "search": "検索",

@@ -256,7 +256,7 @@
       "coalesced": "{{n}} ya notificado recientemente.",
       "rateLimited": "{{n}} alcance el límite de velocidad; inténtelo más tarde.",
       "sent": "{{n}} notificado por correo electrónico.",
-      "skipped": "{{n}} skipped (no email / opted out)."
+      "skipped": "{{n}} omitidos (sin correo / dados de baja)."
     },
     "passwordPrompt": "Establecer una contraseña:",
     "passwordPrompt_clear": "Nueva contraseña (en blanco para eliminar):",
@@ -430,7 +430,7 @@
     "file_types": {
       "document": "Documento",
       "image": "Imagen",
-      "video": "Video",
+      "video": "Vídeo",
       "audio": "Audio",
       "pdf": "PDF",
       "text": "Texto",
@@ -514,7 +514,7 @@
     "uploaded": "Subida completa",
     "uploading": "Subiendo…",
     "uploading_file": "Subiendo {{name}}…",
-    "uploading_n": "Uploading {{done}}/{{total}} files…"
+    "uploading_n": "Subiendo {{done}}/{{total}} archivos…"
   },
   "dialogs": {
     "rename_folder": "Renombrar carpeta",
@@ -642,7 +642,7 @@
     "admin_setup": "¿Primera vez?",
     "setup": "Configurar administrador",
     "register_title": "Crear cuenta",
-    "email": "Email",
+    "email": "Correo",
     "email_placeholder": "Ingresa tu email",
     "confirm_password": "Confirmar contraseña",
     "confirm_password_placeholder": "Confirma tu contraseña",
@@ -859,7 +859,7 @@
     "callback_url": "URL de Callback",
     "callback_url_hint": "(registrar en tu IdP)",
     "advanced_settings": "Configuración Avanzada",
-    "scopes": "Scopes",
+    "scopes": "Ámbitos",
     "auto_provision": "Auto-provisionar usuarios en el primer inicio de sesión",
     "admin_groups": "Grupos de Admin",
     "admin_groups_hint": "Nombres de grupos OIDC separados por comas que mapean al rol de admin",
@@ -978,7 +978,7 @@
     "oidc_client_id": "ID de cliente",
     "oidc_disable_pw": "Desactivar inicio de sesión con contraseña (solo OIDC)",
     "oidc_issuer": "URL del Emisor",
-    "oidc_scopes": "Scopes",
+    "oidc_scopes": "Ámbitos",
     "password": "Contraseña",
     "quotas": "Cuotas",
     "reset_pw_for": "Nueva contraseña para",
@@ -1176,15 +1176,11 @@
     "storage_size": "almacenado",
     "storage_test": "Prueba",
     "storage_backend_audit": "Consistencia del backend",
-    "storage_backend_audit_triggered": "backend_consistency se activó para `{{name}}`: mírelo en la pestaña Trabajos.",
     "time_day_ago": "Hace {{n}} d",
     "time_hour_ago": "Hace {{n}} h",
     "time_just_now": "En este momento",
     "unchanged": "Déjelo en blanco para mantenerse actualizado",
     "jobs": {
-      "tab": "Empleos",
-      "title": "Empleos",
-      "hint": "Esta sección se refiere a trabajos internos: trabajos periódicos + bajo demanda. Las comprobaciones de coherencia se pueden ejecutar de forma segura en cualquier momento: son de solo lectura.",
       "run_all_consistency": "Ejecute todas las comprobaciones de coherencia",
       "run_deep": "Corre profundo",
       "run_deep_hint": "También ejecuta variantes lentas (repetición de blobs, detección de bitrot).",
@@ -1216,7 +1212,6 @@
       "findings_title": "Recomendaciones",
       "no_runs": "Aún no hay carreras.",
       "no_findings": "No hay resultados: ejecución limpia.",
-      "none_registered": "No hay empleos registrados.",
       "on_demand": "Bajo demanda",
       "every_h": "cada {{n}} horas",
       "every_min": "cada {{n}} minutos",
@@ -1230,7 +1225,6 @@
       "notices_present_tooltip": "Hallazgos informativos: no se requiere ninguna acción. Ampliar para más detalles.",
       "purge": "Purgar ejecuciones antiguas",
       "purge_hint": "Elimine el historial de ejecuciones completadas y fallidas anteriores a la ventana de retención elegida. Los hallazgos disminuyen con las carreras de sus padres. Los tramos no terminales siempre se conservan.",
-      "purge_title": "Limpiar el historial de trabajo antiguo",
       "purge_body": "Elimine el historial de ejecuciones completadas y fallidas con una antigüedad superior al número de días elegido. Los hallazgos disminuyen con las carreras de sus padres. Las ejecuciones no terminales (en ejecución, en pausa, con solicitud de cancelación) siempre se conservan.",
       "purge_days_label": "Retención (días)",
       "purge_confirm": "Purga",
@@ -1246,10 +1240,15 @@
       "cancel_requested": "Cancelación solicitada: {{name}} se detendrá en el siguiente límite seguro",
       "cancel_noop": "No hay nada que cancelar: {{name}} no se está ejecutando",
       "progress_exact_tooltip": "{{pct}} ({{scanned}} / {{total}})",
-      "progress_approx_tooltip": "{{pct}} ({{scanned}} / {{total}} — approximate, backend proxy)"
+      "progress_approx_tooltip": "{{pct}} ({{scanned}} / {{total}} — aproximado, proxy backend)",
+      "tab": "Tareas en segundo plano",
+      "title": "Tareas en segundo plano",
+      "hint": "Esta sección concierne a las tareas internas en segundo plano: tareas periódicas y bajo demanda. Las comprobaciones de consistencia son seguras de ejecutar en cualquier momento — son de solo lectura.",
+      "none_registered": "No hay tareas en segundo plano registradas.",
+      "purge_title": "Purgar historial de tareas antiguas"
     },
     "oidc": "OIDC / SSO",
-    "oidc_discover": "Test / discover",
+    "oidc_discover": "Probar / descubrir",
     "sessions": {
       "filter_user": "Usuario (UUID)",
       "include_revoked": "Incluir revocadas / caducadas",
@@ -1281,7 +1280,8 @@
         "device": "Dispositivo",
         "unknown": "Desconocido"
       }
-    }
+    },
+    "storage_backend_audit_triggered": "backend_consistency activado para `{{name}}` — sígalo en la pestaña Tareas en segundo plano."
   },
   "profile": {
     "page_title": "Perfil",
@@ -1359,14 +1359,14 @@
     "error_revoke": "Error al revocar contraseña",
     "edit_photo": "Editar foto",
     "photo_tab_url": "URL",
-    "photo_tab_upload": "Upload",
-    "photo_url_placeholder": "https://example.com/photo.jpg",
-    "photo_url_hint": "https://, http://, or data:image/…;base64,… accepted",
+    "photo_tab_upload": "Subir",
+    "photo_url_placeholder": "https://ejemplo.com/foto.jpg",
+    "photo_url_hint": "https://, http:// o data:image/…;base64,… aceptado",
     "photo_choose_file": "Elige una foto (PNG, JPEG, WebP)",
     "photo_resize_note": "Las imágenes de más de 512 × 512 px cambian de tamaño automáticamente.",
     "photo_save": "guardar foto",
     "photo_remove": "Quitar foto",
-    "photo_cancel": "Cancel",
+    "photo_cancel": "Cancelar",
     "photo_save_failed": "No se pudo guardar la foto",
     "photo_no_file": "Por favor seleccione un archivo primero",
     "photo_managed_by_oidc": "Foto gestionada por su proveedor de identidad.",
@@ -1394,7 +1394,7 @@
     "uploading": "Subiendo...",
     "files": "archivos",
     "complete": "{{count}} / {{total}} subidos",
-    "files_counter": "{{completed}} / {{total}} files"
+    "files_counter": "{{completed}} / {{total}} archivos"
   },
   "storage_quota_exceeded": "Cuota de almacenamiento superada",
   "sharedwithme": {

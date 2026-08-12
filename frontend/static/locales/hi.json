@@ -153,14 +153,14 @@
     "manage_shares": "शेयर प्रबंधित करें",
     "no_shares": "अभी तक कोई शेयर नहीं",
     "playback_error": "प्लेबैक विफल रहा",
-    "private": "Private",
-    "public": "Public",
+    "private": "निजी",
+    "public": "सार्वजनिक",
     "read_only": "केवल पढ़ने के लिए",
-    "remove": "Remove",
+    "remove": "हटाएँ",
     "remove_share": "शेयर हटाएँ",
     "set_cover": "कवर सेट करें",
     "share_with_user": "उपयोगकर्ता आईडी या ईमेल",
-    "toggle_public": "Visibility",
+    "toggle_public": "दृश्यता",
     "track_removed": "ट्रैक हटा दिया गया",
     "prev": "पिछला",
     "add_selected": "चुने हुए को जोड़ो",
@@ -214,10 +214,10 @@
     "delete_permanently": "स्थायी रूप से हटाएँ",
     "empty_trash": "रद्दी खाली करें",
     "open_parent_folder": "मूल फ़ोल्डर पर जाएं",
-    "add": "Add",
-    "apply": "Apply",
-    "clear": "Clear",
-    "remove": "Remove"
+    "add": "जोड़ें",
+    "apply": "लागू करें",
+    "clear": "साफ़ करें",
+    "remove": "हटाएँ"
   },
   "user_menu": {
     "appearance": "दिखावट",
@@ -265,8 +265,8 @@
     "linkNamePlaceholder": "लिंक का नाम (वैकल्पिक)",
     "newLink": "नया लिंक",
     "noExpiry": "कोई समाप्ति नहीं",
-    "pending": "Pending",
-    "people": "People",
+    "pending": "लंबित",
+    "people": "लोग",
     "publicLinks": "सार्वजनिक लिंक",
     "role": {
       "canEdit": "संपादित कर सकते हैं",
@@ -284,7 +284,7 @@
     "folders": "फ़ोल्डर",
     "link_name": "लिंक का नाम (वैकल्पिक)",
     "notifyByEmail": "ईमेल से सूचित करें",
-    "revoke": "Remove",
+    "revoke": "हटाएँ",
     "role_label": "भूमिका",
     "col_shared_by": "द्वारा साझा किया गया",
     "col_shared": "साझा किया गया",
@@ -309,7 +309,7 @@
       "coalesced": "{{n}}हाल ही में अधिसूचित किया गया है।",
       "rateLimited": "{{n}} दर सीमा तक पहुंचें - बाद में प्रयास करें।",
       "sent": "{{n}} ईमेल द्वारा सूचित किया गया।",
-      "skipped": "{{n}} skipped (no email / opted out)."
+      "skipped": "{{n}} छोड़े गए (ईमेल नहीं / ऑप्ट-आउट)।"
     },
     "passwordPrompt": "पासवर्ड सेट करें:",
     "passwordPrompt_clear": "नया पासवर्ड (हटाने के लिए खाली):",
@@ -514,7 +514,7 @@
     "upload_failed": "अपलोड विफल रहा",
     "uploading": "अपलोड हो रहा है...",
     "uploading_file": "अपलोड हो रहा है {{name}}…",
-    "uploading_n": "Uploading {{done}}/{{total}} files…"
+    "uploading_n": "{{done}}/{{total}} फ़ाइलें अपलोड हो रही हैं…"
   },
   "dialogs": {
     "rename_folder": "फ़ोल्डर का नाम बदलें",
@@ -1166,7 +1166,6 @@
     "storage_size": "संग्रहित",
     "storage_test": "परीक्षा",
     "storage_backend_audit": "बैकएंड संगति",
-    "storage_backend_audit_triggered": "`{{name}}` के लिए बैकएंड_कंसिस्टेंसी ट्रिगर हुई - इसे जॉब्स टैब पर देखें।",
     "time_day_ago": "{{n}} पहले",
     "time_hour_ago": "{{n}} घंटे पहले",
     "time_just_now": "बस अब",
@@ -1181,9 +1180,6 @@
     "gen_key": "कुंजी उत्पन्न करें",
     "gen_key_warning": "इस कुंजी को सुरक्षित रूप से संग्रहित करें. यदि यह खो जाता है, तो एन्क्रिप्टेड डेटा अपरिवर्तनीय रूप से खो जाता है।",
     "jobs": {
-      "tab": "नौकरियाँ",
-      "title": "नौकरियाँ",
-      "hint": "यह अनुभाग आंतरिक नौकरियों से संबंधित है: आवधिक + ऑन-डिमांड नौकरियां। संगति जांच किसी भी समय चलाना सुरक्षित है - वे केवल-पढ़ने के लिए हैं।",
       "run_all_consistency": "सभी संगतता जांचें चलाएँ",
       "run_deep": "गहरा रिश्ता",
       "run_deep_hint": "धीमे वेरिएंट (ब्लॉब री-हैश, बिट्रोट डिटेक्शन) भी चलाता है।",
@@ -1215,7 +1211,6 @@
       "findings_title": "निष्कर्ष",
       "no_runs": "अभी तक कोई रन नहीं.",
       "no_findings": "कोई निष्कर्ष नहीं - क्लीन रन।",
-      "none_registered": "कोई नौकरी पंजीकृत नहीं.",
       "on_demand": "मांग पर",
       "every_h": "हर {{n}} घंटे",
       "every_min": "हर {{n}} मिनट",
@@ -1229,7 +1224,6 @@
       "notices_present_tooltip": "सूचनात्मक निष्कर्ष - किसी कार्रवाई की आवश्यकता नहीं। विवरण के लिए विस्तार करें.",
       "purge": "पुराने रन शुद्ध करें",
       "purge_hint": "चुनी गई अवधारण विंडो से पुराना पूर्ण और विफल रन इतिहास हटाएं। निष्कर्ष उनके मूल संचालन के साथ घटते हैं। गैर-टर्मिनल रन हमेशा संरक्षित रहते हैं।",
-      "purge_title": "पुराना कार्य इतिहास मिटाएँ",
       "purge_body": "चुने गए दिनों की संख्या से अधिक पुराने पूर्ण और विफल रन इतिहास को हटा दें। निष्कर्ष उनके मूल संचालन के साथ घटते हैं। गैर-टर्मिनल रन (चल रहे, रुके हुए, रद्द-अनुरोधित) हमेशा संरक्षित रहते हैं।",
       "purge_days_label": "अवधारण (दिन)",
       "purge_confirm": "शुद्ध करना",
@@ -1245,11 +1239,16 @@
       "cancel_requested": "अनुरोध रद्द करें - {{name}} अगली सुरक्षित सीमा पर रुकेगा",
       "cancel_noop": "रद्द करने के लिए कुछ भी नहीं - {{name}} नहीं चल रहा है",
       "progress_exact_tooltip": "{{pct}} ({{scanned}} / {{total}})",
-      "progress_approx_tooltip": "{{pct}} ({{scanned}} / {{total}} — approximate, backend proxy)"
+      "progress_approx_tooltip": "{{pct}} ({{scanned}} / {{total}} — अनुमानित, बैकएंड प्रॉक्सी)",
+      "tab": "बैकग्राउंड टास्क",
+      "title": "बैकग्राउंड टास्क",
+      "hint": "यह अनुभाग आंतरिक बैकग्राउंड टास्क से संबंधित है: आवधिक + ऑन-डिमांड टास्क। संगति जाँच किसी भी समय सुरक्षित रूप से चलाई जा सकती हैं — वे केवल-पढ़ने के लिए हैं।",
+      "none_registered": "कोई बैकग्राउंड टास्क पंजीकृत नहीं है।",
+      "purge_title": "पुराने टास्क इतिहास को साफ़ करें"
     },
     "oidc": "OIDC / SSO",
-    "oidc_discover": "Test / discover",
-    "reextract_done": "{{processed}}/{{total}} processed · {{failed}} failed",
+    "oidc_discover": "परीक्षण / खोज",
+    "reextract_done": "{{processed}}/{{total}} संसाधित · {{failed}} विफल",
     "sessions": {
       "filter_user": "उपयोगकर्ता (UUID)",
       "include_revoked": "रद्द / समाप्त शामिल करें",
@@ -1281,7 +1280,8 @@
         "device": "डिवाइस",
         "unknown": "अज्ञात"
       }
-    }
+    },
+    "storage_backend_audit_triggered": "backend_consistency `{{name}}` के लिए ट्रिगर हुआ — इसे बैकग्राउंड टास्क टैब पर देखें।"
   },
   "profile": {
     "page_title": "प्रोफ़ाइल",
@@ -1359,14 +1359,14 @@
     "error_revoke": "रद्द करने में विफल",
     "edit_photo": "फ़ोटो संपादित करें",
     "photo_tab_url": "URL",
-    "photo_tab_upload": "Upload",
+    "photo_tab_upload": "अपलोड",
     "photo_url_placeholder": "https://example.com/photo.jpg",
-    "photo_url_hint": "https://, http://, or data:image/…;base64,… accepted",
+    "photo_url_hint": "https://, http://, या data:image/…;base64,… स्वीकार्य",
     "photo_choose_file": "एक फोटो चुनें (पीएनजी, जेपीईजी, वेबपी)",
     "photo_resize_note": "512 × 512 पीएक्स से बड़ी छवियों का आकार स्वचालित रूप से बदल दिया जाता है।",
     "photo_save": "तस्वीर को बचाने",
     "photo_remove": "फ़ोटो हटाएँ",
-    "photo_cancel": "Cancel",
+    "photo_cancel": "रद्द करें",
     "photo_save_failed": "फ़ोटो सहेजने में विफल",
     "photo_no_file": "कृपया पहले एक फ़ाइल चुनें",
     "photo_managed_by_oidc": "फोटो आपके पहचान प्रदाता द्वारा प्रबंधित किया गया।",
@@ -1394,7 +1394,7 @@
     "uploading": "अपलोड हो रहा है...",
     "files": "फ़ाइलें",
     "complete": "{{count}} / {{total}} अपलोड हुए",
-    "files_counter": "{{completed}} / {{total}} files"
+    "files_counter": "{{completed}} / {{total}} फ़ाइलें"
   },
   "storage_quota_exceeded": "स्टोरेज कोटा पार हो गया",
   "sharedwithme": {
@@ -1439,7 +1439,7 @@
     "create_dialog_title": "नया समूह",
     "edit_dialog_title": "समूह का नाम बदलें",
     "name_label": "नाम",
-    "name_placeholder": "engineering",
+    "name_placeholder": "इंजीनियरिंग",
     "description_label": "विवरण (वैकल्पिक)",
     "members_section": "सदस्य",
     "add_member_placeholder": "उपयोगकर्ता या समूह जोड़ें…",
@@ -1495,12 +1495,12 @@
     "passwordLinks": "पासवर्ड से सुरक्षित लिंक"
   },
   "sort": {
-    "asc": "ascending",
-    "desc": "descending",
+    "asc": "आरोही",
+    "desc": "अवरोही",
     "direction": "दिशा क्रमबद्ध करें"
   },
   "notif": {
-    "errorTitle": "Error",
+    "errorTitle": "त्रुटि",
     "searchError": "खोज करने में त्रुटि",
     "cleanupCompleted": "सफ़ाई पूरी हो गई",
     "cleanupCompletedBody": "हाल की फ़ाइलों का इतिहास साफ़ कर दिया गया है",
@@ -1584,7 +1584,7 @@
   "common": {
     "add": "जोड़ें",
     "cancel": "रद्द करें",
-    "clear": "Clear",
+    "clear": "साफ़ करें",
     "close": "बंद करें",
     "confirm": "पुष्टि करें",
     "copy": "कॉपी करें",
@@ -1596,7 +1596,7 @@
     "next": "अगला",
     "no": "नहीं",
     "previous": "पिछला",
-    "remove": "Remove",
+    "remove": "हटाएँ",
     "rename": "नाम बदलें",
     "save": "सहेजें",
     "search": "खोजें",

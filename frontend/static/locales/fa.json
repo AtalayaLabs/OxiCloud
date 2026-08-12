@@ -153,14 +153,14 @@
     "manage_shares": "مدیریت سهام",
     "no_shares": "هنوز هیچ سهمی وجود ندارد",
     "playback_error": "پخش نشد",
-    "private": "Private",
-    "public": "Public",
+    "private": "خصوصی",
+    "public": "عمومی",
     "read_only": "فقط بخوانید",
-    "remove": "Remove",
+    "remove": "حذف",
     "remove_share": "حذف اشتراک",
     "set_cover": "پوشش را تنظیم کنید",
     "share_with_user": "شناسه کاربری یا ایمیل",
-    "toggle_public": "Visibility",
+    "toggle_public": "دیده‌شدن",
     "track_removed": "آهنگ حذف شد",
     "prev": "قبلی",
     "add_selected": "انتخاب شده را اضافه کنید",
@@ -214,10 +214,10 @@
     "delete_permanently": "برای همیشه حذف کنید",
     "empty_trash": "زباله ها را خالی کنید",
     "open_parent_folder": "رفتن به پوشه والد",
-    "add": "Add",
-    "apply": "Apply",
-    "clear": "Clear",
-    "remove": "Remove"
+    "add": "افزودن",
+    "apply": "اعمال",
+    "clear": "پاک کردن",
+    "remove": "حذف"
   },
   "user_menu": {
     "appearance": "ظاهر",
@@ -265,8 +265,8 @@
     "linkNamePlaceholder": "نام پیوند (اختیاری)",
     "newLink": "لینک جدید",
     "noExpiry": "بدون انقضا",
-    "pending": "Pending",
-    "people": "People",
+    "pending": "در انتظار",
+    "people": "افراد",
     "publicLinks": "پیوندهای عمومی",
     "role": {
       "canEdit": "می تواند ویرایش کند",
@@ -284,7 +284,7 @@
     "folders": "پوشه‌ها",
     "link_name": "نام پیوند (اختیاری)",
     "notifyByEmail": "اطلاع‌رسانی از طریق ایمیل",
-    "revoke": "Remove",
+    "revoke": "حذف",
     "role_label": "نقش",
     "col_shared_by": "به اشتراک گذاشته شده توسط",
     "col_shared": "به اشتراک گذاشته شده",
@@ -309,7 +309,7 @@
       "coalesced": "{{n}} اخیراً اطلاع رسانی شده است.",
       "rateLimited": "{{n}} به حد مجاز ضربه بزنید — بعداً امتحان کنید.",
       "sent": "{{n}} از طریق ایمیل اطلاع رسانی می شود.",
-      "skipped": "{{n}} skipped (no email / opted out)."
+      "skipped": "{{n}} رد شد (بدون ایمیل / انصراف)."
     },
     "passwordPrompt": "تعیین رمز عبور:",
     "passwordPrompt_clear": "رمز عبور جدید (برای حذف خالی):",
@@ -513,8 +513,8 @@
     "uploaded_skipped": "{{ok}} آپلود شده · {{skipped}} رد شده (فایل های معمولی نیستند)",
     "upload_failed": "آپلود انجام نشد",
     "uploading": "در حال آپلود…",
-    "uploading_file": "Uploading {{name}}…",
-    "uploading_n": "Uploading {{done}}/{{total}} files…"
+    "uploading_file": "در حال بارگذاری {{name}}…",
+    "uploading_n": "در حال بارگذاری {{done}}/{{total}} فایل…"
   },
   "dialogs": {
     "rename_folder": "تغییر نام پوشه",
@@ -1148,7 +1148,6 @@
     "storage_size": "ذخیره شده",
     "storage_test": "تست کنید",
     "storage_backend_audit": "سازگاری باطن",
-    "storage_backend_audit_triggered": "backend_consistency برای «{{name}}» فعال شد — آن را در برگه Jobs تماشا کنید.",
     "time_day_ago": "{{n}} روز پیش",
     "time_hour_ago": "{{n}} ساعت پیش",
     "time_just_now": "همین الان",
@@ -1163,9 +1162,6 @@
     "gen_key": "کلید تولید کنید",
     "gen_key_warning": "این کلید را به صورت ایمن ذخیره کنید. اگر از بین برود، داده های رمزگذاری شده به طور غیرقابل جبرانی از بین می روند.",
     "jobs": {
-      "tab": "مشاغل",
-      "title": "مشاغل",
-      "hint": "این بخش مربوط به مشاغل داخلی است: مشاغل دوره ای + درخواستی. بررسی های سازگاری در هر زمان ایمن هستند - آنها فقط خواندنی هستند.",
       "run_all_consistency": "تمام بررسی های سازگاری را اجرا کنید",
       "run_deep": "عمیق بدو",
       "run_deep_hint": "همچنین انواع آهسته را اجرا می کند (هش مجدد حباب، تشخیص بیتوت).",
@@ -1196,11 +1192,10 @@
       "findings_title": "یافته ها",
       "no_runs": "هنوز اجرا نشده است.",
       "no_findings": "بدون یافته - اجرا تمیز.",
-      "none_registered": "هیچ شغلی ثبت نشده است",
       "on_demand": "بر حسب تقاضا",
       "every_h": "هر {{n}} ساعت",
       "every_min": "هر {{n}} دقیقه",
-      "every_sec": "every {{n}} s",
+      "every_sec": "هر {{n}} ثانیه",
       "outcome_ok": "باشه",
       "outcome_err": "اشتباه کن",
       "outcome_issues": "مسائل",
@@ -1210,7 +1205,6 @@
       "notices_present_tooltip": "یافته های اطلاعاتی - هیچ اقدامی لازم نیست. برای جزئیات بزرگ کنید.",
       "purge": "اجراهای قدیمی را پاک کنید",
       "purge_hint": "سابقه اجرای کامل و ناموفق قدیمی‌تر از پنجره حفظ انتخابی را حذف کنید. یافته ها با اجراهای والدینشان کاهش می یابد. اجراهای غیر ترمینال همیشه حفظ می شوند.",
-      "purge_title": "تاریخچه شغلی قدیمی را پاک کنید",
       "purge_body": "سابقه اجرای کامل و ناموفق قدیمی‌تر از تعداد روزهای انتخابی را حذف کنید. یافته ها با اجراهای والدینشان کاهش می یابد. اجراهای غیر پایانی (در حال اجرا، توقف، لغو درخواست) همیشه حفظ می شوند.",
       "purge_days_label": "نگهداری (روزها)",
       "purge_confirm": "پاکسازی",
@@ -1227,11 +1221,16 @@
       "cancel_noop": "چیزی برای لغو وجود ندارد - {{name}} در حال اجرا نیست",
       "progress_scanned_only": "{{n}} اسکن شده",
       "progress_exact_tooltip": "{{pct}} ({{scanned}} / {{total}})",
-      "progress_approx_tooltip": "{{pct}} ({{scanned}} / {{total}} — approximate, backend proxy)"
+      "progress_approx_tooltip": "{{pct}} ({{scanned}} / {{total}} — تقریبی، پروکسی بک‌اند)",
+      "tab": "کارهای پس‌زمینه",
+      "title": "کارهای پس‌زمینه",
+      "hint": "این بخش به کارهای داخلی پس‌زمینه مربوط می‌شود: کارهای دوره‌ای و بر اساس تقاضا. بررسی‌های سازگاری در هر زمان به‌طور ایمن قابل اجرا هستند — فقط خواندنی هستند.",
+      "none_registered": "هیچ کار پس‌زمینه‌ای ثبت نشده است.",
+      "purge_title": "پاک کردن تاریخچه کارهای قدیمی"
     },
     "oidc": "OIDC / SSO",
-    "oidc_discover": "Test / discover",
-    "reextract_done": "{{processed}}/{{total}} processed · {{failed}} failed",
+    "oidc_discover": "آزمایش / کشف",
+    "reextract_done": "{{processed}}/{{total}} پردازش شد · {{failed}} ناموفق",
     "sessions": {
       "filter_user": "کاربر (UUID)",
       "include_revoked": "شامل لغو‌شده‌ها / منقضی‌شده‌ها",
@@ -1263,7 +1262,8 @@
         "device": "دستگاه",
         "unknown": "ناشناخته"
       }
-    }
+    },
+    "storage_backend_audit_triggered": "backend_consistency برای `{{name}}` راه‌اندازی شد — در تب کارهای پس‌زمینه پیگیری کنید."
   },
   "profile": {
     "page_title": "پروفایل",
@@ -1341,14 +1341,14 @@
     "error_revoke": "ابطال ناموفق بود",
     "edit_photo": "ویرایش عکس",
     "photo_tab_url": "URL",
-    "photo_tab_upload": "Upload",
+    "photo_tab_upload": "بارگذاری",
     "photo_url_placeholder": "https://example.com/photo.jpg",
-    "photo_url_hint": "https://, http://, or data:image/…;base64,… accepted",
+    "photo_url_hint": "https://، http:// یا data:image/…;base64,… پذیرفته می‌شود",
     "photo_choose_file": "انتخاب یک عکس (PNG، JPEG، WebP)",
     "photo_resize_note": "اندازه تصاویر بزرگتر از 512 × 512 پیکسل به طور خودکار تغییر می کند.",
     "photo_save": "ذخیره عکس",
     "photo_remove": "حذف عکس",
-    "photo_cancel": "Cancel",
+    "photo_cancel": "لغو",
     "photo_save_failed": "عکس ذخیره نشد",
     "photo_no_file": "لطفا ابتدا یک فایل را انتخاب کنید",
     "photo_managed_by_oidc": "عکس مدیریت شده توسط ارائه دهنده هویت شما.",
@@ -1363,7 +1363,7 @@
     "sso_connect_title": "اتصال Single Sign-On",
     "sso_connect_description": "حساب خود را به {{provider}} پیوند دهید تا بتوانید به جای رمز عبور خود با SSO وارد شوید.",
     "sso_connect_button": "با {{provider}} ارتباط برقرار کنید",
-    "sso_disconnect_title": "Single Sign-On",
+    "sso_disconnect_title": "ورود یکپارچه",
     "sso_disconnect_description": "حساب شما به {{provider}} متصل است. برای قطع ارتباط از این پس باید با رمز عبور خود وارد سیستم شوید.",
     "sso_disconnect_button": "اتصال Single Sign-On را قطع کنید",
     "sso_disconnect_confirm_title": "اتصال Single Sign-On قطع شود؟",
@@ -1394,7 +1394,7 @@
     "uploading": "در حال آپلود...",
     "files": "فایل‌ها",
     "complete": "{{count}} / {{total}} آپلود شد",
-    "files_counter": "{{completed}} / {{total}} files"
+    "files_counter": "{{completed}} / {{total}} فایل"
   },
   "storage_quota_exceeded": "سهمیه فضای ذخیره‌سازی تجاوز کرده است",
   "sharedwithme": {
@@ -1439,7 +1439,7 @@
     "create_dialog_title": "گروه جدید",
     "edit_dialog_title": "تغییر نام گروه",
     "name_label": "نام",
-    "name_placeholder": "engineering",
+    "name_placeholder": "مهندسی",
     "description_label": "توضیحات (اختیاری)",
     "members_section": "اعضا",
     "add_member_placeholder": "افزودن کاربر یا گروه…",
@@ -1495,12 +1495,12 @@
     "passwordLinks": "پیوندهای محافظت شده با رمز عبور"
   },
   "sort": {
-    "asc": "ascending",
-    "desc": "descending",
+    "asc": "صعودی",
+    "desc": "نزولی",
     "direction": "جهت مرتب سازی"
   },
   "notif": {
-    "errorTitle": "Error",
+    "errorTitle": "خطا",
     "searchError": "خطا در انجام جستجو",
     "cleanupCompleted": "پاکسازی تکمیل شد",
     "cleanupCompletedBody": "سابقه فایل های اخیر پاک شده است",
@@ -1584,7 +1584,7 @@
   "common": {
     "add": "افزودن",
     "cancel": "لغو",
-    "clear": "Clear",
+    "clear": "پاک کردن",
     "close": "بستن",
     "confirm": "تأیید",
     "copy": "رونوشت",
@@ -1596,7 +1596,7 @@
     "next": "بعدی",
     "no": "خیر",
     "previous": "قبلی",
-    "remove": "Remove",
+    "remove": "حذف",
     "rename": "تغییر نام",
     "save": "ذخیره",
     "search": "جست‌و‌جو",

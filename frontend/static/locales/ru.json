@@ -153,14 +153,14 @@
     "manage_shares": "Управление общими ресурсами",
     "no_shares": "Акций пока нет",
     "playback_error": "Воспроизведение не удалось",
-    "private": "Private",
-    "public": "Public",
+    "private": "Частный",
+    "public": "Публичный",
     "read_only": "Только чтение",
-    "remove": "Remove",
+    "remove": "Удалить",
     "remove_share": "Удалить общий доступ",
     "set_cover": "Установить крышку",
     "share_with_user": "Идентификатор пользователя или адрес электронной почты",
-    "toggle_public": "Visibility",
+    "toggle_public": "Видимость",
     "track_removed": "Трек удален.",
     "prev": "Предыдущий",
     "add_selected": "Добавить выбранное",
@@ -214,10 +214,10 @@
     "delete_permanently": "Удалить навсегда",
     "empty_trash": "Очистить корзину",
     "open_parent_folder": "Перейти в родительскую папку",
-    "add": "Add",
-    "apply": "Apply",
-    "clear": "Clear",
-    "remove": "Remove"
+    "add": "Добавить",
+    "apply": "Применить",
+    "clear": "Очистить",
+    "remove": "Удалить"
   },
   "user_menu": {
     "appearance": "Оформление",
@@ -265,8 +265,8 @@
     "linkNamePlaceholder": "Название ссылки (необязательно)",
     "newLink": "Новая ссылка",
     "noExpiry": "Нет срока действия",
-    "pending": "Pending",
-    "people": "People",
+    "pending": "В ожидании",
+    "people": "Люди",
     "publicLinks": "Публичные ссылки",
     "role": {
       "canEdit": "Можно редактировать",
@@ -284,7 +284,7 @@
     "folders": "Папки",
     "link_name": "Название ссылки (необязательно)",
     "notifyByEmail": "Уведомить по e-mail",
-    "revoke": "Remove",
+    "revoke": "Удалить",
     "role_label": "Роль",
     "col_shared_by": "Поделился",
     "col_shared": "Общий доступ",
@@ -309,7 +309,7 @@
       "coalesced": "{{n}} уже уведомлен недавно.",
       "rateLimited": "{{n}} достиг предела скорости — попробуйте позже.",
       "sent": "{{n}} уведомлено по электронной почте.",
-      "skipped": "{{n}} skipped (no email / opted out)."
+      "skipped": "{{n}} пропущено (нет e-mail / отписались)."
     },
     "passwordPrompt": "Установите пароль:",
     "passwordPrompt_clear": "Новый пароль (пусто для удаления):",
@@ -514,7 +514,7 @@
     "upload_failed": "Загрузка не удалась",
     "uploading": "Загрузка…",
     "uploading_file": "Загрузка {{name}}…",
-    "uploading_n": "Uploading {{done}}/{{total}} files…"
+    "uploading_n": "Загрузка {{done}}/{{total}} файлов…"
   },
   "dialogs": {
     "rename_folder": "Переименовать папку",
@@ -642,7 +642,7 @@
     "admin_setup": "Первый запуск?",
     "setup": "Настроить администратора",
     "register_title": "Создание аккаунта",
-    "email": "Email",
+    "email": "Эл. почта",
     "email_placeholder": "Введите email",
     "confirm_password": "Подтвердите пароль",
     "confirm_password_placeholder": "Подтвердите пароль",
@@ -667,7 +667,7 @@
     "sso_login_provider": "Войти через {{provider}}",
     "magicLinkHint": "Нет пароля? Введите ваш email, и мы пришлём вам одноразовую ссылку для входа.",
     "magicLinkEmailLabel": "Адрес электронной почты",
-    "magicLinkEmailPlaceholder": "you@example.com",
+    "magicLinkEmailPlaceholder": "вы@пример.com",
     "magicLinkSubmit": "Отправить ссылку для входа",
     "magicLinkSent": "Если для этого адреса существует учётная запись, ссылка для входа отправлена. Проверьте входящие.",
     "magicLinkUnavailable": "Вход по электронной почте недоступен на этом сервере.",
@@ -1166,7 +1166,6 @@
     "storage_size": "Хранится",
     "storage_test": "Тест",
     "storage_backend_audit": "Согласованность серверной части",
-    "storage_backend_audit_triggered": "backend_consistency срабатывает для `{{name}}` — смотрите его на вкладке «Задания».",
     "time_day_ago": "{{n}} дня назад",
     "time_hour_ago": "{{n}} часа назад",
     "time_just_now": "прямо сейчас",
@@ -1181,9 +1180,6 @@
     "gen_key": "Сгенерировать ключ",
     "gen_key_warning": "Храните этот ключ в надежном месте. Если он утерян, зашифрованные данные теряются безвозвратно.",
     "jobs": {
-      "tab": "Вакансии",
-      "title": "Вакансии",
-      "hint": "В этом разделе речь идет о внутренних работах: периодические + по требованию. Проверки согласованности можно безопасно запускать в любое время — они доступны только для чтения.",
       "run_all_consistency": "Запустите все проверки согласованности",
       "run_deep": "Беги глубоко",
       "run_deep_hint": "Также выполняются медленные варианты (повторное хэширование больших двоичных объектов, обнаружение битротов).",
@@ -1215,7 +1211,6 @@
       "findings_title": "Выводы",
       "no_runs": "Пробегов пока нет.",
       "no_findings": "Никаких результатов — чистый пробег.",
-      "none_registered": "Вакансий не зарегистрировано.",
       "on_demand": "по требованию",
       "every_h": "каждые {{n}} ч",
       "every_min": "каждые {{n}} мин.",
@@ -1229,7 +1224,6 @@
       "notices_present_tooltip": "Информационные выводы — никаких действий не требуется. Разверните для подробностей.",
       "purge": "Очистка старых пробегов",
       "purge_hint": "Удалить историю завершенных и неудачных запусков старше выбранного периода хранения. Результаты падают вместе с их родительскими запусками. Нетерминальные прогоны всегда сохраняются.",
-      "purge_title": "Очистить старую историю работы",
       "purge_body": "Удалить историю завершенных и неудачных запусков старше выбранного количества дней. Результаты падают вместе с их родительскими запусками. Нетерминальные запуски (выполняющиеся, приостановленные, с запросом на отмену) всегда сохраняются.",
       "purge_days_label": "Хранение (дней)",
       "purge_confirm": "Удалять",
@@ -1245,11 +1239,16 @@
       "cancel_requested": "Отмена запроса — {{name}} приостановится на следующей безопасной границе",
       "cancel_noop": "Отменять нечего — {{name}} не работает",
       "progress_exact_tooltip": "{{pct}} ({{scanned}} / {{total}})",
-      "progress_approx_tooltip": "{{pct}} ({{scanned}} / {{total}} — approximate, backend proxy)"
+      "progress_approx_tooltip": "{{pct}} ({{scanned}} / {{total}} — приблизительно, прокси бэкенда)",
+      "tab": "Фоновые задачи",
+      "title": "Фоновые задачи",
+      "hint": "Этот раздел касается внутренних фоновых задач: периодических и по требованию. Проверки согласованности можно безопасно запускать в любое время — они доступны только для чтения.",
+      "none_registered": "Нет зарегистрированных фоновых задач.",
+      "purge_title": "Очистить старую историю задач"
     },
     "oidc": "OIDC / SSO",
-    "oidc_discover": "Test / discover",
-    "reextract_done": "{{processed}}/{{total}} processed · {{failed}} failed",
+    "oidc_discover": "Проверить / обнаружить",
+    "reextract_done": "{{processed}}/{{total}} обработано · {{failed}} не удалось",
     "sessions": {
       "filter_user": "Пользователь (UUID)",
       "include_revoked": "Включая отозванные / истёкшие",
@@ -1281,7 +1280,8 @@
         "device": "Устройство",
         "unknown": "Неизвестно"
       }
-    }
+    },
+    "storage_backend_audit_triggered": "backend_consistency запущен для `{{name}}` — следите за ним на вкладке Фоновые задачи."
   },
   "profile": {
     "page_title": "Профиль",
@@ -1359,14 +1359,14 @@
     "error_revoke": "Не удалось отозвать",
     "edit_photo": "Редактировать фотографию",
     "photo_tab_url": "URL",
-    "photo_tab_upload": "Upload",
-    "photo_url_placeholder": "https://example.com/photo.jpg",
-    "photo_url_hint": "https://, http://, or data:image/…;base64,… accepted",
+    "photo_tab_upload": "Загрузить",
+    "photo_url_placeholder": "https://пример.com/фото.jpg",
+    "photo_url_hint": "https://, http:// или data:image/…;base64,… принимаются",
     "photo_choose_file": "Выберите фотографию (PNG, JPEG, WebP)",
     "photo_resize_note": "Размер изображений размером более 512 × 512 пикселей автоматически изменяется.",
     "photo_save": "Сохранить фото",
     "photo_remove": "Удалить фото",
-    "photo_cancel": "Cancel",
+    "photo_cancel": "Отмена",
     "photo_save_failed": "Не удалось сохранить фото.",
     "photo_no_file": "Пожалуйста, сначала выберите файл",
     "photo_managed_by_oidc": "Фотография управляется вашим поставщиком удостоверений.",
@@ -1394,7 +1394,7 @@
     "uploading": "Загрузка...",
     "files": "файлов",
     "complete": "{{count}} / {{total}} загружено",
-    "files_counter": "{{completed}} / {{total}} files"
+    "files_counter": "{{completed}} / {{total}} файлов"
   },
   "storage_quota_exceeded": "Превышена квота хранилища",
   "sharedwithme": {
@@ -1495,12 +1495,12 @@
     "passwordLinks": "Ссылки, защищенные паролем"
   },
   "sort": {
-    "asc": "ascending",
-    "desc": "descending",
+    "asc": "по возрастанию",
+    "desc": "по убыванию",
     "direction": "Направление сортировки"
   },
   "notif": {
-    "errorTitle": "Error",
+    "errorTitle": "Ошибка",
     "searchError": "Ошибка при выполнении поиска",
     "cleanupCompleted": "Очистка завершена",
     "cleanupCompletedBody": "История последних файлов очищена",
@@ -1584,7 +1584,7 @@
   "common": {
     "add": "Добавить",
     "cancel": "Отмена",
-    "clear": "Clear",
+    "clear": "Очистить",
     "close": "Закрыть",
     "confirm": "Подтвердить",
     "copy": "Копировать",
@@ -1596,7 +1596,7 @@
     "next": "Следующий",
     "no": "Нет",
     "previous": "Предыдущий",
-    "remove": "Remove",
+    "remove": "Удалить",
     "rename": "Переименовать",
     "save": "Сохранить",
     "search": "Найти",

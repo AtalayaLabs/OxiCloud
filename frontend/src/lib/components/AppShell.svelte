@@ -131,7 +131,7 @@
 		},
 		{
 			href: '/admin/jobs',
-			label: t('admin.jobs.tab', 'Jobs'),
+			label: t('admin.jobs.tab', 'Background tasks'),
 			icon: 'cogs',
 			section: 'admin-jobs'
 		}
