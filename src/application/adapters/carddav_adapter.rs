@@ -11,6 +11,7 @@ use quick_xml::{
  */
 use std::io::{BufReader, Read, Write};
 
+use crate::application::adapters::param_encoding::render_param_value;
 use crate::application::adapters::webdav_adapter::{
     PropFindRequest, PropFindType, QualifiedName, Result, WebDavAdapter, WebDavError,
 };
@@ -976,24 +977,30 @@ pub fn contact_to_vcard(contact: &ContactDto) -> String {
     }
 
     for email in &contact.email {
+        let mut ty = String::new();
+        crate::common::fmt::push_upper(&mut ty, &email.r#type);
         vcard.push_str("EMAIL;TYPE=");
-        crate::common::fmt::push_upper(&mut vcard, &email.r#type);
+        vcard.push_str(&render_param_value(&ty));
         vcard.push(':');
         vcard.push_str(&email.email);
         vcard.push_str("\r\n");
     }
 
     for phone in &contact.phone {
+        let mut ty = String::new();
+        crate::common::fmt::push_upper(&mut ty, &phone.r#type);
         vcard.push_str("TEL;TYPE=");
-        crate::common::fmt::push_upper(&mut vcard, &phone.r#type);
+        vcard.push_str(&render_param_value(&ty));
         vcard.push(':');
         vcard.push_str(&phone.number);
         vcard.push_str("\r\n");
     }
 
     for addr in &contact.address {
+        let mut ty = String::new();
+        crate::common::fmt::push_upper(&mut ty, &addr.r#type);
         vcard.push_str("ADR;TYPE=");
-        crate::common::fmt::push_upper(&mut vcard, &addr.r#type);
+        vcard.push_str(&render_param_value(&ty));
         let _ = write!(
             vcard,
             ":;;{};{};{};{};{}\r\n",

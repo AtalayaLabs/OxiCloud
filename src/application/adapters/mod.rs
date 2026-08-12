@@ -2,6 +2,7 @@
 
 pub mod caldav_adapter;
 pub mod carddav_adapter;
+pub mod param_encoding;
 pub mod plugin_lifecycle_hook;
 pub mod plugin_user_lifecycle_hook;
 pub mod webdav_adapter;

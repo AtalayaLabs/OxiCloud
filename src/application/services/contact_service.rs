@@ -2,6 +2,7 @@ use chrono::Utc;
 use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::application::adapters::param_encoding::render_param_value;
 use crate::application::dtos::address_book_dto::{
     AddressBookDto, CreateAddressBookDto, UpdateAddressBookDto,
 };
@@ -286,8 +287,10 @@ impl ContactService {
 
         // Email addresses
         for email in contact.email() {
+            let mut ty = String::new();
+            crate::common::fmt::push_upper(&mut ty, &email.r#type);
             vcard.push_str("EMAIL;TYPE=");
-            crate::common::fmt::push_upper(&mut vcard, &email.r#type);
+            vcard.push_str(&render_param_value(&ty));
             vcard.push(':');
             vcard.push_str(&email.email);
             vcard.push_str("\r\n");
@@ -313,8 +316,10 @@ impl ContactService {
             let postal_code = addr.postal_code.as_deref().unwrap_or_default();
             let country = addr.country.as_deref().unwrap_or_default();
 
+            let mut ty = String::new();
+            crate::common::fmt::push_upper(&mut ty, &addr.r#type);
             vcard.push_str("ADR;TYPE=");
-            crate::common::fmt::push_upper(&mut vcard, &addr.r#type);
+            vcard.push_str(&render_param_value(&ty));
             let _ = write!(
                 vcard,
                 ":;;{};{};{};{};{}\r\n",
