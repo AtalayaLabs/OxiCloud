@@ -92,7 +92,10 @@ pub trait UserRepository: Send + Sync + 'static {
     async fn create_user(&self, user: User) -> UserRepositoryResult<User>;
 
     /// Gets a user by ID
-    async fn get_user_by_id(&self, id: Uuid) -> UserRepositoryResult<User>;
+    fn get_user_by_id(
+        &self,
+        id: Uuid,
+    ) -> impl std::future::Future<Output = UserRepositoryResult<User>> + std::marker::Send;
 
     /// Batch-loads a set of users by id, preserving no particular order
     /// and silently skipping ids that don't match any row. Caller is
