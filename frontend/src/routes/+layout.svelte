@@ -15,6 +15,8 @@
 	import { hashUrlToPath } from '$lib/utils/hashRedirect';
 	import { killLegacyServiceWorker } from '$lib/utils/killLegacyServiceWorker';
 	import { getOidcProviders, type OidcProviders } from '$lib/api/endpoints/auth';
+	import { readAndClearInterrupted } from '$lib/upload/interruption';
+	import { t } from '$lib/i18n/index.svelte';
 
 	let { children } = $props();
 
@@ -155,6 +157,32 @@
 		// the route (login renders immediately; protected routes show their own
 		// loading state) is already in the DOM behind it.
 		document.getElementById('app-splash')?.remove();
+
+		// If a page reload interrupted one or more uploads mid-flight, the
+		// registry in sessionStorage carries breadcrumbs into the next mount.
+		// Toast a resume hint — already-uploaded chunks reuse via delta's
+		// negotiate stage, so re-dropping the same file is fast, not from
+		// scratch. Reading the register clears it so a subsequent reload
+		// doesn't re-notify.
+		const interrupted = readAndClearInterrupted();
+		if (interrupted.length > 0) {
+			const one = interrupted.length === 1;
+			const msg = one
+				? t(
+						'files.upload_interrupted_one',
+						{ description: interrupted[0].description },
+						`Upload interrupted: ${interrupted[0].description}. Re-drop to resume — already-uploaded chunks are reused.`
+					)
+				: t(
+						'files.upload_interrupted_many',
+						{ n: interrupted.length },
+						`${interrupted.length} uploads interrupted. Re-drop the files to resume — already-uploaded chunks are reused.`
+					);
+			// 10 s dwell — same pattern as the other long-copy toasts
+			// (see profile SSO error). Info kind because the situation is
+			// recoverable and the user only needs to know how to resume.
+			ui.notify(msg, 'info', 10000);
+		}
 
 		// Redirect old `#/...` bookmarks to the new path before anything else.
 		if (typeof location !== 'undefined' && location.hash.startsWith('#/')) {
