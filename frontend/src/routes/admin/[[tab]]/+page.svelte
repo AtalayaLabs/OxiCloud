@@ -3028,7 +3028,7 @@
 						<th>{t('admin.sessions.col_ip', 'IP')}</th>
 						<th>{t('admin.sessions.col_user_agent', 'User agent')}</th>
 						<th>{t('admin.sessions.col_bound', 'Bound')}</th>
-						<th>{t('admin.sessions.col_status', 'Status')}</th>
+						<th class="col-center">{t('admin.sessions.col_status', 'Status')}</th>
 						<th></th>
 					</tr>
 				</thead>
@@ -3042,17 +3042,6 @@
 							<td>
 								<div class="user-vignette-cell">
 									<UserVignette userId={s.user_id} fallbackLabel={s.user_id} />
-									{#if s.is_current}
-										<span
-											class="badge badge--self"
-											title={t(
-												'admin.sessions.current_tooltip',
-												"This is the session you're using right now — revoking it will log you out."
-											)}
-										>
-											{t('admin.you_badge', 'you')}
-										</span>
-									{/if}
 								</div>
 							</td>
 							<td data-testid={`admin-sessions-origin-${s.id}`}>
@@ -3083,7 +3072,7 @@
 									<span class="muted">{t('admin.sessions.unbound', 'unbound')}</span>
 								{/if}
 							</td>
-							<td>
+							<td class="col-center">
 								{#if s.is_revoked}
 									<span class="badge badge--inactive">
 										{t('admin.sessions.revoked', 'revoked')}
@@ -3095,6 +3084,17 @@
 								{:else}
 									<span class="badge badge--active">
 										{t('admin.sessions.active', 'active')}
+									</span>
+								{/if}
+								{#if s.is_current}
+									<span
+										class="badge badge--self"
+										title={t(
+											'admin.sessions.current_tooltip',
+											"This is the session you're using right now — revoking it will log you out."
+										)}
+									>
+										{t('admin.you_badge', 'you')}
 									</span>
 								{/if}
 							</td>
@@ -4190,6 +4190,15 @@
 	   confirms with an escalated message on top of the visual cue. */
 	.current-session td:first-child {
 		border-left: 3px solid var(--color-accent);
+	}
+
+	/* Center-align the sessions table's Status column (badge cluster
+	   reads better centered than left-flushed under a `Status` label,
+	   especially now that the `you` badge sits alongside the status
+	   pill). Scoped to this component by Svelte's default style
+	   isolation. */
+	.col-center {
+		text-align: center;
 	}
 
 	.logs-toolbar {
