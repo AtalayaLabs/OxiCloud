@@ -7,9 +7,26 @@
  * commits. Any failure resolves `null` so the caller falls back to a plain
  * byte upload — delta is an optimization, never a gate.
  */
+import log from 'loglevel';
 import { getCsrfToken } from '$lib/api/csrf';
 import { createFileByHash, dedupCheckBatch } from '$lib/api/endpoints/files';
 import { blake3HexOfFile } from '$lib/vendor/hashWasm';
+
+// Namespaced logger — level configurable at runtime from the browser
+// console via `log.getLogger('oxi:upload').setLevel('debug')`, persisted
+// to `localStorage['loglevel:oxi:upload']`. Default = info so common
+// phase transitions are visible without extra opt-in; users chasing a
+// bug flip to `debug` for per-chunk verbose trace without a page reload.
+const uploadLog = log.getLogger('oxi:upload');
+uploadLog.setDefaultLevel('info');
+
+// Short random id — one per upload attempt — so multiple concurrent
+// files stay distinguishable in the console.
+function newUploadId(): string {
+	const buf = new Uint8Array(3);
+	crypto.getRandomValues(buf);
+	return Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('');
+}
 
 /** Files smaller than this skip delta: the round-trips cost more than the bytes.
  *  Also the upper bound for client-side whole-file hashing (instant by-hash
@@ -49,8 +66,25 @@ interface DoneMsg {
 	type: 'done';
 	status: number;
 	body?: { message?: string; error?: string; still_missing?: unknown };
+	/** Final worker-side counters, sourced from the worker so throttled
+	 *  progress messages can't undercount on fast dedup-heavy paths. */
+	reusedBytes?: number;
+	uploadedBytes?: number;
+	/** Whole-file BLAKE3 the delta protocol committed — same value the
+	 *  server stores as `file_blobs.hash`. Correlates a client-side log
+	 *  line with the resulting server-side blob. */
+	fileHash?: string;
 }
-type WorkerMsg = ProgressMsg | FallbackMsg | DoneMsg;
+/** Worker-emitted log line forwarded to the main-thread `uploadLog` — the
+ *  worker can't import loglevel from a static file, so it postMessages
+ *  and we relay it through the shared logger. */
+interface LogMsg {
+	type: 'log';
+	level: 'debug' | 'info' | 'warn' | 'error';
+	msg: string;
+	extra?: Record<string, unknown>;
+}
+type WorkerMsg = ProgressMsg | FallbackMsg | DoneMsg | LogMsg;
 
 /**
  * Try to upload `file` through the delta protocol. Resolves `null` whenever
@@ -62,21 +96,38 @@ export function tryDeltaUpload(
 	folderId: string | null | undefined,
 	onProgress?: (pct: number) => void
 ): Promise<DeltaUploadAnswer | null> {
+	const id = newUploadId();
 	if (
 		!folderId ||
 		file.size < DELTA_UPLOAD_MIN_SIZE ||
 		usable === false ||
 		typeof Worker === 'undefined'
 	) {
+		// Not a bug — these are the documented skip conditions. Log at
+		// debug so verbose-flag users see why delta was skipped; silent
+		// in the default path (would be noise on every small file).
+		const reason = !folderId
+			? 'no folder id'
+			: file.size < DELTA_UPLOAD_MIN_SIZE
+				? `file below ${DELTA_UPLOAD_MIN_SIZE} B threshold`
+				: usable === false
+					? 'delta previously disabled for this tab'
+					: 'Worker constructor unavailable';
+		uploadLog.debug(`[${id}] delta skipped: ${reason}`, { file: file.name, size: file.size });
 		return Promise.resolve(null);
 	}
+
+	uploadLog.info(`[${id}] delta start`, { file: file.name, size: file.size });
 
 	return new Promise((resolve) => {
 		let worker: Worker;
 		try {
 			worker = new Worker(DELTA_WORKER_URL, { type: 'module' });
-		} catch {
+		} catch (err) {
 			usable = false;
+			uploadLog.warn(`[${id}] delta disabled for this tab: Worker constructor threw`, {
+				error: err instanceof Error ? err.message : String(err)
+			});
 			resolve(null);
 			return;
 		}
@@ -92,7 +143,13 @@ export function tryDeltaUpload(
 			worker.terminate();
 			resolve(answer);
 		};
-		const timer = setTimeout(() => settle(null), timeoutMs);
+		const timer = setTimeout(() => {
+			uploadLog.error(
+				`[${id}] delta timeout after ${Math.round(timeoutMs / 1000)}s — falling back to direct upload`,
+				{ file: file.name, size: file.size }
+			);
+			settle(null);
+		}, timeoutMs);
 
 		// Liveness watchdog: a healthy worker posts progress sub-second while it
 		// hashes and uploads. If it goes SILENT this long it is wedged (WASM init
@@ -105,6 +162,10 @@ export function tryDeltaUpload(
 			clearTimeout(stallTimer);
 			stallTimer = setTimeout(() => {
 				usable = false;
+				uploadLog.error(
+					`[${id}] delta worker went silent for ${STALL_MS / 1000}s — disabling delta for this tab (later files this session will go direct)`,
+					{ file: file.name }
+				);
 				settle(null);
 			}, STALL_MS);
 		};
@@ -113,6 +174,18 @@ export function tryDeltaUpload(
 		worker.onmessage = (event: MessageEvent<WorkerMsg>) => {
 			armStall(); // worker is alive — reset the liveness watchdog
 			const msg = event.data;
+			if (msg.type === 'log') {
+				// Relay worker log through the shared logger so runtime-set
+				// level (via `log.getLogger('oxi:upload').setLevel(...)`)
+				// filters worker output too. Worker id doesn't know the
+				// upload id — we prefix it here for correlation. Skip the
+				// second arg when there's no extras: loglevel would log the
+				// literal `undefined` next to the message otherwise.
+				const line = `[${id}] worker: ${msg.msg}`;
+				if (msg.extra) uploadLog[msg.level](line, msg.extra);
+				else uploadLog[msg.level](line);
+				return;
+			}
 			if (msg.type === 'progress') {
 				savedBytes = msg.reusedBytes;
 				if (onProgress && msg.totalBytes > 0) {
@@ -125,29 +198,57 @@ export function tryDeltaUpload(
 				return;
 			}
 			if (msg.type === 'fallback') {
+				uploadLog.warn(`[${id}] worker requested fallback: ${msg.reason ?? 'no reason'}`, {
+					file: file.name
+				});
 				settle(null);
 				return;
 			}
 			if (msg.type === 'done') {
 				if (msg.status === 201 || msg.status === 200) {
-					settle({ ok: true, data: msg.body, savedBytes });
+					// Prefer the worker's authoritative final counter over
+					// the throttled progress-message-derived one — throttling
+					// can hide the reused-bytes update on fast paths.
+					const finalSaved = msg.reusedBytes ?? savedBytes;
+					uploadLog.info(`[${id}] delta done`, {
+						file: file.name,
+						blake3: msg.fileHash,
+						savedBytes: finalSaved,
+						uploadedBytes: msg.uploadedBytes ?? 0
+					});
+					settle({ ok: true, data: msg.body, savedBytes: finalSaved });
 					return;
 				}
 				const errorMsg =
 					msg.body?.message || msg.body?.error || `Delta upload failed (HTTP ${msg.status})`;
 				if (msg.status === 507) {
+					uploadLog.warn(`[${id}] delta hit quota (HTTP 507)`, { file: file.name, errorMsg });
 					settle({ ok: false, isQuotaError: true, errorMsg });
 					return;
 				}
 				if (msg.status === 409 && !msg.body?.still_missing) {
+					uploadLog.warn(`[${id}] delta conflict (HTTP 409)`, { file: file.name, errorMsg });
 					settle({ ok: false, errorMsg });
 					return;
 				}
+				uploadLog.warn(
+					`[${id}] delta done with non-2xx (HTTP ${msg.status}) — falling back to direct upload`,
+					{ file: file.name, errorMsg }
+				);
 				settle(null);
 			}
 		};
-		worker.onerror = () => {
+		worker.onerror = (e) => {
 			usable = false;
+			// Real browsers pass an ErrorEvent; test doubles fire onerror
+			// with no argument. Optional-chain so the no-arg path doesn't
+			// throw on `.message` and mask the real disable-signal.
+			uploadLog.error(`[${id}] delta worker onerror — disabling delta for this tab`, {
+				file: file.name,
+				message: e?.message,
+				filename: e?.filename,
+				lineno: e?.lineno
+			});
 			settle(null);
 		};
 
