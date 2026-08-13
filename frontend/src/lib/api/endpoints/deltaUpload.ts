@@ -84,7 +84,14 @@ interface LogMsg {
 	msg: string;
 	extra?: Record<string, unknown>;
 }
-type WorkerMsg = ProgressMsg | FallbackMsg | DoneMsg | LogMsg;
+/** Kept-alive signal the worker emits every 5 s while awaiting a long
+ *  fetch (commit, slow chunk PUT). The orchestrator's on-every-message
+ *  `armStall()` resets the watchdog just from receiving this — the type
+ *  handler below intentionally no-ops so nothing else fires. */
+interface HeartbeatMsg {
+	type: 'heartbeat';
+}
+type WorkerMsg = ProgressMsg | FallbackMsg | DoneMsg | LogMsg | HeartbeatMsg;
 
 /**
  * Try to upload `file` through the delta protocol. Resolves `null` whenever
@@ -137,9 +144,22 @@ export function tryDeltaUpload(
 		let savedBytes = 0;
 
 		let stallTimer: ReturnType<typeof setTimeout>;
+		// Page Visibility listener — pause the stall watchdog while the
+		// tab is hidden. Background tabs get main-thread timer throttling
+		// (Chrome/Firefox: 1 s min tick, ~5 min hidden → timers may pause
+		// entirely) but Web Workers keep running at full speed. Without
+		// this pause, a tab-switch during a large upload would let messages
+		// queue up on the throttled main thread while the watchdog fires
+		// spuriously — poisoning `usable = false` for the rest of the
+		// session even though the worker was healthy the whole time.
+		let visibilityListener: (() => void) | null = null;
 		const settle = (answer: DeltaUploadAnswer | null) => {
 			clearTimeout(timer);
 			clearTimeout(stallTimer);
+			if (visibilityListener) {
+				document.removeEventListener('visibilitychange', visibilityListener);
+				visibilityListener = null;
+			}
 			worker.terminate();
 			resolve(answer);
 		};
@@ -157,9 +177,18 @@ export function tryDeltaUpload(
 		// — exactly what freezes a folder upload ~2 min per large file. Disable
 		// delta for this file AND every later one so they fall straight to a plain
 		// upload instead of each burning the full size-scaled delta timeout.
+		//
+		// Long single fetches (commit, slow chunk PUTs) don't emit progress
+		// on their own — the worker sends `{ type: 'heartbeat' }` every 5 s
+		// while awaiting a network request so the watchdog stays fresh.
 		const STALL_MS = 20_000;
 		const armStall = () => {
 			clearTimeout(stallTimer);
+			// Don't count time while the tab is hidden — background throttling
+			// on the main thread breaks the "no message in 20 s = wedged"
+			// premise. When the user comes back, the visibility listener
+			// re-arms.
+			if (typeof document !== 'undefined' && document.hidden) return;
 			stallTimer = setTimeout(() => {
 				usable = false;
 				uploadLog.error(
@@ -169,11 +198,22 @@ export function tryDeltaUpload(
 				settle(null);
 			}, STALL_MS);
 		};
+		if (typeof document !== 'undefined') {
+			visibilityListener = () => {
+				if (document.hidden) clearTimeout(stallTimer);
+				else armStall();
+			};
+			document.addEventListener('visibilitychange', visibilityListener);
+		}
 		armStall();
 
 		worker.onmessage = (event: MessageEvent<WorkerMsg>) => {
 			armStall(); // worker is alive — reset the liveness watchdog
 			const msg = event.data;
+			if (msg.type === 'heartbeat') {
+				// armStall() above already served its purpose — no other work.
+				return;
+			}
 			if (msg.type === 'log') {
 				// Relay worker log through the shared logger so runtime-set
 				// level (via `log.getLogger('oxi:upload').setLevel(...)`)

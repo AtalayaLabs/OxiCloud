@@ -89,6 +89,26 @@ workerScope.onmessage = async (event) => {
     const log = (level, msg, extra) =>
         workerScope.postMessage({ type: 'log', level, msg, extra });
 
+    /**
+     * Wrap a long-running fetch so the main-thread stall watchdog stays
+     * fresh while the worker is legitimately awaiting the network. The
+     * watchdog resets on every worker → main-thread message; heartbeats
+     * every 5 s keep it from firing during a slow commit or chunk PUT.
+     * Cleanup in `finally` runs regardless of resolve / reject.
+     *
+     * @template T
+     * @param {() => Promise<T>} fn
+     * @returns {Promise<T>}
+     */
+    const withHeartbeat = async (fn) => {
+        const hb = setInterval(() => workerScope.postMessage({ type: 'heartbeat' }), 5000);
+        try {
+            return await fn();
+        } finally {
+            clearInterval(hb);
+        }
+    };
+
     /** @param {string} reason */
     const fallback = (reason) => {
         log('warn', `worker fallback: ${reason}`);
@@ -204,14 +224,16 @@ workerScope.onmessage = async (event) => {
                 const wire = await encodeFrames(batch);
                 log('debug', `chunk PUT: ${batch.length} chunks, ${wire.length} bytes`);
                 // eslint-disable-next-line no-await-in-loop -- bounded by pool size
-                const response = await fetch('/api/files/delta/chunks', {
-                    method: 'PUT',
-                    headers: {
-                        'Content-Type': 'application/octet-stream',
-                        ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {})
-                    },
-                    body: wire
-                });
+                const response = await withHeartbeat(() =>
+                    fetch('/api/files/delta/chunks', {
+                        method: 'PUT',
+                        headers: {
+                            'Content-Type': 'application/octet-stream',
+                            ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {})
+                        },
+                        body: wire
+                    })
+                );
                 if (!response.ok) {
                     failed = `chunk PUT failed (HTTP ${response.status})`;
                     log('error', failed);
@@ -242,11 +264,13 @@ workerScope.onmessage = async (event) => {
         const run = negotiateTail.then(async () => {
             if (failed) return;
             try {
-                const response = await fetch('/api/files/delta/negotiate', {
-                    method: 'POST',
-                    headers: mutHeaders,
-                    body: JSON.stringify({ chunks: fresh.map(({ h, s }) => ({ h, s })) })
-                });
+                const response = await withHeartbeat(() =>
+                    fetch('/api/files/delta/negotiate', {
+                        method: 'POST',
+                        headers: mutHeaders,
+                        body: JSON.stringify({ chunks: fresh.map(({ h, s }) => ({ h, s })) })
+                    })
+                );
                 if (!response.ok) {
                     failed = failed || `negotiate failed (HTTP ${response.status})`;
                     log('error', `negotiate failed (HTTP ${response.status})`);
@@ -343,11 +367,13 @@ workerScope.onmessage = async (event) => {
         };
         for (let attempt = 0; ; attempt++) {
             // eslint-disable-next-line no-await-in-loop -- retry loop
-            const response = await fetch('/api/files/delta/commit', {
-                method: 'POST',
-                headers: mutHeaders,
-                body: JSON.stringify(commitBody)
-            });
+            const response = await withHeartbeat(() =>
+                fetch('/api/files/delta/commit', {
+                    method: 'POST',
+                    headers: mutHeaders,
+                    body: JSON.stringify(commitBody)
+                })
+            );
             /** @type {any} */
             let body = null;
             try {
@@ -372,14 +398,16 @@ workerScope.onmessage = async (event) => {
                 }
                 const wire = await encodeFrames(retry);
                 // eslint-disable-next-line no-await-in-loop -- retry loop
-                const put = await fetch('/api/files/delta/chunks', {
-                    method: 'PUT',
-                    headers: {
-                        'Content-Type': 'application/octet-stream',
-                        ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {})
-                    },
-                    body: wire
-                });
+                const put = await withHeartbeat(() =>
+                    fetch('/api/files/delta/chunks', {
+                        method: 'PUT',
+                        headers: {
+                            'Content-Type': 'application/octet-stream',
+                            ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {})
+                        },
+                        body: wire
+                    })
+                );
                 if (!put.ok) {
                     fallback(`retry chunk PUT failed (HTTP ${put.status})`);
                     return;
