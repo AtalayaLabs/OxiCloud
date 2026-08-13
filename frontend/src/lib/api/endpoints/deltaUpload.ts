@@ -252,7 +252,20 @@ export function tryDeltaUpload(
 			settle(null);
 		};
 
-		worker.postMessage({ file, folderId, name: file.name, csrfToken: getCsrfToken() || '' });
+		// Runtime-tunable batch size (`window.oxi.UPLOAD_BATCH_BYTES`,
+		// persisted to localStorage). Undefined = worker uses its own
+		// default (8 MiB). Behind Cloudflare Tunnel or other proxies
+		// with tight per-request timeouts, users can lower it via
+		// `oxi.UPLOAD_BATCH_BYTES = 1024 * 1024` so each PUT completes
+		// well inside the proxy's 100 s window on a slow uplink.
+		const uploadBatchBytes = window.oxi?.UPLOAD_BATCH_BYTES;
+		worker.postMessage({
+			file,
+			folderId,
+			name: file.name,
+			csrfToken: getCsrfToken() || '',
+			uploadBatchBytes
+		});
 	});
 }
 

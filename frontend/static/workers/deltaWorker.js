@@ -28,8 +28,13 @@ const WASM_GLUE_URL = '/vendors/hash-wasm/oxicloud_hash_wasm.js';
 const SLICE_BYTES = 8 * 1024 * 1024;
 /** Negotiate after this many freshly hashed chunks (~64 MiB of content). */
 const NEGOTIATE_BATCH = 256;
-/** Group missing chunks into PUT bodies of at most this many bytes. */
-const UPLOAD_BATCH_BYTES = 8 * 1024 * 1024;
+/** Default target size of a PUT body (grouping multiple chunk frames).
+ *  The orchestrator may override this per-upload via the init message's
+ *  `uploadBatchBytes` field, sourced from `window.oxi.UPLOAD_BATCH_BYTES`.
+ *  Lowering it (say to 1 MiB) helps clients behind proxies with tight
+ *  per-request timeouts (Cloudflare Tunnel: 100 s absolute) at the cost
+ *  of more requests per file. */
+const UPLOAD_BATCH_BYTES_DEFAULT = 8 * 1024 * 1024;
 /** Reclaim consumed queue slots periodically. A head cursor makes dequeue O(1);
  *  compaction bounds the backing array when hashing stays ahead of the network. */
 const UPLOAD_QUEUE_COMPACT_AT = 4096;
@@ -63,7 +68,13 @@ async function loadWasm() {
 }
 
 workerScope.onmessage = async (event) => {
-    const { file, folderId, name, csrfToken } = /** @type {{ file: File, folderId: string, name: string, csrfToken: string }} */ (event.data);
+    const { file, folderId, name, csrfToken, uploadBatchBytes } = /** @type {{ file: File, folderId: string, name: string, csrfToken: string, uploadBatchBytes?: number }} */ (event.data);
+    // Per-upload override sourced from `window.oxi.UPLOAD_BATCH_BYTES`
+    // in the main thread. Falls back to the module default (8 MiB).
+    const uploadBatchBytesEff =
+        typeof uploadBatchBytes === 'number' && uploadBatchBytes > 0
+            ? uploadBatchBytes
+            : UPLOAD_BATCH_BYTES_DEFAULT;
 
     /**
      * Forward a log line to the main-thread orchestrator, which routes it
@@ -158,11 +169,11 @@ workerScope.onmessage = async (event) => {
 
     const uploadLoop = async () => {
         while (!failed) {
-            // Take up to UPLOAD_BATCH_BYTES from the queue.
+            // Take up to the effective per-PUT byte cap from the queue.
             /** @type {WorkerChunk[]} */
             const batch = [];
             let bytes = 0;
-            while (uploadHead < uploadQueue.length && bytes < UPLOAD_BATCH_BYTES) {
+            while (uploadHead < uploadQueue.length && bytes < uploadBatchBytesEff) {
                 const c = /** @type {WorkerChunk} */ (uploadQueue[uploadHead]);
                 uploadQueue[uploadHead] = undefined;
                 uploadHead++;

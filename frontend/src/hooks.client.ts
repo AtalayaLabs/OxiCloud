@@ -10,38 +10,75 @@ import { session } from '$lib/stores/session.svelte';
 import { seedNonceFromCookie } from '$lib/auth/dpop-proof';
 
 // DevTools shortcut: expose a small `oxi.*` helper on window so users
-// can toggle log levels from the browser console without needing to
-// import anything. Namespaces used today: `oxi:upload` (delta + direct
+// can toggle log levels and knobs from the browser console without
+// needing to import anything.
+//
+// Log levels — namespaces used today: `oxi:upload` (delta + direct
 // upload pipeline). Levels: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'silent'.
 // Choices persist to `localStorage['loglevel:<namespace>']` via loglevel.
 //
-// Usage:
 //   oxi.setLogLevel('oxi:upload', 'debug')    // deep dive
 //   oxi.setLogLevel('oxi:upload', 'warn')     // quiet
 //   oxi.log.setLevel('debug')                  // everything to debug
+//
+// Delta-upload batch size — bytes per PUT to `/api/files/delta/chunks`.
+// Default 8 MiB. Behind proxies with tight per-request timeouts
+// (Cloudflare Tunnel: 100 s absolute), lower this so each PUT completes
+// within the window on a slow uplink:
+//
+//   oxi.UPLOAD_BATCH_BYTES = 1024 * 1024      // 1 MiB per PUT
+//
+// Persists to `localStorage['oxi:upload:batchBytes']`. Read on every
+// upload — set once from the console, refresh not required.
+const BATCH_BYTES_KEY = 'oxi:upload:batchBytes';
+const BATCH_BYTES_DEFAULT = 8 * 1024 * 1024;
+
+function readBatchBytes(): number {
+	try {
+		if (typeof localStorage === 'undefined') return BATCH_BYTES_DEFAULT;
+		const raw = localStorage.getItem(BATCH_BYTES_KEY);
+		if (!raw) return BATCH_BYTES_DEFAULT;
+		const n = Number(raw);
+		return Number.isFinite(n) && n > 0 ? n : BATCH_BYTES_DEFAULT;
+	} catch {
+		return BATCH_BYTES_DEFAULT;
+	}
+}
+
+function writeBatchBytes(n: number): void {
+	if (typeof localStorage === 'undefined') return;
+	try {
+		if (n === BATCH_BYTES_DEFAULT) localStorage.removeItem(BATCH_BYTES_KEY);
+		else localStorage.setItem(BATCH_BYTES_KEY, String(n));
+	} catch {
+		/* quota / disabled — best-effort */
+	}
+}
+
 declare global {
 	interface Window {
 		oxi?: {
 			log: typeof log;
 			setLogLevel: (namespace: string, level: log.LogLevelDesc) => string;
 			listLogLevels: () => Record<string, string>;
+			UPLOAD_BATCH_BYTES: number;
 		};
 	}
 }
 
 export async function init(): Promise<void> {
 	if (typeof window !== 'undefined') {
-		window.oxi = {
+		const helpers = {
 			log,
 			// Return a confirmation string so the DevTools echo is a
 			// useful "worked → new level" signal instead of `undefined`.
-			setLogLevel(namespace, level) {
+			setLogLevel(namespace: string, level: log.LogLevelDesc): string {
 				log.getLogger(namespace).setLevel(level);
 				return `${namespace} → ${level}`;
 			},
 			// Enumerate the levels loglevel has persisted so users can see
 			// what's currently set without opening the Application tab.
-			listLogLevels() {
+			listLogLevels(): Record<string, string> {
 				const out: Record<string, string> = {};
 				if (typeof localStorage === 'undefined') return out;
 				for (let i = 0; i < localStorage.length; i++) {
@@ -53,6 +90,17 @@ export async function init(): Promise<void> {
 				return out;
 			}
 		};
+		// UPLOAD_BATCH_BYTES: getter reads live from localStorage so any
+		// tab / component pulling `window.oxi.UPLOAD_BATCH_BYTES` sees the
+		// current value; setter persists so the choice survives reload
+		// (mirrors loglevel's persistence pattern).
+		Object.defineProperty(helpers, 'UPLOAD_BATCH_BYTES', {
+			get: readBatchBytes,
+			set: writeBatchBytes,
+			enumerable: true,
+			configurable: true
+		});
+		window.oxi = helpers as Window['oxi'];
 	}
 
 	setSessionExpiredHandler(() => {
