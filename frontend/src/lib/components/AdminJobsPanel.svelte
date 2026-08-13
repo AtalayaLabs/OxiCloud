@@ -588,7 +588,7 @@
 			<p class="jobs-panel__hint">
 				{t(
 					'admin.jobs.hint',
-					'Fires periodic + on-demand jobs. Consistency checks are safe to run at any time — they are read-only.'
+					'This section concerns internal background tasks: periodic + on-demand tasks. Consistency checks are safe to run at any time — they are read-only.'
 				)}
 			</p>
 		</div>
@@ -640,7 +640,9 @@
 	{:else if !jobs}
 		<p class="jobs-panel__status">{t('common.loading', 'Loading…')}</p>
 	{:else if jobs.length === 0}
-		<p class="jobs-panel__status">{t('admin.jobs.none_registered', 'No jobs registered.')}</p>
+		<p class="jobs-panel__status">
+			{t('admin.jobs.none_registered', 'No background tasks registered.')}
+		</p>
 	{:else}
 		<table class="jobs-panel__table">
 			<thead>
@@ -1106,7 +1108,7 @@
 <!-- Purge modal — pick a retention window, then confirm. -->
 <Modal
 	open={purgeModal !== null}
-	title={t('admin.jobs.purge_title', 'Purge old job history')}
+	title={t('admin.jobs.purge_title', 'Purge old task history')}
 	onclose={closePurge}
 >
 	{#if purgeModal}

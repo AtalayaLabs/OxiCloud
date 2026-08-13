@@ -153,14 +153,14 @@
     "manage_shares": "Freigaben verwalten",
     "no_shares": "Noch keine Aktien",
     "playback_error": "Die Wiedergabe ist fehlgeschlagen",
-    "private": "Private",
-    "public": "Public",
+    "private": "Privat",
+    "public": "Öffentlich",
     "read_only": "Nur lesen",
-    "remove": "Remove",
+    "remove": "Entfernen",
     "remove_share": "Freigabe entfernen",
     "set_cover": "Abdeckung einstellen",
     "share_with_user": "Benutzer-ID oder E-Mail",
-    "toggle_public": "Visibility",
+    "toggle_public": "Sichtbarkeit",
     "track_removed": "Spur entfernt",
     "prev": "Zurück",
     "add_selected": "Ausgewählte hinzufügen",
@@ -214,10 +214,10 @@
     "delete_permanently": "Endgültig löschen",
     "empty_trash": "Papierkorb leeren",
     "open_parent_folder": "Zum übergeordneten Ordner",
-    "add": "Add",
-    "apply": "Apply",
-    "clear": "Clear",
-    "remove": "Remove"
+    "add": "Hinzufügen",
+    "apply": "Anwenden",
+    "clear": "Löschen",
+    "remove": "Entfernen"
   },
   "user_menu": {
     "appearance": "Erscheinungsbild",
@@ -265,8 +265,8 @@
     "linkNamePlaceholder": "Linkname (optional)",
     "newLink": "Neuer Link",
     "noExpiry": "Kein Ablauf",
-    "pending": "Pending",
-    "people": "People",
+    "pending": "Ausstehend",
+    "people": "Personen",
     "publicLinks": "Öffentliche Links",
     "role": {
       "canEdit": "Kann bearbeiten",
@@ -284,7 +284,7 @@
     "folders": "Ordner",
     "link_name": "Linkname (optional)",
     "notifyByEmail": "Per E-Mail benachrichtigen",
-    "revoke": "Remove",
+    "revoke": "Entfernen",
     "role_label": "Rolle",
     "col_shared_by": "Geteilt von",
     "col_shared": "Geteilt",
@@ -309,7 +309,7 @@
       "coalesced": "{{n}} bereits vor Kurzem benachrichtigt.",
       "rateLimited": "{{n}} das Ratenlimit erreicht – versuchen Sie es später.",
       "sent": "{{n}} per E-Mail benachrichtigt.",
-      "skipped": "{{n}} skipped (no email / opted out)."
+      "skipped": "{{n}} übersprungen (keine E-Mail / abgemeldet)."
     },
     "passwordPrompt": "Legen Sie ein Passwort fest:",
     "passwordPrompt_clear": "Neues Passwort (zum Entfernen leer):",
@@ -514,7 +514,7 @@
     "upload_failed": "Der Upload ist fehlgeschlagen",
     "uploading": "Hochladen…",
     "uploading_file": "Hochladen {{name}}…",
-    "uploading_n": "Uploading {{done}}/{{total}} files…"
+    "uploading_n": "{{done}}/{{total}} Dateien werden hochgeladen…"
   },
   "dialogs": {
     "rename_folder": "Ordner umbenennen",
@@ -859,7 +859,7 @@
     "callback_url": "Callback-URL",
     "callback_url_hint": "(bei IdP registrieren)",
     "advanced_settings": "Erweiterte Einstellungen",
-    "scopes": "Scopes",
+    "scopes": "Bereiche",
     "auto_provision": "Benutzer bei erstem Login automatisch anlegen",
     "admin_groups": "Admin-Gruppen",
     "admin_groups_hint": "Kommagetrennte OIDC-Gruppennamen für Admin-Rolle",
@@ -978,7 +978,7 @@
     "oidc_client_id": "Client-ID",
     "oidc_disable_pw": "Passwort-Login deaktivieren (nur OIDC)",
     "oidc_issuer": "Aussteller-URL",
-    "oidc_scopes": "Scopes",
+    "oidc_scopes": "Bereiche",
     "password": "Passwort",
     "quotas": "Kontingente",
     "reset_pw_for": "Neues Passwort für",
@@ -1124,7 +1124,7 @@
     "logs_time": "Zeit",
     "mig_eta": "~{{min}} Min. verbleibend",
     "mig_failed": "{{n}} fehlgeschlagene Blobs",
-    "mig_start": "Start",
+    "mig_start": "Starten",
     "mig_verify": "Überprüfen Sie die Integrität",
     "mig_verify_mismatch": "{{n}} Größenunterschiede",
     "mig_verify_missing": "{{n}} fehlt",
@@ -1166,7 +1166,6 @@
     "storage_size": "Gelagert",
     "storage_test": "Prüfen",
     "storage_backend_audit": "Backend-Konsistenz",
-    "storage_backend_audit_triggered": "backend_consistency wurde für „{{name}}“ ausgelöst – sehen Sie es sich auf der Registerkarte „Jobs“ an.",
     "time_day_ago": "Vor {{n}} d",
     "time_hour_ago": "Vor {{n}} h",
     "time_just_now": "soeben",
@@ -1181,9 +1180,6 @@
     "gen_key": "Schlüssel generieren",
     "gen_key_warning": "Bewahren Sie diesen Schlüssel sicher auf. Bei Verlust sind die verschlüsselten Daten unwiederbringlich verloren.",
     "jobs": {
-      "tab": "Jobs",
-      "title": "Jobs",
-      "hint": "Dieser Abschnitt betrifft interne Jobs: periodische + On-Demand-Jobs. Konsistenzprüfungen können jederzeit sicher ausgeführt werden – sie sind schreibgeschützt.",
       "run_all_consistency": "Führen Sie alle Konsistenzprüfungen durch",
       "run_deep": "Lauf tief",
       "run_deep_hint": "Läuft auch langsame Varianten (Blob-Re-Hash, Bitrot-Erkennung).",
@@ -1215,7 +1211,6 @@
       "findings_title": "Erkenntnisse",
       "no_runs": "Noch keine Läufe.",
       "no_findings": "Keine Befunde – sauberer Lauf.",
-      "none_registered": "Keine Jobs registriert.",
       "on_demand": "auf Anfrage",
       "every_h": "alle {{n}} h",
       "every_min": "alle {{n}} Min",
@@ -1229,7 +1224,6 @@
       "notices_present_tooltip": "Informative Erkenntnisse – keine Maßnahmen erforderlich. Für Details erweitern.",
       "purge": "Alte Läufe löschen",
       "purge_hint": "Löschen Sie den Verlauf abgeschlossener und fehlgeschlagener Ausführungen, die älter als das ausgewählte Aufbewahrungsfenster sind. Ergebnisse fallen mit ihren übergeordneten Läufen ab. Nicht-terminale Läufe bleiben immer erhalten.",
-      "purge_title": "Löschen Sie den alten Jobverlauf",
       "purge_body": "Löschen Sie den Verlauf abgeschlossener und fehlgeschlagener Ausführungen, die älter als die ausgewählte Anzahl von Tagen sind. Ergebnisse fallen mit ihren übergeordneten Läufen ab. Nicht-terminale Ausführungen (laufend, angehalten, Abbruch angefordert) bleiben immer erhalten.",
       "purge_days_label": "Aufbewahrung (Tage)",
       "purge_confirm": "Säubern",
@@ -1245,11 +1239,16 @@
       "cancel_requested": "Abbrechen angefordert – {{name}} pausiert an der nächsten sicheren Grenze",
       "cancel_noop": "Es gibt nichts abzubrechen – {{name}} läuft nicht",
       "progress_exact_tooltip": "{{pct}} ({{scanned}} / {{total}})",
-      "progress_approx_tooltip": "{{pct}} ({{scanned}} / {{total}} — approximate, backend proxy)"
+      "progress_approx_tooltip": "{{pct}} ({{scanned}} / {{total}} — ungefähr, Backend-Proxy)",
+      "tab": "Hintergrundaufgaben",
+      "title": "Hintergrundaufgaben",
+      "hint": "Dieser Abschnitt betrifft interne Hintergrundaufgaben: regelmäßige und bedarfsgesteuerte Aufgaben. Konsistenzprüfungen können jederzeit sicher ausgeführt werden — sie sind schreibgeschützt.",
+      "none_registered": "Keine Hintergrundaufgaben registriert.",
+      "purge_title": "Alten Aufgabenverlauf löschen"
     },
     "oidc": "OIDC / SSO",
-    "oidc_discover": "Test / discover",
-    "reextract_done": "{{processed}}/{{total}} processed · {{failed}} failed",
+    "oidc_discover": "Testen / entdecken",
+    "reextract_done": "{{processed}}/{{total}} verarbeitet · {{failed}} fehlgeschlagen",
     "sessions": {
       "filter_user": "Benutzer (UUID)",
       "include_revoked": "Widerrufene / abgelaufene einschließen",
@@ -1281,7 +1280,8 @@
         "device": "Gerät",
         "unknown": "Unbekannt"
       }
-    }
+    },
+    "storage_backend_audit_triggered": "backend_consistency für `{{name}}` ausgelöst — verfolgen Sie es im Tab Hintergrundaufgaben."
   },
   "profile": {
     "page_title": "Profil",
@@ -1359,14 +1359,14 @@
     "error_revoke": "Widerrufen fehlgeschlagen",
     "edit_photo": "Foto bearbeiten",
     "photo_tab_url": "URL",
-    "photo_tab_upload": "Upload",
-    "photo_url_placeholder": "https://example.com/photo.jpg",
-    "photo_url_hint": "https://, http://, or data:image/…;base64,… accepted",
+    "photo_tab_upload": "Hochladen",
+    "photo_url_placeholder": "https://beispiel.de/foto.jpg",
+    "photo_url_hint": "https://, http:// oder data:image/…;base64,… akzeptiert",
     "photo_choose_file": "Wählen Sie ein Foto (PNG, JPEG, WebP)",
     "photo_resize_note": "Bilder, die größer als 512 × 512 Pixel sind, werden automatisch in der Größe angepasst.",
     "photo_save": "Foto speichern",
     "photo_remove": "Foto entfernen",
-    "photo_cancel": "Cancel",
+    "photo_cancel": "Abbrechen",
     "photo_save_failed": "Foto konnte nicht gespeichert werden",
     "photo_no_file": "Bitte wählen Sie zunächst eine Datei aus",
     "photo_managed_by_oidc": "Von Ihrem Identitätsanbieter verwaltetes Foto.",
@@ -1394,7 +1394,7 @@
     "uploading": "Wird hochgeladen...",
     "files": "Dateien",
     "complete": "{{count}} / {{total}} hochgeladen",
-    "files_counter": "{{completed}} / {{total}} files"
+    "files_counter": "{{completed}} / {{total}} Dateien"
   },
   "storage_quota_exceeded": "Speicherplatz erschöpft",
   "sharedwithme": {
@@ -1439,7 +1439,7 @@
     "create_dialog_title": "Neue Gruppe",
     "edit_dialog_title": "Gruppe umbenennen",
     "name_label": "Name",
-    "name_placeholder": "engineering",
+    "name_placeholder": "Engineering-Notation",
     "description_label": "Beschreibung (optional)",
     "members_section": "Mitglieder",
     "add_member_placeholder": "Benutzer oder Gruppe hinzufügen…",
@@ -1500,7 +1500,7 @@
     "direction": "Sortierrichtung"
   },
   "notif": {
-    "errorTitle": "Error",
+    "errorTitle": "Fehler",
     "searchError": "Fehler beim Durchführen der Suche",
     "cleanupCompleted": "Bereinigung abgeschlossen",
     "cleanupCompletedBody": "Der Verlauf der letzten Dateien wurde gelöscht",
@@ -1584,7 +1584,7 @@
   "common": {
     "add": "Hinzufügen",
     "cancel": "Abbrechen",
-    "clear": "Clear",
+    "clear": "Löschen",
     "close": "Schließen",
     "confirm": "Bestätigen",
     "copy": "Kopieren",
@@ -1596,7 +1596,7 @@
     "next": "Weiter",
     "no": "Nein",
     "previous": "Zurück",
-    "remove": "Remove",
+    "remove": "Entfernen",
     "rename": "Umbenennen",
     "save": "Speichern",
     "search": "Suchen",

@@ -81,7 +81,7 @@
     "view_monthly": "Miesiąc",
     "view_yearly": "Rok",
     "group_by": "Grupuj według",
-    "confirm_delete": "Move {{n}} photos to trash?",
+    "confirm_delete": "Przenieść {{n}} zdjęć do kosza?",
     "confirm_delete_one": "Usunąć {{name}}?",
     "delete": "Usuń zdjęcia",
     "empty": "Nie ma jeszcze zdjęć.",
@@ -214,10 +214,10 @@
     "delete_permanently": "Usuń trwale",
     "empty_trash": "Opróżnij kosz",
     "open_parent_folder": "Przejdź do folderu nadrzędnego",
-    "add": "Add",
-    "apply": "Apply",
-    "clear": "Clear",
-    "remove": "Remove"
+    "add": "Dodaj",
+    "apply": "Zastosuj",
+    "clear": "Wyczyść",
+    "remove": "Usuń"
   },
   "user_menu": {
     "appearance": "Wygląd",
@@ -265,8 +265,8 @@
     "linkNamePlaceholder": "Nazwa linku (opcjonalnie)",
     "newLink": "Nowe łącze",
     "noExpiry": "Brak wygaśnięcia",
-    "pending": "Pending",
-    "people": "People",
+    "pending": "Oczekujące",
+    "people": "Osoby",
     "publicLinks": "Linki publiczne",
     "role": {
       "canEdit": "Można edytować",
@@ -307,9 +307,9 @@
     "none": "Nie ma jeszcze żadnych linków publicznych.",
     "notify": {
       "coalesced": "{{n}} został już niedawno powiadomiony.",
-      "rateLimited": "{{n}} hit the rate limit — try later.",
+      "rateLimited": "{{n}} osiągnęło limit — spróbuj później.",
       "sent": "{{n}} powiadomiony e-mailem.",
-      "skipped": "{{n}} skipped (no email / opted out)."
+      "skipped": "{{n}} pominięte (brak e-maila / rezygnacja)."
     },
     "passwordPrompt": "Ustaw hasło:",
     "passwordPrompt_clear": "Nowe hasło (puste do usunięcia):",
@@ -514,7 +514,7 @@
     "upload_failed": "Przesyłanie nie powiodło się",
     "uploading": "Przesyłanie…",
     "uploading_file": "Przesyłanie {{name}}…",
-    "uploading_n": "Uploading {{done}}/{{total}} files…"
+    "uploading_n": "Przesyłanie {{done}}/{{total}} plików…"
   },
   "dialogs": {
     "rename_folder": "Zmień nazwę folderu",
@@ -845,7 +845,7 @@
     "deactivate_title": "Dezaktywuj",
     "activate_title": "Aktywuj",
     "delete_title": "Usuń",
-    "sso_title": "Single Sign-On (OIDC / SSO)",
+    "sso_title": "Logowanie jednokrotne (OIDC / SSO)",
     "enable_sso": "Włącz uwierzytelnianie SSO",
     "provider_name": "Nazwa dostawcy",
     "issuer_url": "URL wystawcy",
@@ -1124,7 +1124,7 @@
     "logs_time": "Czas",
     "mig_eta": "~{{min}} pozostała minuta",
     "mig_failed": "{{n}} nieudane plamy",
-    "mig_start": "Start",
+    "mig_start": "Uruchom",
     "mig_verify": "Sprawdź integralność",
     "mig_verify_mismatch": "{{n}} niedopasowanie rozmiaru",
     "mig_verify_missing": "{{n}} brak",
@@ -1164,11 +1164,10 @@
     "storage_dedup": "Współczynnik deduplikacji",
     "storage_preset": "Wstępnie ustawione",
     "storage_size": "Przechowywane",
-    "storage_test": "Test",
+    "storage_test": "Testuj",
     "storage_backend_audit": "Spójność backendu",
-    "storage_backend_audit_triggered": "backend_consistency uruchomione dla `{{name}}` — obejrzyj na karcie Zadania.",
-    "time_day_ago": "{{n}} d ago",
-    "time_hour_ago": "{{n}} h ago",
+    "time_day_ago": "{{n}} dni temu",
+    "time_hour_ago": "{{n}} godz temu",
     "time_just_now": "właśnie",
     "unchanged": "Pozostaw puste, aby zachować aktualność",
     "running": "Działanie…",
@@ -1181,9 +1180,6 @@
     "gen_key": "Wygeneruj klucz",
     "gen_key_warning": "Przechowuj ten klucz w bezpiecznym miejscu. W przypadku jego utraty zaszyfrowane dane zostaną utracone bezpowrotnie.",
     "jobs": {
-      "tab": "Praca",
-      "title": "Praca",
-      "hint": "Ta sekcja dotyczy zleceń wewnętrznych: okresowych + na żądanie. Kontrole spójności można bezpiecznie przeprowadzić w dowolnym momencie — są one tylko do odczytu.",
       "run_all_consistency": "Uruchom wszystkie kontrole spójności",
       "run_deep": "Biegnij głęboko",
       "run_deep_hint": "Uruchamia również powolne warianty (ponowne mieszanie obiektów blob, wykrywanie bitrot).",
@@ -1215,11 +1211,10 @@
       "findings_title": "Ustalenia",
       "no_runs": "Nie ma jeszcze żadnych biegów.",
       "no_findings": "Brak wyników – czysty przebieg.",
-      "none_registered": "Brak zarejestrowanych ofert pracy.",
       "on_demand": "na żądanie",
       "every_h": "co {{n}} godz",
       "every_min": "co {{n}} min",
-      "every_sec": "every {{n}} s",
+      "every_sec": "co {{n}} s",
       "outcome_ok": "OK",
       "outcome_err": "błądzić",
       "outcome_issues": "kwestie",
@@ -1229,7 +1224,6 @@
       "notices_present_tooltip": "Ustalenia informacyjne — nie są wymagane żadne działania. Rozwiń, aby poznać szczegóły.",
       "purge": "Usuń stare przebiegi",
       "purge_hint": "Usuń historię zakończonych i nieudanych uruchomień starszą niż wybrane okno przechowywania. Wyniki spadają wraz z przebiegami nadrzędnymi. Przebiegi inne niż terminale są zawsze zachowywane.",
-      "purge_title": "Usuń starą historię zadań",
       "purge_body": "Usuń historię zakończonych i nieudanych uruchomień starszą niż wybrana liczba dni. Wyniki spadają wraz z przebiegami nadrzędnymi. Uruchomienia inne niż terminalowe (uruchomione, wstrzymane, z żądaniem anulowania) są zawsze zachowywane.",
       "purge_days_label": "Przechowywanie (dni)",
       "purge_confirm": "Oczyszczać",
@@ -1237,19 +1231,24 @@
       "state_running": "działanie",
       "never": "nigdy",
       "just_now": "właśnie",
-      "n_min_ago": "{{n}} min ago",
-      "n_h_ago": "{{n}} h ago",
-      "n_d_ago": "{{n}} d ago",
+      "n_min_ago": "{{n}} min temu",
+      "n_h_ago": "{{n}} godz temu",
+      "n_d_ago": "{{n}} dni temu",
       "triggered_ok": "{{name}} uruchomiono pomyślnie",
       "triggered_err": "{{name}} nie powiodło się: {{message}}",
       "cancel_requested": "Żądano anulowania — {{name}} zatrzyma się przy następnej bezpiecznej granicy",
       "cancel_noop": "Nie ma nic do anulowania — {{name}} nie działa",
       "progress_exact_tooltip": "{{pct}} ({{scanned}} / {{total}})",
-      "progress_approx_tooltip": "{{pct}} ({{scanned}} / {{total}} — approximate, backend proxy)"
+      "progress_approx_tooltip": "{{pct}} ({{scanned}} / {{total}} — przybliżone, proxy backendu)",
+      "tab": "Zadania w tle",
+      "title": "Zadania w tle",
+      "hint": "Ta sekcja dotyczy wewnętrznych zadań w tle: zadań okresowych i na żądanie. Kontrole spójności można bezpiecznie uruchamiać w dowolnym momencie — są tylko do odczytu.",
+      "none_registered": "Brak zarejestrowanych zadań w tle.",
+      "purge_title": "Usuń starą historię zadań"
     },
     "oidc": "OIDC / SSO",
-    "oidc_discover": "Test / discover",
-    "reextract_done": "{{processed}}/{{total}} processed · {{failed}} failed",
+    "oidc_discover": "Testuj / wykryj",
+    "reextract_done": "{{processed}}/{{total}} przetworzono · {{failed}} nieudane",
     "sessions": {
       "filter_user": "Użytkownik (UUID)",
       "include_revoked": "Uwzględnij unieważnione / wygasłe",
@@ -1259,7 +1258,7 @@
       "col_created": "Utworzono",
       "col_expires": "Wygasa",
       "col_ip": "IP",
-      "col_user_agent": "User agent",
+      "col_user_agent": "Agent użytkownika",
       "col_bound": "Powiązana",
       "col_status": "Stan",
       "current_tooltip": "To sesja, której obecnie używasz — unieważnienie jej wyloguje Cię.",
@@ -1281,7 +1280,8 @@
         "device": "Urządzenie",
         "unknown": "Nieznane"
       }
-    }
+    },
+    "storage_backend_audit_triggered": "backend_consistency uruchomiony dla `{{name}}` — obserwuj to na karcie Zadania w tle."
   },
   "profile": {
     "page_title": "Profil",
@@ -1359,14 +1359,14 @@
     "error_revoke": "Nie udało się unieważnić hasła aplikacji",
     "edit_photo": "Edytuj zdjęcie",
     "photo_tab_url": "URL",
-    "photo_tab_upload": "Upload",
-    "photo_url_placeholder": "https://example.com/photo.jpg",
-    "photo_url_hint": "https://, http://, or data:image/…;base64,… accepted",
+    "photo_tab_upload": "Wyślij",
+    "photo_url_placeholder": "https://przyklad.pl/zdjecie.jpg",
+    "photo_url_hint": "https://, http:// lub data:image/…;base64,… akceptowane",
     "photo_choose_file": "Wybierz zdjęcie (PNG, JPEG, WebP)",
     "photo_resize_note": "Rozmiar obrazów większych niż 512 × 512 pikseli jest zmieniany automatycznie.",
     "photo_save": "Zapisz zdjęcie",
     "photo_remove": "Usuń zdjęcie",
-    "photo_cancel": "Cancel",
+    "photo_cancel": "Anuluj",
     "photo_save_failed": "Nie udało się zapisać zdjęcia",
     "photo_no_file": "Najpierw wybierz plik",
     "photo_managed_by_oidc": "Zdjęcie zarządzane przez Twojego dostawcę tożsamości.",
@@ -1394,7 +1394,7 @@
     "uploading": "Przesyłanie...",
     "files": "plików",
     "complete": "{{count}} / {{total}} przesłano",
-    "files_counter": "{{completed}} / {{total}} files"
+    "files_counter": "{{completed}} / {{total}} plików"
   },
   "storage_quota_exceeded": "Przekroczono limit pamięci masowej",
   "sharedwithme": {
@@ -1495,12 +1495,12 @@
     "passwordLinks": "Linki chronione hasłem"
   },
   "sort": {
-    "asc": "ascending",
-    "desc": "descending",
+    "asc": "rosnąco",
+    "desc": "malejąco",
     "direction": "Kierunek sortowania"
   },
   "notif": {
-    "errorTitle": "Error",
+    "errorTitle": "Błąd",
     "searchError": "Błąd podczas wyszukiwania",
     "cleanupCompleted": "Czyszczenie zakończone",
     "cleanupCompletedBody": "Historia ostatnich plików została wyczyszczona",
@@ -1584,7 +1584,7 @@
   "common": {
     "add": "Dodaj",
     "cancel": "Anuluj",
-    "clear": "Clear",
+    "clear": "Wyczyść",
     "close": "Zamknij",
     "confirm": "Potwierdź",
     "copy": "Kopiuj",

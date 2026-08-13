@@ -242,7 +242,7 @@
 			case 'smtp':
 				return t('admin.smtp', 'Email (SMTP)');
 			case 'jobs':
-				return t('admin.jobs.tab', 'Jobs');
+				return t('admin.jobs.tab', 'Background tasks');
 		}
 	});
 
@@ -451,7 +451,7 @@
 				t(
 					'admin.storage_backend_audit_triggered',
 					{ name },
-					'backend_consistency triggered for `{{name}}` — watch it on the Jobs tab.'
+					'backend_consistency triggered for `{{name}}` — watch it on the Background tasks tab.'
 				),
 				'success'
 			);
