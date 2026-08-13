@@ -2446,7 +2446,13 @@ impl AuthApplicationService {
     ) -> Result<UserDto, DomainError> {
         let mut user = self.user_storage.get_user_by_id(caller_id).await?;
 
-        if user.is_oidc_user() {
+        // For OIDC-managed users, refuse the patch ONLY when it touches
+        // a field the IdP owns (currently `given_name` / `family_name`
+        // — see `UpdateProfileDto::touches_idp_managed_fields`). Local-
+        // only fields (ui_preferences, notify_on_share, preferred_locale,
+        // claim-once username) stay editable — those are personal
+        // OxiCloud preferences, not identity data pushed by the IdP.
+        if user.is_oidc_user() && dto.touches_idp_managed_fields() {
             tracing::info!(
                 target: "audit",
                 event = "auth.profile_update_rejected",
@@ -2457,7 +2463,7 @@ impl AuthApplicationService {
             return Err(DomainError::new(
                 ErrorKind::AccessDenied,
                 "User",
-                "Your profile is managed by the identity provider and \
+                "Your name is managed by the identity provider and \
                  cannot be edited here. Update it at the IdP — changes \
                  will propagate on your next sign-in.",
             ));
