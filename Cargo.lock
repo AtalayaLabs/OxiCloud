@@ -4821,7 +4821,7 @@ dependencies = [
 [[package]]
 name = "ocm-drivers"
 version = "0.2.0"
-source = "git+https://codeberg.org/OpenGeoMesh/OpenCloudMesh-rs.git?rev=debc87b29a6609612fc13f3dda8077ba8f46e404#debc87b29a6609612fc13f3dda8077ba8f46e404"
+source = "git+https://codeberg.org/OpenGeoMesh/OpenCloudMesh-rs.git?rev=49d06e1b8e49a28764df25d05731d83d0cae93c1#49d06e1b8e49a28764df25d05731d83d0cae93c1"
 dependencies = [
  "axum-core",
  "base64 0.22.1",
@@ -4842,7 +4842,7 @@ dependencies = [
 [[package]]
 name = "ocm-server-axum"
 version = "0.1.0"
-source = "git+https://codeberg.org/OpenGeoMesh/OpenCloudMesh-rs.git?rev=debc87b29a6609612fc13f3dda8077ba8f46e404#debc87b29a6609612fc13f3dda8077ba8f46e404"
+source = "git+https://codeberg.org/OpenGeoMesh/OpenCloudMesh-rs.git?rev=49d06e1b8e49a28764df25d05731d83d0cae93c1#49d06e1b8e49a28764df25d05731d83d0cae93c1"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -4872,7 +4872,7 @@ dependencies = [
 [[package]]
 name = "ocm-types"
 version = "0.2.1"
-source = "git+https://codeberg.org/OpenGeoMesh/OpenCloudMesh-rs.git?rev=debc87b29a6609612fc13f3dda8077ba8f46e404#debc87b29a6609612fc13f3dda8077ba8f46e404"
+source = "git+https://codeberg.org/OpenGeoMesh/OpenCloudMesh-rs.git?rev=49d06e1b8e49a28764df25d05731d83d0cae93c1#49d06e1b8e49a28764df25d05731d83d0cae93c1"
 dependencies = [
  "serde",
  "serde_json",
@@ -4933,7 +4933,7 @@ dependencies = [
 [[package]]
 name = "opencloudmesh"
 version = "0.2.1"
-source = "git+https://codeberg.org/OpenGeoMesh/OpenCloudMesh-rs.git?rev=debc87b29a6609612fc13f3dda8077ba8f46e404#debc87b29a6609612fc13f3dda8077ba8f46e404"
+source = "git+https://codeberg.org/OpenGeoMesh/OpenCloudMesh-rs.git?rev=49d06e1b8e49a28764df25d05731d83d0cae93c1#49d06e1b8e49a28764df25d05731d83d0cae93c1"
 dependencies = [
  "http 1.5.0",
  "ocm-types",

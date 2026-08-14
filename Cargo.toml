@@ -7,16 +7,41 @@ default-run = "oxicloud"
 
 [dependencies]
 mimalloc = { version = "0.1.52", default-features = false }
-axum = { version = "0.8.9", features = ["multipart", "http1", "http2", "tokio", "macros"] }
+axum = { version = "0.8.9", features = [
+  "multipart",
+  "http1",
+  "http2",
+  "tokio",
+  "macros",
+] }
 # "process" was previously enabled implicitly through aws-config's feature
 # unification; ffmpeg_video_frame_service needs it, so declare it ourselves.
-tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "io-util", "net", "time", "sync", "fs", "process"] }
+tokio = { version = "1.52.3", features = [
+  "rt-multi-thread",
+  "macros",
+  "io-util",
+  "net",
+  "time",
+  "sync",
+  "fs",
+  "process",
+] }
 tokio-util = { version = "0.7.18", features = ["io", "codec", "compat"] }
 tokio-stream = { version = "0.1.18", features = ["fs", "sync"] }
 bytes = "1.11.1"
 tempfile = "3.27.0"
 tower = "0.5.3"
-tower-http = { version = "0.6.11", features = ["fs", "compression-gzip", "compression-br", "trace", "cors", "add-extension", "request-id", "set-header", "limit"] }
+tower-http = { version = "0.6.11", features = [
+  "fs",
+  "compression-gzip",
+  "compression-br",
+  "trace",
+  "cors",
+  "add-extension",
+  "request-id",
+  "set-header",
+  "limit",
+] }
 flate2 = "1.1.9"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
@@ -52,7 +77,15 @@ thiserror = "2.0.18"
 arc-swap = "1.9"
 
 mockall = { version = "0.14.0", optional = true }
-sqlx = { version = "0.8.6", features = ["postgres", "runtime-tokio", "tls-rustls", "chrono", "uuid", "json", "migrate"] }
+sqlx = { version = "0.8.6", features = [
+  "postgres",
+  "runtime-tokio",
+  "tls-rustls",
+  "chrono",
+  "uuid",
+  "json",
+  "migrate",
+] }
 jsonwebtoken = { version = "10.4.0", features = ["rust_crypto"] }
 argon2 = "0.5.3"
 rand_core = { version = "0.6", features = ["std", "getrandom"] }
@@ -71,7 +104,12 @@ quick-xml = "0.41.0"
 dotenvy = "0.15.7"
 moka = { version = "0.12.15", features = ["future", "sync"] }
 http-range-header = "0.4"
-image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+image = { version = "0.25.10", default-features = false, features = [
+  "jpeg",
+  "png",
+  "gif",
+  "webp",
+] }
 # Shrink-on-load JPEG decode (DCT 1/2·1/4·1/8 scaling) for thumbnails — pure
 # Rust, no C toolchain. The `image` crate's zune-jpeg backend can't scale during
 # decode; this can, cutting decode time/RAM ~order-of-magnitude on large photos.
@@ -143,8 +181,8 @@ ndarray = { version = "0.17.2", optional = true }
 # bumping either side.
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
-ocm-server-axum = { git = "https://codeberg.org/OpenGeoMesh/OpenCloudMesh-rs.git", rev = "debc87b29a6609612fc13f3dda8077ba8f46e404", features = ["tracing"], default-features = false, optional = true}
-ocm-drivers = { git = "https://codeberg.org/OpenGeoMesh/OpenCloudMesh-rs.git", rev = "debc87b29a6609612fc13f3dda8077ba8f46e404", features = ["webdav", "tracing"], default-features = false, optional = true}
+ocm-server-axum = { git = "https://codeberg.org/OpenGeoMesh/OpenCloudMesh-rs.git", rev = "49d06e1b8e49a28764df25d05731d83d0cae93c1", features = ["tracing",], default-features = false, optional = true }
+ocm-drivers = { git = "https://codeberg.org/OpenGeoMesh/OpenCloudMesh-rs.git", rev = "49d06e1b8e49a28764df25d05731d83d0cae93c1", features = ["webdav", "tracing"], default-features = false, optional = true }
 
 [features]
 default = []

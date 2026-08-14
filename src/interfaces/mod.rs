@@ -6,6 +6,8 @@ pub mod nextcloud;
 pub mod range_requests;
 pub mod upload_ingest;
 pub mod web;
+#[cfg(feature = "opencloudmesh")]
+pub mod opencloudmesh;
 
 pub use api::create_api_routes;
 pub use api::create_health_routes;

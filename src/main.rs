@@ -56,6 +56,8 @@ use oxicloud::interfaces;
 
 use common::di::AppServiceFactory;
 use infrastructure::db::create_database_pools;
+#[cfg(feature = "opencloudmesh")]
+use interfaces::opencloudmesh::create_opencloudmesh_routes;
 use interfaces::{
     create_api_routes, create_health_routes, create_public_api_routes,
     web::{create_web_routes, resolve_static_path},
@@ -629,6 +631,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let public_api_routes = create_public_api_routes(&app_state);
     let health_routes = create_health_routes(&app_state);
     let web_routes = create_web_routes(app_state.clone());
+    #[cfg(feature = "opencloudmesh")]
+    let opencloudmesh_routes = create_opencloudmesh_routes(&app_state).await;
 
     let mut app;
 
@@ -1411,6 +1415,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Provide the fully-built state to the router
     let app = app.with_state(app_state);
+
+    #[cfg(feature = "opencloudmesh")]
+    let app = if let Some(opencloudmesh_routes) = opencloudmesh_routes {
+        // merge opencloudmesh_routes after adding app_state as they do NOT need app_state 
+        app.merge(opencloudmesh_routes.layer(access_log!("http::opencloudmesh")))
+    } else {
+        app
+    };
 
     // TCP_NODELAY is inherited from the listening socket on Linux,
     // so every accepted connection already has Nagle disabled.

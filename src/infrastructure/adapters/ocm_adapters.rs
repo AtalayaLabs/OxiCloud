@@ -1,12 +1,14 @@
 use std::sync::Arc;
 
+use crate::domain::entities::folder::Folder;
 use crate::domain::repositories::user_repository::UserRepository;
 use crate::domain::repositories::user_repository::UserRepositoryError;
+use ocm_server_axum::drivers::resources::Resource;
 use ocm_server_axum::drivers::users::User as OcmUser;
 use ocm_server_axum::drivers::users::UserRepo;
 use ocm_server_axum::drivers::users::UserRepoError as OcmUserRepoError;
 
-struct OcmUserRepo<T: UserRepository>(Arc<T>);
+pub(crate) struct OcmUserRepo<T: UserRepository>(Arc<T>);
 
 impl<T: UserRepository> From<T> for OcmUserRepo<T> {
     fn from(value: T) -> Self {
@@ -28,7 +30,7 @@ impl<T: UserRepository> Clone for OcmUserRepo<T> {
 
 impl<T> UserRepo for OcmUserRepo<T>
 where
-    T: UserRepository + Clone,
+    T: UserRepository,
 {
     async fn get(&self, user_id: &str) -> Result<OcmUser, OcmUserRepoError> {
         let id = user_id
@@ -62,5 +64,17 @@ impl From<UserRepositoryError> for OcmUserRepoError {
             | UserRepositoryError::Timeout(_)
             | UserRepositoryError::OperationNotAllowed(_) => OcmUserRepoError::RepoAccessFailed,
         }
+    }
+}
+
+impl Resource for Folder {
+    const RESOURCE_TYPE: &str = "folder";
+
+    fn uri(&self) -> &str {
+        self.id()
+    }
+
+    fn name(&self) -> &str {
+        self.name()
     }
 }
