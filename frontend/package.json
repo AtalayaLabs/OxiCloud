@@ -47,6 +47,7 @@
     "vitest": "^4.1.9"
   },
   "dependencies": {
-    "@serenity-kit/opaque": "^1.1.0"
+    "@serenity-kit/opaque": "^1.1.0",
+    "loglevel": "^1.9.2"
   }
 }

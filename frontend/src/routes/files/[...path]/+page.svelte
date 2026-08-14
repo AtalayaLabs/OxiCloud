@@ -30,6 +30,12 @@
 		resolveOwnedHashes,
 		tryDeltaUpload
 	} from '$lib/api/endpoints/deltaUpload';
+	import {
+		acquireUploadGuard,
+		markUploadFinished,
+		markUploadStarted,
+		releaseUploadGuard
+	} from '$lib/upload/interruption';
 	import { addFavorite, removeFavorite } from '$lib/api/endpoints/favorites';
 	import { canEditWithWopi, getEditorUrlWithFallback } from '$lib/api/endpoints/wopi';
 	import { addTracks, createPlaylist, listPlaylists } from '$lib/api/endpoints/music';
@@ -710,6 +716,17 @@
 	async function uploadBatch(files: File[]) {
 		if (files.length === 0) return;
 		uploading = true;
+		// Arm the reload-guard + persist a "batch in flight" marker so a
+		// page refresh mid-upload (a) prompts the browser's "Leave site?"
+		// dialog and (b) leaves a breadcrumb the layout picks up on the
+		// next mount → toasts a "uploads were interrupted, re-drop to
+		// resume (chunks reuse)" hint.
+		acquireUploadGuard();
+		const batchDescription =
+			files.length === 1
+				? files[0].name
+				: t('files.n_files_batch', { n: files.length }, `${files.length} files`);
+		const batchHandle = markUploadStarted(batchDescription, currentId);
 		const nid = ui.startProgress(
 			t('files.uploading_n', { done: 0, total: files.length }, `Uploading 0/${files.length} files…`)
 		);
@@ -760,6 +777,8 @@
 			ui.finishProgress(nid, errorMessage(err), 'error');
 		} finally {
 			uploading = false;
+			markUploadFinished(batchHandle);
+			releaseUploadGuard();
 		}
 	}
 
@@ -1539,6 +1558,14 @@
 	async function uploadTree(entries: { file: File; relativePath: string }[]) {
 		if (entries.length === 0) return;
 		uploading = true;
+		// Same reload-guard + interrupted-uploads breadcrumb as uploadBatch —
+		// the browser prompts on refresh, and if the user reloads anyway
+		// the layout picks up the marker on next mount and toasts.
+		acquireUploadGuard();
+		const treeHandle = markUploadStarted(
+			t('files.n_files_batch', { n: entries.length }, `${entries.length} files`),
+			currentId
+		);
 		// Same bell progress notification as uploadBatch, so folder uploads show
 		// live progress + a final result instead of staying silent until the end.
 		const nid = ui.startProgress(
@@ -1594,6 +1621,8 @@
 			ui.finishProgress(nid, errorMessage(err), 'error');
 		} finally {
 			uploading = false;
+			markUploadFinished(treeHandle);
+			releaseUploadGuard();
 		}
 	}
 

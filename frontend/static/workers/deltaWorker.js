@@ -28,8 +28,13 @@ const WASM_GLUE_URL = '/vendors/hash-wasm/oxicloud_hash_wasm.js';
 const SLICE_BYTES = 8 * 1024 * 1024;
 /** Negotiate after this many freshly hashed chunks (~64 MiB of content). */
 const NEGOTIATE_BATCH = 256;
-/** Group missing chunks into PUT bodies of at most this many bytes. */
-const UPLOAD_BATCH_BYTES = 8 * 1024 * 1024;
+/** Default target size of a PUT body (grouping multiple chunk frames).
+ *  The orchestrator may override this per-upload via the init message's
+ *  `uploadBatchBytes` field, sourced from `window.oxi.UPLOAD_BATCH_BYTES`.
+ *  Lowering it (say to 1 MiB) helps clients behind proxies with tight
+ *  per-request timeouts (Cloudflare Tunnel: 100 s absolute) at the cost
+ *  of more requests per file. */
+const UPLOAD_BATCH_BYTES_DEFAULT = 8 * 1024 * 1024;
 /** Reclaim consumed queue slots periodically. A head cursor makes dequeue O(1);
  *  compaction bounds the backing array when hashing stays ahead of the network. */
 const UPLOAD_QUEUE_COMPACT_AT = 4096;
@@ -63,10 +68,54 @@ async function loadWasm() {
 }
 
 workerScope.onmessage = async (event) => {
-    const { file, folderId, name, csrfToken } = /** @type {{ file: File, folderId: string, name: string, csrfToken: string }} */ (event.data);
+    const { file, folderId, name, csrfToken, uploadBatchBytes } = /** @type {{ file: File, folderId: string, name: string, csrfToken: string, uploadBatchBytes?: number }} */ (event.data);
+    // Per-upload override sourced from `window.oxi.UPLOAD_BATCH_BYTES`
+    // in the main thread. Falls back to the module default (8 MiB).
+    const uploadBatchBytesEff =
+        typeof uploadBatchBytes === 'number' && uploadBatchBytes > 0
+            ? uploadBatchBytes
+            : UPLOAD_BATCH_BYTES_DEFAULT;
+
+    /**
+     * Forward a log line to the main-thread orchestrator, which routes it
+     * through the shared `loglevel` logger (namespace `oxi:upload`). Worker
+     * can't `import 'loglevel'` — it's served from /static and isn't
+     * bundler-resolved — so postMessage is the transport.
+     *
+     * @param {'debug'|'info'|'warn'|'error'} level
+     * @param {string} msg
+     * @param {Record<string, unknown>=} extra
+     */
+    const log = (level, msg, extra) =>
+        workerScope.postMessage({ type: 'log', level, msg, extra });
+
+    /**
+     * Wrap a long-running fetch so the main-thread stall watchdog stays
+     * fresh while the worker is legitimately awaiting the network. The
+     * watchdog resets on every worker → main-thread message; heartbeats
+     * every 5 s keep it from firing during a slow commit or chunk PUT.
+     * Cleanup in `finally` runs regardless of resolve / reject.
+     *
+     * @template T
+     * @param {() => Promise<T>} fn
+     * @returns {Promise<T>}
+     */
+    const withHeartbeat = async (fn) => {
+        const hb = setInterval(() => workerScope.postMessage({ type: 'heartbeat' }), 5000);
+        try {
+            return await fn();
+        } finally {
+            clearInterval(hb);
+        }
+    };
 
     /** @param {string} reason */
-    const fallback = (reason) => workerScope.postMessage({ type: 'fallback', reason });
+    const fallback = (reason) => {
+        log('warn', `worker fallback: ${reason}`);
+        workerScope.postMessage({ type: 'fallback', reason });
+    };
+
+    log('info', `worker start`, { file: name, size: file.size });
 
     /** @type {Record<string, string>} */
     const mutHeaders = { 'Content-Type': 'application/json' };
@@ -75,6 +124,7 @@ workerScope.onmessage = async (event) => {
     let wasm;
     try {
         wasm = await loadWasm();
+        log('debug', 'wasm loaded');
     } catch (err) {
         fallback(`wasm unavailable: ${err instanceof Error ? err.message : String(err)}`);
         return;
@@ -139,11 +189,11 @@ workerScope.onmessage = async (event) => {
 
     const uploadLoop = async () => {
         while (!failed) {
-            // Take up to UPLOAD_BATCH_BYTES from the queue.
+            // Take up to the effective per-PUT byte cap from the queue.
             /** @type {WorkerChunk[]} */
             const batch = [];
             let bytes = 0;
-            while (uploadHead < uploadQueue.length && bytes < UPLOAD_BATCH_BYTES) {
+            while (uploadHead < uploadQueue.length && bytes < uploadBatchBytesEff) {
                 const c = /** @type {WorkerChunk} */ (uploadQueue[uploadHead]);
                 uploadQueue[uploadHead] = undefined;
                 uploadHead++;
@@ -172,23 +222,28 @@ workerScope.onmessage = async (event) => {
             try {
                 // eslint-disable-next-line no-await-in-loop -- bounded by pool size
                 const wire = await encodeFrames(batch);
+                log('debug', `chunk PUT: ${batch.length} chunks, ${wire.length} bytes`);
                 // eslint-disable-next-line no-await-in-loop -- bounded by pool size
-                const response = await fetch('/api/files/delta/chunks', {
-                    method: 'PUT',
-                    headers: {
-                        'Content-Type': 'application/octet-stream',
-                        ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {})
-                    },
-                    body: wire
-                });
+                const response = await withHeartbeat(() =>
+                    fetch('/api/files/delta/chunks', {
+                        method: 'PUT',
+                        headers: {
+                            'Content-Type': 'application/octet-stream',
+                            ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {})
+                        },
+                        body: wire
+                    })
+                );
                 if (!response.ok) {
                     failed = `chunk PUT failed (HTTP ${response.status})`;
+                    log('error', failed);
                     return;
                 }
                 for (const c of batch) uploadedBytes += c.s;
                 progress();
             } catch (err) {
                 failed = `chunk PUT failed: ${err instanceof Error ? err.message : String(err)}`;
+                log('error', failed);
                 return;
             }
         }
@@ -209,13 +264,16 @@ workerScope.onmessage = async (event) => {
         const run = negotiateTail.then(async () => {
             if (failed) return;
             try {
-                const response = await fetch('/api/files/delta/negotiate', {
-                    method: 'POST',
-                    headers: mutHeaders,
-                    body: JSON.stringify({ chunks: fresh.map(({ h, s }) => ({ h, s })) })
-                });
+                const response = await withHeartbeat(() =>
+                    fetch('/api/files/delta/negotiate', {
+                        method: 'POST',
+                        headers: mutHeaders,
+                        body: JSON.stringify({ chunks: fresh.map(({ h, s }) => ({ h, s })) })
+                    })
+                );
                 if (!response.ok) {
                     failed = failed || `negotiate failed (HTTP ${response.status})`;
+                    log('error', `negotiate failed (HTTP ${response.status})`);
                     return;
                 }
                 const missing = new Set(/** @type {{missing: string[]}} */ (await response.json()).missing);
@@ -226,10 +284,15 @@ workerScope.onmessage = async (event) => {
                         reusedBytes += c.s;
                     }
                 }
+                log(
+                    'info',
+                    `negotiate: ${fresh.length} hashes → ${missing.size} missing, ${fresh.length - missing.size} dedup'd`
+                );
                 signalUploaders();
                 progress();
             } catch (err) {
                 failed = failed || `negotiate failed: ${err instanceof Error ? err.message : String(err)}`;
+                log('error', `negotiate failed: ${err instanceof Error ? err.message : String(err)}`);
             }
         });
         negotiateTail = run.catch(() => {});
@@ -281,6 +344,10 @@ workerScope.onmessage = async (event) => {
         const fileHash = /** @type {string} */ (fin.file_hash);
         hashedBytes = file.size;
         progress(true);
+        // Log the whole-file BLAKE3 immediately so it's visible in the
+        // trace regardless of whether the commit succeeds. Correlates
+        // the client-side view with the server's `file_blobs.hash`.
+        log('info', `hashed — blake3=${fileHash} (${chunks.length} chunks)`);
 
         // ── Drain: negotiations → uploads → commit ───────────────
         await Promise.all(negotiations);
@@ -300,11 +367,13 @@ workerScope.onmessage = async (event) => {
         };
         for (let attempt = 0; ; attempt++) {
             // eslint-disable-next-line no-await-in-loop -- retry loop
-            const response = await fetch('/api/files/delta/commit', {
-                method: 'POST',
-                headers: mutHeaders,
-                body: JSON.stringify(commitBody)
-            });
+            const response = await withHeartbeat(() =>
+                fetch('/api/files/delta/commit', {
+                    method: 'POST',
+                    headers: mutHeaders,
+                    body: JSON.stringify(commitBody)
+                })
+            );
             /** @type {any} */
             let body = null;
             try {
@@ -329,14 +398,16 @@ workerScope.onmessage = async (event) => {
                 }
                 const wire = await encodeFrames(retry);
                 // eslint-disable-next-line no-await-in-loop -- retry loop
-                const put = await fetch('/api/files/delta/chunks', {
-                    method: 'PUT',
-                    headers: {
-                        'Content-Type': 'application/octet-stream',
-                        ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {})
-                    },
-                    body: wire
-                });
+                const put = await withHeartbeat(() =>
+                    fetch('/api/files/delta/chunks', {
+                        method: 'PUT',
+                        headers: {
+                            'Content-Type': 'application/octet-stream',
+                            ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {})
+                        },
+                        body: wire
+                    })
+                );
                 if (!put.ok) {
                     fallback(`retry chunk PUT failed (HTTP ${put.status})`);
                     return;
@@ -349,7 +420,39 @@ workerScope.onmessage = async (event) => {
             // Conclusive: 201 created, or a real error (quota, name
             // conflict, validation). The spawner maps it to the uploaders'
             // UploadAnswer contract.
-            workerScope.postMessage({ type: 'done', status: response.status, body });
+            const ok = response.status >= 200 && response.status < 300;
+            if (ok) {
+                // Human-friendly outcome line — the raw commit line below
+                // still carries the byte counts for anyone who wants them.
+                if (uploadedBytes === 0 && reusedBytes > 0) {
+                    log('info', `✅ file already on server — 100% dedup, no bytes transferred (${reusedBytes.toLocaleString()} B reused, blake3=${fileHash})`);
+                } else if (reusedBytes > 0) {
+                    const pct = Math.round((100 * reusedBytes) / file.size);
+                    log('info', `✅ committed — uploaded ${uploadedBytes.toLocaleString()} B, reused ${reusedBytes.toLocaleString()} B (${pct}% dedup, blake3=${fileHash})`);
+                } else {
+                    log('info', `✅ committed — uploaded ${uploadedBytes.toLocaleString()} B (no dedup, blake3=${fileHash})`);
+                }
+            }
+            log(ok ? 'info' : 'warn', `commit HTTP ${response.status}`, {
+                blake3: fileHash,
+                uploadedBytes,
+                reusedBytes,
+                totalBytes: file.size,
+                attempt,
+            });
+            // Include the final counters + file hash on the done envelope
+            // so the orchestrator's summary is accurate even when the last
+            // throttled progress() got skipped (fast dedup-heavy paths
+            // complete under 150ms — progress' throttle window — so
+            // reusedBytes never surfaced via a progress message).
+            workerScope.postMessage({
+                type: 'done',
+                status: response.status,
+                body,
+                reusedBytes,
+                uploadedBytes,
+                fileHash,
+            });
             return;
         }
     } catch (err) {
