@@ -702,7 +702,9 @@
     "login_error_callback_failed": "Nie udało się ukończyć logowania jednokrotnego. Spróbuj ponownie.",
     "login_error_generic": "Odmówiono logowania jednokrotnego. Spróbuj ponownie.",
     "login_error_email_ambiguous": "Do tego adresu e-mail pasuje wiele kont lokalnych. Skontaktuj się z administratorem, aby rozwiązać problem.",
-    "logged_out": "Wylogowano pomyślnie."
+    "logged_out": "Wylogowano pomyślnie.",
+    "login_error_email_not_verified_at_idp": "Twój dostawca tożsamości zgłasza, że Twój adres e-mail nie jest zweryfikowany. Potwierdź swój adres e-mail u dostawcy tożsamości i spróbuj zalogować się ponownie.",
+    "login_error_email_verification_required": "Ten serwer wymaga zweryfikowanego adresu e-mail. Twój dostawca tożsamości nie dołączył oświadczenia o weryfikacji e-maila. Skontaktuj się z administratorem."
   },
   "storage": {
     "title": "Pamięć masowa",

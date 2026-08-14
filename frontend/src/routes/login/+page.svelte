@@ -21,6 +21,7 @@
 		type OidcProviders
 	} from '$lib/api/endpoints/auth';
 	import { i18n, SUPPORTED_LOCALES, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
+	import { loginErrorMessage } from '$lib/auth/loginError';
 	import { session } from '$lib/stores/session.svelte';
 	import { hasSessionHint } from '$lib/api/csrf';
 
@@ -309,47 +310,8 @@
 		}
 	}
 
-	// Reason keys mirror the OIDC callback's redirect arms in
-	// auth_handler.rs — snake_case, matching the URL param shape used
-	// by the sibling /profile?link_error=<reason> flow. Any unknown
-	// key falls back to the generic copy so a new backend reason never
-	// blanks out the notice.
-	function loginErrorMessage(key: string): string {
-		switch (key) {
-			case 'auto_link_disabled':
-				return t(
-					'auth.login_error_auto_link_disabled',
-					'This server does not auto-link SSO accounts. Sign in with your existing credentials, then connect SSO from your profile.'
-				);
-			case 'auto_link_email_not_verified':
-				return t(
-					'auth.login_error_auto_link_email_not_verified',
-					'Your SSO provider did not confirm your email address. Verify your email at your identity provider, then try again.'
-				);
-			case 'already_linked_elsewhere':
-				return t(
-					'auth.login_error_already_linked_elsewhere',
-					'A local account with this email already exists and is linked to a different SSO identity. Contact your administrator.'
-				);
-			case 'email_ambiguous':
-				return t(
-					'auth.login_error_email_ambiguous',
-					'Multiple local accounts match this email address. Contact your administrator to resolve.'
-				);
-			case 'callback_denied':
-				return t(
-					'auth.login_error_callback_denied',
-					'Your sign-in link expired or was already used. Please try signing in again.'
-				);
-			case 'callback_failed':
-				return t(
-					'auth.login_error_callback_failed',
-					"SSO sign-in couldn't complete. Please try again."
-				);
-			default:
-				return t('auth.login_error_generic', 'SSO sign-in was refused. Please try again.');
-		}
-	}
+	// `?login_error=<key>` → localized copy lives in $lib/auth/loginError
+	// (extracted so a Vitest can exercise the mapping in isolation).
 
 	onMount(async () => {
 		// 0) Consume the one-shot `?source=session_expired` flag, if any.

@@ -1758,6 +1758,31 @@ pub async fn oidc_callback(
             );
             Ok(Redirect::temporary(&redirect_url).into_response())
         }
+        // Rejected-by-policy (e.g. `email_verified=false` while
+        // `OXICLOUD_REQUIRE_VERIFIED_EMAIL=true`). Map each stable reason
+        // to its own `login_error` key so the SPA can render targeted
+        // copy — "verify your email at the IdP" instead of a misleading
+        // generic "sign-in link expired" toast. See app service's OIDC
+        // callback email-verification block for the reason enumeration.
+        OidcCallbackResult::Rejected { reason } => {
+            let key = match reason {
+                "idp_asserts_unverified" => "email_not_verified_at_idp",
+                "claim_absent_and_required" => "email_verification_required",
+                // Future-proof fallback — a new backend reason without an
+                // explicit map here lands on the generic bucket rather
+                // than silently 200'ing the user through.
+                _ => "callback_denied",
+            };
+            let config = auth_app.oidc_config().unwrap();
+            let frontend_url = config.frontend_url.trim_end_matches('/');
+            let redirect_url = format!("{}/login?login_error={}", frontend_url, key);
+            tracing::info!(
+                reason = reason,
+                login_error = key,
+                "OIDC callback rejected by policy, redirecting to /login?login_error"
+            );
+            Ok(Redirect::temporary(&redirect_url).into_response())
+        }
     }
 }
 

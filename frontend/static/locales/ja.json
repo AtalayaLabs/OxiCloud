@@ -702,7 +702,9 @@
     "login_error_callback_failed": "SSO サインインを完了できませんでした。もう一度試してください。",
     "login_error_generic": "SSO サインインが拒否されました。もう一度試してください。",
     "login_error_email_ambiguous": "複数のローカル アカウントがこの電子メール アドレスに一致します。解決するには管理者に問い合わせてください。",
-    "logged_out": "サインアウトしました。"
+    "logged_out": "サインアウトしました。",
+    "login_error_email_not_verified_at_idp": "IDプロバイダーから、メールアドレスが確認されていないと報告されています。IDプロバイダーでメールを確認してから、もう一度サインインしてください。",
+    "login_error_email_verification_required": "このサーバーは検証済みのメールアドレスを必要とします。IDプロバイダーがメール検証クレームを含めませんでした。管理者に連絡してください。"
   },
   "storage": {
     "title": "ストレージ",
