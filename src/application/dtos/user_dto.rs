@@ -406,6 +406,23 @@ pub struct UpdateProfileDto {
     pub ui_preferences: Option<serde_json::Value>,
 }
 
+impl UpdateProfileDto {
+    /// True when the patch touches at least one field whose source of
+    /// truth is an external identity provider — currently `given_name`
+    /// and `family_name`. For OIDC-managed users the auth service
+    /// refuses the whole patch when this returns true (IdP pushes those
+    /// fields on every login; editing them here would be silently
+    /// overwritten). Local-only fields — `ui_preferences`,
+    /// `notify_on_share`, `preferred_locale`, the claim-once `username`
+    /// (never re-synced from the IdP) — return `false` so an OIDC user
+    /// can still change their view mode, share-mail opt-in, locale,
+    /// etc. Add future IdP-authoritative fields (e.g. `email`, `image`)
+    /// here if they land in this DTO.
+    pub fn touches_idp_managed_fields(&self) -> bool {
+        self.given_name.is_some() || self.family_name.is_some()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AuthResponseDto {
     pub user: UserDto,
