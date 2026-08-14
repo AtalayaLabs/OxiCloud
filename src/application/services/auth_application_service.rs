@@ -28,6 +28,64 @@ use std::sync::RwLock;
 use std::time::Duration;
 use uuid::Uuid;
 
+/// Decision returned by `classify_email_verification` — encodes the full
+/// (email_verified × require_verified_email) matrix the OIDC callback's
+/// email-verification gate needs. Pure function of two inputs; extracted
+/// so a unit test can walk the matrix without any OIDC/DB machinery.
+///
+/// - `reject = true`  → the callback returns `OidcCallbackResult::Rejected`
+///   with `reason` as the wire-visible key (mapped by the handler to a
+///   distinct `login_error=<key>` on the /login redirect).
+/// - `reject = false` + `reason = Some(...)` → accept path, but audit-log
+///   the underlying risky signal (`oidc.email_unverified_accepted`) so
+///   operators running with the flag off can still spot loose IdPs.
+/// - `reject = false` + `reason = None`      → clean accept, no audit noise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EmailVerificationDecision {
+    reject: bool,
+    reason: Option<&'static str>,
+}
+
+/// Classify what the OIDC callback should do for a given
+/// `email_verified` claim value under the deployment's
+/// `OXICLOUD_REQUIRE_VERIFIED_EMAIL` posture.
+///
+/// | claim state           | require=true                     | require=false                                          |
+/// |-----------------------|----------------------------------|--------------------------------------------------------|
+/// | `Some(true)`  → verified | accept, silent                | accept, silent                                         |
+/// | `Some(false)` → asserted-unverified | REJECT `idp_asserts_unverified` | accept, audit `idp_asserts_unverified_flag_off` |
+/// | `None`        → claim absent      | REJECT `claim_absent_and_required` | accept, silent (absence isn't itself a signal) |
+///
+/// See `project_oidc_callback_error_specific_reasons` memory for the
+/// audit-line / wire-key correlation rationale.
+fn classify_email_verification(
+    email_verified: Option<bool>,
+    must_verify: bool,
+) -> EmailVerificationDecision {
+    match (email_verified, must_verify) {
+        (Some(true), _) => EmailVerificationDecision {
+            reject: false,
+            reason: None,
+        },
+        (Some(false), true) => EmailVerificationDecision {
+            reject: true,
+            reason: Some("idp_asserts_unverified"),
+        },
+        (Some(false), false) => EmailVerificationDecision {
+            reject: false,
+            reason: Some("idp_asserts_unverified_flag_off"),
+        },
+        (None, true) => EmailVerificationDecision {
+            reject: true,
+            reason: Some("claim_absent_and_required"),
+        },
+        (None, false) => EmailVerificationDecision {
+            reject: false,
+            reason: None,
+        },
+    }
+}
+
 /// Validate a client-supplied DPoP JWK thumbprint. RFC 7638 §3 produces
 /// a base64url-encoded SHA-256 (32 bytes → 43 base64url chars, no
 /// padding). We accept exactly that shape; anything else is a client
@@ -87,6 +145,111 @@ mod dpop_jkt_tests {
     }
 }
 
+// Pure-function coverage for the OIDC email-verification decision
+// matrix. Ships every leg of the 3×2 truth table so a future refactor
+// that flips one arm trips its own dedicated assertion — no need for
+// DB fixtures, mock OIDC service, or a full callback pipeline.
+//
+// The reject-branch `reason` values are the exact strings the app
+// service hoists into `OidcCallbackResult::Rejected` and the handler
+// then maps to `/login?login_error=<key>` — see the corresponding
+// handler match arm in `interfaces/api/handlers/auth_handler.rs`. Keep
+// these string literals in sync across all three sites (audit line +
+// wire envelope + handler translation).
+//
+// Companion FE coverage: `frontend/src/lib/auth/loginError.test.ts`
+// asserts the FE renders the right copy for each key.
+#[cfg(test)]
+mod classify_email_verification_tests {
+    use super::{EmailVerificationDecision, classify_email_verification};
+
+    fn assert_decision(
+        got: EmailVerificationDecision,
+        expected_reject: bool,
+        expected_reason: Option<&'static str>,
+    ) {
+        assert_eq!(
+            got,
+            EmailVerificationDecision {
+                reject: expected_reject,
+                reason: expected_reason,
+            },
+        );
+    }
+
+    // ── ACCEPT paths ────────────────────────────────────────────
+
+    #[test]
+    fn verified_and_flag_on_accepts_silently() {
+        assert_decision(classify_email_verification(Some(true), true), false, None);
+    }
+
+    #[test]
+    fn verified_and_flag_off_accepts_silently() {
+        assert_decision(classify_email_verification(Some(true), false), false, None);
+    }
+
+    #[test]
+    fn unverified_and_flag_off_accepts_but_audits() {
+        // Operator-override branch — accept, but leave a "loose IdP"
+        // audit line so log tail can spot the risky signal after the fact.
+        assert_decision(
+            classify_email_verification(Some(false), false),
+            false,
+            Some("idp_asserts_unverified_flag_off"),
+        );
+    }
+
+    #[test]
+    fn claim_absent_and_flag_off_accepts_silently() {
+        // Absence is a weaker signal than an explicit false — no audit
+        // line, otherwise every log fills with noise for IdPs that
+        // simply don't publish the claim.
+        assert_decision(classify_email_verification(None, false), false, None);
+    }
+
+    // ── REJECT paths (the load-bearing new behaviour) ────────────
+
+    #[test]
+    fn unverified_and_flag_on_rejects_with_idp_asserts_unverified() {
+        assert_decision(
+            classify_email_verification(Some(false), true),
+            true,
+            Some("idp_asserts_unverified"),
+        );
+    }
+
+    #[test]
+    fn claim_absent_and_flag_on_rejects_with_claim_absent_and_required() {
+        assert_decision(
+            classify_email_verification(None, true),
+            true,
+            Some("claim_absent_and_required"),
+        );
+    }
+
+    // ── Wire-key drift guard ────────────────────────────────────
+    // These are the exact strings the handler switches on to pick the
+    // `login_error=<key>` for the /login redirect. If either literal
+    // changes here without updating the handler, the redirect silently
+    // falls to `callback_denied` and the SPA shows the misleading
+    // "sign-in link expired" copy — exactly the regression this whole
+    // refactor was meant to prevent.
+    #[test]
+    fn reject_reasons_are_the_wire_keys_the_handler_switches_on() {
+        assert_eq!(
+            classify_email_verification(Some(false), true).reason,
+            Some("idp_asserts_unverified"),
+            "handler maps this reason → login_error=email_not_verified_at_idp",
+        );
+        assert_eq!(
+            classify_email_verification(None, true).reason,
+            Some("claim_absent_and_required"),
+            "handler maps this reason → login_error=email_verification_required",
+        );
+    }
+}
+
 /// Result of a successful OIDC callback. The handler layer inspects this to
 /// decide whether to redirect to the regular frontend or complete a Nextcloud
 /// Login Flow v2 session.
@@ -123,6 +286,24 @@ pub enum OidcCallbackResult {
     /// on the 409 response so the login page can switch on it.
     /// See docs/plan/oidc-account-linking.md § Auto-link.
     AutoLinkRefused { reason: &'static str },
+    /// OIDC login refused before any user lookup by a policy gate that
+    /// carries a specific reason worth surfacing to the user. The
+    /// handler maps each `reason` to a distinct `login_error=<key>`
+    /// redirect, and the SPA renders targeted copy so the user can act
+    /// on it (e.g. "verify your email at the IdP") instead of a
+    /// misleading generic "sign-in link expired" toast.
+    ///
+    /// Current reasons — emit the same `reason=` as the
+    /// `oidc.callback_rejected` audit line so log-tail correlation
+    /// stays trivial:
+    ///
+    /// - `idp_asserts_unverified` — IdP explicitly claims
+    ///   `email_verified=false` AND `OXICLOUD_REQUIRE_VERIFIED_EMAIL=true`.
+    /// - `claim_absent_and_required` — IdP omitted the `email_verified`
+    ///   claim AND `OXICLOUD_REQUIRE_VERIFIED_EMAIL=true`.
+    ///
+    /// See `project_oidc_callback_error_specific_reasons` memory.
+    Rejected { reason: &'static str },
 }
 
 /// Outcome of a successful magic-link redemption. The auth tokens are
@@ -4047,29 +4228,33 @@ impl AuthApplicationService {
         // placeholder later).
         if let Some(email) = &claims.email {
             let must_verify = self.require_verified_email();
-            let (reject, reason) = match (claims.email_verified, must_verify) {
-                (Some(true), _) => (false, None),
-                (Some(false), true) => (true, Some("idp_asserts_unverified")),
-                (Some(false), false) => (false, Some("idp_asserts_unverified_flag_off")),
-                (None, true) => (true, Some("claim_absent_and_required")),
-                (None, false) => (false, None),
-            };
-            if let Some(reason) = reason {
+            let decision = classify_email_verification(claims.email_verified, must_verify);
+            if let Some(reason) = decision.reason {
                 tracing::info!(
                     target: "audit",
-                    event = if reject { "oidc.callback_rejected" } else { "oidc.email_unverified_accepted" },
+                    event = if decision.reject { "oidc.callback_rejected" } else { "oidc.email_unverified_accepted" },
                     reason = reason,
                     provider = %provider_name,
                     email = %email,
                     "👮🏻‍♂️ OIDC callback: email-verification signal"
                 );
             }
-            if reject {
-                return Err(DomainError::new(
-                    ErrorKind::AccessDenied,
-                    "OIDC",
-                    "Email verification required. Please verify your email at the identity provider.",
-                ));
+            if decision.reject {
+                // Return `Ok(Rejected)` rather than `Err(AccessDenied)` so
+                // the handler can map this specific `reason` to a distinct
+                // `login_error=<key>` on the /login redirect — instead of
+                // being lumped into the generic `callback_denied` bucket
+                // (which shows a misleading "sign-in link expired" toast).
+                // See `project_oidc_callback_error_specific_reasons` memory.
+                //
+                // `decision.reason` on a reject-branch is guaranteed Some
+                // by `classify_email_verification`'s match arms; the fallback
+                // to "callback_denied" defends against a future refactor
+                // adding a reject branch without a reason (currently
+                // unreachable).
+                return Ok(OidcCallbackResult::Rejected {
+                    reason: decision.reason.unwrap_or("callback_denied"),
+                });
             }
         }
 

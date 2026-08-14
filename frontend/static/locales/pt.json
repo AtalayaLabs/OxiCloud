@@ -702,7 +702,9 @@
     "login_error_callback_failed": "Não foi possível concluir o login do SSO. Por favor, tente novamente.",
     "login_error_generic": "O login do SSO foi recusado. Por favor, tente novamente.",
     "login_error_email_ambiguous": "Várias contas locais correspondem a este endereço de e-mail. Entre em contato com seu administrador para resolver.",
-    "logged_out": "Sessão terminada com sucesso."
+    "logged_out": "Sessão terminada com sucesso.",
+    "login_error_email_not_verified_at_idp": "Seu provedor de identidade informa que seu endereço de e-mail não está verificado. Confirme seu e-mail em seu provedor de identidade e tente entrar novamente.",
+    "login_error_email_verification_required": "Este servidor requer um endereço de e-mail verificado. Seu provedor de identidade não incluiu uma declaração de verificação de e-mail. Contate seu administrador."
   },
   "storage": {
     "title": "Armazenamento",

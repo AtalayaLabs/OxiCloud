@@ -702,7 +702,9 @@
     "login_error_callback_denied": "로그인 링크가 만료되었거나 이미 사용되었습니다. 다시 로그인해 보세요.",
     "login_error_callback_failed": "SSO 로그인을 완료할 수 없습니다. 다시 시도해 주세요.",
     "login_error_generic": "SSO 로그인이 거부되었습니다. 다시 시도해 주세요.",
-    "login_error_email_ambiguous": "여러 로컬 계정이 이 이메일 주소와 일치합니다. 해결하려면 관리자에게 문의하세요."
+    "login_error_email_ambiguous": "여러 로컬 계정이 이 이메일 주소와 일치합니다. 해결하려면 관리자에게 문의하세요.",
+    "login_error_email_not_verified_at_idp": "ID 공급자가 이메일 주소가 확인되지 않았다고 보고했습니다. ID 공급자에서 이메일을 확인한 후 다시 로그인하세요.",
+    "login_error_email_verification_required": "이 서버는 인증된 이메일이 필요합니다. ID 공급자가 이메일 인증 클레임을 포함하지 않았습니다. 관리자에게 문의하세요."
   },
   "storage": {
     "title": "저장소",

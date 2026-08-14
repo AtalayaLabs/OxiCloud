@@ -702,7 +702,9 @@
     "login_error_callback_failed": "Impossibile completare l'accesso SSO. Per favore riprova.",
     "login_error_generic": "L'accesso SSO è stato rifiutato. Per favore riprova.",
     "login_error_email_ambiguous": "Più account locali corrispondono a questo indirizzo email. Contatta l'amministratore per risolvere.",
-    "logged_out": "Disconnessione effettuata."
+    "logged_out": "Disconnessione effettuata.",
+    "login_error_email_not_verified_at_idp": "Il tuo provider di identità segnala che il tuo indirizzo e-mail non è verificato. Conferma la tua e-mail presso il tuo provider di identità e riprova ad accedere.",
+    "login_error_email_verification_required": "Questo server richiede un indirizzo e-mail verificato. Il tuo provider di identità non ha incluso una dichiarazione di verifica e-mail. Contatta il tuo amministratore."
   },
   "storage": {
     "title": "Archiviazione",

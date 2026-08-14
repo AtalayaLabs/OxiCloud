@@ -689,6 +689,8 @@
     "login_error_email_ambiguous": "Plusieurs comptes locaux correspondent à cette adresse e-mail. Contactez votre administrateur pour résoudre.",
     "login_error_callback_denied": "Votre lien de connexion a expiré ou a déjà été utilisé. Veuillez réessayer.",
     "login_error_callback_failed": "La connexion SSO n'a pas pu se terminer. Veuillez réessayer.",
+    "login_error_email_not_verified_at_idp": "Votre fournisseur d'identité signale que votre adresse e-mail n'est pas vérifiée. Confirmez votre e-mail chez votre fournisseur d'identité, puis réessayez.",
+    "login_error_email_verification_required": "Ce serveur exige une adresse e-mail vérifiée. Votre fournisseur d'identité n'a pas inclus de revendication de vérification d'e-mail. Contactez votre administrateur.",
     "login_error_generic": "La connexion SSO a été refusée. Veuillez réessayer.",
     "password_or_link_hint": "Mot de passe (laisser vide pour un lien de connexion)",
     "cookie_rejected": "La connexion a réussi mais le navigateur a rejeté le cookie de session. Si vous êtes sur HTTP, définissez OXICLOUD_COOKIE_SECURE=false ou utilisez HTTPS.",

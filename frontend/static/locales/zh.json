@@ -702,7 +702,9 @@
     "login_error_callback_failed": "SSO 登录无法完成。请再试一次。",
     "login_error_generic": "SSO 登录被拒绝。请再试一次。",
     "login_error_email_ambiguous": "多个本地帐户与此电子邮件地址匹配。请联系您的管理员来解决。",
-    "logged_out": "已成功退出。"
+    "logged_out": "已成功退出。",
+    "login_error_email_not_verified_at_idp": "您的身份提供商报告您的电子邮件地址未经验证。请在您的身份提供商处确认电子邮件,然后重新登录。",
+    "login_error_email_verification_required": "此服务器要求提供已验证的电子邮件。您的身份提供商未包含电子邮件验证声明。请联系您的管理员。"
   },
   "storage": {
     "title": "存储空间",

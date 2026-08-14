@@ -21,6 +21,7 @@
 		type OidcProviders
 	} from '$lib/api/endpoints/auth';
 	import { i18n, SUPPORTED_LOCALES, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
+	import { loginErrorMessage } from '$lib/auth/loginError';
 	import { session } from '$lib/stores/session.svelte';
 	import { hasSessionHint } from '$lib/api/csrf';
 
@@ -116,6 +117,16 @@
 	// config, or the local account is already linked to a different
 	// identity). See docs/plan/oidc-account-linking.md § Auto-link.
 	let loginErrorNotice = $state<string | null>(null);
+	// True while we're mid-OIDC-callback and about to redirect into the
+	// app. Read synchronously at script-init from `?oidc_code=…` so the
+	// FIRST paint suppresses the form and shows a loader instead —
+	// without this the SPA briefly renders the empty username/password
+	// fields between the IdP redirect and the exchange-then-goto,
+	// making it look like the login screen "flashed." Cleared in
+	// onMount if the exchange fails so the normal form takes over.
+	let willRedirect = $state(
+		typeof window !== 'undefined' && page.url.searchParams.has('oidc_code')
+	);
 	// Refs used by the mode-driven auto-focus effect. Bound with
 	// `bind:this` on the first input of each mode's form so the effect
 	// can focus the "primary" field each time the mode changes without
@@ -309,47 +320,8 @@
 		}
 	}
 
-	// Reason keys mirror the OIDC callback's redirect arms in
-	// auth_handler.rs — snake_case, matching the URL param shape used
-	// by the sibling /profile?link_error=<reason> flow. Any unknown
-	// key falls back to the generic copy so a new backend reason never
-	// blanks out the notice.
-	function loginErrorMessage(key: string): string {
-		switch (key) {
-			case 'auto_link_disabled':
-				return t(
-					'auth.login_error_auto_link_disabled',
-					'This server does not auto-link SSO accounts. Sign in with your existing credentials, then connect SSO from your profile.'
-				);
-			case 'auto_link_email_not_verified':
-				return t(
-					'auth.login_error_auto_link_email_not_verified',
-					'Your SSO provider did not confirm your email address. Verify your email at your identity provider, then try again.'
-				);
-			case 'already_linked_elsewhere':
-				return t(
-					'auth.login_error_already_linked_elsewhere',
-					'A local account with this email already exists and is linked to a different SSO identity. Contact your administrator.'
-				);
-			case 'email_ambiguous':
-				return t(
-					'auth.login_error_email_ambiguous',
-					'Multiple local accounts match this email address. Contact your administrator to resolve.'
-				);
-			case 'callback_denied':
-				return t(
-					'auth.login_error_callback_denied',
-					'Your sign-in link expired or was already used. Please try signing in again.'
-				);
-			case 'callback_failed':
-				return t(
-					'auth.login_error_callback_failed',
-					"SSO sign-in couldn't complete. Please try again."
-				);
-			default:
-				return t('auth.login_error_generic', 'SSO sign-in was refused. Please try again.');
-		}
-	}
+	// `?login_error=<key>` → localized copy lives in $lib/auth/loginError
+	// (extracted so a Vitest can exercise the mapping in isolation).
 
 	onMount(async () => {
 		// 0) Consume the one-shot `?source=session_expired` flag, if any.
@@ -406,7 +378,10 @@
 				await goto(resolve(redirectTarget), { replaceState: true });
 				return;
 			}
-			// Exchange failed — fall through to the normal login UI.
+			// Exchange failed — fall through to the normal login UI. Drop
+			// the loader guard so the form appears; if we leave it true
+			// the user stares at a spinner indefinitely.
+			willRedirect = false;
 		}
 
 		// 2) Existing-session probe: if already authenticated, skip the form.
@@ -482,563 +457,588 @@
 	<title>{t('app.title', 'OxiCloud')}</title>
 </svelte:head>
 
-<div class="auth-container">
-	<div class="auth-panel">
-		<div class="auth-logo">
-			<div class="auth-logo-icon">
-				<svg viewBox="95 67 320 320" aria-hidden="true">
-					<path
-						d="M345 310c32 0 58-26 58-58s-26-58-58-58c-6.2 0-12 0.9-17.5 2.7C318 166 289 143 255 143c-34.3 0-63.1 22.6-73 53.7C176.9 195.7 171 195 165 195c-32 0-58 26-58 58s26 58 58 58h180z"
-					/>
-				</svg>
+{#if willRedirect}
+	<!-- Full-viewport overlay that visually continues the boot splash
+		 (see app.html `#app-splash`) — same background, same spinner —
+		 so the OIDC callback landing goes spinner → spinner → /files
+		 with no intermediate flash of the auth-panel shell (logo +
+		 language selector). Auth-container below is skipped entirely
+		 during this window; if the exchange fails, `willRedirect`
+		 flips false and the normal login form takes over. -->
+	<div
+		class="auth-splash"
+		role="status"
+		aria-label="Signing in"
+		data-testid="login-redirect-loader"
+	>
+		<div class="auth-splash__spinner" aria-hidden="true"></div>
+	</div>
+{:else}
+	<div class="auth-container">
+		<div class="auth-panel">
+			<div class="auth-logo">
+				<div class="auth-logo-icon">
+					<svg viewBox="95 67 320 320" aria-hidden="true">
+						<path
+							d="M345 310c32 0 58-26 58-58s-26-58-58-58c-6.2 0-12 0.9-17.5 2.7C318 166 289 143 255 143c-34.3 0-63.1 22.6-73 53.7C176.9 195.7 171 195 165 195c-32 0-58 26-58 58s26 58 58 58h180z"
+						/>
+					</svg>
+				</div>
+				<div class="auth-logo-text"><span class="brand-oxi">Oxi</span>Cloud</div>
 			</div>
-			<div class="auth-logo-text"><span class="brand-oxi">Oxi</span>Cloud</div>
-		</div>
 
-		<!-- Form paints immediately alongside the logo — the onMount
+			<!-- Form paints immediately alongside the logo — the onMount
 			     probes (OIDC code exchange, session probe, providers
 			     lookup) run concurrently and either redirect the user
 			     away or upgrade the visible affordances (OIDC button,
 			     magic-link toggle) in place. Guarding the whole form
 			     behind `booting` caused a "logo only, then form" flash
 			     on first paint. -->
-		{#if loginErrorNotice}
-			<!-- Dedicated error view — hides the login form entirely
+			{#if loginErrorNotice}
+				<!-- Dedicated error view — hides the login form entirely
 			     until the user dismisses. Lands the user on a focused
 			     "this went wrong" screen instead of a form buried
 			     under a red banner. Sibling of the callback redirect
 			     that surfaced this notice in the first place.
 			     Reuses `.auth-title` and `.auth-button` for theme
 			     consistency with the normal login/register/setup views. -->
-			<div class="auth-error-view" role="alert" data-testid="login-error-notice">
-				<h1 class="auth-title">{t('auth.login_error_title', 'Sign-in failed')}</h1>
-				<p class="auth-error-view__message">{loginErrorNotice}</p>
-				<button
-					type="button"
-					class="auth-button"
-					data-testid="login-error-back-btn"
-					onclick={() => (loginErrorNotice = null)}
-				>
-					{t('auth.login_error_back_to_login', 'Back to login')}
-				</button>
-			</div>
-		{:else}
-			<h1 class="auth-title">
-				{#if mode === 'login'}
-					{t('auth.sign_in', 'Sign in')}
-				{:else if mode === 'register'}
-					{t('auth.register', 'Create account')}
-				{:else}
-					{t('auth.setup_title', 'Initial setup')}
+				<div class="auth-error-view" role="alert" data-testid="login-error-notice">
+					<h1 class="auth-title">{t('auth.login_error_title', 'Sign-in failed')}</h1>
+					<p class="auth-error-view__message">{loginErrorNotice}</p>
+					<button
+						type="button"
+						class="auth-button"
+						data-testid="login-error-back-btn"
+						onclick={() => (loginErrorNotice = null)}
+					>
+						{t('auth.login_error_back_to_login', 'Back to login')}
+					</button>
+				</div>
+			{:else}
+				<h1 class="auth-title">
+					{#if mode === 'login'}
+						{t('auth.sign_in', 'Sign in')}
+					{:else if mode === 'register'}
+						{t('auth.register', 'Create account')}
+					{:else}
+						{t('auth.setup_title', 'Initial setup')}
+					{/if}
+				</h1>
+
+				{#if sessionExpiredNotice}
+					<div
+						class="auth-error auth-error--dismissible"
+						style="display: flex"
+						role="alert"
+						data-testid="login-session-expired-notice"
+					>
+						<span>{t('auth.session_expired', 'Your session expired. Please sign in again.')}</span>
+						<button
+							type="button"
+							class="auth-notice-dismiss"
+							aria-label={t('common.dismiss', 'Dismiss')}
+							data-testid="login-session-expired-dismiss-btn"
+							onclick={() => (sessionExpiredNotice = false)}>×</button
+						>
+					</div>
 				{/if}
-			</h1>
 
-			{#if sessionExpiredNotice}
-				<div
-					class="auth-error auth-error--dismissible"
-					style="display: flex"
-					role="alert"
-					data-testid="login-session-expired-notice"
-				>
-					<span>{t('auth.session_expired', 'Your session expired. Please sign in again.')}</span>
-					<button
-						type="button"
-						class="auth-notice-dismiss"
-						aria-label={t('common.dismiss', 'Dismiss')}
-						data-testid="login-session-expired-dismiss-btn"
-						onclick={() => (sessionExpiredNotice = false)}>×</button
+				{#if loggedOutNotice}
+					<div
+						class="auth-success auth-error--dismissible"
+						style="display: flex"
+						role="status"
+						data-testid="login-logged-out-notice"
 					>
-				</div>
-			{/if}
+						<span>{t('auth.logged_out', 'Successfully signed out.')}</span>
+						<button
+							type="button"
+							class="auth-notice-dismiss"
+							aria-label={t('common.dismiss', 'Dismiss')}
+							data-testid="login-logged-out-dismiss-btn"
+							onclick={() => (loggedOutNotice = false)}>×</button
+						>
+					</div>
+				{/if}
 
-			{#if loggedOutNotice}
-				<div
-					class="auth-success auth-error--dismissible"
-					style="display: flex"
-					role="status"
-					data-testid="login-logged-out-notice"
-				>
-					<span>{t('auth.logged_out', 'Successfully signed out.')}</span>
-					<button
-						type="button"
-						class="auth-notice-dismiss"
-						aria-label={t('common.dismiss', 'Dismiss')}
-						data-testid="login-logged-out-dismiss-btn"
-						onclick={() => (loggedOutNotice = false)}>×</button
+				{#if postRegisterNotice && mode === 'login'}
+					<div
+						class="auth-success auth-error--dismissible"
+						style="display: flex"
+						role="status"
+						data-testid="login-post-register-notice"
 					>
-				</div>
-			{/if}
+						<span>{postRegisterNotice}</span>
+						<button
+							type="button"
+							class="auth-notice-dismiss"
+							aria-label={t('common.dismiss', 'Dismiss')}
+							data-testid="login-post-register-dismiss-btn"
+							onclick={() => (postRegisterNotice = null)}>×</button
+						>
+					</div>
+				{/if}
 
-			{#if postRegisterNotice && mode === 'login'}
-				<div
-					class="auth-success auth-error--dismissible"
-					style="display: flex"
-					role="status"
-					data-testid="login-post-register-notice"
-				>
-					<span>{postRegisterNotice}</span>
-					<button
-						type="button"
-						class="auth-notice-dismiss"
-						aria-label={t('common.dismiss', 'Dismiss')}
-						data-testid="login-post-register-dismiss-btn"
-						onclick={() => (postRegisterNotice = null)}>×</button
-					>
-				</div>
-			{/if}
-
-			{#if mode === 'login'}
-				<!-- Unified login form. One identifier + one (optional)
+				{#if mode === 'login'}
+					<!-- Unified login form. One identifier + one (optional)
 				     password field drive both flows:
 				       * password filled       → POST /api/auth/login
 				       * password empty        → POST /api/auth/magic-link/send
 				       * password-only server  → password field is required, no hint
 				       * magic-link-only server → password field hides entirely -->
-				{#if passwordLoginEnabled || magicLinkLoginEnabled}
-					{#if error}
-						<div
-							class={emailNotVerified ? 'auth-success' : 'auth-error'}
-							style="display: block"
-							role="alert"
+					{#if passwordLoginEnabled || magicLinkLoginEnabled}
+						{#if error}
+							<div
+								class={emailNotVerified ? 'auth-success' : 'auth-error'}
+								style="display: block"
+								role="alert"
+							>
+								{error}
+							</div>
+						{/if}
+						{#if magicStatus}
+							<div
+								class={magicStatus.ok
+									? 'auth-status auth-status-success'
+									: 'auth-status auth-status-error'}
+								role={magicStatus.ok ? 'status' : 'alert'}
+							>
+								{magicStatus.text}
+							</div>
+						{/if}
+						<form class="auth-form" data-testid="login-form" onsubmit={onLogin} novalidate>
+							<div class="auth-input-group">
+								<label class="auth-label" for="login-username">
+									{t('auth.login_identifier', 'Username or email')}
+								</label>
+								<div class="auth-input-wrap auth-input-wrap--user">
+									<input
+										id="login-username"
+										class="auth-input"
+										data-testid="login-username-input"
+										type="text"
+										bind:value={username}
+										bind:this={loginIdentifierInput}
+										autocomplete="username"
+										placeholder={t(
+											'auth.login_identifier_placeholder',
+											'Enter your username or email'
+										)}
+										required
+										disabled={busy}
+									/>
+								</div>
+							</div>
+
+							{#if passwordLoginEnabled}
+								<div class="auth-input-group">
+									<label class="auth-label" for="login-password">
+										{#if magicLinkLoginEnabled}
+											{t('auth.password_or_link_hint', 'Password (leave blank for a sign-in link)')}
+										{:else}
+											{t('auth.password', 'Password')}
+										{/if}
+									</label>
+									<div class="auth-input-wrap auth-input-wrap--lock has-toggle">
+										<input
+											id="login-password"
+											class="auth-input"
+											data-testid="login-password-input"
+											type={showPassword ? 'text' : 'password'}
+											bind:value={password}
+											onkeydown={onPwKey}
+											onkeyup={onPwKey}
+											autocomplete="current-password"
+											required={!magicLinkLoginEnabled}
+											disabled={busy}
+										/>
+										<button
+											type="button"
+											class="auth-pw-toggle"
+											aria-pressed={showPassword}
+											data-testid="login-password-toggle-btn"
+											aria-label={t('auth.toggle_password', 'Show password')}
+											onclick={() => (showPassword = !showPassword)}
+										></button>
+									</div>
+									{#if capsOn}
+										<div class="auth-caps-warning">{t('auth.caps_lock', 'Caps Lock is on')}</div>
+									{/if}
+								</div>
+							{/if}
+
+							<button
+								class="auth-button"
+								type="submit"
+								data-testid="login-submit-btn"
+								disabled={busy}
+								aria-busy={busy}
+							>
+								{#if busy}
+									{submitAsMagicLink
+										? t('auth.sending', 'Sending…')
+										: t('auth.signing_in', 'Signing in…')}
+								{:else if submitAsMagicLink}
+									{t('auth.magicLinkSubmit', 'Send sign-in link')}
+								{:else}
+									{t('auth.sign_in', 'Sign in')}
+								{/if}
+							</button>
+						</form>
+					{/if}
+
+					{#if oidc.enabled}
+						{#if passwordLoginEnabled}
+							<div class="auth-divider"><span>{t('auth.or', 'or')}</span></div>
+						{/if}
+						<!-- Backend OIDC authorize endpoint (not a SvelteKit route). -->
+						<a
+							class="auth-button auth-button-oidc"
+							data-testid="login-oidc-btn"
+							href={oidc.authorize_endpoint}
+							rel="external"
 						>
-							{error}
+							{t(
+								'auth.sso_login_provider',
+								{ provider: oidc.provider_name ?? 'SSO' },
+								'Sign in with {{provider}}'
+							)}
+						</a>
+					{/if}
+
+					{#if passwordLoginEnabled}
+						<div class="auth-toggle">
+							{t('auth.no_account', 'No account?')}
+							<button
+								class="auth-toggle-link"
+								data-testid="login-to-register-btn"
+								onclick={() => (mode = 'register')}
+							>
+								{t('auth.register', 'Create one')}
+							</button>
 						</div>
 					{/if}
-					{#if magicStatus}
-						<div
-							class={magicStatus.ok
-								? 'auth-status auth-status-success'
-								: 'auth-status auth-status-error'}
-							role={magicStatus.ok ? 'status' : 'alert'}
-						>
-							{magicStatus.text}
+
+					{#if setupAvailable}
+						<div class="auth-toggle">
+							{t('auth.admin_setup', 'First time?')}
+							<button
+								class="auth-toggle-link"
+								data-testid="login-to-setup-btn"
+								onclick={() => (mode = 'setup')}
+							>
+								{t('auth.setup', 'Set up administrator')}
+							</button>
 						</div>
 					{/if}
-					<form class="auth-form" data-testid="login-form" onsubmit={onLogin} novalidate>
+				{:else if mode === 'register'}
+					{#if regError}<div class="auth-error" style="display: block" role="alert">
+							{regError}
+						</div>{/if}
+					<form
+						class="auth-form"
+						data-testid="login-register-form"
+						onsubmit={onRegister}
+						novalidate
+					>
+						<!-- Email is the only required identifier since PR 18 — the
+					     backend accepts email-only signup and mints a welcome
+					     magic-link. Username is optional at this stage; the user
+					     can claim a handle later via profile settings. -->
 						<div class="auth-input-group">
-							<label class="auth-label" for="login-username">
-								{t('auth.login_identifier', 'Username or email')}
+							<label class="auth-label" for="reg-email">{t('auth.email', 'Email')}</label>
+							<input
+								id="reg-email"
+								class="auth-input"
+								data-testid="login-register-email-input"
+								type="email"
+								bind:value={regEmail}
+								bind:this={registerEmailInput}
+								autocomplete="email"
+								required
+								disabled={busy}
+							/>
+						</div>
+						<div class="auth-input-group">
+							<label class="auth-label" for="reg-username">
+								{t('auth.username_optional', 'Username (optional)')}
+							</label>
+							<input
+								id="reg-username"
+								class="auth-input"
+								data-testid="login-register-username-input"
+								bind:value={regUsername}
+								autocomplete="username"
+								disabled={busy}
+							/>
+						</div>
+						<!-- Password fields hide entirely when policy forbids password
+					     login — the whole form becomes email-only in that mode. -->
+						{#if passwordLoginEnabled}
+							<div class="auth-input-group">
+								<label class="auth-label" for="reg-password">
+									{t(
+										'auth.password_optional',
+										'Password (optional — leave blank for a sign-in link)'
+									)}
+								</label>
+								<div class="auth-input-wrap auth-input-wrap--lock has-toggle">
+									<input
+										id="reg-password"
+										class="auth-input"
+										data-testid="login-register-password-input"
+										type={regShowPassword ? 'text' : 'password'}
+										bind:value={regPassword}
+										onkeydown={onRegPwKey}
+										onkeyup={onRegPwKey}
+										autocomplete="new-password"
+										disabled={busy}
+									/>
+									<button
+										type="button"
+										class="auth-pw-toggle"
+										aria-pressed={regShowPassword}
+										data-testid="login-register-password-toggle-btn"
+										aria-label={t('auth.toggle_password', 'Show password')}
+										onclick={() => (regShowPassword = !regShowPassword)}
+									></button>
+								</div>
+								{#if regCapsOn}
+									<div class="auth-caps-warning">{t('auth.caps_lock', 'Caps Lock is on')}</div>
+								{/if}
+							</div>
+							{#if !regEmailOnly}
+								<div class="auth-input-group">
+									<label class="auth-label" for="reg-confirm"
+										>{t('auth.confirm_password', 'Confirm password')}</label
+									>
+									<div class="auth-input-wrap auth-input-wrap--lock has-toggle">
+										<input
+											id="reg-confirm"
+											class="auth-input"
+											data-testid="login-register-confirm-input"
+											type={regShowConfirm ? 'text' : 'password'}
+											bind:value={regConfirm}
+											onkeydown={onRegPwKey}
+											onkeyup={onRegPwKey}
+											autocomplete="new-password"
+											required
+											disabled={busy}
+										/>
+										<button
+											type="button"
+											class="auth-pw-toggle"
+											aria-pressed={regShowConfirm}
+											data-testid="login-register-confirm-toggle-btn"
+											aria-label={t('auth.toggle_password', 'Show password')}
+											onclick={() => (regShowConfirm = !regShowConfirm)}
+										></button>
+									</div>
+									{#if matchState}
+										<div
+											class="auth-match show {matchState === 'ok'
+												? 'auth-match--ok'
+												: 'auth-match--bad'}"
+										>
+											{matchState === 'ok'
+												? t('auth.passwords_match', 'Passwords match')
+												: t('auth.passwords_mismatch', "Passwords don't match")}
+										</div>
+									{/if}
+								</div>
+							{/if}
+						{/if}
+						<button
+							class="auth-button"
+							type="submit"
+							data-testid="login-register-submit-btn"
+							disabled={busy}
+							aria-busy={busy}
+						>
+							{!passwordLoginEnabled || regEmailOnly
+								? t('auth.register_email_only', 'Send me a sign-in link')
+								: t('auth.register', 'Create account')}
+						</button>
+					</form>
+					<div class="auth-toggle">
+						{t('auth.have_account', 'Already have an account?')}
+						<button
+							class="auth-toggle-link"
+							data-testid="login-register-to-login-btn"
+							onclick={() => (mode = 'login')}
+						>
+							{t('auth.sign_in', 'Sign in')}
+						</button>
+					</div>
+				{:else}
+					<div class="setup-steps">
+						<div class="setup-step">
+							<div class="step-number active">1</div>
+							<div class="step-title active">{t('auth.setup_step1', 'Admin')}</div>
+						</div>
+						<div class="setup-step">
+							<div class="step-number">2</div>
+							<div class="step-title">{t('auth.setup_step2', 'System')}</div>
+						</div>
+						<div class="setup-step">
+							<div class="step-number">3</div>
+							<div class="step-title">{t('auth.setup_step3', 'Completed')}</div>
+						</div>
+					</div>
+
+					{#if setupError}<div class="auth-error" style="display: block" role="alert">
+							{setupError}
+						</div>{/if}
+					{#if setupSuccess}<div class="auth-success" style="display: block">
+							{setupSuccess}
+						</div>{/if}
+
+					<form class="auth-form" data-testid="login-setup-form" onsubmit={onSetup} novalidate>
+						<div class="auth-input-group">
+							<label class="auth-label" for="setup-username">
+								{t('auth.admin_username', 'Administrator username')}
 							</label>
 							<div class="auth-input-wrap auth-input-wrap--user">
 								<input
-									id="login-username"
+									id="setup-username"
 									class="auth-input"
-									data-testid="login-username-input"
+									data-testid="login-setup-username-input"
 									type="text"
-									bind:value={username}
-									bind:this={loginIdentifierInput}
-									autocomplete="username"
-									placeholder={t(
-										'auth.login_identifier_placeholder',
-										'Enter your username or email'
-									)}
+									value="admin"
+									readonly
+								/>
+							</div>
+						</div>
+
+						<div class="auth-input-group">
+							<label class="auth-label" for="setup-email">
+								{t('auth.admin_email', 'Administrator email')}
+							</label>
+							<div class="auth-input-wrap auth-input-wrap--mail">
+								<input
+									id="setup-email"
+									class="auth-input"
+									data-testid="login-setup-email-input"
+									type="email"
+									bind:value={setupEmail}
+									bind:this={setupEmailInput}
+									autocomplete="email"
 									required
 									disabled={busy}
 								/>
 							</div>
 						</div>
 
-						{#if passwordLoginEnabled}
-							<div class="auth-input-group">
-								<label class="auth-label" for="login-password">
-									{#if magicLinkLoginEnabled}
-										{t('auth.password_or_link_hint', 'Password (leave blank for a sign-in link)')}
-									{:else}
-										{t('auth.password', 'Password')}
-									{/if}
-								</label>
-								<div class="auth-input-wrap auth-input-wrap--lock has-toggle">
-									<input
-										id="login-password"
-										class="auth-input"
-										data-testid="login-password-input"
-										type={showPassword ? 'text' : 'password'}
-										bind:value={password}
-										onkeydown={onPwKey}
-										onkeyup={onPwKey}
-										autocomplete="current-password"
-										required={!magicLinkLoginEnabled}
-										disabled={busy}
-									/>
-									<button
-										type="button"
-										class="auth-pw-toggle"
-										aria-pressed={showPassword}
-										data-testid="login-password-toggle-btn"
-										aria-label={t('auth.toggle_password', 'Show password')}
-										onclick={() => (showPassword = !showPassword)}
-									></button>
-								</div>
-								{#if capsOn}
-									<div class="auth-caps-warning">{t('auth.caps_lock', 'Caps Lock is on')}</div>
-								{/if}
-							</div>
-						{/if}
-
-						<button
-							class="auth-button"
-							type="submit"
-							data-testid="login-submit-btn"
-							disabled={busy}
-							aria-busy={busy}
-						>
-							{#if busy}
-								{submitAsMagicLink
-									? t('auth.sending', 'Sending…')
-									: t('auth.signing_in', 'Signing in…')}
-							{:else if submitAsMagicLink}
-								{t('auth.magicLinkSubmit', 'Send sign-in link')}
-							{:else}
-								{t('auth.sign_in', 'Sign in')}
-							{/if}
-						</button>
-					</form>
-				{/if}
-
-				{#if oidc.enabled}
-					{#if passwordLoginEnabled}
-						<div class="auth-divider"><span>{t('auth.or', 'or')}</span></div>
-					{/if}
-					<!-- Backend OIDC authorize endpoint (not a SvelteKit route). -->
-					<a
-						class="auth-button auth-button-oidc"
-						data-testid="login-oidc-btn"
-						href={oidc.authorize_endpoint}
-						rel="external"
-					>
-						{t(
-							'auth.sso_login_provider',
-							{ provider: oidc.provider_name ?? 'SSO' },
-							'Sign in with {{provider}}'
-						)}
-					</a>
-				{/if}
-
-				{#if passwordLoginEnabled}
-					<div class="auth-toggle">
-						{t('auth.no_account', 'No account?')}
-						<button
-							class="auth-toggle-link"
-							data-testid="login-to-register-btn"
-							onclick={() => (mode = 'register')}
-						>
-							{t('auth.register', 'Create one')}
-						</button>
-					</div>
-				{/if}
-
-				{#if setupAvailable}
-					<div class="auth-toggle">
-						{t('auth.admin_setup', 'First time?')}
-						<button
-							class="auth-toggle-link"
-							data-testid="login-to-setup-btn"
-							onclick={() => (mode = 'setup')}
-						>
-							{t('auth.setup', 'Set up administrator')}
-						</button>
-					</div>
-				{/if}
-			{:else if mode === 'register'}
-				{#if regError}<div class="auth-error" style="display: block" role="alert">
-						{regError}
-					</div>{/if}
-				<form class="auth-form" data-testid="login-register-form" onsubmit={onRegister} novalidate>
-					<!-- Email is the only required identifier since PR 18 — the
-					     backend accepts email-only signup and mints a welcome
-					     magic-link. Username is optional at this stage; the user
-					     can claim a handle later via profile settings. -->
-					<div class="auth-input-group">
-						<label class="auth-label" for="reg-email">{t('auth.email', 'Email')}</label>
-						<input
-							id="reg-email"
-							class="auth-input"
-							data-testid="login-register-email-input"
-							type="email"
-							bind:value={regEmail}
-							bind:this={registerEmailInput}
-							autocomplete="email"
-							required
-							disabled={busy}
-						/>
-					</div>
-					<div class="auth-input-group">
-						<label class="auth-label" for="reg-username">
-							{t('auth.username_optional', 'Username (optional)')}
-						</label>
-						<input
-							id="reg-username"
-							class="auth-input"
-							data-testid="login-register-username-input"
-							bind:value={regUsername}
-							autocomplete="username"
-							disabled={busy}
-						/>
-					</div>
-					<!-- Password fields hide entirely when policy forbids password
-					     login — the whole form becomes email-only in that mode. -->
-					{#if passwordLoginEnabled}
 						<div class="auth-input-group">
-							<label class="auth-label" for="reg-password">
-								{t(
-									'auth.password_optional',
-									'Password (optional — leave blank for a sign-in link)'
-								)}
+							<label class="auth-label" for="setup-password">
+								{t('auth.admin_password', 'Administrator password')}
 							</label>
 							<div class="auth-input-wrap auth-input-wrap--lock has-toggle">
 								<input
-									id="reg-password"
+									id="setup-password"
 									class="auth-input"
-									data-testid="login-register-password-input"
-									type={regShowPassword ? 'text' : 'password'}
-									bind:value={regPassword}
-									onkeydown={onRegPwKey}
-									onkeyup={onRegPwKey}
+									data-testid="login-setup-password-input"
+									type={setupShowPassword ? 'text' : 'password'}
+									bind:value={setupPassword}
+									onkeydown={onSetupPwKey}
+									onkeyup={onSetupPwKey}
 									autocomplete="new-password"
+									minlength="8"
+									required
 									disabled={busy}
 								/>
 								<button
 									type="button"
 									class="auth-pw-toggle"
-									aria-pressed={regShowPassword}
-									data-testid="login-register-password-toggle-btn"
+									aria-pressed={setupShowPassword}
+									data-testid="login-setup-password-toggle-btn"
 									aria-label={t('auth.toggle_password', 'Show password')}
-									onclick={() => (regShowPassword = !regShowPassword)}
+									onclick={() => (setupShowPassword = !setupShowPassword)}
 								></button>
 							</div>
-							{#if regCapsOn}
+							{#if setupCapsOn}
 								<div class="auth-caps-warning">{t('auth.caps_lock', 'Caps Lock is on')}</div>
 							{/if}
 						</div>
-						{#if !regEmailOnly}
-							<div class="auth-input-group">
-								<label class="auth-label" for="reg-confirm"
-									>{t('auth.confirm_password', 'Confirm password')}</label
+
+						<div class="auth-input-group">
+							<label class="auth-label" for="setup-confirm">
+								{t('auth.confirm_password', 'Confirm password')}
+							</label>
+							<div class="auth-input-wrap auth-input-wrap--lock has-toggle">
+								<input
+									id="setup-confirm"
+									class="auth-input"
+									data-testid="login-setup-confirm-input"
+									type={setupShowConfirm ? 'text' : 'password'}
+									bind:value={setupConfirm}
+									onkeydown={onSetupPwKey}
+									onkeyup={onSetupPwKey}
+									autocomplete="new-password"
+									required
+									disabled={busy}
+								/>
+								<button
+									type="button"
+									class="auth-pw-toggle"
+									aria-pressed={setupShowConfirm}
+									data-testid="login-setup-confirm-toggle-btn"
+									aria-label={t('auth.toggle_password', 'Show password')}
+									onclick={() => (setupShowConfirm = !setupShowConfirm)}
+								></button>
+							</div>
+							{#if setupMatchState}
+								<div
+									class="auth-match show {setupMatchState === 'ok'
+										? 'auth-match--ok'
+										: 'auth-match--bad'}"
 								>
-								<div class="auth-input-wrap auth-input-wrap--lock has-toggle">
-									<input
-										id="reg-confirm"
-										class="auth-input"
-										data-testid="login-register-confirm-input"
-										type={regShowConfirm ? 'text' : 'password'}
-										bind:value={regConfirm}
-										onkeydown={onRegPwKey}
-										onkeyup={onRegPwKey}
-										autocomplete="new-password"
-										required
-										disabled={busy}
-									/>
-									<button
-										type="button"
-										class="auth-pw-toggle"
-										aria-pressed={regShowConfirm}
-										data-testid="login-register-confirm-toggle-btn"
-										aria-label={t('auth.toggle_password', 'Show password')}
-										onclick={() => (regShowConfirm = !regShowConfirm)}
-									></button>
+									{setupMatchState === 'ok'
+										? t('auth.passwords_match', 'Passwords match')
+										: t('auth.passwords_mismatch', "Passwords don't match")}
 								</div>
-								{#if matchState}
-									<div
-										class="auth-match show {matchState === 'ok'
-											? 'auth-match--ok'
-											: 'auth-match--bad'}"
-									>
-										{matchState === 'ok'
-											? t('auth.passwords_match', 'Passwords match')
-											: t('auth.passwords_mismatch', "Passwords don't match")}
-									</div>
-								{/if}
-							</div>
-						{/if}
-					{/if}
-					<button
-						class="auth-button"
-						type="submit"
-						data-testid="login-register-submit-btn"
-						disabled={busy}
-						aria-busy={busy}
-					>
-						{!passwordLoginEnabled || regEmailOnly
-							? t('auth.register_email_only', 'Send me a sign-in link')
-							: t('auth.register', 'Create account')}
-					</button>
-				</form>
-				<div class="auth-toggle">
-					{t('auth.have_account', 'Already have an account?')}
-					<button
-						class="auth-toggle-link"
-						data-testid="login-register-to-login-btn"
-						onclick={() => (mode = 'login')}
-					>
-						{t('auth.sign_in', 'Sign in')}
-					</button>
-				</div>
-			{:else}
-				<div class="setup-steps">
-					<div class="setup-step">
-						<div class="step-number active">1</div>
-						<div class="step-title active">{t('auth.setup_step1', 'Admin')}</div>
-					</div>
-					<div class="setup-step">
-						<div class="step-number">2</div>
-						<div class="step-title">{t('auth.setup_step2', 'System')}</div>
-					</div>
-					<div class="setup-step">
-						<div class="step-number">3</div>
-						<div class="step-title">{t('auth.setup_step3', 'Completed')}</div>
-					</div>
-				</div>
-
-				{#if setupError}<div class="auth-error" style="display: block" role="alert">
-						{setupError}
-					</div>{/if}
-				{#if setupSuccess}<div class="auth-success" style="display: block">{setupSuccess}</div>{/if}
-
-				<form class="auth-form" data-testid="login-setup-form" onsubmit={onSetup} novalidate>
-					<div class="auth-input-group">
-						<label class="auth-label" for="setup-username">
-							{t('auth.admin_username', 'Administrator username')}
-						</label>
-						<div class="auth-input-wrap auth-input-wrap--user">
-							<input
-								id="setup-username"
-								class="auth-input"
-								data-testid="login-setup-username-input"
-								type="text"
-								value="admin"
-								readonly
-							/>
+							{/if}
 						</div>
+
+						<button
+							class="auth-button"
+							type="submit"
+							data-testid="login-setup-submit-btn"
+							disabled={busy}
+							aria-busy={busy}
+						>
+							{t('auth.create_admin', 'Create administrator')}
+						</button>
+					</form>
+
+					<div class="auth-toggle">
+						{t('auth.back_to_login', 'Already configured?')}
+						<button
+							class="auth-toggle-link"
+							data-testid="login-setup-to-login-btn"
+							onclick={() => (mode = 'login')}
+						>
+							{t('auth.sign_in', 'Sign in')}
+						</button>
 					</div>
-
-					<div class="auth-input-group">
-						<label class="auth-label" for="setup-email">
-							{t('auth.admin_email', 'Administrator email')}
-						</label>
-						<div class="auth-input-wrap auth-input-wrap--mail">
-							<input
-								id="setup-email"
-								class="auth-input"
-								data-testid="login-setup-email-input"
-								type="email"
-								bind:value={setupEmail}
-								bind:this={setupEmailInput}
-								autocomplete="email"
-								required
-								disabled={busy}
-							/>
-						</div>
-					</div>
-
-					<div class="auth-input-group">
-						<label class="auth-label" for="setup-password">
-							{t('auth.admin_password', 'Administrator password')}
-						</label>
-						<div class="auth-input-wrap auth-input-wrap--lock has-toggle">
-							<input
-								id="setup-password"
-								class="auth-input"
-								data-testid="login-setup-password-input"
-								type={setupShowPassword ? 'text' : 'password'}
-								bind:value={setupPassword}
-								onkeydown={onSetupPwKey}
-								onkeyup={onSetupPwKey}
-								autocomplete="new-password"
-								minlength="8"
-								required
-								disabled={busy}
-							/>
-							<button
-								type="button"
-								class="auth-pw-toggle"
-								aria-pressed={setupShowPassword}
-								data-testid="login-setup-password-toggle-btn"
-								aria-label={t('auth.toggle_password', 'Show password')}
-								onclick={() => (setupShowPassword = !setupShowPassword)}
-							></button>
-						</div>
-						{#if setupCapsOn}
-							<div class="auth-caps-warning">{t('auth.caps_lock', 'Caps Lock is on')}</div>
-						{/if}
-					</div>
-
-					<div class="auth-input-group">
-						<label class="auth-label" for="setup-confirm">
-							{t('auth.confirm_password', 'Confirm password')}
-						</label>
-						<div class="auth-input-wrap auth-input-wrap--lock has-toggle">
-							<input
-								id="setup-confirm"
-								class="auth-input"
-								data-testid="login-setup-confirm-input"
-								type={setupShowConfirm ? 'text' : 'password'}
-								bind:value={setupConfirm}
-								onkeydown={onSetupPwKey}
-								onkeyup={onSetupPwKey}
-								autocomplete="new-password"
-								required
-								disabled={busy}
-							/>
-							<button
-								type="button"
-								class="auth-pw-toggle"
-								aria-pressed={setupShowConfirm}
-								data-testid="login-setup-confirm-toggle-btn"
-								aria-label={t('auth.toggle_password', 'Show password')}
-								onclick={() => (setupShowConfirm = !setupShowConfirm)}
-							></button>
-						</div>
-						{#if setupMatchState}
-							<div
-								class="auth-match show {setupMatchState === 'ok'
-									? 'auth-match--ok'
-									: 'auth-match--bad'}"
-							>
-								{setupMatchState === 'ok'
-									? t('auth.passwords_match', 'Passwords match')
-									: t('auth.passwords_mismatch', "Passwords don't match")}
-							</div>
-						{/if}
-					</div>
-
-					<button
-						class="auth-button"
-						type="submit"
-						data-testid="login-setup-submit-btn"
-						disabled={busy}
-						aria-busy={busy}
-					>
-						{t('auth.create_admin', 'Create administrator')}
-					</button>
-				</form>
-
-				<div class="auth-toggle">
-					{t('auth.back_to_login', 'Already configured?')}
-					<button
-						class="auth-toggle-link"
-						data-testid="login-setup-to-login-btn"
-						onclick={() => (mode = 'login')}
-					>
-						{t('auth.sign_in', 'Sign in')}
-					</button>
-				</div>
+				{/if}
 			{/if}
-		{/if}
 
-		<div class="auth-lang">
-			<select
-				aria-label={t('settings.language', 'Language')}
-				data-testid="login-language-select"
-				value={i18n.locale}
-				onchange={(e) => setLocale(e.currentTarget.value as Locale)}
-			>
-				{#each SUPPORTED_LOCALES as loc (loc)}
-					<option value={loc}>{loc}</option>
-				{/each}
-			</select>
+			<div class="auth-lang">
+				<select
+					aria-label={t('settings.language', 'Language')}
+					data-testid="login-language-select"
+					value={i18n.locale}
+					onchange={(e) => setLocale(e.currentTarget.value as Locale)}
+				>
+					{#each SUPPORTED_LOCALES as loc (loc)}
+						<option value={loc}>{loc}</option>
+					{/each}
+				</select>
+			</div>
 		</div>
 	</div>
-</div>
+{/if}
 
 <style>
 	.auth-lang {
@@ -1090,5 +1090,31 @@
 	.auth-error-view__message {
 		color: var(--color-text-secondary);
 		margin: 0;
+	}
+
+	/* OIDC-callback continuation splash — VISUALLY IDENTICAL to the
+	   boot splash in app.html so the transition boot-splash →
+	   post-exchange overlay is imperceptible: same background, same
+	   spinner dimensions, same colors, same animation cadence.
+	   Tokens match by design — `--color-bg-page` resolves to the
+	   same `light-dark(#f5f7fa, #0f172a)` the boot splash hard-codes;
+	   ditto `--color-border` and `--color-accent`. If you ever retone
+	   the splash, update BOTH sites at once (app.html + this file). */
+	.auth-splash {
+		position: fixed;
+		inset: 0;
+		z-index: 9999;
+		display: grid;
+		place-items: center;
+		background: var(--color-bg-page);
+	}
+
+	.auth-splash__spinner {
+		width: 38px;
+		height: 38px;
+		border: 3px solid var(--color-border);
+		border-top-color: var(--color-accent);
+		border-radius: 50%;
+		animation: spin 0.7s linear infinite;
 	}
 </style>

@@ -702,7 +702,9 @@
     "login_error_callback_failed": "Die SSO-Anmeldung konnte nicht abgeschlossen werden. Bitte versuchen Sie es erneut.",
     "login_error_generic": "Die SSO-Anmeldung wurde abgelehnt. Bitte versuchen Sie es erneut.",
     "login_error_email_ambiguous": "Mehrere lokale Konten stimmen mit dieser E-Mail-Adresse überein. Wenden Sie sich zur Lösung an Ihren Administrator.",
-    "logged_out": "Erfolgreich abgemeldet."
+    "logged_out": "Erfolgreich abgemeldet.",
+    "login_error_email_not_verified_at_idp": "Ihr Identitätsanbieter meldet, dass Ihre E-Mail-Adresse nicht bestätigt ist. Bestätigen Sie Ihre E-Mail bei Ihrem Identitätsanbieter und versuchen Sie es erneut.",
+    "login_error_email_verification_required": "Dieser Server erfordert eine bestätigte E-Mail-Adresse. Ihr Identitätsanbieter hat keinen E-Mail-Bestätigungsanspruch übermittelt. Wenden Sie sich an Ihren Administrator."
   },
   "storage": {
     "title": "Speicher",

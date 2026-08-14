@@ -737,6 +737,8 @@
     "login_error_email_ambiguous": "Multiple local accounts match this email address. Contact your administrator to resolve.",
     "login_error_callback_denied": "Your sign-in link expired or was already used. Please try signing in again.",
     "login_error_callback_failed": "SSO sign-in couldn't complete. Please try again.",
+    "login_error_email_not_verified_at_idp": "Your identity provider reports that your email address is not verified. Confirm your email at your identity provider, then try signing in again.",
+    "login_error_email_verification_required": "This server requires a verified email. Your identity provider did not include an email-verification claim. Contact your administrator.",
     "login_error_generic": "SSO sign-in was refused. Please try again."
   },
   "storage": {

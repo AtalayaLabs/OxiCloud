@@ -702,7 +702,9 @@
     "login_error_callback_failed": "SSO-aanmelding kan niet worden voltooid. Probeer het opnieuw.",
     "login_error_generic": "SSO-aanmelding is geweigerd. Probeer het opnieuw.",
     "login_error_email_ambiguous": "Meerdere lokale accounts komen overeen met dit e-mailadres. Neem contact op met uw beheerder om dit op te lossen.",
-    "logged_out": "Succesvol afgemeld."
+    "logged_out": "Succesvol afgemeld.",
+    "login_error_email_not_verified_at_idp": "Uw identiteitsprovider meldt dat uw e-mailadres niet is geverifieerd. Bevestig uw e-mail bij uw identiteitsprovider en probeer opnieuw in te loggen.",
+    "login_error_email_verification_required": "Deze server vereist een geverifieerd e-mailadres. Uw identiteitsprovider heeft geen e-mailverificatie-claim opgenomen. Neem contact op met uw beheerder."
   },
   "storage": {
     "title": "Opslag",

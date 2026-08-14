@@ -702,7 +702,9 @@
     "login_error_callback_failed": "No se pudo completar el inicio de sesión SSO. Por favor inténtalo de nuevo.",
     "login_error_generic": "Se rechazó el inicio de sesión SSO. Por favor inténtalo de nuevo.",
     "login_error_email_ambiguous": "Varias cuentas locales coinciden con esta dirección de correo electrónico. Póngase en contacto con su administrador para resolverlo.",
-    "logged_out": "Sesión cerrada correctamente."
+    "logged_out": "Sesión cerrada correctamente.",
+    "login_error_email_not_verified_at_idp": "Su proveedor de identidad indica que su dirección de correo electrónico no está verificada. Confirme su correo electrónico en su proveedor de identidad y vuelva a iniciar sesión.",
+    "login_error_email_verification_required": "Este servidor requiere un correo electrónico verificado. Su proveedor de identidad no incluyó una declaración de verificación de correo electrónico. Contacte a su administrador."
   },
   "storage": {
     "title": "Almacenamiento",
