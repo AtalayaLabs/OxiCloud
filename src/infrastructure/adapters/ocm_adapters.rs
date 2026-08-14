@@ -1,28 +1,38 @@
+use std::sync::Arc;
+
+use crate::domain::entities::folder::Folder;
 use crate::domain::repositories::user_repository::UserRepository;
 use crate::domain::repositories::user_repository::UserRepositoryError;
-use ocm_server_axum::drivers::users::UserRepo;
+use ocm_server_axum::drivers::resources::Resource;
 use ocm_server_axum::drivers::users::User as OcmUser;
+use ocm_server_axum::drivers::users::UserRepo;
 use ocm_server_axum::drivers::users::UserRepoError as OcmUserRepoError;
 
-#[derive(Clone)]
-struct OcmUserRepo<T: UserRepository>(T);
+pub(crate) struct OcmUserRepo<T: UserRepository>(Arc<T>);
 
 impl<T: UserRepository> From<T> for OcmUserRepo<T> {
     fn from(value: T) -> Self {
-        OcmUserRepo(value)
+        OcmUserRepo(Arc::new(value))
+    }
+}
+
+impl<T: UserRepository> Clone for OcmUserRepo<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
     }
 }
 
 impl<T> UserRepo for OcmUserRepo<T>
 where
-    T: UserRepository + Clone,
+    T: UserRepository,
 {
     async fn get(&self, user_id: &str) -> Result<OcmUser, OcmUserRepoError> {
         let id = user_id
             .parse::<uuid::Uuid>()
             .map_err(|_| OcmUserRepoError::NotFound(user_id.to_owned()))?;
 
-        let user = self.0
+        let user = self
+            .0
             .get_user_by_id(id)
             .await
             .map_err(OcmUserRepoError::from)?;
@@ -46,9 +56,19 @@ impl From<UserRepositoryError> for OcmUserRepoError {
             | UserRepositoryError::DatabaseError(_)
             | UserRepositoryError::ValidationError(_)
             | UserRepositoryError::Timeout(_)
-            | UserRepositoryError::OperationNotAllowed(_) => {
-                OcmUserRepoError::RepoAccessFailed
-            }
+            | UserRepositoryError::OperationNotAllowed(_) => OcmUserRepoError::RepoAccessFailed,
         }
+    }
+}
+
+impl Resource for Folder {
+    const RESOURCE_TYPE: &str = "folder";
+
+    fn uri(&self) -> &str {
+        self.id()
+    }
+
+    fn name(&self) -> &str {
+        self.name()
     }
 }
