@@ -10,7 +10,7 @@ import { session } from '$lib/stores/session.svelte';
 import type { SubjectType } from './grants';
 
 export interface Recipient {
-	type: Extract<SubjectType, 'user' | 'group' | 'email'>;
+	type: Extract<SubjectType, 'user' | 'group' | 'email' | 'opencloudmesh'>;
 	/** For email recipients this is the normalised email; for users/groups, the UUID. */
 	id: string;
 	label: string;
@@ -199,11 +199,14 @@ export async function searchRecipients(
 		sublabel: email
 	}));
 
-	const emailItems: Recipient[] = [];
+	const syntheticItems: Recipient[] = [];
 	if (looksLikeEmail(q)) {
 		const exists = matched.some(({ email }) => email.toLowerCase() === q);
-		if (!exists) emailItems.push({ type: 'email', id: q, label: q });
+		if (!exists) {
+      syntheticItems.push({ type: 'email', id: q, label: q });
+      syntheticItems.push({ type: 'opencloudmesh', id: q, label: q });
+    }
 	}
 
-	return [...groups, ...users, ...emailItems].slice(0, 8);
+	return [...groups, ...users, ...syntheticItems].slice(0, 8);
 }

@@ -170,6 +170,7 @@
 
 	function subjectInput(r: Recipient): GrantSubjectInput {
 		if (r.type === 'email') return { type: 'email', email: r.id };
+		if (r.type === 'opencloudmesh') return { type: 'opencloudmesh', share_with: r.id };
 		return { type: r.type, id: r.id };
 	}
 
@@ -483,7 +484,7 @@
 					<div class="search">
 						<input
 							data-testid="share-dialog-search-input"
-							placeholder={t('share.add_people', 'Add people, groups, or email…')}
+							placeholder={t('share.add_people', 'Add people, groups, OCM address or email…')}
 							bind:value={query}
 							oninput={onQueryInput}
 							autocomplete="off"
@@ -502,12 +503,17 @@
 													? 'user-group'
 													: r.type === 'email'
 														? 'envelope'
-														: 'user'}
+														:  r.type === 'opencloudmesh'
+                        ? 'share-alt' : 'user'}
 											/>
 											<span class="result__label">{r.label}</span>
 											{#if r.type === 'email'}
 												<span class="result__sub"
 													>{t('share.inviteByEmail', 'Invite by email')}</span
+												>
+											{:else if r.type === 'opencloudmesh'}
+												<span class="result__sub"
+													>{t('share.sendFederatedShare', 'Send federated share')}</span
 												>
 											{:else if r.sublabel}
 												<span class="result__sub">{r.sublabel}</span>

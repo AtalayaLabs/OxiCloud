@@ -15,7 +15,7 @@ export type GrantResourceType = ItemType | 'drive';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
-export type SubjectType = 'user' | 'group' | 'email' | 'token';
+export type SubjectType = 'user' | 'group' | 'email' | 'token' | 'opencloudmesh';
 /** Roles the share UI exposes. The backend role enum also has `commenter` and
  * `contributor`, which {@link displayRole} collapses to the nearest of these. */
 export type ShareRole = 'viewer' | 'editor' | 'owner';
@@ -34,7 +34,8 @@ export type GrantSubjectInput =
 	| { type: 'user'; id: string }
 	| { type: 'group'; id: string }
 	| { type: 'token'; id: string }
-	| { type: 'email'; email: string };
+	| { type: 'email'; email: string }
+	| { type: 'opencloudmesh'; share_with: string };
 
 /**
  * One role grant for a (subject, resource). Role-keyed since the role-grants
