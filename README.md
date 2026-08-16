@@ -205,11 +205,11 @@ OxiCloud is a community-driven project, and we appreciate all contributions. Che
 
 ## Star History
 
-<a href="https://www.star-history.com/#AtalayaLabs/OxiCloud&Date">
+<a href="https://star-history.dera.page/#AtalayaLabs/OxiCloud&Date">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=AtalayaLabs/OxiCloud&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=AtalayaLabs/OxiCloud&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=AtalayaLabs/OxiCloud&type=Date" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=AtalayaLabs/OxiCloud&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=AtalayaLabs/OxiCloud&type=Date" />
+   <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=AtalayaLabs/OxiCloud&type=Date" />
  </picture>
 </a>
 
