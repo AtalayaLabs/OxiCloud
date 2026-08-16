@@ -16,6 +16,12 @@ impl<T: UserRepository> From<T> for OcmUserRepo<T> {
     }
 }
 
+impl<T: UserRepository> From<Arc<T>> for OcmUserRepo<T> {
+    fn from(value: Arc<T>) -> Self {
+        OcmUserRepo(value)
+    }
+}
+
 impl<T: UserRepository> Clone for OcmUserRepo<T> {
     fn clone(&self) -> Self {
         Self(self.0.clone())

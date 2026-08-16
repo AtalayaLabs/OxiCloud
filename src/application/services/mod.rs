@@ -25,6 +25,8 @@ pub mod mount_registry;
 pub mod music_service;
 pub mod nextcloud_file_id_service;
 pub mod nextcloud_login_flow_service;
+#[cfg(feature = "opencloudmesh")]
+pub mod opencloudmesh_service;
 pub mod people_service;
 pub mod places_service;
 pub mod recent_service;

@@ -146,7 +146,6 @@ metrics-exporter-prometheus = { version = "0.18", default-features = false }
 ocm-server-axum = { git = "https://codeberg.org/OpenGeoMesh/OpenCloudMesh-rs.git", rev = "debc87b29a6609612fc13f3dda8077ba8f46e404", features = ["tracing"], default-features = false, optional = true}
 ocm-drivers = { git = "https://codeberg.org/OpenGeoMesh/OpenCloudMesh-rs.git", rev = "debc87b29a6609612fc13f3dda8077ba8f46e40", features = ["webdav", "tracing"], default-features = false, optional = true}
 
-
 [features]
 default = ["opencloudmesh"]
 test_utils = ["mockall"]
