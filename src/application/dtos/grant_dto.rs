@@ -220,6 +220,9 @@ pub enum SubjectInputDto {
     Email {
         email: String,
     },
+    OpenCloudMesh {
+        share_with: String,
+    },
 }
 
 /// `POST /api/grants` — create or refresh a role assignment.

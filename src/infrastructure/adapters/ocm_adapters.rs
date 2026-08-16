@@ -1,15 +1,28 @@
+use std::sync::Arc;
+
 use crate::domain::repositories::user_repository::UserRepository;
 use crate::domain::repositories::user_repository::UserRepositoryError;
-use ocm_server_axum::drivers::users::UserRepo;
 use ocm_server_axum::drivers::users::User as OcmUser;
+use ocm_server_axum::drivers::users::UserRepo;
 use ocm_server_axum::drivers::users::UserRepoError as OcmUserRepoError;
 
-#[derive(Clone)]
-struct OcmUserRepo<T: UserRepository>(T);
+struct OcmUserRepo<T: UserRepository>(Arc<T>);
 
 impl<T: UserRepository> From<T> for OcmUserRepo<T> {
     fn from(value: T) -> Self {
+        OcmUserRepo(Arc::new(value))
+    }
+}
+
+impl<T: UserRepository> From<Arc<T>> for OcmUserRepo<T> {
+    fn from(value: Arc<T>) -> Self {
         OcmUserRepo(value)
+    }
+}
+
+impl<T: UserRepository> Clone for OcmUserRepo<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
     }
 }
 
@@ -22,7 +35,8 @@ where
             .parse::<uuid::Uuid>()
             .map_err(|_| OcmUserRepoError::NotFound(user_id.to_owned()))?;
 
-        let user = self.0
+        let user = self
+            .0
             .get_user_by_id(id)
             .await
             .map_err(OcmUserRepoError::from)?;
@@ -46,9 +60,7 @@ impl From<UserRepositoryError> for OcmUserRepoError {
             | UserRepositoryError::DatabaseError(_)
             | UserRepositoryError::ValidationError(_)
             | UserRepositoryError::Timeout(_)
-            | UserRepositoryError::OperationNotAllowed(_) => {
-                OcmUserRepoError::RepoAccessFailed
-            }
+            | UserRepositoryError::OperationNotAllowed(_) => OcmUserRepoError::RepoAccessFailed,
         }
     }
 }

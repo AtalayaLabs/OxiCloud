@@ -2206,6 +2206,7 @@ impl AppServiceFactory {
             email_sender: None,                   // populated below
             mock_email_sender: None,              // populated below
             magic_link_invite_service: None,      // populated below
+            opencloudmesh_service: None,      // populated below
             recipient_notification_service: None, // populated below alongside magic_link_invite_service
             // 60 lookups / minute / caller; cap at 50 000 tracked
             // callers to bound memory. The same limiter instance is
@@ -2314,6 +2315,28 @@ impl AppServiceFactory {
                         self.config.base_url(),
                     ),
                 ));
+            }
+        }
+
+        #[cfg(feature = "opencloudmesh")]
+        {
+            if let Some(lifecycle) = user_lifecycle_handle.clone() {
+                let user_storage = Arc::new(
+                    crate::infrastructure::repositories::pg::UserPgRepository::new(pool.clone()),
+                );
+                let share_repository = Arc::new(SharePgRepository::new(pool.clone()));
+                app_state.opencloudmesh_service = Some(Arc::new(
+                    crate::application::services::opencloudmesh_service::OpenCloudMeshService::new(
+                        user_storage,
+                        authorization.clone(),
+                        app_state.repositories.folder_repository.clone(),
+                        app_state.repositories.file_read_repository.clone(),
+                        share_repository,
+                        lifecycle,
+                        self.config.base_url(),
+                    )
+                    .await,
+                ))
             }
         }
 
@@ -3040,6 +3063,10 @@ pub struct AppState {
     /// returns 503 when this is `None`.
     pub magic_link_invite_service: Option<
         Arc<crate::application::services::magic_link_invite_service::MagicLinkInviteService>,
+    >,
+    /// Federated Sharing via OpenCloudMesh
+    pub opencloudmesh_service: Option<
+        Arc<crate::application::services::opencloudmesh_service::OpenCloudMeshService>,
     >,
     /// Unified share-notification dispatcher (PR N1) — used by both
     /// `create_grant` and the future `POST /api/grants/{id}/notify` to
