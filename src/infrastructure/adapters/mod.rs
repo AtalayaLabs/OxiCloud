@@ -11,6 +11,8 @@ pub mod calendar_storage_adapter;
 pub mod contact_storage_adapter;
 pub mod error_adapters;
 pub mod music_storage_adapter;
+#[cfg(feature = "opencloudmesh")]
+pub mod ocm_adapters;
 
 pub use calendar_storage_adapter::CalendarStorageAdapter;
 pub use contact_storage_adapter::ContactStorageAdapter;

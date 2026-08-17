@@ -143,9 +143,11 @@ ndarray = { version = "0.17.2", optional = true }
 # bumping either side.
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
+ocm-server-axum = { git = "https://codeberg.org/OpenGeoMesh/OpenCloudMesh-rs.git", rev = "debc87b29a6609612fc13f3dda8077ba8f46e404", features = ["tracing"], default-features = false, optional = true}
+ocm-drivers = { git = "https://codeberg.org/OpenGeoMesh/OpenCloudMesh-rs.git", rev = "debc87b29a6609612fc13f3dda8077ba8f46e40", features = ["webdav", "tracing"], default-features = false, optional = true}
 
 [features]
-default = []
+default = ["opencloudmesh"]
 test_utils = ["mockall"]
 integration_tests = []
 # WASM plugin runtime (Extism). Opt-in: bundles wasmtime, a large engine most
@@ -168,6 +170,7 @@ faces-onnx = ["dep:ort", "dep:ndarray"]
 # `examples/` can measure them. Off by default — adds nothing to prod builds.
 # Run with: `cargo bench --features bench` / `cargo run --release --features bench --example bench_thumbnails_mem`.
 bench = []
+opencloudmesh = ["dep:ocm-server-axum", "dep:ocm-drivers"]
 
 [dev-dependencies]
 criterion = "0.5"

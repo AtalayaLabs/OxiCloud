@@ -163,11 +163,12 @@ pub async fn create_grant(
     }
 
     // D5 — `forbid_external_sharing` (early): when the caller is sharing
-    // by email, refuse BEFORE `resolve_or_create_recipient` runs so the
-    // policy never side-effects a fresh external-user row. Existing
+    // by email or OpenCloudMesh, refuse BEFORE `resolve_or_create_recipient`
+    // runs so this policy never side-effects a fresh external-user row. Existing
     // external users are caught by the late check below.
     if drive_policies.forbid_external_sharing
-        && matches!(&dto.subject, SubjectInputDto::Email { .. })
+        && (matches!(&dto.subject, SubjectInputDto::Email { .. })
+            | matches!(&dto.subject, SubjectInputDto::OpenCloudMesh { .. }))
     {
         tracing::info!(
             target: "audit",
@@ -190,7 +191,8 @@ pub async fn create_grant(
     // an external user (or reuses an existing match) and remembers the
     // resolved User so the invitation email can be sent after the grant
     // rows land.
-    let (subject, invite_recipient) = match dto.subject {
+    // FIXME: clone to make ocm send share match work below
+    let (subject, invite_recipient) = match dto.subject.clone() {
         SubjectInputDto::User { id } => (Subject::User(id), None),
         SubjectInputDto::Group { id } => (Subject::Group(id), None),
         SubjectInputDto::Token { id } => (Subject::Token(id), None),
@@ -231,6 +233,23 @@ pub async fn create_grant(
             // just leaves the new row's locale NULL, no hard error).
             match invite_svc
                 .resolve_or_create_recipient(&email, Some(caller_id))
+                .await
+            {
+                Ok(user) => (Subject::User(user.id()), Some(user)),
+                Err(e) => return AppError::from(e).into_response(),
+            }
+        }
+        SubjectInputDto::OpenCloudMesh { ref share_with } => {
+            let Some(ocm_svc) = state.opencloudmesh_service.as_ref() else {
+                return AppError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "OpenCloudMesh is not configured on this server",
+                    "ServiceUnavailable",
+                )
+                .into_response();
+            };
+            match ocm_svc
+                .resolve_or_create_recipient(&share_with)
                 .await
             {
                 Ok(user) => (Subject::User(user.id()), Some(user)),
@@ -348,6 +367,30 @@ pub async fn create_grant(
     // notification service re-resolves the same id, which is cheap and
     // keeps the entry-point signature uniform across subject types.
     let _ = invite_recipient; // value used only for its side effect above
+
+    #[cfg(feature = "opencloudmesh")]
+    {
+        match (dto.subject, invite_recipient) {
+            (SubjectInputDto::OpenCloudMesh { .. }, Some(invite_recipient)) => {
+                let Some(ocm_svc) = state.opencloudmesh_service.as_ref() else {
+                    return AppError::new(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "OpenCloudMesh is not configured on this server",
+                        "ServiceUnavailable",
+                    )
+                    .into_response();
+                };
+                match ocm_svc
+                    .send_share(invite_recipient, caller_id, &resource)
+                    .await
+                {
+                    Ok(user) => (Subject::User(user.id()), Some(user)),
+                    Err(e) => return AppError::from(e).into_response(),
+                };
+            }
+            _ => {},
+        }
+    };
 
     // Load the granter as a full `User` entity — the notification
     // service uses display fields (`username`, `given/family_name`) for
