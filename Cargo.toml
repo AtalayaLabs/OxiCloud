@@ -10,7 +10,7 @@ mimalloc = { version = "0.1.52", default-features = false }
 axum = { version = "0.8.9", features = ["multipart", "http1", "http2", "tokio", "macros"] }
 # "process" was previously enabled implicitly through aws-config's feature
 # unification; ffmpeg_video_frame_service needs it, so declare it ourselves.
-tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "io-util", "net", "time", "sync", "fs", "process"] }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "io-util", "net", "time", "sync", "fs", "process", "signal"] }
 tokio-util = { version = "0.7.18", features = ["io", "codec", "compat"] }
 tokio-stream = { version = "0.1.18", features = ["fs", "sync"] }
 bytes = "1.11.1"

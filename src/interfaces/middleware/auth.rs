@@ -229,6 +229,18 @@ pub async fn auth_middleware(
                             request.extensions_mut().insert(current_user);
                             tracing::Span::current()
                                 .record("user_id", tracing::field::display(user_id));
+                            // Bump per-session liveness for the
+                            // Prometheus gauges. O(1) DashMap upsert
+                            // — no I/O on this hot path. The `sid`
+                            // claim is `None` on tokens minted by
+                            // pre-`sid` builds, in which case the
+                            // stamp is skipped entirely — no
+                            // fallback lookup, no round-trip.
+                            if let (Some(sid), Some(tracker)) =
+                                (claims.sid, state.last_seen_tracker.as_ref())
+                            {
+                                tracker.stamp(sid);
+                            }
                             return Ok(next.run(request).await);
                         }
                         Err(e) => {
@@ -353,6 +365,15 @@ pub async fn auth_middleware(
                                 request.extensions_mut().insert(CookieAuthenticated);
                                 tracing::Span::current()
                                     .record("user_id", tracing::field::display(user_id));
+                                // Cookie-auth branch stamps the same
+                                // way as the Bearer branch above —
+                                // see that site for the O(1) /
+                                // no-DB rationale.
+                                if let (Some(sid), Some(tracker)) =
+                                    (claims.sid, state.last_seen_tracker.as_ref())
+                                {
+                                    tracker.stamp(sid);
+                                }
                                 return Ok(next.run(request).await);
                             }
                             LiveRole::Revoked => {

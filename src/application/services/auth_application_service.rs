@@ -1269,21 +1269,17 @@ impl AuthApplicationService {
             None => None,
         };
 
-        // Generate tokens using the injected token service. The
-        // access token carries the `cnf.jkt` binding when present,
-        // so the DPoP middleware can enforce "bound → proof required"
-        // straight from the already-validated JWT — no session-row
-        // lookup on the hot path.
-        let access_token = self
-            .token_service
-            .generate_access_token(&user, validated_jkt.as_deref())?;
-
-        let refresh_token = self.token_service.generate_refresh_token();
-
+        // Construct the session FIRST so its id is available to the
+        // token mint below — the `sid` claim lets the auth middleware
+        // stamp per-session liveness with no DB round trip. Order
+        // was reversed as part of the `last_seen_at` wiring
+        // (`docs/plan/sessions.md`).
+        //
         // Save session — new login starts a new token family. DPoP
         // binding is set at INSERT time and immutable thereafter (see
         // `docs/plan/dpop.md` — a mutable bind would let an attacker
         // downgrade a bound session by re-binding to their own key).
+        let refresh_token = self.token_service.generate_refresh_token();
         let mut session = Session::new(
             user.id(),
             refresh_token.clone(),
@@ -1293,6 +1289,18 @@ impl AuthApplicationService {
             Uuid::new_v4(),
             origin,
         );
+
+        // Generate tokens using the injected token service. The
+        // access token carries the `cnf.jkt` binding when present,
+        // so the DPoP middleware can enforce "bound → proof required"
+        // straight from the already-validated JWT — no session-row
+        // lookup on the hot path. `sid` correlates the token to the
+        // session row constructed just above.
+        let access_token = self.token_service.generate_access_token(
+            &user,
+            Some(session.id()),
+            validated_jkt.as_deref(),
+        )?;
         if let Some(jkt) = validated_jkt {
             // Success-path audit — records the bind so operators can
             // correlate a session_id in the panel with the exact moment
@@ -1562,8 +1570,9 @@ impl AuthApplicationService {
         // thread `dpop_jkt` into a GET body. Session is minted
         // unbound; the SPA calls `POST /api/auth/dpop/bind`
         // post-redirect to bind it (see Gate 3). Token accordingly
-        // ships without `cnf.jkt`.
-        let access_token = self.token_service.generate_access_token(&user, None)?;
+        // ships without `cnf.jkt`. Session constructed first so
+        // its id can feed the token's `sid` claim — see the login
+        // path above for the rationale.
         let refresh_token = self.token_service.generate_refresh_token();
         let session = Session::new(
             user.id(),
@@ -1574,6 +1583,9 @@ impl AuthApplicationService {
             Uuid::new_v4(),
             crate::domain::entities::session::SessionOrigin::MagicLink,
         );
+        let access_token =
+            self.token_service
+                .generate_access_token(&user, Some(session.id()), None)?;
         self.session_storage.create_session(session).await?;
 
         tracing::info!(
@@ -1715,16 +1727,12 @@ impl AuthApplicationService {
             ));
         }
 
-        // Generate new tokens. Inherit the DPoP binding from the
-        // parent session so the refreshed access token carries the
-        // same `cnf.jkt` — otherwise every refresh would silently
-        // downgrade to unbound and the next request would 401 under
-        // Gate 9 enforcement (see Gate 7).
-        let access_token = self
-            .token_service
-            .generate_access_token(&user, session.dpop_jkt())?;
-        let new_refresh_token = self.token_service.generate_refresh_token();
-
+        // Rotate the session first so the new row's id is available
+        // to the token mint below — the `sid` claim tracks the
+        // freshly-inserted row, not the revoked parent. Order
+        // reversed as part of the `last_seen_at` wiring
+        // (`docs/plan/sessions.md`).
+        //
         // New session inherits the family_id so reuse of any ancestor triggers
         // full-family revocation. Revoking the old session and inserting the
         // new one happen in ONE transaction (`rotate_session`) — this path
@@ -1738,6 +1746,7 @@ impl AuthApplicationService {
         // refresh silently downgrade the session to unbound, and every
         // subsequent request would fail DPoP verification once required
         // mode enforces per-session binding.
+        let new_refresh_token = self.token_service.generate_refresh_token();
         let mut new_session = Session::new(
             user.id(),
             new_refresh_token.clone(),
@@ -1769,6 +1778,16 @@ impl AuthApplicationService {
         if let Some(sid) = session.oidc_sid() {
             new_session = new_session.with_oidc_sid(sid.to_string());
         }
+
+        // Mint the access token AFTER the new session is fully
+        // configured — the `sid` claim points at the new row's id,
+        // and `cnf.jkt` inherits from the parent so DPoP proof
+        // enforcement (Gate 9) still holds across the rotation.
+        let access_token = self.token_service.generate_access_token(
+            &user,
+            Some(new_session.id()),
+            session.dpop_jkt(),
+        )?;
 
         self.session_storage
             .rotate_session(session.id(), new_session)
@@ -4608,8 +4627,8 @@ impl AuthApplicationService {
         // through the browser's redirect chain. Session is minted
         // unbound; the SPA calls `POST /api/auth/dpop/bind` post-
         // redirect to bind it (see Gate 3). Token accordingly ships
-        // without `cnf.jkt`.
-        let access_token = self.token_service.generate_access_token(&user, None)?;
+        // without `cnf.jkt`. Session constructed first so its id
+        // feeds the token's `sid` claim.
         let refresh_token = self.token_service.generate_refresh_token();
 
         let mut session = Session::new(
@@ -4630,6 +4649,11 @@ impl AuthApplicationService {
         if let Some(sid) = claims.sid.as_ref() {
             session = session.with_oidc_sid(sid.clone());
         }
+        // Mint AFTER session is fully configured so `sid` claim
+        // aligns with the row about to be inserted.
+        let access_token =
+            self.token_service
+                .generate_access_token(&user, Some(session.id()), None)?;
         self.session_storage.create_session(session).await?;
 
         let force_password_change = self.read_force_password_change(user.id()).await;

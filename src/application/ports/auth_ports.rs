@@ -63,6 +63,14 @@ pub struct TokenClaims {
     /// The DPoP middleware reads it from the already-validated token
     /// (no DB round trip) to enforce "bound session → proof required".
     pub dpop_jkt: Option<String>,
+    /// Session identifier — the `auth.sessions.id` this access token
+    /// was minted for. Read by the auth middleware to stamp
+    /// per-session liveness via [`LastSeenTracker`](crate::infrastructure::services::last_seen_tracker)
+    /// with no DB round trip. `None` for tokens minted by builds
+    /// that predate the `sid` claim (backward compat during rollout;
+    /// harmless — the missing sid just means no stamp fires, and
+    /// the token still authenticates normally).
+    pub sid: Option<Uuid>,
 }
 
 /// Port for JWT token operations.
@@ -81,6 +89,7 @@ pub trait TokenServicePort: Send + Sync + 'static {
     fn generate_access_token(
         &self,
         user: &User,
+        session_id: Option<Uuid>,
         dpop_jkt: Option<&str>,
     ) -> Result<String, DomainError>;
 
