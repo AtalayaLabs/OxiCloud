@@ -159,6 +159,7 @@ fn section_identity(iters: u64) {
         email: Arc::from("alice.longname@example.com"),
         role: "user".to_string(),
         dpop_jkt: None,
+        sid: None,
     });
 
     let (bn, ba) = measure("BEFORE String clones + role to_string", iters, || {

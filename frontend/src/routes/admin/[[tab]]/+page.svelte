@@ -2758,8 +2758,8 @@
 								-->
 								{#if isOidcUser(u)}
 									<span class="badge badge--oidc" title={u.federation_issuer}>
-										<Icon name="key" />
-										<span class="badge__label">{u.federation_issuer}</span>
+										<Icon name="shield-alt" />
+										<span class="badge__label">oidc</span>
 									</span>
 								{/if}
 								{#if u.has_password}
