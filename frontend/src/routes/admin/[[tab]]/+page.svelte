@@ -3082,6 +3082,36 @@
 										{t('admin.sessions.expired', 'expired')}
 									</span>
 								{:else}
+									<!--
+										Presence dot — filled green when the server saw a
+										request in the last 5 min (backend `is_online`),
+										outlined grey otherwise. Only rendered on active
+										rows: a revoked-but-recently-seen row would otherwise
+										flash green post-revocation. Tooltip carries the
+										human "last seen X ago" so admins don't have to
+										hover-hunt for the exact timestamp — the
+										`last_seen_at` DateTime is available as
+										`title` for the details-on-demand case.
+									-->
+									<span
+										class="presence-dot"
+										class:presence-dot--online={s.is_online}
+										class:presence-dot--idle={!s.is_online}
+										title={s.is_online
+											? t(
+													'admin.sessions.presence_online_tooltip',
+													{ ago: timeAgo(s.last_seen_at) },
+													'Online — last seen {{ago}}'
+												)
+											: t(
+													'admin.sessions.presence_idle_tooltip',
+													{ ago: timeAgo(s.last_seen_at) },
+													'Idle — last seen {{ago}}'
+												)}
+										aria-label={s.is_online
+											? t('admin.sessions.online', 'online')
+											: t('admin.sessions.idle', 'idle')}
+									></span>
 									<span class="badge badge--active">
 										{t('admin.sessions.active', 'active')}
 									</span>
@@ -4570,6 +4600,46 @@
 		background: var(--color-warning-bg);
 		color: var(--color-warning-text);
 		text-transform: uppercase;
+	}
+
+	/* Presence dot in the sessions-table Status column — filled green
+	   when the row is `is_online` (a request landed in the last 5 min),
+	   outlined grey when the row is active-but-idle. Only rendered on
+	   active rows: a revoked-but-recently-seen row must never flash
+	   green post-revocation (see the markup guard `{#if s.is_active}`).
+	   The dot sits BEFORE the `active` badge with a small gap, so the
+	   Status cell reads left-to-right as `● active` when online and
+	   `○ active` when idle.
+
+	   Tokens: `--color-success-alt` / `--color-success-border` for the
+	   filled fill is the same green used by `.badge--active`, keeping
+	   the presence signal visually consistent with the lifecycle one
+	   without stealing the badge's own colour treatment. Grey border
+	   for the idle state uses the neutral `--color-border` token so
+	   both themes (light + dark, driven by `light-dark(...)`) get a
+	   readable contrast. Fixed 8px / 8px sizing — the dot is a signal,
+	   not a click target, so relative units would over-scale on
+	   larger UI densities. */
+	.presence-dot {
+		display: inline-block;
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		margin-right: var(--space-1);
+		vertical-align: middle;
+		/* No border on the filled state, so both variants render at
+		   the same 8×8 footprint (the outlined variant's 1px border
+		   is inset via box-sizing: border-box below). */
+		box-sizing: border-box;
+	}
+
+	.presence-dot--online {
+		background: var(--color-success-alt);
+	}
+
+	.presence-dot--idle {
+		background: transparent;
+		border: 1px solid var(--color-border);
 	}
 
 	/* External / grant-only account marker. Sibling of `.badge--user`
