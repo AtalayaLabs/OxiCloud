@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { SvelteDate, SvelteMap } from 'svelte/reactivity';
+	import { Calendar, Willow } from '@svar-ui/svelte-calendar';
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
-	import { dateTimeFormatFor, formatDate } from '$lib/utils/display';
+	import { dateTimeFormatFor } from '$lib/utils/display';
 	import { errorMessage } from '$lib/utils/errors';
 	import {
 		fetchCalendarAgenda,
@@ -12,56 +12,54 @@
 	} from '$lib/api/endpoints/calendar';
 	import { t } from '$lib/i18n/index.svelte';
 
+	type CalendarWidgetEvent = {
+		id: string;
+		start: Date;
+		end: Date;
+		allDay?: boolean;
+		text: string;
+		details?: string;
+		color?: string;
+	};
+
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let result = $state<CalendarAgendaResult>({ calendars: [], events: [], errors: [] });
+	let calendarDate = $state(new Date());
 
 	const timeFmt = dateTimeFormatFor(undefined, { hour: 'numeric', minute: '2-digit' });
-
-	function dayKey(date: Date): string {
-		const year = date.getFullYear();
-		const month = `${date.getMonth() + 1}`.padStart(2, '0');
-		const day = `${date.getDate()}`.padStart(2, '0');
-		return `${year}-${month}-${day}`;
-	}
-
-	function dayLabel(date: Date): string {
-		const today = new SvelteDate();
-		today.setHours(0, 0, 0, 0);
-		const target = new SvelteDate(date);
-		target.setHours(0, 0, 0, 0);
-		const deltaDays = Math.round((target.getTime() - today.getTime()) / 86_400_000);
-		if (deltaDays === 0) return t('calendar.today', 'Today');
-		if (deltaDays === 1) return t('calendar.tomorrow', 'Tomorrow');
-		return formatDate(date.getTime());
-	}
 
 	function formatTimeRange(event: CalendarAgendaEvent): string {
 		if (event.allDay) return t('calendar.all_day', 'All day');
 		return `${timeFmt.format(event.start)} - ${timeFmt.format(event.end)}`;
 	}
 
-	function formatAgendaSections(
-		events: CalendarAgendaEvent[]
-	): { key: string; date: Date; events: CalendarAgendaEvent[] }[] {
-		const groups = new SvelteMap<string, { date: SvelteDate; events: CalendarAgendaEvent[] }>();
-		for (const event of events) {
-			const key = dayKey(event.start);
-			const bucket = groups.get(key);
-			if (bucket) bucket.events.push(event);
-			else groups.set(key, { date: new SvelteDate(event.start), events: [event] });
-		}
-		return Array.from(groups.entries()).map(([key, value]) => ({ key, ...value }));
+	function toCalendarEvent(event: CalendarAgendaEvent): CalendarWidgetEvent {
+		return {
+			id: event.id,
+			start: new Date(event.start),
+			end: new Date(event.end),
+			allDay: event.allDay,
+			text: event.summary,
+			details: [event.location, event.description].filter(Boolean).join(' • '),
+			color: 'var(--color-primary-strong, #6b7cff)'
+		};
 	}
 
 	async function loadAgenda() {
 		loading = true;
 		error = null;
 		try {
-			result = await fetchCalendarAgenda();
+			const nextResult = await fetchCalendarAgenda();
+			result = nextResult;
+			const nextEvent = [...nextResult.events].sort(
+				(a, b) => a.start.getTime() - b.start.getTime()
+			)[0];
+			calendarDate = nextEvent ? new Date(nextEvent.start) : new Date();
 		} catch (err) {
 			error = errorMessage(err);
 			result = { calendars: [], events: [], errors: [] };
+			calendarDate = new Date();
 		} finally {
 			loading = false;
 		}
@@ -71,8 +69,8 @@
 		void loadAgenda();
 	});
 
-	const sections = $derived(formatAgendaSections(result.events));
 	const nextEvent = $derived(result.events[0] ?? null);
+	const calendarEvents = $derived(result.events.map(toCalendarEvent));
 </script>
 
 <svelte:head>
@@ -136,17 +134,6 @@
 			title={t('calendar.loading', 'Loading agenda')}
 			hint={t('calendar.loading_hint', 'Fetching calendars and upcoming events.')}
 		/>
-	{:else if result.events.length === 0}
-		<EmptyState
-			icon="calendar"
-			title={t('calendar.empty', 'No upcoming events')}
-			hint={result.calendars.length > 0
-				? t(
-						'calendar.empty_hint',
-						'Your calendars are connected, but nothing is scheduled in the next month.'
-					)
-				: t('calendar.no_calendars', 'No calendars were returned by CalDAV.')}
-		/>
 	{:else}
 		{#if result.errors.length > 0}
 			<div class="calendar-page__warning" role="status">
@@ -161,40 +148,19 @@
 			</div>
 		{/if}
 
-		<div class="calendar-page__agenda">
-			{#each sections as section (section.key)}
-				<section class="calendar-day">
-					<header class="calendar-day__header">
-						<div>
-							<p class="calendar-day__label">{dayLabel(section.date)}</p>
-							<p class="calendar-day__meta">{formatDate(section.date.getTime())}</p>
-						</div>
-						<span class="calendar-day__count">{section.events.length}</span>
-					</header>
-					<div class="calendar-day__events">
-						{#each section.events as event (event.id)}
-							<article class="calendar-event">
-								<div class="calendar-event__time">{formatTimeRange(event)}</div>
-								<div class="calendar-event__body">
-									<div class="calendar-event__title-row">
-										<h2 class="calendar-event__title">{event.summary}</h2>
-										<span class="calendar-event__calendar">{event.calendarName}</span>
-									</div>
-									{#if event.location}
-										<p class="calendar-event__detail">{event.location}</p>
-									{/if}
-									{#if event.description}
-										<p class="calendar-event__detail calendar-event__detail--muted">
-											{event.description}
-										</p>
-									{/if}
-								</div>
-							</article>
-						{/each}
-					</div>
-				</section>
-			{/each}
-		</div>
+		{#if result.calendars.length === 0}
+			<EmptyState
+				icon="calendar"
+				title={t('calendar.empty', 'No upcoming events')}
+				hint={t('calendar.no_calendars', 'No calendars were returned by CalDAV.')}
+			/>
+		{:else}
+			<div class="calendar-page__calendar" aria-label={t('nav.calendar', 'Calendar')}>
+				<Willow>
+					<Calendar events={calendarEvents} date={calendarDate} view="month" readonly />
+				</Willow>
+			</div>
+		{/if}
 	{/if}
 </div>
 
@@ -255,7 +221,6 @@
 	}
 
 	.calendar-stat,
-	.calendar-day,
 	.calendar-page__warning {
 		border: 1px solid var(--color-border);
 		background: var(--color-bg-surface);
@@ -297,94 +262,44 @@
 		margin: 0;
 	}
 
-	.calendar-page__agenda {
-		display: grid;
-		gap: var(--space-4);
-	}
-
-	.calendar-day {
-		padding: var(--space-4);
-	}
-
-	.calendar-day__header {
-		display: flex;
-		justify-content: space-between;
-		gap: var(--space-4);
-		align-items: flex-start;
-		margin-bottom: var(--space-3);
-		padding-bottom: var(--space-3);
-		border-bottom: 1px solid var(--color-border);
-	}
-
-	.calendar-day__label {
-		margin: 0;
-		font-size: var(--text-lg);
-		font-weight: var(--weight-semibold);
-	}
-
-	.calendar-day__meta {
-		margin: var(--space-1) 0 0;
-		color: var(--color-text-muted);
-		font-size: var(--text-sm);
-	}
-
-	.calendar-day__count {
-		padding: var(--space-1) var(--space-2);
-		border-radius: var(--radius-full);
-		background: var(--color-bg-muted);
-		color: var(--color-text-muted);
-		font-size: var(--text-sm);
-		font-weight: var(--weight-semibold);
-	}
-
-	.calendar-day__events {
-		display: grid;
-		gap: var(--space-3);
-	}
-
-	.calendar-event {
-		display: grid;
-		grid-template-columns: minmax(8rem, 12rem) minmax(0, 1fr);
-		gap: var(--space-4);
+	.calendar-page__calendar {
 		padding: var(--space-3);
-		border-radius: var(--radius-md);
-		background: var(--color-bg-muted);
-	}
-
-	.calendar-event__time {
-		font-size: var(--text-sm);
-		font-weight: var(--weight-semibold);
-		color: var(--color-text-muted);
-	}
-
-	.calendar-event__title-row {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: baseline;
-		gap: var(--space-2);
-	}
-
-	.calendar-event__title {
-		margin: 0;
-		font-size: var(--text-base);
-		font-weight: var(--weight-semibold);
-	}
-
-	.calendar-event__calendar {
-		padding: 0.1rem 0.5rem;
-		border-radius: var(--radius-full);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-lg);
 		background: var(--color-bg-surface);
-		color: var(--color-text-muted);
-		font-size: var(--text-xs);
+		box-shadow: var(--shadow-sm);
+		overflow: hidden;
 	}
 
-	.calendar-event__detail {
-		margin: var(--space-2) 0 0;
-		color: var(--color-text);
+	.calendar-page__calendar :global(.wx-calendar) {
+		display: block;
+		height: clamp(34rem, 72vh, 52rem);
 	}
 
-	.calendar-event__detail--muted {
-		color: var(--color-text-muted);
+	.calendar-page__calendar :global(.wx-calendar-main),
+	.calendar-page__calendar :global(.wx-sections) {
+		height: 100%;
+	}
+
+	/* Fallback icons when the remote wx-icons font is blocked/unavailable. */
+	.calendar-page__calendar :global(.wxi-angle-left::before) {
+		content: "\2039";
+		font-family: var(--wx-font-family, sans-serif);
+	}
+
+	.calendar-page__calendar :global(.wxi-angle-right::before) {
+		content: "\203A";
+		font-family: var(--wx-font-family, sans-serif);
+	}
+
+	.calendar-page__calendar :global(.wxi-angle-down::before) {
+		content: "\25BE";
+		font-family: var(--wx-font-family, sans-serif);
+	}
+
+	.calendar-page__calendar :global(.wxi-menu::before) {
+		content: "\2630";
+		font-family: var(--wx-font-family, sans-serif);
 	}
 
 	@media (width <= 900px) {
@@ -393,15 +308,15 @@
 			grid-template-columns: 1fr;
 			display: grid;
 		}
-
-		.calendar-event {
-			grid-template-columns: 1fr;
-		}
 	}
 
 	@media (width <= 640px) {
 		.calendar-page {
 			padding: var(--space-3);
+		}
+
+		.calendar-page__calendar :global(.wx-calendar) {
+			height: 70vh;
 		}
 
 		.calendar-page__hero {
