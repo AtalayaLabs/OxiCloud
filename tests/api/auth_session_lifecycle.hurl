@@ -78,7 +78,7 @@ Authorization: Bearer {{access_v2}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.username" == "{{username}}"
+jsonpath "$.full.user.username" == "{{username}}"
 
 
 # ─────────────────────────────────────────────────────────────

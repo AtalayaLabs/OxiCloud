@@ -55,7 +55,7 @@ Content-Type: application/json
 HTTP 200
 [Captures]
 charlie_token: jsonpath "$.access_token"
-charlie_user_id: jsonpath "$.user.id"
+charlie_user_id: jsonpath "$.user.full.user.id"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -139,16 +139,16 @@ Authorization: Bearer {{pr18_access_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.email" == "pr18-emailonly@example.com"
-jsonpath "$.is_external" == false
-jsonpath "$.username" not exists
+jsonpath "$.full.user.email" == "pr18-emailonly@example.com"
+jsonpath "$.full.user.is_external" == false
+jsonpath "$.full.user.username" not exists
 # PR 23 — the user redeemed the welcome magic-link in Step 5b, so
 # email_verified_at is stamped (the click IS the proof of inbox
 # control, regardless of whether the redemption went through the
 # direct or cross-browser-confirm path).
-jsonpath "$.email_verified_at" exists
+jsonpath "$.full.email_verified_at" exists
 [Captures]
-pr18_user_id: jsonpath "$.id"
+pr18_user_id: jsonpath "$.full.user.id"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -162,9 +162,9 @@ Content-Type: application/json
 
 HTTP 200
 [Asserts]
-jsonpath "$.id" == "{{pr18_user_id}}"
-jsonpath "$.username" not exists
-jsonpath "$.given_name" not exists
+jsonpath "$.full.user.id" == "{{pr18_user_id}}"
+jsonpath "$.full.user.username" not exists
+jsonpath "$.full.user.given_name" not exists
 
 
 # ─────────────────────────────────────────────────────────────
@@ -178,9 +178,9 @@ Content-Type: application/json
 
 HTTP 200
 [Asserts]
-jsonpath "$.given_name" == "Pee Are"
-jsonpath "$.family_name" == "Eighteen"
-jsonpath "$.username" not exists
+jsonpath "$.full.user.given_name" == "Pee Are"
+jsonpath "$.full.user.family_name" == "Eighteen"
+jsonpath "$.full.user.username" not exists
 
 
 # ─────────────────────────────────────────────────────────────
@@ -220,7 +220,7 @@ Content-Type: application/json
 
 HTTP 200
 [Asserts]
-jsonpath "$.username" == "pr18handle"
+jsonpath "$.full.user.username" == "pr18handle"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -263,7 +263,7 @@ Content-Type: application/json
 
 HTTP 200
 [Asserts]
-jsonpath "$.given_name" == "Pr18@Handle"
+jsonpath "$.full.user.given_name" == "Pr18@Handle"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -276,10 +276,10 @@ Authorization: Bearer {{pr18_access_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.username" == "pr18handle"
-jsonpath "$.given_name" == "Pr18@Handle"
-jsonpath "$.family_name" == "Eighteen"
-jsonpath "$.email_verified_at" exists
+jsonpath "$.full.user.username" == "pr18handle"
+jsonpath "$.full.user.given_name" == "Pr18@Handle"
+jsonpath "$.full.user.family_name" == "Eighteen"
+jsonpath "$.full.email_verified_at" exists
 
 
 # ─────────────────────────────────────────────────────────────

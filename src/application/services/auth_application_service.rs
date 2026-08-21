@@ -1360,13 +1360,37 @@ impl AuthApplicationService {
         user_id: Uuid,
         session: &crate::domain::entities::session::Session,
     ) -> Result<SelfUserDto, DomainError> {
+        // Session-context flavour — delegates to the shared builder
+        // with the DPoP-bound flag derived from the session row's
+        // thumbprint. See [`build_self_user_dto_for_id`] for the
+        // handler-context flavour.
+        self.build_self_user_dto_for_id(user_id, session.dpop_jkt().is_some())
+            .await
+    }
+
+    /// Handler-context variant of [`build_self_user_dto`]. Called by
+    /// every endpoint that returns a `SelfUserDto` from a REST handler
+    /// (`GET /me`, `PATCH /me/profile`, `POST /upgrade-to-internal`)
+    /// so the wire shape is byte-for-byte identical across them —
+    /// avoids a "quiet lie" where a client PATCHes one shape and
+    /// reads another on the very next `/me`.
+    ///
+    /// `is_dpop_bound` is passed in by the handler because the JWT
+    /// `cnf.jkt` claim is where handler-scope code learns the caller's
+    /// binding state (via `auth_user.dpop_jkt.is_some()`). Session-
+    /// mint paths use [`build_self_user_dto`] and derive the flag from
+    /// the freshly-created `Session` row instead.
+    pub async fn build_self_user_dto_for_id(
+        &self,
+        user_id: Uuid,
+        is_dpop_bound: bool,
+    ) -> Result<SelfUserDto, DomainError> {
         let (user, flags) =
             UserStoragePort::get_user_with_derived_flags(&*self.user_storage, user_id).await?;
         let can_edit_image = !user.is_oidc_user();
         let ui_preferences = user.ui_preferences().clone();
         let notify_on_share = user.notify_on_share();
         let force_password_change = self.read_force_password_change(user_id).await;
-        let is_dpop_bound = session.dpop_jkt().is_some();
         let full = FullUserDto::build(user, flags);
         Ok(SelfUserDto::build(
             full,
@@ -3414,7 +3438,7 @@ impl AuthApplicationService {
     pub async fn admin_create_user(
         &self,
         dto: crate::application::dtos::settings_dto::AdminCreateUserDto,
-    ) -> Result<PublicUserDto, DomainError> {
+    ) -> Result<FullUserDto, DomainError> {
         // Validate username length
         if dto.username.len() < 3 || dto.username.len() > 254 {
             return Err(DomainError::new(
@@ -3572,7 +3596,16 @@ impl AuthApplicationService {
             created.id(),
             created.is_external()
         );
-        Ok(PublicUserDto::new(created, false))
+        // Return `FullUserDto` — same shape as `GET /api/admin/users/{id}`
+        // and one row of the admin list. Admin surfaces uniformly return
+        // FullUserDto so the SPA / test asserts don't need to know which
+        // admin endpoint they came from. Fresh user has no session yet
+        // (`is_online = false`) and no OPAQUE registration; `has_password`
+        // reflects whatever the admin passed in the DTO.
+        let created_id = created.id();
+        let (user, flags) =
+            UserStoragePort::get_user_with_derived_flags(&*self.user_storage, created_id).await?;
+        Ok(FullUserDto::build(user, flags))
     }
 
     /// Admin-only: reset a user's password.
@@ -3668,10 +3701,20 @@ impl AuthApplicationService {
         Ok(())
     }
 
-    /// Get a single user by ID (for admin panel)
-    pub async fn get_user_admin(&self, user_id: Uuid) -> Result<PublicUserDto, DomainError> {
-        let user = self.user_storage.get_user_by_id(user_id).await?;
-        Ok(PublicUserDto::new(user, false))
+    /// Get a single user by ID (for admin panel).
+    ///
+    /// Returns `FullUserDto` — same shape as one row of
+    /// `/api/admin/users` — so admin single-user views (detail modal,
+    /// per-user edit page) render the same fields the list surfaces.
+    /// The single-row admin view is the canonical observation surface
+    /// for admin-visible signals like `email_verified_at` /
+    /// `has_password` / `opaque_registered` / `last_login_at` — none
+    /// of which live on the peer-view `PublicUserDto`. See
+    /// `docs/plan/userdto-refactor.md`.
+    pub async fn get_user_admin(&self, user_id: Uuid) -> Result<FullUserDto, DomainError> {
+        let (user, flags) =
+            UserStoragePort::get_user_with_derived_flags(&*self.user_storage, user_id).await?;
+        Ok(FullUserDto::build(user, flags))
     }
 
     /// Delete a user by ID (admin only).

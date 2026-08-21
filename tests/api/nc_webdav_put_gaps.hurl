@@ -40,7 +40,7 @@ Content-Type: application/json
 HTTP 200
 [Captures]
 admin_jwt: jsonpath "$.access_token"
-admin_user_id: jsonpath "$.user.id"
+admin_user_id: jsonpath "$.user.full.user.id"
 
 
 # ═════════════════════════════════════════════════════════════
@@ -65,7 +65,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-editor_user_id: jsonpath "$.id"
+editor_user_id: jsonpath "$.user.id"
 
 POST {{base_url}}/api/admin/users
 Authorization: Bearer {{admin_jwt}}
@@ -79,7 +79,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-viewer_user_id: jsonpath "$.id"
+viewer_user_id: jsonpath "$.user.id"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -351,7 +351,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-quota_owner_id: jsonpath "$.id"
+quota_owner_id: jsonpath "$.user.id"
 
 
 PUT {{base_url}}/api/admin/users/{{quota_owner_id}}/quota

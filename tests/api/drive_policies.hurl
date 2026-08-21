@@ -65,7 +65,7 @@ Content-Type: application/json
 HTTP 200
 [Captures]
 owner_token:   jsonpath "$.access_token"
-owner_user_id: jsonpath "$.user.id"
+owner_user_id: jsonpath "$.user.full.user.id"
 
 
 # Provision `dp_intruder` — a second internal user used only to
@@ -91,7 +91,7 @@ Content-Type: application/json
 HTTP 200
 [Captures]
 intruder_token:   jsonpath "$.access_token"
-intruder_user_id: jsonpath "$.user.id"
+intruder_user_id: jsonpath "$.user.full.user.id"
 
 
 # ─────────────────────────────────────────────────────────────

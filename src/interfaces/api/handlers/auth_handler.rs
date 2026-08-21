@@ -11,9 +11,9 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::application::dtos::user_dto::{
-    AuthResponseDto, ChangePasswordDto, FullUserDto, LoginDto, OidcCallbackQueryDto,
-    OidcExchangeDto, OidcProviderInfoDto, PublicUserDto, RefreshTokenDto, RegisterDto, SelfUserDto,
-    SetupAdminDto, UpgradeToInternalDto,
+    AuthResponseDto, ChangePasswordDto, LoginDto, OidcCallbackQueryDto, OidcExchangeDto,
+    OidcProviderInfoDto, PublicUserDto, RefreshTokenDto, RegisterDto, SelfUserDto, SetupAdminDto,
+    UpgradeToInternalDto,
 };
 use crate::application::services::auth_application_service::{OidcCallbackResult, RegisterResult};
 use crate::common::di::AppState;
@@ -652,58 +652,19 @@ pub async fn get_current_user(
     // Semantics (`docs/plan/drive.md` §7): `storage_used_bytes` is the SUM
     // of `used_bytes` across the user's personal drives only. Shared drives
     // never count against this envelope — collaborating in a team drive
-    // costs no personal bytes. The matching cap is
-    // `storage_quota_bytes` (admin-only mutation).
+    // costs no personal bytes.
     //
-    // Single-query fetch: `get_user_with_derived_flags` returns the full
-    // `User` entity + `UserDerivedFlags` (has_password / OPAQUE flags /
-    // is_online) in one round-trip. That collapses what used to be a
-    // `get_user_by_id` + separate credential lookups into one wire trip,
-    // AND populates the OPAQUE flags on `/me` which the fat-PublicUserDto path
-    // never did (it left them at false — the "quiet lie" that motivated
-    // this refactor, see `docs/plan/userdto-refactor.md`).
-    let (user, flags) = auth_service
+    // Delegate to the shared `build_self_user_dto_for_id` — same code
+    // path `PATCH /me/profile` and `POST /upgrade-to-internal` use so
+    // all three self endpoints ship byte-for-byte identical shapes.
+    // The DPoP-bound signal comes from the JWT `cnf.jkt` claim
+    // (surfaced by the auth middleware into `AuthUser.dpop_jkt`);
+    // when present the session that minted this JWT is bound and
+    // the SPA can skip a redundant `/dpop/bind` call.
+    let self_dto = auth_service
         .auth_application_service
-        .get_user_with_derived_flags(user_id)
+        .build_self_user_dto_for_id(user_id, auth_user.dpop_jkt.is_some())
         .await?;
-
-    // Read the fields we need before moving `user` into FullUserDto below.
-    // Ordering matters: `can_edit_image` and the self-only bag fields
-    // must be captured while `user` is still borrowable; the
-    // `FullUserDto::build` call downstream consumes the entity.
-    let can_edit_image = !user.is_oidc_user();
-    let ui_preferences = user.ui_preferences().clone();
-    let notify_on_share = user.notify_on_share();
-
-    // Overlay the cached `force_password_change` flag (see UserFlags).
-    // Using the cached path (`get_user_flags` → `user_flags_cache`)
-    // avoids a second DB round-trip on this hot endpoint.
-    let force_password_change = auth_service
-        .auth_application_service
-        .get_user_flags(user_id)
-        .await
-        .map(|f| f.force_password_change)
-        .unwrap_or(false);
-
-    // Session-binding state — read from the JWT `cnf.jkt` claim
-    // (surfaced by the auth middleware into `CurrentUser.dpop_jkt`).
-    // Present ⇒ the session that minted this JWT was bound; absent ⇒
-    // the session is unbound and the SPA should call `/dpop/bind` to
-    // attach the browser's keypair (OIDC / magic-link redirect flow).
-    // Skips an otherwise-redundant `POST /dpop/bind` on every page load
-    // which would return 409 `already_bound` and litter the audit
-    // stream.
-    let is_dpop_bound = auth_user.dpop_jkt.is_some();
-
-    let full = FullUserDto::build(user, flags);
-    let self_dto = SelfUserDto::build(
-        full,
-        ui_preferences,
-        notify_on_share,
-        is_dpop_bound,
-        force_password_change,
-        can_edit_image,
-    );
 
     Ok((StatusCode::OK, Json(self_dto)))
 }
@@ -860,14 +821,16 @@ pub async fn change_password(
 /// self-registration policy. Refused with 403
 /// `error_type = "RegistrationDomainNotAllowed"`.
 ///
-/// Response: the updated `PublicUserDto` (post-upgrade view — `is_external`
-/// is false, `storage_quota_bytes` is set).
+/// Response: the updated `SelfUserDto` (same shape as `GET /me`) so the SPA
+/// absorbs the post-upgrade state — new `storage_quota_bytes`,
+/// `is_external = false`, updated OPAQUE / auth capability flags — in one
+/// round trip without a follow-up `/me` fetch.
 #[utoipa::path(
     post,
     path = "/api/auth/upgrade-to-internal",
     request_body = UpgradeToInternalDto,
     responses(
-        (status = 200, description = "Upgrade succeeded", body = PublicUserDto),
+        (status = 200, description = "Upgrade succeeded — returns SelfUserDto (same shape as GET /me)", body = SelfUserDto),
         (status = 400, description = "Password missing / too short"),
         (status = 401, description = "Not authenticated"),
         (status = 403, description = "OIDC user, or domain not in allowlist"),
@@ -878,9 +841,10 @@ pub async fn change_password(
 )]
 pub async fn upgrade_to_internal(
     State(state): State<Arc<AppState>>,
-    CurrentUserId(user_id): CurrentUserId,
+    auth_user: AuthUser,
     Json(dto): Json<UpgradeToInternalDto>,
 ) -> Result<impl IntoResponse, AppError> {
+    let user_id = auth_user.id;
     let auth_service = state
         .auth_service
         .as_ref()
@@ -928,7 +892,11 @@ pub async fn upgrade_to_internal(
         }
     }
 
-    let updated = auth_service
+    // Apply the upgrade. Service returns the updated `PublicUserDto`;
+    // we discard it and rebuild the full self view via the shared
+    // `build_self_user_dto_for_id` helper so the wire shape matches
+    // `GET /me` and `PATCH /me/profile` byte-for-byte.
+    let _ = auth_service
         .auth_application_service
         .upgrade_to_internal(user_id, dto)
         .await
@@ -947,7 +915,11 @@ pub async fn upgrade_to_internal(
             _ => AppError::from(err),
         })?;
 
-    Ok((StatusCode::OK, Json(updated)))
+    let self_dto = auth_service
+        .auth_application_service
+        .build_self_user_dto_for_id(user_id, auth_user.dpop_jkt.is_some())
+        .await?;
+    Ok((StatusCode::OK, Json(self_dto)))
 }
 
 /// Update the caller's profile (PR 24).
@@ -965,7 +937,7 @@ pub async fn upgrade_to_internal(
     path = "/api/auth/me/profile",
     request_body = crate::application::dtos::user_dto::UpdateProfileDto,
     responses(
-        (status = 200, description = "Updated profile (PublicUserDto)", body = PublicUserDto),
+        (status = 200, description = "Updated profile (SelfUserDto) — same shape as GET /me so the SPA sees the just-written state without a follow-up fetch", body = SelfUserDto),
         (status = 400, description = "Validation error (e.g. invalid handle format, empty given_name)"),
         (status = 401, description = "Not authenticated"),
         (status = 403, description = "OIDC-managed profile — edit at the IdP"),
@@ -976,20 +948,39 @@ pub async fn upgrade_to_internal(
 )]
 pub async fn update_profile(
     State(state): State<Arc<AppState>>,
-    CurrentUserId(user_id): CurrentUserId,
+    auth_user: AuthUser,
     Json(dto): Json<crate::application::dtos::user_dto::UpdateProfileDto>,
 ) -> Result<impl IntoResponse, AppError> {
+    let user_id = auth_user.id;
     let auth_service = state
         .auth_service
         .as_ref()
         .ok_or_else(|| AppError::internal_error("Authentication service not configured"))?;
 
-    let updated = auth_service
+    // Apply the patch. The service returns the updated `PublicUserDto`
+    // internally; we discard it and re-fetch the full self view below
+    // so the response matches `GET /me`'s `SelfUserDto` shape.
+    //
+    // Why SelfUserDto instead of PublicUserDto: a self-write endpoint
+    // whose response mirrors GET /me lets the SPA update its session
+    // store in one round trip. Returning a slim PublicUserDto would
+    // force the SPA to follow up with GET /me anyway to observe the
+    // just-written `ui_preferences` / `notify_on_share` / etc — those
+    // fields live on SelfUserDto only, not on the public identity
+    // slice. Same shape for both endpoints avoids "quiet lie" reads
+    // where a client PATCHes and then reads a stale local value.
+    let _ = auth_service
         .auth_application_service
         .update_profile_with_perms(user_id, dto, &state.locale_registry)
         .await?;
 
-    Ok((StatusCode::OK, Json(updated)))
+    // Rebuild via the shared helper so the wire shape matches
+    // `GET /me` and `POST /upgrade-to-internal` byte-for-byte.
+    let self_dto = auth_service
+        .auth_application_service
+        .build_self_user_dto_for_id(user_id, auth_user.dpop_jkt.is_some())
+        .await?;
+    Ok((StatusCode::OK, Json(self_dto)))
 }
 
 // TODO: add utoipa

@@ -50,5 +50,5 @@ Content-Type: application/json
 HTTP 200
 [Asserts]
 jsonpath "$.access_token" exists
-jsonpath "$.user.username" == "bob"
-jsonpath "$.user.email"    == "bob@example.com"
+jsonpath "$.user.full.user.username" == "bob"
+jsonpath "$.user.full.user.email"    == "bob@example.com"

@@ -98,11 +98,11 @@ GET {{base_url}}/api/auth/me
 
 HTTP 200
 [Asserts]
-jsonpath "$.username" == "{{username}}"
+jsonpath "$.full.user.username" == "{{username}}"
 # federation_kind is skip_serializing_if=Option::is_none, so a
 # local user's response OMITS the field entirely.
-jsonpath "$.federation_kind" not exists
-jsonpath "$.federation_issuer" not exists
+jsonpath "$.full.federation_kind" not exists
+jsonpath "$.full.federation_issuer" not exists
 
 
 # ─────────────────────────────────────────────────────────────
@@ -202,8 +202,8 @@ GET {{base_url}}/api/auth/me
 
 HTTP 200
 [Asserts]
-jsonpath "$.federation_kind" not exists
-jsonpath "$.federation_issuer" not exists
+jsonpath "$.full.federation_kind" not exists
+jsonpath "$.full.federation_issuer" not exists
 
 
 # ═════════════════════════════════════════════════════════════
@@ -252,8 +252,8 @@ GET {{base_url}}/api/auth/me
 
 HTTP 200
 [Asserts]
-jsonpath "$.federation_kind" not exists
-jsonpath "$.federation_issuer" not exists
+jsonpath "$.full.federation_kind" not exists
+jsonpath "$.full.federation_issuer" not exists
 
 
 # ═════════════════════════════════════════════════════════════
@@ -307,9 +307,9 @@ GET {{base_url}}/api/auth/me
 
 HTTP 200
 [Asserts]
-jsonpath "$.username" == "{{username}}"
-jsonpath "$.federation_kind" == "oidc"
-jsonpath "$.federation_issuer" == "{{oidc_issuer}}"
+jsonpath "$.full.user.username" == "{{username}}"
+jsonpath "$.full.federation_kind" == "oidc"
+jsonpath "$.full.federation_issuer" == "{{oidc_issuer}}"
 
 
 # Scenario 9 — unlink success (admin has a password, so the
@@ -326,8 +326,8 @@ GET {{base_url}}/api/auth/me
 
 HTTP 200
 [Asserts]
-jsonpath "$.federation_kind" not exists
-jsonpath "$.federation_issuer" not exists
+jsonpath "$.full.federation_kind" not exists
+jsonpath "$.full.federation_issuer" not exists
 
 
 # ═════════════════════════════════════════════════════════════
@@ -380,7 +380,7 @@ GET {{base_url}}/api/auth/me
 
 HTTP 200
 [Asserts]
-jsonpath "$.federation_kind" == "oidc"
+jsonpath "$.full.federation_kind" == "oidc"
 
 
 # Unlink to reset state before the auto-link scenarios.
@@ -447,9 +447,9 @@ HTTP 200
 [Asserts]
 # Auto-link resolved to the pre-existing admin, NOT a fresh
 # JIT-provisioned user. The load-bearing assertion.
-jsonpath "$.user.username" == "{{username}}"
-jsonpath "$.user.federation_kind" == "oidc"
-jsonpath "$.user.federation_issuer" == "{{oidc_issuer}}"
+jsonpath "$.user.full.user.username" == "{{username}}"
+jsonpath "$.user.full.federation_kind" == "oidc"
+jsonpath "$.user.full.federation_issuer" == "{{oidc_issuer}}"
 [Captures]
 # Fresh cookies replace the password session's; capture the
 # new CSRF for the unlink below.
@@ -463,9 +463,9 @@ GET {{base_url}}/api/auth/me
 
 HTTP 200
 [Asserts]
-jsonpath "$.username" == "{{username}}"
-jsonpath "$.federation_kind" == "oidc"
-jsonpath "$.federation_issuer" == "{{oidc_issuer}}"
+jsonpath "$.full.user.username" == "{{username}}"
+jsonpath "$.full.federation_kind" == "oidc"
+jsonpath "$.full.federation_issuer" == "{{oidc_issuer}}"
 
 
 # Reset admin state before the next scenario (auto-link would
@@ -535,7 +535,7 @@ GET {{base_url}}/api/auth/me
 
 HTTP 200
 [Asserts]
-jsonpath "$.federation_kind" not exists
+jsonpath "$.full.federation_kind" not exists
 
 
 # Reset fake IdP state (email_verified back to true, sub back
@@ -599,7 +599,7 @@ X-CSRF-Token: {{autolink_csrf_token}}
 
 HTTP 201
 [Captures]
-alias_user_id: jsonpath "$.id"
+alias_user_id: jsonpath "$.user.id"
 
 
 # Point the fake IdP at a fresh sub with admin's email. Both
@@ -636,7 +636,7 @@ GET {{base_url}}/api/auth/me
 
 HTTP 200
 [Asserts]
-jsonpath "$.federation_kind" not exists
+jsonpath "$.full.federation_kind" not exists
 
 
 # Cleanup — delete the collider so later scenarios see the same
@@ -701,8 +701,8 @@ Content-Type: application/json
 
 HTTP 200
 [Asserts]
-jsonpath "$.user.username" == "oidc_user"
-jsonpath "$.user.federation_kind" == "oidc"
+jsonpath "$.user.full.user.username" == "oidc_user"
+jsonpath "$.user.full.federation_kind" == "oidc"
 [Captures]
 # Fresh CSRF from the OIDC session cookies — the admin CSRFs
 # won't validate against these new cookies.
@@ -730,5 +730,5 @@ GET {{base_url}}/api/auth/me
 
 HTTP 200
 [Asserts]
-jsonpath "$.federation_kind" == "oidc"
-jsonpath "$.federation_issuer" == "{{oidc_issuer}}"
+jsonpath "$.full.federation_kind" == "oidc"
+jsonpath "$.full.federation_issuer" == "{{oidc_issuer}}"

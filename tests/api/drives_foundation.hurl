@@ -31,7 +31,7 @@ Content-Type: application/json
 HTTP 200
 [Captures]
 admin_token: jsonpath "$.access_token"
-admin_user_id: jsonpath "$.user.id"
+admin_user_id: jsonpath "$.user.full.user.id"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -70,7 +70,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-alice_user_id: jsonpath "$.id"
+alice_user_id: jsonpath "$.user.id"
 
 POST {{base_url}}/api/admin/users
 Authorization: Bearer {{admin_token}}
@@ -79,7 +79,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-bob_user_id: jsonpath "$.id"
+bob_user_id: jsonpath "$.user.id"
 
 
 # Alice's first login fires `PersonalDriveLifecycleHook::on_user_login`

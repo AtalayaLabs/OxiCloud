@@ -12,7 +12,7 @@ import type {
 	DriveMember,
 	DriveMemberSubject,
 	DriveRole,
-	User
+	FullUser
 } from '$lib/api/types';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
@@ -287,9 +287,12 @@ export function listUsers(limit: number, offset: number): Promise<AdminUsersPage
 
 /**
  * Admin-scoped single-user lookup — `GET /api/admin/users/{id}`.
- * Returns the full `User` DTO including `storage_quota_bytes` +
- * `storage_used_bytes` which the non-admin `/api/users/{id}`
- * response omits for privacy.
+ * Returns the full `FullUser` DTO (public identity in `.user` +
+ * admin-visible extras like `email_verified_at` / `has_password` /
+ * `opaque_registered` / `last_login_at` / quotas at top level) —
+ * same shape as one row of `/api/admin/users` list. The peer-view
+ * `/api/users/{id}` returns the slim `PublicUser` which omits those
+ * admin-only signals.
  *
  * Result promises are cached per id at module scope so multiple
  * callers for the same user (e.g. the admin drives table with N
@@ -301,14 +304,14 @@ export function listUsers(limit: number, offset: number): Promise<AdminUsersPage
  * still sees the cached value. Callers that need to refresh (e.g.
  * after `setUserQuota`) should call `invalidateAdminUserCache`.
  */
-const adminUserCache = new Map<string, Promise<User | null>>();
+const adminUserCache = new Map<string, Promise<FullUser | null>>();
 
-export function getUserAdmin(id: string): Promise<User | null> {
+export function getUserAdmin(id: string): Promise<FullUser | null> {
 	const hit = adminUserCache.get(id);
 	if (hit) return hit;
-	const pending = (async (): Promise<User | null> => {
+	const pending = (async (): Promise<FullUser | null> => {
 		try {
-			return await apiJson<User>(`/api/admin/users/${encodeURIComponent(id)}`, {
+			return await apiJson<FullUser>(`/api/admin/users/${encodeURIComponent(id)}`, {
 				credentials: 'same-origin'
 			});
 		} catch {

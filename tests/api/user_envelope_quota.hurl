@@ -64,7 +64,7 @@ Content-Type: application/json
 HTTP 200
 [Captures]
 owner_token:   jsonpath "$.access_token"
-owner_user_id: jsonpath "$.user.id"
+owner_user_id: jsonpath "$.user.full.user.id"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -92,7 +92,7 @@ Authorization: Bearer {{owner_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.storage_used_bytes" == 0
+jsonpath "$.full.storage_used_bytes" == 0
 
 
 # ─────────────────────────────────────────────────────────────
@@ -173,7 +173,7 @@ Authorization: Bearer {{owner_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.storage_used_bytes" == 0
+jsonpath "$.full.storage_used_bytes" == 0
 
 
 # ─────────────────────────────────────────────────────────────
@@ -202,7 +202,7 @@ retry-interval: 200ms
 
 HTTP 200
 [Asserts]
-jsonpath "$.storage_used_bytes" == 32
+jsonpath "$.full.storage_used_bytes" == 32
 
 
 # Confirm the sweep agrees with the delta — both code paths must
@@ -217,7 +217,7 @@ Authorization: Bearer {{owner_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.storage_used_bytes" == 32
+jsonpath "$.full.storage_used_bytes" == 32
 
 
 # ─────────────────────────────────────────────────────────────
@@ -247,7 +247,7 @@ Authorization: Bearer {{owner_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.storage_used_bytes" == 0
+jsonpath "$.full.storage_used_bytes" == 0
 
 
 # ─────────────────────────────────────────────────────────────

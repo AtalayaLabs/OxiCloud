@@ -75,7 +75,10 @@ log "Probe blob and thumbnail confirmed present on disk."
 # subsequent trash-empty triggers garbage_collect() to remove the
 # now-orphaned blob files from disk.
 
-# /api/admin/users returns { users: [...], total, limit, offset }
+# /api/admin/users returns { users: [PublicUserDto…], total, limit, offset }
+# under the default `?summary=false` path — flat public-identity rows. The
+# `?summary=true` path emits nested FullUserDto rows instead (used by the
+# admin table); see `docs/plan/userdto-refactor.md`.
 USERS_JSON=$(curl -sf -H "$AUTH" "$base_url/api/admin/users?limit=500")
 
 ADMIN_USER_ID=$(echo "$USERS_JSON" \

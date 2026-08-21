@@ -85,7 +85,7 @@ Content-Type: application/json
 HTTP 200
 [Captures]
 ncq_owner_jwt: jsonpath "$.access_token"
-ncq_owner_id: jsonpath "$.user.id"
+ncq_owner_id: jsonpath "$.user.full.user.id"
 
 POST {{base_url}}/api/auth/app-passwords
 Authorization: Bearer {{ncq_owner_jwt}}
