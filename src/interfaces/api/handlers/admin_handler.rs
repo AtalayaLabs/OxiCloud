@@ -22,7 +22,7 @@ use crate::application::dtos::settings_dto::{
     TestOidcConnectionDto, TestStorageConnectionDto, UpdateUserActiveDto, UpdateUserQuotaDto,
     UpdateUserRoleDto,
 };
-use crate::application::dtos::user_dto::{AdminUserSummaryDto, UserDto};
+use crate::application::dtos::user_dto::{FullUserDto, UserDto};
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::plugin_ports::{LogQuery, PluginManagementPort, PluginMgmtError};
 // JobStoreProvider is used only by the storage-migration shims below,
@@ -42,8 +42,17 @@ use uuid::Uuid;
 #[derive(serde::Serialize)]
 #[serde(untagged)]
 enum AdminUsersPayload {
+    /// Fat-`UserDto` per row. Emitted when `?summary=false` — legacy
+    /// path retained until the FE drops the `summary=false` query
+    /// (rare; the SPA uses `summary=true` for the paginated table).
     Full(Vec<UserDto>),
-    Summary(Vec<AdminUserSummaryDto>),
+    /// `FullUserDto` per row — same shape one row of the /me
+    /// response's embedded `full` carries. Emitted when
+    /// `?summary=true`. The FE seeds `resolveUser` cache from
+    /// `row.user` here (kills the per-row `/api/users/{id}` fetch).
+    /// The old `AdminUserSummaryDto` returned here has been replaced
+    /// by `FullUserDto`; see `docs/plan/userdto-refactor.md`.
+    Summary(Vec<FullUserDto>),
 }
 
 #[derive(serde::Serialize)]

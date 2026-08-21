@@ -123,6 +123,36 @@ pub trait UserStoragePort: Send + Sync + 'static {
     /// Gets a user by ID
     async fn get_user_by_id(&self, id: Uuid) -> Result<User, DomainError>;
 
+    /// Fetch the full `User` + [`UserDerivedFlags`] in one query. See
+    /// [`UserRepository::get_user_with_derived_flags`](crate::domain::repositories::user_repository::UserRepository::get_user_with_derived_flags)
+    /// for the contract and the rationale for the single-query shape.
+    async fn get_user_with_derived_flags(
+        &self,
+        id: Uuid,
+    ) -> Result<
+        (
+            User,
+            crate::domain::repositories::user_repository::UserDerivedFlags,
+        ),
+        DomainError,
+    >;
+
+    /// Paginated admin user listing with derived flags. See
+    /// [`UserRepository::list_users_with_derived_flags`](crate::domain::repositories::user_repository::UserRepository::list_users_with_derived_flags)
+    /// for the contract and rationale.
+    async fn list_users_with_derived_flags(
+        &self,
+        limit: i64,
+        offset: i64,
+        include_external: bool,
+    ) -> Result<
+        Vec<(
+            User,
+            crate::domain::repositories::user_repository::UserDerivedFlags,
+        )>,
+        DomainError,
+    >;
+
     /// Batch-loads users by id. Order is unspecified; missing ids are
     /// silently dropped. Used by group-recipient expansion in
     /// `RecipientNotificationService` to avoid N+1 lookups when notifying

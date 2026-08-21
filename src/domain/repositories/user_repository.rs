@@ -139,6 +139,20 @@ pub trait UserRepository: Send + Sync + 'static {
     /// Gets a user by ID
     async fn get_user_by_id(&self, id: Uuid) -> UserRepositoryResult<User>;
 
+    /// Fetch the full `User` entity + the [`UserDerivedFlags`] in a
+    /// single query. Used by `/api/auth/me` and future admin single-user
+    /// views — anywhere the caller needs both the row itself AND the
+    /// derived booleans (`has_password`, OPAQUE flags, `is_online`) to
+    /// build a [`FullUserDto`](crate::application::dtos::user_dto::FullUserDto)
+    /// or [`SelfUserDto`](crate::application::dtos::user_dto::SelfUserDto).
+    /// Single query is cheaper than `get_user_by_id` + separate lookups
+    /// for OPAQUE state + `is_online`; the EXISTS subquery is cheap
+    /// thanks to the partial index `idx_sessions_last_seen_at`.
+    async fn get_user_with_derived_flags(
+        &self,
+        id: Uuid,
+    ) -> UserRepositoryResult<(User, UserDerivedFlags)>;
+
     /// Batch-loads a set of users by id, preserving no particular order
     /// and silently skipping ids that don't match any row. Caller is
     /// responsible for de-duplicating the input vec. Returns an empty
@@ -200,12 +214,35 @@ pub trait UserRepository: Send + Sync + 'static {
     /// Lists the columns needed by compact user-management tables.  Unlike
     /// [`Self::list_users`], this never fetches password hashes, OIDC subjects,
     /// avatars, names, locale state, or UI preferences.
+    ///
+    /// **Deprecated** — [`Self::list_users_with_derived_flags`] supersedes
+    /// this: it returns the full `User` entity + [`UserDerivedFlags`] so
+    /// the application layer can build [`FullUserDto`](crate::application::dtos::user_dto::FullUserDto)
+    /// directly. Kept only until P6 of `docs/plan/userdto-refactor.md`
+    /// removes `UserListEntry` + the last remaining caller.
     async fn list_user_summaries(
         &self,
         limit: i64,
         offset: i64,
         include_external: bool,
     ) -> UserRepositoryResult<Vec<UserListEntry>>;
+
+    /// Paginated admin user listing — full `User` entity + the derived
+    /// booleans (`has_password`, OPAQUE flags, `is_online`) in one wide
+    /// SELECT. Called by the admin service to build
+    /// `Vec<FullUserDto>` for `/api/admin/users` without paying two
+    /// round-trips per row (once for User, once for derived flags).
+    ///
+    /// Same `include_external` semantics as [`Self::list_users`]:
+    /// admin management UI passes `true`; every other caller passes
+    /// `false` so external / grant-only users stay off internal-user
+    /// surfaces.
+    async fn list_users_with_derived_flags(
+        &self,
+        limit: i64,
+        offset: i64,
+        include_external: bool,
+    ) -> UserRepositoryResult<Vec<(User, UserDerivedFlags)>>;
 
     /// Searches users by username or email (SQL ILIKE) with a limit.
     /// See [`list_users`] for the meaning of `include_external`.

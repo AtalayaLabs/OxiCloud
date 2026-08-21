@@ -681,7 +681,12 @@ impl UpdateProfileDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AuthResponseDto {
-    pub user: UserDto,
+    /// Full self view — identical shape to `/api/auth/me`. Every
+    /// login / refresh / OIDC-callback / magic-link redemption ships
+    /// this so the SPA's post-auth state matches its post-`/me` state
+    /// (no UI race between `AuthResponseDto` and the first `/me`
+    /// fetch). See `docs/plan/userdto-refactor.md` § Endpoint mapping.
+    pub user: SelfUserDto,
     pub access_token: String,
     pub refresh_token: String,
     pub token_type: String,

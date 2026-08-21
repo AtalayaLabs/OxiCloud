@@ -1,6 +1,6 @@
 use crate::application::dtos::user_dto::{
-    AdminUserSummaryDto, AuthResponseDto, ChangePasswordDto, LoginDto, RefreshTokenDto,
-    RegisterDto, UpgradeToInternalDto, UserDto,
+    AuthResponseDto, ChangePasswordDto, FullUserDto, LoginDto, RefreshTokenDto, RegisterDto,
+    SelfUserDto, UpgradeToInternalDto, UserDto,
 };
 use crate::application::ports::auth_ports::{
     OidcIdClaims, OidcServicePort, PasswordHasherPort, SessionStoragePort, TokenServicePort,
@@ -1320,18 +1320,61 @@ impl AuthApplicationService {
             session = session.with_dpop_jkt(jkt);
         }
 
+        // Build the SelfUserDto BEFORE `session` moves into
+        // `create_session` — the builder reads `session.dpop_jkt()`.
+        let user_id = user.id();
+        let user_dto = self.build_self_user_dto(user_id, &session).await?;
         self.session_storage.create_session(session).await?;
 
         // Authentication response
-        let force_password_change = self.read_force_password_change(user.id()).await;
+        let force_password_change = self.read_force_password_change(user_id).await;
         Ok(AuthResponseDto {
-            user: UserDto::from(user),
+            user: user_dto,
             access_token,
             refresh_token,
             token_type: "Bearer".to_string(),
             expires_in: self.token_service.refresh_token_expiry_secs(),
             force_password_change,
         })
+    }
+
+    /// Assemble a `SelfUserDto` for the given user + the session that
+    /// mints them. Called by every `AuthResponseDto` path
+    /// (login / refresh / OIDC / magic-link) so the wire shape stays
+    /// consistent across login flavours and matches what `/api/auth/me`
+    /// would return.
+    ///
+    /// Costs one wide SELECT (`get_user_with_derived_flags`) even when
+    /// the caller already has a `User` in hand — acceptable because
+    /// `/login`, `/refresh`, and the OIDC/magic-link callbacks are
+    /// not hot inner loops. In exchange the composition stays uniform
+    /// across all four callsites and OPAQUE / `is_online` flags land
+    /// on the wire without a second lookup at each site.
+    ///
+    /// `is_dpop_bound` is derived from the session's own DPoP
+    /// thumbprint — the session was just constructed, so this reads
+    /// exactly the binding that will govern subsequent requests.
+    async fn build_self_user_dto(
+        &self,
+        user_id: Uuid,
+        session: &crate::domain::entities::session::Session,
+    ) -> Result<SelfUserDto, DomainError> {
+        let (user, flags) =
+            UserStoragePort::get_user_with_derived_flags(&*self.user_storage, user_id).await?;
+        let can_edit_image = !user.is_oidc_user();
+        let ui_preferences = user.ui_preferences().clone();
+        let notify_on_share = user.notify_on_share();
+        let force_password_change = self.read_force_password_change(user_id).await;
+        let is_dpop_bound = session.dpop_jkt().is_some();
+        let full = FullUserDto::build(user, flags);
+        Ok(SelfUserDto::build(
+            full,
+            ui_preferences,
+            notify_on_share,
+            is_dpop_bound,
+            force_password_change,
+            can_edit_image,
+        ))
     }
 
     /// Read `force_password_change_at_next_login` for the given user,
@@ -1586,22 +1629,29 @@ impl AuthApplicationService {
         let access_token =
             self.token_service
                 .generate_access_token(&user, Some(session.id()), None)?;
+        // Snapshot fields still needed for logging + DTO before
+        // `session` and `user` are consumed by the storage call and
+        // the DTO builder below.
+        let user_id = user.id();
+        let user_display = user.display_for_audit().to_string();
+        let is_external = user.is_external();
+        let user_dto = self.build_self_user_dto(user_id, &session).await?;
         self.session_storage.create_session(session).await?;
 
         tracing::info!(
             target: "audit",
             event = "magic_link.redeemed",
-            user_id = %user.id(),
-            username = %user.display_for_audit(),
-            is_external = user.is_external(),
+            user_id = %user_id,
+            username = %user_display,
+            is_external = is_external,
             resource_kind = ?mlt.resource_kind(),
             resource_id = ?mlt.resource_id(),
             cross_browser_confirmed = cross_browser_confirmed,
         );
 
-        let force_password_change = self.read_force_password_change(user.id()).await;
+        let force_password_change = self.read_force_password_change(user_id).await;
         let auth = AuthResponseDto {
-            user: UserDto::from(user),
+            user: user_dto,
             access_token,
             refresh_token,
             token_type: "Bearer".to_string(),
@@ -1789,6 +1839,12 @@ impl AuthApplicationService {
             session.dpop_jkt(),
         )?;
 
+        // Build the SelfUserDto before `new_session` is consumed by
+        // the rotate call — the builder reads `session.dpop_jkt()`
+        // to compute `is_dpop_bound`.
+        let user_id = user.id();
+        let user_dto = self.build_self_user_dto(user_id, &new_session).await?;
+
         self.session_storage
             .rotate_session(session.id(), new_session)
             .await?;
@@ -1798,9 +1854,9 @@ impl AuthApplicationService {
         // initial login. The SPA's post-refresh flow (silent, on
         // its own timer) can then route the user to change-password
         // without waiting for an explicit re-login.
-        let force_password_change = self.read_force_password_change(user.id()).await;
+        let force_password_change = self.read_force_password_change(user_id).await;
         Ok(AuthResponseDto {
-            user: UserDto::from(user),
+            user: user_dto,
             access_token,
             refresh_token: new_refresh_token,
             token_type: "Bearer".to_string(),
@@ -2871,6 +2927,26 @@ impl AuthApplicationService {
         UserStoragePort::get_user_by_id(&*self.user_storage, user_id).await
     }
 
+    /// Load the full `User` entity + `UserDerivedFlags` for the given
+    /// id in ONE query. See
+    /// [`UserRepository::get_user_with_derived_flags`](crate::domain::repositories::user_repository::UserRepository::get_user_with_derived_flags)
+    /// for the shape and the SELECT that drives it. Used by
+    /// `/api/auth/me` to build a `SelfUserDto` and by future admin
+    /// single-user views to build a `FullUserDto` without paying two
+    /// round-trips.
+    pub async fn get_user_with_derived_flags(
+        &self,
+        user_id: Uuid,
+    ) -> Result<
+        (
+            crate::domain::entities::user::User,
+            crate::domain::repositories::user_repository::UserDerivedFlags,
+        ),
+        DomainError,
+    > {
+        UserStoragePort::get_user_with_derived_flags(&*self.user_storage, user_id).await
+    }
+
     /// Login-style identifier lookup: dispatches on `@` in the input
     /// (email path when present, username path when not), identical
     /// to `login()`'s dispatch. Exposed so the OPAQUE login handler
@@ -3145,22 +3221,30 @@ impl AuthApplicationService {
         Ok(users.into_iter().map(UserDto::from).collect())
     }
 
-    /// Admin-only compact listing.  The detail endpoint retains the complete
-    /// [`UserDto`]; this path projects only what the management table renders so
-    /// PostgreSQL never detoasts or transfers avatars/preferences for a page.
+    /// Admin-only user listing. Returns `Vec<FullUserDto>` — same
+    /// `FullUserDto` shape [`SelfUserDto`] embeds, so the FE reads
+    /// admin table rows and `/me` responses through identical field
+    /// paths. Includes the avatar (`user.image`) and presence
+    /// (`user.is_online`) so the admin table renders the vignette +
+    /// green dot without per-row follow-up fetches to
+    /// `/api/users/{id}` (the N+1 that motivated the widening — see
+    /// `docs/plan/userdto-refactor.md` § N+1).
     pub async fn list_user_summaries_including_external_with_perms<A: AuthorizationEngine>(
         &self,
         authorization: &A,
         caller_id: Uuid,
         limit: i64,
         offset: i64,
-    ) -> Result<Vec<AdminUserSummaryDto>, DomainError> {
+    ) -> Result<Vec<FullUserDto>, DomainError> {
         self.require_admin_caller(authorization, caller_id).await?;
-        let users = self
+        let rows = self
             .user_storage
-            .list_user_summaries(limit, offset, true)
+            .list_users_with_derived_flags(limit, offset, true)
             .await?;
-        Ok(users.into_iter().map(AdminUserSummaryDto::from).collect())
+        Ok(rows
+            .into_iter()
+            .map(|(user, flags)| FullUserDto::build(user, flags))
+            .collect())
     }
 
     /// Service-layer gate for administrator-scoped user-directory operations.
@@ -4654,11 +4738,17 @@ impl AuthApplicationService {
         let access_token =
             self.token_service
                 .generate_access_token(&user, Some(session.id()), None)?;
+        // Build the SelfUserDto before `session` is consumed by the
+        // storage call — the builder reads `session.dpop_jkt()`
+        // (None here since OIDC callbacks land unbound and the SPA
+        // finishes binding post-redirect).
+        let user_id = user.id();
+        let user_dto = self.build_self_user_dto(user_id, &session).await?;
         self.session_storage.create_session(session).await?;
 
-        let force_password_change = self.read_force_password_change(user.id()).await;
+        let force_password_change = self.read_force_password_change(user_id).await;
         let auth_response = AuthResponseDto {
-            user: UserDto::from(user),
+            user: user_dto,
             access_token,
             refresh_token,
             token_type: "Bearer".to_string(),

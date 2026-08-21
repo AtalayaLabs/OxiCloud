@@ -11,9 +11,9 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::application::dtos::user_dto::{
-    AuthResponseDto, ChangePasswordDto, LoginDto, OidcCallbackQueryDto, OidcExchangeDto,
-    OidcProviderInfoDto, RefreshTokenDto, RegisterDto, SetupAdminDto, UpgradeToInternalDto,
-    UserDto,
+    AuthResponseDto, ChangePasswordDto, FullUserDto, LoginDto, OidcCallbackQueryDto,
+    OidcExchangeDto, OidcProviderInfoDto, RefreshTokenDto, RegisterDto, SelfUserDto, SetupAdminDto,
+    UpgradeToInternalDto, UserDto,
 };
 use crate::application::services::auth_application_service::{OidcCallbackResult, RegisterResult};
 use crate::common::di::AppState;
@@ -626,7 +626,7 @@ pub async fn refresh_token(
     get,
     path = "/api/auth/me",
     responses(
-        (status = 200, description = "Current user profile", body = UserDto),
+        (status = 200, description = "Current user profile", body = SelfUserDto),
         (status = 401, description = "Not authenticated"),
     ),
     security(("bearerAuth" = [])),
@@ -654,35 +654,58 @@ pub async fn get_current_user(
     // never count against this envelope — collaborating in a team drive
     // costs no personal bytes. The matching cap is
     // `storage_quota_bytes` (admin-only mutation).
-    let mut user = auth_service
+    //
+    // Single-query fetch: `get_user_with_derived_flags` returns the full
+    // `User` entity + `UserDerivedFlags` (has_password / OPAQUE flags /
+    // is_online) in one round-trip. That collapses what used to be a
+    // `get_user_by_id` + separate credential lookups into one wire trip,
+    // AND populates the OPAQUE flags on `/me` which the fat-UserDto path
+    // never did (it left them at false — the "quiet lie" that motivated
+    // this refactor, see `docs/plan/userdto-refactor.md`).
+    let (user, flags) = auth_service
         .auth_application_service
-        .get_user_by_id(user_id)
+        .get_user_with_derived_flags(user_id)
         .await?;
 
+    // Read the fields we need before moving `user` into FullUserDto below.
+    // Ordering matters: `can_edit_image` and the self-only bag fields
+    // must be captured while `user` is still borrowable; the
+    // `FullUserDto::build` call downstream consumes the entity.
+    let can_edit_image = !user.is_oidc_user();
+    let ui_preferences = user.ui_preferences().clone();
+    let notify_on_share = user.notify_on_share();
+
     // Overlay the cached `force_password_change` flag (see UserFlags).
-    // `From<User>` defaults to false; the SPA reads this field on
-    // startup to decide whether to enter mandatory change-password
-    // mode. Using the cached path (`get_user_flags` → `user_flags_cache`)
+    // Using the cached path (`get_user_flags` → `user_flags_cache`)
     // avoids a second DB round-trip on this hot endpoint.
-    if let Ok(flags) = auth_service
+    let force_password_change = auth_service
         .auth_application_service
         .get_user_flags(user_id)
         .await
-    {
-        user.force_password_change = flags.force_password_change;
-    }
+        .map(|f| f.force_password_change)
+        .unwrap_or(false);
 
     // Session-binding state — read from the JWT `cnf.jkt` claim
     // (surfaced by the auth middleware into `CurrentUser.dpop_jkt`).
     // Present ⇒ the session that minted this JWT was bound; absent ⇒
-    // the session is unbound and the SPA should call `/dpop/bind`
-    // to attach the browser's keypair (OIDC / magic-link redirect
-    // flow). Skips an otherwise-redundant `POST /dpop/bind` on every
-    // page load which would return 409 `already_bound` and litter
-    // the audit stream.
-    user.is_dpop_bound = auth_user.dpop_jkt.is_some();
+    // the session is unbound and the SPA should call `/dpop/bind` to
+    // attach the browser's keypair (OIDC / magic-link redirect flow).
+    // Skips an otherwise-redundant `POST /dpop/bind` on every page load
+    // which would return 409 `already_bound` and litter the audit
+    // stream.
+    let is_dpop_bound = auth_user.dpop_jkt.is_some();
 
-    Ok((StatusCode::OK, Json(user)))
+    let full = FullUserDto::build(user, flags);
+    let self_dto = SelfUserDto::build(
+        full,
+        ui_preferences,
+        notify_on_share,
+        is_dpop_bound,
+        force_password_change,
+        can_edit_image,
+    );
+
+    Ok((StatusCode::OK, Json(self_dto)))
 }
 
 /// DTO for updating the user's profile image.
@@ -1821,9 +1844,11 @@ pub async fn oidc_exchange(
         "OIDC token exchange successful for user: {}",
         auth_response
             .user
+            .full
+            .user
             .username
             .as_deref()
-            .unwrap_or(&auth_response.user.email)
+            .unwrap_or(&auth_response.user.full.user.email)
     );
 
     // Set HttpOnly cookies for the browser
