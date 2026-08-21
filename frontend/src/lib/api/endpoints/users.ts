@@ -16,15 +16,23 @@ export interface ResolvedUser {
 	email: string;
 	image: string | null;
 	isExternal: boolean;
+	/** Presence — TRUE when the server observed a request on any of this
+	 * user's non-revoked sessions within the last 5 min (backend
+	 * `PublicUserDto.is_online`). Drives the presence dot overlay on
+	 * `<UserAvatar>` / `<UserVignette>`. `false` when the caller's
+	 * source didn't compute presence (a bare `resolveUser(id)` from
+	 * pre-3-layer callers, an older backend build) — dot stays dark. */
+	isOnline: boolean;
 }
 
-/** Subset of the backend `UserDto` we consume here. */
-interface UserDtoShape {
+/** Subset of the backend `PublicUserDto` we consume here. */
+interface PublicUserShape {
 	id: string;
 	username?: string | null;
 	email?: string | null;
 	image?: string | null;
 	is_external: boolean;
+	is_online?: boolean;
 }
 
 // id → in-flight/resolved lookup (the Promise is cached so concurrent callers
@@ -41,13 +49,14 @@ export function resolveUser(id: string): Promise<ResolvedUser | null> {
 				credentials: 'same-origin'
 			});
 			if (!res.ok) return null;
-			const u = (await res.json()) as UserDtoShape;
+			const u = (await res.json()) as PublicUserShape;
 			return {
 				id: u.id,
 				name: u.username?.trim() || u.email || u.id,
 				email: u.email ?? '',
 				image: u.image ?? null,
-				isExternal: u.is_external
+				isExternal: u.is_external,
+				isOnline: u.is_online ?? false
 			};
 		} catch {
 			return null;
@@ -78,6 +87,7 @@ export function seedUser(u: {
 	email: string;
 	image?: string | null;
 	is_external: boolean;
+	is_online?: boolean;
 }): void {
 	if (cache.has(u.id)) return;
 	const resolved: ResolvedUser = {
@@ -85,7 +95,8 @@ export function seedUser(u: {
 		name: u.username?.trim() || u.email || u.id,
 		email: u.email,
 		image: u.image ?? null,
-		isExternal: u.is_external
+		isExternal: u.is_external,
+		isOnline: u.is_online ?? false
 	};
 	cache.set(u.id, Promise.resolve(resolved));
 }

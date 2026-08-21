@@ -161,8 +161,32 @@ pub struct SelfUserDto {
     pub can_edit_image: bool,
 }
 
-impl From<User> for PublicUserDto {
-    fn from(user: User) -> Self {
+impl PublicUserDto {
+    /// Construct a `PublicUserDto` from a `User` entity + an explicit
+    /// `is_online` signal.
+    ///
+    /// **Why not `From<User>`?** The `User` entity models a row in
+    /// `auth.users`; `is_online` is a cross-table lookup on
+    /// `auth.sessions` (see the EXISTS subquery in
+    /// `list_users_with_derived_flags` and `get_user_with_derived_flags`
+    /// on the user repo). A `From<User>` impl couldn't compute it
+    /// honestly — it would have to ship a `false` default that lies to
+    /// the FE presence dot on every emitter that didn't remember to
+    /// override. Making presence a required constructor argument
+    /// removes that footgun: every callsite has to declare its intent.
+    ///
+    /// Two shapes at the callsite:
+    ///
+    /// - Presence matters (single-user `/api/users/{id}`, list
+    ///   projections, self-view): pair with
+    ///   `user_storage.get_user_with_derived_flags(id)` and pass
+    ///   `flags.is_online`.
+    /// - Presence is out of scope (register / update-profile response,
+    ///   post-mutation echo where the FE ignores the field): pass
+    ///   `false` with a short comment explaining why. The receiver's
+    ///   presence read is a no-op — no dot lights up on the stale
+    ///   value.
+    pub fn new(user: User, is_online: bool) -> Self {
         let role = format!("{}", user.role());
         let p = user.into_parts();
         Self {
@@ -174,11 +198,7 @@ impl From<User> for PublicUserDto {
             is_external: p.is_external,
             given_name: p.given_name,
             family_name: p.family_name,
-            // Single-user paths that don't enrich presence ship `false`.
-            // List projections (admin users, sharees enriched with
-            // presence) build via FullUserDto::build below, which
-            // overrides this from UserDerivedFlags.
-            is_online: false,
+            is_online,
         }
     }
 }

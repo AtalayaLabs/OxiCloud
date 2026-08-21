@@ -876,9 +876,7 @@ impl AuthApplicationService {
             is_external = false,
             "🛂 user registered",
         );
-        Ok(RegisterResult::Created(Box::new(PublicUserDto::from(
-            created_user,
-        ))))
+        Ok(RegisterResult::Created(Box::new(PublicUserDto::new(created_user, false))))
     }
 
     /// Create the first admin user during initial system setup.
@@ -981,7 +979,7 @@ impl AuthApplicationService {
             username,
             created_user.id()
         );
-        Ok(PublicUserDto::from(created_user))
+        Ok(PublicUserDto::new(created_user, false))
     }
 
     pub async fn login(
@@ -2182,7 +2180,7 @@ impl AuthApplicationService {
             lc.dispatch_upgraded_to_internal(&updated).await;
         }
 
-        Ok(PublicUserDto::from(updated))
+        Ok(PublicUserDto::new(updated, false))
     }
 
     /// Admin-driven external → internal promotion.
@@ -2293,7 +2291,7 @@ impl AuthApplicationService {
             "👮🏻‍♂️ external user promoted to internal by admin",
         );
 
-        Ok(PublicUserDto::from(updated))
+        Ok(PublicUserDto::new(updated, false))
     }
 
     /// `keep_session_id` — when `Some`, revoke every OTHER session for
@@ -2550,7 +2548,7 @@ impl AuthApplicationService {
 
     pub async fn get_user(&self, user_id: Uuid) -> Result<PublicUserDto, DomainError> {
         let user = self.user_storage.get_user_by_id(user_id).await?;
-        Ok(PublicUserDto::from(user))
+        Ok(PublicUserDto::new(user, false))
     }
 
     /// Cached, image-free lookup of the caller's authorization flags
@@ -2875,7 +2873,7 @@ impl AuthApplicationService {
 
         if changed.is_empty() && ui_prefs_patch.is_none() {
             // No-op — return the current user without a DB write.
-            return Ok(PublicUserDto::from(user));
+            return Ok(PublicUserDto::new(user, false));
         }
 
         // Persist the typed-field changes first (if any). Skip the
@@ -2906,7 +2904,7 @@ impl AuthApplicationService {
         // Refetch so the returned DTO reflects the merged JSONB bag
         // (the in-memory `user` above holds the pre-merge value).
         let refreshed = self.user_storage.get_user_by_id(caller_id).await?;
-        Ok(PublicUserDto::from(refreshed))
+        Ok(PublicUserDto::new(refreshed, false))
     }
 
     // Alias for consistency with handler method
@@ -3006,9 +3004,20 @@ impl AuthApplicationService {
     ) -> Result<PublicUserDto, DomainError> {
         // (1) Self — a single fetch suffices (the check compares the input
         // UUIDs, so the target read is never needed on this path).
+        //
+        // Both branches use `get_user_with_derived_flags` (not the narrow
+        // `get_user_by_id`) so `PublicUserDto.is_online` on the wire
+        // reflects the same EXISTS subquery the admin list uses. Without
+        // this the FE presence dot would only light up on list-derived
+        // paths (admin seed); single fetches from share pickers / group
+        // members would show every user as offline regardless of real
+        // state. See `docs/plan/userdto-refactor.md`.
         if caller_id == target_id {
-            let caller = self.user_storage.get_user_by_id(caller_id).await?;
-            return Ok(PublicUserDto::from(caller));
+            let (caller, flags) = self
+                .user_storage
+                .get_user_with_derived_flags(caller_id)
+                .await?;
+            return Ok(PublicUserDto::new(caller, flags.is_online));
         }
 
         // Caller and target are independent point reads (the self-case already
@@ -3016,16 +3025,26 @@ impl AuthApplicationService {
         // overlap them with `join!` instead of two serial round-trips.
         // `caller_res?` first preserves the caller-error precedence of the old
         // sequential form. (benches/ROUND23.md §P1)
+        //
+        // `caller` uses the narrow `get_user_by_id` because we only read
+        // `is_external()` off it for the visibility gate; nothing about
+        // the caller ships on the wire. Only `target` needs the wider
+        // projection.
         let (caller_res, target_res) = tokio::join!(
             self.user_storage.get_user_by_id(caller_id),
-            self.user_storage.get_user_by_id(target_id)
+            self.user_storage.get_user_with_derived_flags(target_id)
         );
         let caller = caller_res?;
 
         // Anti-enumeration: NotFound for everything that doesn't pass.
         // Convert a real NotFound on `target` to the same anonymous 404,
         // so existence isn't leaked through differential responses.
-        let target = match target_res {
+        //
+        // Destructure the (User, UserDerivedFlags) tuple immediately so
+        // `target` keeps its historical `User` shape (accessors still
+        // work below); the flags come along as `target_flags` for the
+        // `is_online` propagation into the returned `PublicUserDto`.
+        let (target, target_flags) = match target_res {
             Ok(u) => u,
             Err(e) if e.kind == ErrorKind::NotFound => {
                 tracing::info!(
@@ -3069,7 +3088,7 @@ impl AuthApplicationService {
         })?;
 
         if related.is_some() {
-            return Ok(PublicUserDto::from(target));
+            return Ok(PublicUserDto::new(target, target_flags.is_online));
         }
 
         // (3) External callers stop here — no directory enumeration.
@@ -3097,12 +3116,12 @@ impl AuthApplicationService {
 
         // (4) Internal target + system-address-book exposed: already public.
         if !target.is_external() && expose_system_users {
-            return Ok(PublicUserDto::from(target));
+            return Ok(PublicUserDto::new(target, target_flags.is_online));
         }
 
         // (5) Admin caller: always visible.
         if caller.role() == UserRole::Admin {
-            return Ok(PublicUserDto::from(target));
+            return Ok(PublicUserDto::new(target, target_flags.is_online));
         }
 
         // (6) No relationship — anti-enumeration NotFound.
@@ -3184,7 +3203,7 @@ impl AuthApplicationService {
     // New method to get user by username - needed for admin user handling
     pub async fn get_user_by_username(&self, username: &str) -> Result<PublicUserDto, DomainError> {
         let user = self.user_storage.get_user_by_username(username).await?;
-        Ok(PublicUserDto::from(user))
+        Ok(PublicUserDto::new(user, false))
     }
 
     // Method to count how many admin users exist in the system
@@ -3208,7 +3227,7 @@ impl AuthApplicationService {
         offset: i64,
     ) -> Result<Vec<PublicUserDto>, DomainError> {
         let users = self.user_storage.list_users(limit, offset, false).await?;
-        Ok(users.into_iter().map(PublicUserDto::from).collect())
+        Ok(users.into_iter().map(|u| PublicUserDto::new(u, false)).collect())
     }
 
     /// Admin-only: lists users including external (grant-only) recipients.
@@ -3222,7 +3241,7 @@ impl AuthApplicationService {
     ) -> Result<Vec<PublicUserDto>, DomainError> {
         self.require_admin_caller(authorization, caller_id).await?;
         let users = self.user_storage.list_users(limit, offset, true).await?;
-        Ok(users.into_iter().map(PublicUserDto::from).collect())
+        Ok(users.into_iter().map(|u| PublicUserDto::new(u, false)).collect())
     }
 
     /// Admin-only user listing. Returns `Vec<FullUserDto>` — same
@@ -3277,7 +3296,7 @@ impl AuthApplicationService {
         limit: i64,
     ) -> Result<Vec<PublicUserDto>, DomainError> {
         let users = self.user_storage.search_users(query, limit, false).await?;
-        Ok(users.into_iter().map(PublicUserDto::from).collect())
+        Ok(users.into_iter().map(|u| PublicUserDto::new(u, false)).collect())
     }
 
     /// Username-only search for the NC sharee autocomplete: identical
@@ -3541,7 +3560,7 @@ impl AuthApplicationService {
             created.id(),
             created.is_external()
         );
-        Ok(PublicUserDto::from(created))
+        Ok(PublicUserDto::new(created, false))
     }
 
     /// Admin-only: reset a user's password.
@@ -3640,7 +3659,7 @@ impl AuthApplicationService {
     /// Get a single user by ID (for admin panel)
     pub async fn get_user_admin(&self, user_id: Uuid) -> Result<PublicUserDto, DomainError> {
         let user = self.user_storage.get_user_by_id(user_id).await?;
-        Ok(PublicUserDto::from(user))
+        Ok(PublicUserDto::new(user, false))
     }
 
     /// Delete a user by ID (admin only).
