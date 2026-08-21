@@ -179,148 +179,116 @@ export interface TrashResourcesResponse {
 
 export type Role = 'user' | 'admin';
 
-/** Wire shape of `UserDto` (backend: src/application/dtos/user_dto.rs). */
-export interface User {
+// ─────────────────────────────────────────────────────────────────────────
+// Three-layer user family — mirrors src/application/dtos/user_dto.rs.
+// See docs/plan/userdto-refactor.md.
+//
+// `PublicUser`  — public identity. Every authenticated caller may see it.
+//                 Returned by /api/users/{id}, share responses, group
+//                 members, magic-link invitees, recipient enrichment.
+// `FullUser`    — `{ user: PublicUser, ...admin+self extras }`. Returned
+//                 as Vec by /api/admin/users; embedded in `SelfUser`.
+// `SelfUser`    — `{ full: FullUser, ...self-only extras }`. Returned by
+//                 /api/auth/me and by every auth response.
+//
+// Adding a field? Decide by audience:
+//   * Any authenticated caller may see it about another user → PublicUser.
+//   * Only admin (about another user) AND self (about self) → FullUser.
+//   * Only self about themselves → SelfUser.
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Public identity — 9 fields visible to any authenticated caller. */
+export interface PublicUser {
 	id: string;
 	username?: string;
 	email: string;
 	role: string;
-	storage_quota_bytes: number;
-	storage_used_bytes: number;
+	image?: string | null;
+	is_external: boolean;
+	given_name?: string;
+	family_name?: string;
+	/** Presence — TRUE when the server observed a request on any of this
+	 * user's non-revoked sessions within the last 5 min. Populated on
+	 * list endpoints; single-user public paths default to `false`.
+	 * Backwards-compat: missing on older backend builds → `false`. */
+	is_online?: boolean;
+}
+
+/** Full user record — public identity + all fields BOTH an admin (viewing
+ * another user) AND the subject themselves may see. Returned as `Vec` by
+ * `/api/admin/users`; embedded in `SelfUser` for `/api/auth/me`. */
+export interface FullUser {
+	user: PublicUser;
+	/** IdP linkage. Load-bearing "is federated?" predicate:
+	 * `full.federation_kind === 'oidc'`. */
+	federation_kind?: 'oidc' | 'ocm' | 'magic_link';
+	/** Authority that minted the OIDC/OCM identity — issuer URL for OIDC,
+	 * peer domain for OCM. FE that wants a friendly label maps this
+	 * against `OidcProviders.issuer → provider_name`. */
+	federation_issuer?: string;
+	preferred_locale?: string;
+	email_verified_at?: string;
 	created_at: string;
 	updated_at: string;
 	last_login_at?: string | null;
 	active: boolean;
-	/**
-	 * Which trust chain minted this user's federation identity. `null`
-	 * (omitted from wire) for local users (password / OPAQUE only).
-	 * `"oidc" | "ocm" | "magic_link"` for federated users. Predicate:
-	 * `!user.federation_kind` = local; `user.federation_kind === 'oidc'`
-	 * = OIDC user. Mirrors `auth.users.federation_kind` verbatim.
-	 */
-	federation_kind?: 'oidc' | 'ocm' | 'magic_link';
-	/**
-	 * Authority that minted this user's OIDC/OCM identity — issuer URL
-	 * for OIDC (id_token `iss`), peer domain for OCM. `null` (omitted)
-	 * for local users. FE that wants a friendly display label maps this
-	 * against `OidcProviders.issuer → provider_name` when they match;
-	 * shows the raw value otherwise. Renamed from the historical
-	 * `auth_provider` (which held a display label pre-Phase-B and a
-	 * `"local"` sentinel for non-federated users — both are gone).
-	 */
-	federation_issuer?: string;
-	image?: string | null;
-	can_edit_image: boolean;
-	is_external: boolean;
-	given_name?: string;
-	family_name?: string;
-	email_verified_at?: string;
-	preferred_locale?: string;
-	notify_on_share: boolean;
-	/**
-	 * Opaque UI preferences bag. Server-side JSONB column that persists
-	 * pure UI toggles (hide-dotfiles, view mode, sidebar collapse, …)
-	 * across devices. The server never inspects the contents — the SPA
-	 * defines the keys (see `lib/stores/preferences.svelte.ts` for the
-	 * typed view). Always an object on the wire (empty bag is `{}`,
-	 * never `null` or missing).
-	 *
-	 * When PATCHing back to the server via
-	 * `PATCH /api/auth/me/profile { ui_preferences: {...} }`, the
-	 * server SHALLOW-merges — only the keys present in the patch are
-	 * touched, so partial writes from one device don't clobber
-	 * preferences set on another. Set a key to `null` in the patch to
-	 * delete it from the bag.
-	 */
-	ui_preferences: Record<string, unknown>;
-	/**
-	 * Mirrors `auth.users.force_password_change_at_next_login`. Only
-	 * populated by `GET /api/auth/me` (see the backend UserDto doc for
-	 * why other UserDto call-sites default to false). When true, the
-	 * SPA MUST lock navigation to the password-change surface — the
-	 * root layout's guard + the backend's `require_no_password_change_pending`
-	 * middleware together enforce this. Optional on the wire because
-	 * older backend builds omit it and `#[serde(default)]` maps
-	 * missing → `false`.
-	 */
-	force_password_change?: boolean;
-	/**
-	 * TRUE when the account has a local Argon2id `password_hash` on
-	 * file. Distinct from `federation_kind`: an OIDC-linked account
-	 * (`federation_kind === 'oidc'`) can ALSO carry a local password
-	 * (hybrid posture — SSO for daily login, local password as
-	 * fallback). The profile page's change-password card gates on this
-	 * flag rather than on the federation shape so hybrid users can
-	 * rotate their local credential. Optional on the wire for older-
-	 * backend compatibility; missing → `false` (safe default: hide the
-	 * card).
-	 */
-	has_password?: boolean;
-	/**
-	 * TRUE when the caller's current session is DPoP-bound (row's
-	 * `dpop_jkt IS NOT NULL`). Populated only by `/api/auth/me`; other
-	 * User-emitting endpoints leave it unset.
-	 *
-	 * The session store reads this to skip a redundant
-	 * `POST /api/auth/dpop/bind` call — the endpoint returns 409
-	 * `already_bound` on repeated attempts (anti-downgrade invariant)
-	 * and each rejection logs at audit INFO, so a naive "bind on
-	 * every load" pattern was cluttering the audit stream. We only
-	 * fire bind now when there's actual work to do (fresh OIDC /
-	 * magic-link session that landed unbound).
-	 */
-	is_dpop_bound?: boolean;
+	storage_quota_bytes: number;
+	storage_used_bytes: number;
+	/** TRUE when the account has a local Argon2id `password_hash` on file.
+	 * Distinct from `federation_kind`: an OIDC-linked account can ALSO
+	 * carry a local password (hybrid). */
+	has_password: boolean;
+	/** TRUE when the user has an OPAQUE envelope on file. Admin-visible
+	 * rollout signal — kept off `PublicUser` so directory endpoints don't
+	 * leak OPAQUE adoption. */
+	opaque_registered: boolean;
+	/** TRUE when the user has completed ≥1 OPAQUE login. Distinct from
+	 * `opaque_registered` — envelope-on-file vs successful-login. */
+	opaque_migrated: boolean;
 }
 
-/** Fields rendered by the paginated admin table. Full account details remain
- * available from the detail endpoint; this shape keeps avatars and preference
- * documents off every listing page.
- *
- * The two OPAQUE flags below are ADMIN-ONLY signals: they surface per-user
- * OPAQUE rollout progress in the admin table. The backend deliberately keeps
- * them off `UserDto` (`/api/auth/me`, share-recipient DTOs, group members)
- * so a non-admin can't enumerate the adoption set through third-party
- * endpoints. Both optional on the wire — older backend builds omit them and
- * `#[serde(default)]` maps missing → `false`. */
-export type AdminUserSummary = Pick<
-	User,
-	| 'id'
-	| 'username'
-	| 'email'
-	| 'role'
-	| 'storage_quota_bytes'
-	| 'storage_used_bytes'
-	| 'last_login_at'
-	| 'active'
-	| 'federation_kind'
-	| 'federation_issuer'
-	| 'is_external'
-> & {
-	/** TRUE = user has a server-verifiable password on file (legacy or
-	 * admin-set). Combined with `opaque_registered` and `federation_kind`,
-	 * the admin table derives the full auth capability set — a user with
-	 * `has_password=false`, `opaque_registered=false` AND
-	 * `federation_kind === undefined` (no federation) is passwordless
-	 * (magic-link only, which is the default for externals). */
-	has_password?: boolean;
-	/** TRUE = user has an OPAQUE envelope on file (Phase 2 silent migration
-	 * succeeded, or the user completed a manual re-registration). */
-	opaque_registered?: boolean;
-	/** TRUE = user has completed at least one successful OPAQUE login.
-	 * Distinct from `opaque_registered` — the envelope may have been
-	 * cleared by an admin reset while a stale migrated=true remains as
-	 * historical signal (backend clears both atomically today, but the
-	 * two-flag shape keeps the option open for a future policy split). */
-	opaque_migrated?: boolean;
-};
+/** Self view — everything the caller may see about themselves.
+ * Returned by `/api/auth/me` and every `AuthResponse` (login / refresh /
+ * OIDC callback / magic-link redemption ships this so the SPA's post-auth
+ * state matches its post-`/me` state with no UI race). */
+export interface SelfUser {
+	full: FullUser;
+	/** Opaque UI-preferences bag. Cross-device store for pure UI toggles
+	 * (view mode, sidebar collapse, hide-dotfiles, …). Server never
+	 * inspects contents; the SPA defines the keys (see
+	 * `lib/stores/preferences.svelte.ts`). Always an object on the wire
+	 * — empty bag is `{}`, never `null`. PATCH via `/api/auth/me/profile`
+	 * shallow-merges; setting a key to `null` removes it. */
+	ui_preferences: Record<string, unknown>;
+	/** Whether the user wants share-notification emails. */
+	notify_on_share: boolean;
+	/** Session-scoped: my current session is DPoP-bound. SPA reads this
+	 * on `session.load()` to skip a redundant `/api/auth/dpop/bind` call
+	 * (409 `already_bound` otherwise, noisy in the audit stream). */
+	is_dpop_bound: boolean;
+	/** Admin-set temp-password gate — SPA nav guard blocks everything
+	 * but /change-password until this flips back. Cleared by a successful
+	 * `POST /api/auth/change-password`. */
+	force_password_change: boolean;
+	/** Caller-scoped: can I edit my own avatar? `false` for OIDC users
+	 * whose avatar comes from the IdP. Only meaningful when caller ==
+	 * subject; nonsense on any other DTO. */
+	can_edit_image: boolean;
+}
+
+/** Backwards-compat alias while migrating call-sites. Prefer `PublicUser`
+ * for public-identity contexts (sharee, group member, invitee) or
+ * `SelfUser` when reading `/api/auth/me`. Delete once no consumers reference
+ * the bare `User` name. */
+export type User = PublicUser;
 
 export interface AdminUsersPage {
 	total: number;
-	users: AdminUserSummary[];
+	users: FullUser[];
 }
 
 export interface AuthResponse {
-	user: User;
+	user: SelfUser;
 	access_token: string;
 	refresh_token: string;
 	token_type: string;

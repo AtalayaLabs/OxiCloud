@@ -69,12 +69,15 @@ const PATCH_DEBOUNCE_MS = 500;
 
 class PreferencesStore {
 	/**
-	 * The typed view of the bag. Derived from `session.user?.ui_preferences`
-	 * so signing in / out / refresh flips it in lockstep with the session.
+	 * The typed view of the bag. Derived from `session.me?.ui_preferences`
+	 * (moved from public `User.ui_preferences` to `SelfUser.ui_preferences`
+	 * as part of the three-layer UserDto refactor — the bag is self-only
+	 * state, not something other authenticated callers should see).
+	 * Signing in / out / refresh flips it in lockstep with the session.
 	 * Reads pass through DEFAULTS for any missing key.
 	 */
 	private bag = $derived<Record<string, unknown>>(
-		(session.user?.ui_preferences as Record<string, unknown> | undefined) ?? {}
+		(session.me?.ui_preferences as Record<string, unknown> | undefined) ?? {}
 	);
 
 	// ── Typed accessors ──────────────────────────────────────────
@@ -100,11 +103,14 @@ class PreferencesStore {
 	 * `jsonb_strip_nulls` after the merge).
 	 */
 	set(patch: Partial<Record<keyof UiPreferences, unknown>>): void {
-		if (!session.user) return;
+		if (!session.me) return;
 
-		// Optimistic local write — mutate the reactive user shallowly.
+		// Optimistic local write — mutate the reactive me shallowly.
+		// `ui_preferences` lives on `SelfUser` (self-only), not on the
+		// public `User` slice, so the mutation stays at the SelfUser
+		// level. The nested `full` / `full.user` blocks are untouched.
 		const nextBag = {
-			...((session.user.ui_preferences as Record<string, unknown> | undefined) ?? {}),
+			...((session.me.ui_preferences as Record<string, unknown> | undefined) ?? {}),
 			...patch
 		};
 		// Strip any explicit-null locally so the derived getters see the
@@ -114,7 +120,7 @@ class PreferencesStore {
 		for (const [k, v] of Object.entries(patch)) {
 			if (v === null) delete (nextBag as Record<string, unknown>)[k];
 		}
-		session.user = { ...session.user, ui_preferences: nextBag };
+		session.me = { ...session.me, ui_preferences: nextBag };
 
 		// Accumulate keys so successive `set` calls before the debounce
 		// fires collapse into a single PATCH body — matters for

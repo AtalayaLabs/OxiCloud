@@ -63,6 +63,7 @@
 		type StorageTestResult
 	} from '$lib/api/endpoints/admin';
 	import { createDrive, updateDrivePolicies } from '$lib/api/endpoints/drives';
+	import { seedUser } from '$lib/api/endpoints/users';
 	import {
 		ensureResolvers,
 		resolveRecipient,
@@ -70,7 +71,7 @@
 		type Recipient
 	} from '$lib/api/endpoints/recipients';
 	import type {
-		AdminUserSummary,
+		FullUser,
 		Drive,
 		DriveMember,
 		DrivePolicies,
@@ -156,11 +157,11 @@
 		deleteUserModal !== null &&
 			deleteUserEmailInput.trim().toLowerCase() === deleteUserModal.email.toLowerCase()
 	);
-	function openDeleteUser(u: AdminUserSummary) {
+	function openDeleteUser(u: FullUser) {
 		deleteUserModal = {
-			userId: u.id,
-			username: u.username || u.email,
-			email: u.email
+			userId: u.user.id,
+			username: u.user.username || u.user.email,
+			email: u.user.email
 		};
 		deleteUserEmailInput = '';
 	}
@@ -817,7 +818,7 @@
 	}
 
 	// Users
-	let users = $state<AdminUserSummary[]>([]);
+	let users = $state<FullUser[]>([]);
 	let total = $state(0);
 	let pageIndex = $state(0);
 	let usersError = $state<string | null>(null);
@@ -923,6 +924,12 @@
 			const page = await listUsers(PAGE_SIZE, pageIndex * PAGE_SIZE);
 			users = page.users;
 			total = page.total;
+			// Seed the per-user resolver cache with the row's `PublicUser`
+			// slice so every `UserVignette` mounted per row hits the cache
+			// synchronously — no per-row `/api/users/{id}` follow-up.
+			// Kills the N+1 that motivated widening `/api/admin/users` to
+			// carry the avatar (docs/plan/userdto-refactor.md § N+1).
+			for (const row of page.users) seedUser(row.user);
 		} catch (e) {
 			usersError = errorMessage(e);
 		}
@@ -1003,49 +1010,49 @@
 	}
 
 	/** True for the signed-in admin's own row — guards self-destructive actions. */
-	function isSelf(u: AdminUserSummary): boolean {
-		return u.id === currentAdminId;
+	function isSelf(u: FullUser): boolean {
+		return u.user.id === currentAdminId;
 	}
 	/** OIDC/SSO-provisioned account (no local password to reset). */
-	function isOidcUser(u: AdminUserSummary): boolean {
+	function isOidcUser(u: FullUser): boolean {
 		return u.federation_kind === 'oidc';
 	}
 	/** Used-quota percentage (0 when unlimited) for the per-user progress bar. */
-	function quotaPct(u: AdminUserSummary): number {
+	function quotaPct(u: FullUser): number {
 		return u.storage_quota_bytes > 0 ? (u.storage_used_bytes / u.storage_quota_bytes) * 100 : 0;
 	}
 
-	async function toggleRole(u: AdminUserSummary) {
+	async function toggleRole(u: FullUser) {
 		if (isSelf(u)) return;
-		const role = u.role === 'admin' ? 'user' : 'admin';
+		const role = u.user.role === 'admin' ? 'user' : 'admin';
 		if (!(await showConfirm(t('admin.confirm_role', { role }, 'Change role to {{role}}?')))) return;
 		try {
-			await setUserRole(u.id, role);
+			await setUserRole(u.user.id, role);
 			await loadUsers();
 		} catch (e) {
 			reportError(e);
 		}
 	}
 
-	async function toggleActive(u: AdminUserSummary) {
+	async function toggleActive(u: FullUser) {
 		if (isSelf(u) && u.active) return;
 		const msg = u.active
 			? t('admin.confirm_deactivate', 'Deactivate this user?')
 			: t('admin.confirm_activate', 'Activate this user?');
 		if (!(await showConfirm(msg))) return;
 		try {
-			await setUserActive(u.id, !u.active);
+			await setUserActive(u.user.id, !u.active);
 			await loadUsers();
 		} catch (e) {
 			reportError(e);
 		}
 	}
 
-	function openQuota(u: AdminUserSummary) {
+	function openQuota(u: FullUser) {
 		quotaModalError = null;
 		quotaModal = {
-			userId: u.id,
-			username: u.username || u.email,
+			userId: u.user.id,
+			username: u.user.username || u.user.email,
 			initialBytes: u.storage_quota_bytes
 		};
 	}
@@ -1069,8 +1076,8 @@
 		}
 	}
 
-	function openReset(u: AdminUserSummary) {
-		resetModal = { userId: u.id, username: u.username || u.email };
+	function openReset(u: FullUser) {
+		resetModal = { userId: u.user.id, username: u.user.username || u.user.email };
 		resetPassword = '';
 		resetError = null;
 	}
@@ -1094,7 +1101,7 @@
 		}
 	}
 
-	function removeUser(u: AdminUserSummary) {
+	function removeUser(u: FullUser) {
 		if (isSelf(u)) return;
 		openDeleteUser(u);
 	}
@@ -1103,20 +1110,20 @@
 	// provisions a home drive + flips the is_external flag; irreversible
 	// via the admin UI (there's no demote endpoint on purpose). Backend
 	// refuses when magic-link login is disabled — surfaced as a toast.
-	async function promoteExternal(u: AdminUserSummary) {
-		if (!u.is_external) return;
+	async function promoteExternal(u: FullUser) {
+		if (!u.user.is_external) return;
 		if (
 			!(await showConfirm(
 				t(
 					'admin.confirm_promote_user',
-					{ name: u.username || u.email },
+					{ name: u.user.username || u.user.email },
 					'Promote {{name}} to an internal user? This provisions a home drive and gives the account a normal storage envelope. The account keeps its identity; magic-link login stays the way in unless a password is set later.'
 				)
 			))
 		)
 			return;
 		try {
-			await promoteUserToInternal(u.id);
+			await promoteUserToInternal(u.user.id);
 			await loadUsers();
 		} catch (e) {
 			reportError(e);
@@ -2680,15 +2687,15 @@
 					</tr>
 				</thead>
 				<tbody>
-					{#each users as u (u.id)}
+					{#each users as u (u.user.id)}
 						{@const pct = quotaPct(u)}
 						<tr>
 							<td>
 								<div class="user-vignette-cell">
 									<UserVignette
-										userId={u.id}
-										fallbackLabel={u.username || u.email}
-										fallbackSublabel={u.email}
+										userId={u.user.id}
+										fallbackLabel={u.user.username || u.user.email}
+										fallbackSublabel={u.user.email}
 									/>
 									{#if isSelf(u)}
 										<span class="badge badge--self">{t('admin.you_badge', 'you')}</span>
@@ -2703,11 +2710,11 @@
 								     badge is `white-space: nowrap` so the badge label
 								     itself never wraps mid-word either. -->
 								<div class="role-badges">
-									<span class="badge badge--{u.role === 'admin' ? 'admin' : 'user'}">
-										{#if u.role === 'admin'}<Icon name="shield-alt" />{/if}
-										{u.role}
+									<span class="badge badge--{u.user.role === 'admin' ? 'admin' : 'user'}">
+										{#if u.user.role === 'admin'}<Icon name="shield-alt" />{/if}
+										{u.user.role}
 									</span>
-									{#if u.is_external}
+									{#if u.user.is_external}
 										<!-- Origin flag, orthogonal to `role`. Grant-only
 										     accounts (magic-link / OCM) can never be admin
 										     (DB CHECK `users_external_not_admin`) so the two
@@ -2738,7 +2745,7 @@
 							<td class="auth-cell">
 								<!--
 									Auth-capability chip set — ADMIN-ONLY (fields
-									scoped to `AdminUserSummaryDto`; never on
+									scoped to `FullUserDto`; never on
 									`UserDto`). Any user carries ZERO OR MORE of:
 									  * SSO/OIDC — `federation_kind === 'oidc'`,
 									    identity delegated to the IdP; label is
@@ -2825,7 +2832,7 @@
 								</span>
 							</td>
 							<td>
-								{#if u.is_external}
+								{#if u.user.is_external}
 									<!-- External accounts have no storage envelope by
 									     design (DB CHECK `users_external_no_storage`
 									     enforces storage_quota_bytes = 0). Rendering the
@@ -2867,10 +2874,10 @@
 								     actions render as invisible placeholders. -->
 								<div class="actions actions--user">
 									<!-- Slot 1: quota (internal) OR promote (external). -->
-									{#if u.is_external}
+									{#if u.user.is_external}
 										<button
 											class="icon-btn icon-btn--success"
-											data-testid={`admin-user-promote-${u.id}`}
+											data-testid={`admin-user-promote-${u.user.id}`}
 											title={t('admin.promote_to_internal_title', 'Promote to internal user')}
 											aria-label={t('admin.promote_to_internal_title', 'Promote to internal user')}
 											onclick={() => promoteExternal(u)}
@@ -2880,7 +2887,7 @@
 									{:else}
 										<button
 											class="icon-btn"
-											data-testid={`admin-user-quota-${u.id}`}
+											data-testid={`admin-user-quota-${u.user.id}`}
 											title={t('admin.edit_quota_title', 'Edit quota')}
 											aria-label={t('admin.edit_quota_title', 'Edit quota')}
 											onclick={() => openQuota(u)}
@@ -2891,10 +2898,10 @@
 									<!-- Slot 2: reset password (local internal only —
 									     OIDC and external accounts have no password
 									     to reset). Placeholder otherwise. -->
-									{#if !isOidcUser(u) && !u.is_external}
+									{#if !isOidcUser(u) && !u.user.is_external}
 										<button
 											class="icon-btn"
-											data-testid={`admin-user-reset-password-${u.id}`}
+											data-testid={`admin-user-reset-password-${u.user.id}`}
 											title={t('admin.reset_password_title', 'Reset password')}
 											aria-label={t('admin.reset_password_title', 'Reset password')}
 											onclick={() => openReset(u)}
@@ -2909,16 +2916,16 @@
 									     `change_user_role` + DB CHECK
 									     `users_external_not_admin`). Promotion to
 									     internal is offered separately in slot 1. -->
-									{#if !u.is_external}
+									{#if !u.user.is_external}
 										<button
 											class="icon-btn"
-											data-testid={`admin-user-toggle-role-${u.id}`}
+											data-testid={`admin-user-toggle-role-${u.user.id}`}
 											title={t('admin.toggle_role_title', 'Toggle admin role')}
 											aria-label={t('admin.toggle_role_title', 'Toggle admin role')}
 											disabled={isSelf(u)}
 											onclick={() => toggleRole(u)}
 										>
-											<Icon name={u.role === 'admin' ? 'user' : 'crown'} />
+											<Icon name={u.user.role === 'admin' ? 'user' : 'crown'} />
 										</button>
 									{:else}
 										<span class="icon-btn icon-btn--placeholder" aria-hidden="true"></span>
@@ -2926,7 +2933,7 @@
 									<!-- Slot 4: activate/deactivate. -->
 									<button
 										class="icon-btn {u.active ? 'icon-btn--danger' : 'icon-btn--success'}"
-										data-testid={`admin-user-toggle-active-${u.id}`}
+										data-testid={`admin-user-toggle-active-${u.user.id}`}
 										title={u.active
 											? t('admin.deactivate_title', 'Deactivate')
 											: t('admin.activate_title', 'Activate')}
@@ -2941,7 +2948,7 @@
 									<!-- Slot 5: delete. -->
 									<button
 										class="icon-btn icon-btn--danger"
-										data-testid={`admin-user-delete-${u.id}`}
+										data-testid={`admin-user-delete-${u.user.id}`}
 										title={t('admin.delete_title', 'Delete user')}
 										aria-label={t('admin.delete_title', 'Delete user')}
 										disabled={isSelf(u)}
@@ -3275,11 +3282,21 @@
 						    fall back to the owner's cap; 0 also means "no limit"
 						    (backend convention — see `User.storage_quota_bytes` doc).
 						-->
+						<!-- Personal-drive fallback used to read
+						     `owner.storage_quota_bytes` off the resolved DTO.
+						     Post the UserDto refactor
+						     (docs/plan/userdto-refactor.md) `owner` here is a
+						     `PublicUser` (public identity, no quota); the
+						     envelope quota only lives on `FullUser` /
+						     `SelfUser`. Rather than widen the resolver's shape
+						     just for this fallback, hold the effective quota at
+						     `null` when the drive itself doesn't declare one —
+						     the row renders "—" and the admin can consult the
+						     user's row for their envelope cap. Explicit
+						     shared-drive quota still surfaces as before. -->
 						{@const effectiveQuota =
 							d.kind === 'personal'
-								? owner && owner.storage_quota_bytes > 0
-									? owner.storage_quota_bytes
-									: null
+								? null
 								: d.quota_bytes && d.quota_bytes > 0
 									? d.quota_bytes
 									: null}

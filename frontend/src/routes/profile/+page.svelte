@@ -72,11 +72,11 @@
 	let creatingPw = $state(false);
 	let autoExpanded = $state(false);
 
-	const isOidc = $derived(session.user?.federation_kind === 'oidc');
-	const isLocal = $derived(!session.user?.federation_kind);
+	const isOidc = $derived(session.me?.full.federation_kind === 'oidc');
+	const isLocal = $derived(!session.me?.full.federation_kind);
 	const usernameClaimed = $derived(!!session.user?.username);
 	const isAdmin = $derived(session.user?.role === 'admin');
-	const canEditImage = $derived(session.user?.can_edit_image === true && isLocal);
+	const canEditImage = $derived(session.me?.can_edit_image === true && isLocal);
 	// Show the change-password card when the user CAN change their
 	// local password: they have `password_hash` on file AND the
 	// deployment offers password login (backend `change_password`
@@ -87,14 +87,16 @@
 	// password) are a legitimate posture and MUST be able to rotate
 	// their local credential; the new gate lets them, and the backend
 	// refusal covers the pure-SSO case where has_password is false.
-	const showPasswordCard = $derived((session.user?.has_password ?? false) && passwordLoginEnabled);
+	const showPasswordCard = $derived(
+		(session.me?.full.has_password ?? false) && passwordLoginEnabled
+	);
 
 	// SSO card gates — see docs/plan/oidc-account-linking.md.
 	// Connect: only when OIDC is enabled AND the user isn't already linked.
 	// Disconnect: only when currently OIDC-linked AND the user has an
 	// alternative auth method (password or OPAQUE-registered) — else
 	// unlinking would lock them out.
-	const canConnectSso = $derived(oidcEnabled && !session.user?.federation_kind);
+	const canConnectSso = $derived(oidcEnabled && !session.me?.full.federation_kind);
 	// Show the disconnect button whenever the user is OIDC-linked.
 	// The backend guard (`AuthApplicationService::unlink_oidc`) is the
 	// source of truth for the "no alternative auth" refusal — it also
@@ -103,7 +105,7 @@
 	// adoption status through user-directory endpoints). The UI shows
 	// the button unconditionally and surfaces the backend's 403 as a
 	// user-facing "set a password first" prompt.
-	const canDisconnectSso = $derived(session.user?.federation_kind === 'oidc');
+	const canDisconnectSso = $derived(session.me?.full.federation_kind === 'oidc');
 
 	/**
 	 * Mandatory change-password mode. TRUE when the backend has
@@ -136,14 +138,11 @@
 		}
 	});
 
-	const storagePct = $derived(
-		session.user && session.user.storage_quota_bytes > 0
-			? Math.min(
-					100,
-					Math.round((session.user.storage_used_bytes / session.user.storage_quota_bytes) * 100)
-				)
-			: 0
-	);
+	const storagePct = $derived.by(() => {
+		const full = session.me?.full;
+		if (!full || full.storage_quota_bytes <= 0) return 0;
+		return Math.min(100, Math.round((full.storage_used_bytes / full.storage_quota_bytes) * 100));
+	});
 	const storageBarClass = $derived(
 		storagePct > 90 ? 'bar__fill--red' : storagePct > 70 ? 'bar__fill--orange' : 'bar__fill--green'
 	);
@@ -159,15 +158,20 @@
 		relativeTimeAgo(value, { empty: t('profile.never', 'Never'), invalidAsString: true });
 
 	function hydrate() {
-		const u = session.user;
-		if (!u) return;
-		givenName = u.given_name ?? '';
-		familyName = u.family_name ?? '';
-		username = u.username ?? '';
-		preferredLocale = u.preferred_locale ?? '';
-		notifyOnShare = u.notify_on_share;
+		const me = session.me;
+		if (!me) return;
+		// Public identity (name / handle) reads via `me.full.user`;
+		// admin-visible extras (preferred_locale) via `me.full`;
+		// self-only bag flags (notify_on_share) via `me` directly.
+		// The three-level indirection makes the audience of each
+		// field visible at the callsite (docs/plan/userdto-refactor.md).
+		givenName = me.full.user.given_name ?? '';
+		familyName = me.full.user.family_name ?? '';
+		username = me.full.user.username ?? '';
+		preferredLocale = me.full.preferred_locale ?? '';
+		notifyOnShare = me.notify_on_share;
 		// Source of truth is the preferences store, which itself
-		// derives from `session.user.ui_preferences`. Reading through
+		// derives from `session.me.ui_preferences`. Reading through
 		// the store here (rather than the raw bag) means a new
 		// preference field just needs a getter in the store and its
 		// own line here — no wire-format knowledge on the page.
@@ -176,21 +180,22 @@
 
 	async function saveProfile(e: SubmitEvent) {
 		e.preventDefault();
-		const u = session.user;
-		if (!u) return;
+		const me = session.me;
+		if (!me) return;
 
 		// Build a sparse patch of only the fields the user actually changed.
 		// Sending empty strings the user never touched would 400 on the server.
 		const patch: ProfilePatch = {};
-		if (!usernameClaimed && username.trim() && username.trim() !== (u.username ?? '')) {
+		if (!usernameClaimed && username.trim() && username.trim() !== (me.full.user.username ?? '')) {
 			patch.username = username.trim();
 		}
-		if (givenName.trim() !== (u.given_name ?? '')) patch.given_name = givenName.trim();
-		if (familyName.trim() !== (u.family_name ?? '')) patch.family_name = familyName.trim();
-		if ((preferredLocale || '') !== (u.preferred_locale ?? '')) {
+		if (givenName.trim() !== (me.full.user.given_name ?? '')) patch.given_name = givenName.trim();
+		if (familyName.trim() !== (me.full.user.family_name ?? ''))
+			patch.family_name = familyName.trim();
+		if ((preferredLocale || '') !== (me.full.preferred_locale ?? '')) {
 			patch.preferred_locale = preferredLocale || undefined;
 		}
-		if (notifyOnShare !== u.notify_on_share) patch.notify_on_share = notifyOnShare;
+		if (notifyOnShare !== me.notify_on_share) patch.notify_on_share = notifyOnShare;
 		// Ship the diff as a partial `ui_preferences` patch — the
 		// server does a shallow merge, so only the changed key is
 		// touched; siblings set on other devices survive.
@@ -205,8 +210,13 @@
 
 		savingProfile = true;
 		try {
-			const updated = await updateProfile(patch);
-			session.user = updated;
+			await updateProfile(patch);
+			// Server returns the truncated `PublicUser` shape; re-fetch
+			// `/me` so `session.me` picks up self-only edits (locale,
+			// notify_on_share, ui_preferences bag) as well as the public
+			// identity changes. `session.user` is a derived accessor over
+			// `session.me.full.user`, so it updates in lockstep.
+			await session.refresh();
 			if (patch.preferred_locale) await setLocale(patch.preferred_locale as Locale);
 			ui.notify(t('profile.saved', 'Profile saved'), 'success');
 		} catch (err) {
@@ -445,7 +455,7 @@
 			// (federation_kind should now be 'oidc').
 			try {
 				const me = await fetchMe();
-				if (me) session.user = me;
+				if (me) session.me = me;
 			} catch {
 				/* stale session is recoverable — next request refreshes */
 			}
@@ -536,7 +546,7 @@
 		try {
 			await unlinkOidc();
 			const me = await fetchMe();
-			if (me) session.user = me;
+			if (me) session.me = me;
 			ui.notify(t('profile.sso_unlinked_success', 'Single sign-on disconnected.'), 'info');
 		} catch (err) {
 			if (err instanceof ApiError && err.errorType === 'NoAlternativeAuth') {
@@ -742,7 +752,7 @@
 						<Icon name="clock" />
 						{t('profile.last_login', 'Last Login')}
 					</div>
-					<div class="info-value">{timeAgo(session.user.last_login_at)}</div>
+					<div class="info-value">{timeAgo(session.me?.full.last_login_at)}</div>
 				</div>
 			</div>
 		</div>
@@ -752,20 +762,20 @@
 			<h2><Icon name="hdd" /> {t('profile.storage', 'Storage')}</h2>
 			<div class="storage-stats">
 				<div class="storage-stat">
-					<div class="stat-value">{formatBytes(session.user.storage_used_bytes)}</div>
+					<div class="stat-value">{formatBytes(session.me?.full.storage_used_bytes ?? 0)}</div>
 					<div class="muted">{t('profile.used', 'Used')}</div>
 				</div>
 				<div class="storage-stat">
 					<div class="stat-value">
-						{session.user.storage_quota_bytes > 0
-							? formatBytes(session.user.storage_quota_bytes)
+						{(session.me?.full.storage_quota_bytes ?? 0) > 0
+							? formatBytes(session.me?.full.storage_quota_bytes ?? 0)
 							: '∞'}
 					</div>
 					<div class="muted">{t('profile.quota', 'Quota')}</div>
 				</div>
 				<div class="storage-stat">
 					<div class="stat-value">
-						{session.user.storage_quota_bytes > 0 ? `${storagePct}%` : '—'}
+						{(session.me?.full.storage_quota_bytes ?? 0) > 0 ? `${storagePct}%` : '—'}
 					</div>
 					<div class="muted">{t('profile.usage', 'Usage')}</div>
 				</div>

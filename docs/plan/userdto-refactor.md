@@ -1,5 +1,16 @@
 # UserDto Refactor — Three-Layer Split (Public / Full / Self)
 
+> **Status — SHIPPED 2026-08-21.** All eight phases landed and all gates
+> pass: `cargo clippy --all-targets --all-features -D warnings` clean,
+> `cargo fmt --check` clean, `cargo test three_layer_quarantine` (2/2
+> structural-quarantine tests pass), `npm run check` (593 files, 0
+> errors, 0 warnings), `npm run test:unit` (414 pass / 1 skipped / 0
+> failed), OpenAPI regenerated at `resources/gen/openapi.json`. See the
+> [Phasing](#phasing) section below for the per-step outcome. The doc
+> is retained as the reference for anyone extending the three-layer
+> shape (new field → decide by audience per the rule in the opening
+> section).
+
 Establish three DTO shapes for representing a user on the wire, each
 with a single unambiguous audience, composed hierarchically so the
 overlap between audiences is defined ONCE:

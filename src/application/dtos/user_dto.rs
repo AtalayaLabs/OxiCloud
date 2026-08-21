@@ -586,3 +586,142 @@ pub struct OidcUserInfoDto {
     pub name: Option<String>,
     pub groups: Vec<String>,
 }
+
+#[cfg(test)]
+mod three_layer_quarantine {
+    use super::*;
+    use serde_json::Value;
+
+    /// Structural-quarantine guard for `SelfUserDto`. The self-only
+    /// bag (`ui_preferences`, `notify_on_share`, `is_dpop_bound`,
+    /// `force_password_change`, `can_edit_image`) MUST live at the
+    /// top level, NOT nested inside `.full` or `.full.user`. If a
+    /// future refactor accidentally moves one of them down, the
+    /// wire shape leaks it through every `PublicUserDto` /
+    /// `FullUserDto` emitter (share responses, group members,
+    /// `/api/admin/users`, magic-link invitees) — exactly what the
+    /// three-layer split exists to prevent. Fails loudly here.
+    #[test]
+    fn self_only_fields_stay_at_top_level_of_self_user_dto() {
+        let self_dto = SelfUserDto {
+            full: FullUserDto {
+                user: PublicUserDto {
+                    id: "00000000-0000-0000-0000-000000000001".into(),
+                    username: None,
+                    email: "self@example.invalid".into(),
+                    role: "user".into(),
+                    image: None,
+                    is_external: false,
+                    given_name: None,
+                    family_name: None,
+                    is_online: false,
+                },
+                federation_kind: None,
+                federation_issuer: None,
+                preferred_locale: None,
+                email_verified_at: None,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                last_login_at: None,
+                active: true,
+                storage_quota_bytes: 0,
+                storage_used_bytes: 0,
+                has_password: true,
+                opaque_registered: false,
+                opaque_migrated: false,
+            },
+            ui_preferences: serde_json::json!({}),
+            notify_on_share: true,
+            is_dpop_bound: false,
+            force_password_change: false,
+            can_edit_image: true,
+        };
+        let json: Value = serde_json::to_value(&self_dto).expect("SelfUserDto serialises");
+        assert!(
+            json.get("ui_preferences").is_some(),
+            "top-level ui_preferences"
+        );
+        assert!(
+            json.get("full")
+                .expect("full block")
+                .get("ui_preferences")
+                .is_none(),
+            "ui_preferences must NOT appear inside `.full`"
+        );
+        assert!(
+            json.pointer("/full/user/ui_preferences").is_none(),
+            "ui_preferences must NOT appear inside `.full.user`"
+        );
+        // Same guard for the other self-only fields.
+        for k in [
+            "notify_on_share",
+            "is_dpop_bound",
+            "force_password_change",
+            "can_edit_image",
+        ] {
+            assert!(json.get(k).is_some(), "{k} at top level");
+            assert!(
+                json.pointer(&format!("/full/{k}")).is_none(),
+                "{k} must NOT nest in .full"
+            );
+            assert!(
+                json.pointer(&format!("/full/user/{k}")).is_none(),
+                "{k} must NOT nest in .full.user"
+            );
+        }
+    }
+
+    /// Structural-quarantine guard for `FullUserDto`. Admin-visible
+    /// extras (`has_password`, OPAQUE flags, `federation_*`,
+    /// `last_login_at`, `active`, quotas, `preferred_locale`,
+    /// `email_verified_at`) MUST live at the top level of
+    /// `FullUserDto`, NOT inside `.user`. If a future refactor
+    /// accidentally lifts one of them onto `PublicUserDto` (the
+    /// embedded `user` field), it leaks through `/api/users/{id}`
+    /// and every other public directory endpoint.
+    #[test]
+    fn admin_only_fields_stay_at_top_level_of_full_user_dto() {
+        let full = FullUserDto {
+            user: PublicUserDto {
+                id: "00000000-0000-0000-0000-000000000002".into(),
+                username: Some("bob".into()),
+                email: "bob@example.invalid".into(),
+                role: "user".into(),
+                image: None,
+                is_external: false,
+                given_name: None,
+                family_name: None,
+                is_online: false,
+            },
+            federation_kind: None,
+            federation_issuer: None,
+            preferred_locale: None,
+            email_verified_at: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            last_login_at: None,
+            active: true,
+            storage_quota_bytes: 10_737_418_240,
+            storage_used_bytes: 0,
+            has_password: true,
+            opaque_registered: false,
+            opaque_migrated: false,
+        };
+        let json: Value = serde_json::to_value(&full).expect("FullUserDto serialises");
+        for k in [
+            "has_password",
+            "opaque_registered",
+            "opaque_migrated",
+            "last_login_at",
+            "active",
+            "storage_quota_bytes",
+            "storage_used_bytes",
+        ] {
+            assert!(json.get(k).is_some(), "{k} at top level of FullUserDto");
+            assert!(
+                json.pointer(&format!("/user/{k}")).is_none(),
+                "{k} must NOT nest in .user"
+            );
+        }
+    }
+}
