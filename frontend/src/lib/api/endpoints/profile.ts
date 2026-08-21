@@ -1,7 +1,7 @@
 /** Profile / account endpoints — ported from views/profile/profile.js. */
 import { apiFetch } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
-import type { PublicUser } from '$lib/api/types';
+import type { SelfUser } from '$lib/api/types';
 import { t } from '$lib/i18n/index.svelte';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
@@ -24,7 +24,7 @@ export interface ProfilePatch {
 	ui_preferences?: Record<string, unknown>;
 }
 
-export async function updateProfile(patch: ProfilePatch): Promise<PublicUser> {
+export async function updateProfile(patch: ProfilePatch): Promise<SelfUser> {
 	const res = await apiFetch('/api/auth/me/profile', {
 		method: 'PATCH',
 		credentials: 'same-origin',
@@ -57,7 +57,7 @@ export async function updateProfile(patch: ProfilePatch): Promise<PublicUser> {
 		}
 		throw new Error(err.message || err.error || `profile update failed: ${res.status}`);
 	}
-	return (await res.json()) as PublicUser;
+	return (await res.json()) as SelfUser;
 }
 
 export async function changePassword(currentPw: string, newPw: string): Promise<void> {

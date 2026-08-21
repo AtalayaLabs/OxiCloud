@@ -210,13 +210,13 @@
 
 		savingProfile = true;
 		try {
-			await updateProfile(patch);
-			// Server returns the truncated `PublicUser` shape; re-fetch
-			// `/me` so `session.me` picks up self-only edits (locale,
-			// notify_on_share, ui_preferences bag) as well as the public
-			// identity changes. `session.user` is a derived accessor over
-			// `session.me.full.user`, so it updates in lockstep.
-			await session.refresh();
+			// PATCH /me/profile echoes SelfUser (same shape as GET /me)
+			// so the SPA absorbs the just-written state in one round
+			// trip — no follow-up refresh needed. `session.user` is a
+			// derived accessor over `session.me.full.user`, so it
+			// updates in lockstep with the me assignment.
+			const updated = await updateProfile(patch);
+			session.me = updated;
 			if (patch.preferred_locale) await setLocale(patch.preferred_locale as Locale);
 			ui.notify(t('profile.saved', 'Profile saved'), 'success');
 		} catch (err) {
