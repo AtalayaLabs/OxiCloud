@@ -163,10 +163,39 @@ pub struct DashboardStatsDto {
     pub auth_enabled: bool,
     pub oidc_configured: bool,
     pub quotas_enabled: bool,
-    // User stats
+    // ── User accounts (static breakdown of auth.users) ──
+    // All four are counts of the SAME table under different
+    // predicates. `active`, `admin`, `external` are all subsets of
+    // `total`. `external` is disjoint from `admin` by DB constraint
+    // (`users_external_not_admin`). The dashboard renders these as
+    // one grouped section separate from the live-activity section
+    // below, so admins don't confuse "as-of-now row count" with
+    // "who's here right now".
     pub total_users: i64,
     pub active_users: i64,
     pub admin_users: i64,
+    /// Grant-only accounts (magic-link / OIDC-only / OCM recipients).
+    /// Filtered out of `total_users` / `active_users` since those
+    /// columns count operational seats (see the SELECT comment). Here
+    /// as its own metric because operators of external-heavy
+    /// deployments (public shares, invited-collab shops) need to see
+    /// the invited population at a glance.
+    pub external_users: i64,
+    // ── Live activity (projection over auth.sessions) ──
+    // Both fields change minute-to-minute, unlike the user counts
+    // above which only move on register/deactivate/role-toggle.
+    // Same 5-min window as the Prometheus gauges
+    // (`oxicloud_sessions_online[_users]` in
+    // `session_liveness_gauges.rs`), computed via the shared
+    // `ONLINE_WINDOW` constant so per-user badges + aggregate
+    // counts + this dashboard number stay consistent by construction.
+    /// Distinct users behind non-revoked sessions active in the last
+    /// 5 min. Answers "how many humans are here right now?".
+    pub online_users: i64,
+    /// Non-revoked sessions active in the last 5 min. Answers "how
+    /// many concurrent connections must I serve?". Ratio
+    /// `online_sessions / online_users` is the multi-device factor.
+    pub online_sessions: i64,
     // ── Per-drive-kind quota accounting ──
     // One row per drive kind (personal, shared). Pre-dedup, logical
     // file sizes summed from `drives.used_bytes` (personal rolls up

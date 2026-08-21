@@ -876,7 +876,10 @@ impl AuthApplicationService {
             is_external = false,
             "🛂 user registered",
         );
-        Ok(RegisterResult::Created(Box::new(PublicUserDto::new(created_user, false))))
+        Ok(RegisterResult::Created(Box::new(PublicUserDto::new(
+            created_user,
+            false,
+        ))))
     }
 
     /// Create the first admin user during initial system setup.
@@ -3227,7 +3230,10 @@ impl AuthApplicationService {
         offset: i64,
     ) -> Result<Vec<PublicUserDto>, DomainError> {
         let users = self.user_storage.list_users(limit, offset, false).await?;
-        Ok(users.into_iter().map(|u| PublicUserDto::new(u, false)).collect())
+        Ok(users
+            .into_iter()
+            .map(|u| PublicUserDto::new(u, false))
+            .collect())
     }
 
     /// Admin-only: lists users including external (grant-only) recipients.
@@ -3241,7 +3247,10 @@ impl AuthApplicationService {
     ) -> Result<Vec<PublicUserDto>, DomainError> {
         self.require_admin_caller(authorization, caller_id).await?;
         let users = self.user_storage.list_users(limit, offset, true).await?;
-        Ok(users.into_iter().map(|u| PublicUserDto::new(u, false)).collect())
+        Ok(users
+            .into_iter()
+            .map(|u| PublicUserDto::new(u, false))
+            .collect())
     }
 
     /// Admin-only user listing. Returns `Vec<FullUserDto>` — same
@@ -3296,7 +3305,10 @@ impl AuthApplicationService {
         limit: i64,
     ) -> Result<Vec<PublicUserDto>, DomainError> {
         let users = self.user_storage.search_users(query, limit, false).await?;
-        Ok(users.into_iter().map(|u| PublicUserDto::new(u, false)).collect())
+        Ok(users
+            .into_iter()
+            .map(|u| PublicUserDto::new(u, false))
+            .collect())
     }
 
     /// Username-only search for the NC sharee autocomplete: identical

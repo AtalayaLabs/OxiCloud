@@ -387,9 +387,30 @@ export interface DriveKindUsage {
 }
 
 export interface AdminDashboard {
+	// ── User accounts (static breakdown of auth.users) ──
+	// All four are counts of the same table under different
+	// predicates. Rendered as one grouped section on the dashboard.
 	total_users: number;
 	active_users: number;
 	admin_users: number;
+	/** Grant-only accounts (magic-link / OIDC-only / OCM recipients).
+	 * Filtered out of `total_users` / `active_users` — those count
+	 * operational seats. Surfaced here as its own metric because
+	 * external-heavy deployments (public-share collab, invited-only
+	 * shops) need the invited population at a glance. */
+	external_users: number;
+	// ── Live activity (projection over auth.sessions) ──
+	// Both change minute-to-minute — a whole different cadence from
+	// the account counts above. Rendered as a separate section on
+	// the dashboard with the presence-dot visual cue.
+	/** Distinct users behind non-revoked sessions active in the last
+	 * 5 min. Same 5-min window as the `oxicloud_sessions_online_users`
+	 * Prometheus gauge; single source of truth on the backend. */
+	online_users: number;
+	/** Non-revoked sessions active in the last 5 min. Ratio
+	 * `online_sessions / online_users` is the multi-device factor
+	 * (browser + desktop + phone). */
+	online_sessions: number;
 	server_version: string;
 	drive_usage: DriveKindUsage[];
 	auth_enabled: boolean;

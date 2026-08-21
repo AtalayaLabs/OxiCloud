@@ -940,6 +940,51 @@ pub async fn get_dashboard_stats(
     .await
     .map_err(|e| AppError::internal_error(format!("Database query failed: {}", e)))?;
 
+    // External account count — distinct query (not FILTERed into
+    // `stats_row` above) because `stats_row` scopes to
+    // `is_external = false` for the operational-seat counts.
+    // Externals form their own population; the dashboard renders them
+    // as a separate stat card in the "User accounts" section.
+    let external_users: i64 =
+        sqlx::query_scalar(r#"SELECT COUNT(*)::INT8 FROM auth.users WHERE is_external = true"#)
+            .fetch_one(db_pool.as_ref())
+            .await
+            .map_err(|e| AppError::internal_error(format!("External user count failed: {}", e)))?;
+
+    // Live-activity counts — projection over auth.sessions, same
+    // `ONLINE_WINDOW` (5 min) the Prometheus gauges use so the
+    // dashboard number, admin-table green dot, and
+    // `oxicloud_sessions_online` scrape all agree by construction.
+    // Bound as `$1 = window_secs` via `make_interval(secs => $1)`
+    // to keep the single-source-of-truth pattern (no SQL literal
+    // for the window). Both queries hit the partial index
+    // `idx_sessions_last_seen_at WHERE revoked = FALSE` so per-run
+    // cost is ~μs even at tens of thousands of session rows.
+    let online_window_secs: f64 =
+        crate::application::dtos::session_dto::ONLINE_WINDOW.as_secs_f64();
+    let online_sessions: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)::INT8 FROM auth.sessions
+        WHERE revoked = FALSE
+          AND last_seen_at > NOW() - make_interval(secs => $1)
+        "#,
+    )
+    .bind(online_window_secs)
+    .fetch_one(db_pool.as_ref())
+    .await
+    .map_err(|e| AppError::internal_error(format!("Online session count failed: {}", e)))?;
+    let online_users: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(DISTINCT user_id)::INT8 FROM auth.sessions
+        WHERE revoked = FALSE
+          AND last_seen_at > NOW() - make_interval(secs => $1)
+        "#,
+    )
+    .bind(online_window_secs)
+    .fetch_one(db_pool.as_ref())
+    .await
+    .map_err(|e| AppError::internal_error(format!("Online user count failed: {}", e)))?;
+
     use sqlx::Row;
 
     // Per-drive-kind quota panel:
@@ -1024,6 +1069,9 @@ pub async fn get_dashboard_stats(
         total_users: stats_row.get("total_users"),
         active_users: stats_row.get("active_users"),
         admin_users: stats_row.get("admin_users"),
+        external_users,
+        online_users,
+        online_sessions,
         drive_usage,
         users_over_80_percent: stats_row.get("users_over_80"),
         users_over_quota: stats_row.get("users_over_quota"),
