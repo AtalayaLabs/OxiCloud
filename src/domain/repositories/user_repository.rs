@@ -69,6 +69,51 @@ pub struct UserListEntry {
     /// file without having actually logged in via OPAQUE yet (e.g.
     /// admin cleared the envelope, silent-migration hasn't re-run).
     pub opaque_migrated: bool,
+    /// Optional avatar payload (base64, up to 512 KiB per row). Included
+    /// on the admin list projection so the SPA can seed its per-user
+    /// `resolveUser` cache from the list row and skip the follow-up
+    /// `/api/users/{id}` fetch UserVignette would otherwise trigger.
+    /// The narrow-projection concern that motivated omitting this
+    /// column originally is retired by that cache-seeding path — the
+    /// bytes now do useful work per page load instead of being
+    /// discarded. Deferred: moving avatar storage out of the row
+    /// entirely (planned refactor); this shape is transitional.
+    pub image: Option<String>,
+    /// Presence signal — TRUE when the server observed a request on
+    /// any of this user's non-revoked sessions within the last
+    /// [`ONLINE_WINDOW`](crate::application::dtos::session_dto::ONLINE_WINDOW)
+    /// (5 min). Populated via an `EXISTS(...)` subquery on
+    /// `auth.sessions` in the list projection — the partial index
+    /// `idx_sessions_last_seen_at WHERE revoked = FALSE` covers the
+    /// scan, so per-row cost is ~μs. Surfaces to the FE via
+    /// `UserDto::is_online` so both `/api/users/{id}` and the admin
+    /// listing carry it, and the admin table renders a green/grey
+    /// presence dot next to each vignette.
+    pub is_online: bool,
+}
+
+/// DB-computed booleans about a user that aren't fields on the
+/// [`User`](crate::domain::entities::user::User) entity itself —
+/// either derived from column presence (`password_hash IS NOT NULL`)
+/// or from a cross-table lookup (`auth.sessions.last_seen_at` for
+/// `is_online`). Companion to `User` on the list projection: the
+/// repo computes both, the application layer packs them into
+/// [`FullUserDto`](crate::application::dtos::user_dto::FullUserDto).
+///
+/// Not "admin-only" — every field ends up on `FullUserDto`, which
+/// both admin AND self read. The name reflects "derived from the DB
+/// row, not intrinsic to the User entity".
+///
+/// See `docs/plan/userdto-refactor.md` for the phasing that
+/// introduces this type; it will replace [`UserListEntry`] once the
+/// list repo is switched from narrow projection to
+/// `Vec<(User, UserDerivedFlags)>` (P6 of the refactor).
+#[derive(Debug, Clone, Copy)]
+pub struct UserDerivedFlags {
+    pub has_password: bool,
+    pub opaque_registered: bool,
+    pub opaque_migrated: bool,
+    pub is_online: bool,
 }
 
 // Conversion from UserRepositoryError to DomainError

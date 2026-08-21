@@ -858,6 +858,8 @@ impl UserRepository for UserPgRepository {
                 bool,
                 bool,
                 bool,
+                Option<String>,
+                bool,
             ),
         >(
             // Auth-credential columns projected as booleans via `IS NOT
@@ -871,6 +873,21 @@ impl UserRepository for UserPgRepository {
             // federation_kind / federation_issuer, the SPA derives the
             // full "capability set" per user (password / OPAQUE / SSO /
             // passwordless).
+            //
+            // `image` is projected too — the previous narrow projection
+            // (ROUND12 §Q1 / ROUND13 §Q1) discarded up to 512 KiB per
+            // row because the admin table never rendered it. That's now
+            // reversed: the SPA seeds its per-user `resolveUser` cache
+            // from these rows to kill the N+1 `/api/users/{id}` fetches
+            // UserVignette would otherwise trigger.
+            //
+            // `is_online` uses an EXISTS scalar subquery against
+            // `auth.sessions` — the partial index
+            // `idx_sessions_last_seen_at WHERE revoked = FALSE` covers
+            // the lookup, so per-row cost is ~μs. The window comes from
+            // `application::dtos::session_dto::ONLINE_WINDOW` (bound as
+            // `$4` seconds), same single-source-of-truth pattern the
+            // `session_liveness_gauges` module uses.
             r#"
             SELECT
                 id, username, email, role::text,
@@ -879,7 +896,14 @@ impl UserRepository for UserPgRepository {
                 federation_kind, federation_issuer, is_external,
                 (password_hash IS NOT NULL)       AS has_password,
                 (opaque_envelope IS NOT NULL)     AS opaque_registered,
-                (opaque_migrated_at IS NOT NULL)  AS opaque_migrated
+                (opaque_migrated_at IS NOT NULL)  AS opaque_migrated,
+                image,
+                EXISTS (
+                    SELECT 1 FROM auth.sessions s
+                     WHERE s.user_id = auth.users.id
+                       AND s.revoked = FALSE
+                       AND s.last_seen_at > NOW() - make_interval(secs => $4)
+                )                                 AS is_online
               FROM auth.users
              WHERE ($3 OR is_external = FALSE)
              ORDER BY created_at DESC, id DESC
@@ -889,6 +913,7 @@ impl UserRepository for UserPgRepository {
         .bind(limit)
         .bind(offset)
         .bind(include_external)
+        .bind(crate::application::dtos::session_dto::ONLINE_WINDOW.as_secs_f64())
         .fetch_all(self.pool.as_ref())
         .await
         .map_err(Self::map_sqlx_error)?;
@@ -911,6 +936,8 @@ impl UserRepository for UserPgRepository {
                     has_password,
                     opaque_registered,
                     opaque_migrated,
+                    image,
+                    is_online,
                 )| UserListEntry {
                     id,
                     username,
@@ -930,6 +957,8 @@ impl UserRepository for UserPgRepository {
                     has_password,
                     opaque_registered,
                     opaque_migrated,
+                    image,
+                    is_online,
                 },
             )
             .collect())
