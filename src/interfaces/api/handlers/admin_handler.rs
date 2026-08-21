@@ -39,25 +39,14 @@ use crate::interfaces::middleware::auth::AuthUser;
 use std::sync::Arc;
 use uuid::Uuid;
 
-#[derive(serde::Serialize)]
-#[serde(untagged)]
-enum AdminUsersPayload {
-    /// Fat-`PublicUserDto` per row. Emitted when `?summary=false` — legacy
-    /// path retained until the FE drops the `summary=false` query
-    /// (rare; the SPA uses `summary=true` for the paginated table).
-    Full(Vec<PublicUserDto>),
-    /// `FullUserDto` per row — same shape one row of the /me
-    /// response's embedded `full` carries. Emitted when
-    /// `?summary=true`. The FE seeds `resolveUser` cache from
-    /// `row.user` here (kills the per-row `/api/users/{id}` fetch).
-    /// The old `AdminUserSummaryDto` returned here has been replaced
-    /// by `FullUserDto`; see `docs/plan/userdto-refactor.md`.
-    Summary(Vec<FullUserDto>),
-}
-
+/// Response envelope for `GET /api/admin/users`. `users` is always
+/// `Vec<FullUserDto>` — same shape one row of `/me`'s embedded
+/// `full` block carries; the FE seeds `resolveUser` cache from
+/// `row.user` (kills the per-row `/api/users/{id}` fetch). See
+/// `docs/plan/userdto-refactor.md`.
 #[derive(serde::Serialize)]
 struct AdminUsersPageResponse {
-    users: AdminUsersPayload,
+    users: Vec<FullUserDto>,
     total: i64,
     limit: i64,
     offset: i64,
@@ -1094,13 +1083,20 @@ pub async fn get_dashboard_stats(
 // ============================================================================
 
 /// GET /api/admin/users?limit=50&offset=0 — list all users
+///
+/// Always returns `Vec<FullUserDto>` — the shape one row of the
+/// `/me` response's embedded `full` block carries. The former
+/// `?summary` toggle (flat `PublicUserDto` vs nested `FullUserDto`)
+/// has been retired: admin listing is low-volume and the FE always
+/// asked for the nested shape anyway, so the two-shape split served
+/// no caller and only invited jq-path bugs. See
+/// `docs/plan/userdto-refactor.md`.
 #[utoipa::path(
     get,
     path = "/api/admin/users",
     params(
         ("limit" = Option<i64>, Query, description = "Max users to return (default 100, max 500)"),
-        ("offset" = Option<i64>, Query, description = "Pagination offset"),
-        ("summary" = Option<bool>, Query, description = "Return the compact management-table projection")
+        ("offset" = Option<i64>, Query, description = "Pagination offset")
     ),
     responses(
         (status = 200, description = "List of users"),
@@ -1128,31 +1124,16 @@ pub async fn list_users(
     // internal-only variant is used by system address book / sharee
     // search, where surfacing externals would leak identities. See
     // `auth_application_service::list_users` doc for the split.
-    let users = if query.summary.unwrap_or(false) {
-        AdminUsersPayload::Summary(
-            auth.auth_application_service
-                .list_user_summaries_including_external_with_perms(
-                    state.authorization.as_ref(),
-                    auth_user.id,
-                    limit,
-                    offset,
-                )
-                .await
-                .map_err(AppError::from)?,
+    let users = auth
+        .auth_application_service
+        .list_user_summaries_including_external_with_perms(
+            state.authorization.as_ref(),
+            auth_user.id,
+            limit,
+            offset,
         )
-    } else {
-        AdminUsersPayload::Full(
-            auth.auth_application_service
-                .list_users_including_external_with_perms(
-                    state.authorization.as_ref(),
-                    auth_user.id,
-                    limit,
-                    offset,
-                )
-                .await
-                .map_err(AppError::from)?,
-        )
-    };
+        .await
+        .map_err(AppError::from)?;
 
     let total = auth
         .auth_application_service

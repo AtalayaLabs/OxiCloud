@@ -3247,30 +3247,13 @@ impl AuthApplicationService {
     /// out so that internal-user surfaces — system address book, OCS
     /// sharee search, etc. — never expose external identities. Admin
     /// surfaces that need the full list should call
-    /// [`list_users_including_external_with_perms`] instead.
+    /// [`list_user_summaries_including_external_with_perms`] instead.
     pub async fn list_users(
         &self,
         limit: i64,
         offset: i64,
     ) -> Result<Vec<PublicUserDto>, DomainError> {
         let users = self.user_storage.list_users(limit, offset, false).await?;
-        Ok(users
-            .into_iter()
-            .map(|u| PublicUserDto::new(u, false))
-            .collect())
-    }
-
-    /// Admin-only: lists users including external (grant-only) recipients.
-    /// Used by the admin user-management UI.
-    pub async fn list_users_including_external_with_perms<A: AuthorizationEngine>(
-        &self,
-        authorization: &A,
-        caller_id: Uuid,
-        limit: i64,
-        offset: i64,
-    ) -> Result<Vec<PublicUserDto>, DomainError> {
-        self.require_admin_caller(authorization, caller_id).await?;
-        let users = self.user_storage.list_users(limit, offset, true).await?;
         Ok(users
             .into_iter()
             .map(|u| PublicUserDto::new(u, false))
@@ -3284,7 +3267,10 @@ impl AuthApplicationService {
     /// (`user.is_online`) so the admin table renders the vignette +
     /// green dot without per-row follow-up fetches to
     /// `/api/users/{id}` (the N+1 that motivated the widening — see
-    /// `docs/plan/userdto-refactor.md` § N+1).
+    /// `docs/plan/userdto-refactor.md` § N+1). This is the sole
+    /// admin-visible listing path; the former flat
+    /// `list_users_including_external_with_perms` variant was
+    /// retired when `?summary` was dropped.
     pub async fn list_user_summaries_including_external_with_perms<A: AuthorizationEngine>(
         &self,
         authorization: &A,
@@ -3362,8 +3348,8 @@ impl AuthApplicationService {
     // `interfaces/api/routes.rs::admin_router`) — but every admin
     // method here still calls `require_admin_caller` as a
     // defense-in-depth check, matching the pattern
-    // `list_users_including_external_with_perms` established. If a
-    // handler is ever wired outside the /admin subtree, the AuthZ
+    // `list_user_summaries_including_external_with_perms` established.
+    // If a handler is ever wired outside the /admin subtree, the AuthZ
     // still holds.
 
     /// List sessions for the admin panel. `user_id_filter = Some(uuid)`

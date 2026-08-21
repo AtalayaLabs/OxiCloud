@@ -277,10 +277,12 @@ export function revokeAdminSession(sessionId: string): Promise<void> {
 
 // ── Users ───────────────────────────────────────────────────────────────
 
-/** List the compact rows rendered by the management table; full account
- * details remain available through {@link getUserAdmin}. */
+/** List admin users — always returns `FullUser` rows. The former
+ * `?summary` toggle is retired; a single canonical shape carries
+ * the vignette + admin-visible extras the table needs. Single-user
+ * details still available via {@link getUserAdmin}. */
 export function listUsers(limit: number, offset: number): Promise<AdminUsersPage> {
-	return apiJson<AdminUsersPage>(`/api/admin/users?limit=${limit}&offset=${offset}&summary=true`, {
+	return apiJson<AdminUsersPage>(`/api/admin/users?limit=${limit}&offset=${offset}`, {
 		credentials: 'same-origin'
 	});
 }

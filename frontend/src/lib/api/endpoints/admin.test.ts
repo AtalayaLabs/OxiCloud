@@ -64,10 +64,7 @@ describe('admin mutate-based endpoints', () => {
 describe('admin read endpoints', () => {
 	it('call apiJson for the listing/settings reads', async () => {
 		await admin.listUsers(25, 0);
-		expect(jsonMock).toHaveBeenCalledWith(
-			'/api/admin/users?limit=25&offset=0&summary=true',
-			expect.anything()
-		);
+		expect(jsonMock).toHaveBeenCalledWith('/api/admin/users?limit=25&offset=0', expect.anything());
 		await admin.getDashboard();
 		await admin.getSmtpInfo();
 		await admin.getOidcSettings();

@@ -1247,8 +1247,13 @@
 				.map(async (d) => {
 					const ownerMember = nextMembers[d.id]?.find((m) => m.subject.type === 'user');
 					if (!ownerMember) return;
-					const user = await getUserAdmin(ownerMember.subject.id);
-					if (user) nextOwners[d.id] = user;
+					// `getUserAdmin` returns `FullUser` (admin-visible extras
+					// + nested `.user: PublicUser`). The drive row only reads
+					// public-identity fields (username, email, image) so keep
+					// the map typed as `PublicUser` and unwrap the embedded
+					// public block on insert. See docs/plan/userdto-refactor.md.
+					const full = await getUserAdmin(ownerMember.subject.id);
+					if (full) nextOwners[d.id] = full.user;
 				})
 		);
 		personalDriveOwners = nextOwners;

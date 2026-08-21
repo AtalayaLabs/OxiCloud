@@ -137,16 +137,20 @@ class PreferencesStore {
 		this.pendingPatch = {};
 		if (Object.keys(patch).length === 0) return;
 
-		const previousUser = session.user;
+		// `session.user` is a derived read-through on `session.me.full.user`
+		// — the source of truth is `session.me: SelfUser`. Snapshot + assign
+		// there so the optimistic update / rollback matches the store shape
+		// (see `docs/plan/userdto-refactor.md` for the layering).
+		const previousMe = session.me;
 		try {
 			const updated = await updateProfile({ ui_preferences: patch });
-			session.user = updated;
+			session.me = updated;
 		} catch {
 			// Roll back to whatever the server last confirmed. The
 			// optimistic local mutation is discarded and the derived
 			// `hideDotfiles` / other getters snap back on the next
 			// reactivity tick.
-			session.user = previousUser;
+			session.me = previousMe;
 			ui.notify(
 				t('preferences.save_failed', "Couldn't save your preference. Please try again."),
 				'error'

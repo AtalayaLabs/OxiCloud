@@ -108,14 +108,15 @@ pub struct AdminResetPasswordDto {
     pub new_password: String,
 }
 
-/// Query parameters for listing users
+/// Query parameters for listing users. `/api/admin/users` used to
+/// bifurcate on `?summary=` (flat `PublicUserDto` vs nested
+/// `FullUserDto`); that split was retired — the endpoint now always
+/// returns `FullUserDto`. Unknown query params are ignored, so
+/// existing callers still passing `?summary=true` keep working.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ListUsersQueryDto {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
-    /// Return only the fields rendered by the paginated management table.
-    /// Defaults to `false` so existing API clients keep the full user shape.
-    pub summary: Option<bool>,
 }
 
 /// Query parameters for the admin sessions listing.
