@@ -23,6 +23,30 @@ ignore = [
     "RUSTSEC-2026-0098",
     "RUSTSEC-2026-0099",
 
+    # h2 0.3.27 — RUSTSEC-2026-0258 "unbounded empty DATA frames"
+    # (GHSA-q83h-524g-xf6h). Transitive via aws-smithy-http-client 1.1.12
+    # → hyper 0.14.32 → h2 0.3.27. The patched line is 0.4.16+, but hyper
+    # 0.14's `h2 = "0.3"` requirement pins us to the 0.3.x branch which
+    # will not receive a backport — real fix requires aws-smithy-http-client
+    # to migrate to hyper 1.x (which our other h2 copy — 0.4.16, already
+    # bumped — is on). The 0.4.x copy is fixed via `cargo update`; this
+    # ignore covers only the 0.3.x chain.
+    #
+    # Severity: low (advisory's own classification). Attack is empty-DATA-
+    # frame flooding by a malicious HTTP/2 peer → memory pressure or panic.
+    # In this codebase h2 0.3.x runs strictly on the CLIENT side of AWS
+    # SDK requests to S3 endpoints. Exploitation requires either
+    # compromising AWS S3 (out-of-scope) or MitM with a valid TLS cert
+    # for the configured S3 host (bigger problem than the DoS). No
+    # data-integrity or auth impact; panic path contained by
+    # request-level unwind.
+    #
+    # Un-ignore trigger: aws-smithy-http-client releases a version that
+    # switches to hyper 1.x (checkable with `cargo tree -i h2@0.3` — the
+    # command returns no rows once the chain is gone). Track upstream at
+    # https://github.com/smithy-lang/smithy-rs/issues (search "hyper 1").
+    "RUSTSEC-2026-0258",
+
     # instant unmaintained — transitive via azure_core 0.21.0 (latest available).
     # No direct security impact; no upgrade path exists.
     "RUSTSEC-2024-0384",
