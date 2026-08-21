@@ -22,7 +22,7 @@ use crate::application::dtos::settings_dto::{
     TestOidcConnectionDto, TestStorageConnectionDto, UpdateUserActiveDto, UpdateUserQuotaDto,
     UpdateUserRoleDto,
 };
-use crate::application::dtos::user_dto::{FullUserDto, UserDto};
+use crate::application::dtos::user_dto::{FullUserDto, PublicUserDto};
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::plugin_ports::{LogQuery, PluginManagementPort, PluginMgmtError};
 // JobStoreProvider is used only by the storage-migration shims below,
@@ -42,10 +42,10 @@ use uuid::Uuid;
 #[derive(serde::Serialize)]
 #[serde(untagged)]
 enum AdminUsersPayload {
-    /// Fat-`UserDto` per row. Emitted when `?summary=false` — legacy
+    /// Fat-`PublicUserDto` per row. Emitted when `?summary=false` — legacy
     /// path retained until the FE drops the `summary=false` query
     /// (rare; the SPA uses `summary=true` for the paginated table).
-    Full(Vec<UserDto>),
+    Full(Vec<PublicUserDto>),
     /// `FullUserDto` per row — same shape one row of the /me
     /// response's embedded `full` carries. Emitted when
     /// `?summary=true`. The FE seeds `resolveUser` cache from
@@ -1571,7 +1571,7 @@ pub async fn reset_user_password(
     path = "/api/admin/users/{id}/promote-to-internal",
     params(("id" = String, Path, description = "Target user id")),
     responses(
-        (status = 200, description = "User promoted", body = UserDto),
+        (status = 200, description = "User promoted", body = PublicUserDto),
         (status = 400, description = "Magic-link login is disabled on this deployment"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required (or target is OIDC-linked)"),

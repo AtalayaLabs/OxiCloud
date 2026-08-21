@@ -12,8 +12,8 @@ use uuid::Uuid;
 
 use crate::application::dtos::user_dto::{
     AuthResponseDto, ChangePasswordDto, FullUserDto, LoginDto, OidcCallbackQueryDto,
-    OidcExchangeDto, OidcProviderInfoDto, RefreshTokenDto, RegisterDto, SelfUserDto, SetupAdminDto,
-    UpgradeToInternalDto, UserDto,
+    OidcExchangeDto, OidcProviderInfoDto, PublicUserDto, RefreshTokenDto, RegisterDto, SelfUserDto,
+    SetupAdminDto, UpgradeToInternalDto,
 };
 use crate::application::services::auth_application_service::{OidcCallbackResult, RegisterResult};
 use crate::common::di::AppState;
@@ -89,7 +89,7 @@ pub fn setup_route() -> Router<Arc<AppState>> {
 ///   the `audit` channel as `auth.register` with `reason` one of
 ///   `created`, `email_taken`, `username_taken`.
 /// - **SMTP not configured**: there is no welcome-mail cover story, so
-///   the classic `201 + UserDto` on success and `409` on collision
+///   the classic `201 + PublicUserDto` on success and `409` on collision
 ///   apply. Anti-enumeration would just be misleading UX (telling the
 ///   user to check an email that will never arrive). Email-only
 ///   signup is **503** in this mode because the user would otherwise
@@ -106,7 +106,7 @@ pub fn setup_route() -> Router<Arc<AppState>> {
     request_body = RegisterDto,
     responses(
         (status = 200, description = "Uniform registration response (SMTP configured, anti-enumeration mode)"),
-        (status = 201, description = "User registered successfully (SMTP not configured)", body = UserDto),
+        (status = 201, description = "User registered successfully (SMTP not configured)", body = PublicUserDto),
         (status = 400, description = "Validation error (malformed request body)"),
         (status = 403, description = "Registration disabled (admin setting or OIDC-only mode)"),
         (status = 409, description = "Username or email already taken (SMTP not configured)"),
@@ -280,7 +280,7 @@ pub async fn register(
                 }
                 Ok(resp)
             } else {
-                // Classic mode: clear 201 + UserDto so the frontend can
+                // Classic mode: clear 201 + PublicUserDto so the frontend can
                 // log the user in directly with the password they just
                 // submitted. Unbox the DTO for the JSON serialisation.
                 Ok((StatusCode::CREATED, Json(*user)).into_response())
@@ -659,7 +659,7 @@ pub async fn get_current_user(
     // `User` entity + `UserDerivedFlags` (has_password / OPAQUE flags /
     // is_online) in one round-trip. That collapses what used to be a
     // `get_user_by_id` + separate credential lookups into one wire trip,
-    // AND populates the OPAQUE flags on `/me` which the fat-UserDto path
+    // AND populates the OPAQUE flags on `/me` which the fat-PublicUserDto path
     // never did (it left them at false — the "quiet lie" that motivated
     // this refactor, see `docs/plan/userdto-refactor.md`).
     let (user, flags) = auth_service
@@ -860,14 +860,14 @@ pub async fn change_password(
 /// self-registration policy. Refused with 403
 /// `error_type = "RegistrationDomainNotAllowed"`.
 ///
-/// Response: the updated `UserDto` (post-upgrade view — `is_external`
+/// Response: the updated `PublicUserDto` (post-upgrade view — `is_external`
 /// is false, `storage_quota_bytes` is set).
 #[utoipa::path(
     post,
     path = "/api/auth/upgrade-to-internal",
     request_body = UpgradeToInternalDto,
     responses(
-        (status = 200, description = "Upgrade succeeded", body = UserDto),
+        (status = 200, description = "Upgrade succeeded", body = PublicUserDto),
         (status = 400, description = "Password missing / too short"),
         (status = 401, description = "Not authenticated"),
         (status = 403, description = "OIDC user, or domain not in allowlist"),
@@ -965,7 +965,7 @@ pub async fn upgrade_to_internal(
     path = "/api/auth/me/profile",
     request_body = crate::application::dtos::user_dto::UpdateProfileDto,
     responses(
-        (status = 200, description = "Updated profile (UserDto)", body = UserDto),
+        (status = 200, description = "Updated profile (PublicUserDto)", body = PublicUserDto),
         (status = 400, description = "Validation error (e.g. invalid handle format, empty given_name)"),
         (status = 401, description = "Not authenticated"),
         (status = 403, description = "OIDC-managed profile — edit at the IdP"),
@@ -1249,7 +1249,7 @@ pub struct BackchannelLogoutForm {
     path = "/api/setup",
     request_body = SetupAdminDto,
     responses(
-        (status = 201, description = "First admin created and system initialized", body = UserDto),
+        (status = 201, description = "First admin created and system initialized", body = PublicUserDto),
         (status = 403, description = "System already initialized"),
         (status = 503, description = "Auth service not configured"),
     ),

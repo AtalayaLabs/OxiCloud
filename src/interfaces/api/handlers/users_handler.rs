@@ -1,6 +1,6 @@
 //! User-profile lookup for the frontend.
 //!
-//! `GET /api/users/{id}` returns a [`UserDto`] for the target user iff
+//! `GET /api/users/{id}` returns a [`PublicUserDto`] for the target user iff
 //! the authenticated caller has a legitimate relationship with them.
 //! The visibility rule lives in
 //! [`AuthApplicationService::get_user_profile`] — handlers never embed

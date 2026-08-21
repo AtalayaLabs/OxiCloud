@@ -7,7 +7,7 @@ use crate::application::ports::auth_ports::UserStoragePort;
 use crate::common::errors::DomainError;
 use crate::domain::entities::user::{User, UserFlags, UserRole};
 use crate::domain::repositories::user_repository::{
-    StorageStats, UserListEntry, UserRepository, UserRepositoryError, UserRepositoryResult,
+    StorageStats, UserRepository, UserRepositoryError, UserRepositoryResult,
 };
 use crate::infrastructure::repositories::pg::transaction_utils::with_transaction;
 
@@ -919,135 +919,6 @@ impl UserRepository for UserPgRepository {
         Ok(users)
     }
 
-    async fn list_user_summaries(
-        &self,
-        limit: i64,
-        offset: i64,
-        include_external: bool,
-    ) -> UserRepositoryResult<Vec<UserListEntry>> {
-        let rows = sqlx::query_as::<
-            _,
-            (
-                Uuid,
-                Option<String>,
-                String,
-                String,
-                i64,
-                i64,
-                Option<chrono::DateTime<chrono::Utc>>,
-                bool,
-                Option<String>,
-                Option<String>,
-                bool,
-                bool,
-                bool,
-                bool,
-                Option<String>,
-                bool,
-            ),
-        >(
-            // Auth-credential columns projected as booleans via `IS NOT
-            // NULL` rather than as timestamps / hashes so the row-mapping
-            // tuple stays small and the wire shape is exactly what the
-            // admin table needs. Per-row scalar tests — no cost beyond
-            // the full-table sequential scan the LIMIT/OFFSET already
-            // pays. `has_password` on the password_hash column tells
-            // the admin table whether a server-verifiable password is
-            // on file; combined with the two OPAQUE flags and
-            // federation_kind / federation_issuer, the SPA derives the
-            // full "capability set" per user (password / OPAQUE / SSO /
-            // passwordless).
-            //
-            // `image` is projected too — the previous narrow projection
-            // (ROUND12 §Q1 / ROUND13 §Q1) discarded up to 512 KiB per
-            // row because the admin table never rendered it. That's now
-            // reversed: the SPA seeds its per-user `resolveUser` cache
-            // from these rows to kill the N+1 `/api/users/{id}` fetches
-            // UserVignette would otherwise trigger.
-            //
-            // `is_online` uses an EXISTS scalar subquery against
-            // `auth.sessions` — the partial index
-            // `idx_sessions_last_seen_at WHERE revoked = FALSE` covers
-            // the lookup, so per-row cost is ~μs. The window comes from
-            // `application::dtos::session_dto::ONLINE_WINDOW` (bound as
-            // `$4` seconds), same single-source-of-truth pattern the
-            // `session_liveness_gauges` module uses.
-            r#"
-            SELECT
-                id, username, email, role::text,
-                storage_quota_bytes, storage_used_bytes,
-                last_login_at, active,
-                federation_kind, federation_issuer, is_external,
-                (password_hash IS NOT NULL)       AS has_password,
-                (opaque_envelope IS NOT NULL)     AS opaque_registered,
-                (opaque_migrated_at IS NOT NULL)  AS opaque_migrated,
-                image,
-                EXISTS (
-                    SELECT 1 FROM auth.sessions s
-                     WHERE s.user_id = auth.users.id
-                       AND s.revoked = FALSE
-                       AND s.last_seen_at > NOW() - make_interval(secs => $4)
-                )                                 AS is_online
-              FROM auth.users
-             WHERE ($3 OR is_external = FALSE)
-             ORDER BY created_at DESC, id DESC
-             LIMIT $1 OFFSET $2
-            "#,
-        )
-        .bind(limit)
-        .bind(offset)
-        .bind(include_external)
-        .bind(crate::application::dtos::session_dto::ONLINE_WINDOW.as_secs_f64())
-        .fetch_all(self.pool.as_ref())
-        .await
-        .map_err(Self::map_sqlx_error)?;
-
-        Ok(rows
-            .into_iter()
-            .map(
-                |(
-                    id,
-                    username,
-                    email,
-                    role,
-                    storage_quota_bytes,
-                    storage_used_bytes,
-                    last_login_at,
-                    active,
-                    federation_kind,
-                    federation_issuer,
-                    is_external,
-                    has_password,
-                    opaque_registered,
-                    opaque_migrated,
-                    image,
-                    is_online,
-                )| UserListEntry {
-                    id,
-                    username,
-                    email,
-                    role: if role == "admin" {
-                        UserRole::Admin
-                    } else {
-                        UserRole::User
-                    },
-                    storage_quota_bytes,
-                    storage_used_bytes,
-                    last_login_at,
-                    active,
-                    federation_kind,
-                    federation_issuer,
-                    is_external,
-                    has_password,
-                    opaque_registered,
-                    opaque_migrated,
-                    image,
-                    is_online,
-                },
-            )
-            .collect())
-    }
-
     async fn list_users_with_derived_flags(
         &self,
         limit: i64,
@@ -1588,17 +1459,6 @@ impl UserStoragePort for UserPgRepository {
             .map_err(DomainError::from)
     }
 
-    async fn list_user_summaries(
-        &self,
-        limit: i64,
-        offset: i64,
-        include_external: bool,
-    ) -> Result<Vec<UserListEntry>, DomainError> {
-        UserRepository::list_user_summaries(self, limit, offset, include_external)
-            .await
-            .map_err(DomainError::from)
-    }
-
     async fn list_users_with_derived_flags(
         &self,
         limit: i64,
@@ -1992,26 +1852,27 @@ mod integration_tests {
         )
         .await;
 
-        let page = UserRepository::list_user_summaries(&repo, 3, 0, true)
+        // Migrated from the (now-deleted) `list_user_summaries` +
+        // `UserListEntry` to `list_users_with_derived_flags`, which
+        // returns `Vec<(User, UserDerivedFlags)>`. Field checks read
+        // through the `User` accessors instead of struct-field access.
+        let page = UserRepository::list_users_with_derived_flags(&repo, 3, 0, true)
             .await
             .expect("compact projection query must decode");
-        assert_eq!(page.iter().map(|entry| entry.id).collect::<Vec<_>>(), ids);
-        assert_eq!(page[0].username.as_deref(), Some(username_a.as_str()));
-        assert_eq!(page[0].role, UserRole::Admin);
-        assert_eq!(page[0].storage_quota_bytes, 10_737_418_240);
-        assert_eq!(page[1].username, None);
-        assert!(page[1].is_external);
-        assert_eq!(
-            page[1].federation_issuer.as_deref(),
-            Some("integration-idp")
-        );
+        assert_eq!(page.iter().map(|(u, _)| u.id()).collect::<Vec<_>>(), ids);
+        assert_eq!(page[0].0.username(), Some(username_a.as_str()));
+        assert_eq!(page[0].0.role(), UserRole::Admin);
+        assert_eq!(page[0].0.storage_quota_bytes(), 10_737_418_240);
+        assert_eq!(page[1].0.username(), None);
+        assert!(page[1].0.is_external());
+        assert_eq!(page[1].0.federation_issuer(), Some("integration-idp"));
 
-        let internal = UserRepository::list_user_summaries(&repo, 10, 0, false)
+        let internal = UserRepository::list_users_with_derived_flags(&repo, 10, 0, false)
             .await
             .expect("internal compact projection query must decode");
-        assert!(internal.iter().any(|entry| entry.id == ids[0]));
-        assert!(internal.iter().any(|entry| entry.id == ids[2]));
-        assert!(!internal.iter().any(|entry| entry.id == ids[1]));
+        assert!(internal.iter().any(|(u, _)| u.id() == ids[0]));
+        assert!(internal.iter().any(|(u, _)| u.id() == ids[2]));
+        assert!(!internal.iter().any(|(u, _)| u.id() == ids[1]));
 
         sqlx::query("DELETE FROM auth.users WHERE id = ANY($1)")
             .bind(ids.as_slice())

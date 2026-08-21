@@ -61,7 +61,7 @@ async fn create_app_password(
     }
 
     // Require a claimed username. NextCloud Basic Auth resolves users by
-    // username; an app password is unusable without one. UserDto carries
+    // username; an app password is unusable without one. PublicUserDto carries
     // an empty string when the underlying `users.username` is NULL — the
     // entity rejects empty strings on construction, so empty here is an
     // unambiguous signal that the column is NULL.

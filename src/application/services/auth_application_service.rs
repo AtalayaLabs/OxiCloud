@@ -1,6 +1,6 @@
 use crate::application::dtos::user_dto::{
-    AuthResponseDto, ChangePasswordDto, FullUserDto, LoginDto, RefreshTokenDto, RegisterDto,
-    SelfUserDto, UpgradeToInternalDto, UserDto,
+    AuthResponseDto, ChangePasswordDto, FullUserDto, LoginDto, PublicUserDto, RefreshTokenDto,
+    RegisterDto, SelfUserDto, UpgradeToInternalDto,
 };
 use crate::application::ports::auth_ports::{
     OidcIdClaims, OidcServicePort, PasswordHasherPort, SessionStoragePort, TokenServicePort,
@@ -319,11 +319,11 @@ pub enum OidcCallbackResult {
 #[derive(Debug, Clone)]
 pub enum RegisterResult {
     /// Boxed to avoid the `large_enum_variant` clippy warning —
-    /// `UserDto` is ~250 bytes, the other variants are zero-sized,
+    /// `PublicUserDto` is ~250 bytes, the other variants are zero-sized,
     /// so a heap-pointer indirection keeps the enum's stack size
     /// small. `register` is called once per request; the
     /// allocation cost is negligible.
-    Created(Box<UserDto>),
+    Created(Box<PublicUserDto>),
     UsernameTaken,
     EmailTaken,
 }
@@ -876,7 +876,7 @@ impl AuthApplicationService {
             is_external = false,
             "🛂 user registered",
         );
-        Ok(RegisterResult::Created(Box::new(UserDto::from(
+        Ok(RegisterResult::Created(Box::new(PublicUserDto::from(
             created_user,
         ))))
     }
@@ -894,7 +894,7 @@ impl AuthApplicationService {
         username: String,
         email: String,
         password: String,
-    ) -> Result<UserDto, DomainError> {
+    ) -> Result<PublicUserDto, DomainError> {
         // Validate username
         if username.len() < 3 || username.len() > 254 {
             return Err(DomainError::new(
@@ -981,7 +981,7 @@ impl AuthApplicationService {
             username,
             created_user.id()
         );
-        Ok(UserDto::from(created_user))
+        Ok(PublicUserDto::from(created_user))
     }
 
     pub async fn login(
@@ -2081,7 +2081,7 @@ impl AuthApplicationService {
         &self,
         caller_id: Uuid,
         dto: UpgradeToInternalDto,
-    ) -> Result<UserDto, DomainError> {
+    ) -> Result<PublicUserDto, DomainError> {
         let mut user = self.user_storage.get_user_by_id(caller_id).await?;
 
         // Precondition: caller is currently external. Fast-path 409 so
@@ -2182,7 +2182,7 @@ impl AuthApplicationService {
             lc.dispatch_upgraded_to_internal(&updated).await;
         }
 
-        Ok(UserDto::from(updated))
+        Ok(PublicUserDto::from(updated))
     }
 
     /// Admin-driven external → internal promotion.
@@ -2211,7 +2211,7 @@ impl AuthApplicationService {
         &self,
         admin_id: Uuid,
         target_id: Uuid,
-    ) -> Result<UserDto, DomainError> {
+    ) -> Result<PublicUserDto, DomainError> {
         let mut user = self.user_storage.get_user_by_id(target_id).await?;
 
         if !user.is_external() {
@@ -2293,7 +2293,7 @@ impl AuthApplicationService {
             "👮🏻‍♂️ external user promoted to internal by admin",
         );
 
-        Ok(UserDto::from(updated))
+        Ok(PublicUserDto::from(updated))
     }
 
     /// `keep_session_id` — when `Some`, revoke every OTHER session for
@@ -2548,9 +2548,9 @@ impl AuthApplicationService {
         Ok(())
     }
 
-    pub async fn get_user(&self, user_id: Uuid) -> Result<UserDto, DomainError> {
+    pub async fn get_user(&self, user_id: Uuid) -> Result<PublicUserDto, DomainError> {
         let user = self.user_storage.get_user_by_id(user_id).await?;
-        Ok(UserDto::from(user))
+        Ok(PublicUserDto::from(user))
     }
 
     /// Cached, image-free lookup of the caller's authorization flags
@@ -2699,7 +2699,7 @@ impl AuthApplicationService {
         caller_id: Uuid,
         dto: crate::application::dtos::user_dto::UpdateProfileDto,
         locale_registry: &crate::common::locale::LocaleRegistry,
-    ) -> Result<UserDto, DomainError> {
+    ) -> Result<PublicUserDto, DomainError> {
         let mut user = self.user_storage.get_user_by_id(caller_id).await?;
 
         // For OIDC-managed users, refuse the patch ONLY when it touches
@@ -2875,7 +2875,7 @@ impl AuthApplicationService {
 
         if changed.is_empty() && ui_prefs_patch.is_none() {
             // No-op — return the current user without a DB write.
-            return Ok(UserDto::from(user));
+            return Ok(PublicUserDto::from(user));
         }
 
         // Persist the typed-field changes first (if any). Skip the
@@ -2906,11 +2906,11 @@ impl AuthApplicationService {
         // Refetch so the returned DTO reflects the merged JSONB bag
         // (the in-memory `user` above holds the pre-merge value).
         let refreshed = self.user_storage.get_user_by_id(caller_id).await?;
-        Ok(UserDto::from(refreshed))
+        Ok(PublicUserDto::from(refreshed))
     }
 
     // Alias for consistency with handler method
-    pub async fn get_user_by_id(&self, user_id: Uuid) -> Result<UserDto, DomainError> {
+    pub async fn get_user_by_id(&self, user_id: Uuid) -> Result<PublicUserDto, DomainError> {
         self.get_user(user_id).await
     }
 
@@ -3003,12 +3003,12 @@ impl AuthApplicationService {
         target_id: Uuid,
         expose_system_users: bool,
         pool: &sqlx::PgPool,
-    ) -> Result<UserDto, DomainError> {
+    ) -> Result<PublicUserDto, DomainError> {
         // (1) Self — a single fetch suffices (the check compares the input
         // UUIDs, so the target read is never needed on this path).
         if caller_id == target_id {
             let caller = self.user_storage.get_user_by_id(caller_id).await?;
-            return Ok(UserDto::from(caller));
+            return Ok(PublicUserDto::from(caller));
         }
 
         // Caller and target are independent point reads (the self-case already
@@ -3069,7 +3069,7 @@ impl AuthApplicationService {
         })?;
 
         if related.is_some() {
-            return Ok(UserDto::from(target));
+            return Ok(PublicUserDto::from(target));
         }
 
         // (3) External callers stop here — no directory enumeration.
@@ -3097,12 +3097,12 @@ impl AuthApplicationService {
 
         // (4) Internal target + system-address-book exposed: already public.
         if !target.is_external() && expose_system_users {
-            return Ok(UserDto::from(target));
+            return Ok(PublicUserDto::from(target));
         }
 
         // (5) Admin caller: always visible.
         if caller.role() == UserRole::Admin {
-            return Ok(UserDto::from(target));
+            return Ok(PublicUserDto::from(target));
         }
 
         // (6) No relationship — anti-enumeration NotFound.
@@ -3155,7 +3155,7 @@ impl AuthApplicationService {
         username: &str,
         expose_system_users: bool,
         pool: &sqlx::PgPool,
-    ) -> Result<UserDto, DomainError> {
+    ) -> Result<PublicUserDto, DomainError> {
         let target = match self.user_storage.get_user_by_username(username).await {
             Ok(u) => u,
             Err(e) if e.kind == ErrorKind::NotFound => {
@@ -3182,9 +3182,9 @@ impl AuthApplicationService {
     }
 
     // New method to get user by username - needed for admin user handling
-    pub async fn get_user_by_username(&self, username: &str) -> Result<UserDto, DomainError> {
+    pub async fn get_user_by_username(&self, username: &str) -> Result<PublicUserDto, DomainError> {
         let user = self.user_storage.get_user_by_username(username).await?;
-        Ok(UserDto::from(user))
+        Ok(PublicUserDto::from(user))
     }
 
     // Method to count how many admin users exist in the system
@@ -3202,9 +3202,13 @@ impl AuthApplicationService {
     /// sharee search, etc. — never expose external identities. Admin
     /// surfaces that need the full list should call
     /// [`list_users_including_external_with_perms`] instead.
-    pub async fn list_users(&self, limit: i64, offset: i64) -> Result<Vec<UserDto>, DomainError> {
+    pub async fn list_users(
+        &self,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<PublicUserDto>, DomainError> {
         let users = self.user_storage.list_users(limit, offset, false).await?;
-        Ok(users.into_iter().map(UserDto::from).collect())
+        Ok(users.into_iter().map(PublicUserDto::from).collect())
     }
 
     /// Admin-only: lists users including external (grant-only) recipients.
@@ -3215,10 +3219,10 @@ impl AuthApplicationService {
         caller_id: Uuid,
         limit: i64,
         offset: i64,
-    ) -> Result<Vec<UserDto>, DomainError> {
+    ) -> Result<Vec<PublicUserDto>, DomainError> {
         self.require_admin_caller(authorization, caller_id).await?;
         let users = self.user_storage.list_users(limit, offset, true).await?;
-        Ok(users.into_iter().map(UserDto::from).collect())
+        Ok(users.into_iter().map(PublicUserDto::from).collect())
     }
 
     /// Admin-only user listing. Returns `Vec<FullUserDto>` — same
@@ -3267,9 +3271,13 @@ impl AuthApplicationService {
     }
 
     /// Searches internal users only. See [`list_users`] for the rationale.
-    pub async fn search_users(&self, query: &str, limit: i64) -> Result<Vec<UserDto>, DomainError> {
+    pub async fn search_users(
+        &self,
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<PublicUserDto>, DomainError> {
         let users = self.user_storage.search_users(query, limit, false).await?;
-        Ok(users.into_iter().map(UserDto::from).collect())
+        Ok(users.into_iter().map(PublicUserDto::from).collect())
     }
 
     /// Username-only search for the NC sharee autocomplete: identical
@@ -3375,7 +3383,7 @@ impl AuthApplicationService {
     pub async fn admin_create_user(
         &self,
         dto: crate::application::dtos::settings_dto::AdminCreateUserDto,
-    ) -> Result<UserDto, DomainError> {
+    ) -> Result<PublicUserDto, DomainError> {
         // Validate username length
         if dto.username.len() < 3 || dto.username.len() > 254 {
             return Err(DomainError::new(
@@ -3533,7 +3541,7 @@ impl AuthApplicationService {
             created.id(),
             created.is_external()
         );
-        Ok(UserDto::from(created))
+        Ok(PublicUserDto::from(created))
     }
 
     /// Admin-only: reset a user's password.
@@ -3630,9 +3638,9 @@ impl AuthApplicationService {
     }
 
     /// Get a single user by ID (for admin panel)
-    pub async fn get_user_admin(&self, user_id: Uuid) -> Result<UserDto, DomainError> {
+    pub async fn get_user_admin(&self, user_id: Uuid) -> Result<PublicUserDto, DomainError> {
         let user = self.user_storage.get_user_by_id(user_id).await?;
-        Ok(UserDto::from(user))
+        Ok(PublicUserDto::from(user))
     }
 
     /// Delete a user by ID (admin only).

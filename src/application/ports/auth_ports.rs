@@ -3,7 +3,6 @@ use crate::domain::entities::app_password::AppPassword;
 use crate::domain::entities::device_code::DeviceCode;
 use crate::domain::entities::session::Session;
 use crate::domain::entities::user::User;
-use crate::domain::repositories::user_repository::UserListEntry;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -193,15 +192,6 @@ pub trait UserStoragePort: Send + Sync + 'static {
         offset: i64,
         include_external: bool,
     ) -> Result<Vec<User>, DomainError>;
-
-    /// Narrow user-list projection for management tables.  Keeps heavyweight
-    /// account-detail fields off the database and JSON hot path.
-    async fn list_user_summaries(
-        &self,
-        limit: i64,
-        offset: i64,
-        include_external: bool,
-    ) -> Result<Vec<UserListEntry>, DomainError>;
 
     /// Searches users by username or email (SQL ILIKE) with a limit.
     /// See [`list_users`] for the meaning of `include_external`.
