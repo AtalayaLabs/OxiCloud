@@ -18,7 +18,19 @@
 	let { icon, title, hint, error = false, children }: Props = $props();
 </script>
 
-<div class="empty-state" class:empty-state--error={error} role={error ? 'alert' : undefined}>
+<!-- `data-testid="empty-state"` is a stable Playwright hook: consumers
+     (ResourceList, ShareList, TrashList, …) only render this component
+     once the underlying load resolved with no items — so waiting on
+     this testid = "the listing definitively finished loading and is
+     empty". Used by `tests/e2e/spa/files.spec.ts` to gate a cold-
+     navigation upload behind the folder-loaded state (see the guard
+     in `routes/files/[...path]/+page.svelte::guardUploadFolderReady`). -->
+<div
+	class="empty-state"
+	class:empty-state--error={error}
+	role={error ? 'alert' : undefined}
+	data-testid="empty-state"
+>
 	{#if icon}<Icon name={icon} class="empty-state__icon" />{/if}
 	{#if title}<p class="empty-state__title">{title}</p>{/if}
 	{#if hint}<p class="empty-state__hint">{hint}</p>{/if}

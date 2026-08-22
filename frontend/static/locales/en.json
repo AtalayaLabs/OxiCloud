@@ -546,6 +546,7 @@
     "empty_hidden_hint": "Files whose name starts with '.' are hidden. Toggle the setting to see them.",
     "show_hidden": "Show hidden files",
     "upload_dotfile_hidden": "{{n}} file(s) uploaded but hidden by your dotfile preference.",
+    "upload_folder_not_ready": "Folder is still loading — please try again in a moment.",
     "rename_dotfile_hidden": "Renamed to '{{name}}' — now hidden by your preference.",
     "new_folder_dotfile_hidden": "Created folder '{{name}}' — hidden by your dotfile preference.",
     "dotfiles_hidden_toast": "Dotfiles hidden",

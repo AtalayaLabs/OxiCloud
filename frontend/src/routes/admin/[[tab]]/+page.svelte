@@ -1882,13 +1882,17 @@
 									row.kind === 'personal'
 										? t('admin.quota_personal', 'Personal drives')
 										: t('admin.quota_shared', 'Shared drives')}
+								{@const total = row.unlimited_count + row.capped_count}
 								{@const pct =
 									row.capped_quota_bytes && row.capped_quota_bytes > 0
 										? (row.used_bytes / row.capped_quota_bytes) * 100
 										: null}
 								{#if row.capped_count > 0 || row.unlimited_count > 0}
 									<tr>
-										<th scope="row">{label}</th>
+										<th scope="row">
+											<span class="quota-table__count">{total}</span>
+											{label}
+										</th>
 										<td class="quota-table__num">
 											{#if row.capped_quota_bytes !== null && pct !== null}
 												{formatBytes(row.used_bytes)} / {formatBytes(row.capped_quota_bytes)}
@@ -4567,6 +4571,19 @@
 		font-weight: var(--weight-semibold);
 		color: var(--color-text-heading);
 		white-space: nowrap;
+	}
+
+	/* Prepended drive count: tabular-nums so single/double/triple digits align
+	   vertically across rows; right-aligned inside a fixed-width box so the
+	   ones-digits line up across "personal" and "shared" rows regardless of
+	   how many digits each count has. */
+	.quota-table__count {
+		display: inline-block;
+		min-width: 1.5em;
+		margin-right: 0.25em;
+		text-align: right;
+		font-variant-numeric: tabular-nums;
+		color: var(--color-text-heading);
 	}
 
 	.quota-table__num {

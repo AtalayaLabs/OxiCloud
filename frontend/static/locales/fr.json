@@ -459,6 +459,7 @@
     "empty_hidden_hint": "Les fichiers dont le nom commence par '.' sont masqués. Modifiez le réglage pour les afficher.",
     "show_hidden": "Afficher les fichiers masqués",
     "upload_dotfile_hidden": "{{n}} fichier(s) téléversé(s) mais masqué(s) par votre préférence.",
+    "upload_folder_not_ready": "Le dossier est encore en cours de chargement — merci de réessayer dans un instant.",
     "rename_dotfile_hidden": "Renommé en \"{{name}}\" — désormais masqué par votre préférence.",
     "new_folder_dotfile_hidden": "Dossier \"{{name}}\" créé — masqué par votre préférence.",
     "dotfiles_hidden_toast": "Fichiers masqués",
