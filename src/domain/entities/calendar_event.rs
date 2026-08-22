@@ -1105,9 +1105,15 @@ impl CalendarEvent {
         }
 
         // Standard UTC form: YYYYMMDDTHHMMSSZ, 16 chars, trailing 'Z'.
-        // Floating-time (no 'Z') and TZID-anchored forms aren't yet
-        // supported — future work when we tackle VTIMEZONE properly.
-        if value.len() < 15 || !value.ends_with('Z') {
+        // Floating-time (no 'Z', RFC 5545 §3.3.5) is what calendar apps emit
+        // for events without a timezone — DAVx5 sends it from Fossify
+        // Calendar, and rejecting it failed the whole event sync with a 400
+        // (#682). Accept it and interpret the wall-clock time as UTC.
+        // TZID-anchored forms remain unsupported — future work when we
+        // tackle VTIMEZONE properly.
+        let has_utc_suffix = value.len() == 16 && value.ends_with('Z');
+        let is_floating = value.len() == 15;
+        if !has_utc_suffix && !is_floating {
             return Err(format!(
                 "Invalid datetime format: expected YYYYMMDDTHHMMSSZ, got {:?}",
                 value
@@ -1357,6 +1363,24 @@ END:VEVENT\r
 END:VCALENDAR\r
 ";
 
+    /// Floating-time VEVENT — DTSTART/DTEND without the UTC 'Z' suffix
+    /// (RFC 5545 §3.3.5 "form #2": local time, no timezone reference).
+    /// This is what DAVx5 syncs from calendar apps for events created
+    /// without a timezone (e.g. Fossify Calendar); rejecting it failed
+    /// the entire event upload with a 400 (#682).
+    const FLOATING_TIME_EVENT: &str = "BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//OxiCloud test//EN
+BEGIN:VEVENT
+UID:floating-1@oxicloud.test
+DTSTAMP:20260101T100000Z
+DTSTART:20260831T154000
+DTEND:20260831T164000
+SUMMARY:Floating time event
+END:VEVENT
+END:VCALENDAR
+";
+
     fn parse_ok(body: &str) -> CalendarEvent {
         CalendarEvent::from_ical(Uuid::new_v4(), body.to_string())
             .expect("expected successful parse")
@@ -1367,6 +1391,18 @@ END:VCALENDAR\r
         let ev = parse_ok(TIMED_EVENT);
         assert_eq!(ev.summary(), "Timed baseline");
         assert!(!ev.all_day());
+    }
+
+    #[test]
+    fn floating_time_event_parses_as_utc_wall_clock() {
+        // Regression (#682): '20260831T154000' used to be rejected with
+        // "Invalid datetime format: expected YYYYMMDDTHHMMSSZ" and the
+        // whole DAVx5 sync failed with HTTP 400.
+        let ev = parse_ok(FLOATING_TIME_EVENT);
+        assert_eq!(ev.summary(), "Floating time event");
+        assert!(!ev.all_day());
+        assert_eq!(ev.start_time().to_rfc3339(), "2026-08-31T15:40:00+00:00");
+        assert_eq!(ev.end_time().to_rfc3339(), "2026-08-31T16:40:00+00:00");
     }
 
     #[test]
