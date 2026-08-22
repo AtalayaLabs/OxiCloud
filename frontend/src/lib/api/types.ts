@@ -761,12 +761,27 @@ export interface SessionSummary {
 	user_id: string;
 	created_at: string;
 	expires_at: string;
+	/** Wall-clock (RFC 3339) of the last authenticated request the
+	 *  server observed on this session. Trails the true value by at
+	 *  most the tracker's flush interval (30 s) on a running server;
+	 *  converges after graceful shutdown. Populates the "last seen X
+	 *  ago" tooltip on the presence dot. */
+	last_seen_at: string;
 	ip_address: string | null;
 	user_agent: string | null;
 	is_bound: boolean;
 	dpop_jkt_prefix: string | null;
 	is_revoked: boolean;
 	is_active: boolean;
+	/** Presence signal — `true` when the server observed a request on
+	 *  this session within the last 5 minutes AND the row is `is_active`
+	 *  (never `true` on revoked / expired rows). Renders as a filled
+	 *  green dot in the Status column; `false` on an otherwise-active
+	 *  row renders as an outlined idle dot with a "last seen X ago"
+	 *  tooltip. Distinct from `is_active`: that's a lifecycle signal,
+	 *  this is a presence signal. Derived server-side against the
+	 *  same window that drives `oxicloud_sessions_online[_users]`. */
+	is_online: boolean;
 	/** How this session was minted. `unknown` covers pre-migration
 	 *  rows and any origin the SPA doesn't yet render. Server enum
 	 *  is populated at INSERT (see `Session::new`) and copied on

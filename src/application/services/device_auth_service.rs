@@ -180,10 +180,12 @@ impl DeviceAuthService {
         // clients that don't run WebCrypto — always unbound (`None`
         // for the `dpop_jkt` param), which the DPoP middleware exempts
         // from proof requirements. See `docs/plan/dpop.md` Gate 9.
-        let access_token = self.token_service.generate_access_token(&user, None)?;
+        //
+        // Session constructed first so its id feeds the token's
+        // `sid` claim — the auth middleware uses this to stamp
+        // per-session liveness without a DB round trip
+        // (`docs/plan/sessions.md`).
         let refresh_token = self.token_service.generate_refresh_token();
-
-        // Persist refresh token as a session
         let session = Session::new(
             user_id,
             refresh_token.clone(),
@@ -193,6 +195,9 @@ impl DeviceAuthService {
             Uuid::new_v4(),
             crate::domain::entities::session::SessionOrigin::Device,
         );
+        let access_token =
+            self.token_service
+                .generate_access_token(&user, Some(session.id()), None)?;
         self.session_storage.create_session(session).await?;
 
         // Store tokens on the device code entity

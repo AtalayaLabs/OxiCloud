@@ -2126,6 +2126,38 @@ impl AppServiceFactory {
         let mut core = core;
         core.zip_service = Some(zip_service);
 
+        // Session liveness tracker — spawns its own 30 s flush
+        // loop at construction. Only built when auth (and thus
+        // sessions) exist; when auth is off this is `None` and
+        // the middleware never calls it. Uses the maintenance
+        // pool so background flushes don't compete with
+        // request-serving connections. See
+        // [`LastSeenTracker`](crate::infrastructure::services::last_seen_tracker).
+        let last_seen_tracker = if auth_services.is_some() {
+            Some(
+                crate::infrastructure::services::last_seen_tracker::LastSeenTracker::start(
+                    maintenance_pool.clone(),
+                ),
+            )
+        } else {
+            None
+        };
+
+        // Session-liveness Prometheus poller — three COUNT(*) reads
+        // every 30 s, publishing `oxicloud_sessions_active`,
+        // `_active_users`, `_total_non_revoked`. Only spawned when
+        // the Prometheus recorder is installed (i.e.,
+        // `OXICLOUD_METRICS_LISTEN` is set) — without the recorder
+        // the `metrics::gauge!(...)` calls are no-ops and the
+        // periodic PG hits would be pure waste. Requires auth for
+        // the same reason as `last_seen_tracker`: no sessions to
+        // count without it.
+        if auth_services.is_some() && self.config.metrics_listen.is_some() {
+            crate::infrastructure::services::session_liveness_gauges::spawn(
+                maintenance_pool.clone(),
+            );
+        }
+
         // 9. Assemble final AppState
         let mut app_state = AppState {
             core,
@@ -2158,6 +2190,7 @@ impl AppServiceFactory {
             people_service,
             storage_usage_service,
             grant_cleanup_service,
+            last_seen_tracker,
             calendar_service: None,
             calendar_use_case: None,
             addressbook_use_case: None,
@@ -2951,6 +2984,16 @@ pub struct AppState {
     /// the `?force=true` grace-override path.
     pub grant_cleanup_service: Option<
         Arc<crate::infrastructure::services::grant_cleanup_service::GrantCleanupService>,
+    >,
+    /// Per-session liveness tracker — the auth middleware calls
+    /// `stamp(session_id)` after every successful token validation,
+    /// and a background loop flushes the DashMap to `auth.sessions.
+    /// last_seen_at` every 30 s (batched UNNEST UPDATE). `None`
+    /// when auth is disabled — nothing to track. See
+    /// [`LastSeenTracker`](crate::infrastructure::services::last_seen_tracker)
+    /// for the contract and `docs/plan/sessions.md` for the design.
+    pub last_seen_tracker: Option<
+        Arc<crate::infrastructure::services::last_seen_tracker::LastSeenTracker>,
     >,
     pub calendar_service: Option<Arc<CalendarService>>,
     pub calendar_use_case: Option<Arc<CalendarService>>,

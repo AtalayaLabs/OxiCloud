@@ -117,7 +117,7 @@ impl SessionRepository for SessionPgRepository {
             SELECT
                 id, user_id, refresh_token, expires_at,
                 ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token, oidc_sid, dpop_jkt, origin
+                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at
             FROM auth.sessions
             WHERE id = $1
             "#,
@@ -141,6 +141,7 @@ impl SessionRepository for SessionPgRepository {
             row.get("oidc_sid"),
             row.get("dpop_jkt"),
             crate::domain::entities::session::SessionOrigin::from_wire(row.get("origin")),
+            row.get("last_seen_at"),
         ))
     }
 
@@ -155,7 +156,7 @@ impl SessionRepository for SessionPgRepository {
             SELECT
                 id, user_id, refresh_token, expires_at,
                 ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token, oidc_sid, dpop_jkt, origin
+                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at
             FROM auth.sessions
             WHERE refresh_token = $1
             "#,
@@ -179,6 +180,7 @@ impl SessionRepository for SessionPgRepository {
             row.get("oidc_sid"),
             row.get("dpop_jkt"),
             crate::domain::entities::session::SessionOrigin::from_wire(row.get("origin")),
+            row.get("last_seen_at"),
         ))
     }
 
@@ -192,7 +194,7 @@ impl SessionRepository for SessionPgRepository {
             SELECT
                 id, user_id, refresh_token, expires_at,
                 ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token, oidc_sid, dpop_jkt, origin
+                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at
             FROM auth.sessions
             WHERE user_id = $1
             ORDER BY created_at DESC
@@ -220,6 +222,7 @@ impl SessionRepository for SessionPgRepository {
                     row.get("oidc_sid"),
                     row.get("dpop_jkt"),
                     crate::domain::entities::session::SessionOrigin::from_wire(row.get("origin")),
+                    row.get("last_seen_at"),
                 )
             })
             .collect();
@@ -248,7 +251,7 @@ impl SessionRepository for SessionPgRepository {
             SELECT
                 id, user_id, refresh_token, expires_at,
                 ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token, oidc_sid, dpop_jkt, origin
+                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at
             FROM auth.sessions
             WHERE ($1::uuid IS NULL OR user_id = $1)
               AND ($2 OR (revoked = false AND expires_at > NOW()))
@@ -281,6 +284,7 @@ impl SessionRepository for SessionPgRepository {
                     row.get("oidc_sid"),
                     row.get("dpop_jkt"),
                     crate::domain::entities::session::SessionOrigin::from_wire(row.get("origin")),
+                    row.get("last_seen_at"),
                 )
             })
             .collect();

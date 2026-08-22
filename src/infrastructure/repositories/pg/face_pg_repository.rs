@@ -47,8 +47,17 @@ fn embedding_to_bytes(e: &[f32]) -> Vec<u8> {
 }
 
 fn bytes_to_embedding(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+    // `as_chunks::<4>` (stable since Rust 1.88) hands back `&[[u8; 4]]`
+    // typed at the array level, so the closure gets a `&[u8; 4]` and
+    // the `[c[0], c[1], c[2], c[3]]` array-copy dance from the old
+    // `chunks_exact(4)` shape collapses to a plain deref. Any trailing
+    // bytes that aren't a multiple of 4 land in `.1` and are dropped
+    // — same semantics as `chunks_exact` which iterated only the
+    // aligned prefix.
+    b.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect()
 }
 

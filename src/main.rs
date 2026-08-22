@@ -1409,17 +1409,89 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let listener = tokio::net::TcpListener::from_std(socket.into())?;
 
+    // Grab shutdown-hook handles BEFORE the router consumes
+    // app_state below. Currently: only the session `LastSeenTracker`
+    // needs a final synchronous flush on graceful shutdown so
+    // rolling restarts don't lose the last flush interval of
+    // liveness stamps. Future services with shutdown obligations
+    // add their handles here and chain their flushes into
+    // [`shutdown_signal`] alongside this one.
+    let last_seen_tracker = app_state.last_seen_tracker.clone();
+
     // Provide the fully-built state to the router
     let app = app.with_state(app_state);
 
     // TCP_NODELAY is inherited from the listening socket on Linux,
     // so every accepted connection already has Nagle disabled.
+    //
+    // `with_graceful_shutdown` waits for SIGTERM / SIGINT, then
+    // stops accepting new connections, drains in-flight requests,
+    // and runs the async block below. The session tracker flush
+    // fires AFTER draining so it captures any last-second requests
+    // that landed while shutdown propagates.
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        if let Some(tracker) = last_seen_tracker {
+            match tracker.flush_now().await {
+                Ok(n) => tracing::info!(
+                    target: "oxicloud::sessions",
+                    flushed = n,
+                    "last-seen final flush before shutdown",
+                ),
+                Err(err) => tracing::warn!(
+                    target: "oxicloud::sessions",
+                    error = %err,
+                    "last-seen final flush failed; up to one flush interval of \
+                     liveness data may have been lost",
+                ),
+            }
+        }
+    })
     .await?;
     tracing::info!("Server shutdown completed");
 
     Ok(())
+}
+
+/// Block until the process receives SIGINT (Ctrl-C) or SIGTERM
+/// (systemd / docker stop / K8s pod eviction). Returns once EITHER
+/// arrives — no distinction between them at the caller: a signal
+/// is a signal, drain and exit.
+///
+/// On non-Unix (Windows), the `terminate` arm is a never-resolving
+/// future so only Ctrl-C works — which matches how Windows expects
+/// service shutdown to be signalled anyway.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(err) = tokio::signal::ctrl_c().await {
+            tracing::warn!("failed to install Ctrl-C handler: {err}");
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => {
+                s.recv().await;
+            }
+            Err(err) => {
+                tracing::warn!("failed to install SIGTERM handler: {err}");
+                // Fall through to a pending future so tokio::select! doesn't
+                // spin — Ctrl-C is still armed.
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => tracing::info!("SIGINT received, initiating graceful shutdown"),
+        _ = terminate => tracing::info!("SIGTERM received, initiating graceful shutdown"),
+    }
 }

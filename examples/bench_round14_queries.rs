@@ -43,9 +43,13 @@ fn stats(mut s: Vec<f64>) -> (f64, f64, f64) {
 
 /// Mirror of `face_pg_repository::bytes_to_embedding` — the per-face
 /// `Vec<f32>` decode the BEFORE path pays for a column it never reads.
+/// Kept byte-for-byte identical to the shipped path so the benchmark
+/// measures apples-to-apples; `as_chunks` swap matches the source.
 fn bytes_to_embedding(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+    b.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect()
 }
 
