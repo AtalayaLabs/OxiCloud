@@ -16,7 +16,7 @@ use crate::application::dtos::contact_dto::{
     AddressDto, ContactDto, ContactGroupDto, CreateContactDto, CreateContactGroupDto, EmailDto,
     GroupMembershipDto, PhoneDto, UpdateContactDto, UpdateContactGroupDto,
 };
-use crate::application::dtos::user_dto::UserDto;
+use crate::application::dtos::user_dto::PublicUserDto;
 use crate::application::ports::carddav_ports::{AddressBookUseCase, ContactUseCase};
 use crate::application::services::auth_application_service::AuthApplicationService;
 use crate::application::services::contact_service::ContactService;
@@ -185,14 +185,14 @@ fn if_match_passes(if_match: Option<&str>, stored_etag: &str) -> bool {
     }
 }
 
-/// Map a `UserDto` to a `ContactDto` so OxiCloud users appear as contacts
+/// Map a `PublicUserDto` to a `ContactDto` so OxiCloud users appear as contacts
 /// inside the virtual system address book.
 ///
 /// `given_name`/`family_name` come from OIDC standard claims at JIT
 /// provisioning (or NULL for password-only or pre-OIDC users). When
 /// they're present, prefer a "First Last" full name; otherwise fall
 /// back to the username (which is always present).
-fn user_to_contact(user: UserDto) -> ContactDto {
+fn user_to_contact(user: PublicUserDto) -> ContactDto {
     // Display fallback chain: given+family name → username → email.
     // Username is `Option<String>` post PR 16; externals start with None.
     let full_name = match (user.given_name.as_deref(), user.family_name.as_deref()) {
@@ -222,8 +222,19 @@ fn user_to_contact(user: UserDto) -> ContactDto {
         photo_url: user.image.clone(),
         birthday: None,
         anniversary: None,
-        created_at: user.created_at,
-        updated_at: user.updated_at,
+        // System-book contacts are VIRTUAL projections of the user
+        // directory — they have no independent creation history. Stamp
+        // both timestamps with `Utc::now()` so the ContactDto shape is
+        // satisfied; CardDAV clients ETag on the vCard content (see
+        // `etag` below, keyed on the stable user id), not on these
+        // wrapper timestamps.
+        //
+        // Previously read `user.created_at` / `user.updated_at` from the
+        // fat `UserDto`; those fields moved to `FullUserDto` under the
+        // three-layer refactor (docs/plan/userdto-refactor.md) and are
+        // not exposed on the slim `PublicUserDto` this function receives.
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
         etag: user.id,
     }
 }

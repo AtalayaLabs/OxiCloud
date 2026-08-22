@@ -76,7 +76,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-dora_id: jsonpath "$.id"
+dora_id: jsonpath "$.user.id"
 
 
 # ─────────────────────────────────────────────────────────────

@@ -52,7 +52,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-bob_user_id: jsonpath "$.id"
+bob_user_id: jsonpath "$.user.id"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -73,8 +73,8 @@ Authorization: Bearer {{bob_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.is_external" == true
-jsonpath "$.storage_quota_bytes" == 0
+jsonpath "$.full.user.is_external" == true
+jsonpath "$.full.storage_quota_bytes" == 0
 
 
 # ─────────────────────────────────────────────────────────────
@@ -88,8 +88,8 @@ Content-Type: application/json
 
 HTTP 200
 [Asserts]
-jsonpath "$.is_external" == false
-jsonpath "$.storage_quota_bytes" > 0
+jsonpath "$.full.user.is_external" == false
+jsonpath "$.full.storage_quota_bytes" > 0
 
 
 # ─────────────────────────────────────────────────────────────
@@ -100,8 +100,8 @@ Authorization: Bearer {{bob_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.is_external" == false
-jsonpath "$.storage_quota_bytes" > 0
+jsonpath "$.full.user.is_external" == false
+jsonpath "$.full.storage_quota_bytes" > 0
 
 
 # ─────────────────────────────────────────────────────────────
@@ -179,7 +179,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-carol_user_id: jsonpath "$.id"
+carol_user_id: jsonpath "$.user.id"
 
 POST {{base_url}}/api/auth/login
 Content-Type: application/json
@@ -204,7 +204,7 @@ Authorization: Bearer {{carol_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.is_external" == true
+jsonpath "$.full.user.is_external" == true
 
 
 # ─────────────────────────────────────────────────────────────

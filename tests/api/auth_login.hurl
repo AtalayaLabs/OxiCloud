@@ -19,7 +19,7 @@ Content-Type: application/json
 HTTP 200
 [Asserts]
 jsonpath "$.access_token" exists
-jsonpath "$.user.email" == "{{email}}"
+jsonpath "$.user.full.user.email" == "{{email}}"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -34,7 +34,7 @@ Content-Type: application/json
 HTTP 200
 [Asserts]
 jsonpath "$.access_token" exists
-jsonpath "$.user.email" == "{{email}}"
+jsonpath "$.user.full.user.email" == "{{email}}"
 
 
 # ─────────────────────────────────────────────────────────────

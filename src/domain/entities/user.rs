@@ -207,7 +207,7 @@ pub struct User {
 /// Owned decomposition of a [`User`] (mirrors `FileParts` / `FolderParts` /
 /// `ContactParts`). Lets a consumer MOVE the heap fields out instead of cloning
 /// them through the borrowing accessors — notably `image` (a data URI up to
-/// 512 KiB) and `ui_preferences` (a JSON tree). See `UserDto::from`
+/// 512 KiB) and `ui_preferences` (a JSON tree). See `PublicUserDto::from`
 /// (benches/ROUND20.md §A2).
 pub struct UserParts {
     pub id: Uuid,

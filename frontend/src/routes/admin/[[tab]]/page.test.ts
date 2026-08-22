@@ -96,16 +96,26 @@ const dashboard = {
 	users_over_quota: 0
 };
 
+// FullUser fixture — post the three-layer UserDto refactor
+// (docs/plan/userdto-refactor.md), /api/admin/users returns
+// `Vec<FullUserDto>` where public identity nests under `.user`
+// and admin-visible extras (quotas, active, has_password, OPAQUE
+// flags) live at the top level.
 const user = {
-	id: 'u1',
-	username: 'bob',
-	email: 'bob@x.test',
-	role: 'user',
+	user: {
+		id: 'u1',
+		username: 'bob',
+		email: 'bob@x.test',
+		role: 'user',
+		is_external: false
+	},
 	active: true,
 	is_active: true,
 	storage_used_bytes: 10,
 	storage_quota_bytes: 100,
-	is_external: false
+	has_password: true,
+	opaque_registered: false,
+	opaque_migrated: false
 };
 
 const mount = {

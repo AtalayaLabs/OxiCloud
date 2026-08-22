@@ -1,6 +1,6 @@
 use crate::application::dtos::user_dto::{
-    AdminUserSummaryDto, AuthResponseDto, ChangePasswordDto, LoginDto, RefreshTokenDto,
-    RegisterDto, UpgradeToInternalDto, UserDto,
+    AuthResponseDto, ChangePasswordDto, FullUserDto, LoginDto, PublicUserDto, RefreshTokenDto,
+    RegisterDto, SelfUserDto, UpgradeToInternalDto,
 };
 use crate::application::ports::auth_ports::{
     OidcIdClaims, OidcServicePort, PasswordHasherPort, SessionStoragePort, TokenServicePort,
@@ -319,11 +319,11 @@ pub enum OidcCallbackResult {
 #[derive(Debug, Clone)]
 pub enum RegisterResult {
     /// Boxed to avoid the `large_enum_variant` clippy warning —
-    /// `UserDto` is ~250 bytes, the other variants are zero-sized,
+    /// `PublicUserDto` is ~250 bytes, the other variants are zero-sized,
     /// so a heap-pointer indirection keeps the enum's stack size
     /// small. `register` is called once per request; the
     /// allocation cost is negligible.
-    Created(Box<UserDto>),
+    Created(Box<PublicUserDto>),
     UsernameTaken,
     EmailTaken,
 }
@@ -876,8 +876,9 @@ impl AuthApplicationService {
             is_external = false,
             "🛂 user registered",
         );
-        Ok(RegisterResult::Created(Box::new(UserDto::from(
+        Ok(RegisterResult::Created(Box::new(PublicUserDto::new(
             created_user,
+            false,
         ))))
     }
 
@@ -894,7 +895,7 @@ impl AuthApplicationService {
         username: String,
         email: String,
         password: String,
-    ) -> Result<UserDto, DomainError> {
+    ) -> Result<PublicUserDto, DomainError> {
         // Validate username
         if username.len() < 3 || username.len() > 254 {
             return Err(DomainError::new(
@@ -981,7 +982,7 @@ impl AuthApplicationService {
             username,
             created_user.id()
         );
-        Ok(UserDto::from(created_user))
+        Ok(PublicUserDto::new(created_user, false))
     }
 
     pub async fn login(
@@ -1320,18 +1321,85 @@ impl AuthApplicationService {
             session = session.with_dpop_jkt(jkt);
         }
 
+        // Build the SelfUserDto BEFORE `session` moves into
+        // `create_session` — the builder reads `session.dpop_jkt()`.
+        let user_id = user.id();
+        let user_dto = self.build_self_user_dto(user_id, &session).await?;
         self.session_storage.create_session(session).await?;
 
         // Authentication response
-        let force_password_change = self.read_force_password_change(user.id()).await;
+        let force_password_change = self.read_force_password_change(user_id).await;
         Ok(AuthResponseDto {
-            user: UserDto::from(user),
+            user: user_dto,
             access_token,
             refresh_token,
             token_type: "Bearer".to_string(),
             expires_in: self.token_service.refresh_token_expiry_secs(),
             force_password_change,
         })
+    }
+
+    /// Assemble a `SelfUserDto` for the given user + the session that
+    /// mints them. Called by every `AuthResponseDto` path
+    /// (login / refresh / OIDC / magic-link) so the wire shape stays
+    /// consistent across login flavours and matches what `/api/auth/me`
+    /// would return.
+    ///
+    /// Costs one wide SELECT (`get_user_with_derived_flags`) even when
+    /// the caller already has a `User` in hand — acceptable because
+    /// `/login`, `/refresh`, and the OIDC/magic-link callbacks are
+    /// not hot inner loops. In exchange the composition stays uniform
+    /// across all four callsites and OPAQUE / `is_online` flags land
+    /// on the wire without a second lookup at each site.
+    ///
+    /// `is_dpop_bound` is derived from the session's own DPoP
+    /// thumbprint — the session was just constructed, so this reads
+    /// exactly the binding that will govern subsequent requests.
+    async fn build_self_user_dto(
+        &self,
+        user_id: Uuid,
+        session: &crate::domain::entities::session::Session,
+    ) -> Result<SelfUserDto, DomainError> {
+        // Session-context flavour — delegates to the shared builder
+        // with the DPoP-bound flag derived from the session row's
+        // thumbprint. See [`build_self_user_dto_for_id`] for the
+        // handler-context flavour.
+        self.build_self_user_dto_for_id(user_id, session.dpop_jkt().is_some())
+            .await
+    }
+
+    /// Handler-context variant of [`build_self_user_dto`]. Called by
+    /// every endpoint that returns a `SelfUserDto` from a REST handler
+    /// (`GET /me`, `PATCH /me/profile`, `POST /upgrade-to-internal`)
+    /// so the wire shape is byte-for-byte identical across them —
+    /// avoids a "quiet lie" where a client PATCHes one shape and
+    /// reads another on the very next `/me`.
+    ///
+    /// `is_dpop_bound` is passed in by the handler because the JWT
+    /// `cnf.jkt` claim is where handler-scope code learns the caller's
+    /// binding state (via `auth_user.dpop_jkt.is_some()`). Session-
+    /// mint paths use [`build_self_user_dto`] and derive the flag from
+    /// the freshly-created `Session` row instead.
+    pub async fn build_self_user_dto_for_id(
+        &self,
+        user_id: Uuid,
+        is_dpop_bound: bool,
+    ) -> Result<SelfUserDto, DomainError> {
+        let (user, flags) =
+            UserStoragePort::get_user_with_derived_flags(&*self.user_storage, user_id).await?;
+        let can_edit_image = !user.is_oidc_user();
+        let ui_preferences = user.ui_preferences().clone();
+        let notify_on_share = user.notify_on_share();
+        let force_password_change = self.read_force_password_change(user_id).await;
+        let full = FullUserDto::build(user, flags);
+        Ok(SelfUserDto::build(
+            full,
+            ui_preferences,
+            notify_on_share,
+            is_dpop_bound,
+            force_password_change,
+            can_edit_image,
+        ))
     }
 
     /// Read `force_password_change_at_next_login` for the given user,
@@ -1586,22 +1654,29 @@ impl AuthApplicationService {
         let access_token =
             self.token_service
                 .generate_access_token(&user, Some(session.id()), None)?;
+        // Snapshot fields still needed for logging + DTO before
+        // `session` and `user` are consumed by the storage call and
+        // the DTO builder below.
+        let user_id = user.id();
+        let user_display = user.display_for_audit().to_string();
+        let is_external = user.is_external();
+        let user_dto = self.build_self_user_dto(user_id, &session).await?;
         self.session_storage.create_session(session).await?;
 
         tracing::info!(
             target: "audit",
             event = "magic_link.redeemed",
-            user_id = %user.id(),
-            username = %user.display_for_audit(),
-            is_external = user.is_external(),
+            user_id = %user_id,
+            username = %user_display,
+            is_external = is_external,
             resource_kind = ?mlt.resource_kind(),
             resource_id = ?mlt.resource_id(),
             cross_browser_confirmed = cross_browser_confirmed,
         );
 
-        let force_password_change = self.read_force_password_change(user.id()).await;
+        let force_password_change = self.read_force_password_change(user_id).await;
         let auth = AuthResponseDto {
-            user: UserDto::from(user),
+            user: user_dto,
             access_token,
             refresh_token,
             token_type: "Bearer".to_string(),
@@ -1789,6 +1864,12 @@ impl AuthApplicationService {
             session.dpop_jkt(),
         )?;
 
+        // Build the SelfUserDto before `new_session` is consumed by
+        // the rotate call — the builder reads `session.dpop_jkt()`
+        // to compute `is_dpop_bound`.
+        let user_id = user.id();
+        let user_dto = self.build_self_user_dto(user_id, &new_session).await?;
+
         self.session_storage
             .rotate_session(session.id(), new_session)
             .await?;
@@ -1798,9 +1879,9 @@ impl AuthApplicationService {
         // initial login. The SPA's post-refresh flow (silent, on
         // its own timer) can then route the user to change-password
         // without waiting for an explicit re-login.
-        let force_password_change = self.read_force_password_change(user.id()).await;
+        let force_password_change = self.read_force_password_change(user_id).await;
         Ok(AuthResponseDto {
-            user: UserDto::from(user),
+            user: user_dto,
             access_token,
             refresh_token: new_refresh_token,
             token_type: "Bearer".to_string(),
@@ -2025,7 +2106,7 @@ impl AuthApplicationService {
         &self,
         caller_id: Uuid,
         dto: UpgradeToInternalDto,
-    ) -> Result<UserDto, DomainError> {
+    ) -> Result<PublicUserDto, DomainError> {
         let mut user = self.user_storage.get_user_by_id(caller_id).await?;
 
         // Precondition: caller is currently external. Fast-path 409 so
@@ -2126,7 +2207,7 @@ impl AuthApplicationService {
             lc.dispatch_upgraded_to_internal(&updated).await;
         }
 
-        Ok(UserDto::from(updated))
+        Ok(PublicUserDto::new(updated, false))
     }
 
     /// Admin-driven external → internal promotion.
@@ -2155,7 +2236,7 @@ impl AuthApplicationService {
         &self,
         admin_id: Uuid,
         target_id: Uuid,
-    ) -> Result<UserDto, DomainError> {
+    ) -> Result<PublicUserDto, DomainError> {
         let mut user = self.user_storage.get_user_by_id(target_id).await?;
 
         if !user.is_external() {
@@ -2237,7 +2318,7 @@ impl AuthApplicationService {
             "👮🏻‍♂️ external user promoted to internal by admin",
         );
 
-        Ok(UserDto::from(updated))
+        Ok(PublicUserDto::new(updated, false))
     }
 
     /// `keep_session_id` — when `Some`, revoke every OTHER session for
@@ -2492,9 +2573,9 @@ impl AuthApplicationService {
         Ok(())
     }
 
-    pub async fn get_user(&self, user_id: Uuid) -> Result<UserDto, DomainError> {
+    pub async fn get_user(&self, user_id: Uuid) -> Result<PublicUserDto, DomainError> {
         let user = self.user_storage.get_user_by_id(user_id).await?;
-        Ok(UserDto::from(user))
+        Ok(PublicUserDto::new(user, false))
     }
 
     /// Cached, image-free lookup of the caller's authorization flags
@@ -2643,7 +2724,7 @@ impl AuthApplicationService {
         caller_id: Uuid,
         dto: crate::application::dtos::user_dto::UpdateProfileDto,
         locale_registry: &crate::common::locale::LocaleRegistry,
-    ) -> Result<UserDto, DomainError> {
+    ) -> Result<PublicUserDto, DomainError> {
         let mut user = self.user_storage.get_user_by_id(caller_id).await?;
 
         // For OIDC-managed users, refuse the patch ONLY when it touches
@@ -2819,7 +2900,7 @@ impl AuthApplicationService {
 
         if changed.is_empty() && ui_prefs_patch.is_none() {
             // No-op — return the current user without a DB write.
-            return Ok(UserDto::from(user));
+            return Ok(PublicUserDto::new(user, false));
         }
 
         // Persist the typed-field changes first (if any). Skip the
@@ -2850,11 +2931,11 @@ impl AuthApplicationService {
         // Refetch so the returned DTO reflects the merged JSONB bag
         // (the in-memory `user` above holds the pre-merge value).
         let refreshed = self.user_storage.get_user_by_id(caller_id).await?;
-        Ok(UserDto::from(refreshed))
+        Ok(PublicUserDto::new(refreshed, false))
     }
 
     // Alias for consistency with handler method
-    pub async fn get_user_by_id(&self, user_id: Uuid) -> Result<UserDto, DomainError> {
+    pub async fn get_user_by_id(&self, user_id: Uuid) -> Result<PublicUserDto, DomainError> {
         self.get_user(user_id).await
     }
 
@@ -2869,6 +2950,26 @@ impl AuthApplicationService {
         user_id: Uuid,
     ) -> Result<crate::domain::entities::user::User, DomainError> {
         UserStoragePort::get_user_by_id(&*self.user_storage, user_id).await
+    }
+
+    /// Load the full `User` entity + `UserDerivedFlags` for the given
+    /// id in ONE query. See
+    /// [`UserRepository::get_user_with_derived_flags`](crate::domain::repositories::user_repository::UserRepository::get_user_with_derived_flags)
+    /// for the shape and the SELECT that drives it. Used by
+    /// `/api/auth/me` to build a `SelfUserDto` and by future admin
+    /// single-user views to build a `FullUserDto` without paying two
+    /// round-trips.
+    pub async fn get_user_with_derived_flags(
+        &self,
+        user_id: Uuid,
+    ) -> Result<
+        (
+            crate::domain::entities::user::User,
+            crate::domain::repositories::user_repository::UserDerivedFlags,
+        ),
+        DomainError,
+    > {
+        UserStoragePort::get_user_with_derived_flags(&*self.user_storage, user_id).await
     }
 
     /// Login-style identifier lookup: dispatches on `@` in the input
@@ -2927,12 +3028,23 @@ impl AuthApplicationService {
         target_id: Uuid,
         expose_system_users: bool,
         pool: &sqlx::PgPool,
-    ) -> Result<UserDto, DomainError> {
+    ) -> Result<PublicUserDto, DomainError> {
         // (1) Self — a single fetch suffices (the check compares the input
         // UUIDs, so the target read is never needed on this path).
+        //
+        // Both branches use `get_user_with_derived_flags` (not the narrow
+        // `get_user_by_id`) so `PublicUserDto.is_online` on the wire
+        // reflects the same EXISTS subquery the admin list uses. Without
+        // this the FE presence dot would only light up on list-derived
+        // paths (admin seed); single fetches from share pickers / group
+        // members would show every user as offline regardless of real
+        // state. See `docs/plan/userdto-refactor.md`.
         if caller_id == target_id {
-            let caller = self.user_storage.get_user_by_id(caller_id).await?;
-            return Ok(UserDto::from(caller));
+            let (caller, flags) = self
+                .user_storage
+                .get_user_with_derived_flags(caller_id)
+                .await?;
+            return Ok(PublicUserDto::new(caller, flags.is_online));
         }
 
         // Caller and target are independent point reads (the self-case already
@@ -2940,16 +3052,26 @@ impl AuthApplicationService {
         // overlap them with `join!` instead of two serial round-trips.
         // `caller_res?` first preserves the caller-error precedence of the old
         // sequential form. (benches/ROUND23.md §P1)
+        //
+        // `caller` uses the narrow `get_user_by_id` because we only read
+        // `is_external()` off it for the visibility gate; nothing about
+        // the caller ships on the wire. Only `target` needs the wider
+        // projection.
         let (caller_res, target_res) = tokio::join!(
             self.user_storage.get_user_by_id(caller_id),
-            self.user_storage.get_user_by_id(target_id)
+            self.user_storage.get_user_with_derived_flags(target_id)
         );
         let caller = caller_res?;
 
         // Anti-enumeration: NotFound for everything that doesn't pass.
         // Convert a real NotFound on `target` to the same anonymous 404,
         // so existence isn't leaked through differential responses.
-        let target = match target_res {
+        //
+        // Destructure the (User, UserDerivedFlags) tuple immediately so
+        // `target` keeps its historical `User` shape (accessors still
+        // work below); the flags come along as `target_flags` for the
+        // `is_online` propagation into the returned `PublicUserDto`.
+        let (target, target_flags) = match target_res {
             Ok(u) => u,
             Err(e) if e.kind == ErrorKind::NotFound => {
                 tracing::info!(
@@ -2993,7 +3115,7 @@ impl AuthApplicationService {
         })?;
 
         if related.is_some() {
-            return Ok(UserDto::from(target));
+            return Ok(PublicUserDto::new(target, target_flags.is_online));
         }
 
         // (3) External callers stop here — no directory enumeration.
@@ -3021,12 +3143,12 @@ impl AuthApplicationService {
 
         // (4) Internal target + system-address-book exposed: already public.
         if !target.is_external() && expose_system_users {
-            return Ok(UserDto::from(target));
+            return Ok(PublicUserDto::new(target, target_flags.is_online));
         }
 
         // (5) Admin caller: always visible.
         if caller.role() == UserRole::Admin {
-            return Ok(UserDto::from(target));
+            return Ok(PublicUserDto::new(target, target_flags.is_online));
         }
 
         // (6) No relationship — anti-enumeration NotFound.
@@ -3079,7 +3201,7 @@ impl AuthApplicationService {
         username: &str,
         expose_system_users: bool,
         pool: &sqlx::PgPool,
-    ) -> Result<UserDto, DomainError> {
+    ) -> Result<PublicUserDto, DomainError> {
         let target = match self.user_storage.get_user_by_username(username).await {
             Ok(u) => u,
             Err(e) if e.kind == ErrorKind::NotFound => {
@@ -3106,9 +3228,9 @@ impl AuthApplicationService {
     }
 
     // New method to get user by username - needed for admin user handling
-    pub async fn get_user_by_username(&self, username: &str) -> Result<UserDto, DomainError> {
+    pub async fn get_user_by_username(&self, username: &str) -> Result<PublicUserDto, DomainError> {
         let user = self.user_storage.get_user_by_username(username).await?;
-        Ok(UserDto::from(user))
+        Ok(PublicUserDto::new(user, false))
     }
 
     // Method to count how many admin users exist in the system
@@ -3125,42 +3247,46 @@ impl AuthApplicationService {
     /// out so that internal-user surfaces — system address book, OCS
     /// sharee search, etc. — never expose external identities. Admin
     /// surfaces that need the full list should call
-    /// [`list_users_including_external_with_perms`] instead.
-    pub async fn list_users(&self, limit: i64, offset: i64) -> Result<Vec<UserDto>, DomainError> {
-        let users = self.user_storage.list_users(limit, offset, false).await?;
-        Ok(users.into_iter().map(UserDto::from).collect())
-    }
-
-    /// Admin-only: lists users including external (grant-only) recipients.
-    /// Used by the admin user-management UI.
-    pub async fn list_users_including_external_with_perms<A: AuthorizationEngine>(
+    /// [`list_user_summaries_including_external_with_perms`] instead.
+    pub async fn list_users(
         &self,
-        authorization: &A,
-        caller_id: Uuid,
         limit: i64,
         offset: i64,
-    ) -> Result<Vec<UserDto>, DomainError> {
-        self.require_admin_caller(authorization, caller_id).await?;
-        let users = self.user_storage.list_users(limit, offset, true).await?;
-        Ok(users.into_iter().map(UserDto::from).collect())
+    ) -> Result<Vec<PublicUserDto>, DomainError> {
+        let users = self.user_storage.list_users(limit, offset, false).await?;
+        Ok(users
+            .into_iter()
+            .map(|u| PublicUserDto::new(u, false))
+            .collect())
     }
 
-    /// Admin-only compact listing.  The detail endpoint retains the complete
-    /// [`UserDto`]; this path projects only what the management table renders so
-    /// PostgreSQL never detoasts or transfers avatars/preferences for a page.
+    /// Admin-only user listing. Returns `Vec<FullUserDto>` — same
+    /// `FullUserDto` shape [`SelfUserDto`] embeds, so the FE reads
+    /// admin table rows and `/me` responses through identical field
+    /// paths. Includes the avatar (`user.image`) and presence
+    /// (`user.is_online`) so the admin table renders the vignette +
+    /// green dot without per-row follow-up fetches to
+    /// `/api/users/{id}` (the N+1 that motivated the widening — see
+    /// `docs/plan/userdto-refactor.md` § N+1). This is the sole
+    /// admin-visible listing path; the former flat
+    /// `list_users_including_external_with_perms` variant was
+    /// retired when `?summary` was dropped.
     pub async fn list_user_summaries_including_external_with_perms<A: AuthorizationEngine>(
         &self,
         authorization: &A,
         caller_id: Uuid,
         limit: i64,
         offset: i64,
-    ) -> Result<Vec<AdminUserSummaryDto>, DomainError> {
+    ) -> Result<Vec<FullUserDto>, DomainError> {
         self.require_admin_caller(authorization, caller_id).await?;
-        let users = self
+        let rows = self
             .user_storage
-            .list_user_summaries(limit, offset, true)
+            .list_users_with_derived_flags(limit, offset, true)
             .await?;
-        Ok(users.into_iter().map(AdminUserSummaryDto::from).collect())
+        Ok(rows
+            .into_iter()
+            .map(|(user, flags)| FullUserDto::build(user, flags))
+            .collect())
     }
 
     /// Service-layer gate for administrator-scoped user-directory operations.
@@ -3183,9 +3309,16 @@ impl AuthApplicationService {
     }
 
     /// Searches internal users only. See [`list_users`] for the rationale.
-    pub async fn search_users(&self, query: &str, limit: i64) -> Result<Vec<UserDto>, DomainError> {
+    pub async fn search_users(
+        &self,
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<PublicUserDto>, DomainError> {
         let users = self.user_storage.search_users(query, limit, false).await?;
-        Ok(users.into_iter().map(UserDto::from).collect())
+        Ok(users
+            .into_iter()
+            .map(|u| PublicUserDto::new(u, false))
+            .collect())
     }
 
     /// Username-only search for the NC sharee autocomplete: identical
@@ -3215,8 +3348,8 @@ impl AuthApplicationService {
     // `interfaces/api/routes.rs::admin_router`) — but every admin
     // method here still calls `require_admin_caller` as a
     // defense-in-depth check, matching the pattern
-    // `list_users_including_external_with_perms` established. If a
-    // handler is ever wired outside the /admin subtree, the AuthZ
+    // `list_user_summaries_including_external_with_perms` established.
+    // If a handler is ever wired outside the /admin subtree, the AuthZ
     // still holds.
 
     /// List sessions for the admin panel. `user_id_filter = Some(uuid)`
@@ -3291,7 +3424,7 @@ impl AuthApplicationService {
     pub async fn admin_create_user(
         &self,
         dto: crate::application::dtos::settings_dto::AdminCreateUserDto,
-    ) -> Result<UserDto, DomainError> {
+    ) -> Result<FullUserDto, DomainError> {
         // Validate username length
         if dto.username.len() < 3 || dto.username.len() > 254 {
             return Err(DomainError::new(
@@ -3449,7 +3582,16 @@ impl AuthApplicationService {
             created.id(),
             created.is_external()
         );
-        Ok(UserDto::from(created))
+        // Return `FullUserDto` — same shape as `GET /api/admin/users/{id}`
+        // and one row of the admin list. Admin surfaces uniformly return
+        // FullUserDto so the SPA / test asserts don't need to know which
+        // admin endpoint they came from. Fresh user has no session yet
+        // (`is_online = false`) and no OPAQUE registration; `has_password`
+        // reflects whatever the admin passed in the DTO.
+        let created_id = created.id();
+        let (user, flags) =
+            UserStoragePort::get_user_with_derived_flags(&*self.user_storage, created_id).await?;
+        Ok(FullUserDto::build(user, flags))
     }
 
     /// Admin-only: reset a user's password.
@@ -3545,10 +3687,20 @@ impl AuthApplicationService {
         Ok(())
     }
 
-    /// Get a single user by ID (for admin panel)
-    pub async fn get_user_admin(&self, user_id: Uuid) -> Result<UserDto, DomainError> {
-        let user = self.user_storage.get_user_by_id(user_id).await?;
-        Ok(UserDto::from(user))
+    /// Get a single user by ID (for admin panel).
+    ///
+    /// Returns `FullUserDto` — same shape as one row of
+    /// `/api/admin/users` — so admin single-user views (detail modal,
+    /// per-user edit page) render the same fields the list surfaces.
+    /// The single-row admin view is the canonical observation surface
+    /// for admin-visible signals like `email_verified_at` /
+    /// `has_password` / `opaque_registered` / `last_login_at` — none
+    /// of which live on the peer-view `PublicUserDto`. See
+    /// `docs/plan/userdto-refactor.md`.
+    pub async fn get_user_admin(&self, user_id: Uuid) -> Result<FullUserDto, DomainError> {
+        let (user, flags) =
+            UserStoragePort::get_user_with_derived_flags(&*self.user_storage, user_id).await?;
+        Ok(FullUserDto::build(user, flags))
     }
 
     /// Delete a user by ID (admin only).
@@ -4654,11 +4806,17 @@ impl AuthApplicationService {
         let access_token =
             self.token_service
                 .generate_access_token(&user, Some(session.id()), None)?;
+        // Build the SelfUserDto before `session` is consumed by the
+        // storage call — the builder reads `session.dpop_jkt()`
+        // (None here since OIDC callbacks land unbound and the SPA
+        // finishes binding post-redirect).
+        let user_id = user.id();
+        let user_dto = self.build_self_user_dto(user_id, &session).await?;
         self.session_storage.create_session(session).await?;
 
-        let force_password_change = self.read_force_password_change(user.id()).await;
+        let force_password_change = self.read_force_password_change(user_id).await;
         let auth_response = AuthResponseDto {
-            user: UserDto::from(user),
+            user: user_dto,
             access_token,
             refresh_token,
             token_type: "Bearer".to_string(),

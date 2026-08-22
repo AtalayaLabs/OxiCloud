@@ -191,7 +191,15 @@ async fn user_provisioning_response(
         return Json(ocs_err(997, "Database pool not available")).into_response();
     };
 
-    let user_dto = match auth_service
+    // Two-step lookup: (1) `get_user_profile_by_username_with_perms`
+    // gates access via the same visibility engine the REST endpoint
+    // uses; (2) if visibility passes, `get_user_with_derived_flags`
+    // hydrates the OCS-specific fields (federation_kind / last_login_at
+    // / active) that live on `FullUserDto` but not on the slim
+    // `PublicUserDto` returned by the visibility gate. Second call is
+    // ~1 DB round-trip on the maintenance pool; NC OCS provisioning is
+    // not on any hot inner loop.
+    let public = match auth_service
         .get_user_profile_by_username_with_perms(
             user.id,
             &userid,
@@ -205,9 +213,27 @@ async fn user_provisioning_response(
             return Json(ocs_err(404, "User not found")).into_response();
         }
     };
+    let target_id = match uuid::Uuid::parse_str(&public.id) {
+        Ok(u) => u,
+        Err(_) => {
+            // Should be unreachable — PublicUserDto.id is always the
+            // serialised form of a Uuid. Fail closed if this invariant
+            // is ever violated.
+            return Json(ocs_err(500, "Malformed user id")).into_response();
+        }
+    };
+    let user_dto = match auth_service.get_user_with_derived_flags(target_id).await {
+        Ok((user, flags)) => crate::application::dtos::user_dto::FullUserDto::build(user, flags),
+        Err(_) => {
+            // Visibility already passed above; a miss here would mean
+            // the user was deleted between the two round-trips. Fall
+            // back to the 404 shape (anti-enum invariant still holds).
+            return Json(ocs_err(404, "User not found")).into_response();
+        }
+    };
 
     // Determine groups based on role
-    let groups = if user_dto.role == "admin" {
+    let groups = if user_dto.user.role == "admin" {
         vec!["admin", "users"]
     } else {
         vec!["users"]
@@ -235,7 +261,7 @@ async fn user_provisioning_response(
     // Fetch quota from storage usage service
     let quota: (i64, i64) = match state.storage_usage_service.as_ref() {
         Some(service) => match service
-            .get_user_storage_info(uuid::Uuid::parse_str(&user_dto.id).unwrap_or_default())
+            .get_user_storage_info(uuid::Uuid::parse_str(&user_dto.user.id).unwrap_or_default())
             .await
         {
             Ok((used, total)) => (used, total),
@@ -256,10 +282,10 @@ async fn user_provisioning_response(
             "meta": { "status": "ok", "statuscode": statuscode, "message": "OK" },
             "data": {
                 "enabled": user_dto.active,
-                "id": user_dto.username,
-                "display-name": user_dto.username,
-                "displayname": user_dto.username,
-                "email": user_dto.email,
+                "id": user_dto.user.username,
+                "display-name": user_dto.user.username,
+                "displayname": user_dto.user.username,
+                "email": user_dto.user.email,
                 "phone": "",
                 "address": "",
                 "website": "",

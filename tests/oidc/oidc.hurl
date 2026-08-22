@@ -172,7 +172,7 @@ Content-Type: application/json
 
 HTTP 200
 [Captures]
-oidc_session_user: jsonpath "$.user.username"
+oidc_session_user: jsonpath "$.user.full.user.username"
 # Snapshotted so Step 7's refresh can prove the tokens rotated
 # rather than being re-issued unchanged. The refresh handler in
 # auth_handler.rs always rotates all three cookies (access JWT,
@@ -184,8 +184,8 @@ initial_access_token:  jsonpath "$.access_token"
 initial_refresh_token: jsonpath "$.refresh_token"
 initial_csrf_token:    cookie "oxicloud_csrf"
 [Asserts]
-jsonpath "$.user.username" == "oidc_user"
-jsonpath "$.user.email"    == "oidc@example.com"
+jsonpath "$.user.full.user.username" == "oidc_user"
+jsonpath "$.user.full.user.email"    == "oidc@example.com"
 jsonpath "$.access_token"  isString
 # Multiple Set-Cookie headers come back as a list of values, so
 # `contains` only matches whole-element strings. Each cookie shows up
@@ -211,10 +211,10 @@ HTTP 200
 # Stash the user id for the re-login check in Step 10 below — a
 # second OIDC flow with the same `sub` must resolve back to this
 # exact user, not silently create a duplicate.
-oidc_user_id: jsonpath "$.id"
+oidc_user_id: jsonpath "$.full.user.id"
 [Asserts]
-jsonpath "$.username" == "oidc_user"
-jsonpath "$.email"    == "oidc@example.com"
+jsonpath "$.full.user.username" == "oidc_user"
+jsonpath "$.full.user.email"    == "oidc@example.com"
 # Post the federation-identity rename (docs/plan/ocm.md § Schema
 # rename) UserDto exposes federation_kind + federation_issuer as
 # separate nullable fields. Local users have both null; OIDC users
@@ -222,24 +222,24 @@ jsonpath "$.email"    == "oidc@example.com"
 # the fake IdP (tests/oidc/fake_idp/server.js) that URL is the
 # issuer published in its discovery document, which matches
 # `oidc_issuer` from test.env.
-jsonpath "$.federation_kind"   == "oidc"
-jsonpath "$.federation_issuer" == "{{oidc_issuer}}"
+jsonpath "$.full.federation_kind"   == "oidc"
+jsonpath "$.full.federation_issuer" == "{{oidc_issuer}}"
 # Full claim round-trip — the fake IdP (tests/oidc/fake_idp/server.js)
 # pins these values and OxiCloud must persist each one verbatim during
 # JIT provisioning (see auth_application_service.rs around line 2257).
 # A regression that drops, swaps, or truncates a claim trips here.
 # Note the field name flip on the API side: OIDC `picture` becomes
 # UserDto.image (a URL or data URI).
-jsonpath "$.given_name"  == "OIDC"
-jsonpath "$.family_name" == "Test"
-jsonpath "$.image"       == "https://example.com/oidc-test-user.png"
+jsonpath "$.full.user.given_name"  == "OIDC"
+jsonpath "$.full.user.family_name" == "Test"
+jsonpath "$.full.user.image"       == "https://example.com/oidc-test-user.png"
 # Group-to-role mapping. server-with-oidc.env sets
 # OXICLOUD_OIDC_ADMIN_GROUPS=admin-users; the fake IdP's claims include
 # `groups: ["admin-users"]`. The JIT path intersects the claim against
 # the env and promotes the new user from `user` to `admin`. A
 # regression here would silently strip (or wrongly grant) admin rights
 # for every SSO deployment that uses group-based role mapping.
-jsonpath "$.role" == "admin"
+jsonpath "$.full.user.role" == "admin"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -274,7 +274,7 @@ refreshed_refresh_token: jsonpath "$.refresh_token"
 # the (freshly-rotated) `oxicloud_csrf` cookie on the browser.
 refreshed_csrf_token:    cookie "oxicloud_csrf"
 [Asserts]
-jsonpath "$.user.username" == "oidc_user"
+jsonpath "$.user.full.user.username" == "oidc_user"
 jsonpath "$.access_token"  isString
 jsonpath "$.refresh_token" isString
 # All three cookies must rotate. If any value were re-used, a
@@ -296,7 +296,7 @@ GET {{base_url}}/api/auth/me
 
 HTTP 200
 [Asserts]
-jsonpath "$.username" == "oidc_user"
+jsonpath "$.full.user.username" == "oidc_user"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -412,8 +412,8 @@ HTTP 200
 [Asserts]
 # Same local id — proves the existing-user resolver matched on `sub`
 # (or `oidc_provider + oidc_subject`) instead of minting a new row.
-jsonpath "$.user.id" == "{{oidc_user_id}}"
-jsonpath "$.user.username" == "oidc_user"
+jsonpath "$.user.full.user.id" == "{{oidc_user_id}}"
+jsonpath "$.user.full.user.username" == "oidc_user"
 # Role from the prior JIT-provisioned admin survives the re-login.
 # Two regressions this catches: (a) the existing-user branch wiping
 # the role to a default `user`; (b) the existing-user branch
@@ -421,7 +421,7 @@ jsonpath "$.user.username" == "oidc_user"
 # IdP still emits `groups: ["admin-users"]`, OXICLOUD_OIDC_ADMIN_GROUPS
 # still resolves to "admin"). Either way, the role should remain
 # `admin` — otherwise we have a silent admin demotion on every login.
-jsonpath "$.user.role" == "admin"
+jsonpath "$.user.full.user.role" == "admin"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -876,7 +876,7 @@ Content-Type: application/json
 
 HTTP 200
 [Asserts]
-jsonpath "$.user.username" == "oidc_user"
+jsonpath "$.user.full.user.username" == "oidc_user"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -889,7 +889,7 @@ GET {{base_url}}/api/auth/me
 
 HTTP 200
 [Asserts]
-jsonpath "$.username" == "oidc_user"
+jsonpath "$.full.user.username" == "oidc_user"
 
 
 # ─────────────────────────────────────────────────────────────

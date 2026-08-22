@@ -12,8 +12,8 @@ use uuid::Uuid;
 
 use crate::application::dtos::user_dto::{
     AuthResponseDto, ChangePasswordDto, LoginDto, OidcCallbackQueryDto, OidcExchangeDto,
-    OidcProviderInfoDto, RefreshTokenDto, RegisterDto, SetupAdminDto, UpgradeToInternalDto,
-    UserDto,
+    OidcProviderInfoDto, PublicUserDto, RefreshTokenDto, RegisterDto, SelfUserDto, SetupAdminDto,
+    UpgradeToInternalDto,
 };
 use crate::application::services::auth_application_service::{OidcCallbackResult, RegisterResult};
 use crate::common::di::AppState;
@@ -89,7 +89,7 @@ pub fn setup_route() -> Router<Arc<AppState>> {
 ///   the `audit` channel as `auth.register` with `reason` one of
 ///   `created`, `email_taken`, `username_taken`.
 /// - **SMTP not configured**: there is no welcome-mail cover story, so
-///   the classic `201 + UserDto` on success and `409` on collision
+///   the classic `201 + PublicUserDto` on success and `409` on collision
 ///   apply. Anti-enumeration would just be misleading UX (telling the
 ///   user to check an email that will never arrive). Email-only
 ///   signup is **503** in this mode because the user would otherwise
@@ -106,7 +106,7 @@ pub fn setup_route() -> Router<Arc<AppState>> {
     request_body = RegisterDto,
     responses(
         (status = 200, description = "Uniform registration response (SMTP configured, anti-enumeration mode)"),
-        (status = 201, description = "User registered successfully (SMTP not configured)", body = UserDto),
+        (status = 201, description = "User registered successfully (SMTP not configured)", body = PublicUserDto),
         (status = 400, description = "Validation error (malformed request body)"),
         (status = 403, description = "Registration disabled (admin setting or OIDC-only mode)"),
         (status = 409, description = "Username or email already taken (SMTP not configured)"),
@@ -280,7 +280,7 @@ pub async fn register(
                 }
                 Ok(resp)
             } else {
-                // Classic mode: clear 201 + UserDto so the frontend can
+                // Classic mode: clear 201 + PublicUserDto so the frontend can
                 // log the user in directly with the password they just
                 // submitted. Unbox the DTO for the JSON serialisation.
                 Ok((StatusCode::CREATED, Json(*user)).into_response())
@@ -626,7 +626,7 @@ pub async fn refresh_token(
     get,
     path = "/api/auth/me",
     responses(
-        (status = 200, description = "Current user profile", body = UserDto),
+        (status = 200, description = "Current user profile", body = SelfUserDto),
         (status = 401, description = "Not authenticated"),
     ),
     security(("bearerAuth" = [])),
@@ -652,37 +652,21 @@ pub async fn get_current_user(
     // Semantics (`docs/plan/drive.md` §7): `storage_used_bytes` is the SUM
     // of `used_bytes` across the user's personal drives only. Shared drives
     // never count against this envelope — collaborating in a team drive
-    // costs no personal bytes. The matching cap is
-    // `storage_quota_bytes` (admin-only mutation).
-    let mut user = auth_service
+    // costs no personal bytes.
+    //
+    // Delegate to the shared `build_self_user_dto_for_id` — same code
+    // path `PATCH /me/profile` and `POST /upgrade-to-internal` use so
+    // all three self endpoints ship byte-for-byte identical shapes.
+    // The DPoP-bound signal comes from the JWT `cnf.jkt` claim
+    // (surfaced by the auth middleware into `AuthUser.dpop_jkt`);
+    // when present the session that minted this JWT is bound and
+    // the SPA can skip a redundant `/dpop/bind` call.
+    let self_dto = auth_service
         .auth_application_service
-        .get_user_by_id(user_id)
+        .build_self_user_dto_for_id(user_id, auth_user.dpop_jkt.is_some())
         .await?;
 
-    // Overlay the cached `force_password_change` flag (see UserFlags).
-    // `From<User>` defaults to false; the SPA reads this field on
-    // startup to decide whether to enter mandatory change-password
-    // mode. Using the cached path (`get_user_flags` → `user_flags_cache`)
-    // avoids a second DB round-trip on this hot endpoint.
-    if let Ok(flags) = auth_service
-        .auth_application_service
-        .get_user_flags(user_id)
-        .await
-    {
-        user.force_password_change = flags.force_password_change;
-    }
-
-    // Session-binding state — read from the JWT `cnf.jkt` claim
-    // (surfaced by the auth middleware into `CurrentUser.dpop_jkt`).
-    // Present ⇒ the session that minted this JWT was bound; absent ⇒
-    // the session is unbound and the SPA should call `/dpop/bind`
-    // to attach the browser's keypair (OIDC / magic-link redirect
-    // flow). Skips an otherwise-redundant `POST /dpop/bind` on every
-    // page load which would return 409 `already_bound` and litter
-    // the audit stream.
-    user.is_dpop_bound = auth_user.dpop_jkt.is_some();
-
-    Ok((StatusCode::OK, Json(user)))
+    Ok((StatusCode::OK, Json(self_dto)))
 }
 
 /// DTO for updating the user's profile image.
@@ -837,14 +821,16 @@ pub async fn change_password(
 /// self-registration policy. Refused with 403
 /// `error_type = "RegistrationDomainNotAllowed"`.
 ///
-/// Response: the updated `UserDto` (post-upgrade view — `is_external`
-/// is false, `storage_quota_bytes` is set).
+/// Response: the updated `SelfUserDto` (same shape as `GET /me`) so the SPA
+/// absorbs the post-upgrade state — new `storage_quota_bytes`,
+/// `is_external = false`, updated OPAQUE / auth capability flags — in one
+/// round trip without a follow-up `/me` fetch.
 #[utoipa::path(
     post,
     path = "/api/auth/upgrade-to-internal",
     request_body = UpgradeToInternalDto,
     responses(
-        (status = 200, description = "Upgrade succeeded", body = UserDto),
+        (status = 200, description = "Upgrade succeeded — returns SelfUserDto (same shape as GET /me)", body = SelfUserDto),
         (status = 400, description = "Password missing / too short"),
         (status = 401, description = "Not authenticated"),
         (status = 403, description = "OIDC user, or domain not in allowlist"),
@@ -855,9 +841,10 @@ pub async fn change_password(
 )]
 pub async fn upgrade_to_internal(
     State(state): State<Arc<AppState>>,
-    CurrentUserId(user_id): CurrentUserId,
+    auth_user: AuthUser,
     Json(dto): Json<UpgradeToInternalDto>,
 ) -> Result<impl IntoResponse, AppError> {
+    let user_id = auth_user.id;
     let auth_service = state
         .auth_service
         .as_ref()
@@ -905,7 +892,11 @@ pub async fn upgrade_to_internal(
         }
     }
 
-    let updated = auth_service
+    // Apply the upgrade. Service returns the updated `PublicUserDto`;
+    // we discard it and rebuild the full self view via the shared
+    // `build_self_user_dto_for_id` helper so the wire shape matches
+    // `GET /me` and `PATCH /me/profile` byte-for-byte.
+    let _ = auth_service
         .auth_application_service
         .upgrade_to_internal(user_id, dto)
         .await
@@ -924,7 +915,11 @@ pub async fn upgrade_to_internal(
             _ => AppError::from(err),
         })?;
 
-    Ok((StatusCode::OK, Json(updated)))
+    let self_dto = auth_service
+        .auth_application_service
+        .build_self_user_dto_for_id(user_id, auth_user.dpop_jkt.is_some())
+        .await?;
+    Ok((StatusCode::OK, Json(self_dto)))
 }
 
 /// Update the caller's profile (PR 24).
@@ -942,7 +937,7 @@ pub async fn upgrade_to_internal(
     path = "/api/auth/me/profile",
     request_body = crate::application::dtos::user_dto::UpdateProfileDto,
     responses(
-        (status = 200, description = "Updated profile (UserDto)", body = UserDto),
+        (status = 200, description = "Updated profile (SelfUserDto) — same shape as GET /me so the SPA sees the just-written state without a follow-up fetch", body = SelfUserDto),
         (status = 400, description = "Validation error (e.g. invalid handle format, empty given_name)"),
         (status = 401, description = "Not authenticated"),
         (status = 403, description = "OIDC-managed profile — edit at the IdP"),
@@ -953,20 +948,39 @@ pub async fn upgrade_to_internal(
 )]
 pub async fn update_profile(
     State(state): State<Arc<AppState>>,
-    CurrentUserId(user_id): CurrentUserId,
+    auth_user: AuthUser,
     Json(dto): Json<crate::application::dtos::user_dto::UpdateProfileDto>,
 ) -> Result<impl IntoResponse, AppError> {
+    let user_id = auth_user.id;
     let auth_service = state
         .auth_service
         .as_ref()
         .ok_or_else(|| AppError::internal_error("Authentication service not configured"))?;
 
-    let updated = auth_service
+    // Apply the patch. The service returns the updated `PublicUserDto`
+    // internally; we discard it and re-fetch the full self view below
+    // so the response matches `GET /me`'s `SelfUserDto` shape.
+    //
+    // Why SelfUserDto instead of PublicUserDto: a self-write endpoint
+    // whose response mirrors GET /me lets the SPA update its session
+    // store in one round trip. Returning a slim PublicUserDto would
+    // force the SPA to follow up with GET /me anyway to observe the
+    // just-written `ui_preferences` / `notify_on_share` / etc — those
+    // fields live on SelfUserDto only, not on the public identity
+    // slice. Same shape for both endpoints avoids "quiet lie" reads
+    // where a client PATCHes and then reads a stale local value.
+    let _ = auth_service
         .auth_application_service
         .update_profile_with_perms(user_id, dto, &state.locale_registry)
         .await?;
 
-    Ok((StatusCode::OK, Json(updated)))
+    // Rebuild via the shared helper so the wire shape matches
+    // `GET /me` and `POST /upgrade-to-internal` byte-for-byte.
+    let self_dto = auth_service
+        .auth_application_service
+        .build_self_user_dto_for_id(user_id, auth_user.dpop_jkt.is_some())
+        .await?;
+    Ok((StatusCode::OK, Json(self_dto)))
 }
 
 // TODO: add utoipa
@@ -1226,7 +1240,7 @@ pub struct BackchannelLogoutForm {
     path = "/api/setup",
     request_body = SetupAdminDto,
     responses(
-        (status = 201, description = "First admin created and system initialized", body = UserDto),
+        (status = 201, description = "First admin created and system initialized", body = PublicUserDto),
         (status = 403, description = "System already initialized"),
         (status = 503, description = "Auth service not configured"),
     ),
@@ -1821,9 +1835,11 @@ pub async fn oidc_exchange(
         "OIDC token exchange successful for user: {}",
         auth_response
             .user
+            .full
+            .user
             .username
             .as_deref()
-            .unwrap_or(&auth_response.user.email)
+            .unwrap_or(&auth_response.user.full.user.email)
     );
 
     // Set HttpOnly cookies for the browser

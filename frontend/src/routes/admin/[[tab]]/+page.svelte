@@ -63,6 +63,7 @@
 		type StorageTestResult
 	} from '$lib/api/endpoints/admin';
 	import { createDrive, updateDrivePolicies } from '$lib/api/endpoints/drives';
+	import { seedUser } from '$lib/api/endpoints/users';
 	import {
 		ensureResolvers,
 		resolveRecipient,
@@ -70,7 +71,7 @@
 		type Recipient
 	} from '$lib/api/endpoints/recipients';
 	import type {
-		AdminUserSummary,
+		FullUser,
 		Drive,
 		DriveMember,
 		DrivePolicies,
@@ -156,11 +157,11 @@
 		deleteUserModal !== null &&
 			deleteUserEmailInput.trim().toLowerCase() === deleteUserModal.email.toLowerCase()
 	);
-	function openDeleteUser(u: AdminUserSummary) {
+	function openDeleteUser(u: FullUser) {
 		deleteUserModal = {
-			userId: u.id,
-			username: u.username || u.email,
-			email: u.email
+			userId: u.user.id,
+			username: u.user.username || u.user.email,
+			email: u.user.email
 		};
 		deleteUserEmailInput = '';
 	}
@@ -817,7 +818,7 @@
 	}
 
 	// Users
-	let users = $state<AdminUserSummary[]>([]);
+	let users = $state<FullUser[]>([]);
 	let total = $state(0);
 	let pageIndex = $state(0);
 	let usersError = $state<string | null>(null);
@@ -923,6 +924,12 @@
 			const page = await listUsers(PAGE_SIZE, pageIndex * PAGE_SIZE);
 			users = page.users;
 			total = page.total;
+			// Seed the per-user resolver cache with the row's `PublicUser`
+			// slice so every `UserVignette` mounted per row hits the cache
+			// synchronously — no per-row `/api/users/{id}` follow-up.
+			// Kills the N+1 that motivated widening `/api/admin/users` to
+			// carry the avatar (docs/plan/userdto-refactor.md § N+1).
+			for (const row of page.users) seedUser(row.user);
 		} catch (e) {
 			usersError = errorMessage(e);
 		}
@@ -1003,49 +1010,49 @@
 	}
 
 	/** True for the signed-in admin's own row — guards self-destructive actions. */
-	function isSelf(u: AdminUserSummary): boolean {
-		return u.id === currentAdminId;
+	function isSelf(u: FullUser): boolean {
+		return u.user.id === currentAdminId;
 	}
 	/** OIDC/SSO-provisioned account (no local password to reset). */
-	function isOidcUser(u: AdminUserSummary): boolean {
+	function isOidcUser(u: FullUser): boolean {
 		return u.federation_kind === 'oidc';
 	}
 	/** Used-quota percentage (0 when unlimited) for the per-user progress bar. */
-	function quotaPct(u: AdminUserSummary): number {
+	function quotaPct(u: FullUser): number {
 		return u.storage_quota_bytes > 0 ? (u.storage_used_bytes / u.storage_quota_bytes) * 100 : 0;
 	}
 
-	async function toggleRole(u: AdminUserSummary) {
+	async function toggleRole(u: FullUser) {
 		if (isSelf(u)) return;
-		const role = u.role === 'admin' ? 'user' : 'admin';
+		const role = u.user.role === 'admin' ? 'user' : 'admin';
 		if (!(await showConfirm(t('admin.confirm_role', { role }, 'Change role to {{role}}?')))) return;
 		try {
-			await setUserRole(u.id, role);
+			await setUserRole(u.user.id, role);
 			await loadUsers();
 		} catch (e) {
 			reportError(e);
 		}
 	}
 
-	async function toggleActive(u: AdminUserSummary) {
+	async function toggleActive(u: FullUser) {
 		if (isSelf(u) && u.active) return;
 		const msg = u.active
 			? t('admin.confirm_deactivate', 'Deactivate this user?')
 			: t('admin.confirm_activate', 'Activate this user?');
 		if (!(await showConfirm(msg))) return;
 		try {
-			await setUserActive(u.id, !u.active);
+			await setUserActive(u.user.id, !u.active);
 			await loadUsers();
 		} catch (e) {
 			reportError(e);
 		}
 	}
 
-	function openQuota(u: AdminUserSummary) {
+	function openQuota(u: FullUser) {
 		quotaModalError = null;
 		quotaModal = {
-			userId: u.id,
-			username: u.username || u.email,
+			userId: u.user.id,
+			username: u.user.username || u.user.email,
 			initialBytes: u.storage_quota_bytes
 		};
 	}
@@ -1069,8 +1076,8 @@
 		}
 	}
 
-	function openReset(u: AdminUserSummary) {
-		resetModal = { userId: u.id, username: u.username || u.email };
+	function openReset(u: FullUser) {
+		resetModal = { userId: u.user.id, username: u.user.username || u.user.email };
 		resetPassword = '';
 		resetError = null;
 	}
@@ -1094,7 +1101,7 @@
 		}
 	}
 
-	function removeUser(u: AdminUserSummary) {
+	function removeUser(u: FullUser) {
 		if (isSelf(u)) return;
 		openDeleteUser(u);
 	}
@@ -1103,20 +1110,20 @@
 	// provisions a home drive + flips the is_external flag; irreversible
 	// via the admin UI (there's no demote endpoint on purpose). Backend
 	// refuses when magic-link login is disabled — surfaced as a toast.
-	async function promoteExternal(u: AdminUserSummary) {
-		if (!u.is_external) return;
+	async function promoteExternal(u: FullUser) {
+		if (!u.user.is_external) return;
 		if (
 			!(await showConfirm(
 				t(
 					'admin.confirm_promote_user',
-					{ name: u.username || u.email },
+					{ name: u.user.username || u.user.email },
 					'Promote {{name}} to an internal user? This provisions a home drive and gives the account a normal storage envelope. The account keeps its identity; magic-link login stays the way in unless a password is set later.'
 				)
 			))
 		)
 			return;
 		try {
-			await promoteUserToInternal(u.id);
+			await promoteUserToInternal(u.user.id);
 			await loadUsers();
 		} catch (e) {
 			reportError(e);
@@ -1240,8 +1247,13 @@
 				.map(async (d) => {
 					const ownerMember = nextMembers[d.id]?.find((m) => m.subject.type === 'user');
 					if (!ownerMember) return;
-					const user = await getUserAdmin(ownerMember.subject.id);
-					if (user) nextOwners[d.id] = user;
+					// `getUserAdmin` returns `FullUser` (admin-visible extras
+					// + nested `.user: PublicUser`). The drive row only reads
+					// public-identity fields (username, email, image) so keep
+					// the map typed as `PublicUser` and unwrap the embedded
+					// public block on insert. See docs/plan/userdto-refactor.md.
+					const full = await getUserAdmin(ownerMember.subject.id);
+					if (full) nextOwners[d.id] = full.user;
 				})
 		);
 		personalDriveOwners = nextOwners;
@@ -1723,6 +1735,16 @@
 		{:else if !dashboard}
 			<p class="status">{t('common.loading', 'Loading…')}</p>
 		{:else}
+			<!-- Three grouped sections — one per data-nature axis. Static
+			     row counts on top (change on register/deactivate/role toggle),
+			     live-presence signals in the middle (change minute-to-minute,
+			     visually distinguished with the presence dot), system flags at
+			     the bottom (deployment posture, changes rarely). Splitting
+			     what used to be a single 4-card row prevents admins from
+			     misreading "as-of-now count" as "who's here right now". -->
+
+			<!-- Section 1: User accounts — static breakdown of auth.users -->
+			<h2 class="ds-section-title">{t('admin.section_accounts', 'User accounts')}</h2>
 			<div class="ds-grid">
 				<div class="ds-card">
 					<span class="ds-num">{dashboard.total_users}</span>{t('admin.total_users', 'Total users')}
@@ -1733,11 +1755,66 @@
 				<div class="ds-card">
 					<span class="ds-num">{dashboard.admin_users}</span>{t('admin.admin_users', 'Admins')}
 				</div>
-				<div class="ds-card">
-					<span class="ds-num">v{dashboard.server_version}</span>{t('admin.version', 'Version')}
+				<div
+					class="ds-card"
+					title={t(
+						'admin.external_users_tooltip',
+						'Grant-only accounts — magic-link, OIDC-only, OCM recipients'
+					)}
+				>
+					<span class="ds-num">{dashboard.external_users}</span>{t(
+						'admin.external_users',
+						'External'
+					)}
 				</div>
 			</div>
 
+			<!-- Section 2: Live activity — projection over auth.sessions.
+			     Same 5-min window as the Prometheus `oxicloud_sessions_online`
+			     gauges. The presence dot before each number signals "this
+			     value changes minute-to-minute" — same green as the
+			     admin > sessions row indicator so admins read one consistent
+			     visual for presence across the panel. -->
+			<h2 class="ds-section-title">
+				{t('admin.section_activity', 'Live activity')}
+				<span
+					class="ds-section-live"
+					title={t('admin.live_tooltip', 'Reflects sessions active in the last 5 minutes')}
+				>
+					{t('admin.live', 'live')}
+				</span>
+			</h2>
+			<div class="ds-grid">
+				<div
+					class="ds-card"
+					title={t(
+						'admin.online_users_tooltip',
+						'Distinct users with a session active in the last 5 minutes'
+					)}
+				>
+					<span class="ds-num ds-num--live">
+						<span class="presence-dot presence-dot--online" aria-hidden="true"></span>
+						{dashboard.online_users}
+					</span>
+					{t('admin.online_users', 'Online users')}
+				</div>
+				<div
+					class="ds-card"
+					title={t(
+						'admin.online_sessions_tooltip',
+						'Non-revoked sessions active in the last 5 minutes — multi-device users contribute more than one'
+					)}
+				>
+					<span class="ds-num ds-num--live">
+						<span class="presence-dot presence-dot--online" aria-hidden="true"></span>
+						{dashboard.online_sessions}
+					</span>
+					{t('admin.online_sessions', 'Online sessions')}
+				</div>
+			</div>
+
+			<!-- Section 3: System — deployment flags + version. -->
+			<h2 class="ds-section-title">{t('admin.section_system', 'System')}</h2>
 			<div class="ds-grid">
 				<div class="ds-card">
 					<span class="ds-flag" class:ds-flag--on={dashboard.auth_enabled}>
@@ -1760,6 +1837,9 @@
 							: t('admin.disabled', 'Disabled')}
 					</span>
 					{t('admin.quotas', 'Quotas')}
+				</div>
+				<div class="ds-card">
+					<span class="ds-num">v{dashboard.server_version}</span>{t('admin.version', 'Version')}
 				</div>
 			</div>
 
@@ -1802,13 +1882,17 @@
 									row.kind === 'personal'
 										? t('admin.quota_personal', 'Personal drives')
 										: t('admin.quota_shared', 'Shared drives')}
+								{@const total = row.unlimited_count + row.capped_count}
 								{@const pct =
 									row.capped_quota_bytes && row.capped_quota_bytes > 0
 										? (row.used_bytes / row.capped_quota_bytes) * 100
 										: null}
 								{#if row.capped_count > 0 || row.unlimited_count > 0}
 									<tr>
-										<th scope="row">{label}</th>
+										<th scope="row">
+											<span class="quota-table__count">{total}</span>
+											{label}
+										</th>
 										<td class="quota-table__num">
 											{#if row.capped_quota_bytes !== null && pct !== null}
 												{formatBytes(row.used_bytes)} / {formatBytes(row.capped_quota_bytes)}
@@ -2680,15 +2764,15 @@
 					</tr>
 				</thead>
 				<tbody>
-					{#each users as u (u.id)}
+					{#each users as u (u.user.id)}
 						{@const pct = quotaPct(u)}
 						<tr>
 							<td>
 								<div class="user-vignette-cell">
 									<UserVignette
-										userId={u.id}
-										fallbackLabel={u.username || u.email}
-										fallbackSublabel={u.email}
+										userId={u.user.id}
+										fallbackLabel={u.user.username || u.user.email}
+										fallbackSublabel={u.user.email}
 									/>
 									{#if isSelf(u)}
 										<span class="badge badge--self">{t('admin.you_badge', 'you')}</span>
@@ -2703,11 +2787,11 @@
 								     badge is `white-space: nowrap` so the badge label
 								     itself never wraps mid-word either. -->
 								<div class="role-badges">
-									<span class="badge badge--{u.role === 'admin' ? 'admin' : 'user'}">
-										{#if u.role === 'admin'}<Icon name="shield-alt" />{/if}
-										{u.role}
+									<span class="badge badge--{u.user.role === 'admin' ? 'admin' : 'user'}">
+										{#if u.user.role === 'admin'}<Icon name="shield-alt" />{/if}
+										{u.user.role}
 									</span>
-									{#if u.is_external}
+									{#if u.user.is_external}
 										<!-- Origin flag, orthogonal to `role`. Grant-only
 										     accounts (magic-link / OCM) can never be admin
 										     (DB CHECK `users_external_not_admin`) so the two
@@ -2738,7 +2822,7 @@
 							<td class="auth-cell">
 								<!--
 									Auth-capability chip set — ADMIN-ONLY (fields
-									scoped to `AdminUserSummaryDto`; never on
+									scoped to `FullUserDto`; never on
 									`UserDto`). Any user carries ZERO OR MORE of:
 									  * SSO/OIDC — `federation_kind === 'oidc'`,
 									    identity delegated to the IdP; label is
@@ -2825,7 +2909,7 @@
 								</span>
 							</td>
 							<td>
-								{#if u.is_external}
+								{#if u.user.is_external}
 									<!-- External accounts have no storage envelope by
 									     design (DB CHECK `users_external_no_storage`
 									     enforces storage_quota_bytes = 0). Rendering the
@@ -2867,10 +2951,10 @@
 								     actions render as invisible placeholders. -->
 								<div class="actions actions--user">
 									<!-- Slot 1: quota (internal) OR promote (external). -->
-									{#if u.is_external}
+									{#if u.user.is_external}
 										<button
 											class="icon-btn icon-btn--success"
-											data-testid={`admin-user-promote-${u.id}`}
+											data-testid={`admin-user-promote-${u.user.id}`}
 											title={t('admin.promote_to_internal_title', 'Promote to internal user')}
 											aria-label={t('admin.promote_to_internal_title', 'Promote to internal user')}
 											onclick={() => promoteExternal(u)}
@@ -2880,7 +2964,7 @@
 									{:else}
 										<button
 											class="icon-btn"
-											data-testid={`admin-user-quota-${u.id}`}
+											data-testid={`admin-user-quota-${u.user.id}`}
 											title={t('admin.edit_quota_title', 'Edit quota')}
 											aria-label={t('admin.edit_quota_title', 'Edit quota')}
 											onclick={() => openQuota(u)}
@@ -2891,10 +2975,10 @@
 									<!-- Slot 2: reset password (local internal only —
 									     OIDC and external accounts have no password
 									     to reset). Placeholder otherwise. -->
-									{#if !isOidcUser(u) && !u.is_external}
+									{#if !isOidcUser(u) && !u.user.is_external}
 										<button
 											class="icon-btn"
-											data-testid={`admin-user-reset-password-${u.id}`}
+											data-testid={`admin-user-reset-password-${u.user.id}`}
 											title={t('admin.reset_password_title', 'Reset password')}
 											aria-label={t('admin.reset_password_title', 'Reset password')}
 											onclick={() => openReset(u)}
@@ -2909,16 +2993,16 @@
 									     `change_user_role` + DB CHECK
 									     `users_external_not_admin`). Promotion to
 									     internal is offered separately in slot 1. -->
-									{#if !u.is_external}
+									{#if !u.user.is_external}
 										<button
 											class="icon-btn"
-											data-testid={`admin-user-toggle-role-${u.id}`}
+											data-testid={`admin-user-toggle-role-${u.user.id}`}
 											title={t('admin.toggle_role_title', 'Toggle admin role')}
 											aria-label={t('admin.toggle_role_title', 'Toggle admin role')}
 											disabled={isSelf(u)}
 											onclick={() => toggleRole(u)}
 										>
-											<Icon name={u.role === 'admin' ? 'user' : 'crown'} />
+											<Icon name={u.user.role === 'admin' ? 'user' : 'crown'} />
 										</button>
 									{:else}
 										<span class="icon-btn icon-btn--placeholder" aria-hidden="true"></span>
@@ -2926,7 +3010,7 @@
 									<!-- Slot 4: activate/deactivate. -->
 									<button
 										class="icon-btn {u.active ? 'icon-btn--danger' : 'icon-btn--success'}"
-										data-testid={`admin-user-toggle-active-${u.id}`}
+										data-testid={`admin-user-toggle-active-${u.user.id}`}
 										title={u.active
 											? t('admin.deactivate_title', 'Deactivate')
 											: t('admin.activate_title', 'Activate')}
@@ -2941,7 +3025,7 @@
 									<!-- Slot 5: delete. -->
 									<button
 										class="icon-btn icon-btn--danger"
-										data-testid={`admin-user-delete-${u.id}`}
+										data-testid={`admin-user-delete-${u.user.id}`}
 										title={t('admin.delete_title', 'Delete user')}
 										aria-label={t('admin.delete_title', 'Delete user')}
 										disabled={isSelf(u)}
@@ -3275,11 +3359,21 @@
 						    fall back to the owner's cap; 0 also means "no limit"
 						    (backend convention — see `User.storage_quota_bytes` doc).
 						-->
+						<!-- Personal-drive fallback used to read
+						     `owner.storage_quota_bytes` off the resolved DTO.
+						     Post the UserDto refactor
+						     (docs/plan/userdto-refactor.md) `owner` here is a
+						     `PublicUser` (public identity, no quota); the
+						     envelope quota only lives on `FullUser` /
+						     `SelfUser`. Rather than widen the resolver's shape
+						     just for this fallback, hold the effective quota at
+						     `null` when the drive itself doesn't declare one —
+						     the row renders "—" and the admin can consult the
+						     user's row for their envelope cap. Explicit
+						     shared-drive quota still surfaces as before. -->
 						{@const effectiveQuota =
 							d.kind === 'personal'
-								? owner && owner.storage_quota_bytes > 0
-									? owner.storage_quota_bytes
-									: null
+								? null
 								: d.quota_bytes && d.quota_bytes > 0
 									? d.quota_bytes
 									: null}
@@ -4323,6 +4417,40 @@
 		margin-bottom: var(--space-4);
 	}
 
+	/* Section title bar above each dashboard grid — labels the
+	   nature of the cards below (accounts vs live activity vs
+	   system). Small, muted, so it structures the page without
+	   competing with the numbers. `text-transform: uppercase` +
+	   `letter-spacing` matches the small-caps section-header pattern
+	   used elsewhere in the admin surface. */
+	.ds-section-title {
+		display: flex;
+		align-items: baseline;
+		gap: var(--space-2);
+		margin: var(--space-4) 0 var(--space-2) 0;
+		font-size: var(--text-xs);
+		font-weight: var(--weight-semibold);
+		color: var(--color-text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+	}
+
+	/* "live" pill next to the "Live activity" section header —
+	   subtle visual hint that the values in this grid change on
+	   their own cadence. Matches the presence-dot's success token
+	   so the whole live-activity block reads as one visual family. */
+	.ds-section-live {
+		display: inline-block;
+		padding: 0 var(--space-2);
+		border-radius: var(--radius-full);
+		background: var(--color-success-bg);
+		color: var(--color-success-text);
+		font-size: 0.65rem;
+		font-weight: var(--weight-bold);
+		letter-spacing: 0.08em;
+		vertical-align: middle;
+	}
+
 	.ds-card {
 		display: flex;
 		flex-direction: column;
@@ -4339,6 +4467,18 @@
 		font-size: 1.5rem;
 		font-weight: var(--weight-bold);
 		color: var(--color-text-heading);
+	}
+
+	/* Live-count variant — same font size as `.ds-num`, plus a
+	   flex container so the leading presence dot aligns with the
+	   number baseline instead of the top of the digit. Reuses the
+	   `.presence-dot--online` class from the sessions-panel work
+	   so the visual signal for presence is identical across the
+	   admin surface. */
+	.ds-num.ds-num--live {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-2);
 	}
 
 	.ds-bar {
@@ -4431,6 +4571,19 @@
 		font-weight: var(--weight-semibold);
 		color: var(--color-text-heading);
 		white-space: nowrap;
+	}
+
+	/* Prepended drive count: tabular-nums so single/double/triple digits align
+	   vertically across rows; right-aligned inside a fixed-width box so the
+	   ones-digits line up across "personal" and "shared" rows regardless of
+	   how many digits each count has. */
+	.quota-table__count {
+		display: inline-block;
+		min-width: 1.5em;
+		margin-right: 0.25em;
+		text-align: right;
+		font-variant-numeric: tabular-nums;
+		color: var(--color-text-heading);
 	}
 
 	.quota-table__num {
@@ -5213,9 +5366,17 @@
 	}
 
 	.admin {
-		max-width: 64rem;
+		/* Raised from 64rem to 80rem so the data-dense tables (sessions
+		   row with 9+ cells, users table with vignette + role + auth
+		   chips + quota bar) have more horizontal room. At viewports
+		   above 80rem `margin: 0 auto` still centers with the leftover
+		   whitespace — DevTools shows that whitespace as horizontal
+		   margin (not padding) and is what "content looks squeezed"
+		   really means on wide displays. Vertical rhythm and the small
+		   horizontal padding are unchanged. */
+		max-width: 80rem;
 		margin: 0 auto;
-		padding: 1.5rem 1rem;
+		padding: 1.5rem var(--space-2);
 		display: flex;
 		flex-direction: column;
 		gap: 1rem;

@@ -249,7 +249,7 @@ Content-Type: application/json
 
 HTTP *
 [Captures]
-alice_id: jsonpath "$.id"
+alice_id: jsonpath "$.user.id"
 
 
 POST {{base_url}}/api/auth/login

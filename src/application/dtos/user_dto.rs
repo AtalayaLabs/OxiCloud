@@ -1,5 +1,4 @@
 use crate::domain::entities::user::User;
-use crate::domain::repositories::user_repository::UserListEntry;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -7,286 +6,282 @@ use std::sync::Arc;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+// ────────────────────────────────────────────────────────────────────────
+// Three-layer user DTO family — see docs/plan/userdto-refactor.md.
+//
+// `PublicUserDto`  — public identity. Every authenticated caller may see it.
+//                    Returned by /api/users/{id}, share responses, group
+//                    members, magic-link invitees, recipient enrichment.
+// `FullUserDto`    — `{ user: PublicUserDto, ...admin+self extras }`.
+//                    Returned as `Vec<FullUserDto>` by /api/admin/users;
+//                    embedded in `SelfUserDto`. Closest DTO to the
+//                    `auth.users` row.
+// `SelfUserDto`    — `{ full: FullUserDto, ...self-only extras }`. Returned
+//                    by /api/auth/me and by every AuthResponseDto path.
+//
+// Adding a field? Decide by audience:
+//   * Any authenticated caller may see it about another user → `PublicUserDto`.
+//   * Only admin (about another user) AND self (about self) → `FullUserDto`.
+//   * Only self about themselves → `SelfUserDto`.
+// ────────────────────────────────────────────────────────────────────────
+
+/// Public identity — what any authenticated caller may see about ANOTHER
+/// user. Returned by `/api/users/{id}` and everywhere a user is
+/// referenced by another surface (share responses, group members,
+/// magic-link invitees, recipient enrichment).
+///
+/// This is the audience-narrowest DTO: adding a field here means every
+/// authenticated caller can see it about every visible user. Fields that
+/// are meaningful only to the subject themselves (preferences, session
+/// state) or only to an admin (auth adoption signals) belong on
+/// [`SelfUserDto`] or [`FullUserDto`] respectively.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct UserDto {
+pub struct PublicUserDto {
     pub id: String,
-    /// Optional handle. `None` for users who have not claimed one
-    /// (externals, fresh email-only signups). Frontend display callers
-    /// should walk `username → given/family → email` as their fallback
-    /// chain. Omitted from JSON when None (consistent with the existing
-    /// given_name / family_name fields).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
     pub email: String,
+    /// Role string ("admin" | "user"). Kept public because the sharee /
+    /// group-member vignette renders an admin badge.
     pub role: String,
-    pub storage_quota_bytes: i64,
-    pub storage_used_bytes: i64,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    pub last_login_at: Option<DateTime<Utc>>,
-    pub active: bool,
-    /// Which trust chain minted this user's federation identity —
-    /// `"oidc" | "ocm" | "magic_link"` — or `None` for pure local
-    /// users. Load-bearing for "is this user OIDC?"-shape predicates:
-    /// use `federation_kind == "oidc"` rather than string-scraping
-    /// `federation_issuer`. Serialized only when populated.
-    ///
-    /// Mirrors `auth.users.federation_kind` verbatim — same name at
-    /// DB, entity, and wire layers so there's no translation to reason
-    /// about. See docs/plan/ocm.md § Identity & auth model.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub federation_kind: Option<String>,
-    /// The authority that mints this user's `federation_subject` —
-    /// issuer URL for OIDC (id_token `iss` claim), peer domain for
-    /// OCM, `null` for local users (password / OPAQUE only).
-    ///
-    /// Renamed from `auth_provider` (which was a `String` with the
-    /// sentinel `"local"` for non-federated users, and a human-readable
-    /// label like `"MockSSO"` before Phase B). This shape mirrors the
-    /// `auth.users.federation_issuer` column directly: nullable when
-    /// there's no federation involved. FE predicates for "is this user
-    /// federated?" should read `federation_kind`, not
-    /// string-compare this value.
-    ///
-    /// When populated, FE code that wants a friendly display label
-    /// looks this value up against `OidcProviderInfoDto.issuer →
-    /// provider_name` to render the deployment's configured display
-    /// name; falls back to the raw issuer for foreign IdPs / legacy
-    /// rows still holding a pre-Phase-B label.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub federation_issuer: Option<String>,
+    /// Avatar payload (base64 data-URI up to 512 KiB). Public so a share
+    /// picker can render the recipient's face directly. Will move to a
+    /// dedicated avatar endpoint in a future refactor — this shape is
+    /// transitional.
     pub image: Option<String>,
-    pub can_edit_image: bool,
     /// `true` for grant-only external recipients (magic-link, OIDC-only,
-    /// future OCM federated). External users have no home folder and
-    /// can't own storage; their quota is always 0. Internal users
-    /// default to `false`.
+    /// future OCM federated). Renders the "external" badge on the vignette.
     pub is_external: bool,
-    /// Optional first/given name. Populated from the OIDC `given_name`
-    /// claim at JIT provisioning, or via a profile-edit endpoint.
-    /// `None` until explicitly set — `skip_serializing_if = "Option::is_none"`
-    /// keeps the wire format compact for the common case.
+    /// Optional first/given name. Social identity.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub given_name: Option<String>,
-    /// Optional last/family name. Same provenance + serde rules as
-    /// `given_name`.
+    /// Optional last/family name. Social identity.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub family_name: Option<String>,
-    /// When the user first demonstrated control of their email (PR 23).
-    /// `None` = unverified (omitted from JSON). Stamped on the first
-    /// successful magic-link redemption or OIDC JIT with verified
-    /// claim. Idempotent — the original timestamp is preserved on
-    /// subsequent verifications.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub email_verified_at: Option<DateTime<Utc>>,
-    /// User-chosen locale for server-rendered surfaces (emails,
-    /// future authenticated HTML). `None` = no preference (the server
-    /// resolves to `OXICLOUD_DEFAULT_LOCALE` when rendering). Round-trips
-    /// through `/api/auth/me` and `PATCH /api/auth/me/profile`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub preferred_locale: Option<String>,
-    /// Whether the user wants an email when someone shares a resource
-    /// with them. `true` (default) = receive share-notification mails;
-    /// `false` = grants are still created but no email is sent. Honored
-    /// only on the plain-notification path — magic-link first-invitations
-    /// to brand-new external users always send, otherwise the recipient
-    /// could never claim the share. Round-trips through `/api/auth/me`
-    /// and `PATCH /api/auth/me/profile`.
-    pub notify_on_share: bool,
-    /// Opaque UI preferences bag. Cross-device store for pure UI
-    /// toggles (hide dotfiles, view mode, sidebar collapse, …). The
-    /// server never inspects the contents — this DTO field just echoes
-    /// what was PATCHed via `PATCH /api/auth/me/profile`. Shape is a
-    /// JSON object; the frontend defines the keys it cares about (see
-    /// `frontend/src/lib/stores/preferences.svelte.ts`). Always present
-    /// on the wire; empty bag is `{}`, never `null`.
-    pub ui_preferences: serde_json::Value,
-    /// Mirrors `auth.users.force_password_change_at_next_login`. Set
-    /// TRUE by the admin password-reset flow (see
-    /// `AuthApplicationService::admin_reset_password`) and cleared by
-    /// a successful self-service `POST /api/auth/change-password`.
-    ///
-    /// Populated only by the `/api/auth/me` handler and the login
-    /// response minter (via a distinct code path). `From<User>` — used
-    /// by admin listings, share-recipient responses, group-member DTOs,
-    /// etc. — leaves it at `false`. The flag is a per-session-account
-    /// concern (does *this* user need to change their password before
-    /// they can proceed?), not a general user attribute worth
-    /// surfacing on every list row.
-    ///
-    /// The load-bearing consumer is the SPA's session store: on
-    /// startup and after every refresh, `/me` returns the current
-    /// flag value and the SPA's nav-guard blocks navigation to
-    /// anything but the change-password surface until it flips
-    /// back to false. Backend enforcement is separate (see the
-    /// `require_no_password_change_pending` middleware) — this DTO
-    /// field is what the SPA reads to render the mandatory-mode UI.
+    /// Presence signal — TRUE when the server observed a request on any
+    /// of this user's non-revoked sessions within the last
+    /// [`ONLINE_WINDOW`](crate::application::dtos::session_dto::ONLINE_WINDOW)
+    /// (5 min). Sourced from an EXISTS subquery when the DTO is built
+    /// from a list-projection path; single-user endpoints that don't
+    /// enrich presence ship `false`.
     #[serde(default)]
-    pub force_password_change: bool,
-    /// TRUE when the account has a local Argon2id `password_hash` on
-    /// file. Distinct from `federation_kind`: an OIDC-linked account
-    /// (`federation_kind == "oidc"`) can ALSO carry a local password if
-    /// it was set at signup or later — a hybrid posture. The SPA
-    /// gates the profile page's change-password card on this flag,
-    /// so hybrid users can rotate their local password even though
-    /// they normally sign in via SSO.
-    ///
-    /// Populated only by the `/api/auth/me` handler. `From<User>` in
-    /// this file leaves it `false` — other UserDto emitters (admin
-    /// listings, share-recipient responses, group members) do not
-    /// need to surface per-user credential state.
-    #[serde(default)]
-    pub has_password: bool,
-    /// TRUE when the caller's current session carries a DPoP JWK
-    /// thumbprint (`session.dpop_jkt IS NOT NULL`). Sourced from the
-    /// caller's JWT `cnf.jkt` claim — `is_some()` means the session
-    /// was bound at token-mint time.
-    ///
-    /// Populated only by the `/api/auth/me` handler; other UserDto
-    /// emitters leave it `false`. The SPA reads this on `session.load()`
-    /// to skip a redundant `POST /api/auth/dpop/bind` call when the
-    /// session is already bound (which would 409 and log noisily under
-    /// the audit stream — see the `already_bound` reject). Only the
-    /// OIDC / magic-link redirect flows land here as `false` on first
-    /// visit; password login binds at session-mint time so the very
-    /// first `/me` after login already reports `true`.
-    #[serde(default)]
-    pub is_dpop_bound: bool,
+    pub is_online: bool,
 }
 
-/// Compact row returned by the paginated admin user table.
+/// Full user record — public identity + all fields BOTH an admin
+/// (viewing another user) AND the subject themselves may see. Returned
+/// as `Vec<FullUserDto>` by `/api/admin/users`; embedded in
+/// [`SelfUserDto`] for `/api/auth/me`.
 ///
-/// Account-detail fields deliberately do not appear here.  In particular,
-/// omitting `image` and `ui_preferences` prevents a 100-row page from turning
-/// into tens of MiB when users have uploaded avatars.  `GET /api/admin/users/:id`
-/// remains the full-detail endpoint.
+/// This is the DTO closest to the underlying `auth.users` row. Adding a
+/// field here means an admin looking at any user can see it, and the
+/// subject themselves can see it in their `/me` response — but the field
+/// stays off the public [`PublicUserDto`] surface.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct AdminUserSummaryDto {
-    pub id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub username: Option<String>,
-    pub email: String,
-    pub role: String,
-    pub storage_quota_bytes: i64,
-    pub storage_used_bytes: i64,
-    pub last_login_at: Option<DateTime<Utc>>,
-    pub active: bool,
-    /// See `UserDto::federation_kind` — same semantics, same wire spelling.
+pub struct FullUserDto {
+    /// Public identity — same set every authenticated caller sees.
+    pub user: PublicUserDto,
+    /// Which trust chain minted this user's federation identity —
+    /// `"oidc" | "ocm" | "magic_link"` — or `None` for pure local users.
+    /// Kept off `PublicUserDto` because a peer's federation kind is a
+    /// soft org-affiliation leak; only self + admin need it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub federation_kind: Option<String>,
-    /// See `UserDto::federation_issuer` — same semantics, same wire spelling.
+    /// The authority that minted this user's `federation_subject` —
+    /// issuer URL for OIDC (id_token `iss` claim), peer domain for OCM,
+    /// `None` for local users. Same rationale as `federation_kind`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub federation_issuer: Option<String>,
-    pub is_external: bool,
-    /// TRUE when the user has a server-verifiable password on file
-    /// (`password_hash IS NOT NULL`). The admin table uses this
-    /// alongside `federation_issuer` and `opaque_registered` to render
-    /// the user's full capability set: a `password` chip lights up
-    /// here, an OIDC provider name renders the SSO badge, an
-    /// envelope-on-file flips the OPAQUE chip. A user with none of
-    /// the three is passwordless (magic-link only — the SPA renders
-    /// a distinct `passwordless` chip in that case). Admin-only
-    /// exposure — see the DTO doc for why this isn't on `UserDto`.
-    #[serde(default)]
+    /// Subject's own locale preference. Only THEY or an admin managing
+    /// them needs this — other callers use their own locale.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preferred_locale: Option<String>,
+    /// When the user first demonstrated control of their email. Trust
+    /// signal — meaningful to admin (auditing verification status) and
+    /// to self (own record), but not to a share picker rendering a
+    /// vignette.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email_verified_at: Option<DateTime<Utc>>,
+    /// Row bookkeeping.
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    /// Activity signal — private to the subject; admin sees it too.
+    pub last_login_at: Option<DateTime<Utc>>,
+    /// Account-active flag — a deactivated user couldn't reach `/me`
+    /// anyway, but admin needs to see it.
+    pub active: bool,
+    /// Storage quotas — personal financials. Admin manages others';
+    /// self sees own.
+    pub storage_quota_bytes: i64,
+    pub storage_used_bytes: i64,
+    /// TRUE when the account has a server-verifiable password
+    /// (`password_hash IS NOT NULL`). Kept off `PublicUserDto` because
+    /// per-user auth adoption leaks through directory endpoints.
     pub has_password: bool,
-    /// Mirrors `UserListEntry::opaque_registered` — TRUE when the user
-    /// has an OPAQUE envelope on file. Surfaced on the admin table so
-    /// operators can see per-user rollout progress during the
-    /// migration window. **Admin-only exposure**: this field is NOT
-    /// on `UserDto` — putting it there would leak adoption status
-    /// through every user-directory-adjacent endpoint (share targets,
-    /// group members, invite listings). `#[serde(default)]` keeps
-    /// older SPA builds tolerant of the added field.
-    #[serde(default)]
+    /// TRUE when the user has an OPAQUE envelope on file.
     pub opaque_registered: bool,
-    /// Mirrors `UserListEntry::opaque_migrated` — TRUE when the user
-    /// has completed at least one successful OPAQUE login. Distinct
-    /// from `opaque_registered`: an admin can invalidate the envelope
-    /// (`clear_registration`) leaving the user registered=false but
-    /// with a historical migrated=true; the SPA's admin table shows
-    /// both so this operational nuance is visible.
-    #[serde(default)]
+    /// TRUE when the user has completed ≥1 successful OPAQUE login.
+    /// Distinct from `opaque_registered`: an admin can invalidate the
+    /// envelope leaving the user registered=false but with historical
+    /// migrated=true.
     pub opaque_migrated: bool,
 }
 
-impl From<UserListEntry> for AdminUserSummaryDto {
-    fn from(entry: UserListEntry) -> Self {
-        Self {
-            id: entry.id.to_string(),
-            username: entry.username,
-            email: entry.email,
-            role: entry.role.to_string(),
-            storage_quota_bytes: entry.storage_quota_bytes,
-            storage_used_bytes: entry.storage_used_bytes,
-            last_login_at: entry.last_login_at,
-            active: entry.active,
-            federation_kind: entry.federation_kind,
-            federation_issuer: entry.federation_issuer,
-            is_external: entry.is_external,
-            has_password: entry.has_password,
-            opaque_registered: entry.opaque_registered,
-            opaque_migrated: entry.opaque_migrated,
-        }
-    }
+/// Self view — everything the caller may see about themselves.
+/// Returned by `/api/auth/me` and by every `AuthResponseDto` path
+/// (login / refresh / OIDC callback / magic-link redemption).
+///
+/// Composed on top of [`FullUserDto`] so `/me` and `/admin/users` share
+/// the SAME "full profile" contract for the fields both need — new
+/// self+admin-visible fields go on `FullUserDto` and both endpoints get
+/// them together. Fields here are pure self-scoped state: preferences,
+/// session-scoped flags, and caller-scoped permissions.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SelfUserDto {
+    /// Full profile — same shape as one row of `/api/admin/users`.
+    pub full: FullUserDto,
+    /// Opaque UI preferences bag — my own UI state. Cross-device store
+    /// for pure UI toggles (view mode, sidebar collapse, hide dotfiles,
+    /// …). The server never inspects the contents. Always present on
+    /// the wire; empty bag is `{}`, never `null`.
+    pub ui_preferences: serde_json::Value,
+    /// Whether I want share-notification emails.
+    pub notify_on_share: bool,
+    /// Session-scoped: my current session carries a DPoP thumbprint.
+    /// SPA reads this on `session.load()` to skip a redundant
+    /// `POST /api/auth/dpop/bind` when the session is already bound.
+    pub is_dpop_bound: bool,
+    /// Admin-set temp-password gate — SPA nav guard blocks everything
+    /// but `/change-password` until this flips back. Cleared by a
+    /// successful `POST /api/auth/change-password`.
+    pub force_password_change: bool,
+    /// Caller-scoped permission: can I edit my own avatar? `false` for
+    /// OIDC users whose avatar comes from the IdP. Only meaningful when
+    /// caller == subject; nonsense on any other DTO.
+    pub can_edit_image: bool,
 }
 
-impl From<User> for UserDto {
-    fn from(user: User) -> Self {
-        // `user` is owned and dropped here, so every owned field is MOVED out
-        // via `into_parts` rather than cloned through the borrowing accessors —
-        // the accessor form deep-cloned `image` (a data URI up to 512 KiB) and
-        // the whole `ui_preferences` JSON tree on every `/api/auth/me` and admin
-        // user listing (benches/ROUND20.md §A2). The two derived values read the
-        // entity before the move.
+impl PublicUserDto {
+    /// Construct a `PublicUserDto` from a `User` entity + an explicit
+    /// `is_online` signal.
+    ///
+    /// **Why not `From<User>`?** The `User` entity models a row in
+    /// `auth.users`; `is_online` is a cross-table lookup on
+    /// `auth.sessions` (see the EXISTS subquery in
+    /// `list_users_with_derived_flags` and `get_user_with_derived_flags`
+    /// on the user repo). A `From<User>` impl couldn't compute it
+    /// honestly — it would have to ship a `false` default that lies to
+    /// the FE presence dot on every emitter that didn't remember to
+    /// override. Making presence a required constructor argument
+    /// removes that footgun: every callsite has to declare its intent.
+    ///
+    /// Two shapes at the callsite:
+    ///
+    /// - Presence matters (single-user `/api/users/{id}`, list
+    ///   projections, self-view): pair with
+    ///   `user_storage.get_user_with_derived_flags(id)` and pass
+    ///   `flags.is_online`.
+    /// - Presence is out of scope (register / update-profile response,
+    ///   post-mutation echo where the FE ignores the field): pass
+    ///   `false` with a short comment explaining why. The receiver's
+    ///   presence read is a no-op — no dot lights up on the stale
+    ///   value.
+    pub fn new(user: User, is_online: bool) -> Self {
         let role = format!("{}", user.role());
-        let can_edit_image = !user.is_oidc_user();
-        // has_password is derivable from the entity — read before the
-        // move. Cheap (bool from Option::is_some), no extra DB round-
-        // trip, so From<User> can populate it uniformly rather than
-        // leaving it false and requiring per-call-site backfill.
-        let has_password = user.has_password();
         let p = user.into_parts();
         Self {
             id: p.id.to_string(),
             username: p.username,
             email: p.email,
             role,
-            storage_quota_bytes: p.storage_quota_bytes,
-            storage_used_bytes: p.storage_used_bytes,
+            image: p.image,
+            is_external: p.is_external,
+            given_name: p.given_name,
+            family_name: p.family_name,
+            is_online,
+        }
+    }
+}
+
+impl FullUserDto {
+    /// Construct a `FullUserDto` from a `User` entity plus the DB-derived
+    /// flags the entity doesn't carry (`has_password`, OPAQUE flags,
+    /// `is_online`). Both are typically produced together by the users
+    /// list repo projection.
+    ///
+    /// Not a `From` impl because it takes two arguments; not a `From
+    /// <(User, UserDerivedFlags)>` because that reads awkwardly at
+    /// callsites — `FullUserDto::build(user, flags)` is clearer.
+    pub fn build(
+        user: User,
+        flags: crate::domain::repositories::user_repository::UserDerivedFlags,
+    ) -> Self {
+        let role = format!("{}", user.role());
+        let p = user.into_parts();
+        Self {
+            user: PublicUserDto {
+                id: p.id.to_string(),
+                username: p.username,
+                email: p.email,
+                role,
+                image: p.image,
+                is_external: p.is_external,
+                given_name: p.given_name,
+                family_name: p.family_name,
+                is_online: flags.is_online,
+            },
+            federation_kind: p.federation_kind.map(|k| k.as_str().to_string()),
+            federation_issuer: p.federation_issuer,
+            preferred_locale: p.preferred_locale,
+            email_verified_at: p.email_verified_at,
             created_at: p.created_at,
             updated_at: p.updated_at,
             last_login_at: p.last_login_at,
             active: p.active,
-            // NULL on both fields for local users (no federation wired).
-            // FE predicates use `!!federation_kind` for "is federated?" —
-            // no "local" sentinel string; the null tells the whole story.
-            federation_kind: p.federation_kind.map(|k| k.as_str().to_string()),
-            federation_issuer: p.federation_issuer,
-            image: p.image,
-            can_edit_image,
-            is_external: p.is_external,
-            given_name: p.given_name,
-            family_name: p.family_name,
-            email_verified_at: p.email_verified_at,
-            preferred_locale: p.preferred_locale,
-            notify_on_share: p.notify_on_share,
-            ui_preferences: p.ui_preferences,
-            // Defaults to false. The `/me` handler + the login-response
-            // minter populate this via a distinct code path (a
-            // repo read that goes through the auth service's cache);
-            // admin listings and other UserDto consumers deliberately
-            // leave it false — the flag is per-session-account state,
-            // not a general user attribute.
-            force_password_change: false,
-            has_password,
-            // Populated only by `/api/auth/me` — the handler overlays
-            // the caller's session's actual DPoP binding state after
-            // this `From<User>` runs. Other UserDto emitters leave
-            // this at `false` (they lack session context).
-            is_dpop_bound: false,
+            storage_quota_bytes: p.storage_quota_bytes,
+            storage_used_bytes: p.storage_used_bytes,
+            has_password: flags.has_password,
+            opaque_registered: flags.opaque_registered,
+            opaque_migrated: flags.opaque_migrated,
         }
     }
 }
+
+impl SelfUserDto {
+    /// Assemble the `/me` response from a `FullUserDto` plus the two
+    /// session-scoped booleans that can't be derived from `User` alone:
+    /// the caller's DPoP-binding state (from the JWT `cnf.jkt` claim)
+    /// and the admin-set force-password-change flag (from the auth
+    /// service's cache).
+    ///
+    /// The other self-only fields (`ui_preferences`, `notify_on_share`,
+    /// `can_edit_image`) come from `User` and are read off the entity
+    /// before it's moved into the FullUserDto; this method takes those
+    /// as explicit parameters so the caller can decide when to read
+    /// them (typically at the same point they read the DPoP-binding
+    /// state).
+    pub fn build(
+        full: FullUserDto,
+        ui_preferences: serde_json::Value,
+        notify_on_share: bool,
+        is_dpop_bound: bool,
+        force_password_change: bool,
+        can_edit_image: bool,
+    ) -> Self {
+        Self {
+            full,
+            ui_preferences,
+            notify_on_share,
+            is_dpop_bound,
+            force_password_change,
+            can_edit_image,
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// End of three-layer user DTO family.
+// ────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
 pub struct LoginDto {
@@ -425,7 +420,12 @@ impl UpdateProfileDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AuthResponseDto {
-    pub user: UserDto,
+    /// Full self view — identical shape to `/api/auth/me`. Every
+    /// login / refresh / OIDC-callback / magic-link redemption ships
+    /// this so the SPA's post-auth state matches its post-`/me` state
+    /// (no UI race between `AuthResponseDto` and the first `/me`
+    /// fetch). See `docs/plan/userdto-refactor.md` § Endpoint mapping.
+    pub user: SelfUserDto,
     pub access_token: String,
     pub refresh_token: String,
     pub token_type: String,
@@ -562,7 +562,7 @@ pub struct OidcProviderInfoDto {
     /// users JIT-provisioned via this IdP.
     ///
     /// Populated so the frontend can resolve display: when
-    /// `UserDto.federation_issuer` equals this `issuer`, render
+    /// `PublicUserDto.federation_issuer` equals this `issuer`, render
     /// `provider_name` as the human-friendly label (avoids showing raw
     /// issuer URLs like `https://sso.example.com/realms/main` in the
     /// admin badge / profile view). Falls back to the raw issuer when
@@ -605,4 +605,143 @@ pub struct OidcUserInfoDto {
     pub email: Option<String>,
     pub name: Option<String>,
     pub groups: Vec<String>,
+}
+
+#[cfg(test)]
+mod three_layer_quarantine {
+    use super::*;
+    use serde_json::Value;
+
+    /// Structural-quarantine guard for `SelfUserDto`. The self-only
+    /// bag (`ui_preferences`, `notify_on_share`, `is_dpop_bound`,
+    /// `force_password_change`, `can_edit_image`) MUST live at the
+    /// top level, NOT nested inside `.full` or `.full.user`. If a
+    /// future refactor accidentally moves one of them down, the
+    /// wire shape leaks it through every `PublicUserDto` /
+    /// `FullUserDto` emitter (share responses, group members,
+    /// `/api/admin/users`, magic-link invitees) — exactly what the
+    /// three-layer split exists to prevent. Fails loudly here.
+    #[test]
+    fn self_only_fields_stay_at_top_level_of_self_user_dto() {
+        let self_dto = SelfUserDto {
+            full: FullUserDto {
+                user: PublicUserDto {
+                    id: "00000000-0000-0000-0000-000000000001".into(),
+                    username: None,
+                    email: "self@example.invalid".into(),
+                    role: "user".into(),
+                    image: None,
+                    is_external: false,
+                    given_name: None,
+                    family_name: None,
+                    is_online: false,
+                },
+                federation_kind: None,
+                federation_issuer: None,
+                preferred_locale: None,
+                email_verified_at: None,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                last_login_at: None,
+                active: true,
+                storage_quota_bytes: 0,
+                storage_used_bytes: 0,
+                has_password: true,
+                opaque_registered: false,
+                opaque_migrated: false,
+            },
+            ui_preferences: serde_json::json!({}),
+            notify_on_share: true,
+            is_dpop_bound: false,
+            force_password_change: false,
+            can_edit_image: true,
+        };
+        let json: Value = serde_json::to_value(&self_dto).expect("SelfUserDto serialises");
+        assert!(
+            json.get("ui_preferences").is_some(),
+            "top-level ui_preferences"
+        );
+        assert!(
+            json.get("full")
+                .expect("full block")
+                .get("ui_preferences")
+                .is_none(),
+            "ui_preferences must NOT appear inside `.full`"
+        );
+        assert!(
+            json.pointer("/full/user/ui_preferences").is_none(),
+            "ui_preferences must NOT appear inside `.full.user`"
+        );
+        // Same guard for the other self-only fields.
+        for k in [
+            "notify_on_share",
+            "is_dpop_bound",
+            "force_password_change",
+            "can_edit_image",
+        ] {
+            assert!(json.get(k).is_some(), "{k} at top level");
+            assert!(
+                json.pointer(&format!("/full/{k}")).is_none(),
+                "{k} must NOT nest in .full"
+            );
+            assert!(
+                json.pointer(&format!("/full/user/{k}")).is_none(),
+                "{k} must NOT nest in .full.user"
+            );
+        }
+    }
+
+    /// Structural-quarantine guard for `FullUserDto`. Admin-visible
+    /// extras (`has_password`, OPAQUE flags, `federation_*`,
+    /// `last_login_at`, `active`, quotas, `preferred_locale`,
+    /// `email_verified_at`) MUST live at the top level of
+    /// `FullUserDto`, NOT inside `.user`. If a future refactor
+    /// accidentally lifts one of them onto `PublicUserDto` (the
+    /// embedded `user` field), it leaks through `/api/users/{id}`
+    /// and every other public directory endpoint.
+    #[test]
+    fn admin_only_fields_stay_at_top_level_of_full_user_dto() {
+        let full = FullUserDto {
+            user: PublicUserDto {
+                id: "00000000-0000-0000-0000-000000000002".into(),
+                username: Some("bob".into()),
+                email: "bob@example.invalid".into(),
+                role: "user".into(),
+                image: None,
+                is_external: false,
+                given_name: None,
+                family_name: None,
+                is_online: false,
+            },
+            federation_kind: None,
+            federation_issuer: None,
+            preferred_locale: None,
+            email_verified_at: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            last_login_at: None,
+            active: true,
+            storage_quota_bytes: 10_737_418_240,
+            storage_used_bytes: 0,
+            has_password: true,
+            opaque_registered: false,
+            opaque_migrated: false,
+        };
+        let json: Value = serde_json::to_value(&full).expect("FullUserDto serialises");
+        for k in [
+            "has_password",
+            "opaque_registered",
+            "opaque_migrated",
+            "last_login_at",
+            "active",
+            "storage_quota_bytes",
+            "storage_used_bytes",
+        ] {
+            assert!(json.get(k).is_some(), "{k} at top level of FullUserDto");
+            assert!(
+                json.pointer(&format!("/user/{k}")).is_none(),
+                "{k} must NOT nest in .user"
+            );
+        }
+    }
 }

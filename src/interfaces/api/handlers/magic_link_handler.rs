@@ -625,7 +625,7 @@ fn redirect_target(redemption: &MagicLinkRedemption) -> String {
         (Some(MagicLinkResourceKind::Folder), Some(folder_id)) => {
             format!("/files/{}", folder_id)
         }
-        _ if redemption.auth.user.is_external => "/shared-with-me".to_string(),
+        _ if redemption.auth.user.full.user.is_external => "/shared-with-me".to_string(),
         _ => "/files".to_string(),
     }
 }

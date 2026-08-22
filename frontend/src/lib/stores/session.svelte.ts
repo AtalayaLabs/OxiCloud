@@ -11,17 +11,39 @@ import { setLogoutInProgress } from '$lib/api/client';
 import { hasSessionHint } from '$lib/api/csrf';
 import { seedNonceFromCookie } from '$lib/auth/dpop-proof';
 import { drives } from '$lib/stores/drives.svelte';
-import type { User } from '$lib/api/types';
+import type { PublicUser, SelfUser } from '$lib/api/types';
 import { ensureActiveUser } from '$lib/utils/localStoragePrefs';
 
+/**
+ * Session store — the authenticated user and derived flags.
+ *
+ * Post the three-layer UserDto refactor (`docs/plan/userdto-refactor.md`),
+ * `/api/auth/me` returns `SelfUser` (composed:
+ * `SelfUser.full.user: PublicUser`). Two shorthand accessors keep every
+ * existing consumer readable:
+ *
+ * - `session.user` → `PublicUser` (via `me.full.user`). Every callsite
+ *   that read `session.user.username / email / id / role / image /
+ *   is_external / given_name / family_name / is_online` keeps working.
+ * - `session.me`   → full `SelfUser`. New code that needs self-only or
+ *   admin-visible fields (`has_password`, `is_dpop_bound`, `active`,
+ *   `ui_preferences`, `federation_kind`, `last_login_at`, quotas, …)
+ *   reads through `session.me.full.foo` or `session.me.foo`.
+ */
 class SessionStore {
-	user = $state<User | null>(null);
+	/** Full `/api/auth/me` payload. Null when unauthenticated. */
+	me = $state<SelfUser | null>(null);
 	loaded = $state(false);
 	homeFolderId = $state<string | null>(null);
 	homeFolderName = $state<string | null>(null);
 
-	isExternalUser = $derived(this.user?.is_external ?? false);
-	isAuthenticated = $derived(this.user !== null);
+	/** Public-identity shorthand — same fields any authenticated caller
+	 * can see. Every legacy `session.user.foo` read (username, email, id,
+	 * role, image, is_external, given_name, family_name, is_online) still
+	 * works via this derived accessor. */
+	user = $derived<PublicUser | null>(this.me?.full.user ?? null);
+	isExternalUser = $derived(this.me?.full.user.is_external ?? false);
+	isAuthenticated = $derived(this.me !== null);
 	/**
 	 * TRUE when the backend has set `force_password_change_at_next_login`
 	 * on this account — an admin picked a temporary password and the
@@ -33,7 +55,7 @@ class SessionStore {
 	 * flag (or a malformed `/me` response) doesn't accidentally
 	 * quarantine every user.
 	 */
-	mustChangePassword = $derived(this.user?.force_password_change === true);
+	mustChangePassword = $derived(this.me?.force_password_change === true);
 
 	/**
 	 * Resolve the session once. Probes /api/auth/me; on 401 it makes a single
@@ -41,15 +63,15 @@ class SessionStore {
 	 * what to do with an unauthenticated result. Idempotent: subsequent calls
 	 * return the cached result (so client-side navigation doesn't re-probe).
 	 */
-	async load(): Promise<User | null> {
-		if (this.loaded) return this.user;
+	async load(): Promise<SelfUser | null> {
+		if (this.loaded) return this.me;
 		// No JS-visible session hint ⇒ nothing to probe. The server sets
 		// `oxicloud_csrf` alongside the HttpOnly session cookies and clears
 		// it on logout, so a missing hint means no session. Skips the
 		// doomed 2× /me + /refresh burst that would otherwise fire on
 		// every first landing / post-logout re-mount with no cookies.
 		if (!hasSessionHint()) {
-			this.user = null;
+			this.me = null;
 			this.loaded = true;
 			return null;
 		}
@@ -71,25 +93,25 @@ class SessionStore {
 				// otherwise clutter the audit stream. Fire-and-forget
 				// so a slow IndexedDB open doesn't stall app boot.
 				if (me.is_dpop_bound === false) void bindDpopIfPossible();
-			} else this.user = null;
+			} else this.me = null;
 		} catch {
-			this.user = null;
+			this.me = null;
 		}
 		this.loaded = true;
-		return this.user;
+		return this.me;
 	}
 
 	/**
 	 * Set the authenticated user AND run per-user localStorage cleanup
 	 * (see `$lib/utils/localStoragePrefs::ensureActiveUser`). Direct
-	 * `session.user = …` assignments skip the cleanup — always call
+	 * `session.me = …` assignments skip the cleanup — always call
 	 * `setUser` on login-flow entry points (form login, OIDC exchange,
 	 * existing-session probe) so a switch-account flow inside the same
 	 * tab observes the wipe.
 	 */
-	setUser(user: User): void {
-		this.user = user;
-		ensureActiveUser(user.id);
+	setUser(me: SelfUser): void {
+		this.me = me;
+		ensureActiveUser(me.full.user.id);
 		// Any successful login clears the session-teardown gate. Without
 		// this, a logout → login within the same SPA session leaves the
 		// gate stuck at `true` — the login POST is exempted via
@@ -115,7 +137,7 @@ class SessionStore {
 	async refresh(): Promise<void> {
 		try {
 			const me = await fetchMe();
-			if (me) this.user = me;
+			if (me) this.me = me;
 		} catch {
 			/* keep the existing user on a transient /api/auth/me failure */
 		}
@@ -142,7 +164,7 @@ class SessionStore {
 	}
 
 	reset(): void {
-		this.user = null;
+		this.me = null;
 		this.homeFolderId = null;
 		this.homeFolderName = null;
 		// Mark the store as `loaded` so any subsequent `session.load()` —

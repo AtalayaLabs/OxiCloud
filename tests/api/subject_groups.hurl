@@ -35,7 +35,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-grace_user_id: jsonpath "$.id"
+grace_user_id: jsonpath "$.user.id"
 
 POST {{base_url}}/api/auth/login
 Content-Type: application/json
@@ -268,7 +268,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-helper_user_id: jsonpath "$.id"
+helper_user_id: jsonpath "$.user.id"
 
 
 POST {{base_url}}/api/groups/{{engineers_id}}/members

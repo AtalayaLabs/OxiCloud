@@ -19,11 +19,11 @@ Content-Type: application/json
 HTTP 200
 [Captures]
 token: jsonpath "$.access_token"
-admin_user_id: jsonpath "$.user.id"
+admin_user_id: jsonpath "$.user.full.user.id"
 [Asserts]
 jsonpath "$.access_token" isString
 jsonpath "$.token_type" == "Bearer"
-jsonpath "$.user.id" isString
+jsonpath "$.user.full.user.id" isString
 
 
 # ─────────────────────────────────────────────────────────────

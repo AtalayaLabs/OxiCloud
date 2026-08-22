@@ -75,15 +75,18 @@ log "Probe blob and thumbnail confirmed present on disk."
 # subsequent trash-empty triggers garbage_collect() to remove the
 # now-orphaned blob files from disk.
 
-# /api/admin/users returns { users: [...], total, limit, offset }
+# /api/admin/users returns { users: [FullUserDto…], total, limit, offset }
+# — public identity nests under `.user`; admin-visible extras
+# (`storage_used_bytes`, `last_login_at`, …) sit at the top level of
+# each row. See `docs/plan/userdto-refactor.md`.
 USERS_JSON=$(curl -sf -H "$AUTH" "$base_url/api/admin/users?limit=500")
 
 ADMIN_USER_ID=$(echo "$USERS_JSON" \
-    | jq -r --arg u "$username" '.users[] | select(.username == $u) | .id')
+    | jq -r --arg u "$username" '.users[] | select(.user.username == $u) | .user.id')
 [[ -z "$ADMIN_USER_ID" || "$ADMIN_USER_ID" == "null" ]] && fail "could not resolve admin user id"
 
 OTHER_USER_IDS=$(echo "$USERS_JSON" \
-    | jq -r --arg admin_id "$ADMIN_USER_ID" '.users[] | select(.id != $admin_id) | .id')
+    | jq -r --arg admin_id "$ADMIN_USER_ID" '.users[] | select(.user.id != $admin_id) | .user.id')
 
 OTHER_USER_COUNT=0
 while IFS= read -r uid; do

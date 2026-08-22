@@ -33,6 +33,7 @@
 	const label = $derived(resolved?.name ?? fallbackLabel ?? userId);
 	const email = $derived(resolved?.email || fallbackSublabel || '');
 	const isExternal = $derived(resolved?.isExternal ?? false);
+	const isOnline = $derived(resolved?.isOnline ?? false);
 	const image = $derived(resolved?.image ?? null);
 	const colorIndex = $derived(avatarColorIndex(userId));
 	const initials = $derived(userInitials(label));
@@ -49,6 +50,22 @@
 			<span class="uv__badge" title={t('share.externalUser', 'External user')}>
 				<Icon name="building-circle-xmark" />
 			</span>
+		{/if}
+		{#if isOnline}
+			<!-- Presence dot — top-right corner so it doesn't collide with the
+			     external badge at bottom-right. Only rendered when true (absent
+			     = offline reads cleanly on an avatar; no grey placeholder). Uses
+			     `--color-success-alt` (same green as `.badge--active` in the
+			     admin sessions panel + `.presence-dot--online` in the sessions
+			     status column) so the presence signal reads consistently across
+			     every surface. The 2px surface-coloured border visually detaches
+			     the dot from the avatar's own background — matches the pattern
+			     Slack/Teams/Discord use. -->
+			<span
+				class="uv__presence"
+				title={t('share.userOnline', 'Online')}
+				aria-label={t('share.userOnline', 'Online')}
+			></span>
 		{/if}
 	</span>
 	<span class="uv__text">
@@ -126,6 +143,27 @@
 		background: var(--color-bg-surface);
 		color: var(--color-text-muted);
 		font-size: 9px;
+	}
+
+	/* Presence dot — top-right, symmetric with `.uv__badge` at
+	   bottom-right so the two corners don't collide. Slightly smaller
+	   (10x10 vs the badge's 16x16) because it's a pure signal — no
+	   icon, no text. The 2px `--color-bg-surface` border creates a
+	   visual gap between dot and avatar so the green pops out cleanly
+	   regardless of avatar palette (photo, dark initials, light
+	   initials). `box-sizing: border-box` keeps the inner circle's
+	   green footprint at 6x6 — same visual weight the sessions-table
+	   dot has. See `docs/plan/sessions.md` § UI. */
+	.uv__presence {
+		position: absolute;
+		right: -2px;
+		top: -2px;
+		width: 10px;
+		height: 10px;
+		border-radius: 50%;
+		background: var(--color-success-alt);
+		border: 2px solid var(--color-bg-surface);
+		box-sizing: border-box;
 	}
 
 	.uv__text {

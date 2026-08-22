@@ -7,7 +7,7 @@ use crate::application::ports::auth_ports::UserStoragePort;
 use crate::common::errors::DomainError;
 use crate::domain::entities::user::{User, UserFlags, UserRole};
 use crate::domain::repositories::user_repository::{
-    StorageStats, UserListEntry, UserRepository, UserRepositoryError, UserRepositoryResult,
+    StorageStats, UserRepository, UserRepositoryError, UserRepositoryResult,
 };
 use crate::infrastructure::repositories::pg::transaction_utils::with_transaction;
 
@@ -386,6 +386,90 @@ impl UserRepository for UserPgRepository {
             row.get("notify_on_share"),
             row.get::<serde_json::Value, _>("ui_preferences"),
         ))
+    }
+
+    async fn get_user_with_derived_flags(
+        &self,
+        id: Uuid,
+    ) -> UserRepositoryResult<(
+        User,
+        crate::domain::repositories::user_repository::UserDerivedFlags,
+    )> {
+        // Same column set as `get_user_by_id` plus the three IS-NOT-NULL
+        // derivations for auth-capability flags AND the EXISTS scalar
+        // for `is_online`. The `interval` argument is bound as `$2`
+        // (seconds, `ONLINE_WINDOW.as_secs_f64()`) via
+        // `make_interval(secs => $2)` — same pattern as
+        // `session_liveness_gauges.rs`. Partial index
+        // `idx_sessions_last_seen_at WHERE revoked = FALSE` covers the
+        // EXISTS scan, so per-row cost is ~μs.
+        let row = sqlx::query(
+            r#"
+            SELECT
+                id, username, email, password_hash, role::text as role_text,
+                storage_quota_bytes, storage_used_bytes,
+                created_at, updated_at, last_login_at, active,
+                federation_kind, federation_issuer, federation_subject, image, is_external,
+                given_name, family_name, email_verified_at, preferred_locale, notify_on_share,
+                ui_preferences,
+                (password_hash IS NOT NULL)       AS has_password,
+                (opaque_envelope IS NOT NULL)     AS opaque_registered,
+                (opaque_migrated_at IS NOT NULL)  AS opaque_migrated,
+                EXISTS (
+                    SELECT 1 FROM auth.sessions s
+                     WHERE s.user_id = auth.users.id
+                       AND s.revoked = FALSE
+                       AND s.last_seen_at > NOW() - make_interval(secs => $2)
+                )                                 AS is_online
+            FROM auth.users
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .bind(crate::application::dtos::session_dto::ONLINE_WINDOW.as_secs_f64())
+        .fetch_one(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)?;
+
+        let role_str: Option<String> = row.try_get("role_text").unwrap_or(None);
+        let role = match role_str.as_deref() {
+            Some("admin") => UserRole::Admin,
+            _ => UserRole::User,
+        };
+
+        let user = User::from_data_full(
+            row.get("id"),
+            row.get("username"),
+            row.get("email"),
+            row.get("password_hash"),
+            role,
+            row.get("storage_quota_bytes"),
+            row.get("storage_used_bytes"),
+            row.get("created_at"),
+            row.get("updated_at"),
+            row.get("last_login_at"),
+            row.get("active"),
+            row.get::<Option<String>, _>("federation_kind")
+                .as_deref()
+                .and_then(crate::domain::entities::user::FederationKind::parse),
+            row.get("federation_issuer"),
+            row.get("federation_subject"),
+            row.get("image"),
+            row.get("is_external"),
+            row.get("given_name"),
+            row.get("family_name"),
+            row.get("email_verified_at"),
+            row.get("preferred_locale"),
+            row.get("notify_on_share"),
+            row.get::<serde_json::Value, _>("ui_preferences"),
+        );
+        let flags = crate::domain::repositories::user_repository::UserDerivedFlags {
+            has_password: row.get("has_password"),
+            opaque_registered: row.get("opaque_registered"),
+            opaque_migrated: row.get("opaque_migrated"),
+            is_online: row.get("is_online"),
+        };
+        Ok((user, flags))
     }
 
     /// Gets a user by username
@@ -835,103 +919,107 @@ impl UserRepository for UserPgRepository {
         Ok(users)
     }
 
-    async fn list_user_summaries(
+    async fn list_users_with_derived_flags(
         &self,
         limit: i64,
         offset: i64,
         include_external: bool,
-    ) -> UserRepositoryResult<Vec<UserListEntry>> {
-        let rows = sqlx::query_as::<
-            _,
-            (
-                Uuid,
-                Option<String>,
-                String,
-                String,
-                i64,
-                i64,
-                Option<chrono::DateTime<chrono::Utc>>,
-                bool,
-                Option<String>,
-                Option<String>,
-                bool,
-                bool,
-                bool,
-                bool,
-            ),
-        >(
-            // Auth-credential columns projected as booleans via `IS NOT
-            // NULL` rather than as timestamps / hashes so the row-mapping
-            // tuple stays small and the wire shape is exactly what the
-            // admin table needs. Per-row scalar tests — no cost beyond
-            // the full-table sequential scan the LIMIT/OFFSET already
-            // pays. `has_password` on the password_hash column tells
-            // the admin table whether a server-verifiable password is
-            // on file; combined with the two OPAQUE flags and
-            // federation_kind / federation_issuer, the SPA derives the
-            // full "capability set" per user (password / OPAQUE / SSO /
-            // passwordless).
+    ) -> UserRepositoryResult<
+        Vec<(
+            User,
+            crate::domain::repositories::user_repository::UserDerivedFlags,
+        )>,
+    > {
+        // Full `User` column set (matches `get_user_by_id`) + the four
+        // derived booleans (IS-NOT-NULL for auth capability, EXISTS for
+        // `is_online`) in one SELECT. Same rationale as the single-user
+        // `get_user_with_derived_flags` variant. Widened over the older
+        // `list_user_summaries` projection because the FE now consumes
+        // the full user profile from these rows (killing the per-row
+        // `/api/users/{id}` fetch the admin table used to fire for
+        // avatars — see docs/plan/userdto-refactor.md § N+1).
+        //
+        // `interval` bound as `$4` seconds
+        // (`ONLINE_WINDOW.as_secs_f64()`), same pattern as
+        // `session_liveness_gauges.rs` and `get_user_with_derived_flags`.
+        let rows = sqlx::query(
             r#"
             SELECT
-                id, username, email, role::text,
+                id, username, email, password_hash, role::text as role_text,
                 storage_quota_bytes, storage_used_bytes,
-                last_login_at, active,
-                federation_kind, federation_issuer, is_external,
-                (password_hash IS NOT NULL)       AS has_password,
+                created_at, updated_at, last_login_at, active,
+                federation_kind, federation_issuer, federation_subject, image, is_external,
+                given_name, family_name, email_verified_at, preferred_locale, notify_on_share,
+                ui_preferences,
+                (password_hash IS NOT NULL)       AS has_password_flag,
                 (opaque_envelope IS NOT NULL)     AS opaque_registered,
-                (opaque_migrated_at IS NOT NULL)  AS opaque_migrated
-              FROM auth.users
-             WHERE ($3 OR is_external = FALSE)
-             ORDER BY created_at DESC, id DESC
-             LIMIT $1 OFFSET $2
+                (opaque_migrated_at IS NOT NULL)  AS opaque_migrated,
+                EXISTS (
+                    SELECT 1 FROM auth.sessions s
+                     WHERE s.user_id = auth.users.id
+                       AND s.revoked = FALSE
+                       AND s.last_seen_at > NOW() - make_interval(secs => $4)
+                )                                 AS is_online
+            FROM auth.users
+            WHERE ($3 OR is_external = FALSE)
+            ORDER BY created_at DESC, id DESC
+            LIMIT $1 OFFSET $2
             "#,
         )
         .bind(limit)
         .bind(offset)
         .bind(include_external)
-        .fetch_all(self.pool.as_ref())
+        .bind(crate::application::dtos::session_dto::ONLINE_WINDOW.as_secs_f64())
+        .fetch_all(&*self.pool)
         .await
         .map_err(Self::map_sqlx_error)?;
 
+        // Note: the `has_password_flag` alias avoids colliding with the
+        // `password_hash` column selected above (the tuple destructure
+        // in `list_user_summaries` uses a shorter projection so it
+        // could reuse the raw `has_password` alias; here we keep both).
         Ok(rows
             .into_iter()
-            .map(
-                |(
-                    id,
-                    username,
-                    email,
+            .map(|row| {
+                let role_str: Option<String> = row.try_get("role_text").unwrap_or(None);
+                let role = match role_str.as_deref() {
+                    Some("admin") => UserRole::Admin,
+                    _ => UserRole::User,
+                };
+                let user = User::from_data_full(
+                    row.get("id"),
+                    row.get("username"),
+                    row.get("email"),
+                    row.get("password_hash"),
                     role,
-                    storage_quota_bytes,
-                    storage_used_bytes,
-                    last_login_at,
-                    active,
-                    federation_kind,
-                    federation_issuer,
-                    is_external,
-                    has_password,
-                    opaque_registered,
-                    opaque_migrated,
-                )| UserListEntry {
-                    id,
-                    username,
-                    email,
-                    role: if role == "admin" {
-                        UserRole::Admin
-                    } else {
-                        UserRole::User
-                    },
-                    storage_quota_bytes,
-                    storage_used_bytes,
-                    last_login_at,
-                    active,
-                    federation_kind,
-                    federation_issuer,
-                    is_external,
-                    has_password,
-                    opaque_registered,
-                    opaque_migrated,
-                },
-            )
+                    row.get("storage_quota_bytes"),
+                    row.get("storage_used_bytes"),
+                    row.get("created_at"),
+                    row.get("updated_at"),
+                    row.get("last_login_at"),
+                    row.get("active"),
+                    row.get::<Option<String>, _>("federation_kind")
+                        .as_deref()
+                        .and_then(crate::domain::entities::user::FederationKind::parse),
+                    row.get("federation_issuer"),
+                    row.get("federation_subject"),
+                    row.get("image"),
+                    row.get("is_external"),
+                    row.get("given_name"),
+                    row.get("family_name"),
+                    row.get("email_verified_at"),
+                    row.get("preferred_locale"),
+                    row.get("notify_on_share"),
+                    row.get::<serde_json::Value, _>("ui_preferences"),
+                );
+                let flags = crate::domain::repositories::user_repository::UserDerivedFlags {
+                    has_password: row.get("has_password_flag"),
+                    opaque_registered: row.get("opaque_registered"),
+                    opaque_migrated: row.get("opaque_migrated"),
+                    is_online: row.get("is_online"),
+                };
+                (user, flags)
+            })
             .collect())
     }
 
@@ -1302,6 +1390,21 @@ impl UserStoragePort for UserPgRepository {
             .map_err(DomainError::from)
     }
 
+    async fn get_user_with_derived_flags(
+        &self,
+        id: Uuid,
+    ) -> Result<
+        (
+            User,
+            crate::domain::repositories::user_repository::UserDerivedFlags,
+        ),
+        DomainError,
+    > {
+        UserRepository::get_user_with_derived_flags(self, id)
+            .await
+            .map_err(DomainError::from)
+    }
+
     async fn get_users_by_ids(&self, ids: Vec<Uuid>) -> Result<Vec<User>, DomainError> {
         UserRepository::get_users_by_ids(self, ids)
             .await
@@ -1356,13 +1459,19 @@ impl UserStoragePort for UserPgRepository {
             .map_err(DomainError::from)
     }
 
-    async fn list_user_summaries(
+    async fn list_users_with_derived_flags(
         &self,
         limit: i64,
         offset: i64,
         include_external: bool,
-    ) -> Result<Vec<UserListEntry>, DomainError> {
-        UserRepository::list_user_summaries(self, limit, offset, include_external)
+    ) -> Result<
+        Vec<(
+            User,
+            crate::domain::repositories::user_repository::UserDerivedFlags,
+        )>,
+        DomainError,
+    > {
+        UserRepository::list_users_with_derived_flags(self, limit, offset, include_external)
             .await
             .map_err(DomainError::from)
     }
@@ -1743,26 +1852,27 @@ mod integration_tests {
         )
         .await;
 
-        let page = UserRepository::list_user_summaries(&repo, 3, 0, true)
+        // Migrated from the (now-deleted) `list_user_summaries` +
+        // `UserListEntry` to `list_users_with_derived_flags`, which
+        // returns `Vec<(User, UserDerivedFlags)>`. Field checks read
+        // through the `User` accessors instead of struct-field access.
+        let page = UserRepository::list_users_with_derived_flags(&repo, 3, 0, true)
             .await
             .expect("compact projection query must decode");
-        assert_eq!(page.iter().map(|entry| entry.id).collect::<Vec<_>>(), ids);
-        assert_eq!(page[0].username.as_deref(), Some(username_a.as_str()));
-        assert_eq!(page[0].role, UserRole::Admin);
-        assert_eq!(page[0].storage_quota_bytes, 10_737_418_240);
-        assert_eq!(page[1].username, None);
-        assert!(page[1].is_external);
-        assert_eq!(
-            page[1].federation_issuer.as_deref(),
-            Some("integration-idp")
-        );
+        assert_eq!(page.iter().map(|(u, _)| u.id()).collect::<Vec<_>>(), ids);
+        assert_eq!(page[0].0.username(), Some(username_a.as_str()));
+        assert_eq!(page[0].0.role(), UserRole::Admin);
+        assert_eq!(page[0].0.storage_quota_bytes(), 10_737_418_240);
+        assert_eq!(page[1].0.username(), None);
+        assert!(page[1].0.is_external());
+        assert_eq!(page[1].0.federation_issuer(), Some("integration-idp"));
 
-        let internal = UserRepository::list_user_summaries(&repo, 10, 0, false)
+        let internal = UserRepository::list_users_with_derived_flags(&repo, 10, 0, false)
             .await
             .expect("internal compact projection query must decode");
-        assert!(internal.iter().any(|entry| entry.id == ids[0]));
-        assert!(internal.iter().any(|entry| entry.id == ids[2]));
-        assert!(!internal.iter().any(|entry| entry.id == ids[1]));
+        assert!(internal.iter().any(|(u, _)| u.id() == ids[0]));
+        assert!(internal.iter().any(|(u, _)| u.id() == ids[2]));
+        assert!(!internal.iter().any(|(u, _)| u.id() == ids[1]));
 
         sqlx::query("DELETE FROM auth.users WHERE id = ANY($1)")
             .bind(ids.as_slice())

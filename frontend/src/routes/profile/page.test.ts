@@ -1,10 +1,15 @@
 import { it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
 
-const { session, ui } = vi.hoisted(() => ({
-	session: {
-		loaded: true,
-		load: vi.fn(),
+// Test-double session store. Post the three-layer UserDto refactor
+// (docs/plan/userdto-refactor.md), production `session.user` is a
+// derived accessor over `session.me.full.user`. The stub here mirrors
+// that shape: `me` carries the whole SelfUser tree, and `user` mirrors
+// `me.full.user` so any legacy `session.user.foo` read on the tested
+// page keeps working through the mock without reproducing the derived
+// mechanism.
+const buildSelfMe = () => ({
+	full: {
 		user: {
 			id: '1',
 			username: 'admin',
@@ -12,14 +17,41 @@ const { session, ui } = vi.hoisted(() => ({
 			given_name: 'A',
 			family_name: 'B',
 			role: 'admin',
+			is_external: false
+		},
+		storage_used_bytes: 100,
+		storage_quota_bytes: 1000,
+		has_password: true
+	}
+});
+
+const { session, ui } = vi.hoisted(() => {
+	const me = {
+		full: {
+			user: {
+				id: '1',
+				username: 'admin',
+				email: 'a@x.test',
+				given_name: 'A',
+				family_name: 'B',
+				role: 'admin',
+				is_external: false
+			},
 			storage_used_bytes: 100,
 			storage_quota_bytes: 1000,
-			is_external: false,
 			has_password: true
 		}
-	},
-	ui: { notify: vi.fn() }
-}));
+	};
+	return {
+		session: {
+			loaded: true,
+			load: vi.fn(),
+			me,
+			user: me.full.user
+		},
+		ui: { notify: vi.fn() }
+	};
+});
 vi.mock('$lib/stores/session.svelte', () => ({ session }));
 vi.mock('$lib/stores/ui.svelte', () => ({ ui }));
 vi.mock('$lib/stores/dialogs.svelte', () => ({ confirmDialog: vi.fn() }));
@@ -44,20 +76,13 @@ const m = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	// Reset the shared session each test (handlers may mutate session.user).
+	// Reset the shared session each test (handlers may mutate session.me
+	// on save / refresh). `me` is the SelfUser tree; `user` mirrors
+	// `me.full.user` for legacy `session.user.foo` reads.
 	session.loaded = true;
-	session.user = {
-		id: '1',
-		username: 'admin',
-		email: 'a@x.test',
-		given_name: 'A',
-		family_name: 'B',
-		role: 'admin',
-		storage_used_bytes: 100,
-		storage_quota_bytes: 1000,
-		is_external: false,
-		has_password: true
-	};
+	const me = buildSelfMe();
+	session.me = me;
+	session.user = me.full.user;
 	m(profile.listAppPasswords).mockResolvedValue([]);
 	m(profile.updateProfile).mockResolvedValue(undefined);
 	m(getOidcProviders).mockResolvedValue({ password_login_enabled: true });

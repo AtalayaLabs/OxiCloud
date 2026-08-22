@@ -151,7 +151,7 @@ Content-Type: application/json
 HTTP 200
 [Captures]
 wq_owner_token: jsonpath "$.access_token"
-wq_owner_id: jsonpath "$.user.id"
+wq_owner_id: jsonpath "$.user.full.user.id"
 
 
 POST {{base_url}}/api/drives
