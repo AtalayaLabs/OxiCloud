@@ -225,9 +225,10 @@ jsonpath "$.outcome.count" exists
 # Step 4c — Trigger `consistency_batch`. Coordinator (plain
 #           JobHandler) — snapshots the registry, filters names
 #           ending `_consistency`, sequentially triggers each.
-#           `outcome.count` = number of children dispatched (5 as
-#           of Slice 10: drives + folders + files + blobs +
-#           backend). `extra.per_check` carries a per-child outcome
+#           `outcome.count` = number of children dispatched (6 as
+#           of the copy_folder_ref_count fix: drives + folders +
+#           files + blobs + manifests + backend). `extra.per_check`
+#           carries a per-child outcome
 #           map. Batch itself always returns ok — child failures
 #           live inside per_check. `?deep=true` propagates as
 #           `extra.deep`.
@@ -239,16 +240,21 @@ HTTP 200
 [Asserts]
 jsonpath "$.ok" == true
 jsonpath "$.outcome.outcome" == "ok"
-jsonpath "$.outcome.count" == 5
+jsonpath "$.outcome.count" == 6
 jsonpath "$.outcome.extra.deep" == true
-jsonpath "$.outcome.extra.ok" == 5
+jsonpath "$.outcome.extra.ok" == 6
 jsonpath "$.outcome.extra.err" == 0
-# per_check is keyed by child job name.
-jsonpath "$.outcome.extra.per_check.drives_consistency.outcome"  == "ok"
-jsonpath "$.outcome.extra.per_check.folders_consistency.outcome" == "ok"
-jsonpath "$.outcome.extra.per_check.files_consistency.outcome"   == "ok"
-jsonpath "$.outcome.extra.per_check.blobs_consistency.outcome"   == "ok"
-jsonpath "$.outcome.extra.per_check.backend_consistency.outcome" == "ok"
+# per_check is keyed by child job name. `manifests_consistency` was added
+# by the copy_folder_ref_count fix — see docs/plan/derived-blobs.md and
+# `[[bug_dual_refcount_divergence]]` for why the second counter needed
+# its own tenant. Auto-picked by `consistency_batch` via `.ends_with(
+# "_consistency")` (no explicit list in the batch service).
+jsonpath "$.outcome.extra.per_check.drives_consistency.outcome"    == "ok"
+jsonpath "$.outcome.extra.per_check.folders_consistency.outcome"   == "ok"
+jsonpath "$.outcome.extra.per_check.files_consistency.outcome"     == "ok"
+jsonpath "$.outcome.extra.per_check.blobs_consistency.outcome"     == "ok"
+jsonpath "$.outcome.extra.per_check.manifests_consistency.outcome" == "ok"
+jsonpath "$.outcome.extra.per_check.backend_consistency.outcome"   == "ok"
 
 
 # ─────────────────────────────────────────────────────────────

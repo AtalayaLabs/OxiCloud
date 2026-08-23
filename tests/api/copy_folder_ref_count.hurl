@@ -62,12 +62,23 @@ token: jsonpath "$.access_token"
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 2 — Baseline sweep: run `blobs_consistency` before we
-#          touch anything and capture the finding count. Later
-#          sweeps assert equality with this baseline instead of
-#          `== 0` — so a stale finding from a previous test's
-#          leftover state doesn't flunk this test, only NEW
-#          drift introduced by our copy/delete does.
+# Step 2 — Baseline sweeps: run BOTH consistency tenants that
+#          check ref_count invariants and capture their finding
+#          counts. Later checkpoints assert equality with these
+#          baselines instead of `== 0` — so stale findings from
+#          previous tests don't flunk this one; only NEW drift
+#          introduced by our copy/delete does.
+#
+#          Two tenants because there are two counters (see
+#          `[[bug_dual_refcount_divergence]]`):
+#
+#          - `blobs_consistency` — reconciles
+#            `storage.blobs.ref_count` against its auditor
+#            formula. Catches chunk-level drift.
+#          - `manifests_consistency` — reconciles
+#            `storage.chunk_manifests.ref_count` against its
+#            auditor formula. Catches whole-file drift (the
+#            path the FE + `/api/dedup/check` surface reads).
 #
 #          Trigger returns `outcome.count = stats.finding_count`
 #          for recoverable tenants (see
@@ -81,7 +92,18 @@ Authorization: Bearer {{token}}
 
 HTTP 200
 [Captures]
-baseline_findings: jsonpath "$.outcome.count"
+baseline_blobs_findings: jsonpath "$.outcome.count"
+[Asserts]
+jsonpath "$.ok"              == true
+jsonpath "$.outcome.outcome" == "ok"
+
+
+POST {{base_url}}/api/admin/jobs/manifests_consistency/trigger
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Captures]
+baseline_manifests_findings: jsonpath "$.outcome.count"
 [Asserts]
 jsonpath "$.ok"              == true
 jsonpath "$.outcome.outcome" == "ok"
@@ -184,12 +206,15 @@ jsonpath "$.ref_count" == 2
 
 
 # ─────────────────────────────────────────────────────────────
-# A5b — Sweep the ENTIRE blob table via `blobs_consistency`.
+# A5b — Sweep both consistency tenants that check ref_count.
 #       Complements the single-hash probe above: if the copy
-#       path miscounted some OTHER blob shared by an unrelated
-#       row (e.g. a global thumbnail blob, an OS icon dedup
-#       hit), the single-hash probe wouldn't catch it. Delta
-#       vs `baseline_findings` isolates NEW drift from ambient.
+#       path miscounted some OTHER blob or manifest, the single-
+#       hash probe wouldn't catch it. Delta vs the baselines
+#       isolates NEW drift from ambient.
+#
+#       Both tenants required — one counter each; see
+#       [[bug_dual_refcount_divergence]] for why the copy path
+#       must maintain both symmetrically.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/admin/jobs/blobs_consistency/trigger
 Authorization: Bearer {{token}}
@@ -198,7 +223,17 @@ HTTP 200
 [Asserts]
 jsonpath "$.ok"              == true
 jsonpath "$.outcome.outcome" == "ok"
-jsonpath "$.outcome.count"   == {{baseline_findings}}
+jsonpath "$.outcome.count"   == {{baseline_blobs_findings}}
+
+
+POST {{base_url}}/api/admin/jobs/manifests_consistency/trigger
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.ok"              == true
+jsonpath "$.outcome.outcome" == "ok"
+jsonpath "$.outcome.count"   == {{baseline_manifests_findings}}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -280,10 +315,10 @@ jsonpath "$.exists" == false
 
 
 # ─────────────────────────────────────────────────────────────
-# A9 — End-of-Scenario-A sweep. Scenario A introduced two file
-#      rows (source + copy), then deleted both. Net effect on
-#      the DB is zero — so the drift count must be exactly the
-#      baseline, no more, no less.
+# A9 — End-of-Scenario-A sweep on BOTH tenants. Scenario A
+#      introduced two file rows (source + copy), then deleted
+#      both. Net effect on the DB is zero — so the drift count
+#      on each counter must be exactly the baseline.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/admin/jobs/blobs_consistency/trigger
 Authorization: Bearer {{token}}
@@ -292,21 +327,29 @@ HTTP 200
 [Asserts]
 jsonpath "$.ok"              == true
 jsonpath "$.outcome.outcome" == "ok"
-jsonpath "$.outcome.count"   == {{baseline_findings}}
+jsonpath "$.outcome.count"   == {{baseline_blobs_findings}}
+
+
+POST {{base_url}}/api/admin/jobs/manifests_consistency/trigger
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.ok"              == true
+jsonpath "$.outcome.outcome" == "ok"
+jsonpath "$.outcome.count"   == {{baseline_manifests_findings}}
 
 
 # =============================================================
 # Scenario B — 2 MB multi-chunk file (CDC manifest path)
 #
-# Coverage note: `blobs_consistency` iterates every blob row
-# (whole-file AND per-chunk) and checks each ref_count against
-# the auditor SQL, so a chunk-level under-count is caught by
-# the sweep in B5b. But the DEDICATED tenant for the CDC path
-# is `manifest_consistency` (queued on a separate branch as of
-# 2026-08-23) — when it lands, replace the `blobs_consistency`
-# trigger in B5b/B9 with `manifest_consistency` (or run both
-# in the batch) so the assertion is scoped to what actually
-# describes the CDC invariant.
+# Coverage: this scenario now sweeps BOTH `blobs_consistency`
+# (chunk-level ref_counts on `storage.blobs.ref_count`) and
+# `manifests_consistency` (whole-file ref_counts on
+# `storage.chunk_manifests.ref_count`). Same-shape assertions
+# as Scenario A — see the baseline capture block near the top
+# of this file and [[bug_dual_refcount_divergence]] for why
+# both are needed.
 # =============================================================
 
 # ─────────────────────────────────────────────────────────────
@@ -403,11 +446,12 @@ jsonpath "$.ref_count" == 2
 
 
 # ─────────────────────────────────────────────────────────────
-# B5b — Full-DB sweep after CDC copy. Multi-chunk path
-#       exercises the manifest side of the ref-count invariant
+# B5b — Full-DB sweep on BOTH tenants after CDC copy. Multi-
+#       chunk path exercises the manifest side of the invariant
 #       — a bug that skips one chunk out of N would leak that
-#       chunk without touching the single whole-file assertion
-#       above. Sweep catches it.
+#       chunk without touching the whole-file assertion above.
+#       `blobs_consistency` catches chunk-level drift;
+#       `manifests_consistency` catches whole-file drift.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/admin/jobs/blobs_consistency/trigger
 Authorization: Bearer {{token}}
@@ -416,7 +460,17 @@ HTTP 200
 [Asserts]
 jsonpath "$.ok"              == true
 jsonpath "$.outcome.outcome" == "ok"
-jsonpath "$.outcome.count"   == {{baseline_findings}}
+jsonpath "$.outcome.count"   == {{baseline_blobs_findings}}
+
+
+POST {{base_url}}/api/admin/jobs/manifests_consistency/trigger
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.ok"              == true
+jsonpath "$.outcome.outcome" == "ok"
+jsonpath "$.outcome.count"   == {{baseline_manifests_findings}}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -478,8 +532,9 @@ jsonpath "$.exists" == false
 
 
 # ─────────────────────────────────────────────────────────────
-# B9 — End-of-Scenario-B sweep. All Scenario B rows gone;
-#      finding count must be back at baseline.
+# B9 — End-of-Scenario-B sweep on BOTH tenants. All Scenario B
+#      rows gone; both counter drift counts must be back at
+#      baseline.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/admin/jobs/blobs_consistency/trigger
 Authorization: Bearer {{token}}
@@ -488,7 +543,17 @@ HTTP 200
 [Asserts]
 jsonpath "$.ok"              == true
 jsonpath "$.outcome.outcome" == "ok"
-jsonpath "$.outcome.count"   == {{baseline_findings}}
+jsonpath "$.outcome.count"   == {{baseline_blobs_findings}}
+
+
+POST {{base_url}}/api/admin/jobs/manifests_consistency/trigger
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.ok"              == true
+jsonpath "$.outcome.outcome" == "ok"
+jsonpath "$.outcome.count"   == {{baseline_manifests_findings}}
 
 
 # =============================================================
