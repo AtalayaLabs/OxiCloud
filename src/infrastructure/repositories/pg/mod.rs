@@ -1,5 +1,6 @@
 mod address_book_pg_repository;
 mod app_password_pg_repository;
+pub mod blob_reference_sources;
 mod calendar_event_pg_repository;
 mod calendar_pg_repository;
 mod contact_group_pg_repository;
