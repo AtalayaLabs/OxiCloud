@@ -816,9 +816,6 @@ async fn recompute_hash(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::repositories::pg::blob_reference_sources::{
-        ChunksReferenceSource, FilesReferenceSource,
-    };
 
     fn default_registry() -> BlobReferenceRegistry {
         let pool = Arc::new(
@@ -826,10 +823,7 @@ mod tests {
                 .connect_lazy("postgres://invalid/invalid")
                 .expect("lazy pool never connects"),
         );
-        let mut registry = BlobReferenceRegistry::new();
-        registry.register(Arc::new(FilesReferenceSource::new(pool.clone())));
-        registry.register(Arc::new(ChunksReferenceSource::new(pool)));
-        registry
+        crate::infrastructure::repositories::pg::blob_reference_sources::built_in_registry(pool)
     }
 
     /// Golden test for the chunk-level recompute. Pins the statement

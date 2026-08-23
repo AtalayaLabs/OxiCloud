@@ -440,22 +440,6 @@ impl AppServiceFactory {
         // `blob_backend` into DedupService.
         let blob_backend_for_consistency = blob_backend.clone();
 
-        // Every table holding blob references. Built ONCE and shared by the
-        // GC reap predicate and the consistency recompute so the two cannot
-        // disagree about what "referenced" means — a disagreement reaps live
-        // content. New blob-owning tables register here.
-        // See docs/plan/derived-blobs.md.
-        let blob_reference_registry = {
-            use crate::infrastructure::repositories::pg::blob_reference_sources::{
-                ChunksReferenceSource, FilesReferenceSource,
-            };
-            let mut registry =
-                crate::application::ports::blob_reference_ports::BlobReferenceRegistry::new();
-            registry.register(Arc::new(FilesReferenceSource::new(db_pool.clone())));
-            registry.register(Arc::new(ChunksReferenceSource::new(db_pool.clone())));
-            Arc::new(registry)
-        };
-
         // Deduplication service — PRIMARY blob storage engine (PostgreSQL-backed index)
         let dedup_service = Arc::new(
             crate::infrastructure::services::dedup_service::DedupService::new(
@@ -463,8 +447,7 @@ impl AppServiceFactory {
                 db_pool.clone(),
                 maintenance_pool.clone(),
             )
-            .with_blob_lifecycle(blob_lifecycle)
-            .with_reference_registry(blob_reference_registry.clone()),
+            .with_blob_lifecycle(blob_lifecycle),
         );
         dedup_service.initialize().await?;
 

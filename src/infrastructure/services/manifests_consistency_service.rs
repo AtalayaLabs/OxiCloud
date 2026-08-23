@@ -404,9 +404,6 @@ impl RecoverableJobHandler for ManifestsConsistencyCheck {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::repositories::pg::blob_reference_sources::{
-        ChunksReferenceSource, FilesReferenceSource,
-    };
 
     fn default_registry() -> BlobReferenceRegistry {
         let pool = Arc::new(
@@ -414,10 +411,7 @@ mod tests {
                 .connect_lazy("postgres://invalid/invalid")
                 .expect("lazy pool never connects"),
         );
-        let mut registry = BlobReferenceRegistry::new();
-        registry.register(Arc::new(FilesReferenceSource::new(pool.clone())));
-        registry.register(Arc::new(ChunksReferenceSource::new(pool)));
-        registry
+        crate::infrastructure::repositories::pg::blob_reference_sources::built_in_registry(pool)
     }
 
     /// Golden test — the statement is assembled from the registry, so pin it
@@ -437,7 +431,8 @@ mod tests {
      m.total_size AS total_size,
      m.chunk_count AS chunk_count,
      ((SELECT COUNT(*) FROM storage.files cnt_f
-               WHERE cnt_f.blob_hash = m.file_hash))::bigint AS actual_ref_count
+               WHERE cnt_f.blob_hash = m.file_hash)
+ + (SELECT COUNT(*) FROM storage.content_derived_blobs cnt_d WHERE cnt_d.blob_hash = m.file_hash))::bigint AS actual_ref_count
    FROM storage.chunk_manifests m
   WHERE ($1::text IS NULL OR m.file_hash > $1)
   ORDER BY m.file_hash

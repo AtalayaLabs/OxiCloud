@@ -523,18 +523,17 @@ impl DedupService {
         }
     }
 
-    /// The two sources that were implicit before the registry existed.
-    /// Keeping this as the default means every construction path — including
-    /// tests — has a manifest-level source, so the reap predicate can never
-    /// degenerate to "nothing references anything".
+    /// Every built-in blob-reference source, in one place.
+    ///
+    /// This is THE definition of "what references a blob" — DI does not
+    /// assemble its own, it reads this one back via
+    /// [`Self::reference_registry`] and hands it to the consistency jobs, so
+    /// GC and the sweeps cannot disagree. Keeping it as the construction
+    /// default also means every path — including tests — has a
+    /// manifest-level source, so the reap predicate can never degenerate to
+    /// "nothing references anything".
     fn default_reference_registry(pool: Arc<PgPool>) -> BlobReferenceRegistry {
-        use crate::infrastructure::repositories::pg::blob_reference_sources::{
-            ChunksReferenceSource, FilesReferenceSource,
-        };
-        let mut registry = BlobReferenceRegistry::new();
-        registry.register(Arc::new(FilesReferenceSource::new(pool.clone())));
-        registry.register(Arc::new(ChunksReferenceSource::new(pool)));
-        registry
+        crate::infrastructure::repositories::pg::blob_reference_sources::built_in_registry(pool)
     }
 
     /// See the `manifest_cache` field docs. Weight ≈ real heap bytes of one
@@ -3388,7 +3387,8 @@ mod tests {
      SELECT ctid
        FROM storage.chunk_manifests m
       WHERE m.ref_count <= 0
-         OR NOT (EXISTS (SELECT 1 FROM storage.files cnt_f WHERE cnt_f.blob_hash = m.file_hash))
+         OR NOT (EXISTS (SELECT 1 FROM storage.files cnt_f WHERE cnt_f.blob_hash = m.file_hash)
+        OR EXISTS (SELECT 1 FROM storage.content_derived_blobs cnt_d WHERE cnt_d.blob_hash = m.file_hash))
       LIMIT $1
  )
  RETURNING file_hash, chunk_hashes, total_size"#;
