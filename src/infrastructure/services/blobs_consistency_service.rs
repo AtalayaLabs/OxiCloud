@@ -347,6 +347,10 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
         // stats.finding_count — actual persistence happens in
         // `record_finding` on each emission).
         let mut finding_count = 0u64;
+        // Only touched when `args.repair == true`. Symmetric with
+        // `manifests_consistency`; reported in completion log +
+        // `extra_stats` so operators see "found N, fixed M" in one line.
+        let mut repaired_count = 0u64;
 
         // Deep mode is a per-run flag with two consumers:
         //  1. This handler — decides whether to re-hash bytes.
@@ -399,6 +403,41 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
             );
         }
 
+        // Repair mode: same shape as `deep` above so the admin run-
+        // detail view can display `params.repair = "true"` alongside
+        // `params.deep`. Fresh persists what the trigger asked for;
+        // Resume reads back so a paused repair scan stays a repair
+        // scan (a mid-scan crash mustn't silently downgrade to
+        // discovery-only for the remaining rows).
+        let repair = if is_fresh {
+            let v = if args.repair { "true" } else { "false" };
+            if let Err(e) = store.set_string_param("repair", v).await {
+                return RunOutcome::Failed {
+                    message: format!("failed to persist repair flag to params: {e}"),
+                };
+            }
+            args.repair
+        } else {
+            match store.get_string_param("repair").await {
+                Ok(Some(v)) => v == "true",
+                Ok(None) => false,
+                Err(e) => {
+                    return RunOutcome::Failed {
+                        message: format!("read `repair` from params: {e}"),
+                    };
+                }
+            }
+        };
+
+        if repair {
+            tracing::info!(
+                target: "oxicloud::consistency",
+                event = "blobs_consistency.repair_mode_active",
+                run_id = %store.run_id(),
+                "repair mode: refcount_mismatch findings will trigger corrective UPDATE"
+            );
+        }
+
         loop {
             // Cooperative cancel poll between batches.
             match store.status().await {
@@ -448,11 +487,17 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                     event = "blobs_consistency.completed",
                     run_id = %store.run_id(),
                     finding_count = finding_count,
+                    repaired_count = repaired_count,
+                    repair_requested = repair,
                     deep = deep,
-                    "blobs_consistency completed with {} finding(s)",
-                    finding_count
+                    "blobs_consistency completed with {} finding(s), {} repaired",
+                    finding_count,
+                    repaired_count
                 );
-                return RunOutcome::completed();
+                return RunOutcome::completed_with(serde_json::json!({
+                    "repair_requested": repair,
+                    "repaired_count":   repaired_count,
+                }));
             }
 
             let grace_cutoff = Utc::now() - CREATE_GRACE;
@@ -480,6 +525,67 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                         }),
                     )
                     .await;
+
+                    // Repair pass — content-safe corrective UPDATE. Sets
+                    // `stored` to the value the auditor's two-term formula
+                    // would compute at UPDATE time (subquery mirrors
+                    // `chunk_page_sql`'s `actual_ref_count`), so a
+                    // concurrent write between our page fetch and this
+                    // UPDATE can't leave a stale value — the subquery
+                    // re-reads inside the same statement. The
+                    // `<> (subquery)` guard makes the UPDATE a no-op if
+                    // the drift has healed, making this idempotent under
+                    // retry.
+                    if repair {
+                        let expected = "( \
+                            (SELECT COUNT(*) FROM storage.files f \
+                              WHERE f.blob_hash = b.hash \
+                                AND NOT EXISTS ( \
+                                    SELECT 1 FROM storage.chunk_manifests m \
+                                     WHERE m.file_hash = f.blob_hash \
+                                )) \
+                          + (SELECT COUNT(*) FROM storage.chunk_manifests m \
+                              WHERE b.hash = ANY(m.chunk_hashes)) \
+                        )";
+                        let update_sql = format!(
+                            "UPDATE storage.blobs b \
+                                SET ref_count = {expected} \
+                              WHERE b.hash = $1 \
+                                AND b.ref_count <> {expected}",
+                        );
+                        match sqlx::query(&update_sql)
+                            .bind(&row.hash)
+                            .execute(self.pool.as_ref())
+                            .await
+                        {
+                            Ok(res) if res.rows_affected() > 0 => {
+                                repaired_count += 1;
+                                tracing::info!(
+                                    target: "audit",
+                                    event = "blobs_consistency.repaired",
+                                    run_id = %store.run_id(),
+                                    hash = %row.hash,
+                                    stored_was = row.ref_count,
+                                    actual = row.actual_ref_count,
+                                    "🩹 blob ref_count repaired"
+                                );
+                            }
+                            Ok(_) => {
+                                // No row touched — concurrent repair or
+                                // self-healing drift. Silent no-op.
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    target: "oxicloud::consistency",
+                                    event = "blobs_consistency.repair_failed",
+                                    run_id = %store.run_id(),
+                                    hash = %row.hash,
+                                    error = %e,
+                                    "blob ref_count repair UPDATE failed — finding stays"
+                                );
+                            }
+                        }
+                    }
                 }
 
                 // Skip physical probes for rows within the write
@@ -628,11 +734,17 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                     event = "blobs_consistency.completed",
                     run_id = %store.run_id(),
                     finding_count = finding_count,
+                    repaired_count = repaired_count,
+                    repair_requested = repair,
                     deep = deep,
-                    "blobs_consistency completed with {} finding(s)",
-                    finding_count
+                    "blobs_consistency completed with {} finding(s), {} repaired",
+                    finding_count,
+                    repaired_count
                 );
-                return RunOutcome::completed();
+                return RunOutcome::completed_with(serde_json::json!({
+                    "repair_requested": repair,
+                    "repaired_count":   repaired_count,
+                }));
             }
         }
     }

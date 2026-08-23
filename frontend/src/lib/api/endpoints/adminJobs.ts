@@ -60,11 +60,21 @@ export function listJobs(): Promise<JobSummary[]> {
 }
 
 /**
- * `POST /api/admin/jobs/{name}/trigger?force=X&deep=X` — dispatch a job
- * on-demand. `force` bypasses per-tenant idempotency checks (e.g.
- * `trash_cleanup` skipping when nothing is due). `deep` opts into slow
- * variants (currently only `storage_consistency`, propagated by
- * `consistency_batch` to every child).
+ * `POST /api/admin/jobs/{name}/trigger?force=X&deep=X&repair=X` —
+ * dispatch a job on-demand.
+ *
+ * - `force` bypasses per-tenant idempotency checks (e.g. `trash_cleanup`
+ *   skipping when nothing is due).
+ * - `deep` opts into slow variants (currently only `storage_consistency`,
+ *   propagated by `consistency_batch` to every child).
+ * - `repair` opts into corrective action on the refcount consistency
+ *   tenants (`blobs_consistency`, `manifests_consistency`, and
+ *   `consistency_batch` which fans out to both). Content-safe: only the
+ *   stored counter changes to match the auditor's computed value. Race-
+ *   safe: the corrective UPDATE recomputes the auditor formula in the
+ *   same statement, so a concurrent write can't leave a stale value.
+ *   Default `false` preserves discovery-only behaviour — surface a
+ *   confirm-first flow when calling with `repair: true`.
  *
  * Throws on 4xx / 5xx with the backend's error message when present.
  * A 404 means the job name isn't registered — surface that specifically
@@ -72,11 +82,12 @@ export function listJobs(): Promise<JobSummary[]> {
  */
 export async function triggerJob(
 	name: string,
-	opts: { force?: boolean; deep?: boolean; storage?: string } = {}
+	opts: { force?: boolean; deep?: boolean; storage?: string; repair?: boolean } = {}
 ): Promise<TriggerResponse> {
 	const params = new URLSearchParams();
 	if (opts.force) params.set('force', 'true');
 	if (opts.deep) params.set('deep', 'true');
+	if (opts.repair) params.set('repair', 'true');
 	// `storage` scopes tenants that respect JobRunArgs.storage —
 	// currently blobs_consistency / backend_consistency (probes the
 	// named entry instead of the live backend). See

@@ -161,9 +161,11 @@ impl RecoverableJobHandler for ManifestsConsistencyCheck {
     async fn run_resumable(
         &self,
         store: &dyn JobStore,
-        _args: &JobRunArgs,
+        args: &JobRunArgs,
         resume_cursor: Option<Vec<u8>>,
     ) -> RunOutcome {
+        let is_fresh = resume_cursor.is_none();
+
         // Cursor: the last `file_hash` as UTF-8. Same convention as
         // `blobs_consistency`, which also pages a hash-keyed table.
         let mut cursor: Option<String> = match resume_cursor {
@@ -179,7 +181,48 @@ impl RecoverableJobHandler for ManifestsConsistencyCheck {
             },
         };
 
+        // Persist the repair flag into `params.repair` so the admin
+        // run-detail view can display whether the run was a discovery
+        // scan or an active repair. Fresh takes it from args; Resume
+        // reads back so a paused repair scan stays a repair scan (a
+        // mid-scan crash mustn't silently downgrade the remaining
+        // rows to discovery-only). Same shape as
+        // `blobs_consistency_service.rs`'s `deep` handling — see the
+        // reasoning documented there.
+        let repair = if is_fresh {
+            let v = if args.repair { "true" } else { "false" };
+            if let Err(e) = store.set_string_param("repair", v).await {
+                return RunOutcome::Failed {
+                    message: format!("failed to persist repair flag to params: {e}"),
+                };
+            }
+            args.repair
+        } else {
+            match store.get_string_param("repair").await {
+                Ok(Some(v)) => v == "true",
+                Ok(None) => false,
+                Err(e) => {
+                    return RunOutcome::Failed {
+                        message: format!("read `repair` from params: {e}"),
+                    };
+                }
+            }
+        };
+
+        if repair {
+            tracing::info!(
+                target: "oxicloud::consistency",
+                event = "manifests_consistency.repair_mode_active",
+                run_id = %store.run_id(),
+                "repair mode: manifest_refcount_mismatch findings will trigger corrective UPDATE"
+            );
+        }
+
         let mut finding_count = 0u64;
+        // Only relevant when `repair == true`. Reported inline in
+        // the completion log + the `extra_stats` payload so operators
+        // can see "we found N and fixed M" in one line.
+        let mut repaired_count = 0u64;
 
         loop {
             // Cooperative cancel poll between batches.
@@ -227,10 +270,16 @@ impl RecoverableJobHandler for ManifestsConsistencyCheck {
                     event = "manifests_consistency.completed",
                     run_id = %store.run_id(),
                     finding_count = finding_count,
-                    "manifests_consistency completed with {} finding(s)",
-                    finding_count
+                    repaired_count = repaired_count,
+                    repair_requested = repair,
+                    "manifests_consistency completed with {} finding(s), {} repaired",
+                    finding_count,
+                    repaired_count
                 );
-                return RunOutcome::completed();
+                return RunOutcome::completed_with(serde_json::json!({
+                    "repair_requested": repair,
+                    "repaired_count":   repaired_count,
+                }));
             }
 
             for row in &rows {
@@ -258,6 +307,64 @@ impl RecoverableJobHandler for ManifestsConsistencyCheck {
                     }),
                 )
                 .await;
+
+                // Repair pass — content-safe corrective UPDATE. The
+                // stored counter is set to what the auditor formula
+                // would compute at UPDATE time (subquery matches
+                // `manifest_page_sql`'s `actual_ref_count` predicate),
+                // so a concurrent file insert/delete between our page
+                // fetch and this UPDATE can't leave a stale value —
+                // the subquery re-reads inside the same statement.
+                // The `<> (subquery)` guard makes the UPDATE a no-op
+                // if the value is already correct, so this is
+                // idempotent under retry.
+                if repair {
+                    match sqlx::query(
+                        "UPDATE storage.chunk_manifests m \
+                            SET ref_count = ( \
+                                SELECT COUNT(*) FROM storage.files \
+                                 WHERE blob_hash = m.file_hash \
+                            ) \
+                          WHERE m.file_hash = $1 \
+                            AND m.ref_count <> ( \
+                                SELECT COUNT(*) FROM storage.files \
+                                 WHERE blob_hash = m.file_hash \
+                            )",
+                    )
+                    .bind(&row.file_hash)
+                    .execute(self.pool.as_ref())
+                    .await
+                    {
+                        Ok(res) if res.rows_affected() > 0 => {
+                            repaired_count += 1;
+                            tracing::info!(
+                                target: "audit",
+                                event = "manifests_consistency.repaired",
+                                run_id = %store.run_id(),
+                                file_hash = %row.file_hash,
+                                stored_was = row.ref_count,
+                                actual = row.actual_ref_count,
+                                "🩹 manifest ref_count repaired"
+                            );
+                        }
+                        Ok(_) => {
+                            // Row not touched — either another concurrent
+                            // repair fixed it first, or the drift healed
+                            // itself between page fetch and UPDATE.
+                            // Silent no-op.
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "oxicloud::consistency",
+                                event = "manifests_consistency.repair_failed",
+                                run_id = %store.run_id(),
+                                file_hash = %row.file_hash,
+                                error = %e,
+                                "manifest ref_count repair UPDATE failed — finding stays"
+                            );
+                        }
+                    }
+                }
             }
 
             // Advance cursor + checkpoint.
@@ -279,10 +386,16 @@ impl RecoverableJobHandler for ManifestsConsistencyCheck {
                     event = "manifests_consistency.completed",
                     run_id = %store.run_id(),
                     finding_count = finding_count,
-                    "manifests_consistency completed with {} finding(s)",
-                    finding_count
+                    repaired_count = repaired_count,
+                    repair_requested = repair,
+                    "manifests_consistency completed with {} finding(s), {} repaired",
+                    finding_count,
+                    repaired_count
                 );
-                return RunOutcome::completed();
+                return RunOutcome::completed_with(serde_json::json!({
+                    "repair_requested": repair,
+                    "repaired_count":   repaired_count,
+                }));
             }
         }
     }

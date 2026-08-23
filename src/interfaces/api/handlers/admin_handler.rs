@@ -2575,6 +2575,12 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
 /// `deep=true` opts into slow variants — `consistency_batch` fans it
 /// out to sub-jobs; `storage_consistency` (when implemented) will
 /// re-BLAKE3 each blob for bitrot detection. See `JobRunArgs.deep`.
+///
+/// `repair=true` opts into corrective action on the refcount
+/// consistency tenants (`blobs_consistency`, `manifests_consistency`,
+/// and `consistency_batch` which fans out to both). Default `false`
+/// preserves discovery-only. See `JobRunArgs.repair` for the
+/// content-safety and race-safety guarantees.
 #[derive(serde::Deserialize)]
 pub struct TriggerJobQuery {
     #[serde(default)]
@@ -2591,6 +2597,8 @@ pub struct TriggerJobQuery {
     /// `AppConfig.storage_entries`.
     #[serde(default)]
     pub storage: Option<String>,
+    #[serde(default)]
+    pub repair: bool,
 }
 
 /// `POST /api/admin/jobs/{name}/trigger` — dispatch one run off-schedule.
@@ -2629,15 +2637,18 @@ pub async fn trigger_job(
         job = %name,
         force = query.force,
         deep = query.deep,
-        "👮🏻‍♂️ Admin triggered job {} (force={}, deep={})",
+        repair = query.repair,
+        "👮🏻‍♂️ Admin triggered job {} (force={}, deep={}, repair={})",
         name,
         query.force,
         query.deep,
+        query.repair,
     );
     let args = JobRunArgs {
         force: query.force,
         deep: query.deep,
         storage: query.storage.clone(),
+        repair: query.repair,
     };
 
     // Jobs that can run for hours (backend_migration, future

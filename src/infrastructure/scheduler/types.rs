@@ -45,11 +45,25 @@ use serde::{Deserialize, Serialize};
 ///   of the entry to probe instead of the currently-active backend.
 ///   `None` falls through to the live backend (today's behaviour).
 /// - Others — ignored.
+///
+/// Semantics of `repair` (added 2026-10-17 for the refcount fix):
+/// - `blobs_consistency` / `manifests_consistency` — when `true`,
+///   after each `refcount_mismatch` / `manifest_refcount_mismatch`
+///   finding is recorded, apply the corrective UPDATE that sets the
+///   stored counter to the auditor's computed `actual_ref_count`.
+///   Content-safe: the row itself is fine, only the counter is
+///   wrong. Race-safe: each UPDATE recomputes the auditor formula
+///   in the same statement, so a concurrent write can't leave a
+///   stale value. Default `false` preserves discovery-only
+///   behaviour. Also propagates through `consistency_batch` to
+///   both tenants — one `?repair=true` call fixes both counters.
+/// - Others — ignored.
 #[derive(Debug, Clone, Default)]
 pub struct JobRunArgs {
     pub force: bool,
     pub deep: bool,
     pub storage: Option<String>,
+    pub repair: bool,
 }
 
 /// Uniform outcome the supervisor logs and stores for every job dispatch.
