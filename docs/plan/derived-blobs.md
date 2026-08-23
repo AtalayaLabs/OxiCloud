@@ -1257,10 +1257,40 @@ Schema rename (deferred, requires migration):
 - `storage.chunk_manifests` → `storage.blob_manifests` (or keep — arguable)
 - `BlobStorageBackend` trait → `ChunkStorageBackend` — reads and
   writes physical chunks, not blobs
+- **`blobs_consistency` job → `chunks_consistency`** — it iterates
+  `storage.blobs`, so it inherits whatever that table is called.
 
-`file.blob_hash` semantics stay — references a Blob via its
-manifest OR (for pre-CDC legacy) points directly at a single-chunk
-Blob whose hash equals its lone chunk's hash.
+### The job rename has two rules of its own
+
+**Travel with the schema, never ahead of it.** A job named
+`chunks_consistency` iterating a table still called `storage.blobs` is
+*more* confusing than today's mismatch, not less.
+
+**Never recycle `blobs_consistency`.** Under the corrected taxonomy the
+manifest job *is* the blob-level job, so the freed name looks
+available — and reusing it would be the worst outcome available. A job
+name that survives a release while changing meaning silently breaks
+`POST /api/admin/jobs/<name>/trigger` URLs, every historical row in
+`background_runs.job_name`, and any dashboard or alert keyed on it.
+`manifests_consistency` is unambiguous under either taxonomy; leave it
+alone. Net effect: one job renamed, not two swapped.
+
+Budget for the operational cost either way — job names are not internal
+identifiers. A rename orphans past runs unless `background_runs.job_name`
+is migrated alongside, and any runbook naming the old one breaks. Worth
+an alias period or an explicit release note.
+
+### Explicitly NOT renamed
+
+- **The `.blob` on-disk suffix** (`<hash>.blob` in `LocalBlobBackend`
+  and `CachedBlobBackend`). Correcting it to `.chunk` would mean
+  renaming every file in every deployment's blob store — a migration
+  whose cost is wildly out of proportion to the clarity gained, and one
+  that can fail halfway. The suffix is an implementation detail no
+  consumer parses; leave it.
+- **`file.blob_hash`** — semantics stay. It references a Blob via its
+  manifest OR (for pre-CDC legacy) points directly at a single-chunk
+  Blob whose hash equals its lone chunk's hash.
 
 Scope for this rename: ~23 files touch the SQL, plus a migration
 for the table rename. Not free. Ship AFTER the tier-2 write-side
