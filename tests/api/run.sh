@@ -224,6 +224,22 @@ hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test 
 
 #bash "$API_DIR/dedup_bulk_upload.sh"
 
+# ── 4b. copy-folder ref_count regression — dedicated block ──────────────
+# Ref_count mismatches surface as "expected 1 got 2" at hurl-assert
+# level, which doesn't tell you WHICH half of the invariant broke
+# (cascade delete missed rows vs decrement hook didn't fire). The
+# `_diag.sh` script inspects `storage.blobs.ref_count` and the
+# auditor's `actual_ref_count` formula on the two fixture hashes to
+# pin the mode. Extracted from the main hurl array so `set -e`
+# doesn't skip the diagnostic on failure — the `if !` guard runs
+# the diag first, THEN exits with hurl's failure code so CI still
+# reports the regression.
+if ! hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test --jobs 1 \
+     "$API_DIR/copy_folder_ref_count.hurl"; then
+  bash "$API_DIR/copy_folder_ref_count_diag.sh" || true
+  exit 1
+fi
+
 bash "$API_DIR/storage_cleanup_check.sh"
 
 # ── 5. OPAQUE crypto handshake — the parts Hurl can't drive ─────────────
