@@ -674,6 +674,64 @@ impl DedupService {
         }
     }
 
+    /// Everything that must happen when a blob is permanently reaped:
+    /// drop the artifacts derived FROM it, then notify the lifecycle hooks.
+    ///
+    /// Boxed because it is mutually recursive with `remove_reference`:
+    /// releasing a thumbnail's reference can reap the thumbnail's own blob,
+    /// which comes back through here. It terminates after one level —
+    /// nothing is derived from a thumbnail, so the inner purge finds no rows.
+    fn reap_blob<'a>(
+        &'a self,
+        hash: &'a str,
+    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            self.purge_derived_blobs(hash).await;
+            self.fire_blob_hooks(hash);
+        })
+    }
+
+    /// Delete every artifact derived from `source_hash` and release the
+    /// manifest references those rows held.
+    ///
+    /// The delete counterpart of [`Self::store_derived_blob`]. Without it a
+    /// thumbnail pins its own blob forever: the mapping row keeps
+    /// `chunk_manifests.ref_count` at 1 with no file behind it, so GC never
+    /// reclaims the bytes and a full delete leaves orphans on disk.
+    async fn purge_derived_blobs(&self, source_hash: &str) {
+        let derived: Vec<(String,)> = match sqlx::query_as(
+            "DELETE FROM storage.content_derived_blobs
+              WHERE source_hash = $1
+              RETURNING blob_hash",
+        )
+        .bind(source_hash)
+        .fetch_all(self.pool.as_ref())
+        .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!(
+                    target: "oxicloud::dedup",
+                    error = %e,
+                    "failed to purge derived blobs for {}",
+                    &source_hash[..source_hash.len().min(12)],
+                );
+                return;
+            }
+        };
+
+        for (blob_hash,) in derived {
+            if let Err(e) = self.remove_reference(&blob_hash).await {
+                tracing::warn!(
+                    target: "oxicloud::dedup",
+                    error = %e,
+                    "failed to release derived blob {}",
+                    &blob_hash[..blob_hash.len().min(12)],
+                );
+            }
+        }
+    }
+
     fn fire_blob_hooks(&self, hash: &str) {
         if let Some(lc) = &self.blob_lifecycle {
             lc.on_blob_deleted(hash);
@@ -1937,7 +1995,7 @@ impl DedupService {
             self.manifest_cache.invalidate(file_hash).await;
 
             // File content is gone — drop its blob-keyed thumbnails now.
-            self.fire_blob_hooks(file_hash);
+            self.reap_blob(file_hash).await;
 
             tracing::info!(
                 "MANIFEST DELETED: {} ({} chunks dereferenced; orphans reclaimed by GC)",
@@ -2016,7 +2074,7 @@ impl DedupService {
             }
 
             // Bug 3 fix: notify hooks — e.g. thumbnail cleanup keyed by hash
-            self.fire_blob_hooks(hash);
+            self.reap_blob(hash).await;
 
             tracing::info!("BLOB DELETED: {} (no more references)", &hash[..12]);
             Ok(true)
@@ -2105,7 +2163,7 @@ impl DedupService {
             if let Err(e) = self.backend.delete_blob(hash).await {
                 tracing::warn!("cleanup_if_orphaned: disk delete failed for {short}: {e}");
             }
-            self.fire_blob_hooks(hash);
+            self.reap_blob(hash).await;
             tracing::info!("cleanup_if_orphaned: removed orphaned legacy blob {short}");
         }
     }
@@ -2854,7 +2912,7 @@ impl DedupService {
                 // chunk-keyed hook never finds them. Symptom: orphan webp
                 // under `.thumbnails/{icon,preview,large}/<file_hash>.webp`
                 // after a user-cascade-delete of a video upload.
-                self.fire_blob_hooks(file_hash);
+                self.reap_blob(file_hash).await;
 
                 total_bytes += *size as u64;
                 tracing::debug!(
@@ -2937,7 +2995,7 @@ impl DedupService {
                 .await;
 
             for (hash, size) in &deleted {
-                self.fire_blob_hooks(hash);
+                self.reap_blob(hash).await;
                 total_bytes += *size as u64;
             }
             total_deleted += n as u64;
