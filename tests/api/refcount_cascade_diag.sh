@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================
-# copy_folder_ref_count.hurl — post-failure diagnostic
+# refcount_cascade.hurl — post-failure diagnostic
 # =============================================================
-# When `copy_folder_ref_count.hurl` asserts a specific
+# When `refcount_cascade.hurl` asserts a specific
 # `ref_count` value and the API returns something else, this
 # script inspects the two DB tables the API surface consults
 # to distinguish which side is broken:
@@ -61,7 +61,7 @@ CDC_HASH='fb1e63c28bb792e0f69cd16cd7595989f83c218cf70894e07d1f811ab1dc6f83'
 log() { echo "[ref_count-diag] $*"; }
 
 log "─────────────────────────────────────────────────────────"
-log "copy_folder_ref_count.hurl failed — running diagnostic."
+log "refcount_cascade.hurl failed — running diagnostic."
 log "Shows blob.ref_count AND manifest.ref_count side by side —"
 log "the API queries manifest first (dedup_service.rs:1543), so"
 log "if the two diverge, the API surface + auditor + on-disk"
@@ -135,7 +135,7 @@ log "  blob>A, manifest=A             → blob increment missed"
 log "  blob=A, manifest<A             → manifest increment missed"
 log "  Either column NULL             → row absent from that table"
 log ""
-log "The API surface (`/api/dedup/check/{hash}`) queries manifest"
+log "The API surface (GET /api/dedup/check/{hash}) queries manifest"
 log "FIRST — that's why hurl saw manifest_stored while auditor +"
 log "on-disk state ran off blob_stored."
 log "─────────────────────────────────────────────────────────"

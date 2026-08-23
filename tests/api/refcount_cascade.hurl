@@ -12,10 +12,10 @@
 #
 # Covers two paths so the CDC boundary can't hide a regression:
 #
-#   1. Small file (`copy-ref-small.txt`) → single legacy whole-
+#   1. Small file (`refcount-cascade-small.txt`) → single legacy whole-
 #      file blob. `storage.blobs.ref_count` counted directly on
 #      the file's content hash.
-#   2. 2 MB file (`copy-ref-cdc.bin`) → FastCDC produces multiple
+#   2. 2 MB file (`refcount-cascade-cdc.bin`) → FastCDC produces multiple
 #      distinct chunks. Whole-file `content_hash` still resolves
 #      through the dedup API.
 #
@@ -42,7 +42,7 @@
 #
 # Run:
 #   hurl --variables-file tests/api/test.env --test \
-#        tests/api/copy_folder_ref_count.hurl
+#        tests/api/refcount_cascade.hurl
 # =============================================================
 
 
@@ -137,7 +137,7 @@ POST {{base_url}}/api/files/upload
 Authorization: Bearer {{token}}
 [MultipartFormData]
 folder_id: {{src_small_id}}
-file: file,fixtures/copy-ref-small.txt; text/plain
+file: file,fixtures/refcount-cascade-small.txt; text/plain
 
 HTTP 201
 [Captures]
@@ -378,7 +378,7 @@ POST {{base_url}}/api/files/upload
 Authorization: Bearer {{token}}
 [MultipartFormData]
 folder_id: {{src_cdc_id}}
-file: file,fixtures/copy-ref-cdc.bin; application/octet-stream
+file: file,fixtures/refcount-cascade-cdc.bin; application/octet-stream
 
 HTTP 201
 [Captures]

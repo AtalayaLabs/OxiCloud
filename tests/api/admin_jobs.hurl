@@ -226,7 +226,7 @@ jsonpath "$.outcome.count" exists
 #           JobHandler) — snapshots the registry, filters names
 #           ending `_consistency`, sequentially triggers each.
 #           `outcome.count` = number of children dispatched (6 as
-#           of the copy_folder_ref_count fix: drives + folders +
+#           of the refcount_cascade fix: drives + folders +
 #           files + blobs + manifests + backend). `extra.per_check`
 #           carries a per-child outcome
 #           map. Batch itself always returns ok — child failures
@@ -245,7 +245,7 @@ jsonpath "$.outcome.extra.deep" == true
 jsonpath "$.outcome.extra.ok" == 6
 jsonpath "$.outcome.extra.err" == 0
 # per_check is keyed by child job name. `manifests_consistency` was added
-# by the copy_folder_ref_count fix — see docs/plan/derived-blobs.md and
+# by the refcount_cascade fix — see docs/plan/derived-blobs.md and
 # `[[bug_dual_refcount_divergence]]` for why the second counter needed
 # its own tenant. Auto-picked by `consistency_batch` via `.ends_with(
 # "_consistency")` (no explicit list in the batch service).

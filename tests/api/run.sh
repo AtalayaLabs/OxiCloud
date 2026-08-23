@@ -235,8 +235,8 @@ hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test 
 # the diag first, THEN exits with hurl's failure code so CI still
 # reports the regression.
 if ! hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test --jobs 1 \
-     "$API_DIR/copy_folder_ref_count.hurl"; then
-  bash "$API_DIR/copy_folder_ref_count_diag.sh" || true
+     "$API_DIR/refcount_cascade.hurl"; then
+  bash "$API_DIR/refcount_cascade_diag.sh" || true
   exit 1
 fi
 
