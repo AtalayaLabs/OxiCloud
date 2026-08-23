@@ -1115,7 +1115,7 @@ impl ThumbnailService {
                 }
             };
 
-            self.render_and_persist_all_webp(&file_id, &blob_hash, original_data)
+            self.render_and_persist_all_webp(&file_id, &blob_hash, original_data, Some(&dedup))
                 .await;
 
             tracing::info!("✅ Background thumbnail generation complete: {}", file_id);
@@ -1126,7 +1126,21 @@ impl ThumbnailService {
     /// blob_hash (disk `{hash}.webp` + moka). Shared by the image upload path and
     /// the video path (which passes the extracted frame as the source), so both
     /// produce identical, dedup-able, content-negotiable thumbnails.
-    async fn render_and_persist_all_webp(&self, file_id: &str, blob_hash: &str, source: Bytes) {
+    /// `dedup` is `Some` on every path that has a handle, which is every
+    /// eager background path. When present each rendered size is ALSO stored
+    /// as a derived blob and recorded in `storage.content_derived_blobs`.
+    ///
+    /// The sidecar write is deliberately kept: this slice fills the table
+    /// while reads still come from disk, so a rollback at any point leaves
+    /// working thumbnails and the table can be inspected against real data
+    /// before anything depends on it. See `docs/plan/derived-blobs.md`.
+    async fn render_and_persist_all_webp(
+        &self,
+        file_id: &str,
+        blob_hash: &str,
+        source: Bytes,
+        dedup: Option<&DedupService>,
+    ) {
         let results = tokio::task::spawn_blocking(move || {
             Self::render_all_thumbnails_from_data(source.as_ref(), ThumbnailFormat::Webp)
         })
@@ -1151,15 +1165,39 @@ impl ThumbnailService {
             }
             if let Err(e) = fs::write(&thumb_path, &bytes).await {
                 tracing::warn!("Failed to save thumbnail {} {:?}: {}", file_id, size, e);
-            } else {
-                let cache_key = ThumbnailCacheKey {
-                    file_id: file_id.to_string(),
-                    size,
-                    format: ThumbnailFormat::Webp,
-                };
-                self.cache.insert(cache_key, bytes).await;
-                tracing::debug!("✅ Generated thumbnail: {} {:?}", file_id, size);
+                continue;
             }
+
+            // Tier-3 copy. Best-effort and logged: a failure here must not
+            // cost the user their thumbnail, which is already on disk and in
+            // the cache. `derived_import` sweeps anything missed.
+            if let Some(dedup) = dedup
+                && let Err(e) = dedup
+                    .store_derived_blob(
+                        blob_hash,
+                        "thumbnail",
+                        size.dir_name(),
+                        "image/webp",
+                        bytes.clone(),
+                    )
+                    .await
+            {
+                tracing::warn!(
+                    target: "oxicloud::dedup",
+                    error = %e,
+                    "failed to record derived blob for {} {:?}",
+                    file_id,
+                    size,
+                );
+            }
+
+            let cache_key = ThumbnailCacheKey {
+                file_id: file_id.to_string(),
+                size,
+                format: ThumbnailFormat::Webp,
+            };
+            self.cache.insert(cache_key, bytes).await;
+            tracing::debug!("✅ Generated thumbnail: {} {:?}", file_id, size);
         }
     }
 
@@ -1251,7 +1289,7 @@ impl ThumbnailService {
                 Ok(p) => p,
                 Err(_) => return,
             };
-            self.render_and_persist_all_webp(&file_id, &blob_hash, frame)
+            self.render_and_persist_all_webp(&file_id, &blob_hash, frame, Some(&dedup))
                 .await;
             tracing::info!("✅ Video thumbnail generation complete: {}", file_id);
         });

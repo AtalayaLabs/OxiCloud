@@ -557,6 +557,74 @@ impl DedupService {
         self
     }
 
+    /// Store a server-derived artifact and record the mapping from the
+    /// content it was derived from.
+    ///
+    /// One call does the whole contract, so no caller has to remember the
+    /// accounting:
+    ///
+    /// 1. writes the bytes through the normal CDC path — derived blobs get
+    ///    the same backend, encryption, migration and rotation as any other
+    ///    content, and `store_from_stream` takes exactly one reference;
+    /// 2. records `(source_hash, kind, variant) -> blob_hash`;
+    /// 3. **releases that reference if the mapping already existed**, because
+    ///    the row that would justify it is not ours — two instances racing
+    ///    to render the same thumbnail must leave `ref_count` at 1, not 2.
+    ///
+    /// `bytes` is expected to be small (a thumbnail is 3-90 KB, below
+    /// `CDC_MIN_CHUNK`, so this is a single chunk). See
+    /// `docs/plan/derived-blobs.md`.
+    ///
+    /// Returns the derived blob hash.
+    pub async fn store_derived_blob(
+        &self,
+        source_hash: &str,
+        kind: &str,
+        variant: &str,
+        content_type: &str,
+        bytes: Bytes,
+    ) -> Result<String, DomainError> {
+        let stored = self
+            .store_from_stream(
+                stream::once(async move { Ok::<Bytes, std::io::Error>(bytes) }),
+                Some(content_type.to_string()),
+            )
+            .await?;
+        let derived_hash = stored.hash().to_string();
+
+        let inserted = sqlx::query(
+            "INSERT INTO storage.content_derived_blobs
+                 (source_hash, kind, variant, blob_hash, content_type)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (source_hash, kind, variant) DO NOTHING",
+        )
+        .bind(source_hash)
+        .bind(kind)
+        .bind(variant)
+        .bind(&derived_hash)
+        .bind(content_type)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| DomainError::internal_error("Dedup", format!("record derived blob: {e}")))?
+        .rows_affected();
+
+        if inserted == 0 {
+            // Someone else already mapped this variant. Our reference has no
+            // row behind it; leaving it would inflate ref_count on every
+            // re-render and pin the blob forever.
+            if let Err(e) = self.remove_reference(&derived_hash).await {
+                tracing::warn!(
+                    target: "oxicloud::dedup",
+                    error = %e,
+                    "failed to release duplicate derived-blob reference for {}",
+                    &derived_hash[..derived_hash.len().min(12)],
+                );
+            }
+        }
+
+        Ok(derived_hash)
+    }
+
     /// The registry backing the reap predicate.
     ///
     /// Exposed so `blobs_consistency` recomputes refcounts from the *same*
