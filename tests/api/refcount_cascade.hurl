@@ -577,3 +577,38 @@ HTTP 204
 DELETE {{base_url}}/api/trash/{{tgt_cdc_id}}
 Authorization: Bearer {{token}}
 HTTP 200
+
+
+# ─────────────────────────────────────────────────────────────
+# Final — force `dedup_gc` synchronously so orphaned manifests +
+# blobs actually get reaped and their Rust blob-lifecycle hooks
+# fire (which is what deletes disk thumbnails / face embeddings
+# / audio tags keyed by the whole-file hash).
+#
+# The trigger `trg_files_decrement_blob_ref` deliberately only
+# adjusts counters (see migration `20261017000000_file_delete_
+# trigger_manifest_aware.sql`) — a SQL trigger can't invoke Rust
+# callbacks. Physical cleanup + hook firing lives in `dedup_gc`
+# Phase 1 (see `dedup_service.rs:2660-2772`), which picks up
+# manifests at ref_count <= 0 and calls
+# `fire_blob_hooks(file_hash)` per reap.
+#
+# Without this trigger the test would technically pass (the
+# ref_count assertions all hold; the `exists == false` checks
+# are user-scoped and don't need the DB row gone), but
+# `storage_cleanup_check.sh` running after us would then find
+# 6 orphan thumbnails on disk and fail the whole api-test run.
+# Making the test self-contained keeps the diagnostic tight —
+# if orphans remain after this trigger, the bug is in GC or
+# hooks, not in our cleanup order.
+#
+# `?force=true` bypasses the orphan-grace window (safe: this
+# test has no concurrent uploader that could race the reap).
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/admin/jobs/dedup_gc/trigger?force=true
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.ok" == true
+jsonpath "$.outcome.outcome" == "ok"

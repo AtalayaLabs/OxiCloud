@@ -1959,66 +1959,48 @@ impl DedupService {
     pub async fn cleanup_if_orphaned(&self, hash: &str) {
         let short = &hash[..hash.len().min(12)];
 
-        // ── CDC manifest path (must run FIRST) ───────────────────
-        // For single-chunk CDC files file_hash == chunk_hash, so the PG
-        // trigger on storage.files already decremented storage.blobs.ref_count
-        // when this function is called.  try_dedup_hit increments
-        // chunk_manifests.ref_count but NOT storage.blobs.ref_count, so
-        // blobs.ref_count can reach 0 while the manifest still has ref_count > 1
-        // (other files sharing the same blob).  Checking the manifest first
-        // prevents premature blob + manifest deletion.
-        let manifest = sqlx::query_as::<_, (i32, Vec<String>)>(
-            "SELECT ref_count, chunk_hashes \
-               FROM storage.chunk_manifests WHERE file_hash = $1",
-        )
-        .bind(hash)
-        .fetch_optional(self.pool.as_ref())
-        .await
-        .unwrap_or(None);
-
-        if let Some((ref_count, chunk_hashes)) = manifest {
-            if ref_count <= 1 {
-                // Last reference — remove manifest and all its chunks.
-                if let Err(e) = self
-                    .remove_manifest_reference(hash, ref_count, &chunk_hashes)
-                    .await
-                {
-                    tracing::warn!("cleanup_if_orphaned: manifest cleanup failed for {short}: {e}");
-                }
-            } else {
-                // Other files still share this blob: just decrement the manifest
-                // counter and undo the PG trigger's premature chunk ref_count
-                // decrement (blobs.ref_count is chunk-level; the manifest is the
-                // authoritative file-level counter).
-                sqlx::query(
-                    "UPDATE storage.chunk_manifests \
-                        SET ref_count = ref_count - 1 WHERE file_hash = $1",
-                )
-                .bind(hash)
-                .execute(self.pool.as_ref())
-                .await
-                .ok();
-                // Undo the PG trigger's decrement of storage.blobs.ref_count.
-                // The trigger fired with blob_hash = file_hash, so only the row
-                // WHERE hash = file_hash is affected.  For single-chunk files
-                // file_hash == chunk_hash and that row exists; for multi-chunk
-                // files file_hash is not in storage.blobs, making this a no-op.
-                sqlx::query("UPDATE storage.blobs SET ref_count = ref_count + 1 WHERE hash = $1")
-                    .bind(hash)
-                    .execute(self.pool.as_ref())
-                    .await
-                    .ok();
-                tracing::debug!(
-                    "cleanup_if_orphaned: manifest {short} ref_count {ref_count}→{}",
-                    ref_count - 1
-                );
-            }
-            return;
-        }
-
-        // ── Legacy blob path (no manifest) ───────────────────────
+        // 2026-08-23 refactor: this function used to compensate for the
+        // OLD PG trigger `trg_files_decrement_blob_ref` unconditionally
+        // decrementing `storage.blobs.ref_count`, which was wrong for
+        // CDC files (their `blob_hash` names a `chunk_manifests.file_hash`,
+        // not a chunk-in-a-manifest). The compensation branches would:
+        //   * Decrement `chunk_manifests.ref_count` a SECOND time (the
+        //     trigger having wrongly touched blobs, not the manifest);
+        //   * Undo the trigger's blob decrement (rc > 1 branch);
+        //   * Call `remove_manifest_reference` (rc <= 1 branch), which
+        //     deletes manifest + dereferences chunks — again duplicating
+        //     work the trigger should own.
+        //
+        // Migration `20261017000000_file_delete_trigger_manifest_aware.sql`
+        // rewrote the trigger to be manifest-aware, so it now correctly
+        // decrements EITHER the manifest OR the blob depending on which
+        // one the hash names, walks chunks on last-ref manifest delete,
+        // and leaves the counters in a consistent state without any
+        // compensation call. Running the old compensation ON TOP of the
+        // new trigger causes double-decrement / double-delete and is
+        // exactly what broke `dedup_blob_cleanup.hurl` step 7
+        // (`ref_count == 1` observed 0 after purging one of two dedup
+        // uploads).
+        //
+        // What remains here: **physical cleanup only**. If the trigger
+        // brought a LEGACY whole-file blob to ref_count = 0 and no
+        // manifest still references it (either directly via file_hash or
+        // indirectly as a chunk in another manifest's chunk_hashes[]),
+        // reap the DB row and the backend file eagerly. For CDC chunks
+        // whose ref_count reached 0 via the trigger's last-ref manifest
+        // path, `dedup_gc` handles physical reap with a grace window
+        // against re-upload races.
+        //
+        // Callers can keep invoking `cleanup_if_orphaned` unconditionally
+        // — for CDC paths it's a cheap no-op (manifest still exists OR
+        // the hash never had a blob row), for legacy paths it reaps.
         let deleted_blob = sqlx::query_scalar::<_, String>(
-            "DELETE FROM storage.blobs WHERE hash = $1 AND ref_count <= 0 RETURNING hash",
+            "DELETE FROM storage.blobs \
+                WHERE hash = $1 \
+                  AND ref_count <= 0 \
+                  AND NOT EXISTS (SELECT 1 FROM storage.chunk_manifests \
+                                    WHERE $1 = ANY(chunk_hashes)) \
+              RETURNING hash",
         )
         .bind(hash)
         .fetch_optional(self.pool.as_ref())
@@ -2030,7 +2012,7 @@ impl DedupService {
                 tracing::warn!("cleanup_if_orphaned: disk delete failed for {short}: {e}");
             }
             self.fire_blob_hooks(hash);
-            tracing::info!("cleanup_if_orphaned: removed orphaned blob {short}");
+            tracing::info!("cleanup_if_orphaned: removed orphaned legacy blob {short}");
         }
     }
 
