@@ -558,6 +558,16 @@ impl DedupService {
         self
     }
 
+    /// The registry backing the reap predicate.
+    ///
+    /// Exposed so `blobs_consistency` recomputes refcounts from the *same*
+    /// source set GC reaps from. If the two ever diverged, the sweep would
+    /// bless counts the collector disagrees with — and the collector wins,
+    /// destructively.
+    pub fn reference_registry(&self) -> Arc<BlobReferenceRegistry> {
+        self.reference_registry.clone()
+    }
+
     /// Registers the blob lifecycle dispatcher (thumbnail cleanup, …).
     pub fn with_blob_lifecycle(mut self, lifecycle: Arc<BlobLifecycleService>) -> Self {
         self.blob_lifecycle = Some(lifecycle);
