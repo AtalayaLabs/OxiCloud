@@ -619,9 +619,16 @@ impl DedupService {
         self.backend.initialize().await?;
 
         // The reap statement is assembled from the registered reference
-        // sources, so it is not greppable in the source tree. Log it once so an
-        // operator can read — or paste into psql — exactly what GC will delete.
-        tracing::debug!(
+        // sources, so it is not greppable in the source tree. It DELETES
+        // manifests, so log it unconditionally at info rather than hiding it
+        // behind a filter an operator has to know to enable — if what GC
+        // considers "referenced" ever changes, that must be visible on the
+        // next boot without anyone going looking.
+        //
+        // Whitespace-collapsed to a single field so a multi-line query does
+        // not sprawl across the boot log; expand it with
+        // `sed 's/ AND / AND\n  /g'` or just paste it into psql.
+        tracing::info!(
             target: "oxicloud::dedup",
             sources = ?self
                 .reference_registry
@@ -629,8 +636,12 @@ impl DedupService {
                 .iter()
                 .map(|s| s.source_name())
                 .collect::<Vec<_>>(),
-            "manifest reap statement:\n{}",
-            self.manifest_reap_sql,
+            statement = %self
+                .manifest_reap_sql
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
+            "🧹 manifest reap predicate registered"
         );
 
         let blob_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM storage.blobs")
