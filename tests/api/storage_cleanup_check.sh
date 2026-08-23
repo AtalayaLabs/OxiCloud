@@ -287,11 +287,59 @@ curl -sf -X POST -H "$AUTH" "$base_url/api/admin/jobs/usage_reconcile/trigger" >
     || fail "usage_reconcile trigger failed"
 log "Reconciliation sweep triggered."
 
-GC_RESULT=$(curl -sf -X POST -H "$AUTH" "$base_url/api/admin/jobs/dedup_gc/trigger?force=true")
-[[ -z "$GC_RESULT" ]] && fail "trigger-gc returned an empty body"
-GC_BLOBS=$(echo "$GC_RESULT" | jq -r '.outcome.count')
-GC_BYTES=$(echo "$GC_RESULT" | jq -r '.outcome.extra.bytes_reclaimed')
-log "GC reaped $GC_BLOBS blob(s), $GC_BYTES byte(s) freed."
+# One GC pass is NOT enough, and this is by design rather than a bug.
+# Reaping a source blob releases the references its DERIVED artifacts hold
+# (thumbnails live in storage.content_derived_blobs and each row pins a
+# manifest). Those releases happen mid-sweep, so the derived chunks are
+# only stamped orphaned as the pass is already walking past them —
+# `remove_manifest_reference` deliberately does not unlink, to avoid racing
+# a concurrent upload re-referencing the same chunk. They become
+# collectible on the NEXT sweep.
+#
+# Loop until a pass reclaims nothing rather than hardcoding two passes.
+# Two is correct only while the derivation graph is one level deep — a
+# thumbnail is derived from a file and nothing is derived from a thumbnail.
+# That is a property of the data, not an invariant the code enforces, so a
+# fixed count would silently under-drain the day transcodes-of-thumbnails
+# or E2E-wrapped derivatives appear, and the failure would surface as a
+# confusing leftover-file assertion rather than as the design change it is.
+#
+# Production does NOT need this loop: derived chunks land inside the 1-hour
+# orphan grace, so a second immediate pass would collect nothing and the
+# next scheduled sweep picks them up. It is only `force=true` (grace 0)
+# that can drain a cascade in one go, which is exactly this test.
+GC_TOTAL_BLOBS=0
+GC_TOTAL_BYTES=0
+GC_DRAINED=0
+for gc_pass in 1 2 3; do
+    GC_RESULT=$(curl -sf -X POST -H "$AUTH" "$base_url/api/admin/jobs/dedup_gc/trigger?force=true")
+    [[ -z "$GC_RESULT" ]] && fail "trigger-gc returned an empty body (pass $gc_pass)"
+    GC_BLOBS=$(echo "$GC_RESULT" | jq -r '.outcome.count // 0')
+    GC_BYTES=$(echo "$GC_RESULT" | jq -r '.outcome.extra.bytes_reclaimed // 0')
+    GC_TOTAL_BLOBS=$((GC_TOTAL_BLOBS + GC_BLOBS))
+    GC_TOTAL_BYTES=$((GC_TOTAL_BYTES + GC_BYTES))
+    log "GC pass $gc_pass reaped $GC_BLOBS blob(s), $GC_BYTES byte(s) freed."
+    if [[ "$GC_BLOBS" -eq 0 ]]; then
+        GC_DRAINED=1
+        break
+    fi
+    # Breathe before the next trigger, for two reasons:
+    #
+    #   * The JobRegistry serialises runs of the same job. Firing the next
+    #     trigger before the previous run has fully unwound risks it being
+    #     rejected as already-running — which would come back as 0 reaped
+    #     and exit this loop early, declaring success with blobs still on
+    #     disk. A false pass is worse than a slow one.
+    #   * `on_blob_deleted` spawns detached unlink tasks that nothing
+    #     awaits, so some of the previous pass's disk work may still be in
+    #     flight.
+    sleep 1
+done
+if [[ "$GC_DRAINED" -ne 1 ]]; then
+    log "WARNING: GC still reaping after 3 passes — the derivation graph may"
+    log "         be deeper than one level; raise the bound and check why."
+fi
+log "GC total: $GC_TOTAL_BLOBS blob(s), $GC_TOTAL_BYTES byte(s) freed."
 
 # ── 4. Disk verification ──────────────────────────────────────────────────────
 
