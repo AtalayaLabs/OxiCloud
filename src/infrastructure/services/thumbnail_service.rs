@@ -478,6 +478,11 @@ impl ThumbnailService {
         blob_hash: Option<&str>,
         size: ThumbnailSize,
         format: ThumbnailFormat,
+        // Concrete, and optional: `ThumbnailPort` is never used as a trait
+        // object (checked), and `DedupPort` uses native `async fn` so it is
+        // not dyn-compatible anyway. `None` means sidecar-only — exactly
+        // today's behaviour, which is what the port impl wants.
+        dedup: Option<&DedupService>,
     ) -> Option<Bytes> {
         // 1. Check in-memory cache
         let cache_key = ThumbnailCacheKey {
@@ -520,10 +525,42 @@ impl ThumbnailService {
             let bytes = Bytes::from(data);
             // Populate in-memory cache for next hit
             self.cache.insert(cache_key, bytes.clone()).await;
-            Some(bytes)
-        } else {
-            None
+            return Some(bytes);
         }
+
+        // 4. Tier-3 derived blob. Deliberately LAST while the sidecar still
+        // exists: for every thumbnail already on disk this branch is never
+        // reached, so the DB stays off the hot path and a fault here cannot
+        // break a working gallery. It answers only what disk cannot — another
+        // instance's render, or a box whose sidecar was never populated.
+        //
+        // The order flips (derived blob first, sidecar as fallback) in the
+        // release that removes the sidecar; see docs/plan/derived-blobs.md.
+        let dedup = dedup?;
+        let derived = dedup
+            .find_derived_blob(hash, "thumbnail", size.dir_name())
+            .await?;
+        use futures::StreamExt;
+        let mut stream = dedup.read_blob_stream(&derived.blob_hash).await.ok()?;
+        let mut buf = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(part) => buf.extend_from_slice(&part),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "oxicloud::dedup",
+                        error = %e,
+                        "derived thumbnail read failed for {} {:?}",
+                        file_id,
+                        size,
+                    );
+                    return None;
+                }
+            }
+        }
+        let bytes = Bytes::from(buf);
+        self.cache.insert(cache_key, bytes.clone()).await;
+        Some(bytes)
     }
 
     /// Store an externally-generated thumbnail (e.g. client-side video frame).
@@ -1605,7 +1642,10 @@ impl ThumbnailPort for ThumbnailService {
         blob_hash: Option<&str>,
         size: PortThumbnailSize,
     ) -> Option<Bytes> {
-        self.get_cached_thumbnail(file_id, blob_hash, size.into(), ThumbnailFormat::Webp)
+        // `None` — the abstract port has no DedupService handle, so it stays
+        // sidecar-only. Callers wanting the tier-3 fallback use the concrete
+        // method, which both handlers already do.
+        self.get_cached_thumbnail(file_id, blob_hash, size.into(), ThumbnailFormat::Webp, None)
             .await
     }
 

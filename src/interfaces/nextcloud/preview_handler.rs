@@ -204,6 +204,7 @@ pub async fn handle_preview(
             Some(&blob_hash),
             thumb_size.into(),
             ThumbnailFormat::Jpeg,
+            Some(&state.core.dedup_service),
         )
         .await
     {

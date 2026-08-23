@@ -625,6 +625,33 @@ impl DedupService {
         Ok(derived_hash)
     }
 
+    /// Look up a derived artifact by its source content. Read counterpart of
+    /// [`Self::store_derived_blob`].
+    pub async fn find_derived_blob(
+        &self,
+        source_hash: &str,
+        kind: &str,
+        variant: &str,
+    ) -> Option<crate::application::ports::dedup_ports::DerivedBlobRef> {
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT blob_hash, content_type FROM storage.content_derived_blobs
+              WHERE source_hash = $1 AND kind = $2 AND variant = $3",
+        )
+        .bind(source_hash)
+        .bind(kind)
+        .bind(variant)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .ok()
+        .flatten()
+        .map(|(blob_hash, content_type)| {
+            crate::application::ports::dedup_ports::DerivedBlobRef {
+                blob_hash,
+                content_type,
+            }
+        })
+    }
+
     /// The registry backing the reap predicate.
     ///
     /// Exposed so `blobs_consistency` recomputes refcounts from the *same*
@@ -3293,6 +3320,15 @@ pub struct LegacyRechunkReport {
 impl DedupPort for DedupService {
     async fn blob_exists(&self, hash: &str) -> bool {
         self.blob_exists(hash).await
+    }
+
+    async fn find_derived_blob(
+        &self,
+        source_hash: &str,
+        kind: &str,
+        variant: &str,
+    ) -> Option<crate::application::ports::dedup_ports::DerivedBlobRef> {
+        self.find_derived_blob(source_hash, kind, variant).await
     }
 
     async fn get_blob_metadata(&self, hash: &str) -> Option<BlobMetadataDto> {

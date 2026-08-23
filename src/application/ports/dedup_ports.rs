@@ -24,6 +24,16 @@ pub struct BlobMetadataDto {
     pub content_type: Option<String>,
 }
 
+/// A stored server-derived artifact: which blob holds it, and what it is.
+///
+/// `content_type` is carried so the read path can set the response header
+/// without byte-sniffing the payload, which is what it does today.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DerivedBlobRef {
+    pub blob_hash: String,
+    pub content_type: String,
+}
+
 /// Result of a deduplication store operation.
 #[derive(Debug, Clone)]
 pub enum DedupResultDto {
@@ -82,6 +92,17 @@ pub struct DedupStatsDto {
 pub trait DedupPort: Send + Sync + 'static {
     /// Check if a blob with the given hash exists.
     async fn blob_exists(&self, hash: &str) -> bool;
+
+    /// Look up a server-derived artifact by the content it was derived from.
+    ///
+    /// The read counterpart of `store_derived_blob`. Returns `None` when no
+    /// such variant has been derived yet — the caller then renders it.
+    async fn find_derived_blob(
+        &self,
+        source_hash: &str,
+        kind: &str,
+        variant: &str,
+    ) -> Option<DerivedBlobRef>;
 
     /// Get metadata for a blob.
     async fn get_blob_metadata(&self, hash: &str) -> Option<BlobMetadataDto>;

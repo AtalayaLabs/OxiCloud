@@ -484,7 +484,13 @@ impl FileHandler {
         // Try moka (RAM) → disk before touching the database.
         // If the thumbnail exists it was authorized at creation time.
         if let Some(data) = thumbnail_service
-            .get_cached_thumbnail(&id, None, thumb_size.into(), format)
+            .get_cached_thumbnail(
+                &id,
+                None,
+                thumb_size.into(),
+                format,
+                Some(&state.core.dedup_service),
+            )
             .await
         {
             return Response::builder()
@@ -541,7 +547,13 @@ impl FileHandler {
             }
         };
         if let Some(data) = thumbnail_service
-            .get_cached_thumbnail(&id, Some(&blob_hash), thumb_size.into(), format)
+            .get_cached_thumbnail(
+                &id,
+                Some(&blob_hash),
+                thumb_size.into(),
+                format,
+                Some(&state.core.dedup_service),
+            )
             .await
         {
             return Response::builder()
@@ -572,6 +584,7 @@ impl FileHandler {
                     Some(&blob_hash),
                     thumb_size.into(),
                     ThumbnailFormat::Webp,
+                    Some(&state.core.dedup_service),
                 )
                 .await
             {
