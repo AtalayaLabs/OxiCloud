@@ -1477,6 +1477,22 @@ impl AppServiceFactory {
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
         .await;
 
+        // Reconciles `chunk_manifests.ref_count` — the SECOND reference
+        // counter, and the one nothing verified before. add_reference bumps
+        // it first and only falls back to storage.blobs.ref_count, so every
+        // CDC file (and every derived artifact, once those land) counts here
+        // rather than at the chunk level. Uses the same registry dedup_gc
+        // reaps from, so the two cannot disagree.
+        // See docs/plan/derived-blobs.md.
+        let _ = Arc::new(
+            crate::infrastructure::services::manifests_consistency_service::ManifestsConsistencyCheck::new(
+                maintenance_pool.clone(),
+                core.dedup_service.reference_registry(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
         // Third recoverable-run tenant. Iterates `storage.files`
         // and reports parent-folder-trashed cascade misses,
         // `missing_blob` (data-loss indicator — file references

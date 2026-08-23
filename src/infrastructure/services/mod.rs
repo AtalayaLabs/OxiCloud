@@ -31,6 +31,7 @@ pub mod last_seen_tracker;
 pub mod local_blob_backend;
 pub mod local_fs_mount_provider;
 pub mod login_lockout_service;
+pub mod manifests_consistency_service;
 pub mod media_metadata_service;
 pub mod mock_email_sender;
 pub mod mount_provider_factory;
