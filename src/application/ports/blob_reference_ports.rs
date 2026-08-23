@@ -99,6 +99,19 @@ pub trait BlobReferenceSource: Send + Sync {
     /// by a request; no fragment may interpolate caller input.
     fn ref_count_sql(&self, level: RefLevel, outer_hash_expr: &str) -> Option<String>;
 
+    /// Existence form of [`Self::ref_count_sql`] — a boolean fragment, true
+    /// when this source holds at least one reference at `level`.
+    ///
+    /// Defaults to `(<count>) > 0`. Override when the source can express a
+    /// short-circuiting `EXISTS`, which the planner can stop at the first
+    /// matching row: `dedup_gc`'s reap predicate runs this per candidate
+    /// manifest, and a heavily-deduplicated blob has many referrers, so
+    /// counting all of them where existence would do is a real regression.
+    fn ref_exists_sql(&self, level: RefLevel, outer_hash_expr: &str) -> Option<String> {
+        self.ref_count_sql(level, outer_hash_expr)
+            .map(|fragment| format!("{fragment} > 0"))
+    }
+
     /// Count of references this source holds on `blob_hash`, across both
     /// levels.
     ///
@@ -169,6 +182,28 @@ impl BlobReferenceRegistry {
         } else {
             fragments.join("\n + ")
         }
+    }
+
+    /// Predicate selecting rows that **no** registered source references at
+    /// `level` — i.e. reap candidates.
+    ///
+    /// Returns `None` when no source contributes at this level, and callers
+    /// **must** treat that as "refuse to act" rather than substituting a
+    /// default. The natural default would be the sum-equals-zero form, which
+    /// on an empty registry reduces to `0 = 0` — vacuously true for every
+    /// row, i.e. "delete everything". Returning `None` makes that
+    /// unrepresentable at the call site instead of merely discouraged.
+    pub fn no_reference_predicate(&self, level: RefLevel, outer_hash_expr: &str) -> Option<String> {
+        let fragments: Vec<String> = self
+            .sources
+            .iter()
+            .filter_map(|s| s.ref_exists_sql(level, outer_hash_expr))
+            .collect();
+
+        if fragments.is_empty() {
+            return None;
+        }
+        Some(format!("NOT ({})", fragments.join("\n        OR ")))
     }
 
     /// Total references held on `hash` across every source.

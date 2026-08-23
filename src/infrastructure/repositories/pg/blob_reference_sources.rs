@@ -51,6 +51,27 @@ fn files_ref_sql(level: RefLevel, outer_hash_expr: &str) -> Option<String> {
     }
 }
 
+/// Short-circuiting existence form of [`files_ref_sql`].
+///
+/// `dedup_gc` evaluates this per candidate manifest, so counting every
+/// referrer where existence would do is a real cost on a heavily-deduplicated
+/// blob. This is also the exact shape the reap predicate used before the
+/// registry existed, so wiring it in changes no plan.
+fn files_exists_sql(level: RefLevel, outer_hash_expr: &str) -> Option<String> {
+    let f = FILES_ALIAS;
+    match level {
+        RefLevel::Chunk => Some(format!(
+            "EXISTS (SELECT 1 FROM storage.files {f} \
+             WHERE {f}.blob_hash = {outer_hash_expr} \
+             AND NOT EXISTS (SELECT 1 FROM storage.chunk_manifests {MANIFEST_ALIAS} \
+             WHERE {MANIFEST_ALIAS}.file_hash = {f}.blob_hash))"
+        )),
+        RefLevel::Manifest => Some(format!(
+            "EXISTS (SELECT 1 FROM storage.files {f} WHERE {f}.blob_hash = {outer_hash_expr})"
+        )),
+    }
+}
+
 /// Fragment for [`ChunksReferenceSource`]. See [`files_ref_sql`].
 fn chunks_ref_sql(level: RefLevel, outer_hash_expr: &str) -> Option<String> {
     match level {
@@ -97,6 +118,10 @@ impl BlobReferenceSource for FilesReferenceSource {
 
     fn ref_count_sql(&self, level: RefLevel, outer_hash_expr: &str) -> Option<String> {
         files_ref_sql(level, outer_hash_expr)
+    }
+
+    fn ref_exists_sql(&self, level: RefLevel, outer_hash_expr: &str) -> Option<String> {
+        files_exists_sql(level, outer_hash_expr)
     }
 
     async fn count_references(&self, blob_hash: &str) -> Result<u64, DomainError> {
