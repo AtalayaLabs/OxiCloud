@@ -440,6 +440,22 @@ impl AppServiceFactory {
         // `blob_backend` into DedupService.
         let blob_backend_for_consistency = blob_backend.clone();
 
+        // Every table holding blob references. Built ONCE and shared by the
+        // GC reap predicate and the consistency recompute so the two cannot
+        // disagree about what "referenced" means — a disagreement reaps live
+        // content. New blob-owning tables register here.
+        // See docs/plan/derived-blobs.md.
+        let blob_reference_registry = {
+            use crate::infrastructure::repositories::pg::blob_reference_sources::{
+                ChunksReferenceSource, FilesReferenceSource,
+            };
+            let mut registry =
+                crate::application::ports::blob_reference_ports::BlobReferenceRegistry::new();
+            registry.register(Arc::new(FilesReferenceSource::new(db_pool.clone())));
+            registry.register(Arc::new(ChunksReferenceSource::new(db_pool.clone())));
+            Arc::new(registry)
+        };
+
         // Deduplication service — PRIMARY blob storage engine (PostgreSQL-backed index)
         let dedup_service = Arc::new(
             crate::infrastructure::services::dedup_service::DedupService::new(
@@ -447,7 +463,8 @@ impl AppServiceFactory {
                 db_pool.clone(),
                 maintenance_pool.clone(),
             )
-            .with_blob_lifecycle(blob_lifecycle),
+            .with_blob_lifecycle(blob_lifecycle)
+            .with_reference_registry(blob_reference_registry.clone()),
         );
         dedup_service.initialize().await?;
 
@@ -1460,6 +1477,22 @@ impl AppServiceFactory {
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
         .await;
 
+        // Reconciles `chunk_manifests.ref_count` — the SECOND reference
+        // counter, and the one nothing verified before. add_reference bumps
+        // it first and only falls back to storage.blobs.ref_count, so every
+        // CDC file (and every derived artifact, once those land) counts here
+        // rather than at the chunk level. Uses the same registry dedup_gc
+        // reaps from, so the two cannot disagree.
+        // See docs/plan/derived-blobs.md.
+        let _ = Arc::new(
+            crate::infrastructure::services::manifests_consistency_service::ManifestsConsistencyCheck::new(
+                maintenance_pool.clone(),
+                core.dedup_service.reference_registry(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
         // Third recoverable-run tenant. Iterates `storage.files`
         // and reports parent-folder-trashed cascade misses,
         // `missing_blob` (data-loss indicator — file references
@@ -1493,6 +1526,9 @@ impl AppServiceFactory {
                 core.blob_backend.clone(),
                 core.config.storage_entries.clone(),
                 self.storage_path.clone(),
+                // Same registry instance GC reaps from — see
+                // DedupService::reference_registry.
+                core.dedup_service.reference_registry(),
             ),
         )
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)

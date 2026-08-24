@@ -55,6 +55,7 @@ use std::sync::Arc;
 use tokio_util::io::StreamReader;
 
 use crate::application::ports::blob_lifecycle::BlobLifecycleHook;
+use crate::application::ports::blob_reference_ports::{BlobReferenceRegistry, RefLevel};
 use crate::application::ports::blob_storage_ports::BlobStorageBackend;
 use crate::application::ports::dedup_ports::{
     BlobMetadataDto, DedupPort, DedupResultDto, DedupStatsDto,
@@ -424,6 +425,51 @@ async fn populate_integrity_blob_sizes<'a>(
     IntegrityBlobSizes { hashes, sizes }
 }
 
+/// Build the manifest reap statement from the registered reference sources.
+///
+/// A manifest is collectible when either:
+///   * `ref_count` reached 0 via `cleanup_if_orphaned` on the single-file
+///     delete path, **or**
+///   * nothing references it any more — the bulk-delete path (user cascade,
+///     `empty_trash`), where the PG trigger only touches `storage.blobs` and
+///     the per-file `cleanup_if_orphaned` call is skipped, so `ref_count` is
+///     never decremented and the second clause is the only thing that reaps.
+///
+/// The second clause used to name `storage.files` directly, which hardcoded
+/// "files is the only thing that can reference a manifest". Any new referring
+/// table — thumbnails via `storage.content_derived_blobs`, previews via
+/// `storage.file_attached_blobs` — would then have its manifests reaped on the
+/// next sweep *despite a correct `ref_count`*: clause one false, clause two
+/// true, `OR` fires, bytes gone. See `docs/plan/derived-blobs.md`.
+///
+/// # Panics
+///
+/// If no source contributes at [`RefLevel::Manifest`]. That is a wiring bug,
+/// and it must be loud: with no source, "nothing references it" is vacuously
+/// true for every row and this statement would delete every manifest in the
+/// database. `DedupService::new` always registers `FilesReferenceSource`, so
+/// the only way to reach this is to pass a deliberately empty registry.
+fn manifest_reap_sql(registry: &BlobReferenceRegistry) -> String {
+    let orphaned = registry
+        .no_reference_predicate(RefLevel::Manifest, "m.file_hash")
+        .expect(
+            "no manifest-level blob reference source registered: the reap \
+             predicate would match every manifest",
+        );
+
+    format!(
+        "DELETE FROM storage.chunk_manifests
+ WHERE ctid = ANY(
+     SELECT ctid
+       FROM storage.chunk_manifests m
+      WHERE m.ref_count <= 0
+         OR {orphaned}
+      LIMIT $1
+ )
+ RETURNING file_hash, chunk_hashes, total_size"
+    )
+}
+
 pub struct DedupService {
     /// Pluggable blob storage backend (local FS, S3, …).
     backend: Arc<dyn BlobStorageBackend>,
@@ -442,6 +488,16 @@ pub struct DedupService {
     /// seen immediately), weight-bounded (a manifest is ~72 B per chunk),
     /// short TTL so GC'd manifests age out fast (benches/MANIFEST-CACHE.md).
     manifest_cache: moka::future::Cache<String, Arc<ChunkManifest>>,
+    /// Every table that holds blob references, so GC agrees with the
+    /// consistency jobs on what "referenced" means. Defaults to the two
+    /// built-in sources; DI replaces it once more tables exist. Never
+    /// optional — an empty registry would make "nothing references it"
+    /// vacuously true and the manifest sweep would reap everything.
+    reference_registry: Arc<BlobReferenceRegistry>,
+    /// The manifest reap statement, built once from `reference_registry`.
+    /// Kept as a field so `garbage_collect` runs a fixed statement rather
+    /// than assembling SQL inside a delete loop — see `manifest_reap_sql`.
+    manifest_reap_sql: String,
 }
 
 impl DedupService {
@@ -455,13 +511,30 @@ impl DedupService {
         pool: Arc<PgPool>,
         maintenance_pool: Arc<PgPool>,
     ) -> Self {
+        let registry = Arc::new(Self::default_reference_registry(pool.clone()));
         Self {
             backend,
             pool,
             maintenance_pool,
             blob_lifecycle: None,
             manifest_cache: Self::build_manifest_cache(),
+            reference_registry: registry.clone(),
+            manifest_reap_sql: manifest_reap_sql(&registry),
         }
+    }
+
+    /// The two sources that were implicit before the registry existed.
+    /// Keeping this as the default means every construction path — including
+    /// tests — has a manifest-level source, so the reap predicate can never
+    /// degenerate to "nothing references anything".
+    fn default_reference_registry(pool: Arc<PgPool>) -> BlobReferenceRegistry {
+        use crate::infrastructure::repositories::pg::blob_reference_sources::{
+            ChunksReferenceSource, FilesReferenceSource,
+        };
+        let mut registry = BlobReferenceRegistry::new();
+        registry.register(Arc::new(FilesReferenceSource::new(pool.clone())));
+        registry.register(Arc::new(ChunksReferenceSource::new(pool)));
+        registry
     }
 
     /// See the `manifest_cache` field docs. Weight ≈ real heap bytes of one
@@ -474,6 +547,25 @@ impl DedupService {
             .max_capacity(32 * 1024 * 1024)
             .time_to_live(std::time::Duration::from_secs(60))
             .build()
+    }
+
+    /// Registers the blob-reference registry used by the manifest reap
+    /// predicate. Without it `garbage_collect` skips manifest collection
+    /// entirely — see `docs/plan/derived-blobs.md`.
+    pub fn with_reference_registry(mut self, registry: Arc<BlobReferenceRegistry>) -> Self {
+        self.manifest_reap_sql = manifest_reap_sql(&registry);
+        self.reference_registry = registry;
+        self
+    }
+
+    /// The registry backing the reap predicate.
+    ///
+    /// Exposed so `blobs_consistency` recomputes refcounts from the *same*
+    /// source set GC reaps from. If the two ever diverged, the sweep would
+    /// bless counts the collector disagrees with — and the collector wins,
+    /// destructively.
+    pub fn reference_registry(&self) -> Arc<BlobReferenceRegistry> {
+        self.reference_registry.clone()
     }
 
     /// Registers the blob lifecycle dispatcher (thumbnail cleanup, …).
@@ -510,18 +602,47 @@ impl DedupService {
                 .connect_lazy("postgres://invalid:5432/none")
                 .unwrap(),
         );
+        let stub_registry = Arc::new(Self::default_reference_registry(stub_pool.clone()));
         Self {
             backend: Arc::new(LocalBlobBackend::new(Path::new("/tmp/oxicloud_stub_blobs"))),
             pool: stub_pool.clone(),
-            maintenance_pool: stub_pool,
+            maintenance_pool: stub_pool.clone(),
             blob_lifecycle: None,
             manifest_cache: Self::build_manifest_cache(),
+            reference_registry: stub_registry.clone(),
+            manifest_reap_sql: manifest_reap_sql(&stub_registry),
         }
     }
 
     /// Initialize the service (delegate to backend + log stats from PG).
     pub async fn initialize(&self) -> Result<(), DomainError> {
         self.backend.initialize().await?;
+
+        // The reap statement is assembled from the registered reference
+        // sources, so it is not greppable in the source tree. It DELETES
+        // manifests, so log it unconditionally at info rather than hiding it
+        // behind a filter an operator has to know to enable — if what GC
+        // considers "referenced" ever changes, that must be visible on the
+        // next boot without anyone going looking.
+        //
+        // Whitespace-collapsed to a single field so a multi-line query does
+        // not sprawl across the boot log; expand it with
+        // `sed 's/ AND / AND\n  /g'` or just paste it into psql.
+        tracing::info!(
+            target: "oxicloud::dedup",
+            sources = ?self
+                .reference_registry
+                .sources()
+                .iter()
+                .map(|s| s.source_name())
+                .collect::<Vec<_>>(),
+            statement = %self
+                .manifest_reap_sql
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
+            "🧹 manifest reap predicate registered"
+        );
 
         let blob_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM storage.blobs")
             .fetch_one(self.pool.as_ref())
@@ -1838,66 +1959,48 @@ impl DedupService {
     pub async fn cleanup_if_orphaned(&self, hash: &str) {
         let short = &hash[..hash.len().min(12)];
 
-        // ── CDC manifest path (must run FIRST) ───────────────────
-        // For single-chunk CDC files file_hash == chunk_hash, so the PG
-        // trigger on storage.files already decremented storage.blobs.ref_count
-        // when this function is called.  try_dedup_hit increments
-        // chunk_manifests.ref_count but NOT storage.blobs.ref_count, so
-        // blobs.ref_count can reach 0 while the manifest still has ref_count > 1
-        // (other files sharing the same blob).  Checking the manifest first
-        // prevents premature blob + manifest deletion.
-        let manifest = sqlx::query_as::<_, (i32, Vec<String>)>(
-            "SELECT ref_count, chunk_hashes \
-               FROM storage.chunk_manifests WHERE file_hash = $1",
-        )
-        .bind(hash)
-        .fetch_optional(self.pool.as_ref())
-        .await
-        .unwrap_or(None);
-
-        if let Some((ref_count, chunk_hashes)) = manifest {
-            if ref_count <= 1 {
-                // Last reference — remove manifest and all its chunks.
-                if let Err(e) = self
-                    .remove_manifest_reference(hash, ref_count, &chunk_hashes)
-                    .await
-                {
-                    tracing::warn!("cleanup_if_orphaned: manifest cleanup failed for {short}: {e}");
-                }
-            } else {
-                // Other files still share this blob: just decrement the manifest
-                // counter and undo the PG trigger's premature chunk ref_count
-                // decrement (blobs.ref_count is chunk-level; the manifest is the
-                // authoritative file-level counter).
-                sqlx::query(
-                    "UPDATE storage.chunk_manifests \
-                        SET ref_count = ref_count - 1 WHERE file_hash = $1",
-                )
-                .bind(hash)
-                .execute(self.pool.as_ref())
-                .await
-                .ok();
-                // Undo the PG trigger's decrement of storage.blobs.ref_count.
-                // The trigger fired with blob_hash = file_hash, so only the row
-                // WHERE hash = file_hash is affected.  For single-chunk files
-                // file_hash == chunk_hash and that row exists; for multi-chunk
-                // files file_hash is not in storage.blobs, making this a no-op.
-                sqlx::query("UPDATE storage.blobs SET ref_count = ref_count + 1 WHERE hash = $1")
-                    .bind(hash)
-                    .execute(self.pool.as_ref())
-                    .await
-                    .ok();
-                tracing::debug!(
-                    "cleanup_if_orphaned: manifest {short} ref_count {ref_count}→{}",
-                    ref_count - 1
-                );
-            }
-            return;
-        }
-
-        // ── Legacy blob path (no manifest) ───────────────────────
+        // 2026-08-23 refactor: this function used to compensate for the
+        // OLD PG trigger `trg_files_decrement_blob_ref` unconditionally
+        // decrementing `storage.blobs.ref_count`, which was wrong for
+        // CDC files (their `blob_hash` names a `chunk_manifests.file_hash`,
+        // not a chunk-in-a-manifest). The compensation branches would:
+        //   * Decrement `chunk_manifests.ref_count` a SECOND time (the
+        //     trigger having wrongly touched blobs, not the manifest);
+        //   * Undo the trigger's blob decrement (rc > 1 branch);
+        //   * Call `remove_manifest_reference` (rc <= 1 branch), which
+        //     deletes manifest + dereferences chunks — again duplicating
+        //     work the trigger should own.
+        //
+        // Migration `20261017000000_file_delete_trigger_manifest_aware.sql`
+        // rewrote the trigger to be manifest-aware, so it now correctly
+        // decrements EITHER the manifest OR the blob depending on which
+        // one the hash names, walks chunks on last-ref manifest delete,
+        // and leaves the counters in a consistent state without any
+        // compensation call. Running the old compensation ON TOP of the
+        // new trigger causes double-decrement / double-delete and is
+        // exactly what broke `dedup_blob_cleanup.hurl` step 7
+        // (`ref_count == 1` observed 0 after purging one of two dedup
+        // uploads).
+        //
+        // What remains here: **physical cleanup only**. If the trigger
+        // brought a LEGACY whole-file blob to ref_count = 0 and no
+        // manifest still references it (either directly via file_hash or
+        // indirectly as a chunk in another manifest's chunk_hashes[]),
+        // reap the DB row and the backend file eagerly. For CDC chunks
+        // whose ref_count reached 0 via the trigger's last-ref manifest
+        // path, `dedup_gc` handles physical reap with a grace window
+        // against re-upload races.
+        //
+        // Callers can keep invoking `cleanup_if_orphaned` unconditionally
+        // — for CDC paths it's a cheap no-op (manifest still exists OR
+        // the hash never had a blob row), for legacy paths it reaps.
         let deleted_blob = sqlx::query_scalar::<_, String>(
-            "DELETE FROM storage.blobs WHERE hash = $1 AND ref_count <= 0 RETURNING hash",
+            "DELETE FROM storage.blobs \
+                WHERE hash = $1 \
+                  AND ref_count <= 0 \
+                  AND NOT EXISTS (SELECT 1 FROM storage.chunk_manifests \
+                                    WHERE $1 = ANY(chunk_hashes)) \
+              RETURNING hash",
         )
         .bind(hash)
         .fetch_optional(self.pool.as_ref())
@@ -1909,7 +2012,7 @@ impl DedupService {
                 tracing::warn!("cleanup_if_orphaned: disk delete failed for {short}: {e}");
             }
             self.fire_blob_hooks(hash);
-            tracing::info!("cleanup_if_orphaned: removed orphaned blob {short}");
+            tracing::info!("cleanup_if_orphaned: removed orphaned legacy blob {short}");
         }
     }
 
@@ -2558,10 +2661,18 @@ impl DedupService {
         // A manifest is collectible when:
         //   • ref_count has been decremented to 0 by cleanup_if_orphaned
         //     on the single-file-delete service path, OR
-        //   • no `storage.files.blob_hash` references its file_hash
+        //   • NO registered reference source references its file_hash
         //     (covers bulk-delete paths: user cascade, empty_trash —
         //     where the PG trigger only touches storage.blobs and the
         //     per-file cleanup_if_orphaned call is skipped).
+        //
+        // The second clause used to name `storage.files` directly. That
+        // hardcoded "files is the only thing that can reference a manifest",
+        // so any new referring table (thumbnails via
+        // storage.content_derived_blobs, …) would see its manifests reaped
+        // on the next sweep despite a correct ref_count — the first clause
+        // is false, the second true, and the OR fires. It is now the union
+        // of every registered source; see docs/plan/derived-blobs.md.
         loop {
             // Keep the historically cheap DELETE-only shape for the dominant
             // no-work sweep. Embedding it in the delete/aggregate/update CTE
@@ -2570,23 +2681,14 @@ impl DedupService {
             // update. From two onward, aggregate in-process and issue one UPDATE:
             // the measured crossover is already positive at two, while 500 and
             // 1,000 manifests improve by 60.03x and 51.16x respectively.
-            let batch: Vec<(String, Vec<String>, i64)> = sqlx::query_as(
-                "DELETE FROM storage.chunk_manifests
-                  WHERE ctid = ANY(
-                      SELECT ctid FROM storage.chunk_manifests m
-                       WHERE m.ref_count <= 0
-                          OR NOT EXISTS (
-                              SELECT 1 FROM storage.files f
-                               WHERE f.blob_hash = m.file_hash
-                          )
-                       LIMIT $1
-                  )
-                  RETURNING file_hash, chunk_hashes, total_size",
-            )
-            .bind(BATCH_SIZE)
-            .fetch_all(self.maintenance_pool.as_ref())
-            .await
-            .map_err(|e| DomainError::internal_error("Dedup", format!("GC manifests: {e}")))?;
+            // Assembled once at construction (see `manifest_reap_sql`), not
+            // per sweep: no string work in the hot path, a stable statement for
+            // prepared-statement caching, and a byte-for-byte golden test.
+            let batch: Vec<(String, Vec<String>, i64)> = sqlx::query_as(&self.manifest_reap_sql)
+                .bind(BATCH_SIZE)
+                .fetch_all(self.maintenance_pool.as_ref())
+                .await
+                .map_err(|e| DomainError::internal_error("Dedup", format!("GC manifests: {e}")))?;
 
             if batch.is_empty() {
                 break;
@@ -3267,6 +3369,41 @@ impl crate::infrastructure::scheduler::JobHandler for DedupService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Golden test for the statement `garbage_collect` runs against production
+    /// data. It is assembled from the registered reference sources rather than
+    /// written as a literal, so this pins the whole thing byte-for-byte — the
+    /// point being that a reviewer reads the SQL *here* instead of mentally
+    /// evaluating the registry.
+    ///
+    /// If this fails after adding a source, read the diff carefully: the new
+    /// branch must appear inside the `NOT (...)` group, ORed with the others.
+    /// A branch landing outside that group inverts the predicate for every
+    /// other source and reaps live manifests.
+    #[tokio::test]
+    async fn manifest_reap_statement_is_stable() {
+        let sql = DedupService::new_stub().manifest_reap_sql;
+        let expected = r#"DELETE FROM storage.chunk_manifests
+ WHERE ctid = ANY(
+     SELECT ctid
+       FROM storage.chunk_manifests m
+      WHERE m.ref_count <= 0
+         OR NOT (EXISTS (SELECT 1 FROM storage.files cnt_f WHERE cnt_f.blob_hash = m.file_hash))
+      LIMIT $1
+ )
+ RETURNING file_hash, chunk_hashes, total_size"#;
+        assert_eq!(sql, expected, "reap statement changed:\n{sql}");
+    }
+
+    /// The reap predicate must never match a manifest that some source still
+    /// references. With an empty registry `NOT (...)` would have no operands,
+    /// so the builder refuses rather than emitting a statement that deletes
+    /// every manifest in the database.
+    #[test]
+    #[should_panic(expected = "no manifest-level blob reference source")]
+    fn empty_registry_refuses_to_build_reap_statement() {
+        let _ = manifest_reap_sql(&BlobReferenceRegistry::new());
+    }
     use std::collections::HashSet;
     use tempfile::NamedTempFile;
 

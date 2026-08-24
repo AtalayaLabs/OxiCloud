@@ -178,6 +178,7 @@ impl JobHandler for ConsistencyBatch {
                 "per_check": per_check,
                 "deep": args.deep,
                 "force": args.force,
+                "repair": args.repair,
                 "ok": ok_count,
                 "err": err_count,
             }),

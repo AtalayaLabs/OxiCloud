@@ -1024,10 +1024,21 @@ impl FileWritePort for FileBlobWriteRepository {
                     DomainError::internal_error("FileBlobWrite", format!("fetch blob_hash: {e}"))
                 })?;
 
-        // DELETE fires trg_files_decrement_blob_ref → storage.blobs.ref_count--
+        // DELETE fires `trg_files_decrement_blob_ref` — post-2026-08-23
+        // it dispatches manifest-first (see migration
+        // `20261017000000_file_delete_trigger_manifest_aware.sql`):
+        // decrements `chunk_manifests.ref_count` if the hash names a
+        // manifest (walking chunks on last-ref), else falls back to
+        // `storage.blobs.ref_count`. Counter state after this call is
+        // already correct.
         self.delete_file(file_id).await?;
 
-        // If the blob is now unreferenced, remove disk file + thumbnails.
+        // Physical cleanup only. `cleanup_if_orphaned` was previously
+        // manifest-aware and did counter compensation for the old
+        // trigger's over-decrement; after the trigger rewrite it's a
+        // legacy-blob-eager-reap helper — safe to keep calling
+        // unconditionally (no-op for CDC hashes; reaps legacy blobs
+        // that reached ref_count = 0).
         if let Some(hash) = blob_hash {
             self.dedup.cleanup_if_orphaned(&hash).await;
         }

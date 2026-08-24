@@ -1,0 +1,1 @@
+copy-folder-ref-count regression fixture — do not reuse in other tests (hash must stay unique so ref_count assertions are absolute).

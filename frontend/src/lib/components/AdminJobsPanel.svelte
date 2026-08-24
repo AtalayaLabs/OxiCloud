@@ -21,6 +21,7 @@
 	import { SvelteSet } from 'svelte/reactivity';
 	import Icon from '$lib/icons/Icon.svelte';
 	import Modal from '$lib/components/Modal.svelte';
+	import { confirmDialog } from '$lib/stores/dialogs.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 	import { errorMessage } from '$lib/utils/errors';
 	import { ui } from '$lib/stores/ui.svelte';
@@ -65,6 +66,43 @@
 		if (on) busyKeys.add(key);
 		else busyKeys.delete(key);
 	}
+
+	// Per-job "Run" split-button menu state. Keyed by job name so
+	// two rows can open their menus independently (though the
+	// outside-click handler below closes all on any click outside
+	// any menu — matching the /files upload dropdown pattern). Only
+	// rows with `supportsDeep` OR `supportsRepair` render a chevron;
+	// the plain-Run rows (drives/folders/files/backend/… consistency,
+	// trash_cleanup, dedup_gc, …) show a bare "Run" button with no
+	// menu, keeping the common case one-click.
+	let runMenuOpen = $state<Record<string, boolean>>({});
+	function toggleRunMenu(name: string) {
+		runMenuOpen = { ...runMenuOpen, [name]: !runMenuOpen[name] };
+	}
+	function closeAllRunMenus() {
+		runMenuOpen = {};
+	}
+	// Global outside-click + Escape dismiss. Only registered while at
+	// least one menu is open — a background admin tab doesn't hold
+	// listeners.
+	$effect(() => {
+		const anyOpen = Object.values(runMenuOpen).some((v) => v);
+		if (!anyOpen) return;
+		const onDown = (e: MouseEvent) => {
+			if (!(e.target as HTMLElement).closest('.jobs-panel__split')) {
+				closeAllRunMenus();
+			}
+		};
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === 'Escape') closeAllRunMenus();
+		};
+		window.addEventListener('pointerdown', onDown);
+		window.addEventListener('keydown', onKey);
+		return () => {
+			window.removeEventListener('pointerdown', onDown);
+			window.removeEventListener('keydown', onKey);
+		};
+	});
 
 	// Purge-modal state. Null = closed; otherwise carries the
 	// draft retention days the operator's picking. Kept separate
@@ -234,8 +272,10 @@
 
 	// ─── Actions ───────────────────────────────────────────────────────
 
-	async function onTrigger(name: string, opts: { deep?: boolean } = {}) {
-		const key = `trigger:${name}${opts.deep ? ':deep' : ''}`;
+	async function onTrigger(name: string, opts: { deep?: boolean; repair?: boolean } = {}) {
+		// Key suffix has to keep every dispatched variant distinct so the
+		// button-disabled state of one doesn't lock out another mid-flight.
+		const key = `trigger:${name}${opts.deep ? ':deep' : ''}${opts.repair ? ':repair' : ''}`;
 		markBusy(key, true);
 		try {
 			// Fire the trigger + a follow-up loadJobs after a short delay
@@ -265,10 +305,49 @@
 			if (!res.outcome) {
 				// dispatched (detached) — no outcome to render
 			} else if (res.outcome.outcome === 'ok') {
-				ui.notify(
-					t('admin.jobs.triggered_ok', { name }, '{{name}} triggered successfully'),
-					'success'
-				);
+				// Repair runs surface a rollup so the operator sees
+				// whether corrective UPDATEs actually fired. `extra`
+				// carries `repaired_count` on the two refcount tenants
+				// directly, and nested under `per_check[*].extra` when
+				// dispatched via `consistency_batch`. Sum across the
+				// per_check dict if present, else read the top-level.
+				let repairedTotal = 0;
+				let sawRepair = false;
+				const extra = (res.outcome.extra ?? {}) as {
+					repair_requested?: boolean;
+					repaired_count?: number;
+					per_check?: Record<
+						string,
+						{ extra?: { repair_requested?: boolean; repaired_count?: number } }
+					>;
+				};
+				if (extra.repair_requested) {
+					sawRepair = true;
+					repairedTotal += extra.repaired_count ?? 0;
+				}
+				if (extra.per_check) {
+					for (const child of Object.values(extra.per_check)) {
+						if (child?.extra?.repair_requested) {
+							sawRepair = true;
+							repairedTotal += child.extra.repaired_count ?? 0;
+						}
+					}
+				}
+				if (sawRepair) {
+					ui.notify(
+						t(
+							'admin.jobs.triggered_ok_repair',
+							{ name, n: repairedTotal },
+							'{{name}}: {{n}} counter(s) repaired'
+						),
+						'success'
+					);
+				} else {
+					ui.notify(
+						t('admin.jobs.triggered_ok', { name }, '{{name}} triggered successfully'),
+						'success'
+					);
+				}
 			} else {
 				ui.notify(
 					t(
@@ -557,6 +636,31 @@
 		return name === 'consistency_batch' || name === 'blobs_consistency';
 	}
 
+	// Jobs whose handler consults `args.repair` and applies a
+	// corrective UPDATE against the finding it just emitted. Only the
+	// two ref_count tenants today; `consistency_batch` also accepts
+	// the flag (fans out to both) and is surfaced separately as the
+	// top-bar "Repair ref_counts" button. Keep this list narrow —
+	// adding a job here without a matching backend handler produces a
+	// silently no-op button that confuses operators.
+	function supportsRepair(name: string): boolean {
+		return name === 'blobs_consistency' || name === 'manifests_consistency';
+	}
+
+	async function onTriggerWithRepairConfirm(name: string) {
+		const ok = await confirmDialog({
+			title: t('admin.jobs.run_repair_confirm_title', 'Repair drifted ref_counts?'),
+			message: t(
+				'admin.jobs.run_repair_confirm_body_scoped',
+				{ name },
+				'Runs {{name}} and applies a corrective UPDATE to any counter that disagrees with its live reference count. Content-safe: only counters change; blob content and file rows are untouched.'
+			),
+			confirmText: t('admin.jobs.run_repair_confirm', 'Repair'),
+			danger: true
+		});
+		if (ok) await onTrigger(name, { repair: true });
+	}
+
 	function isRunning(job: JobSummary): boolean {
 		return job.running;
 	}
@@ -613,6 +717,39 @@
 				>
 					<Icon name="play" />
 					{t('admin.jobs.run_deep', 'Run deep')}
+				</button>
+				<!-- Repair goes behind a confirm because it issues corrective
+				     UPDATEs on `storage.blobs.ref_count` and
+				     `storage.chunk_manifests.ref_count`. Content-safe (only
+				     counters change, matching the auditor's computed truth)
+				     and race-safe (each UPDATE recomputes inside the same
+				     statement), but writing-a-lot is still writing-a-lot.
+				     One click, one confirm, one batch dispatched to both
+				     refcount tenants via consistency_batch's arg
+				     propagation. See `?repair=true` on
+				     `POST /api/admin/jobs/{name}/trigger`. -->
+				<button
+					class="jobs-panel__btn jobs-panel__btn--warn"
+					disabled={busyKeys.has('trigger:consistency_batch:repair')}
+					title={t(
+						'admin.jobs.run_repair_hint',
+						'Corrects any drifted ref_counts (blobs + manifests) found by the audit. Content-safe — only counters change, not data.'
+					)}
+					onclick={async () => {
+						const ok = await confirmDialog({
+							title: t('admin.jobs.run_repair_confirm_title', 'Repair drifted ref_counts?'),
+							message: t(
+								'admin.jobs.run_repair_confirm_body',
+								'Runs the audit against every blob + manifest and applies a corrective UPDATE to any counter that disagrees with its live reference count. Content-safe: only the counter changes; blob content and file rows are untouched. Safe to run at any time; a discovery-only run happens first so you can see the drift before this repair overwrites it.'
+							),
+							confirmText: t('admin.jobs.run_repair_confirm', 'Repair'),
+							danger: true
+						});
+						if (ok) await onTrigger('consistency_batch', { repair: true });
+					}}
+				>
+					<Icon name="cog" />
+					{t('admin.jobs.run_repair', 'Repair ref_counts')}
 				</button>
 			{/if}
 			<!-- Purge is orthogonal to consistency — it works even
@@ -754,22 +891,80 @@
 									{t('admin.jobs.cancel', 'Cancel')}
 								</button>
 							{:else}
-								<button
-									class="jobs-panel__btn jobs-panel__btn--small"
-									disabled={busyKeys.has(`trigger:${job.name}`)}
-									onclick={() => onTrigger(job.name)}
-								>
-									{t('admin.jobs.run', 'Run')}
-								</button>
-								{#if supportsDeep(job.name)}
+								<!-- Split-button: primary "Run" fires the default
+								     trigger; the chevron opens a menu with the
+								     tenant-specific variants (Run deep / Repair).
+								     Rows without any variant render a bare Run
+								     button — no chevron, no menu, no extra
+								     width. Preserves one-click discovery for
+								     the common case. -->
+								{@const hasRunVariants = supportsDeep(job.name) || supportsRepair(job.name)}
+								<span class="jobs-panel__split">
 									<button
 										class="jobs-panel__btn jobs-panel__btn--small"
-										disabled={busyKeys.has(`trigger:${job.name}:deep`)}
-										onclick={() => onTrigger(job.name, { deep: true })}
+										class:jobs-panel__split-main={hasRunVariants}
+										disabled={busyKeys.has(`trigger:${job.name}`)}
+										onclick={() => {
+											closeAllRunMenus();
+											void onTrigger(job.name);
+										}}
 									>
-										{t('admin.jobs.run_deep', 'Run deep')}
+										{t('admin.jobs.run', 'Run')}
 									</button>
-								{/if}
+									{#if hasRunVariants}
+										<button
+											class="jobs-panel__btn jobs-panel__btn--small jobs-panel__split-toggle"
+											aria-haspopup="menu"
+											aria-expanded={runMenuOpen[job.name] ?? false}
+											aria-label={t('admin.jobs.run_variants_menu', 'Run variants menu')}
+											onclick={() => toggleRunMenu(job.name)}
+										>
+											<Icon name="caret-down" />
+										</button>
+										{#if runMenuOpen[job.name]}
+											<div class="jobs-panel__run-menu" role="menu">
+												{#if supportsDeep(job.name)}
+													<button
+														type="button"
+														class="jobs-panel__run-menu-item"
+														role="menuitem"
+														disabled={busyKeys.has(`trigger:${job.name}:deep`)}
+														title={t(
+															'admin.jobs.run_deep_hint',
+															'Also runs slow variants (blob re-hash, bitrot detection).'
+														)}
+														onclick={() => {
+															closeAllRunMenus();
+															void onTrigger(job.name, { deep: true });
+														}}
+													>
+														<Icon name="search" />
+														<span>{t('admin.jobs.run_deep', 'Run deep')}</span>
+													</button>
+												{/if}
+												{#if supportsRepair(job.name)}
+													<button
+														type="button"
+														class="jobs-panel__run-menu-item jobs-panel__run-menu-item--warn"
+														role="menuitem"
+														disabled={busyKeys.has(`trigger:${job.name}:repair`)}
+														title={t(
+															'admin.jobs.run_repair_hint',
+															'Corrects any drifted ref_counts (blobs + manifests) found by the audit. Content-safe — only counters change, not data.'
+														)}
+														onclick={() => {
+															closeAllRunMenus();
+															void onTriggerWithRepairConfirm(job.name);
+														}}
+													>
+														<Icon name="cog" />
+														<span>{t('admin.jobs.run_repair', 'Repair')}</span>
+													</button>
+												{/if}
+											</div>
+										{/if}
+									{/if}
+								</span>
 							{/if}
 							{#if isRunning(job) && canExpand}
 								{#if isRecoverable(job)}
@@ -1302,6 +1497,90 @@
 	.jobs-panel__btn--danger {
 		border-color: var(--color-danger-bg);
 		color: var(--color-danger-text-alt);
+	}
+
+	/* Warn variant — used for actions that mutate data but are content-
+	   safe / reversible-in-outcome (e.g. Repair ref_counts). Signals
+	   "read the tooltip and the confirm before clicking" without the
+	   danger red reserved for destructive delete-style buttons. */
+	.jobs-panel__btn--warn {
+		border-color: var(--color-warning-border);
+		color: var(--color-warning-text);
+	}
+
+	/* Split-button — inline flex holding a primary "Run" (fires default
+	   action) and a chevron (opens the variants menu). `position:
+	   relative` anchors the menu below the toggle. Only rendered on
+	   rows whose job supports at least one variant; plain-Run rows
+	   sidestep this whole structure. */
+	.jobs-panel__split {
+		display: inline-flex;
+		position: relative;
+	}
+
+	/* Attached-button trick: main loses its right border-radius, toggle
+	   loses its left. Toggle also loses its left border so the two
+	   don't render a double-thick divider. */
+	.jobs-panel__split-main {
+		border-top-right-radius: 0;
+		border-bottom-right-radius: 0;
+	}
+
+	.jobs-panel__split-toggle {
+		border-top-left-radius: 0;
+		border-bottom-left-radius: 0;
+		border-left: none;
+		padding-left: 0.35rem;
+		padding-right: 0.35rem;
+	}
+
+	/* The variants menu — dropdown below the toggle, right-aligned so
+	   it doesn't overflow the Actions column edge into the next row's
+	   badge cell. Shadow + surface bg mirror the /files upload
+	   dropdown (`upload-dropdown-menu`); using local CSS here rather
+	   than the ported class so the jobs-panel keeps its scoped styling. */
+	.jobs-panel__run-menu {
+		position: absolute;
+		top: calc(100% + 2px);
+		right: 0;
+		z-index: 30;
+		min-width: 10rem;
+		background: var(--color-bg-surface);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md, 6px);
+		box-shadow: var(--shadow-md);
+		padding: 0.25rem 0;
+	}
+
+	.jobs-panel__run-menu-item {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		width: 100%;
+		padding: 0.4rem 0.75rem;
+		background: transparent;
+		border: none;
+		text-align: left;
+		font: inherit;
+		color: var(--color-text);
+		cursor: pointer;
+		white-space: nowrap;
+	}
+
+	.jobs-panel__run-menu-item:hover:not(:disabled) {
+		background: var(--color-bg-hover);
+	}
+
+	.jobs-panel__run-menu-item:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	/* Warn colour on the menu item mirrors the button variant so the
+	   Repair option carries the same "attention-worthy but not
+	   destructive" visual weight as its top-bar counterpart. */
+	.jobs-panel__run-menu-item--warn {
+		color: var(--color-warning-text);
 	}
 
 	.jobs-panel__pill {
