@@ -497,8 +497,13 @@ impl BlobStorageBackend for S3BlobBackend {
                 .list_objects_v2()
                 .bucket(&self.bucket)
                 .max_keys(limit.min(1000) as i32);
+            // Resume after a HASH, not a continuation token (port contract).
+            // ListObjectsV2 supports this natively via StartAfter, and it is
+            // what lets a caller resume the backend side of a merge-join from
+            // a checkpoint it holds — a continuation token would force a
+            // re-enumeration from the start on every resume.
             if let Some(c) = cursor {
-                req = req.continuation_token(c);
+                req = req.start_after(Self::object_key(&c));
             }
 
             let resp = req.send().await.map_err(|e| {
@@ -512,6 +517,9 @@ impl BlobStorageBackend for S3BlobBackend {
             let objects = resp.contents.unwrap_or_default();
             let mut blobs: Vec<BackendBlobEntry> = Vec::with_capacity(objects.len());
             let mut unknowns: Vec<BackendUnknownEntry> = Vec::new();
+            // Last key of the page regardless of classification — the resume
+            // fallback for an all-unknowns page (see next_cursor below).
+            let mut last_key: Option<String> = None;
 
             for obj in objects {
                 let Some(key) = obj.key else { continue };
@@ -539,13 +547,41 @@ impl BlobStorageBackend for S3BlobBackend {
                 });
 
                 match is_canonical {
-                    Some(hash) => blobs.push(BackendBlobEntry { hash, mtime }),
-                    None => unknowns.push(BackendUnknownEntry { path: key, mtime }),
+                    Some(hash) => {
+                        last_key = Some(hash.clone());
+                        blobs.push(BackendBlobEntry { hash, mtime })
+                    }
+                    None => {
+                        last_key = Some(key.clone());
+                        unknowns.push(BackendUnknownEntry { path: key, mtime })
+                    }
                 }
             }
 
+            // Resume point: the last hash of this page, not the continuation
+            // token — see the StartAfter note above.
+            //
+            // `blobs.last()` alone is NOT sufficient. A page can legitimately
+            // contain only non-canonical keys (`.tmp` spool files, `.corrupt`
+            // sidecars), which are filtered into `unknowns`; `blobs` is then
+            // empty and a naive `blobs.last()` yields None, silently ending
+            // enumeration while `is_truncated` says otherwise. A consistency
+            // sweep would under-report rather than fail — the worst shape of
+            // bug for an audit job.
+            //
+            // So fall back to the last KEY seen. StartAfter is a plain string
+            // comparison, so any key works as a resume point; it need not be
+            // a hash. The port contract's "cursor is a hash" is what CALLERS
+            // may synthesise, not a restriction on what backends may return.
             let next_cursor = if resp.is_truncated.unwrap_or(false) {
-                resp.next_continuation_token
+                match blobs.last() {
+                    Some(entry) => Some(entry.hash.clone()),
+                    None => last_key.map(|k| {
+                        // Strip the `blobs/<xx>/` prefix: object_key() re-adds
+                        // it when this comes back as a cursor.
+                        k.rsplit('/').next().unwrap_or(&k).to_string()
+                    }),
+                }
             } else {
                 None
             };

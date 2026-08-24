@@ -778,12 +778,30 @@ impl BlobStorageBackend for LocalBlobBackend {
 
         let blob_root = self.blob_root.clone();
         Box::pin(async move {
+            // Cursor is the last hash returned (see the port contract). The
+            // shard is derivable from it — the shard name IS the hash's first
+            // two chars — so no composite is needed.
+            //
+            // Both legacy forms still resume correctly, so a consistency run
+            // paused across this deploy is not stranded:
+            //   * "<shard>/<hash>" — what this backend used to emit; the
+            //     hash half is taken and the shard re-derived from it.
+            //   * "<shard>" — a bare 2-char shard. It flows through the same
+            //     path: "3f" sorts BEFORE every 64-char hash beginning "3f",
+            //     so using it as start_after skips nothing.
             let (start_shard, start_after_hash): (String, Option<String>) = match cursor {
                 None => (String::from("00"), None),
-                Some(c) => match c.split_once('/') {
-                    Some((sh, h)) => (sh.to_string(), Some(h.to_string())),
-                    None => (c, None),
-                },
+                Some(c) => {
+                    let hash = c.split_once('/').map(|(_, h)| h).unwrap_or(c.as_str());
+                    if hash.len() >= 2 {
+                        (hash[..2].to_string(), Some(hash.to_string()))
+                    } else {
+                        // Under 2 chars — not a hash and not a shard. Should
+                        // be unreachable; start from the beginning rather
+                        // than index out of bounds.
+                        (String::from("00"), None)
+                    }
+                }
             };
 
             let mut blobs: Vec<BackendBlobEntry> = Vec::with_capacity(limit);
@@ -879,11 +897,8 @@ impl BlobStorageBackend for LocalBlobBackend {
                         continue;
                     }
                     if blobs.len() >= limit {
-                        next_cursor = Some(format!(
-                            "{}/{}",
-                            prefix,
-                            blobs.last().map(|e| e.hash.as_str()).unwrap_or("")
-                        ));
+                        // Just the hash — the shard is recoverable from it.
+                        next_cursor = blobs.last().map(|e| e.hash.clone());
                         return Ok(BlobListPage {
                             blobs,
                             unknowns,
@@ -1007,5 +1022,67 @@ mod tests {
             hash_prefix_slot(&fake_hash("aF"))
         );
         assert_eq!(hash_prefix_slot("gg"), None);
+    }
+
+    /// The port contract now REQUIRES ascending hash order and a cursor that
+    /// is the last hash returned. `backend_consistency`'s merge-join depends
+    /// on both: an out-of-order page would make it emit bogus
+    /// `blob_missing_from_backend` findings at `data_loss` severity, and a
+    /// non-hash cursor would stop a caller resuming from its own checkpoint.
+    ///
+    /// Nothing covered enumeration before this, so both properties were
+    /// accidental.
+    #[tokio::test]
+    async fn list_blob_hashes_is_ordered_and_hash_cursor_resumes() {
+        let dir = TempDir::new().unwrap();
+        let backend = LocalBlobBackend::new(dir.path());
+        backend.initialize().await.unwrap();
+
+        // Deliberately inserted out of order and across several shards, so a
+        // passing result cannot come from insertion order.
+        let mut written: Vec<String> = ["f0", "0a", "9c", "0b", "ff", "12"]
+            .iter()
+            .map(|p| fake_hash(p))
+            .collect();
+        for h in &written {
+            backend
+                .put_blob_from_bytes(h, Bytes::from_static(b"x"))
+                .await
+                .unwrap();
+        }
+        written.sort();
+
+        // Page with limit 2 so the cursor is exercised repeatedly.
+        let mut seen: Vec<String> = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..20 {
+            let page = backend.list_blob_hashes(cursor.clone(), 2).await.unwrap();
+            seen.extend(page.blobs.iter().map(|e| e.hash.clone()));
+            match page.next_cursor {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+
+        assert_eq!(seen, written, "enumeration must be complete and ascending");
+
+        // A cursor the CALLER synthesises from a hash it already holds must
+        // work — that is the property the merge-join resume relies on, and
+        // what an opaque backend token could not provide.
+        let midpoint = &written[2];
+        let resumed = backend
+            .list_blob_hashes(Some(midpoint.clone()), 100)
+            .await
+            .unwrap();
+        let expected: Vec<String> = written[3..].to_vec();
+        assert_eq!(
+            resumed
+                .blobs
+                .iter()
+                .map(|e| e.hash.clone())
+                .collect::<Vec<_>>(),
+            expected,
+            "resume must start STRICTLY after the given hash"
+        );
     }
 }
