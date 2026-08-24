@@ -1,7 +1,30 @@
-name: "Docker Hub & GHCR Release"
+name: "Docker Publish (release, main, dry-run)"
+
+# Per-run title shown in the Actions tab list — makes it obvious at
+# a glance which channel a given run served and (for dispatched
+# runs) whether it was a dry-run. Without this, GitHub falls back
+# to the commit subject, which is uninformative when multiple
+# workflows fire on the same commit.
+#
+# Falls back to `github.ref_name` for push / release events (which
+# don't carry `inputs.*`), and stitches "[DRY-RUN]" onto the
+# dispatched cases where `inputs.dry_run` is checked.
+run-name: >-
+  Docker Publish
+  ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '[DRY-RUN]' || '' }}
+  — ${{ github.event.inputs.version || github.ref_name }}
 
 on:
+  # Every merge to `main` republishes the mutable `:main` tag so users
+  # tracking the tip of development can pull the freshest image
+  # without waiting for a release. `:latest` is DELIBERATELY not
+  # touched on this trigger — it stays pointed at the last released
+  # version. Provenance for a specific `:main` pull is queryable via
+  # `docker inspect` (org.opencontainers.image.revision label carries
+  # the SHA).
   push:
+    branches:
+      - "main"
     tags:
       - "v*"
   release:
@@ -12,14 +35,44 @@ on:
       version:
         description: 'Version tag to publish (e.g. v0.5.3)'
         required: true
+      dry_run:
+        description: 'Dry run — build only, skip push + verify. Prints the tag set that WOULD be pushed. Use to smoke-test workflow edits without touching the registry.'
+        required: false
+        type: boolean
+        default: false
 
 env:
+  # Docker Hub image name is fixed to the canonical namespace — forks
+  # that opt in to publishing typically also override this with their
+  # own DockerHub account name (see the fork guide in
+  # docs/plan/docker-publish.md, if/when documented).
   REGISTRY_IMAGE: diocrafts/oxicloud
-  GHCR_REGISTRY_IMAGE: ghcr.io/atalayalabs/oxicloud
+  # GHCR image name follows the repo owner — canonical repo publishes
+  # to `ghcr.io/atalayalabs/oxicloud`; a fork opting in via
+  # `vars.ENABLE_DOCKER_PUBLISH=true` publishes to its own owner's
+  # namespace with zero config edits.
+  GHCR_REGISTRY_IMAGE: ghcr.io/${{ github.repository_owner }}/oxicloud
+
+# Cancel superseded `:main` builds if commits land in quick succession
+# — only the newest one matters, and having two racing builds pushing
+# to the same mutable tag is a coin-toss on which one wins. Release-tag
+# and manual-dispatch builds never cancel: each release is unique and
+# irreversible; every one must publish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
 jobs:
-  # Run tests before publishing
+  # Run tests before publishing.
+  #
+  # SKIPPED on push-to-`main`: the same test matrix already ran on the
+  # PR that produced this commit (branch protection ensures PRs pass
+  # CI before merge). Re-running here would double the CI cost per
+  # merge for zero signal. Release-tag / manual-dispatch builds still
+  # test — they're explicit "shipping this" moments where
+  # belt-and-suspenders matters.
   test:
+    if: github.event_name != 'push' || !startsWith(github.ref, 'refs/heads/')
     name: Pre-publish Tests
     runs-on: ubuntu-latest
     services:
@@ -60,30 +113,64 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     needs: test
+    # Publish gate — TWO conditions must hold:
+    #
+    # 1. The `test` job succeeded (or was skipped for push-to-main —
+    #    branch protection ensures PR CI already ran; see the test
+    #    job's `if:`). `always()` unblocks the `needs:` when test is
+    #    skipped; the result check still blocks on real failures.
+    #
+    # 2. Publishing is enabled for THIS repo. Canonical
+    #    `AtalayaLabs/OxiCloud` always publishes. Forks stay quiet by
+    #    default (no accidental GHCR packages / wasted CI minutes when
+    #    someone forks just to read code); a fork owner who wants to
+    #    test-publish sets `ENABLE_DOCKER_PUBLISH=true` under
+    #    Settings → Secrets and variables → Actions → Variables.
+    if: |
+      always() &&
+      (needs.test.result == 'success' || needs.test.result == 'skipped') &&
+      (github.repository == 'AtalayaLabs/OxiCloud' || vars.ENABLE_DOCKER_PUBLISH == 'true')
     permissions:
       contents: read
       packages: write
+    # Job-level env — `secrets` context is legal here but NOT in
+    # step-level `if:` conditions. Precomputing the "is DH configured"
+    # signal as an env var lets downstream steps gate cleanly via
+    # `env.HAS_DOCKERHUB_TOKEN == 'true'` — see the DockerHub login
+    # step below.
+    env:
+      HAS_DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # Build the exact tag behind the published release or manual dispatch.
+          # Build the exact tag behind the published release or manual
+          # dispatch. On push-to-main, `github.ref` resolves to
+          # `refs/heads/main` and this checks out the freshly-merged
+          # commit — exactly what we want to publish as `:main`.
           ref: ${{ github.event.inputs.version || github.event.release.tag_name || github.ref }}
 
-      - name: Set version tag
-        id: version
-        run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            VERSION="${{ github.event.inputs.version }}"
-          elif [ "${{ github.event_name }}" == "release" ]; then
-            VERSION="${{ github.event.release.tag_name }}"
-          else
-            VERSION="${GITHUB_REF#refs/tags/}"
-          fi
-          # Strip leading 'v' if present for Docker tag
-          VERSION="${VERSION#v}"
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+      - name: Resolve channel + version + tags
+        id: meta
+        # Delegates to `scripts/compute-docker-tags.sh` — logic is
+        # unit-tested via `scripts/test-docker-publish-tags.sh` so
+        # any change to the tag policy gets caught before hitting a
+        # runner. The script emits `version`, `channel`, and `tags`
+        # to $GITHUB_OUTPUT (for later `steps.meta.outputs.*`),
+        # plus `VERSION` / `CHANNEL` / `SKIP_DOCKERHUB` to
+        # $GITHUB_ENV (for later steps that read env directly), plus
+        # a human-readable trailer to stdout for the run log —
+        # useful in dry-run mode where the tag set is the deliverable.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          DISPATCH_VERSION: ${{ github.event.inputs.version }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          # Empty DOCKERHUB_TOKEN → skip DH tags cleanly (forks that
+          # opted in via ENABLE_DOCKER_PUBLISH but didn't set up
+          # DockerHub still get their GHCR image published).
+          SKIP_DOCKERHUB: ${{ secrets.DOCKERHUB_TOKEN == '' && 'true' || 'false' }}
+        run: bash "$GITHUB_WORKSPACE/scripts/compute-docker-tags.sh"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -92,6 +179,19 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Login to DockerHub
+        # Skipped cleanly when DOCKERHUB_TOKEN isn't configured on
+        # this repo — the meta step's SKIP_DOCKERHUB env drops DH
+        # tags from the push set in that case, so we don't need
+        # DH auth at all. Canonical repo always has the secret and
+        # always publishes; forks are opt-in via ENABLE_DOCKER_PUBLISH
+        # AND can further opt in / out of DH separately by
+        # adding / omitting DOCKERHUB_TOKEN.
+        #
+        # `secrets` context is not available in step-level `if:`
+        # conditions — we read it via the job-level env var
+        # `HAS_DOCKERHUB_TOKEN` computed above (which CAN reference
+        # secrets since it lives in `env:`, not `if:`).
+        if: env.HAS_DOCKERHUB_TOKEN == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -109,12 +209,17 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ env.REGISTRY_IMAGE }}:${{ env.VERSION }}
-            ${{ env.REGISTRY_IMAGE }}:latest
-            ${{ env.GHCR_REGISTRY_IMAGE }}:${{ env.VERSION }}
-            ${{ env.GHCR_REGISTRY_IMAGE }}:latest
+          # `push` flips to `false` for a dry-run — the multi-arch
+          # build still runs (catches Dockerfile regressions), but
+          # nothing hits the registry. Only reachable via
+          # `workflow_dispatch` with `dry_run: true`. Real push
+          # events (release, branch push) always publish.
+          push: ${{ github.event.inputs.dry_run != 'true' }}
+          # Tag set computed in the meta step above — release channel
+          # publishes `:<version>` + `:latest`; main channel publishes
+          # just `:main`. Emitted to the build log either way so the
+          # dry-run mode surfaces "what would ship" in plain sight.
+          tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           # GitHub Actions env piped through so build.rs stamps
@@ -129,7 +234,36 @@ jobs:
             GITHUB_HEAD_REF=${{ github.head_ref }}
 
       - name: Verify published image
+        # Skipped on dry-run — nothing was pushed to pull back.
+        # Verifies GHCR unconditionally (always pushed), then adds a
+        # Docker Hub pull when the DH branch actually ran. Simpler
+        # than a matrix — the two registries share the same content
+        # (same multi-arch manifest), so one pull confirms the build
+        # + push worked; the other is just a "did we auth to both"
+        # sanity check.
+        if: github.event.inputs.dry_run != 'true'
         run: |
-          docker pull ${{ env.REGISTRY_IMAGE }}:${{ env.VERSION }}
-          docker image inspect ${{ env.REGISTRY_IMAGE }}:${{ env.VERSION }}
-          echo "✅ Image ${{ env.REGISTRY_IMAGE }}:${{ env.VERSION }} published successfully"
+          echo "─── Verify GHCR ───"
+          docker pull ${{ env.GHCR_REGISTRY_IMAGE }}:${{ env.VERSION }}
+          docker image inspect ${{ env.GHCR_REGISTRY_IMAGE }}:${{ env.VERSION }} > /dev/null
+          echo "✅ ${{ env.GHCR_REGISTRY_IMAGE }}:${{ env.VERSION }} published"
+          if [ "${{ env.SKIP_DOCKERHUB }}" != "true" ]; then
+            echo "─── Verify Docker Hub ───"
+            docker pull ${{ env.REGISTRY_IMAGE }}:${{ env.VERSION }}
+            docker image inspect ${{ env.REGISTRY_IMAGE }}:${{ env.VERSION }} > /dev/null
+            echo "✅ ${{ env.REGISTRY_IMAGE }}:${{ env.VERSION }} published"
+          else
+            echo "ℹ️  Skipped Docker Hub verification (DOCKERHUB_TOKEN not set on this repo)"
+          fi
+
+      - name: Dry-run summary
+        # Only surfaces in dry-run mode. Mirrors the "Verify" step's
+        # role — gives the operator running the dry-run a clear
+        # closing message with the exact tag set the workflow would
+        # have pushed. The meta step already logged it, this step
+        # just makes it prominent at the bottom of the run.
+        if: github.event.inputs.dry_run == 'true'
+        run: |
+          echo "🔍 DRY RUN — image built + tagged but NOT pushed."
+          echo "Would have published:"
+          echo "${{ steps.meta.outputs.tags }}" | sed 's/^/    /'
