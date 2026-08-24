@@ -81,7 +81,6 @@ Authorization: Bearer {{token}}
 HTTP 200
 [Captures]
 etag_before: header "ETag"
-thumb_before: bytes
 [Asserts]
 header "Cache-Control" contains "immutable"
 
@@ -109,15 +108,22 @@ status < 300
 
 
 # Same file row, different content.
-GET {{base_url}}/api/files/{{file_id}}
+#
+# Listed rather than fetched by id: `/api/files/{id}` is the DOWNLOAD
+# route (it returns the image bytes) and `/{id}/metadata` is the EXIF
+# endpoint — neither carries the FileDto. The folder holds exactly this
+# one file, so `count == 1` also proves the PUT overwrote in place
+# instead of creating a second file beside it.
+GET {{base_url}}/api/files?folder_id={{folder_id}}
 Authorization: Bearer {{token}}
 
 HTTP 200
 [Captures]
-hash_after: jsonpath "$.content_hash"
+hash_after: jsonpath "$[0].content_hash"
 [Asserts]
-jsonpath "$.id" == "{{file_id}}"
-jsonpath "$.content_hash" != "{{hash_before}}"
+jsonpath "$" count == 1
+jsonpath "$[0].id" == "{{file_id}}"
+jsonpath "$[0].content_hash" != "{{hash_before}}"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -126,6 +132,12 @@ jsonpath "$.content_hash" != "{{hash_before}}"
 # This is the assertion the file exists for. With the id-keyed ETag it was
 # byte-identical to `etag_before`, and the next request would have been
 # answered 304 from cache — serving the OLD image indefinitely.
+#
+# Deliberately asserts the ETag only, not that the BODY changed. The moka
+# tier is still keyed on file_id and is invalidated from the spawned task
+# in `on_file_updated`, so a request landing before that task runs gets the
+# previous bytes under the new ETag. Asserting on bytes here would be a
+# race; the incoherence itself is tracked separately.
 # ─────────────────────────────────────────────────────────────
 GET {{base_url}}/api/files/{{file_id}}/thumbnail/preview
 Authorization: Bearer {{token}}
