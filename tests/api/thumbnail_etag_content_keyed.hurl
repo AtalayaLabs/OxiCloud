@@ -41,11 +41,28 @@ token: jsonpath "$.access_token"
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 2 – Upload the first image
+# Step 2 – Upload the first image into a folder of its own.
+#
+# `folder_id` is required — the upload path resolves the owner from the
+# destination folder, so omitting it is a 500, not a root upload. The
+# folder also gives the WebDAV overwrite in step 4 a deterministic path.
 # ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/folders
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{
+  "name": "hurl-etag-src"
+}
+
+HTTP 201
+[Captures]
+folder_id: jsonpath "$.id"
+
+
 POST {{base_url}}/api/files/upload
 Authorization: Bearer {{token}}
 [MultipartFormData]
+folder_id: {{folder_id}}
 file: file,fixtures/red-image.png; image/png
 
 HTTP 201
@@ -80,7 +97,7 @@ HTTP 304
 # ─────────────────────────────────────────────────────────────
 # Step 4 – Replace the content in place, keeping the same file id.
 # ─────────────────────────────────────────────────────────────
-PUT {{base_url}}/webdav/{{file_name}}
+PUT {{base_url}}/webdav/hurl-etag-src/{{file_name}}
 Authorization: Bearer {{token}}
 Content-Type: image/png
 file,fixtures/green-image.png;
@@ -139,7 +156,8 @@ HTTP 304
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 6 – Teardown. Hurl files share one database within run.sh.
+# Step 6 – Teardown. Hurl files share one database within run.sh, so the
+#          folder goes too, and both leave trash empty behind them.
 # ─────────────────────────────────────────────────────────────
 DELETE {{base_url}}/api/files/{{file_id}}
 Authorization: Bearer {{token}}
@@ -156,6 +174,26 @@ trash_id: jsonpath "$.items[?(@.resource.id == '{{file_id}}')].resource.id"
 
 
 DELETE {{base_url}}/api/trash/{{trash_id}}
+Authorization: Bearer {{token}}
+
+HTTP 200
+
+
+DELETE {{base_url}}/api/folders/{{folder_id}}
+Authorization: Bearer {{token}}
+
+HTTP 204
+
+
+GET {{base_url}}/api/trash/resources
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Captures]
+trash_folder_id: jsonpath "$.items[?(@.resource.id == '{{folder_id}}')].resource.id"
+
+
+DELETE {{base_url}}/api/trash/{{trash_folder_id}}
 Authorization: Bearer {{token}}
 
 HTTP 200
