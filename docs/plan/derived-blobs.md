@@ -949,6 +949,48 @@ the request. Read order:
    backend stack, which is where the disk cache lives.
 4. Generate only if step 2 found no row.
 
+### HTTP ETag — move to the derived hash when the order flips
+
+Shipped ahead of this plan (2026-08-24): the thumbnail ETag is
+`"thumb-{source_hash}-{size}-{format}"` on both the REST and the
+NextCloud preview endpoint. It replaced a `file_id`-keyed ETag that,
+combined with `Cache-Control: immutable`, meant replacing a file's
+content never invalidated the client's copy — `file_id` survives the
+replacement, so the ETag did too, for a year.
+
+**That key is still one term short.** A thumbnail is a function of
+`(source bytes, size, format, RENDERER)`. Change the encoder, a quality
+setting, or EXIF-rotation handling, and identical inputs produce
+different bytes under an unchanged ETag — the same staleness class, one
+level down. It bites when an already-cached thumbnail is re-rendered
+after a renderer change (sidecar evicted, regenerated on miss).
+
+**The fix is to key on the derived blob's own hash** — the ETag then
+*is* the hash of the bytes served, so any change in output invalidates
+by construction, with no version constant to remember to bump. It is
+self-consistent for free: `store_derived_blob` is
+`ON CONFLICT DO NOTHING`, so a re-render never displaces the stored
+row, and the ETag therefore always equals what the derived tier will
+serve.
+
+**It must land with the read-order flip, not before.** Today the
+derived tier is deliberately read LAST, so an ETag naming the derived
+hash would describe a tier the response probably did not come from.
+The two agree at creation — `render_and_persist_all_webp` writes both
+from the same bytes — but diverge if a sidecar is re-rendered while the
+derived row stays pinned by `DO NOTHING`. Sidecar is served, ETag
+describes the other one: an ETag that lies about the body is worse than
+one that is merely coarse. Two further reasons it has to wait: the
+derived tier is WebP-only (`variant = size.dir_name()`, no format in
+the key), so non-WebP clients have no row to key on; and nothing
+predating this work has a row until `derived_import` backfills.
+
+So at step 10, alongside the flip: ETag becomes the derived hash, with
+the current `source_hash` form kept as the fallback for a variant not
+yet generated and for formats the derived tier does not hold. The
+`LEFT JOIN` in step 2 above already returns the derived hash in the
+same query, so the ETag costs no extra round-trip.
+
 **The disk cache is `CachedBlobBackend`, reused unchanged.** No
 thumbnail-specific cache, no second root path. Routing derived
 blobs through the same stack gets, for free:
@@ -1171,7 +1213,11 @@ hardcoded SQL). New sources bolt on independently.
    declare its version semantics.
 10. **`derived_import` job + the dual-read fallback** — see the
    migration section. Phase 3 (deleting the fallback and the sidecar
-   dirs) is a separate later release, gated on an empty tail.
+   dirs) is a separate later release, gated on an empty tail. **The
+   HTTP ETag moves to the derived hash here**, with the read-order
+   flip and not before — see "HTTP ETag" under *Read path and
+   caching* for why keying it earlier would make the ETag describe a
+   tier the response did not come from.
 11. **`DedupService` → `BlobHandler` rename** — decided, mechanical,
     34 files. Standalone commit, `src/AGENTS.md` updated with it. Can
     land at any point; last is easiest, since every earlier slice
