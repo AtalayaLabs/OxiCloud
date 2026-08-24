@@ -137,19 +137,40 @@ pub async fn handle_preview(
         }
     };
 
-    // Conditional revalidation — the ETag is derived from (object id, size)
-    // only, so it is computable right here, BEFORE the blob-hash query and
-    // the thumbnail cache/disk read. NC clients revalidate gallery previews
-    // constantly; the REST thumbnail endpoint has honoured `If-None-Match`
-    // since PHOTOS-ETAG — this endpoint set an immutable ETag but never
-    // compared it, so every revalidation re-ran the whole pipeline and
-    // re-shipped the body (ROUND10). Authz already passed above; a 304
-    // must never skip the Read check.
+    // Conditional revalidation. NC clients revalidate gallery previews
+    // constantly; this endpoint set an immutable ETag but never compared it,
+    // so every revalidation re-ran the whole pipeline and re-shipped the body
+    // (ROUND10). Authz already passed above; a 304 must never skip the Read
+    // check.
+    //
+    // Keyed on the CONTENT hash, matching the REST thumbnail endpoint. A
+    // thumbnail is a pure function of (source bytes, size), so that pair
+    // identifies the response and `immutable` below is honest. Keying on the
+    // object id meant replacing a file's content — which preserves the id —
+    // left every client showing the old preview for up to a year, since
+    // `immutable` suppresses revalidation entirely.
+    //
+    // This moves the blob-hash query ahead of the 304 rather than adding one:
+    // the same lookup used to sit just below, on the path that renders.
+    let blob_hash = match state
+        .repositories
+        .file_read_repository
+        .get_blob_hash(&object_id)
+        .await
+    {
+        Ok(hash) => hash,
+        Err(_) => {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::from("File blob not found"))
+                .unwrap();
+        }
+    };
     let etag = {
         let s = thumb_size.as_str();
-        let mut e = String::with_capacity(9 + object_id.len() + s.len());
+        let mut e = String::with_capacity(9 + blob_hash.len() + s.len());
         e.push_str("\"thumb-");
-        e.push_str(&object_id);
+        e.push_str(&blob_hash);
         e.push('-');
         e.push_str(s);
         e.push('"');
@@ -179,21 +200,7 @@ pub async fn handle_preview(
             .unwrap();
     }
 
-    // Resolve the blob hash (content-addressable storage)
-    let blob_hash = match state
-        .repositories
-        .file_read_repository
-        .get_blob_hash(&object_id)
-        .await
-    {
-        Ok(hash) => hash,
-        Err(_) => {
-            return Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .body(Body::from("File blob not found"))
-                .unwrap();
-        }
-    };
+    // `blob_hash` was resolved above to build the ETag.
     if let Some(data) = state
         .core
         .thumbnail_service

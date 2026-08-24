@@ -140,6 +140,7 @@ Authorization: Bearer {{token}}
 HTTP 200
 [Captures]
 thumb_bytes: bytes
+thumb_etag: header "ETag"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -173,10 +174,14 @@ jsonpath "$.ref_count" == 2
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 7 – The copy is readable and renders the same bytes.
+# Step 7 – The copy is readable, renders the same bytes, and carries the
+#          SAME ETag as the original.
 #
-# NOT a proof of derived-blob sharing — see the header. This catches the
-# copy being unreadable or resolving to different content.
+# The ETag is keyed on the content hash, which the copy shares. Two
+# different files agreeing on an ETag is the one externally visible
+# consequence of content-keying — a file-id-keyed ETag could not produce
+# it. The 304 below is the payoff: a client that already holds the
+# original's thumbnail does not refetch it for the copy.
 # ─────────────────────────────────────────────────────────────
 GET {{base_url}}/api/files/{{file_copy_id}}/thumbnail/preview
 Authorization: Bearer {{token}}
@@ -184,6 +189,16 @@ Authorization: Bearer {{token}}
 HTTP 200
 [Asserts]
 bytes == {{thumb_bytes}}
+header "ETag" == "{{thumb_etag}}"
+
+
+GET {{base_url}}/api/files/{{file_copy_id}}/thumbnail/preview
+Authorization: Bearer {{token}}
+If-None-Match: {{thumb_etag}}
+
+HTTP 304
+[Asserts]
+header "ETag" == "{{thumb_etag}}"
 
 
 # ─────────────────────────────────────────────────────────────

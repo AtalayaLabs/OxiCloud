@@ -395,19 +395,24 @@ impl FileHandler {
 
     /// Get a thumbnail for a file (image or video).
     ///
-    /// **Cache-first**: if the thumbnail already exists in the moka in-memory
-    /// cache or on disk, serve it immediately — **zero DB queries**.  The
-    /// ownership check was already performed when the thumbnail was first
-    /// generated (at upload) or uploaded (PUT by the owner).  UUIDv4 file IDs
-    /// have 122 bits of entropy, making enumeration infeasible.
+    /// **Cache-first**: once past the hash lookup below, a thumbnail already
+    /// in the moka in-memory cache or on disk is served without further DB
+    /// work.  The ownership check was already performed when the thumbnail
+    /// was first generated (at upload) or uploaded (PUT by the owner).
+    /// UUIDv4 file IDs have 122 bits of entropy, making enumeration
+    /// infeasible.
     ///
-    /// **ETag / 304**: responses carry an immutable ETag.  If the browser
-    /// sends `If-None-Match` matching the ETag, we return 304 Not Modified
-    /// without touching cache or DB — pure header round-trip.
+    /// **ETag / 304**: responses carry an immutable ETag keyed on the
+    /// **content hash**, so it identifies the bytes rather than the file.
+    /// Replacing a file's content changes it (correct invalidation), and two
+    /// files with identical content share it (a copy revalidates to 304
+    /// instead of refetching).  Costs one PK lookup on the 304 path, which an
+    /// id-keyed ETag avoided at the price of never invalidating — see the
+    /// comment at the ETag construction.
     ///
-    /// The DB path is only taken on a **cache miss for images** where the
-    /// thumbnail hasn't been generated yet (first access after upload if
-    /// background generation hasn't finished).
+    /// Beyond that, the DB path is only taken on a **cache miss for images**
+    /// where the thumbnail hasn't been generated yet (first access after
+    /// upload if background generation hasn't finished).
     pub(super) async fn get_thumbnail_impl(
         State(state): State<GlobalState>,
         auth_user: AuthUser,
@@ -449,16 +454,44 @@ impl FileHandler {
         let format =
             ThumbnailFormat::from_accept(headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()));
 
-        // ── ETag short-circuit (Solution C) ──────────────────────────
-        // Thumbnails are immutable — the ETag never changes for a given
-        // (file_id, size, format) triple.  If the browser already has it, return
-        // 304 with zero I/O or DB work. Format is in the ETag so a client that
-        // switched codecs doesn't get a stale 304.
+        // ── ETag short-circuit ───────────────────────────────────────
+        // Keyed on the CONTENT hash, not the file id. A thumbnail is a pure
+        // function of (source bytes, size, format), so that triple genuinely
+        // identifies the response — which is what makes the `immutable`
+        // directive below an honest claim.
+        //
+        // Keying on `file_id` was wrong in both directions. Replacing a
+        // file's content preserves its id (`file_upload_service` rebuilds the
+        // entity with `parts.id` and a new hash, then fires
+        // `on_file_updated`, which regenerates the thumbnails), so the ETag
+        // never changed — and since `immutable` tells a browser not to
+        // revalidate at all inside the freshness window, clients kept the old
+        // preview for up to a year. Conversely a copy, or any dedup twin, got
+        // a *different* id and so refetched bytes it already held, even
+        // though the server serves both from the same derived blob.
+        //
+        // Cost: one PK lookup, where the id-keyed version needed none. It
+        // buys correct invalidation plus 304s shared across every file with
+        // the same content. The lookup runs after the authz check above,
+        // which has already hit the database.
+        //
+        // No new disclosure: `content_hash` is already on `FileDto` and
+        // returned by `GET /api/files/{id}`, so any caller who reaches here
+        // could read it anyway.
+        let blob_hash = match state
+            .repositories
+            .file_read_repository
+            .get_blob_hash(&id)
+            .await
+        {
+            Ok(h) => h,
+            Err(err) => return AppError::from(err).into_response(),
+        };
         let etag = {
             let (s, f) = (thumb_size.as_str(), format.as_str());
-            let mut e = String::with_capacity(9 + id.len() + s.len() + f.len());
+            let mut e = String::with_capacity(9 + blob_hash.len() + s.len() + f.len());
             e.push_str("\"thumb-");
-            e.push_str(&id);
+            e.push_str(&blob_hash);
             e.push('-');
             e.push_str(s);
             e.push('-');
@@ -486,7 +519,9 @@ impl FileHandler {
         if let Some(data) = thumbnail_service
             .get_cached_thumbnail(
                 &id,
-                None,
+                // Already resolved for the ETag above — hand it over rather
+                // than let the service look it up a second time.
+                Some(&blob_hash),
                 thumb_size.into(),
                 format,
                 Some(&state.core.dedup_service),
@@ -534,18 +569,7 @@ impl FileHandler {
                 .into_response();
         }
 
-        // Resolve the blob hash (content-addressable storage).
-        let blob_hash = match state
-            .repositories
-            .file_read_repository
-            .get_blob_hash(&id)
-            .await
-        {
-            Ok(hash) => hash,
-            Err(_) => {
-                return AppError::internal_error("File blob not found").into_response();
-            }
-        };
+        // `blob_hash` was resolved above to build the ETag — no second lookup.
         if let Some(data) = thumbnail_service
             .get_cached_thumbnail(
                 &id,
