@@ -1,30 +1,46 @@
 # =============================================================
 # OxiCloud – Derived blobs survive a copy, and are SHARED not duplicated
 # =============================================================
-# Guards two properties of `docs/plan/derived-blobs.md` that are easy to
-# break and silent when broken.
+# Guards ONE property, the one that was actually broken:
 #
-# 1. **Derived content is content-keyed, so a copy gets it for free.**
-#    `storage.content_derived_blobs` is keyed on `source_hash`, and a copy
-#    carries the SAME `blob_hash` as its original. So the copy resolves to
-#    the very same thumbnail row — nothing is duplicated, and nothing is
-#    re-rendered. A regression that made copy duplicate those rows would
-#    still return 200 here; the byte-identity assertions are what catch it,
-#    because a re-render produces different bytes than a cache hit only if
-#    the pipeline is non-deterministic — so we also assert the ref_count,
-#    which a duplicated row would inflate.
+#   **A copy takes a real blob reference, via BOTH copy paths.**
 #
-# 2. **A copy takes a real blob reference, via BOTH copy paths.**
-#    `storage.copy_file_satellites` (migration `20261019000000`) is now the
-#    single home for that, called by the single-file path and by
-#    `storage.copy_folder_tree`. The tree path previously bumped
-#    `storage.blobs` only — which matched nothing for a manifest-backed
-#    file, so a folder copy took NO reference and deleting the original
-#    reaped bytes the copy still needed. Steps 6 and 9 are what would fail.
+# `storage.copy_file_satellites` (migration `20261019000000`) is the single
+# home for that, called by the single-file path and by
+# `storage.copy_folder_tree`. The tree path previously bumped
+# `storage.blobs` only — which matched nothing for a manifest-backed file,
+# so a folder copy took NO reference, and deleting the original reaped
+# bytes the copy still needed. Steps 6 and 9 assert the ref_count; step 11
+# purges the original, runs GC, and requires both copies to still serve.
 #
-# The strongest assertion is step 11: after the ORIGINAL is permanently
-# deleted and GC has run, both copies must still serve their thumbnail.
-# That only holds if the references were real.
+# ── What this file does NOT prove, and why it cannot ─────────────────────
+#
+# It does not prove the copy SHARES the original's `content_derived_blobs`
+# row rather than getting its own. Two reasons, and neither is fixable by
+# adding assertions here:
+#
+# 1. Duplication is impossible by construction, so there is nothing to
+#    catch. The PK is `(source_hash, kind, variant)` and a copy carries the
+#    SAME `source_hash`, so a second INSERT conflicts — and
+#    `store_derived_blob` is already `ON CONFLICT DO NOTHING`. The schema
+#    enforces the property; no runtime behaviour can violate it.
+#
+# 2. Which tier served a thumbnail is invisible over HTTP. Stored derived
+#    blob, moka RAM cache, and a fresh re-render all return identical bytes
+#    with identical status — rendering is deterministic in the source bytes
+#    and the variant. The copy is in fact a moka hit (that cache is keyed on
+#    `(source_hash, size, format)`, which the copy shares), so it never
+#    reaches the derived tier at all in this test.
+#
+# The `bytes ==` assertions below therefore establish that the pipeline is
+# deterministic and that the copies are readable — NOT that the derived
+# tier was consulted. Read-path tier selection is observable only from
+# inside the process, so it belongs in a Rust unit test over
+# `ThumbnailService::get_cached_thumbnail`, not here.
+#
+# By the same limitation, step 11 proves the SOURCE content survived GC. It
+# does not prove the derived blob survived: had GC reaped it, the server
+# would re-render from the still-alive source and still answer 200.
 #
 # Coverage note: `dedup-test.jpg` is single-chunk, so `file_hash` equals its
 # lone chunk's hash — the aliasing case whose `NOT EXISTS` guard stops one
@@ -157,11 +173,10 @@ jsonpath "$.ref_count" == 2
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 7 – The copy serves the SAME thumbnail bytes.
+# Step 7 – The copy is readable and renders the same bytes.
 #
-# It shares the original's `blob_hash`, so it resolves the same
-# `content_derived_blobs` row. Nothing was copied to make this work —
-# that is the content-keying payoff.
+# NOT a proof of derived-blob sharing — see the header. This catches the
+# copy being unreadable or resolving to different content.
 # ─────────────────────────────────────────────────────────────
 GET {{base_url}}/api/files/{{file_copy_id}}/thumbnail/preview
 Authorization: Bearer {{token}}
@@ -261,9 +276,12 @@ jsonpath "$.ref_count" == 2
 #
 # This is the assertion the whole file exists for. If either copy had
 # failed to take a reference, the original's deletion would have walked
-# the count to 0 and GC would have reaped the content AND its derived
-# thumbnail — leaving these 5xx. That was a real, shipped bug on the
-# folder-copy path.
+# the count to 0 and GC would have reaped the SOURCE CONTENT — leaving
+# these 5xx. That was a real, shipped bug on the folder-copy path.
+#
+# Scope: this proves the source content survived. It says nothing about
+# whether the derived blob survived, because a reaped derived blob is
+# re-rendered transparently from the live source. See the header.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/admin/jobs/dedup_gc/trigger
 Authorization: Bearer {{token}}
