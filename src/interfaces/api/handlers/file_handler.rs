@@ -393,6 +393,35 @@ impl FileHandler {
     //  THUMBNAILS
     // ═══════════════════════════════════════════════════════════════════════
 
+    /// Cache policy for every thumbnail response.
+    ///
+    /// **`private`**, because a thumbnail is authorization-gated: the handler
+    /// runs a `Permission::Read` check before serving it. `public` let any
+    /// shared cache — a corporate proxy, a CDN — store one user's thumbnail
+    /// and hand it to another. `Vary: Accept` did not help, because it does
+    /// not vary on `Authorization`.
+    ///
+    /// **`no-cache`**, not `immutable`, because this URL is keyed by file id
+    /// and its bytes are mutable: uploading a preview, replacing the file's
+    /// content, or removing an attachment all change what it serves.
+    /// `immutable` promises the opposite, so a client that fetched once would
+    /// not revalidate — for a year, under the previous `max-age` — and would
+    /// never see a new preview. That also made the content-keyed ETag
+    /// unobservable in a browser: a correct validator is worthless if nothing
+    /// asks.
+    ///
+    /// `no-cache` still stores the body; it only requires revalidation before
+    /// reuse, which the ETag answers with a body-less 304.
+    ///
+    /// The cost is a conditional request per thumbnail per page load. Buying
+    /// that back needs a content-addressed URL, where `immutable` would be
+    /// honest — but the hash would then be in the URL of an authorized
+    /// resource, so it stays `private` regardless. Separate change; it
+    /// touches the SPA and the file DTO.
+    /// Shared with the NextCloud preview endpoint, which is gated the same
+    /// way and must not drift from this policy.
+    pub(crate) const THUMBNAIL_CACHE_CONTROL: &'static str = "private, no-cache";
+
     /// Get a thumbnail for a file (image or video).
     ///
     /// **Cache-first**: once past the hash lookup below, a thumbnail already
@@ -402,13 +431,15 @@ impl FileHandler {
     /// UUIDv4 file IDs have 122 bits of entropy, making enumeration
     /// infeasible.
     ///
-    /// **ETag / 304**: responses carry an immutable ETag keyed on the
-    /// **content hash**, so it identifies the bytes rather than the file.
-    /// Replacing a file's content changes it (correct invalidation), and two
-    /// files with identical content share it (a copy revalidates to 304
-    /// instead of refetching).  Costs one PK lookup on the 304 path, which an
-    /// id-keyed ETag avoided at the price of never invalidating — see the
-    /// comment at the ETag construction.
+    /// **ETag / 304**: the ETag names the **blob actually served** — an
+    /// uploaded preview's hash, else a derived thumbnail's, else the
+    /// source-keyed form (see `ThumbnailService::thumbnail_content_id`). So
+    /// replacing content or uploading a preview invalidates correctly, and
+    /// two files serving identical bytes share a validator. Costs one or two
+    /// indexed lookups on the 304 path, which an id-keyed ETag avoided at the
+    /// price of never invalidating.  Cache policy is
+    /// [`Self::THUMBNAIL_CACHE_CONTROL`] — `private, no-cache`, since this
+    /// URL is authorization-gated and its bytes are mutable.
     ///
     /// Beyond that, the DB path is only taken on a **cache miss for images**
     /// where the thumbnail hasn't been generated yet (first access after
@@ -455,20 +486,17 @@ impl FileHandler {
             ThumbnailFormat::from_accept(headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()));
 
         // ── ETag short-circuit ───────────────────────────────────────
-        // Keyed on the CONTENT hash, not the file id. A thumbnail is a pure
-        // function of (source bytes, size, format), so that triple genuinely
-        // identifies the response — which is what makes the `immutable`
-        // directive below an honest claim.
+        // Keyed on the CONTENT served, not the file id.
         //
         // Keying on `file_id` was wrong in both directions. Replacing a
         // file's content preserves its id (`file_upload_service` rebuilds the
         // entity with `parts.id` and a new hash, then fires
         // `on_file_updated`, which regenerates the thumbnails), so the ETag
-        // never changed — and since `immutable` tells a browser not to
-        // revalidate at all inside the freshness window, clients kept the old
-        // preview for up to a year. Conversely a copy, or any dedup twin, got
-        // a *different* id and so refetched bytes it already held, even
-        // though the server serves both from the same derived blob.
+        // never changed — and the response was `immutable` with a one-year
+        // max-age, so clients never revalidated and kept the old preview.
+        // Conversely a copy, or any dedup twin, got a *different* id and so
+        // refetched bytes it already held, even though the server serves both
+        // from the same derived blob.
         //
         // Cost: one PK lookup, where the id-keyed version needed none. It
         // buys correct invalidation plus 304s shared across every file with
@@ -511,7 +539,7 @@ impl FileHandler {
                 .status(StatusCode::NOT_MODIFIED)
                 .header(header::ETAG, &etag)
                 .header(header::VARY, header::ACCEPT.as_str())
-                .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+                .header(header::CACHE_CONTROL, Self::THUMBNAIL_CACHE_CONTROL)
                 .body(Body::empty())
                 .unwrap()
                 .into_response();
@@ -539,7 +567,7 @@ impl FileHandler {
                     crate::common::mime_detect::thumbnail_content_type(&data),
                 )
                 .header(header::CONTENT_LENGTH, data.len())
-                .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+                .header(header::CACHE_CONTROL, Self::THUMBNAIL_CACHE_CONTROL)
                 .header(header::ETAG, &etag)
                 .header(header::VARY, header::ACCEPT.as_str())
                 .body(Body::from(data))
@@ -591,7 +619,7 @@ impl FileHandler {
                     crate::common::mime_detect::thumbnail_content_type(&data),
                 )
                 .header(header::CONTENT_LENGTH, data.len())
-                .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+                .header(header::CACHE_CONTROL, Self::THUMBNAIL_CACHE_CONTROL)
                 .header(header::ETAG, &etag)
                 .header(header::VARY, header::ACCEPT.as_str())
                 .body(Body::from(data))
@@ -623,7 +651,7 @@ impl FileHandler {
                         crate::common::mime_detect::thumbnail_content_type(&data),
                     )
                     .header(header::CONTENT_LENGTH, data.len())
-                    .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+                    .header(header::CACHE_CONTROL, Self::THUMBNAIL_CACHE_CONTROL)
                     .header(header::ETAG, &etag)
                     .header(header::VARY, header::ACCEPT.as_str())
                     .body(Body::from(data))
@@ -655,7 +683,7 @@ impl FileHandler {
                     crate::common::mime_detect::thumbnail_content_type(&data),
                 )
                 .header(header::CONTENT_LENGTH, data.len())
-                .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+                .header(header::CACHE_CONTROL, Self::THUMBNAIL_CACHE_CONTROL)
                 .header(header::ETAG, &etag)
                 .header(header::VARY, header::ACCEPT.as_str())
                 .body(Body::from(data))

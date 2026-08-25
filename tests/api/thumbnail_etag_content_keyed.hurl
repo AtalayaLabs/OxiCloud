@@ -82,7 +82,15 @@ HTTP 200
 [Captures]
 etag_before: header "ETag"
 [Asserts]
-header "Cache-Control" contains "immutable"
+# `private`, because a thumbnail is Permission::Read gated — `public` let a
+# shared proxy hand one user's thumbnail to another. `no-cache` rather than
+# `immutable`, because this URL is keyed by file id and its bytes change
+# when content is replaced or a preview uploaded; `immutable` suppressed
+# revalidation entirely, which made the ETag below unobservable in a real
+# client.
+header "Cache-Control" contains "private"
+header "Cache-Control" contains "no-cache"
+header "Cache-Control" not contains "immutable"
 
 
 # Unchanged content revalidates to 304 — the caching path works.

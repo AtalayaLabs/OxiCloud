@@ -17,6 +17,9 @@ use crate::application::ports::storage_ports::FileReadPort;
 use crate::application::ports::thumbnail_ports::{ThumbnailFormat, ThumbnailPort, ThumbnailSize};
 use crate::common::di::AppState;
 use crate::domain::services::authorization::{Permission, Resource, Subject};
+// One definition of the thumbnail cache policy, shared with the REST
+// endpoint: both are Permission::Read gated, so both must stay `private`.
+use crate::interfaces::api::handlers::file_handler::FileHandler;
 use crate::interfaces::middleware::auth::AuthUser;
 use uuid::Uuid;
 
@@ -143,12 +146,13 @@ pub async fn handle_preview(
     // (ROUND10). Authz already passed above; a 304 must never skip the Read
     // check.
     //
-    // Keyed on the CONTENT hash, matching the REST thumbnail endpoint. A
-    // thumbnail is a pure function of (source bytes, size), so that pair
-    // identifies the response and `immutable` below is honest. Keying on the
-    // object id meant replacing a file's content — which preserves the id —
-    // left every client showing the old preview for up to a year, since
-    // `immutable` suppresses revalidation entirely.
+    // Keyed on the CONTENT of the bytes served, matching the REST thumbnail
+    // endpoint. Keying on the object id meant replacing a file's content —
+    // which preserves the id — left the validator unchanged, and the response
+    // was `immutable` with a one-year max-age, so clients never revalidated
+    // and showed the old preview indefinitely. Both halves are fixed: the
+    // ETag names what is served (see `thumbnail_content_id`) and the policy
+    // is `private, no-cache` (see `FileHandler::THUMBNAIL_CACHE_CONTROL`).
     //
     // This moves the blob-hash query ahead of the 304 rather than adding one:
     // the same lookup used to sit just below, on the path that renders.
@@ -189,7 +193,7 @@ pub async fn handle_preview(
     {
         return Response::builder()
             .status(StatusCode::NOT_MODIFIED)
-            .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+            .header(header::CACHE_CONTROL, FileHandler::THUMBNAIL_CACHE_CONTROL)
             .header(header::ETAG, etag)
             .body(Body::empty())
             .unwrap();
@@ -226,7 +230,7 @@ pub async fn handle_preview(
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "image/jpeg")
             .header(header::CONTENT_LENGTH, data.len())
-            .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+            .header(header::CACHE_CONTROL, FileHandler::THUMBNAIL_CACHE_CONTROL)
             .header(header::ETAG, etag)
             .body(Body::from(data))
             .unwrap();
@@ -251,7 +255,7 @@ pub async fn handle_preview(
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "image/jpeg")
             .header(header::CONTENT_LENGTH, data.len())
-            .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+            .header(header::CACHE_CONTROL, FileHandler::THUMBNAIL_CACHE_CONTROL)
             .header(header::ETAG, etag)
             .body(Body::from(data))
             .unwrap(),
