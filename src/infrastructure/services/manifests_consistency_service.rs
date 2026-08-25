@@ -432,7 +432,8 @@ mod tests {
      m.chunk_count AS chunk_count,
      ((SELECT COUNT(*) FROM storage.files cnt_f
                WHERE cnt_f.blob_hash = m.file_hash)
- + (SELECT COUNT(*) FROM storage.content_derived_blobs cnt_d WHERE cnt_d.blob_hash = m.file_hash))::bigint AS actual_ref_count
+ + (SELECT COUNT(*) FROM storage.content_derived_blobs cnt_d WHERE cnt_d.blob_hash = m.file_hash)
+ + (SELECT COUNT(*) FROM storage.file_attached_blobs cnt_a WHERE cnt_a.blob_hash = m.file_hash))::bigint AS actual_ref_count
    FROM storage.chunk_manifests m
   WHERE ($1::text IS NULL OR m.file_hash > $1)
   ORDER BY m.file_hash

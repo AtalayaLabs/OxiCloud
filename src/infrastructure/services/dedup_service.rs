@@ -3550,7 +3550,8 @@ mod tests {
        FROM storage.chunk_manifests m
       WHERE m.ref_count <= 0
          OR NOT (EXISTS (SELECT 1 FROM storage.files cnt_f WHERE cnt_f.blob_hash = m.file_hash)
-        OR EXISTS (SELECT 1 FROM storage.content_derived_blobs cnt_d WHERE cnt_d.blob_hash = m.file_hash))
+        OR EXISTS (SELECT 1 FROM storage.content_derived_blobs cnt_d WHERE cnt_d.blob_hash = m.file_hash)
+        OR EXISTS (SELECT 1 FROM storage.file_attached_blobs cnt_a WHERE cnt_a.blob_hash = m.file_hash))
       LIMIT $1
  )
  RETURNING file_hash, chunk_hashes, total_size"#;
