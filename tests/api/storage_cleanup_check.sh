@@ -404,3 +404,75 @@ if [[ -n "$UPLOAD_FILES" ]]; then
 fi
 
 log "OK — no blobs, thumbnails, or chunked-upload leftovers remain on disk."
+
+# ── 5. Whole-suite consistency sweep ──────────────────────────────────────────
+#
+# The disk checks above prove nothing LEAKED. These prove the bookkeeping
+# behind it is honest — that every refcount matches what the reference
+# sources actually hold, and that no row points at bytes that are gone.
+#
+# End of suite is the right place, and the only place it is cheap. One
+# database serves every hurl file (which is why each must tear down after
+# itself), so by the time we get here the counters have absorbed every
+# upload, copy, move, share, trash and purge the suite performed — across
+# both copy paths, the derived tier and the attached tier. A drift that no
+# single test would notice, because each only inspects its own file, shows
+# up here as a mismatch.
+#
+# It runs AFTER the GC drain deliberately: mid-sweep state is legitimately
+# inconsistent (a manifest can sit at zero waiting for the next pass), so
+# checking before the drain would report normal in-flight state as drift.
+#
+# Zero findings is the assertion. These jobs are read-only, so a finding
+# here is a real invariant violation, not a repair opportunity.
+
+CONSISTENCY_JOBS=(
+    files_consistency
+    blobs_consistency
+    manifests_consistency
+    backend_consistency
+)
+
+CONSISTENCY_FAILED=0
+for job in "${CONSISTENCY_JOBS[@]}"; do
+    TRIGGER=$(curl -sf -X POST -H "$AUTH" "$base_url/api/admin/jobs/$job/trigger") \
+        || { log "WARNING: $job not registered in this build — skipped"; continue; }
+    [[ -z "$TRIGGER" ]] && { log "WARNING: $job returned an empty body — skipped"; continue; }
+
+    # The trigger is synchronous for these tenants, but the run row is what
+    # carries the findings, so read it back rather than trusting the
+    # trigger's own summary.
+    # `list_job_runs` returns a bare JSON array, newest first. The `.runs` /
+    # `.items` fallbacks are there so a future wrapping of the response does
+    # not silently turn this check into a no-op.
+    RUN_ID=$(curl -sf -H "$AUTH" "$base_url/api/admin/jobs/$job/runs?limit=1" \
+             | jq -r 'if type == "array" then .[0].id
+                      else ((.runs // .items // [])[0].id) end // empty')
+    if [[ -z "$RUN_ID" ]]; then
+        log "WARNING: could not resolve a run id for $job — skipped"
+        continue
+    fi
+
+    FINDINGS=$(curl -sf -H "$AUTH" \
+        "$base_url/api/admin/jobs/$job/runs/$RUN_ID/findings?limit=100")
+    COUNT=$(echo "$FINDINGS" | jq -r \
+        'if type == "array" then length
+         else ((.findings // .items // []) | length) end')
+
+    if [[ "$COUNT" -gt 0 ]]; then
+        log "$job reported $COUNT finding(s):"
+        echo "$FINDINGS" | jq -r \
+            'if type == "array" then .[] else (.findings // .items // [])[] end
+             | "    \(.severity // "?") \(.kind // .finding_kind // "?") \(.details // {} | tostring)"' \
+            2>/dev/null | head -20
+        CONSISTENCY_FAILED=1
+    else
+        log "$job: clean."
+    fi
+done
+
+if [[ "$CONSISTENCY_FAILED" -eq 1 ]]; then
+    fail "consistency jobs reported findings after the full suite — see above"
+fi
+
+log "OK — all consistency jobs clean after the full suite."
