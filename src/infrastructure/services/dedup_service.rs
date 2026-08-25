@@ -576,6 +576,106 @@ impl DedupService {
     /// `docs/plan/derived-blobs.md`.
     ///
     /// Returns the derived blob hash.
+    /// Attach user-supplied bytes to a FILE — the file-keyed twin of
+    /// [`Self::store_derived_blob`].
+    ///
+    /// Same storage path (the bytes are still content-addressed and still
+    /// deduplicated), different mapping: the row is keyed by `file_id`, so
+    /// two files holding identical attached bytes get two rows and two
+    /// references. Sharing the mapping is what must not happen — a
+    /// content-keyed client preview would let one user's upload be served
+    /// for another user's file.
+    ///
+    /// `ON CONFLICT … DO UPDATE`, unlike the derived twin: re-uploading a
+    /// preview for the same `(file_id, kind, variant)` is a deliberate
+    /// replacement, whereas a re-derived thumbnail is the same bytes again.
+    /// The reference held by the row being replaced is released.
+    pub async fn store_attached_blob(
+        &self,
+        file_id: &str,
+        kind: &str,
+        variant: &str,
+        content_type: &str,
+        bytes: Bytes,
+        uploaded_by: uuid::Uuid,
+    ) -> Result<String, DomainError> {
+        let stored = self
+            .store_from_stream(
+                stream::once(async move { Ok::<Bytes, std::io::Error>(bytes) }),
+                Some(content_type.to_string()),
+            )
+            .await?;
+        let attached_hash = stored.hash().to_string();
+
+        // `previous` is the hash this row pointed at before, when it existed
+        // and differed — the reference to release once the row no longer
+        // holds it.
+        let previous: Option<(Option<String>,)> = sqlx::query_as(
+            "INSERT INTO storage.file_attached_blobs
+                 (file_id, kind, variant, blob_hash, content_type, uploaded_by)
+             VALUES ($1::uuid, $2, $3, $4, $5, $6)
+             ON CONFLICT (file_id, kind, variant) DO UPDATE
+                 SET blob_hash    = EXCLUDED.blob_hash,
+                     content_type = EXCLUDED.content_type,
+                     uploaded_by  = EXCLUDED.uploaded_by,
+                     created_at   = now()
+             RETURNING NULLIF(storage.file_attached_blobs.blob_hash, EXCLUDED.blob_hash)",
+        )
+        .bind(file_id)
+        .bind(kind)
+        .bind(variant)
+        .bind(&attached_hash)
+        .bind(content_type)
+        .bind(uploaded_by)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| DomainError::internal_error("Dedup", format!("record attached blob: {e}")))?;
+
+        // A replaced row's old blob loses its only reference from here. Not
+        // releasing it would pin those bytes forever — nothing else points at
+        // a superseded preview.
+        if let Some((Some(old_hash),)) = previous
+            && old_hash != attached_hash
+            && let Err(e) = self.remove_reference(&old_hash).await
+        {
+            tracing::warn!(
+                target: "oxicloud::dedup",
+                error = %e,
+                "failed to release replaced attached-blob reference for {}",
+                &old_hash[..old_hash.len().min(12)],
+            );
+        }
+
+        Ok(attached_hash)
+    }
+
+    /// Look up bytes attached to a file. File-keyed counterpart of
+    /// [`Self::find_derived_blob`].
+    pub async fn find_attached_blob(
+        &self,
+        file_id: &str,
+        kind: &str,
+        variant: &str,
+    ) -> Option<crate::application::ports::dedup_ports::DerivedBlobRef> {
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT blob_hash, content_type FROM storage.file_attached_blobs
+              WHERE file_id = $1::uuid AND kind = $2 AND variant = $3",
+        )
+        .bind(file_id)
+        .bind(kind)
+        .bind(variant)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .ok()
+        .flatten()
+        .map(|(blob_hash, content_type)| {
+            crate::application::ports::dedup_ports::DerivedBlobRef {
+                blob_hash,
+                content_type,
+            }
+        })
+    }
+
     pub async fn store_derived_blob(
         &self,
         source_hash: &str,

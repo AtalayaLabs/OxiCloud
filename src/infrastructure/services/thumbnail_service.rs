@@ -505,6 +505,39 @@ impl ThumbnailService {
     /// `blob_hash` is used to locate the file on disk (dedup-aware).
     /// If `None`, only the in-memory cache is checked (used for video
     /// thumbnails where blob_hash is not yet resolved).
+    /// Drain a blob through the dedup stack into memory.
+    ///
+    /// Shared by the attached and derived tiers — the only difference between
+    /// them is which table produced the hash, so the read itself belongs in
+    /// one place. Returns `None` on a read fault rather than propagating: a
+    /// missing satellite must degrade to the next tier, never break a gallery.
+    async fn read_blob_to_bytes(
+        dedup: &DedupService,
+        blob_hash: &str,
+        file_id: &str,
+        size: ThumbnailSize,
+    ) -> Option<Bytes> {
+        use futures::StreamExt;
+        let mut stream = dedup.read_blob_stream(blob_hash).await.ok()?;
+        let mut buf = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(part) => buf.extend_from_slice(&part),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "oxicloud::dedup",
+                        error = %e,
+                        "thumbnail blob read failed for {} {:?}",
+                        file_id,
+                        size,
+                    );
+                    return None;
+                }
+            }
+        }
+        Some(Bytes::from(buf))
+    }
+
     pub async fn get_cached_thumbnail(
         &self,
         file_id: &str,
@@ -553,6 +586,32 @@ impl ThumbnailService {
             return Some(bytes);
         }
 
+        // 2b. Bytes the USER attached to this file, if any.
+        //
+        // Ahead of every content-derived tier below on purpose: an uploaded
+        // preview is an explicit choice about THIS file and must beat
+        // anything the server would render from its content. It is also the
+        // only tier a copy can inherit — the `ext-` sidecar above is keyed by
+        // file_id and is not copied, so without this branch a copied file
+        // silently falls back to a rendered thumbnail, or to none at all for
+        // a PDF that has no server-side render path.
+        if let Some(dedup) = dedup
+            && let Some(attached) = dedup
+                .find_attached_blob(file_id, "preview", size.dir_name())
+                .await
+            && let Some(bytes) =
+                Self::read_blob_to_bytes(dedup, &attached.blob_hash, file_id, size).await
+        {
+            // Cached under the per-file key: these bytes belong to this file,
+            // not to its content, so a content key would leak them to every
+            // other file sharing that content — the poisoning the file-keyed
+            // table exists to prevent.
+            self.cache
+                .insert(ThumbnailCacheKey::external(file_id, size), bytes.clone())
+                .await;
+            return Some(bytes);
+        }
+
         // 3. Check disk for blob-hash thumbnails (needs blob_hash to locate)
         let hash = blob_hash?;
         let thumb_path = self.get_thumbnail_path(hash, size, format);
@@ -580,25 +639,7 @@ impl ThumbnailService {
         let derived = dedup
             .find_derived_blob(hash, "thumbnail", size.dir_name())
             .await?;
-        use futures::StreamExt;
-        let mut stream = dedup.read_blob_stream(&derived.blob_hash).await.ok()?;
-        let mut buf = Vec::new();
-        while let Some(chunk) = stream.next().await {
-            match chunk {
-                Ok(part) => buf.extend_from_slice(&part),
-                Err(e) => {
-                    tracing::warn!(
-                        target: "oxicloud::dedup",
-                        error = %e,
-                        "derived thumbnail read failed for {} {:?}",
-                        file_id,
-                        size,
-                    );
-                    return None;
-                }
-            }
-        }
-        let bytes = Bytes::from(buf);
+        let bytes = Self::read_blob_to_bytes(dedup, &derived.blob_hash, file_id, size).await?;
         self.cache
             .insert(
                 ThumbnailCacheKey::content(hash, size, format),

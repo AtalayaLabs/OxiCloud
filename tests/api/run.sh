@@ -168,6 +168,7 @@ hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test 
   "$API_DIR/dedup_blob_cleanup.hurl" \
   "$API_DIR/derived_blob_copy.hurl" \
   "$API_DIR/thumbnail_etag_content_keyed.hurl" \
+  "$API_DIR/attached_thumbnail_copy.hurl" \
   "$API_DIR/dedup_admin_gate.hurl" \
   "$API_DIR/admin_jobs.hurl" \
   "$API_DIR/recoverable_jobs.hurl" \

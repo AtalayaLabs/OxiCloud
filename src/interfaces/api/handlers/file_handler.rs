@@ -726,15 +726,57 @@ impl FileHandler {
             return AppError::from(err).into_response();
         }
 
-        // Validate, re-encode to WebP, and store
-        match thumbnail_service
+        // Validate, re-encode, and store the per-file sidecar.
+        let stored = match thumbnail_service
             .store_external_thumbnail(&id, thumb_size.into(), body)
             .await
         {
-            Ok(_) => StatusCode::CREATED.into_response(),
-            Err(err) => AppError::internal_error(format!("Failed to store thumbnail: {}", err))
-                .into_response(),
+            Ok(bytes) => bytes,
+            Err(err) => {
+                return AppError::internal_error(format!("Failed to store thumbnail: {}", err))
+                    .into_response();
+            }
+        };
+
+        // Also record it as a file-keyed attachment.
+        //
+        // The sidecar above is `ext-{file_id}.jpg` on local disk, which no
+        // copy path duplicates and no other instance can see. Without this
+        // row a copied file loses the preview its owner uploaded — falling
+        // back to a rendered thumbnail, or to nothing at all for a PDF, which
+        // has no server-side render path. `copy_file_satellites` duplicates
+        // the row, so the copy inherits the bytes.
+        //
+        // File-keyed, never content-keyed: these bytes are the uploader's
+        // claim about THIS file, and sharing them across files with identical
+        // content is the poisoning vector `storage.file_attached_blobs`
+        // exists to prevent.
+        //
+        // Best-effort: the sidecar already succeeded, so the user has their
+        // thumbnail. Failing the request here would report an error for an
+        // operation that visibly worked.
+        if let Err(e) = state
+            .core
+            .dedup_service
+            .store_attached_blob(
+                &id,
+                "preview",
+                thumb_size.dir_name(),
+                "image/jpeg",
+                stored,
+                auth_user.id,
+            )
+            .await
+        {
+            tracing::warn!(
+                target: "oxicloud::dedup",
+                error = %e,
+                file_id = %id,
+                "failed to record attached thumbnail; sidecar written, copies will not inherit it"
+            );
         }
+
+        StatusCode::CREATED.into_response()
     }
 
     // ═══════════════════════════════════════════════════════════════════════
