@@ -92,6 +92,7 @@ Authorization: Bearer {{token}}
 HTTP 200
 [Captures]
 rendered_thumb: bytes
+rendered_etag: header "ETag"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -112,8 +113,33 @@ Authorization: Bearer {{token}}
 HTTP 200
 [Captures]
 uploaded_thumb: bytes
+uploaded_etag: header "ETag"
 [Asserts]
 bytes != {{rendered_thumb}}
+# The ETag must move with the bytes. It is keyed on the ATTACHED blob's own
+# hash, because uploading a preview leaves the file's content — and so a
+# source-keyed ETag — unchanged. With `immutable` set, an unchanged
+# validator means clients never revalidate and keep the old render for a
+# year.
+header "ETag" != "{{rendered_etag}}"
+
+
+# A client holding the pre-upload validator must be told to refetch.
+GET {{base_url}}/api/files/{{orig_file_id}}/thumbnail/preview
+Authorization: Bearer {{token}}
+If-None-Match: {{rendered_etag}}
+
+HTTP 200
+[Asserts]
+header "ETag" == "{{uploaded_etag}}"
+
+
+# ...and the new one revalidates.
+GET {{base_url}}/api/files/{{orig_file_id}}/thumbnail/preview
+Authorization: Bearer {{token}}
+If-None-Match: {{uploaded_etag}}
+
+HTTP 304
 
 
 # ─────────────────────────────────────────────────────────────
@@ -141,6 +167,12 @@ HTTP 200
 [Asserts]
 bytes == {{uploaded_thumb}}
 bytes != {{rendered_thumb}}
+# Same bytes, so the same validator — the copy's attachment row points at
+# the same blob. This is also what stops the collision a source-keyed ETag
+# would allow: the copy inherits the source hash, so if either side later
+# gets a DIFFERENT preview the two would serve different bytes under one
+# ETag, and a shared cache could hand either to either.
+header "ETag" == "{{uploaded_etag}}"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -184,6 +216,7 @@ HTTP 200
 [Asserts]
 bytes == {{uploaded_thumb}}
 bytes != {{rendered_thumb}}
+header "ETag" == "{{uploaded_etag}}"
 
 
 # ─────────────────────────────────────────────────────────────

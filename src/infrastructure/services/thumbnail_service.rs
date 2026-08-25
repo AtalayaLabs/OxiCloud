@@ -505,6 +505,62 @@ impl ThumbnailService {
     /// `blob_hash` is used to locate the file on disk (dedup-aware).
     /// If `None`, only the in-memory cache is checked (used for video
     /// thumbnails where blob_hash is not yet resolved).
+    /// Identity of the bytes a thumbnail request will serve — the body of its
+    /// HTTP ETag.
+    ///
+    /// Mirrors the tier precedence in [`Self::get_cached_thumbnail`], because
+    /// an ETag that names a different tier than the one answering is worse
+    /// than a coarse one: it lets two resources serving different bytes share
+    /// a validator, and a shared cache may then hand either to either.
+    ///
+    /// * An **attached** blob wins, and its own hash is the identity. Nothing
+    ///   else works: uploading a preview does not change the file's content,
+    ///   so a source-keyed ETag would not change either — and with
+    ///   `immutable` set, clients would never revalidate. Worse, a copy
+    ///   inherits the source hash, so an original and a copy carrying
+    ///   *different* uploaded previews would collide on one ETag.
+    /// * Otherwise a **derived** blob's own hash. Strictly better than
+    ///   source-keying, never worse: the pair is written from the same bytes,
+    ///   and where they can diverge — a sidecar re-rendered while the derived
+    ///   row stays pinned by `ON CONFLICT DO NOTHING` — a source-keyed ETag
+    ///   is wrong too, because the renderer is not part of the key.
+    /// * Otherwise the source-keyed form, which still identifies a render of
+    ///   known content at a known size and format.
+    ///
+    /// Known gap: a legacy `ext-{file_id}.jpg` with no `file_attached_blobs`
+    /// row yet falls through to the source-keyed form, so those bytes keep
+    /// today's coarse validator until the import backfills the row. No worse
+    /// than current behaviour, and it disappears with the migration.
+    pub async fn thumbnail_content_id(
+        &self,
+        file_id: &str,
+        blob_hash: &str,
+        size: ThumbnailSize,
+        format: ThumbnailFormat,
+        dedup: Option<&DedupService>,
+    ) -> String {
+        if let Some(dedup) = dedup {
+            if let Some(attached) = dedup
+                .find_attached_blob(file_id, "preview", size.dir_name())
+                .await
+            {
+                return attached.blob_hash;
+            }
+            if let Some(derived) = dedup
+                .find_derived_blob(blob_hash, "thumbnail", size.dir_name())
+                .await
+            {
+                return derived.blob_hash;
+            }
+        }
+        format!(
+            "thumb-{}-{}-{}",
+            blob_hash,
+            size.dir_name(),
+            format.as_str()
+        )
+    }
+
     /// Drain a blob through the dedup stack into memory.
     ///
     /// Shared by the attached and derived tiers — the only difference between

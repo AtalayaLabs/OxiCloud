@@ -487,18 +487,22 @@ impl FileHandler {
             Ok(h) => h,
             Err(err) => return AppError::from(err).into_response(),
         };
-        let etag = {
-            let (s, f) = (thumb_size.as_str(), format.as_str());
-            let mut e = String::with_capacity(9 + blob_hash.len() + s.len() + f.len());
-            e.push_str("\"thumb-");
-            e.push_str(&blob_hash);
-            e.push('-');
-            e.push_str(s);
-            e.push('-');
-            e.push_str(f);
-            e.push('"');
-            e
-        };
+        // The identity of the bytes about to be served, resolved through the
+        // same tier precedence the read path uses — an uploaded preview's own
+        // hash, else a derived thumbnail's own hash, else the source-keyed
+        // form. See `ThumbnailService::thumbnail_content_id`.
+        let etag = format!(
+            "\"{}\"",
+            thumbnail_service
+                .thumbnail_content_id(
+                    &id,
+                    &blob_hash,
+                    thumb_size.into(),
+                    format,
+                    Some(&state.core.dedup_service),
+                )
+                .await
+        );
         if let Some(if_none_match) = headers.get(header::IF_NONE_MATCH)
             && let Ok(val) = if_none_match.to_str()
             && (val == etag || val == "*")

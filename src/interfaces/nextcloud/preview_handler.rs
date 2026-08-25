@@ -166,16 +166,23 @@ pub async fn handle_preview(
                 .unwrap();
         }
     };
-    let etag = {
-        let s = thumb_size.as_str();
-        let mut e = String::with_capacity(9 + blob_hash.len() + s.len());
-        e.push_str("\"thumb-");
-        e.push_str(&blob_hash);
-        e.push('-');
-        e.push_str(s);
-        e.push('"');
-        e
-    };
+    // Same tier-precedence resolution as the REST endpoint: an uploaded
+    // preview's own hash, else a derived thumbnail's own hash, else the
+    // source-keyed form. NC pins JPEG, so that is the format asked for.
+    let etag = format!(
+        "\"{}\"",
+        state
+            .core
+            .thumbnail_service
+            .thumbnail_content_id(
+                &object_id,
+                &blob_hash,
+                thumb_size.into(),
+                ThumbnailFormat::Jpeg,
+                Some(&state.core.dedup_service),
+            )
+            .await
+    );
     if let Some(inm) = req.headers().get(header::IF_NONE_MATCH)
         && let Ok(client_etag) = inm.to_str()
         && (client_etag == etag || client_etag == "*")
