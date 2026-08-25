@@ -405,6 +405,34 @@ fi
 
 log "OK — no blobs, thumbnails, or chunked-upload leftovers remain on disk."
 
+# ── 4b. …and the registry agrees the store is empty ───────────────────────────
+#
+# The disk check above proves no BYTES are left. This proves no ROWS are,
+# which is the other direction and fails differently: a stale
+# `storage.blobs` row with nothing behind it means a reference was never
+# released, and the next `dedup_gc` will keep skipping it forever because
+# its count never reaches zero.
+#
+# Zero is the right assertion here, not "fewer than before". Everything the
+# suite created has been deleted by this point — the users, their drives,
+# and the cascade beneath them — and the disk check has already insisted the
+# blob store is empty. A non-zero registry alongside an empty disk is
+# precisely the divergence the consistency jobs below would report, caught
+# here first because a single number is easier to read than a findings list.
+STATS=$(curl -sf -H "$AUTH" "$base_url/api/admin/dedup/stats" || true)
+if [[ -z "$STATS" ]]; then
+    log "WARNING: /api/admin/dedup/stats unavailable — registry emptiness not checked"
+else
+    REMAINING_BLOBS=$(echo "$STATS" | jq -r '.unique_blobs // 0')
+    REMAINING_BYTES=$(echo "$STATS" | jq -r '.total_physical_bytes // 0')
+    if [[ "$REMAINING_BLOBS" -ne 0 ]]; then
+        log "Registry still reports $REMAINING_BLOBS blob(s), $REMAINING_BYTES physical byte(s):"
+        echo "$STATS" | jq -r 'to_entries[] | "    \(.key): \(.value)"' 2>/dev/null | head
+        fail "$REMAINING_BLOBS blob row(s) remain in the registry while the disk is empty"
+    fi
+    log "Registry clean: 0 blobs, 0 physical bytes."
+fi
+
 # ── 5. Whole-suite consistency sweep ──────────────────────────────────────────
 #
 # The disk checks above prove nothing LEAKED. These prove the bookkeeping
