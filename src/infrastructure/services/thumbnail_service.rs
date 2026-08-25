@@ -69,13 +69,58 @@ impl ThumbnailSize {
     }
 }
 
-/// Cache key for thumbnails. Includes `format` so WebP and the JPEG fallback for
-/// the same (file_id, size) are distinct entries (no cross-format collision).
+/// Cache key for the in-RAM thumbnail tier (moka). Includes `format` so WebP
+/// and the JPEG fallback for the same (content, size) are distinct entries
+/// (no cross-format collision).
+///
+/// Not to be confused with the two other caches on this path: the sidecar
+/// files under `thumbnails_root` (already blob-hash keyed), and
+/// `CachedBlobBackend`, the on-disk LRU in front of a remote blob backend
+/// that only comes into play when a derived blob is read through the dedup
+/// stack.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ThumbnailCacheKey {
-    file_id: String,
+    /// Content hash for rendered thumbnails; `ext-{file_id}` for
+    /// client-uploaded video frames, which really are per-file.
+    ///
+    /// Keying on the hash rather than the file id is what makes the tier
+    /// coherent with the HTTP ETag. When a file's content is replaced its
+    /// id survives, so a file-keyed entry stayed valid-looking and had to
+    /// be invalidated explicitly — which `on_file_updated` does from a
+    /// spawned task, leaving a window where the response carried the NEW
+    /// ETag over the OLD bytes. Since the response is `immutable` with a
+    /// one-year max-age, a client landing in that window cached stale
+    /// bytes permanently. Content keying removes the window rather than
+    /// narrowing it: new content is a different key, so it cannot hit.
+    ///
+    /// It also stops N copies of one photo occupying N entries for
+    /// identical bytes.
+    ///
+    /// The two namespaces cannot collide: hashes are 64 hex characters,
+    /// and the external form carries an `ext-` prefix and a UUID.
+    id: String,
     size: ThumbnailSize,
     format: ThumbnailFormat,
+}
+
+impl ThumbnailCacheKey {
+    /// Rendered thumbnail — keyed by the source content hash.
+    fn content(hash: &str, size: ThumbnailSize, format: ThumbnailFormat) -> Self {
+        Self {
+            id: hash.to_string(),
+            size,
+            format,
+        }
+    }
+
+    /// Client-uploaded video frame — genuinely per-file, always JPEG.
+    fn external(file_id: &str, size: ThumbnailSize) -> Self {
+        Self {
+            id: format!("ext-{file_id}"),
+            size,
+            format: ThumbnailFormat::Jpeg,
+        }
+    }
 }
 
 /// Maximum pixel count before rejecting decode (50 megapixels → ~200 MB RGBA).
@@ -234,11 +279,7 @@ impl ThumbnailService {
         format: ThumbnailFormat,
         original_path: &Path,
     ) -> Result<Bytes, ThumbnailError> {
-        let cache_key = ThumbnailCacheKey {
-            file_id: file_id.to_string(),
-            size,
-            format,
-        };
+        let cache_key = ThumbnailCacheKey::content(blob_hash, size, format);
 
         let thumb_path = self.get_thumbnail_path(blob_hash, size, format);
         let original_owned = original_path.to_path_buf();
@@ -312,11 +353,7 @@ impl ThumbnailService {
         format: ThumbnailFormat,
         original_data: Bytes,
     ) -> Result<Bytes, ThumbnailError> {
-        let cache_key = ThumbnailCacheKey {
-            file_id: file_id.to_string(),
-            size,
-            format,
-        };
+        let cache_key = ThumbnailCacheKey::content(blob_hash, size, format);
 
         let thumb_path = self.get_thumbnail_path(blob_hash, size, format);
         let file_id_owned = file_id.to_string();
@@ -369,11 +406,7 @@ impl ThumbnailService {
         format: ThumbnailFormat,
         dedup: Arc<DedupService>,
     ) -> Result<Bytes, ThumbnailError> {
-        let cache_key = ThumbnailCacheKey {
-            file_id: file_id.to_string(),
-            size,
-            format,
-        };
+        let cache_key = ThumbnailCacheKey::content(blob_hash, size, format);
 
         let thumb_path = self.get_thumbnail_path(blob_hash, size, format);
         let file_id_owned = file_id.to_string();
@@ -484,13 +517,19 @@ impl ThumbnailService {
         // today's behaviour, which is what the port impl wants.
         dedup: Option<&DedupService>,
     ) -> Option<Bytes> {
-        // 1. Check in-memory cache
-        let cache_key = ThumbnailCacheKey {
-            file_id: file_id.to_string(),
-            size,
-            format,
-        };
-        if let Some(bytes) = self.cache.get(&cache_key).await
+        // 1. Check in-memory cache.
+        //
+        // Keyed by content, so a caller that did not resolve the hash cannot
+        // consult this tier — it falls through to disk, which is correct
+        // rather than merely acceptable: a file-id key would be the stale
+        // entry the content key exists to avoid. Every HTTP path passes the
+        // hash (both handlers resolve it to build the ETag), so the fall
+        // through is confined to internal callers that never had one.
+        if let Some(hash) = blob_hash
+            && let Some(bytes) = self
+                .cache
+                .get(&ThumbnailCacheKey::content(hash, size, format))
+                .await
             && !bytes.is_empty()
         {
             return Some(bytes);
@@ -509,11 +548,7 @@ impl ThumbnailService {
             // key's format must describe them. Inserting under `cache_key` (whose
             // format is the *requested* format, possibly Webp) would store JPEG
             // bytes behind a Webp key — a latent cross-format invariant violation.
-            let ext_key = ThumbnailCacheKey {
-                file_id: file_id.to_string(),
-                size,
-                format: ThumbnailFormat::Jpeg,
-            };
+            let ext_key = ThumbnailCacheKey::external(file_id, size);
             self.cache.insert(ext_key, bytes.clone()).await;
             return Some(bytes);
         }
@@ -524,7 +559,12 @@ impl ThumbnailService {
         if let Ok(data) = fs::read(&thumb_path).await {
             let bytes = Bytes::from(data);
             // Populate in-memory cache for next hit
-            self.cache.insert(cache_key, bytes.clone()).await;
+            self.cache
+                .insert(
+                    ThumbnailCacheKey::content(hash, size, format),
+                    bytes.clone(),
+                )
+                .await;
             return Some(bytes);
         }
 
@@ -559,7 +599,12 @@ impl ThumbnailService {
             }
         }
         let bytes = Bytes::from(buf);
-        self.cache.insert(cache_key, bytes.clone()).await;
+        self.cache
+            .insert(
+                ThumbnailCacheKey::content(hash, size, format),
+                bytes.clone(),
+            )
+            .await;
         Some(bytes)
     }
 
@@ -643,11 +688,7 @@ impl ThumbnailService {
             .map_err(|e| ThumbnailError::IoError(e.to_string()))?;
 
         // Populate in-memory cache (external thumbnails are JPEG)
-        let cache_key = ThumbnailCacheKey {
-            file_id: file_id.to_string(),
-            size,
-            format: ThumbnailFormat::Jpeg,
-        };
+        let cache_key = ThumbnailCacheKey::external(file_id, size);
         self.cache.insert(cache_key, bytes.clone()).await;
 
         tracing::info!("✅ Stored external thumbnail: {} {:?}", file_id, size);
@@ -989,11 +1030,8 @@ impl ThumbnailService {
                     let thumb_path =
                         self.get_thumbnail_path(&blob_hash, *size, ThumbnailFormat::Webp);
                     if let Ok(data) = fs::read(&thumb_path).await {
-                        let cache_key = ThumbnailCacheKey {
-                            file_id: file_id.clone(),
-                            size: *size,
-                            format: ThumbnailFormat::Webp,
-                        };
+                        let cache_key =
+                            ThumbnailCacheKey::content(&blob_hash, *size, ThumbnailFormat::Webp);
                         self.cache.insert(cache_key, Bytes::from(data)).await;
                     }
                 }
@@ -1043,8 +1081,8 @@ impl ThumbnailService {
                 }
             };
 
-            // Save each size to disk (keyed by blob_hash for dedup)
-            // AND populate moka (keyed by file_id for fast serving).
+            // Save each size to disk and populate moka — both keyed by
+            // blob_hash, so the two tiers agree and a copy shares them.
             for (size, bytes) in thumbnails {
                 let thumb_path = self.get_thumbnail_path(&blob_hash, size, ThumbnailFormat::Webp);
                 if let Some(parent) = thumb_path.parent() {
@@ -1054,11 +1092,8 @@ impl ThumbnailService {
                     tracing::warn!("Failed to save thumbnail {} {:?}: {}", file_id, size, e);
                 } else {
                     // Populate in-memory cache for instant first-hit serving
-                    let cache_key = ThumbnailCacheKey {
-                        file_id: file_id.clone(),
-                        size,
-                        format: ThumbnailFormat::Webp,
-                    };
+                    let cache_key =
+                        ThumbnailCacheKey::content(&blob_hash, size, ThumbnailFormat::Webp);
                     self.cache.insert(cache_key, bytes).await;
                     tracing::debug!("✅ Generated thumbnail: {} {:?}", file_id, size);
                 }
@@ -1111,11 +1146,8 @@ impl ThumbnailService {
                     let thumb_path =
                         self.get_thumbnail_path(&blob_hash, *size, ThumbnailFormat::Webp);
                     if let Ok(data) = fs::read(&thumb_path).await {
-                        let cache_key = ThumbnailCacheKey {
-                            file_id: file_id.clone(),
-                            size: *size,
-                            format: ThumbnailFormat::Webp,
-                        };
+                        let cache_key =
+                            ThumbnailCacheKey::content(&blob_hash, *size, ThumbnailFormat::Webp);
                         self.cache.insert(cache_key, Bytes::from(data)).await;
                     }
                 }
@@ -1228,11 +1260,7 @@ impl ThumbnailService {
                 );
             }
 
-            let cache_key = ThumbnailCacheKey {
-                file_id: file_id.to_string(),
-                size,
-                format: ThumbnailFormat::Webp,
-            };
+            let cache_key = ThumbnailCacheKey::content(blob_hash, size, ThumbnailFormat::Webp);
             self.cache.insert(cache_key, bytes).await;
             tracing::debug!("✅ Generated thumbnail: {} {:?}", file_id, size);
         }
@@ -1276,11 +1304,8 @@ impl ThumbnailService {
                 for size in ThumbnailSize::all() {
                     let p = self.get_thumbnail_path(&blob_hash, *size, ThumbnailFormat::Webp);
                     if let Ok(data) = fs::read(&p).await {
-                        let key = ThumbnailCacheKey {
-                            file_id: file_id.clone(),
-                            size: *size,
-                            format: ThumbnailFormat::Webp,
-                        };
+                        let key =
+                            ThumbnailCacheKey::content(&blob_hash, *size, ThumbnailFormat::Webp);
                         self.cache.insert(key, Bytes::from(data)).await;
                     }
                 }
@@ -1379,24 +1404,30 @@ impl ThumbnailService {
         Ok(tmp)
     }
 
-    /// Delete thumbnails for a file.
+    /// Delete the per-file thumbnail artifacts for a file.
     ///
-    /// Only invalidates the in-memory moka cache (keyed by file_id).
-    /// Disk thumbnails are keyed by blob_hash and may be shared by
-    /// other files with the same content — they are cleaned up via
-    /// `delete_blob_thumbnails` when the blob is garbage-collected.
-    /// Also removes any external (video-frame) thumbnails stored by file_id.
+    /// Only the external (video-frame) entries are file-keyed, so only those
+    /// are removed — from moka and from disk. Rendered thumbnails, in both
+    /// tiers, are keyed by blob_hash and may be shared with any other file
+    /// holding the same content; they are reclaimed by
+    /// `delete_blob_thumbnails` when the blob itself is garbage-collected.
+    ///
+    /// Content keying is also why this no longer has to win a race. When a
+    /// file's content is replaced the rendered entries are unreachable by
+    /// construction — a new hash is a new key — rather than needing explicit
+    /// invalidation before the next request arrives.
     pub async fn delete_thumbnails(&self, file_id: &str) -> Result<(), ThumbnailError> {
         for size in ThumbnailSize::all() {
-            // Remove from moka cache (lock-free invalidation) — both codecs.
-            for format in [ThumbnailFormat::Webp, ThumbnailFormat::Jpeg] {
-                let cache_key = ThumbnailCacheKey {
-                    file_id: file_id.to_string(),
-                    size: *size,
-                    format,
-                };
-                self.cache.invalidate(&cache_key).await;
-            }
+            // Only the external (per-file) entry needs invalidating. Rendered
+            // thumbnails are keyed by content hash, so replacing a file's
+            // content yields a different key and the old entry simply cannot
+            // be hit again — which is the point: correctness no longer depends
+            // on this call winning a race against the next request. And on
+            // deletion the entry stays valid for any other file sharing that
+            // content, so dropping it would only cost a re-read.
+            self.cache
+                .invalidate(&ThumbnailCacheKey::external(file_id, *size))
+                .await;
 
             // Remove external (video-frame) thumbnails stored by file_id (JPEG-only)
             let ext_path = self
