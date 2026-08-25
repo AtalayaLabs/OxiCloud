@@ -243,6 +243,10 @@ if ! hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --
   exit 1
 fi
 
+# Migration check runs BEFORE the cleanup sweep, which deletes everything
+# it would otherwise need.
+bash "$API_DIR/thumb_import_check.sh"
+
 bash "$API_DIR/storage_cleanup_check.sh"
 
 # ── 5. OPAQUE crypto handshake — the parts Hurl can't drive ─────────────
