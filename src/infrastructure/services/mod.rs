@@ -57,6 +57,7 @@ pub mod session_liveness_gauges;
 pub mod share_unlock_cookie;
 pub mod smtp_email_sender;
 pub mod swappable_blob_backend;
+pub mod thumb_derived_import_service;
 pub mod thumbnail_service;
 #[cfg(test)]
 mod thumbnail_service_test;

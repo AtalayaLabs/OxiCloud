@@ -1476,6 +1476,24 @@ impl AppServiceFactory {
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
         .await;
 
+        // Step 10 migration tenant: backfills `content_derived_blobs` from
+        // the on-disk thumbnail sidecars that predate it. Idempotent, so it
+        // is safe to trigger repeatedly — Phase 3 (deleting the sidecars) is
+        // gated on a run reporting zero imported. Registered unconditionally
+        // rather than behind a flag: a migration nobody can find is a
+        // migration nobody runs.
+        //
+        // `.thumbnails` lives under the storage path, matching
+        // `ThumbnailService::new(&self.storage_path, …)` above.
+        let _ = Arc::new(
+            crate::infrastructure::services::thumb_derived_import_service::ThumbDerivedImport::new(
+                std::path::Path::new(&self.storage_path).join(".thumbnails"),
+                core.dedup_service.clone(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
         // Third recoverable-run tenant. Iterates `storage.files`
         // and reports parent-folder-trashed cascade misses,
         // `missing_blob` (data-loss indicator — file references
