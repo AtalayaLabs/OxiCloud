@@ -106,8 +106,12 @@ impl ThumbAttachedImport {
     ///
     /// Sorted because the cursor resumes by skipping everything at or before
     /// it, which only works over a stable order.
-    async fn sidecar_names(&self, size: ThumbnailSize) -> Vec<String> {
-        let dir = self.thumbnails_root.join(size.dir_name());
+    ///
+    /// Takes the root rather than reading `self`, so the walk — the half that
+    /// decides which files this job claims, and therefore which keying they
+    /// get — is testable against a temp directory with no database in sight.
+    async fn sidecar_names(root: &std::path::Path, size: ThumbnailSize) -> Vec<String> {
+        let dir = root.join(size.dir_name());
         let Ok(mut entries) = fs::read_dir(&dir).await else {
             return Vec::new();
         };
@@ -146,7 +150,9 @@ impl RecoverableJobHandler for ThumbAttachedImport {
     async fn count_total(&self) -> Option<u64> {
         let mut total = 0u64;
         for size in ThumbnailSize::all() {
-            total += self.sidecar_names(*size).await.len() as u64;
+            total += Self::sidecar_names(&self.thumbnails_root, *size)
+                .await
+                .len() as u64;
         }
         Some(total)
     }
@@ -181,7 +187,7 @@ impl RecoverableJobHandler for ThumbAttachedImport {
 
         for size in ThumbnailSize::all() {
             let dir_name = size.dir_name().to_string();
-            for name in self.sidecar_names(*size).await {
+            for name in Self::sidecar_names(&self.thumbnails_root, *size).await {
                 let position = format!("{dir_name}/{name}");
 
                 if let Some(c) = &cursor
@@ -338,6 +344,43 @@ mod tests {
         assert_eq!(
             ThumbAttachedImport::file_id_from_sidecar_name(&format!("ext-{UUID}.jpg")),
             Some(Uuid::parse_str(UUID).unwrap())
+        );
+    }
+
+    /// The other half of the partition. Reuses the same legacy tree as
+    /// `thumb_derived_import`'s test on purpose: the two jobs run over one
+    /// directory, so the property that matters is that together they claim
+    /// every real sidecar exactly once, and neither takes the other's.
+    #[tokio::test]
+    async fn walk_claims_only_uploaded_previews() {
+        use crate::infrastructure::services::thumb_derived_import_service::ThumbDerivedImport;
+
+        let tmp =
+            crate::infrastructure::services::thumb_derived_import_service::tests::legacy_tree()
+                .await;
+
+        let attached = ThumbAttachedImport::sidecar_names(tmp.path(), ThumbnailSize::Preview).await;
+        let derived = ThumbDerivedImport::sidecar_names(tmp.path(), ThumbnailSize::Preview).await;
+
+        assert_eq!(
+            attached,
+            vec!["ext-3f2b1c00-1111-2222-3333-444455556666.jpg".to_string()],
+            "must claim the uploaded preview and nothing else"
+        );
+
+        // Disjoint: no file is imported under both keyings, which would take
+        // two references and — worse — content-key user-supplied bytes.
+        for a in &attached {
+            assert!(
+                !derived.contains(a),
+                "both jobs claimed {a}; keying would be ambiguous"
+            );
+        }
+        // And nothing real is dropped: README.txt is the only unclaimed file.
+        assert_eq!(
+            attached.len() + derived.len(),
+            3,
+            "the three real sidecars must be claimed exactly once between them"
         );
     }
 

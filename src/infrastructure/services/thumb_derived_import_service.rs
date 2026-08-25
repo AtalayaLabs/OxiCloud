@@ -93,8 +93,12 @@ impl ThumbDerivedImport {
     ///
     /// Sorted so the cursor is meaningful: resume skips everything at or
     /// before it, which only works over a stable order.
-    async fn sidecar_names(&self, size: ThumbnailSize) -> Vec<String> {
-        let dir = self.thumbnails_root.join(size.dir_name());
+    ///
+    /// Takes the root rather than reading `self`, so the walk — the half that
+    /// decides which files this job claims, and therefore which keying they
+    /// get — is testable against a temp directory with no database in sight.
+    pub(crate) async fn sidecar_names(root: &std::path::Path, size: ThumbnailSize) -> Vec<String> {
+        let dir = root.join(size.dir_name());
         let Ok(mut entries) = fs::read_dir(&dir).await else {
             return Vec::new();
         };
@@ -120,7 +124,9 @@ impl RecoverableJobHandler for ThumbDerivedImport {
     async fn count_total(&self) -> Option<u64> {
         let mut total = 0u64;
         for size in ThumbnailSize::all() {
-            total += self.sidecar_names(*size).await.len() as u64;
+            total += Self::sidecar_names(&self.thumbnails_root, *size)
+                .await
+                .len() as u64;
         }
         Some(total)
     }
@@ -155,7 +161,7 @@ impl RecoverableJobHandler for ThumbDerivedImport {
 
         for size in ThumbnailSize::all() {
             let dir_name = variant_of(*size);
-            for name in self.sidecar_names(*size).await {
+            for name in Self::sidecar_names(&self.thumbnails_root, *size).await {
                 let position = format!("{dir_name}/{name}");
 
                 // Resume: everything at or before the cursor is done.
@@ -277,7 +283,11 @@ impl RecoverableJobHandler for ThumbDerivedImport {
 }
 
 #[cfg(test)]
-mod tests {
+// `pub(crate)` so the attached import's test can reuse `legacy_tree`. Both
+// jobs walk ONE directory, so the property worth asserting spans them — that
+// together they claim every sidecar exactly once — and that needs a shared
+// fixture rather than two that can drift apart.
+pub(crate) mod tests {
     use super::*;
 
     const H: &str = "0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9";
@@ -287,6 +297,75 @@ mod tests {
         assert_eq!(
             ThumbDerivedImport::hash_from_sidecar_name(&format!("{H}.webp")),
             Some(H)
+        );
+    }
+
+    /// A legacy `.thumbnails` tree as it exists before the migration: both
+    /// sidecar shapes side by side in the same size directory, which is
+    /// exactly how they are written today.
+    ///
+    /// Returns the temp dir — the caller must hold it, or the directory is
+    /// removed while the test is still reading it.
+    pub(crate) async fn legacy_tree() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        for size in ThumbnailSize::all() {
+            let dir = tmp.path().join(size.dir_name());
+            tokio::fs::create_dir_all(&dir).await.unwrap();
+            // Server-rendered, content-keyed. `b` sorts after `0a…`, so the
+            // pair also proves the listing is ordered rather than incidental.
+            tokio::fs::write(dir.join(format!("{H}.webp")), b"webp")
+                .await
+                .unwrap();
+            tokio::fs::write(
+                dir.join("b111111111111111111111111111111111111111111111111111111111111111.webp"),
+                b"webp2",
+            )
+            .await
+            .unwrap();
+            // User-uploaded, file-keyed.
+            tokio::fs::write(
+                dir.join("ext-3f2b1c00-1111-2222-3333-444455556666.jpg"),
+                b"jpeg",
+            )
+            .await
+            .unwrap();
+            // Neither: a stray file that must be claimed by no one.
+            tokio::fs::write(dir.join("README.txt"), b"nope")
+                .await
+                .unwrap();
+        }
+        tmp
+    }
+
+    /// The migration's core invariant: this job claims the content-keyed
+    /// sidecars and *only* those, leaving the uploaded previews for
+    /// `thumb_attached_import`. Getting this wrong content-keys user-supplied
+    /// bytes, which shares one user's preview onto every file with identical
+    /// content.
+    #[tokio::test]
+    async fn walk_claims_only_content_keyed_sidecars_in_sorted_order() {
+        let tmp = legacy_tree().await;
+        let names = ThumbDerivedImport::sidecar_names(tmp.path(), ThumbnailSize::Preview).await;
+
+        assert_eq!(
+            names,
+            vec![
+                format!("{H}.webp"),
+                "b111111111111111111111111111111111111111111111111111111111111111.webp".to_string(),
+            ],
+            "must claim both content-keyed sidecars, sorted, and nothing else"
+        );
+    }
+
+    /// A missing size directory is normal on a fresh install and must not
+    /// abort the walk — the job simply has nothing to import.
+    #[tokio::test]
+    async fn missing_size_directory_yields_no_work() {
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        assert!(
+            ThumbDerivedImport::sidecar_names(tmp.path(), ThumbnailSize::Icon)
+                .await
+                .is_empty()
         );
     }
 
