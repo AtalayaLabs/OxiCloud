@@ -607,10 +607,29 @@ impl DedupService {
             .await?;
         let attached_hash = stored.hash().to_string();
 
-        // `previous` is the hash this row pointed at before, when it existed
-        // and differed — the reference to release once the row no longer
-        // holds it.
-        let previous: Option<(Option<String>,)> = sqlx::query_as(
+        // Read the hash being superseded BEFORE upserting.
+        //
+        // It cannot come from `RETURNING`: PostgreSQL only permits `EXCLUDED`
+        // in the `SET` and `WHERE` of `DO UPDATE`, so a RETURNING clause
+        // comparing old against new is a syntax error — and one that surfaces
+        // only at runtime, where this method's best-effort caller swallows it
+        // into a warning while the sidecar keeps the feature looking healthy.
+        //
+        // The gap between this SELECT and the upsert is benign: losing the
+        // race leaves one stale reference, which the manifest recompute
+        // reports rather than anything being lost or served wrongly.
+        let previous: Option<(String,)> = sqlx::query_as(
+            "SELECT blob_hash FROM storage.file_attached_blobs
+              WHERE file_id = $1::uuid AND kind = $2 AND variant = $3",
+        )
+        .bind(file_id)
+        .bind(kind)
+        .bind(variant)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| DomainError::internal_error("Dedup", format!("read attached blob: {e}")))?;
+
+        sqlx::query(
             "INSERT INTO storage.file_attached_blobs
                  (file_id, kind, variant, blob_hash, content_type, uploaded_by)
              VALUES ($1::uuid, $2, $3, $4, $5, $6)
@@ -618,8 +637,7 @@ impl DedupService {
                  SET blob_hash    = EXCLUDED.blob_hash,
                      content_type = EXCLUDED.content_type,
                      uploaded_by  = EXCLUDED.uploaded_by,
-                     created_at   = now()
-             RETURNING NULLIF(storage.file_attached_blobs.blob_hash, EXCLUDED.blob_hash)",
+                     created_at   = now()",
         )
         .bind(file_id)
         .bind(kind)
@@ -627,14 +645,14 @@ impl DedupService {
         .bind(&attached_hash)
         .bind(content_type)
         .bind(uploaded_by)
-        .fetch_optional(self.pool.as_ref())
+        .execute(self.pool.as_ref())
         .await
         .map_err(|e| DomainError::internal_error("Dedup", format!("record attached blob: {e}")))?;
 
         // A replaced row's old blob loses its only reference from here. Not
         // releasing it would pin those bytes forever — nothing else points at
         // a superseded preview.
-        if let Some((Some(old_hash),)) = previous
+        if let Some((old_hash,)) = previous
             && old_hash != attached_hash
             && let Err(e) = self.remove_reference(&old_hash).await
         {

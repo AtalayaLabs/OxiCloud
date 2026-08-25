@@ -768,11 +768,15 @@ impl FileHandler {
             )
             .await
         {
-            tracing::warn!(
+            // ERROR, not WARN: the sidecar keeps the feature looking healthy
+            // on this box, so nothing else signals that copies are silently
+            // losing the preview. A syntax error in the upsert hid behind a
+            // warning for an entire test cycle exactly this way.
+            tracing::error!(
                 target: "oxicloud::dedup",
                 error = %e,
                 file_id = %id,
-                "failed to record attached thumbnail; sidecar written, copies will not inherit it"
+                "failed to record attached thumbnail; sidecar written, copies will NOT inherit it"
             );
         }
 

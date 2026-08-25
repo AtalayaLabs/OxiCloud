@@ -550,19 +550,22 @@ impl ThumbnailService {
         // today's behaviour, which is what the port impl wants.
         dedup: Option<&DedupService>,
     ) -> Option<Bytes> {
-        // 1. Check in-memory cache.
+        // A file-specific override beats anything derived from the content,
+        // and that has to hold at EVERY tier — including RAM. Checking the
+        // content-keyed entry first would let a previously-rendered
+        // thumbnail shadow a preview the user has since uploaded: the render
+        // is cached under `content(hash)`, the upload lands under
+        // `external(file_id)`, and the content key would win forever.
         //
-        // Keyed by content, so a caller that did not resolve the hash cannot
-        // consult this tier — it falls through to disk, which is correct
-        // rather than merely acceptable: a file-id key would be the stale
-        // entry the content key exists to avoid. Every HTTP path passes the
-        // hash (both handlers resolve it to build the ETag), so the fall
-        // through is confined to internal callers that never had one.
-        if let Some(hash) = blob_hash
-            && let Some(bytes) = self
-                .cache
-                .get(&ThumbnailCacheKey::content(hash, size, format))
-                .await
+        // So the order is: per-file RAM, per-file disk, per-file DB, then the
+        // content-keyed tiers. Same precedence as the disk tiers below, just
+        // applied one level up.
+
+        // 1. Per-file override in RAM (uploaded preview / video frame).
+        if let Some(bytes) = self
+            .cache
+            .get(&ThumbnailCacheKey::external(file_id, size))
+            .await
             && !bytes.is_empty()
         {
             return Some(bytes);
@@ -612,8 +615,26 @@ impl ThumbnailService {
             return Some(bytes);
         }
 
-        // 3. Check disk for blob-hash thumbnails (needs blob_hash to locate)
+        // 3. Content-keyed RAM tier. Below the per-file tiers by the rule
+        //    above; still ahead of every disk read.
+        //
+        //    A caller that did not resolve the hash cannot consult it and
+        //    falls through to disk. That is correct rather than merely
+        //    acceptable: a file-id key here would be the stale entry content
+        //    keying exists to avoid. Both HTTP handlers resolve the hash to
+        //    build the ETag, so the fall-through is confined to internal
+        //    callers that never had one.
         let hash = blob_hash?;
+        if let Some(bytes) = self
+            .cache
+            .get(&ThumbnailCacheKey::content(hash, size, format))
+            .await
+            && !bytes.is_empty()
+        {
+            return Some(bytes);
+        }
+
+        // 4. Check disk for blob-hash thumbnails (needs blob_hash to locate)
         let thumb_path = self.get_thumbnail_path(hash, size, format);
         if let Ok(data) = fs::read(&thumb_path).await {
             let bytes = Bytes::from(data);
