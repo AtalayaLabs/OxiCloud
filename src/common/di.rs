@@ -1494,6 +1494,20 @@ impl AppServiceFactory {
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
         .await;
 
+        // Its file-keyed twin: `ext-{file_id}.jpg` previews the user uploaded,
+        // which no copy path duplicates today. Separate job, separate keying —
+        // routing these into the content-keyed table would share one user's
+        // preview onto every file with identical content.
+        let _ = Arc::new(
+            crate::infrastructure::services::thumb_attached_import_service::ThumbAttachedImport::new(
+                std::path::Path::new(&self.storage_path).join(".thumbnails"),
+                core.dedup_service.clone(),
+                maintenance_pool.clone(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
         // Third recoverable-run tenant. Iterates `storage.files`
         // and reports parent-folder-trashed cascade misses,
         // `missing_blob` (data-loss indicator — file references
