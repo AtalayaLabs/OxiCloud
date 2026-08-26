@@ -94,6 +94,18 @@ impl ThumbnailFormat {
         }
     }
 
+    /// Media type, for `content_derived_blobs.content_type` and for any
+    /// response serving these bytes.
+    ///
+    /// Beside `ext` deliberately: the two must agree, and an extension
+    /// without a matching media type is how a WebP ends up labelled JPEG.
+    pub fn mime(self) -> &'static str {
+        match self {
+            ThumbnailFormat::Webp => "image/webp",
+            ThumbnailFormat::Jpeg => "image/jpeg",
+        }
+    }
+
     /// Pick the output format from a request `Accept` header: WebP when the
     /// client advertises `image/webp`, JPEG otherwise. A plain substring check
     /// is sufficient — no client sends `image/webp;q=0`, and every WebP-capable

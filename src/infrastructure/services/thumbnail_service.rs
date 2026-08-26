@@ -261,6 +261,71 @@ impl ThumbnailService {
             .join(format!("{}.{}", blob_hash, format.ext()))
     }
 
+    /// Persist a freshly rendered thumbnail to every durable tier.
+    ///
+    /// **One place that knows what persisting a thumbnail means.** Before
+    /// this, four render paths each wrote the sidecar and exactly one also
+    /// recorded the `content_derived_blobs` row, so an on-demand render — a
+    /// cache miss, a size never generated, an evicted sidecar — produced
+    /// state the migration could never see. That is not untidy, it breaks
+    /// the migration's premise: `thumb_derived_import` would never reach an
+    /// empty tail, and the gate for deleting the sidecar would never open.
+    ///
+    /// Scope is deliberately *durable* tiers only. The moka entry is left to
+    /// callers because several persist through `cache.entry().or_insert_with`,
+    /// which already owns the insert; doing it here too would write twice.
+    ///
+    /// Dual-write is the interim setting, not the destination. Once the
+    /// derived tier is authoritative and the imports have drained, dropping
+    /// the sidecar becomes a one-line change *here* rather than four edits
+    /// spread across the file — which is the point of consolidating first.
+    ///
+    /// Both writes are best-effort and logged: the bytes are already rendered
+    /// and about to be served, so a persistence failure must cost a
+    /// re-render later, never the response now. `dedup: None` means
+    /// sidecar-only — a caller that could not supply one, which is visible at
+    /// the call site rather than hidden as a missing line.
+    async fn persist_rendered(
+        &self,
+        blob_hash: &str,
+        size: ThumbnailSize,
+        format: ThumbnailFormat,
+        bytes: &Bytes,
+        dedup: Option<&DedupService>,
+    ) {
+        let thumb_path = self.get_thumbnail_path(blob_hash, size, format);
+        if let Some(parent) = thumb_path.parent() {
+            let _ = fs::create_dir_all(parent).await;
+        }
+        if let Err(e) = fs::write(&thumb_path, bytes).await {
+            tracing::warn!(
+                "Failed to save thumbnail sidecar {} {:?}: {e}",
+                &blob_hash[..blob_hash.len().min(12)],
+                size
+            );
+        }
+
+        if let Some(dedup) = dedup
+            && let Err(e) = dedup
+                .store_derived_blob(
+                    blob_hash,
+                    "thumbnail",
+                    size.dir_name(),
+                    format.mime(),
+                    bytes.clone(),
+                )
+                .await
+        {
+            tracing::warn!(
+                target: "oxicloud::dedup",
+                error = %e,
+                "failed to record derived blob for {} {:?}",
+                &blob_hash[..blob_hash.len().min(12)],
+                size,
+            );
+        }
+    }
+
     /// Get a thumbnail, generating it if needed.
     ///
     /// # Arguments
@@ -284,6 +349,7 @@ impl ThumbnailService {
         let thumb_path = self.get_thumbnail_path(blob_hash, size, format);
         let original_owned = original_path.to_path_buf();
         let file_id_owned = file_id.to_string();
+        let blob_hash_owned = blob_hash.to_string();
 
         // Moka's entry().or_insert_with() guarantees that for the same key
         // only ONE init closure runs; concurrent callers await the same
@@ -306,11 +372,11 @@ impl ThumbnailService {
                 tracing::info!("🎨 Generating thumbnail: {} {:?}", file_id_owned, size);
                 match self.generate_thumbnail(&original_owned, size, format).await {
                     Ok(bytes) => {
-                        // Save to disk (best-effort — don't fail the request)
-                        if let Some(parent) = thumb_path.parent() {
-                            let _ = fs::create_dir_all(parent).await;
-                        }
-                        let _ = fs::write(&thumb_path, &bytes).await;
+                        // `None`: renders from an on-disk original and holds
+                        // no DedupService, so sidecar-only. Visible here
+                        // rather than absent.
+                        self.persist_rendered(&blob_hash_owned, size, format, &bytes, None)
+                            .await;
                         bytes
                     }
                     Err(e) => {
@@ -357,6 +423,7 @@ impl ThumbnailService {
 
         let thumb_path = self.get_thumbnail_path(blob_hash, size, format);
         let file_id_owned = file_id.to_string();
+        let blob_hash_owned = blob_hash.to_string();
 
         let entry = self
             .cache
@@ -375,8 +442,19 @@ impl ThumbnailService {
                     tracing::warn!("Decode semaphore closed, skipping {}", file_id_owned);
                     return Bytes::new();
                 };
-                self.generate_and_persist(&file_id_owned, &thumb_path, size, format, original_data)
-                    .await
+                // `None`: this entry point takes the original bytes directly
+                // and has no DedupService, so it persists sidecar-only. The
+                // gap is visible here rather than hidden as a missing write,
+                // and closing it means threading dedup in from its callers.
+                self.generate_and_persist(
+                    &file_id_owned,
+                    &blob_hash_owned,
+                    size,
+                    format,
+                    original_data,
+                    None,
+                )
+                .await
             })
             .await;
 
@@ -440,8 +518,19 @@ impl ThumbnailService {
                         return Bytes::new();
                     }
                 };
-                self.generate_and_persist(&file_id_owned, &thumb_path, size, format, original_data)
-                    .await
+                // The on-demand render the REST handler falls through to on a
+                // cache miss — the busiest path that previously wrote a
+                // sidecar and no row. `dedup` is already in scope here, so
+                // dual-writing costs nothing.
+                self.generate_and_persist(
+                    &file_id_owned,
+                    &blob_hash_owned,
+                    size,
+                    format,
+                    original_data,
+                    Some(dedup.as_ref()),
+                )
+                .await
             })
             .await;
 
@@ -464,10 +553,11 @@ impl ThumbnailService {
     async fn generate_and_persist(
         &self,
         file_id: &str,
-        thumb_path: &Path,
+        blob_hash: &str,
         size: ThumbnailSize,
         format: ThumbnailFormat,
         original_data: Bytes,
+        dedup: Option<&DedupService>,
     ) -> Bytes {
         tracing::info!("🎨 Generating thumbnail: {} {:?}", file_id, size);
         match Self::generate_thumbnail_from_data(
@@ -479,10 +569,8 @@ impl ThumbnailService {
         .await
         {
             Ok(bytes) => {
-                if let Some(parent) = thumb_path.parent() {
-                    let _ = fs::create_dir_all(parent).await;
-                }
-                let _ = fs::write(&thumb_path, &bytes).await;
+                self.persist_rendered(blob_hash, size, format, &bytes, dedup)
+                    .await;
                 bytes
             }
             Err(e) => {
@@ -1202,13 +1290,12 @@ impl ThumbnailService {
             // Save each size to disk and populate moka — both keyed by
             // blob_hash, so the two tiers agree and a copy shares them.
             for (size, bytes) in thumbnails {
-                let thumb_path = self.get_thumbnail_path(&blob_hash, size, ThumbnailFormat::Webp);
-                if let Some(parent) = thumb_path.parent() {
-                    let _ = fs::create_dir_all(parent).await;
-                }
-                if let Err(e) = fs::write(&thumb_path, &bytes).await {
-                    tracing::warn!("Failed to save thumbnail {} {:?}: {}", file_id, size, e);
-                } else {
+                // `None`: this variant renders from a path and holds no
+                // DedupService — `generate_all_sizes_background_from_blob` is
+                // the one that does. Sidecar-only, visibly so.
+                self.persist_rendered(&blob_hash, size, ThumbnailFormat::Webp, &bytes, None)
+                    .await;
+                {
                     // Populate in-memory cache for instant first-hit serving
                     let cache_key =
                         ThumbnailCacheKey::content(&blob_hash, size, ThumbnailFormat::Webp);
@@ -1346,37 +1433,12 @@ impl ThumbnailService {
         };
 
         for (size, bytes) in thumbnails {
-            let thumb_path = self.get_thumbnail_path(blob_hash, size, ThumbnailFormat::Webp);
-            if let Some(parent) = thumb_path.parent() {
-                let _ = fs::create_dir_all(parent).await;
-            }
-            if let Err(e) = fs::write(&thumb_path, &bytes).await {
-                tracing::warn!("Failed to save thumbnail {} {:?}: {}", file_id, size, e);
-                continue;
-            }
-
-            // Tier-3 copy. Best-effort and logged: a failure here must not
-            // cost the user their thumbnail, which is already on disk and in
-            // the cache. `derived_import` sweeps anything missed.
-            if let Some(dedup) = dedup
-                && let Err(e) = dedup
-                    .store_derived_blob(
-                        blob_hash,
-                        "thumbnail",
-                        size.dir_name(),
-                        "image/webp",
-                        bytes.clone(),
-                    )
-                    .await
-            {
-                tracing::warn!(
-                    target: "oxicloud::dedup",
-                    error = %e,
-                    "failed to record derived blob for {} {:?}",
-                    file_id,
-                    size,
-                );
-            }
+            // Was the only path that wrote both tiers, with its own copy of
+            // the logic. Now the same `persist_rendered` every other render
+            // path uses, so there is one definition of what persisting means
+            // and the interim dual-write can be retired in one place.
+            self.persist_rendered(blob_hash, size, ThumbnailFormat::Webp, &bytes, dedup)
+                .await;
 
             let cache_key = ThumbnailCacheKey::content(blob_hash, size, ThumbnailFormat::Webp);
             self.cache.insert(cache_key, bytes).await;
