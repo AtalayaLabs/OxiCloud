@@ -372,9 +372,18 @@ impl ThumbnailService {
                 tracing::info!("🎨 Generating thumbnail: {} {:?}", file_id_owned, size);
                 match self.generate_thumbnail(&original_owned, size, format).await {
                     Ok(bytes) => {
-                        // `None`: renders from an on-disk original and holds
-                        // no DedupService, so sidecar-only. Visible here
-                        // rather than absent.
+                        // `None` — sidecar-only, and that is acceptable here
+                        // ONLY because this path is production-unreachable:
+                        // its sole caller is the `ThumbnailPort` impl, and
+                        // nothing holds a `dyn ThumbnailPort` (checked). Live
+                        // renders go through `get_thumbnail_from_blob`, which
+                        // dual-writes.
+                        //
+                        // If this ever gains a real caller it must take a
+                        // `DedupService` first, or it reopens the gap
+                        // `persist_rendered` exists to close: sidecar-only
+                        // output the import can never see, so the tail never
+                        // empties.
                         self.persist_rendered(&blob_hash_owned, size, format, &bytes, None)
                             .await;
                         bytes
@@ -1295,9 +1304,12 @@ impl ThumbnailService {
             // Save each size to disk and populate moka — both keyed by
             // blob_hash, so the two tiers agree and a copy shares them.
             for (size, bytes) in thumbnails {
-                // `None`: this variant renders from a path and holds no
-                // DedupService — `generate_all_sizes_background_from_blob` is
-                // the one that does. Sidecar-only, visibly so.
+                // `None` — sidecar-only, acceptable for the same reason as
+                // `get_thumbnail`: the path variant is reached only through
+                // the unused `ThumbnailPort` impl. The live upload path is
+                // `generate_all_sizes_background_from_blob`, which carries a
+                // `DedupService` and dual-writes. Give this one a real caller
+                // and it needs one too.
                 self.persist_rendered(&blob_hash, size, ThumbnailFormat::Webp, &bytes, None)
                     .await;
                 {

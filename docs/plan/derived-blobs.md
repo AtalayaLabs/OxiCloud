@@ -1294,10 +1294,14 @@ hardcoded SQL). New sources bolt on independently.
 10. **Import jobs + the dual-read fallback** — see the migration
    section. Revised ordering as of 2026-08-26:
 
-   a. **Consolidate onto one `persist_thumbnail`** (dual-write). The
-      blocker: today only one of four render paths writes the derived
-      row, so the import can never converge. See *Prerequisite: one
-      persist function*.
+   a. **Consolidate onto one `persist_rendered`** (dual-write) — **done
+      2026-08-26**. Was the blocker: only one of four render paths wrote
+      the derived row, so the import could never converge. Every live
+      render now dual-writes. Two paths still pass `None` and stay
+      sidecar-only, which is safe *only* because both are reachable
+      solely through the `ThumbnailPort` impl and nothing holds a
+      `dyn ThumbnailPort` — if either gains a real caller it must take a
+      `DedupService` first. See *Prerequisite: one persist function*.
    b. **`thumb_derived_import`** (shipped) and **`thumb_attached_import`**
       (shipped) — two jobs, not one, because the keying differs and that
       difference is the security boundary. A third, `transcode_import`,
