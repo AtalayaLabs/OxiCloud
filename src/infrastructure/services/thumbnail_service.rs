@@ -1999,6 +1999,228 @@ pub struct ThumbnailStats {
 }
 
 #[cfg(test)]
+mod tier_selection_tests {
+    //! Precedence in [`ThumbnailService::get_cached_thumbnail`].
+    //!
+    //! This function produced four bugs in two days, every one of them an
+    //! ordering mistake rather than a logic error, and every one caught only
+    //! by an end-to-end run comparing bytes against something independent:
+    //!
+    //! * the content-keyed RAM entry shadowing an uploaded preview, so a PUT
+    //!   appeared to do nothing;
+    //! * the same precedence being right on disk but wrong in RAM;
+    //! * a validator flipping because a tier was populated as a side effect
+    //!   of producing the body;
+    //! * a decode error reading as "absent".
+    //!
+    //! The rule they all violate is one sentence: **a file-specific override
+    //! beats anything derived from the content, at every tier.** These tests
+    //! pin it, so the read-order flip (step 10c of
+    //! `docs/plan/derived-blobs.md`) is a change with a safety net rather
+    //! than another end-to-end guess.
+    //!
+    //! `dedup: None` throughout, which skips the two DB-backed tiers and
+    //! needs no database. What remains — per-file RAM, `ext-` disk, content
+    //! RAM, blob-hash sidecar — is exactly where the bugs were.
+
+    use super::*;
+    use std::time::Duration;
+
+    const HASH: &str = "0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9";
+    const FILE_ID: &str = "3f2b1c00-1111-2222-3333-444455556666";
+    const SIZE: ThumbnailSize = ThumbnailSize::Preview;
+    const FMT: ThumbnailFormat = ThumbnailFormat::Webp;
+
+    fn service(root: &std::path::Path) -> ThumbnailService {
+        ThumbnailService::new(root, 100, 10 * 1024 * 1024, Some(Duration::from_secs(5)))
+    }
+
+    /// Seed the per-file disk tier (`ext-{file_id}.jpg`).
+    async fn write_ext_sidecar(root: &std::path::Path, bytes: &[u8]) {
+        let dir = root.join(".thumbnails").join(SIZE.dir_name());
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(dir.join(format!("ext-{FILE_ID}.jpg")), bytes)
+            .await
+            .unwrap();
+    }
+
+    /// Seed the content-keyed disk tier (`{hash}.webp`).
+    async fn write_blob_sidecar(root: &std::path::Path, bytes: &[u8]) {
+        let dir = root.join(".thumbnails").join(SIZE.dir_name());
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(dir.join(format!("{HASH}.{}", FMT.ext())), bytes)
+            .await
+            .unwrap();
+    }
+
+    /// The bug from 2026-08-25: a render cached under the content key
+    /// shadowed a preview the user uploaded afterwards, permanently, because
+    /// the content tier was consulted first. The PUT looked like a no-op.
+    #[tokio::test]
+    async fn per_file_ram_beats_content_ram() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = service(tmp.path());
+
+        svc.cache
+            .insert(
+                ThumbnailCacheKey::content(HASH, SIZE, FMT),
+                Bytes::from_static(b"rendered-from-content"),
+            )
+            .await;
+        svc.cache
+            .insert(
+                ThumbnailCacheKey::external(FILE_ID, SIZE),
+                Bytes::from_static(b"uploaded-by-user"),
+            )
+            .await;
+
+        let got = svc
+            .get_cached_thumbnail(FILE_ID, Some(HASH), SIZE, FMT, None)
+            .await;
+        assert_eq!(got.as_deref(), Some(&b"uploaded-by-user"[..]));
+    }
+
+    /// Same rule one tier down: the per-file file on disk must win over a
+    /// content-keyed entry still sitting in RAM.
+    #[tokio::test]
+    async fn ext_disk_beats_content_ram() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = service(tmp.path());
+
+        svc.cache
+            .insert(
+                ThumbnailCacheKey::content(HASH, SIZE, FMT),
+                Bytes::from_static(b"rendered-from-content"),
+            )
+            .await;
+        write_ext_sidecar(tmp.path(), b"uploaded-on-disk").await;
+
+        let got = svc
+            .get_cached_thumbnail(FILE_ID, Some(HASH), SIZE, FMT, None)
+            .await;
+        assert_eq!(got.as_deref(), Some(&b"uploaded-on-disk"[..]));
+    }
+
+    /// Within the content-keyed tiers, RAM still beats disk — the ordinary
+    /// cache property, asserted so the flip cannot invert it by accident.
+    #[tokio::test]
+    async fn content_ram_beats_blob_sidecar() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = service(tmp.path());
+
+        write_blob_sidecar(tmp.path(), b"on-disk").await;
+        svc.cache
+            .insert(
+                ThumbnailCacheKey::content(HASH, SIZE, FMT),
+                Bytes::from_static(b"in-ram"),
+            )
+            .await;
+
+        let got = svc
+            .get_cached_thumbnail(FILE_ID, Some(HASH), SIZE, FMT, None)
+            .await;
+        assert_eq!(got.as_deref(), Some(&b"in-ram"[..]));
+    }
+
+    /// The sidecar answers when nothing above it does. After step 10c this
+    /// becomes the *fallback* rather than the primary content tier, and this
+    /// test is what proves it still answers at all.
+    #[tokio::test]
+    async fn blob_sidecar_answers_when_nothing_else_does() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = service(tmp.path());
+
+        write_blob_sidecar(tmp.path(), b"only-on-disk").await;
+
+        let got = svc
+            .get_cached_thumbnail(FILE_ID, Some(HASH), SIZE, FMT, None)
+            .await;
+        assert_eq!(got.as_deref(), Some(&b"only-on-disk"[..]));
+    }
+
+    /// Reading the `ext-` file must cache it under the PER-FILE key.
+    ///
+    /// Under a content key those bytes would be served for every other file
+    /// sharing the same content — one user's uploaded preview leaking across
+    /// files, which is the poisoning the keying split exists to prevent.
+    #[tokio::test]
+    async fn ext_disk_read_caches_under_the_per_file_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = service(tmp.path());
+        write_ext_sidecar(tmp.path(), b"uploaded").await;
+
+        svc.get_cached_thumbnail(FILE_ID, Some(HASH), SIZE, FMT, None)
+            .await;
+
+        assert_eq!(
+            svc.cache
+                .get(&ThumbnailCacheKey::external(FILE_ID, SIZE))
+                .await
+                .as_deref(),
+            Some(&b"uploaded"[..]),
+            "must populate the per-file key"
+        );
+        assert!(
+            svc.cache
+                .get(&ThumbnailCacheKey::content(HASH, SIZE, FMT))
+                .await
+                .is_none(),
+            "must NOT populate the content key — those bytes are not derived \
+             from this content and would leak to every file sharing it"
+        );
+    }
+
+    /// A caller with no hash cannot consult the content-keyed tiers, and must
+    /// fall through rather than guess. Yesterday's alternative — keying RAM
+    /// on `file_id` — is precisely the stale entry content-keying removed.
+    #[tokio::test]
+    async fn missing_hash_skips_content_tiers_but_still_reads_ext_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = service(tmp.path());
+
+        write_blob_sidecar(tmp.path(), b"content-keyed").await;
+        assert!(
+            svc.get_cached_thumbnail(FILE_ID, None, SIZE, FMT, None)
+                .await
+                .is_none(),
+            "without a hash the content tiers are unreachable"
+        );
+
+        write_ext_sidecar(tmp.path(), b"per-file").await;
+        assert_eq!(
+            svc.get_cached_thumbnail(FILE_ID, None, SIZE, FMT, None)
+                .await
+                .as_deref(),
+            Some(&b"per-file"[..]),
+            "the per-file tier needs no hash and must still answer"
+        );
+    }
+
+    /// Empty bytes are moka's negative-entry convention (a previous render
+    /// failed). They must not be served as a thumbnail, or a failure gets
+    /// cached and returned as success.
+    #[tokio::test]
+    async fn empty_cache_entry_is_not_served() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = service(tmp.path());
+
+        svc.cache
+            .insert(ThumbnailCacheKey::content(HASH, SIZE, FMT), Bytes::new())
+            .await;
+        write_blob_sidecar(tmp.path(), b"real-bytes").await;
+
+        let got = svc
+            .get_cached_thumbnail(FILE_ID, Some(HASH), SIZE, FMT, None)
+            .await;
+        assert_eq!(
+            got.as_deref(),
+            Some(&b"real-bytes"[..]),
+            "a negative entry must fall through, not be served"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
