@@ -1003,9 +1003,19 @@ first render was immediately stale. Caught by
 `thumbnail_etag_content_keyed.hurl`, where two consecutive GETs of an
 unchanged file stopped revalidating to 304.
 
-The flip is what removes the hazard: once the derived tier is
-authoritative it is populated before it is consulted, so there is no
-window in which the row appears between two reads.
+**The flip alone does NOT remove the hazard** *(corrected 2026-08-26 —
+an earlier revision of this paragraph claimed it did)*. A first render
+still creates the row as a side effect of producing the body, whatever
+the read order, so two consecutive reads would still straddle its
+appearance.
+
+What actually removes it is resolving the ETag **after** generation on
+the 200 path. A 304 can only fire when the client already holds a
+validator, which means it has been served before, which means the row
+exists — so the *conditional* path can safely consult the derived hash
+up front, while the *generating* path computes it from bytes it now
+holds. That is a handler restructure, not an ordering change, and it is
+the actual prerequisite for the derived-hash ETag.
 
 **The disk cache is `CachedBlobBackend`, reused unchanged.** No
 thumbnail-specific cache, no second root path. Routing derived
@@ -1310,10 +1320,23 @@ hardcoded SQL). New sources bolt on independently.
       **re-keyed** file→content on import (legitimate only because a
       transcode is derivable). Its `.skip` markers — a cached negative
       verdict with no bytes — remain an open question.
-   c. **Flip the read order**, derived first. The HTTP ETag's
-      source-keyed fallback becomes unreachable here; the attached and
-      derived halves already landed early, forced by the attachment
-      case (see *HTTP ETag*).
+   c. **Flip the read order**, derived first — **done 2026-08-26**. Two
+      things it is not: a two-line swap, and an ETag fix.
+
+      A derived miss must **fall through** to the sidecar, where the old
+      code terminated the lookup — while the imports drain, most content
+      has a sidecar and no row, so terminating would report "no
+      thumbnail" for nearly everything.
+
+      And it is **WebP-only**. `store_derived_blob` writes `image/webp`
+      with `variant` keyed on size alone, no format term, so a JPEG
+      request matches the WebP row and gets the wrong codec — a
+      regression the old ordering hid, because the `.jpg` sidecar won
+      first. JPEG clients therefore stay on the sidecar, **and the
+      sidecar cannot be deleted for them** until `variant` encodes
+      format. That is a new prerequisite for (e), not a detail: it means
+      a migration to `(kind, variant, format)` — or a format term inside
+      `variant` — has to land before the directories can go.
    d. **Enable deletion** in the import jobs (opt-in, readback-verified).
    e. **Remove the fallback read path** once the directory no longer
       *exists* — not merely once it is empty. Two reasons. Empty is a

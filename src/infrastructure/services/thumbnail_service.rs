@@ -792,11 +792,35 @@ impl ThumbnailService {
             return Some(bytes);
         }
 
-        // 4. Check disk for blob-hash thumbnails (needs blob_hash to locate)
-        let thumb_path = self.get_thumbnail_path(hash, size, format);
-        if let Ok(data) = fs::read(&thumb_path).await {
-            let bytes = Bytes::from(data);
-            // Populate in-memory cache for next hit
+        // 4. Derived blob — the authoritative content tier (step 10c).
+        //
+        // Ahead of the sidecar now, rather than last. The sidecar is local
+        // disk: invisible to other instances, uncarried by a backend
+        // migration, uncovered by any consistency job. Reading the derived
+        // tier first is what lets that disk state become deletable, and it is
+        // not the cost it looks like — `CachedBlobBackend` gives the blob read
+        // a local disk cache, and moka absorbs the repeats above it.
+        //
+        // A miss FALLS THROUGH rather than ending the lookup. That is the
+        // whole reason this is not a two-line swap: while the imports are
+        // draining, most content has a sidecar and no row, and terminating
+        // here would return "no thumbnail" for all of it.
+        //
+        // **WebP only.** `store_derived_blob` writes `image/webp` and keys
+        // `variant` on the size alone, with no format term, so a JPEG request
+        // would match the WebP row and be served the wrong codec — a
+        // regression the old ordering hid, because the `.jpg` sidecar won
+        // first. Until `variant` encodes format, JPEG clients stay on the
+        // sidecar, and the sidecar therefore cannot be deleted for them. See
+        // docs/plan/derived-blobs.md.
+        if format == ThumbnailFormat::Webp
+            && let Some(dedup) = dedup
+            && let Some(derived) = dedup
+                .find_derived_blob(hash, "thumbnail", size.dir_name())
+                .await
+            && let Some(bytes) =
+                Self::read_blob_to_bytes(dedup, &derived.blob_hash, file_id, size).await
+        {
             self.cache
                 .insert(
                     ThumbnailCacheKey::content(hash, size, format),
@@ -806,26 +830,21 @@ impl ThumbnailService {
             return Some(bytes);
         }
 
-        // 4. Tier-3 derived blob. Deliberately LAST while the sidecar still
-        // exists: for every thumbnail already on disk this branch is never
-        // reached, so the DB stays off the hot path and a fault here cannot
-        // break a working gallery. It answers only what disk cannot — another
-        // instance's render, or a box whose sidecar was never populated.
-        //
-        // The order flips (derived blob first, sidecar as fallback) in the
-        // release that removes the sidecar; see docs/plan/derived-blobs.md.
-        let dedup = dedup?;
-        let derived = dedup
-            .find_derived_blob(hash, "thumbnail", size.dir_name())
-            .await?;
-        let bytes = Self::read_blob_to_bytes(dedup, &derived.blob_hash, file_id, size).await?;
-        self.cache
-            .insert(
-                ThumbnailCacheKey::content(hash, size, format),
-                bytes.clone(),
-            )
-            .await;
-        Some(bytes)
+        // 5. Blob-hash sidecar — fallback for content not yet imported, and
+        //    the only content tier a non-WebP request can reach.
+        let thumb_path = self.get_thumbnail_path(hash, size, format);
+        if let Ok(data) = fs::read(&thumb_path).await {
+            let bytes = Bytes::from(data);
+            self.cache
+                .insert(
+                    ThumbnailCacheKey::content(hash, size, format),
+                    bytes.clone(),
+                )
+                .await;
+            return Some(bytes);
+        }
+
+        None
     }
 
     /// Store an externally-generated thumbnail (e.g. client-side video frame).
