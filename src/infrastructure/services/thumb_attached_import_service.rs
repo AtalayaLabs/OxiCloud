@@ -130,14 +130,23 @@ impl ThumbAttachedImport {
     /// Does the file still exist? Checked explicitly rather than letting the
     /// foreign key reject the insert, so an orphaned sidecar is *counted* as
     /// an orphan instead of surfacing as an opaque constraint error.
+    /// `SELECT EXISTS(...)`, deliberately, rather than `SELECT 1 … LIMIT 1`.
+    ///
+    /// PostgreSQL types a bare `1` as `int4`, so decoding it as `i64` fails —
+    /// and because a decode error is indistinguishable from "no row" once
+    /// swallowed, every sidecar would be misreported as an orphan and nothing
+    /// would import. `EXISTS` yields a real `bool` and always returns exactly
+    /// one row, so absence means absence.
+    ///
+    /// A query error still degrades to `false`, which is the safe direction:
+    /// the file is reported as an orphan and left on disk for the operator,
+    /// rather than imported against a row that may not exist.
     async fn file_exists(&self, file_id: Uuid) -> bool {
-        sqlx::query_scalar::<_, i64>("SELECT 1 FROM storage.files WHERE id = $1")
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM storage.files WHERE id = $1)")
             .bind(file_id)
-            .fetch_optional(self.pool.as_ref())
+            .fetch_one(self.pool.as_ref())
             .await
-            .ok()
-            .flatten()
-            .is_some()
+            .unwrap_or(false)
     }
 }
 

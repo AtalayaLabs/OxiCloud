@@ -50,7 +50,32 @@ COMPOSE_FILE="$REPO_ROOT/tests/common/docker-compose.test.yml"
 source "$SCRIPT_DIR/test.env"
 
 log()  { echo "[thumb-import] $*"; }
-fail() { echo $'\e[31m'"[thumb-import] FAIL: $*"$'\e[0m' >&2; exit 1; }
+
+# Dump a job's findings before dying. Without this, an import that ran but
+# imported nothing looks identical to one that never ran — and the jobs
+# record precisely why they skipped a file (orphan, unreadable, store
+# failed). The first failure of this script was a misreported orphan, and
+# the finding naming it was sitting in the run the whole time.
+dump_findings() {
+  local job="$1" run_id findings
+  run_id=$(curl -sf -H "$AUTH" "$base_url/api/admin/jobs/$job/runs?limit=1" 2>/dev/null \
+           | jq -r 'if type == "array" then .[0].id else ((.runs // .items // [])[0].id) end // empty')
+  [[ -z "$run_id" ]] && { echo "  ($job: no run found)" >&2; return; }
+  findings=$(curl -sf -H "$AUTH" \
+    "$base_url/api/admin/jobs/$job/runs/$run_id/findings?limit=20" 2>/dev/null || echo '[]')
+  echo "  $job findings:" >&2
+  echo "$findings" | jq -r \
+    'if type == "array" then .[] else (.findings // .items // [])[] end
+     | "    \(.kind // .finding_kind // "?") \(.details // {} | tostring)"' 2>/dev/null >&2 \
+    || echo "    (unparseable)" >&2
+}
+
+fail() {
+  echo $'\e[31m'"[thumb-import] FAIL: $*"$'\e[0m' >&2
+  dump_findings thumb_derived_import
+  dump_findings thumb_attached_import
+  exit 1
+}
 
 # psql inside the compose container — no host psql dependency, matching
 # how spawn-db.sh probes readiness.
