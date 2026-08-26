@@ -9,10 +9,12 @@
 //! and records the mapping, after which the derived tier can become
 //! authoritative and the sidecar can be deleted.
 //!
-//! **Thumbnails only, and that is permanent.** The table also holds
-//! `kind = 'transcode'`, but transcoding lands *after* this migration, so
-//! transcodes are born into the table and never pass through a sidecar era.
-//! This job will not grow a transcode arm.
+//! **Thumbnails only.** The table also holds `kind = 'transcode'`, and those
+//! need their own import — `ImageTranscodeService` already exists and caches
+//! to `.transcoded/{ext}/{file_id}.{ext}`, a different tree with a different
+//! key. Importing them means **re-keying** file→content, which is legitimate
+//! only because a transcode is derivable from the source bytes. Separate job;
+//! this one will not grow a transcode arm.
 //!
 //! ### Idempotent by construction
 //!

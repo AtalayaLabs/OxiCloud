@@ -1151,8 +1151,72 @@ filesystem and a remote backend for hours). It sweeps the cold tail:
   reference forever.
 - Reports imported / skipped-orphan / skipped-jpeg / failed counts.
 
-**Phase 3 (release N+1): delete** the fallback module and the sidecar
-directories, gated on the job reporting an empty tail.
+**Phase 3: the job deletes, not a release.** *(revised 2026-08-26 —
+supersedes "delete in release N+1, gated on an empty tail")*
+
+Sidecars are **local disk**. A release cannot know whether every
+instance has drained, so gating deletion on "the tail is empty" asks an
+operator to coordinate a fact nothing reports — and there is no way to
+know when, or whether, they will trigger the jobs at all. Instead the
+import unlinks each sidecar it has successfully imported, so **each
+instance drains itself** and the directory becomes removable once
+genuinely empty.
+
+Three constraints on that:
+
+- **Verify readback before unlinking.** Import → read the derived blob
+  back through the normal stack → *then* delete. A store that reported
+  success but landed unreadable would otherwise take the last copy with
+  it. Cheap next to the decode already performed, and it is the
+  difference between a migration and a data-loss bug.
+- **Only after the read-order flip.** Deleting while the sidecar is
+  still read *first* sends reads to the derived tier as a side effect of
+  the migration — its first production traffic arriving by accident
+  rather than by decision.
+- **Opt-in** (`?delete_imported=true`). A migration that deletes on its
+  default setting is surprising, and it is the same instinct as
+  no-silent-auto-repair: early runs import only, so an operator can
+  inspect before committing.
+
+Register it as a **scheduled tick**, not a boot-time trigger: it is
+idempotent and resumable, so periodic is safe, whereas walking a large
+`.thumbnails/` during startup delays readiness for nothing.
+
+The only remaining *release* is removing the fallback read path once the
+directories are empty — by which point no data is at stake.
+
+### Prerequisite: one persist function (found 2026-08-26)
+
+**Four render paths write a sidecar; only one also writes the derived
+row.** `store_derived_blob` has a single call site — in
+`render_and_persist_all_webp` — while `fs::write(&thumb_path, …)` has
+five. `get_thumbnail`, `generate_and_persist` and
+`generate_all_sizes_background` all persist sidecar-only.
+
+That breaks the migration's premise rather than merely being untidy: an
+on-demand render (cache miss, a size never generated, an evicted
+sidecar) keeps producing un-migrated state *after* the import runs, so
+the tail never empties and the deletion gate never opens.
+
+So before the imports can converge, all render paths must go through
+**one** `persist_thumbnail` that writes the sidecar, the derived blob
+and the moka entry together — the same single-source move as
+`storage.copy_file_satellites`. What it writes then becomes a policy in
+one place, so "stop writing sidecars" is later a one-line change rather
+than four edits.
+
+Interim setting is **dual-write**, for two reasons: it is what makes the
+backlog finite, and it leaves reads untouched while the derived tier is
+still unproven. Cost is one extra local `fs::write` per render,
+negligible beside the decode. Note the sidecar *read* path must survive
+until the directories are empty regardless, so stopping the write early
+buys nothing.
+
+Cost to be aware of: `ThumbnailService` holds no `DedupService` — it is
+a per-call parameter (`dedup: Option<&DedupService>`) — so the
+consolidation threads it through those paths, and
+`generate_and_persist` takes a `thumb_path` where it will need the
+`blob_hash` instead.
 
 ### The "just delete it" opt-out is no longer universally safe
 
@@ -1211,13 +1275,35 @@ hardcoded SQL). New sources bolt on independently.
    table. Lands with step 5. File-keyed, never in
    `content_derived_blobs`. Register it in `copy_file_satellites` and
    declare its version semantics.
-10. **`derived_import` job + the dual-read fallback** — see the
-   migration section. Phase 3 (deleting the fallback and the sidecar
-   dirs) is a separate later release, gated on an empty tail. **The
-   HTTP ETag moves to the derived hash here**, with the read-order
-   flip and not before — see "HTTP ETag" under *Read path and
-   caching* for why keying it earlier would make the ETag describe a
-   tier the response did not come from.
+10. **Import jobs + the dual-read fallback** — see the migration
+   section. Revised ordering as of 2026-08-26:
+
+   a. **Consolidate onto one `persist_thumbnail`** (dual-write). The
+      blocker: today only one of four render paths writes the derived
+      row, so the import can never converge. See *Prerequisite: one
+      persist function*.
+   b. **`thumb_derived_import`** (shipped) and **`thumb_attached_import`**
+      (shipped) — two jobs, not one, because the keying differs and that
+      difference is the security boundary. A third, `transcode_import`,
+      is still needed: `ImageTranscodeService` **already exists** and
+      caches `.transcoded/{ext}/{file_id}.{ext}`, so those must be
+      **re-keyed** file→content on import (legitimate only because a
+      transcode is derivable). Its `.skip` markers — a cached negative
+      verdict with no bytes — remain an open question.
+   c. **Flip the read order**, derived first. The HTTP ETag's
+      source-keyed fallback becomes unreachable here; the attached and
+      derived halves already landed early, forced by the attachment
+      case (see *HTTP ETag*).
+   d. **Enable deletion** in the import jobs (opt-in, readback-verified).
+   e. **Remove the fallback read path** once the directory no longer
+      *exists* — not merely once it is empty. Two reasons. Empty is a
+      momentary property an on-demand render can undo, whereas absence
+      is one-way and observable, so the job removes the directory after
+      draining it and that absence is the proof. And it is far cheaper
+      to test: existence is a single `stat`, while emptiness costs an
+      `opendir`/`readdir`/`closedir` — which matters if the fallback
+      ever gates on it per read rather than once at boot. The only
+      remaining release, and no data is at stake by then.
 11. **`DedupService` → `BlobHandler` rename** — decided, mechanical,
     34 files. Standalone commit, `src/AGENTS.md` updated with it. Can
     land at any point; last is easiest, since every earlier slice
