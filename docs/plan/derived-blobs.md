@@ -991,6 +991,22 @@ yet generated and for formats the derived tier does not hold. The
 `LEFT JOIN` in step 2 above already returns the derived hash in the
 same query, so the ETag costs no extra round-trip.
 
+**Attempted early (2026-08-26) and reverted — the constraint above is
+load-bearing.** The attached half shipped and is correct, because an
+upload writes its row synchronously before any read can observe it. The
+*derived* half was brought forward at the same time and had to be backed
+out: the ETag is computed **before** the body, so on a cache miss no row
+exists and the handler emits the source-keyed form — then rendering
+creates the row, and the very next request resolves to the derived hash.
+The validator changed as a side effect of producing the body, so every
+first render was immediately stale. Caught by
+`thumbnail_etag_content_keyed.hurl`, where two consecutive GETs of an
+unchanged file stopped revalidating to 304.
+
+The flip is what removes the hazard: once the derived tier is
+authoritative it is populated before it is consulted, so there is no
+window in which the row appears between two reads.
+
 **The disk cache is `CachedBlobBackend`, reused unchanged.** No
 thumbnail-specific cache, no second root path. Routing derived
 blobs through the same stack gets, for free:

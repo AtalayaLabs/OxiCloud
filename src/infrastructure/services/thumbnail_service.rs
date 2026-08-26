@@ -607,13 +607,25 @@ impl ThumbnailService {
     ///   `immutable` set, clients would never revalidate. Worse, a copy
     ///   inherits the source hash, so an original and a copy carrying
     ///   *different* uploaded previews would collide on one ETag.
-    /// * Otherwise a **derived** blob's own hash. Strictly better than
-    ///   source-keying, never worse: the pair is written from the same bytes,
-    ///   and where they can diverge — a sidecar re-rendered while the derived
-    ///   row stays pinned by `ON CONFLICT DO NOTHING` — a source-keyed ETag
-    ///   is wrong too, because the renderer is not part of the key.
-    /// * Otherwise the source-keyed form, which still identifies a render of
+    /// * Otherwise the **source-keyed** form, which identifies a render of
     ///   known content at a known size and format.
+    ///
+    /// # Why the derived blob's own hash is NOT used yet
+    ///
+    /// It would be a better key — the hash *is* the bytes, so any change in
+    /// output invalidates by construction. But it cannot be resolved here
+    /// without flipping on the first render: the ETag is computed *before*
+    /// the body, so on a cache miss no `content_derived_blobs` row exists yet
+    /// and this returns the source-keyed form — then rendering *creates* that
+    /// row, and the next request resolves to the derived hash instead. The
+    /// validator would change as a side effect of producing the body, making
+    /// every first render immediately stale.
+    ///
+    /// It belongs with the read-order flip, when the derived tier becomes
+    /// authoritative and is populated before it is consulted. See
+    /// `docs/plan/derived-blobs.md`. The attached lookup above has no such
+    /// problem: an upload writes its row synchronously, before any read that
+    /// could observe it.
     ///
     /// Known gap: a legacy `ext-{file_id}.jpg` with no `file_attached_blobs`
     /// row yet falls through to the source-keyed form, so those bytes keep
@@ -627,19 +639,12 @@ impl ThumbnailService {
         format: ThumbnailFormat,
         dedup: Option<&DedupService>,
     ) -> String {
-        if let Some(dedup) = dedup {
-            if let Some(attached) = dedup
+        if let Some(dedup) = dedup
+            && let Some(attached) = dedup
                 .find_attached_blob(file_id, "preview", size.dir_name())
                 .await
-            {
-                return attached.blob_hash;
-            }
-            if let Some(derived) = dedup
-                .find_derived_blob(blob_hash, "thumbnail", size.dir_name())
-                .await
-            {
-                return derived.blob_hash;
-            }
+        {
+            return attached.blob_hash;
         }
         format!(
             "thumb-{}-{}-{}",
