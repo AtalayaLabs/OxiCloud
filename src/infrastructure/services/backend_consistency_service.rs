@@ -1,18 +1,36 @@
 //! Fifth tenant of Part 2 (recoverable-run engine).
 //!
-//! Iterates the storage backend's blob-enumeration surface and
-//! reports every blob physically present on the backend that has NO
-//! matching row in `storage.blobs`. Complements
-//! `blobs_consistency` (which walks the DB and probes the backend):
-//! together they close the reference graph.
+//! **Merge-joins** the backend's blob enumeration against
+//! `storage.blobs`, both ordered by hash, so a single pass yields the
+//! delta in *both* directions rather than one.
 //!
-//! ### Per-row check
+//! It previously walked the backend and probed the DB with
+//! `WHERE hash = ANY($1)` over each page, which could only ever see
+//! backend-only entries: a row whose bytes are gone never appears in a
+//! backend listing, so it was invisible here by construction. That half
+//! was left to `blobs_consistency`'s per-row HEAD probe, which does not
+//! survive the row counts this plan produces — see
+//! `docs/plan/derived-blobs.md`.
+//!
+//! ### Per-row checks
 //!
 //! * `orphan_blob` (severity `inconsistent`) — bytes on disk / S3 /
 //!   Azure with no registry row. Not data-loss (nothing broken —
 //!   just storage overhead), but points at dedup_gc or
 //!   ingest-path drift. Recovery = register-registry-row (if the
 //!   bytes are still needed) OR delete the file (if truly orphan).
+//! * `blob_missing_from_backend` (severity `data_loss`) — a registry
+//!   row whose bytes are absent. The opposite direction and the more
+//!   serious one: an orphan wastes space, this loses a file.
+//!
+//! ### Why the two orderings agree
+//!
+//! The merge-join's premise is that the backend's byte order and the
+//! database's `ORDER BY hash` rank identically. They do, because hashes
+//! are lowercase BLAKE3 hex of fixed length: over `[0-9a-f]` digits
+//! precede letters in both, and there is no case to fold. A hash column
+//! that ever admitted uppercase or variable length would break this
+//! silently and in both directions at once.
 //!
 //! ### Run-level check
 //!
@@ -42,7 +60,6 @@
 //! denominator (backend count ≈ blob count on a healthy install;
 //! deviation IS the finding).
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -376,60 +393,161 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                 return RunOutcome::completed();
             }
 
-            // Batch DB probe: which of these hashes have a
-            // `storage.blobs` row? One `WHERE hash = ANY($1)` per
-            // batch — indexed lookup, cheap even on millions of
-            // rows.
-            let batch_hashes: Vec<String> = page.blobs.iter().map(|e| e.hash.clone()).collect();
-            let db_present: HashSet<String> = if batch_hashes.is_empty() {
-                HashSet::new()
-            } else {
-                match sqlx::query_as::<_, (String,)>(
-                    r#"SELECT hash FROM storage.blobs WHERE hash = ANY($1)"#,
-                )
-                .bind(&batch_hashes[..])
-                .fetch_all(self.pool.as_ref())
-                .await
-                {
-                    Ok(rows) => rows.into_iter().map(|(h,)| h).collect(),
-                    Err(e) => {
-                        return RunOutcome::Failed {
-                            message: format!("db probe: {e}"),
-                        };
-                    }
+            // ── Merge-join, not a one-sided probe ────────────────
+            //
+            // Both sides are ordered by hash ascending — the backend by
+            // contract (`BlobStorageBackend::list_blob_hashes`), the DB by
+            // `ORDER BY hash` — so one pass yields BOTH deltas instead of
+            // one:
+            //
+            //   * present on the backend, absent from the DB → `orphan_blob`
+            //   * present in the DB, absent from the backend →
+            //     `blob_missing_from_backend` (data loss, not overhead)
+            //
+            // The old form probed `WHERE hash = ANY($1)` over the backend
+            // page, so it could only ever see the first kind: a row whose
+            // bytes are gone never appears in a backend listing and was
+            // invisible here by construction.
+            //
+            // Ordering is the whole premise, so it is worth being explicit
+            // about why the two agree. Hashes are lowercase BLAKE3 hex of
+            // fixed length, and over `[0-9a-f]` the database collation and
+            // byte order rank identically (digits before letters in both,
+            // no case folding to disagree about). A hash column that ever
+            // admitted uppercase or variable length would break this
+            // silently, in both directions.
+            let db_hashes: Vec<String> = match sqlx::query_as::<_, (String,)>(
+                r#"SELECT hash FROM storage.blobs
+                    WHERE ($1::text IS NULL OR hash > $1)
+                    ORDER BY hash
+                    LIMIT $2"#,
+            )
+            .bind(cursor.as_deref())
+            .bind(BATCH_SIZE as i64)
+            .fetch_all(self.pool.as_ref())
+            .await
+            {
+                Ok(rows) => rows.into_iter().map(|(h,)| h).collect(),
+                Err(e) => {
+                    return RunOutcome::Failed {
+                        message: format!("db page: {e}"),
+                    };
                 }
             };
 
-            for entry in &page.blobs {
-                if db_present.contains(&entry.hash) {
-                    continue;
-                }
-                if let Some(mtime) = entry.mtime
-                    && mtime > grace_cutoff
-                {
-                    continue;
-                }
+            // The two pages cover different ranges, so only the overlap can
+            // be judged. Beyond `horizon` a hash missing from one side may
+            // simply be on the next page of the other, and emitting there
+            // would invent findings in both directions. When a side is
+            // exhausted its entries cannot be "on a later page", so the
+            // other side's tail becomes judgeable.
+            let backend_last = page.blobs.last().map(|e| e.hash.as_str());
+            let db_last = db_hashes.last().map(|s| s.as_str());
+            let backend_done = page.next_cursor.is_none();
+            let db_done = db_hashes.len() < BATCH_SIZE;
 
-                finding_count += 1;
-                record_or_log(
-                    store,
-                    BACKEND_CONSISTENCY_JOB_NAME,
-                    "orphan_blob",
-                    "inconsistent",
-                    None,
-                    serde_json::json!({
-                        "hash":    entry.hash,
-                        "mtime":   entry.mtime.map(|t| t.to_rfc3339()),
-                        "backend": backend.backend_type(),
-                    }),
-                )
-                .await;
+            let horizon: Option<&str> = match (backend_last, db_last) {
+                _ if backend_done && db_done => None, // judge everything
+                (Some(b), Some(d)) if backend_done => Some(b.max(d)),
+                (Some(b), Some(d)) if db_done => Some(b.max(d)),
+                (Some(b), Some(d)) => Some(b.min(d)),
+                (Some(b), None) => Some(b),
+                (None, Some(d)) => Some(d),
+                (None, None) => None,
+            };
+            let in_range = |h: &str| horizon.is_none_or(|limit| h <= limit);
+
+            let mut bi = page.blobs.iter().peekable();
+            let mut di = db_hashes.iter().peekable();
+            loop {
+                match (bi.peek(), di.peek()) {
+                    (Some(b), Some(d)) if b.hash == **d => {
+                        bi.next();
+                        di.next();
+                    }
+                    // Backend-only: bytes with no registry row.
+                    (Some(b), d_opt)
+                        if d_opt.is_none_or(|d| b.hash.as_str() < d.as_str())
+                            && in_range(&b.hash) =>
+                    {
+                        // Grace window: the write path is
+                        // durability-before-visibility, so bytes exist
+                        // briefly before their row does. Without this every
+                        // in-flight upload reads as an orphan.
+                        if !matches!(b.mtime, Some(m) if m > grace_cutoff) {
+                            finding_count += 1;
+                            record_or_log(
+                                store,
+                                BACKEND_CONSISTENCY_JOB_NAME,
+                                "orphan_blob",
+                                "inconsistent",
+                                None,
+                                serde_json::json!({
+                                    "hash":    b.hash,
+                                    "mtime":   b.mtime.map(|t| t.to_rfc3339()),
+                                    "backend": backend.backend_type(),
+                                }),
+                            )
+                            .await;
+                        }
+                        bi.next();
+                    }
+                    // DB-only: a row whose bytes are gone. Severity is
+                    // `data_loss`, not `inconsistent` — an orphan wastes
+                    // space, this loses a file.
+                    (b_opt, Some(d))
+                        if b_opt.is_none_or(|b| d.as_str() < b.hash.as_str()) && in_range(d) =>
+                    {
+                        finding_count += 1;
+                        record_or_log(
+                            store,
+                            BACKEND_CONSISTENCY_JOB_NAME,
+                            "blob_missing_from_backend",
+                            "data_loss",
+                            None,
+                            serde_json::json!({
+                                "hash":    d,
+                                "backend": backend.backend_type(),
+                                "note":    "registry row with no bytes on the backend",
+                            }),
+                        )
+                        .await;
+                        di.next();
+                    }
+                    // Past the horizon on both sides, or both exhausted.
+                    _ => break,
+                }
             }
 
-            // Advance cursor + checkpoint. Scanned count tracks
-            // both blobs and unknowns since we walked both.
+            // Advance to the horizon, not the backend's own cursor.
+            //
+            // One hash serves both sides: they share an ordering, so "resume
+            // after H" means `start_after(H)` on the backend and
+            // `WHERE hash > H` in the DB. Advancing past the horizon would
+            // skip the un-judged tail of whichever side reached further.
+            //
+            // Scanned count covers blobs and unknowns, since both were
+            // walked.
             let batch_len = (page.blobs.len() + page.unknowns.len()) as u64;
-            cursor = page.next_cursor;
+            let exhausted = backend_done && db_done;
+            cursor = if exhausted {
+                None
+            } else {
+                horizon.map(|h| h.to_string())
+            };
+
+            // Neither side exhausted yet no horizon means neither returned a
+            // row — nothing left to compare, and continuing would spin on the
+            // same empty pages forever.
+            if cursor.is_none() && !exhausted && horizon.is_none() {
+                tracing::debug!(
+                    target: "oxicloud::consistency",
+                    event = "backend_consistency.no_horizon",
+                    run_id = %store.run_id(),
+                    "both sides returned no rows before exhaustion; ending the sweep"
+                );
+            }
+
             let cursor_bytes = cursor
                 .as_ref()
                 .map(|s| s.as_bytes().to_vec())
@@ -440,8 +558,7 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                 };
             }
 
-            // Backend returned no next_cursor → enumeration
-            // complete. Emit the completion log and return.
+            // Both sides drained → the sweep is complete.
             if cursor.is_none() {
                 tracing::info!(
                     target: "oxicloud::consistency",
