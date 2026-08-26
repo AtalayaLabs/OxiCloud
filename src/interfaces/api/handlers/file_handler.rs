@@ -1552,7 +1552,7 @@ pub async fn list_files_query(
 #[utoipa::path(
     post,
     path = "/api/files/upload",
-    request_body(content_type = "multipart/form-data", description = "File data + optional folder_id field"),
+    request_body(content_type = "multipart/form-data", description = "File data + folder_id (required: it determines the file's owner and drive)"),
     responses(
         (status = 201, description = "File uploaded", body = FileDto),
         (status = 400, description = "Invalid request"),

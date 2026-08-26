@@ -130,9 +130,11 @@ impl FileBlobWriteRepository {
                 DomainError::internal_error("FileBlobWrite", format!("parent lookup: {e}"))
             })?
             .ok_or_else(|| DomainError::not_found("Folder", fid)),
-            None => Err(DomainError::internal_error(
-                "FileBlobWrite",
-                "folder_id is required to determine the target drive",
+            // Same reasoning as the owner lookup below: caller error, not
+            // server error.
+            None => Err(DomainError::validation_error(
+                "folder_id is required: the destination folder determines the \
+                 target drive",
             )),
         }
     }
@@ -289,9 +291,15 @@ impl FileBlobWriteRepository {
                     rollback_err
                 );
             }
-            return Err(DomainError::internal_error(
-                "FileBlobWrite",
-                "folder_id is required to determine file owner",
+            // A missing required field is the caller's error, not the
+            // server's. As `internal_error` this surfaced as 500 /
+            // `error_type: Internal Error`, which the SPA cannot tell apart
+            // from the server breaking — so a malformed upload looked like an
+            // outage. The OpenAPI body description called the field optional,
+            // which is how it came to be omitted in the first place.
+            return Err(DomainError::validation_error(
+                "folder_id is required: the destination folder determines the \
+                 file's owner and drive",
             ));
         };
 
