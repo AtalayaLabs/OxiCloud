@@ -1319,7 +1319,24 @@ hardcoded SQL). New sources bolt on independently.
       caches `.transcoded/{ext}/{file_id}.{ext}`, so those must be
       **re-keyed** file→content on import (legitimate only because a
       transcode is derivable). Its `.skip` markers — a cached negative
-      verdict with no bytes — remain an open question.
+      verdict with no bytes — remain an open question, since they do not
+      fit a table whose point is pointing at a blob.
+
+      **Not next, and deliberately so.** Two prerequisites, both learned
+      the hard way on the thumbnail side:
+
+      * **Format must move into `variant` first.** Transcodes are
+        inherently multi-format, and `variant` is keyed on size alone —
+        the same gap that keeps JPEG thumbnails on the sidecar (see
+        10c). Importing before that means migrating into a schema that
+        cannot hold the data without collisions. One migration unblocks
+        both.
+      * **Step 7 before the import.** `ImageTranscodeService` writes only
+        its file-keyed cache today, so an import would run against a
+        cache still growing and never reach an empty tail — precisely
+        the trap `persist_rendered` had to close for thumbnails.
+
+      Order: format-in-`variant` → step 7 → `transcode_import`.
    c. **Flip the read order**, derived first — **done 2026-08-26**. Two
       things it is not: a two-line swap, and an ETag fix.
 
