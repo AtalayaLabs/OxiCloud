@@ -339,6 +339,97 @@ Same trims as `content_derived_blobs` — no `size`, no `format`, no
 Generic naming rather than `file_previews` because the family is
 real, and each member would otherwise be a new table plus a new
 `BlobReferenceSource` plus a new term in the consistency recompute.
+
+### Negative verdicts — `blob_hash` must be nullable
+
+*(Resolved 2026-08-27. Supersedes the "`.skip` markers are an open
+question" note.)*
+
+The table says "here is the artifact". It cannot say **"there is
+deliberately no artifact"**, and absence of a row is ambiguous — it
+means both *never attempted* and *attempted, not worth it*. Collapsing
+those destroys the only information a negative cache exists to hold.
+
+Two live cases, not one:
+
+* **Transcode not beneficial.** `ImageTranscodeService` can only learn
+  whether WebP is smaller by doing the full decode + encode. When it is
+  not, it records a zero-byte `{file_id}.{ext}.skip` marker so the next
+  GET does not repeat the work.
+* **Thumbnail not renderable.** `generate_and_persist` returns empty
+  `Bytes` — "moka's zero-weight negative-entry convention" — for sources
+  over `MAX_DECODE_PIXELS` (50 MP) or that fail to decode. This one is
+  **RAM-only**: after moka evicts, a 60-megapixel upload has its full
+  decode attempted again, forever.
+
+So this is not a transcode quirk. The rule generalises to every `kind`:
+
+> **Any derivation whose failure is deterministic in the source content
+> is worth memoising negatively.**
+
+**The discriminator, or the table fills with noise.** Persist a negative
+only when it is *both* expensive to compute *and* deterministic in the
+content. `can_transcode(mime)` and "not an image" are cheap metadata
+checks — recomputing is free and a row would be pure overhead. It is the
+ones that cost a decode that earn a row.
+
+**Permanent vs transient is the load-bearing split.** "Deterministic"
+above means *a property of the content*, not merely *a failure that
+happened*:
+
+| Permanent — cache it | Transient — never cache it |
+|---|---|
+| decode failed (corrupt / unsupported) | generation timeout |
+| over `MAX_DECODE_PIXELS` | decode semaphore closed |
+| transcode result not smaller | blob read I/O error, OOM under load |
+
+**Today's code cannot tell them apart, and that must be fixed before any
+of this is persisted.** `generate_and_persist` collapses *every* error
+into empty `Bytes` — timeouts and semaphore closures included. That is
+survivable while the sentinel lives only in moka, which evicts; write
+the same signal to the database and a thumbnail that timed out once
+under load is marked unrenderable **forever**. So the renderer must
+return a typed outcome — rendered / permanently-unrenderable / transient
+failure — and only the middle one earns a row.
+
+The asymmetry sets the default. A wrongly-cached transient is silent and
+permanent; a not-cached permanent merely costs repeated work. **When in
+doubt, do not cache** — treat unclassified errors as transient.
+
+**Representation: nullable `blob_hash`.** A sentinel hash was considered
+and rejected — it stops `blob_hash` naming a real blob, and every future
+reader has to know the lie. NULL says what is true. Costs:
+
+* `ContentDerivedReferenceSource` needs `AND blob_hash IS NOT NULL`; a
+  row holding no blob holds no reference.
+* The dangling-derived check (row 9 of the coverage matrix) needs the
+  same guard, or every negative verdict reports as a broken row.
+* The `NOT NULL` constraint is dropped.
+
+**No TTL, and no renderer-version term either.** Both were considered.
+Time is the wrong axis: the verdict is deterministic in
+`(content, encoder)` and does not decay, so a TTL re-attempts an OOMing
+decode on a schedule — reintroducing the exact waste the negative
+exists to prevent — while still leaving staleness for most of the window
+after a deploy.
+
+What makes the mechanism unnecessary is that **negative rows are
+disposable**: they hold no data, so discarding one costs only a
+re-derivation. Upgrading the image library invalidates them with a line
+in the same migration as the dependency bump —
+
+```sql
+DELETE FROM storage.content_derived_blobs WHERE blob_hash IS NULL;
+```
+
+— which beats a version term that must be remembered and leaves dead
+rows behind when bumped. Write this down, or someone later builds the
+expiry logic this paragraph exists to prevent.
+
+Same shape, outside this table and not solved here:
+`blob_extracted_text` (no extractable text) and `faces.faces` (no faces
+detected) are both deterministic negatives currently indistinguishable
+from "never processed".
 With `kind` it's a one-line `ALTER … CHECK`:
 
 | Kind | Why it lands here |
@@ -1308,13 +1399,10 @@ hardcoded SQL). New sources bolt on independently.
      and DI change — mind the construction order, as
      `ThumbnailService` hit the same thing and solved it with a
      per-call parameter instead.
-   * **Decide the `.skip` markers.** `{file_id}.{ext}.skip` records a
-     negative verdict ("result was not smaller — serve the original")
-     and has no bytes, so it does not fit a table whose row points at a
-     blob. Options: leave them as a purely local cache and accept the
-     verdict being recomputed per instance, or model it with a sentinel
-     `blob_hash`. Unresolved; it is the only genuinely open design
-     question in step 10.
+   * **Write the `.skip` markers as negative rows** — resolved: nullable
+     `blob_hash`, see *Negative verdicts*. Thumbnails need the same
+     treatment for undecodable and over-`MAX_DECODE_PIXELS` sources,
+     which are RAM-only today, so do both together rather than twice.
 
    Note the cache is keyed `{file_id}:{ext}` in memory and
    `.transcoded/{ext}/{file_id}.{ext}` on disk, so it also carries the
@@ -1349,9 +1437,10 @@ hardcoded SQL). New sources bolt on independently.
       is still needed: `ImageTranscodeService` **already exists** and
       caches `.transcoded/{ext}/{file_id}.{ext}`, so those must be
       **re-keyed** file→content on import (legitimate only because a
-      transcode is derivable). Its `.skip` markers — a cached negative
-      verdict with no bytes — remain an open question, since they do not
-      fit a table whose point is pointing at a blob.
+      transcode is derivable). Its `.skip` markers import as **negative
+      rows** with a NULL `blob_hash` — see *Negative verdicts* — so the
+      verdict survives the deletion of `.transcoded/`, which it
+      otherwise would not.
 
       **Not next, and deliberately so.** Two prerequisites, both learned
       the hard way on the thumbnail side:
