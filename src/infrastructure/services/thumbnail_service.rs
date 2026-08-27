@@ -2023,6 +2023,37 @@ pub enum ThumbnailError {
     UnsupportedFormat,
 }
 
+impl ThumbnailError {
+    /// Is this failure a property of the CONTENT, rather than of the moment?
+    ///
+    /// Prerequisite for persisting negative verdicts to
+    /// `content_derived_blobs` (see `docs/plan/derived-blobs.md` §Negative
+    /// verdicts). Only a permanent failure may be recorded: it will give the
+    /// same answer forever, so remembering it saves a decode. A transient one
+    /// must never be recorded — the next attempt may well succeed, and a row
+    /// saying otherwise is silent, permanent data loss for that file.
+    ///
+    /// The asymmetry is why the default is `false`. A wrongly-persisted
+    /// transient marks a perfectly good image unrenderable for good; a
+    /// wrongly-omitted permanent merely costs a repeated decode. So anything
+    /// not clearly a content property is treated as transient.
+    ///
+    /// * [`Self::ImageError`] — the decoder rejected these bytes, or they
+    ///   exceed `MAX_DECODE_PIXELS`. Both are facts about the image.
+    /// * [`Self::UnsupportedFormat`] — likewise.
+    /// * [`Self::TaskError`] — timeout, closed decode semaphore, join
+    ///   failure. All say the machine was busy, not that the image is bad. A
+    ///   timeout under load is the exact case that must not be cached.
+    /// * [`Self::IoError`] — the source could not be read. Says nothing about
+    ///   whether it is renderable.
+    pub fn is_permanent(&self) -> bool {
+        match self {
+            ThumbnailError::ImageError(_) | ThumbnailError::UnsupportedFormat => true,
+            ThumbnailError::TaskError(_) | ThumbnailError::IoError(_) => false,
+        }
+    }
+}
+
 /// Statistics about the thumbnail cache
 #[derive(Debug, Clone)]
 pub struct ThumbnailStats {
@@ -2227,6 +2258,27 @@ mod tier_selection_tests {
             Some(&b"per-file"[..]),
             "the per-file tier needs no hash and must still answer"
         );
+    }
+
+    /// A timeout must never be recorded as a permanent verdict.
+    ///
+    /// It is the case that turns a load spike into permanent data loss:
+    /// `generate_and_persist` collapses every error into empty `Bytes`, which
+    /// is survivable only while that sentinel lives in moka and evicts.
+    /// Before any of it reaches `content_derived_blobs`, timeouts must
+    /// classify as transient — so this pins the mapping rather than trusting
+    /// the variant names to stay put.
+    #[test]
+    fn only_content_failures_are_permanent() {
+        // Facts about the image — safe to remember.
+        assert!(ThumbnailError::ImageError("decode failed".into()).is_permanent());
+        assert!(ThumbnailError::UnsupportedFormat.is_permanent());
+
+        // Facts about the moment — must never be remembered. `timeout(...)`
+        // and the decode semaphore both surface as TaskError.
+        assert!(!ThumbnailError::TaskError("thumbnail generation timed out".into()).is_permanent());
+        assert!(!ThumbnailError::TaskError("Decode semaphore closed".into()).is_permanent());
+        assert!(!ThumbnailError::IoError("blob read failed".into()).is_permanent());
     }
 
     /// Empty bytes are moka's negative-entry convention (a previous render
