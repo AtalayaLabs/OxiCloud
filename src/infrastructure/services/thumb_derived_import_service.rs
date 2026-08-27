@@ -70,8 +70,22 @@ impl ThumbDerivedImport {
         registry: &JobRegistry,
         provider: &Arc<dyn JobStoreProvider>,
     ) -> Arc<Self> {
+        // Daily tick rather than manual-only. Ops cannot be relied on to
+        // remember a migration, and boot-time would delay readiness for a
+        // filesystem walk — whereas this is idempotent and resumable, so
+        // periodic is safe and it drains on its own.
+        //
+        // The tick does NOT delete: `repair` defaults false, so scheduled
+        // runs import and stop. Deletion stays a deliberate operator action,
+        // per no-silent-auto-repair. Once drained, a run is a `read_dir` over
+        // three directories that returns nothing — and after the directory is
+        // removed, not even that.
         registry
-            .register_recoverable_job(self.clone(), provider.clone(), None)
+            .register_recoverable_job(
+                self.clone(),
+                provider.clone(),
+                Some(std::time::Duration::from_secs(24 * 3600)),
+            )
             .await;
         self
     }

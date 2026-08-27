@@ -89,8 +89,15 @@ impl ThumbAttachedImport {
         registry: &JobRegistry,
         provider: &Arc<dyn JobStoreProvider>,
     ) -> Arc<Self> {
+        // Daily, matching `thumb_derived_import` — and it does not delete on
+        // the tick either, since `repair` defaults false. See that job for
+        // the reasoning.
         registry
-            .register_recoverable_job(self.clone(), provider.clone(), None)
+            .register_recoverable_job(
+                self.clone(),
+                provider.clone(),
+                Some(std::time::Duration::from_secs(24 * 3600)),
+            )
             .await;
         self
     }
