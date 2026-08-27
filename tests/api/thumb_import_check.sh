@@ -45,6 +45,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 COMPOSE_FILE="$REPO_ROOT/tests/common/docker-compose.test.yml"
+STORAGE_PATH="${OXICLOUD_STORAGE_PATH:-$REPO_ROOT/tests/api/storage}"
 
 # shellcheck source=test.env
 source "$SCRIPT_DIR/test.env"
@@ -130,6 +131,31 @@ curl -sf -X PUT -H "$AUTH" -H "Content-Type: image/png" \
 
 UPLOADED_THUMB=$(mktemp)
 curl -sf -H "$AUTH" "$base_url/api/files/$FILE_ID/thumbnail/preview" -o "$UPLOADED_THUMB"
+
+# ── 1b. Lay down the sidecars the server no longer writes ────────────────
+#
+# Since step 10d2 the write paths persist ONLY to the blob tiers, so an
+# upload no longer leaves anything under .thumbnails/ — which is the point,
+# but it removes the source this test used to manufacture legacy state from.
+#
+# So write them here, with the bytes the API just served, at the exact paths
+# the pre-10d2 code used: `{size}/{blob_hash}.jpg` for the rendered
+# thumbnail and `{size}/ext-{file_id}.jpg` for the upload. Requests omit
+# `Accept`, so both negotiate JPEG.
+#
+# This keeps the reconstruction faithful rather than approximate: same
+# bytes, same paths, same filenames a pre-migration install holds. What it
+# no longer does is rely on the current code to produce them — which it
+# cannot, and should not.
+SIDECAR_DIR="$STORAGE_PATH/.thumbnails/preview"
+mkdir -p "$SIDECAR_DIR"
+cp "$UPLOADED_THUMB" "$SIDECAR_DIR/ext-$FILE_ID.jpg"
+cp "$UPLOADED_THUMB" "$SIDECAR_DIR/$BLOB_HASH.jpg"
+# Identical bytes in both, which is realistic rather than a shortcut: they
+# dedup to one blob, so the derived and attached rows end up referencing the
+# same content while keeping separate mappings — exactly the property the
+# keying split exists to preserve.
+log "legacy sidecars written to $SIDECAR_DIR"
 
 DERIVED_BEFORE=$(sql "SELECT count(*) FROM storage.content_derived_blobs WHERE source_hash='$BLOB_HASH';")
 ATTACHED_BEFORE=$(sql "SELECT count(*) FROM storage.file_attached_blobs WHERE file_id='$FILE_ID';")

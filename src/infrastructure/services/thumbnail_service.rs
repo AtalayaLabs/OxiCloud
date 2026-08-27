@@ -309,18 +309,18 @@ impl ThumbnailService {
         bytes: &Bytes,
         dedup: Option<&DedupService>,
     ) {
-        let thumb_path = self.get_thumbnail_path(blob_hash, size, format);
-        if let Some(parent) = thumb_path.parent() {
-            let _ = fs::create_dir_all(parent).await;
-        }
-        if let Err(e) = fs::write(&thumb_path, bytes).await {
-            tracing::warn!(
-                "Failed to save thumbnail sidecar {} {:?}: {e}",
-                &blob_hash[..blob_hash.len().min(12)],
-                size
-            );
-        }
-
+        // Step 10d2: the sidecar write is GONE. The derived tier is the only
+        // durable home for a rendered thumbnail now.
+        //
+        // Safe because the read flip landed first: reads already prefer the
+        // derived tier, so nothing depended on this write to be found. And a
+        // failure below costs a re-render rather than data — a rendered
+        // thumbnail is regenerable by definition, which is exactly why this
+        // side could stop before the uploaded one.
+        //
+        // Existing sidecars are untouched. They stay readable through the
+        // fallback tier until the import drains them, so a box that has not
+        // run the job yet loses nothing.
         if let Some(dedup) = dedup
             && let Err(e) = dedup
                 .store_derived_blob(
@@ -928,19 +928,19 @@ impl ThumbnailService {
 
         let bytes = Bytes::from(jpeg_bytes);
 
-        // External thumbnails are stored by file_id (not dedup-able)
-        let thumb_path = self
-            .thumbnails_root
-            .join(size.dir_name())
-            .join(format!("ext-{}.jpg", file_id));
-        if let Some(parent) = thumb_path.parent() {
-            let _ = fs::create_dir_all(parent).await;
-        }
-        fs::write(&thumb_path, &bytes)
-            .await
-            .map_err(|e| ThumbnailError::IoError(e.to_string()))?;
-
-        // Populate in-memory cache (external thumbnails are JPEG)
+        // Step 10d2: the `ext-{file_id}.jpg` sidecar write is GONE. The
+        // durable store is now `file_attached_blobs`, written by the caller —
+        // which is why that write had to become fatal first, in the same
+        // change. These bytes have no server-side render path, so a
+        // best-effort store with no sidecar behind it would lose a user's
+        // upload silently.
+        //
+        // This function now re-encodes and caches; it does not persist. The
+        // RAM entry stays because it is what serves the request that follows,
+        // and the caller drops it if the durable write fails.
+        //
+        // Existing `ext-` files remain readable through the fallback tier
+        // until `thumb_attached_import` drains them.
         let cache_key = ThumbnailCacheKey::external(file_id, size);
         self.cache.insert(cache_key, bytes.clone()).await;
 

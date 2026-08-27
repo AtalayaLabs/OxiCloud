@@ -800,16 +800,26 @@ impl FileHandler {
             )
             .await
         {
-            // ERROR, not WARN: the sidecar keeps the feature looking healthy
-            // on this box, so nothing else signals that copies are silently
-            // losing the preview. A syntax error in the upsert hid behind a
-            // warning for an entire test cycle exactly this way.
+            // FATAL as of step 10d2, where it used to warn and return 201.
+            //
+            // That was safe only while `ext-{file_id}.jpg` existed as a
+            // second copy. With the sidecar gone this is the ONLY durable
+            // home for bytes that have no server-side render path — a
+            // client-generated PDF preview cannot be recreated — so
+            // succeeding here would lose a user's upload behind a success
+            // response. Silent, and unrecoverable.
+            //
+            // The RAM entry is dropped too, or the cache would keep serving a
+            // preview that was never persisted and vanishes on eviction,
+            // contradicting the error the client just received.
+            let _ = thumbnail_service.delete_thumbnails(&id).await;
             tracing::error!(
                 target: "oxicloud::dedup",
                 error = %e,
                 file_id = %id,
-                "failed to record attached thumbnail; sidecar written, copies will NOT inherit it"
+                "failed to record attached thumbnail; upload rejected"
             );
+            return AppError::internal_error("Failed to store thumbnail").into_response();
         }
 
         StatusCode::CREATED.into_response()
