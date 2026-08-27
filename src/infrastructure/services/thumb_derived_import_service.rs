@@ -39,7 +39,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::fs;
 
-use crate::application::ports::thumbnail_ports::ThumbnailSize;
+use crate::application::ports::thumbnail_ports::{ThumbnailFormat, ThumbnailSize};
 use crate::infrastructure::scheduler::{
     JobRegistry, JobRunArgs, JobStore, JobStoreProvider, RecoverableJobHandler, RunOutcome,
     RunStatus, record_or_log,
@@ -76,19 +76,35 @@ impl ThumbDerivedImport {
         self
     }
 
-    /// The hash a sidecar filename names, or `None` when the file is not one.
+    /// The hash and format a sidecar filename names, or `None` when the file
+    /// is not one of ours.
     ///
     /// Strict, and deliberately rejects `ext-{file_id}.jpg`: those are
     /// user-supplied, file-keyed bytes. Importing them here would content-key
     /// them and share one user's uploaded preview onto every file with
     /// identical content — the poisoning `file_attached_blobs` exists to
-    /// prevent. They belong to `thumb_attached_import`.
-    fn hash_from_sidecar_name(name: &str) -> Option<&str> {
-        let stem = name.strip_suffix(".webp")?;
+    /// prevent. They belong to `thumb_attached_import`. That rejection
+    /// carries the weight now that `.jpg` is otherwise claimed, since the two
+    /// jobs would otherwise both want it.
+    ///
+    /// Returns the format too, because the row
+    /// key needs both since migration `20261022000000`.
+    ///
+    /// Both codecs are claimed. `persist_rendered` writes
+    /// `{hash}.{format.ext()}`, so any client that does not advertise WebP
+    /// leaves `{hash}.jpg` on disk. While the derived tier was WebP-only
+    /// those were unmigratable by design; now that `variant` carries the
+    /// format they are ordinary content, and skipping them would leave
+    /// `.thumbnails/` permanently non-empty — which is the signal step 10e
+    /// gates the fallback removal on.
+    fn hash_from_sidecar_name(name: &str) -> Option<(&str, ThumbnailFormat)> {
+        let (stem, format) = ThumbnailFormat::ALL
+            .iter()
+            .find_map(|f| name.strip_suffix(&format!(".{}", f.ext())).map(|s| (s, *f)))?;
         if stem.len() != 64 || !stem.chars().all(|c| c.is_ascii_hexdigit()) {
             return None;
         }
-        Some(stem)
+        Some((stem, format))
     }
 
     /// Sorted sidecar filenames for one size directory.
@@ -159,25 +175,14 @@ impl RecoverableJobHandler for ThumbDerivedImport {
         let mut already = 0u64;
         let mut failed = 0u64;
         let mut since_checkpoint = 0usize;
-        // Two different strings, and conflating them is a real trap: the
-        // DIRECTORY is `{size}` on disk, while the VARIANT is
-        // `{size}.{ext}` since migration `20261022000000`. Using the variant
-        // as a path yields `.thumbnails/preview.webp/…`, which does not
-        // exist, so every file reads as unreadable and nothing imports.
-        //
-        // Sidecars here are always `{hash}.webp` — the name filter requires
-        // that extension — so the variant is unconditionally the WebP one.
-        let variant_of = |s: ThumbnailSize| {
-            format!(
-                "{}.{}",
-                s.dir_name(),
-                crate::application::ports::thumbnail_ports::ThumbnailFormat::Webp.ext()
-            )
-        };
-
+        // The DIRECTORY is `{size}` on disk; the VARIANT is `{size}.{ext}`
+        // since migration `20261022000000`. Conflating them is a real trap:
+        // using the variant as a path yields `.thumbnails/preview.webp/…`,
+        // which does not exist, so every file reads as unreadable and nothing
+        // imports. The variant is therefore built per FILE, from the format
+        // its extension names, not once per size.
         for size in ThumbnailSize::all() {
             let dir_name = size.dir_name(); // on-disk directory
-            let variant = variant_of(*size); // content_derived_blobs.variant
             for name in Self::sidecar_names(&self.thumbnails_root, *size).await {
                 // Cursor position uses the DIRECTORY, so a run paused before
                 // this change resumes at the same place.
@@ -204,9 +209,15 @@ impl RecoverableJobHandler for ThumbDerivedImport {
                     }
                 }
 
-                let Some(hash) = Self::hash_from_sidecar_name(&name) else {
+                let Some((hash, format)) = Self::hash_from_sidecar_name(&name) else {
                     continue;
                 };
+                // Both derived from the file's OWN extension, so a `.jpg`
+                // sidecar becomes a JPEG row rather than being mislabelled
+                // WebP — which would serve the wrong codec to anyone the read
+                // path then matched it for.
+                let variant = format!("{dir_name}.{}", format.ext());
+                let content_type = format.mime();
 
                 // Already mapped — the common case on a re-run, and the
                 // reason this job is safe to trigger repeatedly.
@@ -227,7 +238,7 @@ impl RecoverableJobHandler for ThumbDerivedImport {
                                     hash,
                                     "thumbnail",
                                     &variant,
-                                    "image/webp",
+                                    content_type,
                                     Bytes::from(data),
                                 )
                                 .await
@@ -310,12 +321,27 @@ pub(crate) mod tests {
     use super::*;
 
     const H: &str = "0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9";
+    /// A second hash, for the JPEG sidecar in `legacy_tree`.
+    const H2: &str = "c222222222222222222222222222222222222222222222222222222222222222";
 
+    /// BOTH codecs are claimed, and the format comes from the extension.
+    ///
+    /// `.jpg` was previously rejected here, which was correct only while the
+    /// derived tier was WebP-only. Once `variant` carried the format
+    /// (migration `20261022000000`) a JPEG sidecar became ordinary content,
+    /// and leaving it unclaimed would keep `.thumbnails/` permanently
+    /// non-empty — the very signal step 10e gates on.
     #[test]
-    fn accepts_a_canonical_sidecar_name() {
+    fn accepts_both_codecs_and_reports_the_format() {
         assert_eq!(
             ThumbDerivedImport::hash_from_sidecar_name(&format!("{H}.webp")),
-            Some(H)
+            Some((H, ThumbnailFormat::Webp))
+        );
+        assert_eq!(
+            ThumbDerivedImport::hash_from_sidecar_name(&format!("{H}.jpg")),
+            Some((H, ThumbnailFormat::Jpeg)),
+            "a JPEG sidecar must import, and as JPEG — labelling it WebP \
+             would serve the wrong codec"
         );
     }
 
@@ -349,6 +375,13 @@ pub(crate) mod tests {
             .await
             .unwrap();
             // Neither: a stray file that must be claimed by no one.
+            // Server-rendered JPEG: what a client not advertising WebP
+            // leaves behind. Claimed by the derived import, and must not be
+            // confused with the `ext-` upload above despite sharing an
+            // extension.
+            tokio::fs::write(dir.join(format!("{H2}.jpg")), b"jpeg")
+                .await
+                .unwrap();
             tokio::fs::write(dir.join("README.txt"), b"nope")
                 .await
                 .unwrap();
@@ -371,8 +404,10 @@ pub(crate) mod tests {
             vec![
                 format!("{H}.webp"),
                 "b111111111111111111111111111111111111111111111111111111111111111.webp".to_string(),
+                format!("{H2}.jpg"),
             ],
-            "must claim both content-keyed sidecars, sorted, and nothing else"
+            "must claim every content-keyed sidecar of EITHER codec, sorted, \
+             and nothing else"
         );
     }
 
@@ -394,12 +429,15 @@ pub(crate) mod tests {
     #[test]
     fn rejects_external_and_malformed_names() {
         for name in [
+            // `ext-` prefixed: user-supplied and file-keyed, whatever the
+            // extension. Now that .jpg is otherwise claimed, this is the case
+            // that keeps the two jobs disjoint.
             format!("ext-{H}.jpg"),
             "ext-3f2b1c00-0000-0000-0000-000000000000.jpg".to_string(),
-            format!("{H}.jpg"),
             format!("{}.webp", &H[..63]),
             H.to_string(),
             "junk.webp".to_string(),
+            "junk.jpg".to_string(),
         ] {
             assert_eq!(
                 ThumbDerivedImport::hash_from_sidecar_name(&name),

@@ -77,6 +77,12 @@ pub enum ThumbnailFormat {
 }
 
 impl ThumbnailFormat {
+    /// Every format, for callers that must handle all of them — notably
+    /// `thumb_derived_import`, which claims one sidecar extension per format
+    /// and would silently strand a codec if this list and the write path
+    /// drifted apart.
+    pub const ALL: [ThumbnailFormat; 2] = [ThumbnailFormat::Webp, ThumbnailFormat::Jpeg];
+
     /// Stable name, byte-identical to the derived `Debug` output (see
     /// [`ThumbnailSize::as_str`] — same ETag-stability contract).
     pub fn as_str(self) -> &'static str {

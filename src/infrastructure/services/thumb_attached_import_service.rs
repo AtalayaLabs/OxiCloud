@@ -386,10 +386,13 @@ mod tests {
             );
         }
         // And nothing real is dropped: README.txt is the only unclaimed file.
+        // Two content-keyed .webp, one content-keyed .jpg, one ext- upload.
+        // The .jpg pair is the interesting one: same extension, opposite
+        // keying, and only the `ext-` prefix separates them.
         assert_eq!(
             attached.len() + derived.len(),
-            3,
-            "the three real sidecars must be claimed exactly once between them"
+            4,
+            "every real sidecar must be claimed exactly once between the two jobs"
         );
     }
 
