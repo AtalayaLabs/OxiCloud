@@ -61,8 +61,25 @@ HTTP_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" -H "$AUTH" \
 log "Thumbnail fetched (HTTP 200)."
 
 assert_local_blob_existsy "$FIXTURE" "$STORAGE_PATH" || fail "probe blob not found on disk"
-assert_preview_existsy    "$FIXTURE" "$STORAGE_PATH" || fail "probe thumbnail not found on disk"
-log "Probe blob and thumbnail confirmed present on disk."
+
+# The thumbnail must NOT be on disk — inverted at step 10d2, when the sidecar
+# write was removed.
+#
+# It used to assert the opposite, and that was right while `.thumbnails/` was
+# the durable store. Now the durable home is `content_derived_blobs` plus the
+# blob tier, and a sidecar reappearing here means a write path regressed to
+# the legacy shape — which would silently make `.thumbnails/` un-emptyable and
+# strand step 10e forever, since its gate is the directory being gone.
+#
+# The HTTP 200 above is what proves the thumbnail actually works; this proves
+# it got there the new way.
+# Both streams silenced: the helper reports absence loudly, with a red banner
+# and a `find` dump, because absence used to be the failure. Here it is the
+# expected result, so leaving that visible would cry wolf on every clean run.
+if assert_preview_existsy "$FIXTURE" "$STORAGE_PATH" >/dev/null 2>&1; then
+    fail "a thumbnail sidecar was written — the legacy write path is back (step 10d2 removed it)"
+fi
+log "Probe blob on disk; thumbnail served from the derived tier, no sidecar written."
 
 # ── 1c. Delete every non-admin user created by earlier Hurl tests ─────────────
 #
