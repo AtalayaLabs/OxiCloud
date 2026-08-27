@@ -1474,7 +1474,38 @@ hardcoded SQL). New sources bolt on independently.
       format. That is a new prerequisite for (e), not a detail: it means
       a migration to `(kind, variant, format)` — or a format term inside
       `variant` — has to land before the directories can go.
-   d. **Enable deletion** in the import jobs (opt-in, readback-verified).
+   d. **Enable deletion** in the import jobs (opt-in, readback-verified)
+      — **done 2026-08-27**, both halves, sharing one
+      `verify_and_unlink`.
+
+   d2. **Stop writing sidecars.** *(Added 2026-08-27 — the sequence
+      above was missing this, and (e)'s gate is unreachable without
+      it: dual-write means any render or upload recreates the
+      directory seconds after the job removes it, so "no longer
+      exists" can never hold.)*
+
+      Two sides, and they differ in what a failed write costs:
+
+      * **Rendered / content-keyed — safe now.** Delete the `fs::write`
+        in `persist_rendered`. No gate beyond the read flip, which has
+        landed. Existing sidecars are untouched, so a box that has not
+        imported yet keeps its fallback for old content; new content
+        goes only to the derived tier, which the read path already
+        prefers. If the derived store fails the bytes are still served
+        and simply not cached — regenerable by definition.
+      * **Uploaded / file-keyed — needs a change first.**
+        `upload_thumbnail_impl` logs and still returns 201 when
+        `store_attached_blob` fails, which is safe *only* because the
+        `ext-` sidecar catches it. Remove that sidecar while the store
+        is best-effort and a user's uploaded preview can vanish
+        silently behind a success response. These are the
+        non-regenerable bytes, so **the PUT must fail** before the
+        write is removed.
+
+      Order matters: make the attached store fatal, *then* drop its
+      sidecar. Reversed, it trades a silent data-loss window for an
+      empty directory.
+
    e. **Remove the fallback read path** once the directory no longer
       *exists* — not merely once it is empty. Two reasons. Empty is a
       momentary property an on-demand render can undo, whereas absence
