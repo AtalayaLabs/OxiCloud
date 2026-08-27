@@ -123,11 +123,18 @@ impl ThumbDerivedImport {
     /// Returns whether the file was removed. A failed verification leaves the
     /// sidecar in place — the run reports it and the next one retries, which
     /// is the safe direction.
-    async fn verify_and_unlink(&self, derived_hash: &str, path: &std::path::Path) -> bool {
+    /// Shared with `thumb_attached_import` rather than copied into it: both
+    /// jobs delete a sidecar only after proving its replacement is readable,
+    /// and two copies of that rule would be two chances to weaken one.
+    pub(crate) async fn verify_and_unlink(
+        dedup: &DedupService,
+        stored_hash: &str,
+        path: &std::path::Path,
+    ) -> bool {
         let Ok(meta) = fs::metadata(path).await else {
             return false;
         };
-        let Ok(stored) = self.dedup.read_blob_bytes(derived_hash).await else {
+        let Ok(stored) = dedup.read_blob_bytes(stored_hash).await else {
             return false;
         };
         if stored.is_empty() || stored.len() as u64 != meta.len() {
@@ -277,7 +284,7 @@ impl RecoverableJobHandler for ThumbDerivedImport {
                     already += 1;
                     if delete_imported {
                         let path = self.thumbnails_root.join(dir_name).join(&name);
-                        if self.verify_and_unlink(&existing.blob_hash, &path).await {
+                        if Self::verify_and_unlink(&self.dedup, &existing.blob_hash, &path).await {
                             deleted += 1;
                         } else {
                             unverified += 1;
@@ -314,7 +321,13 @@ impl RecoverableJobHandler for ThumbDerivedImport {
                                 Ok(derived_hash) => {
                                     imported += 1;
                                     if delete_imported {
-                                        if self.verify_and_unlink(&derived_hash, &path).await {
+                                        if Self::verify_and_unlink(
+                                            &self.dedup,
+                                            &derived_hash,
+                                            &path,
+                                        )
+                                        .await
+                                        {
                                             deleted += 1;
                                         } else {
                                             unverified += 1;

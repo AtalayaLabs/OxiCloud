@@ -50,6 +50,10 @@ use crate::infrastructure::scheduler::{
     RunStatus, record_or_log,
 };
 use crate::infrastructure::services::dedup_service::DedupService;
+// The readback-then-unlink rule is shared, not copied: two versions of it
+// would be two chances to weaken one, and this is the check standing between
+// a migration and permanent loss.
+use crate::infrastructure::services::thumb_derived_import_service::ThumbDerivedImport;
 
 pub const THUMB_ATTACHED_IMPORT_JOB_NAME: &str = "thumb_attached_import";
 
@@ -169,7 +173,7 @@ impl RecoverableJobHandler for ThumbAttachedImport {
     async fn run_resumable(
         &self,
         store: &dyn JobStore,
-        _args: &JobRunArgs,
+        args: &JobRunArgs,
         resume_cursor: Option<Vec<u8>>,
     ) -> RunOutcome {
         // Cursor is `{size_dir}/{filename}`, matching thumb_derived_import:
@@ -191,6 +195,16 @@ impl RecoverableJobHandler for ThumbAttachedImport {
         let mut imported = 0u64;
         let mut already = 0u64;
         let mut orphaned = 0u64;
+        let mut deleted = 0u64;
+        let mut unverified = 0u64;
+        // Same opt-in as thumb_derived_import: `?repair=true`.
+        //
+        // The readback before unlinking matters more here than there. These
+        // sidecars are the ones that CANNOT be regenerated — a client-uploaded
+        // PDF preview has no server-side render path — so it is not
+        // belt-and-braces, it is the only thing between a migration and
+        // permanent loss.
+        let delete_imported = args.repair;
         let mut failed = 0u64;
         let mut since_checkpoint = 0usize;
 
@@ -227,13 +241,43 @@ impl RecoverableJobHandler for ThumbAttachedImport {
                 // Already mapped. Checked BEFORE storing, because
                 // `store_attached_blob` is ON CONFLICT DO UPDATE and would
                 // release then retake the reference on every run.
-                if self
+                if let Some(existing) = self
                     .dedup
                     .find_attached_blob(&file_id_str, "preview", &dir_name)
                     .await
-                    .is_some()
                 {
                     already += 1;
+                    // Drains on a later run too: importing first and enabling
+                    // deletion afterwards is the expected operator sequence,
+                    // so reaching here is the common path rather than an edge
+                    // case.
+                    if delete_imported {
+                        let path = self.thumbnails_root.join(&dir_name).join(&name);
+                        if ThumbDerivedImport::verify_and_unlink(
+                            &self.dedup,
+                            &existing.blob_hash,
+                            &path,
+                        )
+                        .await
+                        {
+                            deleted += 1;
+                        } else {
+                            unverified += 1;
+                            record_or_log(
+                                store,
+                                THUMB_ATTACHED_IMPORT_JOB_NAME,
+                                "sidecar_delete_unverified",
+                                "anomaly",
+                                None,
+                                serde_json::json!({
+                                    "path":    position,
+                                    "file_id": file_id_str,
+                                    "note":    "attached blob did not read back; sidecar kept",
+                                }),
+                            )
+                            .await;
+                        }
+                    }
                 } else if !self.file_exists(file_id).await {
                     // The file is gone; the sidecar outlived it. Reported
                     // rather than deleted — this job imports, it does not
@@ -272,7 +316,35 @@ impl RecoverableJobHandler for ThumbAttachedImport {
                                 )
                                 .await
                             {
-                                Ok(_) => imported += 1,
+                                Ok(attached_hash) => {
+                                    imported += 1;
+                                    if delete_imported {
+                                        if ThumbDerivedImport::verify_and_unlink(
+                                            &self.dedup,
+                                            &attached_hash,
+                                            &path,
+                                        )
+                                        .await
+                                        {
+                                            deleted += 1;
+                                        } else {
+                                            unverified += 1;
+                                            record_or_log(
+                                                store,
+                                                THUMB_ATTACHED_IMPORT_JOB_NAME,
+                                                "sidecar_delete_unverified",
+                                                "anomaly",
+                                                None,
+                                                serde_json::json!({
+                                                    "path":    position,
+                                                    "file_id": file_id_str,
+                                                    "note":    "attached blob did not read back; sidecar kept",
+                                                }),
+                                            )
+                                            .await;
+                                        }
+                                    }
+                                }
                                 Err(e) => {
                                     failed += 1;
                                     record_or_log(
@@ -333,8 +405,11 @@ impl RecoverableJobHandler for ThumbAttachedImport {
             already_present = already,
             orphaned = orphaned,
             failed = failed,
+            deleted = deleted,
+            unverified = unverified,
             "thumb_attached_import: {imported} imported, {already} already present, \
-             {orphaned} orphaned, {failed} failed"
+             {orphaned} orphaned, {failed} failed, {deleted} sidecar(s) deleted, \
+             {unverified} kept unverified"
         );
 
         RunOutcome::completed()
