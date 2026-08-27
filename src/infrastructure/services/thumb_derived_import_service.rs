@@ -107,6 +107,35 @@ impl ThumbDerivedImport {
         Some((stem, format))
     }
 
+    /// Delete a sidecar, but only after proving the blob that replaced it can
+    /// actually be read back.
+    ///
+    /// The verification is the whole point. `store_derived_blob` reporting
+    /// success is not proof the bytes are retrievable — a backend that
+    /// accepted a write it cannot serve would otherwise have the last copy
+    /// deleted on top of it. This is a migration, and the difference between
+    /// a migration and a data-loss bug is exactly this read.
+    ///
+    /// Length is compared rather than full bytes: it catches the realistic
+    /// failures (absent, empty, truncated) without a second full read of the
+    /// sidecar, which the already-imported path would otherwise need.
+    ///
+    /// Returns whether the file was removed. A failed verification leaves the
+    /// sidecar in place — the run reports it and the next one retries, which
+    /// is the safe direction.
+    async fn verify_and_unlink(&self, derived_hash: &str, path: &std::path::Path) -> bool {
+        let Ok(meta) = fs::metadata(path).await else {
+            return false;
+        };
+        let Ok(stored) = self.dedup.read_blob_bytes(derived_hash).await else {
+            return false;
+        };
+        if stored.is_empty() || stored.len() as u64 != meta.len() {
+            return false;
+        }
+        fs::remove_file(path).await.is_ok()
+    }
+
     /// Sorted sidecar filenames for one size directory.
     ///
     /// Sorted so the cursor is meaningful: resume skips everything at or
@@ -152,9 +181,19 @@ impl RecoverableJobHandler for ThumbDerivedImport {
     async fn run_resumable(
         &self,
         store: &dyn JobStore,
-        _args: &JobRunArgs,
+        args: &JobRunArgs,
         resume_cursor: Option<Vec<u8>>,
     ) -> RunOutcome {
+        // `?repair=true` opts into deleting each sidecar once it has been
+        // imported AND read back. Off by default, matching the house rule
+        // that a job does not mutate on its default setting — early runs
+        // import only, so an operator can inspect before committing.
+        //
+        // Deleting from the job rather than from a later release is what
+        // makes the migration self-draining: sidecars are LOCAL disk, so no
+        // release can know whether every instance has finished, whereas each
+        // instance draining itself needs no coordination at all.
+        let delete_imported = args.repair;
         // Cursor is `{size_dir}/{filename}` — the last file completed. Sizes
         // are walked in `ThumbnailSize::all()` order, and names are sorted
         // within each, so the pair totally orders the walk.
@@ -174,6 +213,8 @@ impl RecoverableJobHandler for ThumbDerivedImport {
         let mut imported = 0u64;
         let mut already = 0u64;
         let mut failed = 0u64;
+        let mut deleted = 0u64;
+        let mut unverified = 0u64;
         let mut since_checkpoint = 0usize;
         // The DIRECTORY is `{size}` on disk; the VARIANT is `{size}.{ext}`
         // since migration `20261022000000`. Conflating them is a real trap:
@@ -221,13 +262,40 @@ impl RecoverableJobHandler for ThumbDerivedImport {
 
                 // Already mapped — the common case on a re-run, and the
                 // reason this job is safe to trigger repeatedly.
-                if self
+                //
+                // Deletion applies here too, not just to fresh imports: a run
+                // without `repair` leaves the sidecar behind, and a later run
+                // with it would otherwise classify the file as "already
+                // imported" and never drain it. Import-then-enable-deletion
+                // is the expected operator sequence, so this is the common
+                // path, not an edge case.
+                if let Some(existing) = self
                     .dedup
                     .find_derived_blob(hash, "thumbnail", &variant)
                     .await
-                    .is_some()
                 {
                     already += 1;
+                    if delete_imported {
+                        let path = self.thumbnails_root.join(dir_name).join(&name);
+                        if self.verify_and_unlink(&existing.blob_hash, &path).await {
+                            deleted += 1;
+                        } else {
+                            unverified += 1;
+                            record_or_log(
+                                store,
+                                THUMB_DERIVED_IMPORT_JOB_NAME,
+                                "sidecar_delete_unverified",
+                                "anomaly",
+                                None,
+                                serde_json::json!({
+                                    "path": position,
+                                    "hash": hash,
+                                    "note": "derived blob did not read back; sidecar kept",
+                                }),
+                            )
+                            .await;
+                        }
+                    }
                 } else {
                     let path = self.thumbnails_root.join(dir_name).join(&name);
                     match fs::read(&path).await {
@@ -243,7 +311,29 @@ impl RecoverableJobHandler for ThumbDerivedImport {
                                 )
                                 .await
                             {
-                                Ok(_) => imported += 1,
+                                Ok(derived_hash) => {
+                                    imported += 1;
+                                    if delete_imported {
+                                        if self.verify_and_unlink(&derived_hash, &path).await {
+                                            deleted += 1;
+                                        } else {
+                                            unverified += 1;
+                                            record_or_log(
+                                                store,
+                                                THUMB_DERIVED_IMPORT_JOB_NAME,
+                                                "sidecar_delete_unverified",
+                                                "anomaly",
+                                                None,
+                                                serde_json::json!({
+                                                    "path": position,
+                                                    "hash": hash,
+                                                    "note": "derived blob did not read back; sidecar kept",
+                                                }),
+                                            )
+                                            .await;
+                                        }
+                                    }
+                                }
                                 Err(e) => {
                                     failed += 1;
                                     record_or_log(
@@ -298,6 +388,23 @@ impl RecoverableJobHandler for ThumbDerivedImport {
             }
         }
 
+        // Remove the size directories once genuinely empty, because ABSENCE
+        // is what step 10e gates the fallback removal on — not emptiness.
+        // Empty is momentary: an on-demand render can repopulate it the next
+        // second. Absence is one-way, and far cheaper to test besides — one
+        // `stat` versus an opendir/readdir/closedir.
+        //
+        // `remove_dir` refuses a non-empty directory, so this needs no
+        // emptiness check of its own and cannot race a concurrent write into
+        // deleting live files.
+        if delete_imported {
+            for size in ThumbnailSize::all() {
+                let dir = self.thumbnails_root.join(size.dir_name());
+                let _ = fs::remove_dir(&dir).await;
+            }
+            let _ = fs::remove_dir(&self.thumbnails_root).await;
+        }
+
         tracing::info!(
             target: "oxicloud::dedup",
             event = "thumb_derived_import.completed",
@@ -305,7 +412,10 @@ impl RecoverableJobHandler for ThumbDerivedImport {
             imported = imported,
             already_present = already,
             failed = failed,
-            "thumb_derived_import: {imported} imported, {already} already present, {failed} failed"
+            deleted = deleted,
+            unverified = unverified,
+            "thumb_derived_import: {imported} imported, {already} already present, \
+             {failed} failed, {deleted} sidecar(s) deleted, {unverified} kept unverified"
         );
 
         RunOutcome::completed()
