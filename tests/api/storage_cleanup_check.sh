@@ -328,7 +328,7 @@ log "Reconciliation sweep triggered."
 GC_TOTAL_BLOBS=0
 GC_TOTAL_BYTES=0
 GC_DRAINED=0
-for gc_pass in 1 2 3; do
+for gc_pass in 1 2 3 4; do
     GC_RESULT=$(curl -sf -X POST -H "$AUTH" "$base_url/api/admin/jobs/dedup_gc/trigger?force=true")
     [[ -z "$GC_RESULT" ]] && fail "trigger-gc returned an empty body (pass $gc_pass)"
     GC_BLOBS=$(echo "$GC_RESULT" | jq -r '.outcome.count // 0')
@@ -336,9 +336,26 @@ for gc_pass in 1 2 3; do
     GC_TOTAL_BLOBS=$((GC_TOTAL_BLOBS + GC_BLOBS))
     GC_TOTAL_BYTES=$((GC_TOTAL_BYTES + GC_BYTES))
     log "GC pass $gc_pass reaped $GC_BLOBS blob(s), $GC_BYTES byte(s) freed."
+    # Break on TWO consecutive zero passes, not one.
+    #
+    # A single zero only says nothing was collectible *at that instant*.
+    # Releases cascade — reaping a source blob drops the references its
+    # derived and attached rows held, and `on_blob_deleted` does that from
+    # spawned tasks — so a pass can land in the gap between "source reaped"
+    # and "dependents released" and report zero while work remains. The
+    # import jobs added a level to that chain, which is when this started
+    # biting.
+    #
+    # Cheap insurance: one extra trigger over an empty store, versus a
+    # false pass that reports a clean disk while blobs remain.
     if [[ "$GC_BLOBS" -eq 0 ]]; then
-        GC_DRAINED=1
-        break
+        if [[ "${GC_ZERO_STREAK:-0}" -ge 1 ]]; then
+            GC_DRAINED=1
+            break
+        fi
+        GC_ZERO_STREAK=1
+    else
+        GC_ZERO_STREAK=0
     fi
     # Breathe before the next trigger, for two reasons:
     #
@@ -408,6 +425,28 @@ fi
 
 if [[ -n "$BLOB_FILES" ]]; then
     BLOB_COUNT=$(echo "$BLOB_FILES" | wc -l | tr -d ' ')
+
+    # Say WHY each one survived, not just that it did. A path alone cannot
+    # distinguish the three causes, and they need opposite fixes: a positive
+    # refcount means something still references it (a release was missed), an
+    # orphan means GC never considered it (a reap predicate gap), and a row
+    # with no manifest means the registry itself is inconsistent. Diagnosing
+    # that by hand costs a round-trip through the whole suite.
+    log "Diagnosing leftovers (refcounts and referrers):"
+    while read -r f; do
+        [[ -z "$f" ]] && continue
+        h=$(basename "$f" .blob)
+        docker compose -f "$COMPOSE_FILE" exec -T postgres-test \
+          psql -U oxicloud_test -d oxicloud_test -tAqc "
+            SELECT '  $h'
+                 || ' manifest_refs=' || COALESCE((SELECT ref_count::text FROM storage.chunk_manifests WHERE file_hash='$h'), '-')
+                 || ' blob_refs='     || COALESCE((SELECT ref_count::text FROM storage.blobs           WHERE hash='$h'), '-')
+                 || ' files='         || (SELECT count(*) FROM storage.files                 WHERE blob_hash='$h')
+                 || ' derived='       || (SELECT count(*) FROM storage.content_derived_blobs WHERE blob_hash='$h')
+                 || ' attached='      || (SELECT count(*) FROM storage.file_attached_blobs   WHERE blob_hash='$h');" \
+          2> >(grep -v 'Executing external compose provider' >&2) || true
+    done <<< "$BLOB_FILES"
+
     log "Leftover blob files ($BLOB_COUNT):"
     echo "$BLOB_FILES"
     fail "$BLOB_COUNT blob file(s) remain on disk after full cleanup"
