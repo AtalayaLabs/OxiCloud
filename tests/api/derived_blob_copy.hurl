@@ -140,7 +140,66 @@ Authorization: Bearer {{token}}
 HTTP 200
 [Captures]
 thumb_bytes: bytes
+# The JPEG validator, since every later request omits `Accept` and so
+# negotiates JPEG too. Captured here rather than after step 4b, or it
+# would belong to a different codec than the bytes beside it.
 thumb_etag: header "ETag"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 4b – Codec negotiation: WebP and JPEG are separate artifacts.
+#
+# Every other request in the suite omits `Accept`, and curl defaults to
+# `*/*`, which `ThumbnailFormat::from_accept` maps to JPEG — so without
+# this case the WebP path is never exercised at all, despite being what
+# background generation writes and what the derived tier was built
+# around.
+#
+# The three assertions are one property each:
+#
+#   Content-Type  — negotiation actually happened (it is byte-sniffed
+#                   from the body, so it cannot be right by accident).
+#   bytes         — the two really are different artifacts.
+#   ETag          — the validators are distinct. `variant` carries the
+#                   format since migration 20261022000000; before that a
+#                   JPEG request could match the WebP row and be served
+#                   the wrong codec, and a shared validator is how a
+#                   cache would then hand either to either.
+#
+# Together they also cover the per-format variant keying that lets one
+# source hold both codecs — the prerequisite for JPEG clients ever
+# leaving the sidecar.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/files/{{orig_file_id}}/thumbnail/preview
+Authorization: Bearer {{token}}
+Accept: image/webp
+
+HTTP 200
+[Captures]
+webp_bytes: bytes
+webp_etag: header "ETag"
+[Asserts]
+header "Content-Type" == "image/webp"
+
+
+GET {{base_url}}/api/files/{{orig_file_id}}/thumbnail/preview
+Authorization: Bearer {{token}}
+Accept: image/jpeg
+
+HTTP 200
+[Asserts]
+header "Content-Type" == "image/jpeg"
+bytes != {{webp_bytes}}
+header "ETag" != "{{webp_etag}}"
+
+
+# Each codec revalidates against its OWN validator.
+GET {{base_url}}/api/files/{{orig_file_id}}/thumbnail/preview
+Authorization: Bearer {{token}}
+Accept: image/webp
+If-None-Match: {{webp_etag}}
+
+HTTP 304
 
 
 # ─────────────────────────────────────────────────────────────
