@@ -159,7 +159,18 @@ impl RecoverableJobHandler for ThumbDerivedImport {
         let mut already = 0u64;
         let mut failed = 0u64;
         let mut since_checkpoint = 0usize;
-        let variant_of = |s: ThumbnailSize| s.dir_name().to_string();
+        // Sidecars under `.thumbnails/` are `{hash}.webp` — the filter that
+        // built this list requires the extension — so the imported rows are
+        // WebP, and the variant must say so since migration
+        // `20261022000000`. Writing the bare size here would produce rows the
+        // read path can never match.
+        let variant_of = |s: ThumbnailSize| {
+            format!(
+                "{}.{}",
+                s.dir_name(),
+                crate::application::ports::thumbnail_ports::ThumbnailFormat::Webp.ext()
+            )
+        };
 
         for size in ThumbnailSize::all() {
             let dir_name = variant_of(*size);

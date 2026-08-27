@@ -59,6 +59,22 @@ impl ThumbnailSize {
         }
     }
 
+    /// The `content_derived_blobs.variant` value for this size and format.
+    ///
+    /// One place builds the string, because it is a primary-key component: a
+    /// writer and a reader that disagree do not fail loudly, they simply
+    /// never find each other's rows — the read falls back to the sidecar and
+    /// the derived tier silently looks empty.
+    ///
+    /// The format term is what lets one source hold both codecs at a size.
+    /// Without it a JPEG request matched the WebP row and would be served the
+    /// wrong codec, which is why the step-10c read flip had to be gated to
+    /// WebP and why JPEG clients could never leave the sidecar. See migration
+    /// `20261022000000`.
+    pub fn derived_variant(&self, format: ThumbnailFormat) -> String {
+        format!("{}.{}", self.dir_name(), format.ext())
+    }
+
     /// Get all thumbnail sizes
     pub fn all() -> &'static [ThumbnailSize] {
         &[
@@ -310,7 +326,7 @@ impl ThumbnailService {
                 .store_derived_blob(
                     blob_hash,
                     "thumbnail",
-                    size.dir_name(),
+                    &size.derived_variant(format),
                     format.mime(),
                     bytes.clone(),
                 )
@@ -806,17 +822,15 @@ impl ThumbnailService {
         // draining, most content has a sidecar and no row, and terminating
         // here would return "no thumbnail" for all of it.
         //
-        // **WebP only.** `store_derived_blob` writes `image/webp` and keys
-        // `variant` on the size alone, with no format term, so a JPEG request
-        // would match the WebP row and be served the wrong codec — a
-        // regression the old ordering hid, because the `.jpg` sidecar won
-        // first. Until `variant` encodes format, JPEG clients stay on the
-        // sidecar, and the sidecar therefore cannot be deleted for them. See
-        // docs/plan/derived-blobs.md.
-        if format == ThumbnailFormat::Webp
-            && let Some(dedup) = dedup
+        // All formats, since migration `20261022000000` put the output format
+        // inside `variant`. Before that, `variant` was the size alone, so a
+        // JPEG request matched the WebP row and would have been served the
+        // wrong codec — the flip had to be gated to WebP, which meant JPEG
+        // clients could never leave the sidecar and the sidecar could never
+        // be deleted. Now each codec has its own row.
+        if let Some(dedup) = dedup
             && let Some(derived) = dedup
-                .find_derived_blob(hash, "thumbnail", size.dir_name())
+                .find_derived_blob(hash, "thumbnail", &size.derived_variant(format))
                 .await
             && let Some(bytes) =
                 Self::read_blob_to_bytes(dedup, &derived.blob_hash, file_id, size).await
