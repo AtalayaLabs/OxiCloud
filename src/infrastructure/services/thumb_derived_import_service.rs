@@ -159,11 +159,14 @@ impl RecoverableJobHandler for ThumbDerivedImport {
         let mut already = 0u64;
         let mut failed = 0u64;
         let mut since_checkpoint = 0usize;
-        // Sidecars under `.thumbnails/` are `{hash}.webp` — the filter that
-        // built this list requires the extension — so the imported rows are
-        // WebP, and the variant must say so since migration
-        // `20261022000000`. Writing the bare size here would produce rows the
-        // read path can never match.
+        // Two different strings, and conflating them is a real trap: the
+        // DIRECTORY is `{size}` on disk, while the VARIANT is
+        // `{size}.{ext}` since migration `20261022000000`. Using the variant
+        // as a path yields `.thumbnails/preview.webp/…`, which does not
+        // exist, so every file reads as unreadable and nothing imports.
+        //
+        // Sidecars here are always `{hash}.webp` — the name filter requires
+        // that extension — so the variant is unconditionally the WebP one.
         let variant_of = |s: ThumbnailSize| {
             format!(
                 "{}.{}",
@@ -173,8 +176,11 @@ impl RecoverableJobHandler for ThumbDerivedImport {
         };
 
         for size in ThumbnailSize::all() {
-            let dir_name = variant_of(*size);
+            let dir_name = size.dir_name(); // on-disk directory
+            let variant = variant_of(*size); // content_derived_blobs.variant
             for name in Self::sidecar_names(&self.thumbnails_root, *size).await {
+                // Cursor position uses the DIRECTORY, so a run paused before
+                // this change resumes at the same place.
                 let position = format!("{dir_name}/{name}");
 
                 // Resume: everything at or before the cursor is done.
@@ -206,13 +212,13 @@ impl RecoverableJobHandler for ThumbDerivedImport {
                 // reason this job is safe to trigger repeatedly.
                 if self
                     .dedup
-                    .find_derived_blob(hash, "thumbnail", &dir_name)
+                    .find_derived_blob(hash, "thumbnail", &variant)
                     .await
                     .is_some()
                 {
                     already += 1;
                 } else {
-                    let path = self.thumbnails_root.join(&dir_name).join(&name);
+                    let path = self.thumbnails_root.join(dir_name).join(&name);
                     match fs::read(&path).await {
                         Ok(data) => {
                             match self
@@ -220,7 +226,7 @@ impl RecoverableJobHandler for ThumbDerivedImport {
                                 .store_derived_blob(
                                     hash,
                                     "thumbnail",
-                                    &dir_name,
+                                    &variant,
                                     "image/webp",
                                     Bytes::from(data),
                                 )

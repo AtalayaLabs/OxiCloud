@@ -80,8 +80,17 @@ fail() {
 # psql inside the compose container — no host psql dependency, matching
 # how spawn-db.sh probes readiness.
 sql() {
+  # Podman's docker-compose shim prints a provider banner to stderr on every
+  # invocation, which buries this script's own output. Filtered rather than
+  # discarded (`2>/dev/null`) so genuine psql errors still surface — losing
+  # those would turn a broken query into a silently wrong assertion.
+  #
+  # Suppressing it at the source needs `[engine] compose_warning_logs = false`
+  # in containers.conf, which is per-developer config and cannot be relied on
+  # in CI.
   docker compose -f "$COMPOSE_FILE" exec -T postgres-test \
-    psql -U oxicloud_test -d oxicloud_test -tAqc "$1"
+    psql -U oxicloud_test -d oxicloud_test -tAqc "$1" \
+    2> >(grep -v 'Executing external compose provider' >&2)
 }
 
 TOKEN=$(curl -sf -X POST "$base_url/api/auth/login" \
