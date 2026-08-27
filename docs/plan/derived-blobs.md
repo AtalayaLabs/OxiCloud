@@ -1289,7 +1289,38 @@ hardcoded SQL). New sources bolt on independently.
    after, step 5 lands at scale; per-row HEADs do not survive a 4×
    row count.
 7. **`ImageTranscodeService`** — same shape, `kind = 'transcode'`,
-   no new table.
+   no new table. **Scoped 2026-08-27, not started.** The service does
+   not currently write the derived tier at all, which is the same gap
+   `persist_rendered` closed for thumbnails, and it must be closed
+   before `transcode_import` can converge.
+
+   Three concrete pieces, in order:
+
+   * **Thread the source hash to the call site.** `get_transcoded` takes
+     `file_id` only, and the table is content-keyed. The hash IS
+     available one frame up — `file_retrieval_service::try_transcode`
+     is called from a scope holding `dto.content_hash` — so it is a
+     parameter to add, not a lookup to invent. Do **not** hash
+     `original_content` on the fly: that is a BLAKE3 over the whole
+     file on every request.
+   * **Give the service a `BlobHandler`.** It has no field for one
+     (`cache_dir`, `memory_cache`, `stats`), so this is a constructor
+     and DI change — mind the construction order, as
+     `ThumbnailService` hit the same thing and solved it with a
+     per-call parameter instead.
+   * **Decide the `.skip` markers.** `{file_id}.{ext}.skip` records a
+     negative verdict ("result was not smaller — serve the original")
+     and has no bytes, so it does not fit a table whose row points at a
+     blob. Options: leave them as a purely local cache and accept the
+     verdict being recomputed per instance, or model it with a sentinel
+     `blob_hash`. Unresolved; it is the only genuinely open design
+     question in step 10.
+
+   Note the cache is keyed `{file_id}:{ext}` in memory and
+   `.transcoded/{ext}/{file_id}.{ext}` on disk, so it also carries the
+   file-vs-content keying mismatch that `transcode_import` has to
+   re-key. Fixing the write path first means the import only has to
+   handle history, not a moving target.
 8. **`storage.copy_file_satellites` consolidation** — collapse the two
    copy paths onto one helper, with a manifest-aware reference bump.
    **Blocks step 9**: adding a file-keyed table before this means
