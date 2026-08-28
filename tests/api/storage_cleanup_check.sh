@@ -532,6 +532,12 @@ CONSISTENCY_JOBS=(
     blobs_consistency
     manifests_consistency
     backend_consistency
+    # Catches what the others structurally cannot: a derived mapping whose
+    # source Blob is gone looks healthy to every refcount-based check — valid
+    # reference, correct count, bytes present — while pinning its artifact
+    # forever. That leak reached this suite as three unreclaimable blobs and
+    # took four runs to identify.
+    derived_consistency
 )
 
 CONSISTENCY_FAILED=0

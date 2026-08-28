@@ -1494,6 +1494,19 @@ impl AppServiceFactory {
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
         .await;
 
+        // Finds derived mappings whose Blob is gone on either side. Nothing
+        // else can: a row whose SOURCE was reaped still holds a valid
+        // reference to a real artifact with a correct refcount, so every
+        // other check agrees the system is healthy while the artifact is
+        // pinned forever. Read-only.
+        let _ = Arc::new(
+            crate::infrastructure::services::derived_consistency_service::DerivedConsistencyCheck::new(
+                maintenance_pool.clone(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
         // Its file-keyed twin: `ext-{file_id}.jpg` previews the user uploaded,
         // which no copy path duplicates today. Separate job, separate keying —
         // routing these into the content-keyed table would share one user's
