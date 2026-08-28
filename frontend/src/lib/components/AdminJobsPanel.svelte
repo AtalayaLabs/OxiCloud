@@ -637,13 +637,14 @@
 	// Jobs that respect `?deep=true`:
 	//   * `consistency_batch` — propagates deep to every child that
 	//     understands it
-	//   * `blobs_consistency` — deep mode re-reads + re-hashes every
-	//     blob for silent bit-rot detection (severity `data_loss`).
-	//     Full read of storage; can take hours on big installs — the
-	//     "Run" (normal) button on the same row does the cheap
-	//     existence probes only.
+	//   * `backend_consistency` — deep mode re-reads + re-hashes every
+	//     matched blob for silent bit-rot detection (severity
+	//     `data_loss`). Full read of storage; can take hours on big
+	//     installs — the "Run" button on the same row does the
+	//     enumeration merge-join only. This was `blobs_consistency`
+	//     until that tenant became database-only.
 	function supportsDeep(name: string): boolean {
-		return name === 'consistency_batch' || name === 'blobs_consistency';
+		return name === 'consistency_batch' || name === 'backend_consistency';
 	}
 
 	// Whether `?repair=true` does anything for this job — declared by the

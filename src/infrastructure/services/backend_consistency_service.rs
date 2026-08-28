@@ -10,7 +10,8 @@
 //! backend listing, so it was invisible here by construction. That half
 //! was left to `blobs_consistency`'s per-row HEAD probe, which does not
 //! survive the row counts this plan produces — see
-//! `docs/plan/derived-blobs.md`.
+//! `docs/plan/derived-blobs.md`. That probe is now gone: this tenant
+//! owns every backend-side check, and `blobs_consistency` is DB-only.
 //!
 //! ### Per-row checks
 //!
@@ -22,6 +23,22 @@
 //! * `blob_missing_from_backend` (severity `data_loss`) — a registry
 //!   row whose bytes are absent. The opposite direction and the more
 //!   serious one: an orphan wastes space, this loses a file.
+//! * `blob_corrupted` (severity `data_loss`, `?deep=true` only) —
+//!   the key exists on both sides but the bytes behind it no longer
+//!   hash to it. Silent bit-rot.
+//! * `blob_unreadable` (severity `data_loss`, `?deep=true` only) —
+//!   the key exists but the bytes cannot be read at all: decrypt
+//!   failure (missing key), transport error, permissions. Same impact
+//!   as corruption from a file's point of view, different remedy,
+//!   hence a separate kind. Triage on the recorded `error`.
+//!
+//! ### Deep mode
+//!
+//! The last two moved here from `blobs_consistency`, which used to
+//! carry a backend solely for them. Re-hashing is backend work end to
+//! end — the only DB input is the hash — and this walk already holds
+//! the matched key pairs, which is exactly the set worth reading. It
+//! costs a full read of every blob, so it is opt-in.
 //!
 //! ### Why the two orderings agree
 //!
@@ -71,14 +88,18 @@ use crate::infrastructure::scheduler::{
     JobRegistry, JobRunArgs, JobStore, JobStoreProvider, ProgressKind, RecoverableJobHandler,
     RunOutcome, RunStatus, record_or_log,
 };
+use crate::infrastructure::services::blob_diagnostics::affected_files;
 
 pub const BACKEND_CONSISTENCY_JOB_NAME: &str = "backend_consistency";
 
-/// Same `params` JSONB key `blobs_consistency` uses — kept identical
-/// so operators grepping run rows see the same convention across
-/// both storage-audit tenants.
-pub const PROBED_STORAGE_PARAM: &str =
-    crate::infrastructure::services::blobs_consistency_service::PROBED_STORAGE_PARAM;
+/// `params` JSONB key under which the entry name being enumerated is
+/// stashed on a Fresh run (matches `TARGET_NAME_PARAM` on
+/// `backend_migration`). Resumed runs re-read it so a paused audit
+/// survives restart without the admin re-specifying the target.
+///
+/// Defined here rather than in `blobs_consistency`, which no longer
+/// touches a backend and so has no entry to scope.
+pub const PROBED_STORAGE_PARAM: &str = "probed_storage";
 
 /// Batch size for backend enumeration + DB probe. 500 is enough to
 /// amortise the DB round-trip while keeping the cancel-poll cadence
@@ -151,8 +172,10 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
         "Merge-joins the storage backend's blob enumeration against \
          storage.blobs, both ordered by hash, so one pass yields the delta \
          in both directions: bytes on the backend no DB row claims, and \
-         rows whose bytes are gone. Read-only — nothing is uploaded or \
-         deleted."
+         rows whose bytes are gone. Add ?deep=true to also read every \
+         matched blob back and re-hash it, catching silent bit-rot — that \
+         is a full read of storage and can take hours. Read-only in both \
+         modes: nothing is uploaded or deleted."
     }
 
     /// Approximate total: on a healthy install every backend blob
@@ -256,6 +279,49 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                 probed_storage = %name,
                 "backend_consistency enumerating entry `{name}` (via ?storage=<name>) instead \
                  of live backend"
+            );
+        }
+
+        // Deep mode — read every matched blob back and re-hash it, rather
+        // than trusting that a key present on both sides means the bytes
+        // behind it are still the bytes that key names.
+        //
+        // It lives here rather than in `blobs_consistency` because it is
+        // a backend operation end to end: the only DB input is the hash,
+        // which this merge-join already holds. Keeping it there forced
+        // that tenant to carry a backend for one flag, which is the
+        // overlap this split removes.
+        //
+        // Persisted to `params.deep` on a Fresh run so a Resume picks up
+        // the same mode (a Paused deep scan must not silently continue
+        // shallow) and the admin run-detail view can show what the scan
+        // actually verified. Written BEFORE the walk so a crash mid-batch
+        // still leaves the marker.
+        let deep = if is_fresh {
+            let v = if args.deep { "true" } else { "false" };
+            if let Err(e) = store.set_string_param("deep", v).await {
+                return RunOutcome::Failed {
+                    message: format!("failed to persist deep flag to params: {e}"),
+                };
+            }
+            args.deep
+        } else {
+            match store.get_string_param("deep").await {
+                Ok(Some(v)) => v == "true",
+                Ok(None) => false,
+                Err(e) => {
+                    return RunOutcome::Failed {
+                        message: format!("read `deep` from params: {e}"),
+                    };
+                }
+            }
+        };
+        if deep {
+            tracing::info!(
+                target: "oxicloud::consistency",
+                event = "backend_consistency.deep_mode_active",
+                run_id = %store.run_id(),
+                "deep mode: re-reading + re-hashing every matched blob (bit-rot detection)"
             );
         }
 
@@ -469,7 +535,20 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
             let mut di = db_hashes.iter().peekable();
             loop {
                 match (bi.peek(), di.peek()) {
+                    // Present on both sides. Shallow: nothing to say — the
+                    // key exists where the registry claims. Deep: the key
+                    // matching says nothing about the bytes behind it, so
+                    // read them back and re-hash.
+                    //
+                    // Guarded by `in_range` so a pair past the horizon is
+                    // not read twice — the cursor stops at the horizon, so
+                    // that pair comes round again next batch and is
+                    // verified then.
                     (Some(b), Some(d)) if b.hash == **d => {
+                        if deep && in_range(&b.hash) {
+                            finding_count +=
+                                self.verify_bytes(store, backend.as_ref(), &b.hash).await;
+                        }
                         bi.next();
                         di.next();
                     }
@@ -580,4 +659,107 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
             }
         }
     }
+}
+
+impl BackendConsistencyCheck {
+    /// Deep-mode per-blob verification. Reads the blob back, re-hashes it,
+    /// and records what it finds. Returns the number of findings recorded
+    /// (0 or 1) so the caller's counter stays the single tally.
+    ///
+    /// Moved here from `blobs_consistency` along with the rest of the
+    /// backend-touching work: the merge-join already holds a verified
+    /// key pair, which is exactly the set worth reading.
+    async fn verify_bytes(
+        &self,
+        store: &dyn JobStore,
+        backend: &dyn BlobStorageBackend,
+        hash: &str,
+    ) -> u64 {
+        match recompute_hash(backend, hash).await {
+            // The bytes still hash to the key they are filed under.
+            Ok(computed) if computed == hash => 0,
+            // Silent bit-rot. `computed_hash` is reported rather than a
+            // bare "mismatch" because the value is diagnostic: a one-bit
+            // flip, a truncation and a whole-object swap leave distinct
+            // signatures.
+            Ok(computed) => {
+                let affected = affected_files(self.pool.as_ref(), hash).await;
+                record_or_log(
+                    store,
+                    BACKEND_CONSISTENCY_JOB_NAME,
+                    "blob_corrupted",
+                    "data_loss",
+                    None,
+                    serde_json::json!({
+                        "hash":           hash,
+                        "computed_hash":  computed,
+                        "backend":        backend.backend_type(),
+                        "affected_files": affected,
+                    }),
+                )
+                .await;
+                1
+            }
+            // Bytes are there by key but cannot be read at all: decrypt
+            // failure (missing key), transport error, permissions. Same
+            // impact as corruption from a file's point of view — the
+            // content is inaccessible — but a different remedy, which is
+            // why it is a separate kind rather than folded into
+            // `blob_corrupted`. Operators triage on `error`.
+            Err(e) => {
+                let affected = affected_files(self.pool.as_ref(), hash).await;
+                record_or_log(
+                    store,
+                    BACKEND_CONSISTENCY_JOB_NAME,
+                    "blob_unreadable",
+                    "data_loss",
+                    None,
+                    serde_json::json!({
+                        "hash":           hash,
+                        "backend":        backend.backend_type(),
+                        "affected_files": affected,
+                        "error":          e.to_string(),
+                    }),
+                )
+                .await;
+                tracing::warn!(
+                    target: "oxicloud::consistency",
+                    event = "backend_consistency.blob_unreadable",
+                    run_id = %store.run_id(),
+                    hash = %hash,
+                    error = %e,
+                    "🚨 blob unreadable in deep mode — recorded finding, continuing"
+                );
+                1
+            }
+        }
+    }
+}
+
+/// Deep-mode helper — read the blob from the backend and recompute its
+/// BLAKE3 hash. Returns the recomputed hex string; callers compare it
+/// against the expected hash themselves. Returning the actual hash (not
+/// a bool) lets the finding surface WHAT the bytes now hash to, which is
+/// diagnostic gold: a one-bit flip has a very different signature from a
+/// chunk-boundary corruption or a truncated read. `Err(_)` on any
+/// backend-side error — the caller records that as `blob_unreadable`
+/// rather than as corruption.
+async fn recompute_hash(
+    backend: &dyn BlobStorageBackend,
+    expected_hash: &str,
+) -> Result<String, crate::common::errors::DomainError> {
+    use crate::common::errors::DomainError;
+    use futures::StreamExt;
+
+    let mut stream = backend.get_blob_stream(expected_hash).await?;
+    let mut hasher = blake3::Hasher::new();
+
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(|e| {
+            DomainError::internal_error("BackendConsistency", format!("stream read: {e}"))
+        })?;
+        hasher.update(&bytes);
+    }
+
+    Ok(hasher.finalize().to_hex().to_string())
 }

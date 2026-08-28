@@ -949,8 +949,8 @@ Findings each job reports today, and where the new tables land:
 | # | Edge | Direction | Mechanism | Status |
 |---|---|---|---|---|
 | 1 | backend → `storage.blobs` | orphan bytes | `orphan_blob` (backend_consistency) | ✓ |
-| 2 | `storage.blobs` → backend | missing bytes | `blob_missing_from_backend` | ✓ |
-| 3 | chunk bytes | corruption | `blob_corrupted`, `blob_unreadable` | ✓ |
+| 2 | `storage.blobs` → backend | missing bytes | `blob_missing_from_backend` (backend_consistency) | ✓ |
+| 3 | chunk bytes | corruption | `blob_corrupted`, `blob_unreadable` (backend_consistency, `?deep=true`) | ✓ |
 | 4 | manifest → chunks | chunk reaped | `chunk_missing` (files_consistency) | ✓ |
 | 5 | `files` → Blob | dangling | `missing_blob` (files_consistency) | ✓ |
 | 6 | `storage.blobs.ref_count` | recompute | `refcount_mismatch` | ✓ chunk level only |

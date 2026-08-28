@@ -1536,24 +1536,21 @@ impl AppServiceFactory {
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
         .await;
 
-        // Fourth recoverable-run tenant. Iterates `storage.blobs`
-        // and verifies each row against the physical backend AND
-        // against the reference-counting invariants that `dedup_gc`
-        // relies on. Three per-row checks (subject-iteration in
-        // action): `blob_missing_from_backend` (data_loss, bytes
-        // gone from disk), `refcount_mismatch` (inconsistent,
-        // dedup counter drift), and `blob_corrupted` (data_loss,
-        // deep mode only — bit-rot). Complements
-        // `files_consistency` without doubling work: probing
-        // per-unique-blob preserves dedup savings vs probing
-        // per-file-chunk. See memory
-        // `project_cdc_dual_storage_registries` for the rationale.
+        // Fourth recoverable-run tenant. Iterates `storage.blobs` and
+        // checks the reference-counting invariant `dedup_gc` relies on:
+        // `refcount_mismatch` (inconsistent — an under-count lets GC reap
+        // a live blob, an over-count pins a dead one), repairable under
+        // `?repair=true`.
+        //
+        // DB-only, and takes no backend. Physical checks — missing bytes,
+        // orphaned bytes, bit-rot — all belong to `backend_consistency`,
+        // which merge-joins the backend enumeration against this same
+        // table in one pass. This tenant used to probe the backend once
+        // per row for missing bytes, which found strictly less than the
+        // merge-join at N round-trips instead of one enumeration.
         let _ = Arc::new(
             crate::infrastructure::services::blobs_consistency_service::BlobsConsistencyCheck::new(
                 maintenance_pool.clone(),
-                core.blob_backend.clone(),
-                core.config.storage_entries.clone(),
-                self.storage_path.clone(),
                 // Same registry instance GC reaps from — see
                 // DedupService::reference_registry.
                 core.dedup_service.reference_registry(),
