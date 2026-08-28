@@ -527,24 +527,37 @@ fi
 # Zero findings is the assertion. These jobs are read-only, so a finding
 # here is a real invariant violation, not a repair opportunity.
 
+# EVERY registered consistency tenant. Keep this list exhaustive: two of
+# these (drives, folders) were missing until 2026-08-28 and had never run
+# under test at all.
 CONSISTENCY_JOBS=(
     files_consistency
+    folders_consistency
+    drives_consistency
     blobs_consistency
     manifests_consistency
     backend_consistency
-    # Catches what the others structurally cannot: a derived mapping whose
+    # Catches what the others structurally cannot: a satellite mapping whose
     # source Blob is gone looks healthy to every refcount-based check — valid
     # reference, correct count, bytes present — while pinning its artifact
     # forever. That leak reached this suite as three unreclaimable blobs and
     # took four runs to identify.
-    derived_consistency
+    satellites_consistency
 )
 
 CONSISTENCY_FAILED=0
 for job in "${CONSISTENCY_JOBS[@]}"; do
+    # FAIL on an unknown job rather than warn-and-skip.
+    #
+    # The warning was there so a feature-gated build would not break, but the
+    # cost is worse than the case it protects: renaming a job (or a typo)
+    # silently removes it from the sweep, and the suite goes on reporting
+    # green over a check that no longer runs. This list said
+    # `derived_consistency` for exactly one commit after the rename and would
+    # have skipped it without comment.
     TRIGGER=$(curl -sf -X POST -H "$AUTH" "$base_url/api/admin/jobs/$job/trigger") \
-        || { log "WARNING: $job not registered in this build — skipped"; continue; }
-    [[ -z "$TRIGGER" ]] && { log "WARNING: $job returned an empty body — skipped"; continue; }
+        || fail "$job could not be triggered — renamed, unregistered, or a typo in CONSISTENCY_JOBS"
+    [[ -z "$TRIGGER" ]] && fail "$job returned an empty body"
 
     # The trigger is synchronous for these tenants, but the run row is what
     # carries the findings, so read it back rather than trusting the

@@ -225,13 +225,22 @@ jsonpath "$.outcome.count" exists
 # Step 4c — Trigger `consistency_batch`. Coordinator (plain
 #           JobHandler) — snapshots the registry, filters names
 #           ending `_consistency`, sequentially triggers each.
-#           `outcome.count` = number of children dispatched (6 as
-#           of the refcount_cascade fix: drives + folders +
-#           files + blobs + manifests + backend). `extra.per_check`
-#           carries a per-child outcome
-#           map. Batch itself always returns ok — child failures
-#           live inside per_check. `?deep=true` propagates as
-#           `extra.deep`.
+#           `extra.per_check` carries a per-child outcome map. Batch
+#           itself always returns ok — child failures live inside
+#           per_check. `?deep=true` propagates as `extra.deep`.
+#
+#           NO assertion on `outcome.count`. The batch auto-discovers
+#           tenants via `.ends_with("_consistency")`, so a hardcoded
+#           total breaks every time one is added — it broke on
+#           `manifests_consistency` and again on
+#           `satellites_consistency`, each time asserting arithmetic
+#           rather than behaviour. Per the house rule: `contains` per
+#           item, never a total.
+#
+#           What matters is that every child SUCCEEDED, which
+#           `err == 0` states directly and without a magic number, plus
+#           a named check per tenant below so a job silently dropping
+#           out of the batch is still caught.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/admin/jobs/consistency_batch/trigger?deep=true
 Authorization: Bearer {{admin_token}}
@@ -240,9 +249,9 @@ HTTP 200
 [Asserts]
 jsonpath "$.ok" == true
 jsonpath "$.outcome.outcome" == "ok"
-jsonpath "$.outcome.count" == 6
 jsonpath "$.outcome.extra.deep" == true
-jsonpath "$.outcome.extra.ok" == 6
+# Zero failures, whatever the tenant count happens to be. `ok` is not
+# asserted against a number for the same reason `count` is not.
 jsonpath "$.outcome.extra.err" == 0
 # per_check is keyed by child job name. `manifests_consistency` was added
 # by the refcount_cascade fix — see docs/plan/derived-blobs.md and
@@ -255,6 +264,11 @@ jsonpath "$.outcome.extra.per_check.files_consistency.outcome"     == "ok"
 jsonpath "$.outcome.extra.per_check.blobs_consistency.outcome"     == "ok"
 jsonpath "$.outcome.extra.per_check.manifests_consistency.outcome" == "ok"
 jsonpath "$.outcome.extra.per_check.backend_consistency.outcome"   == "ok"
+# Finds satellite mappings whose Blob is gone — the one class every
+# refcount-based check above reports as healthy, because the row holds a
+# valid reference with an exactly correct count while pinning an artifact
+# that can never be reclaimed.
+jsonpath "$.outcome.extra.per_check.satellites_consistency.outcome" == "ok"
 
 
 # ─────────────────────────────────────────────────────────────
