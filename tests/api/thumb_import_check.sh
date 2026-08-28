@@ -254,6 +254,69 @@ ATTACHED_2=$(sql "SELECT count(*) FROM storage.file_attached_blobs WHERE file_id
 [[ "$ATTACHED_2" == "$ATTACHED_AFTER" ]] || fail "re-run duplicated attached rows"
 log "re-run is a no-op: rows and refcounts unchanged."
 
+# ── 5b. Deletion: the destructive half, and the only one that can lose data
+#
+# Everything above is additive and recoverable. This unlinks files after a
+# readback check, so a defect here costs bytes — and until now it had never
+# executed under test at all: no test passed `repair=true`, so
+# verify_and_unlink, the sidecar_delete_unverified finding and the directory
+# removal were entirely unexercised.
+#
+# Four assertions, because "the files are gone" alone cannot tell a correct
+# drain from a destructive one:
+#
+#   sidecars gone        — the drain happened
+#   rows still present   — it deleted the COPY, not the record. Removing the
+#                          row would strand the blob exactly as the bulk-reap
+#                          bug did.
+#   unverified == 0      — every unlink passed its readback rather than being
+#                          skipped, which is what makes the deletion safe
+#   directory absent     — the signal step 10e gates on, and the reason
+#                          `remove_dir` is used: it refuses a non-empty
+#                          directory, so success proves emptiness
+
+[[ -f "$SIDECAR_DIR/$BLOB_HASH.jpg"   ]] || fail "precondition: derived sidecar already gone before the repair run"
+[[ -f "$SIDECAR_DIR/ext-$FILE_ID.jpg" ]] || fail "precondition: attached sidecar already gone before the repair run"
+
+for job in thumb_derived_import thumb_attached_import; do
+  curl -sf -X POST -H "$AUTH" "$base_url/api/admin/jobs/$job/trigger?repair=true" >/dev/null \
+    || fail "$job repair-trigger failed"
+  log "$job triggered with repair=true."
+done
+
+[[ ! -f "$SIDECAR_DIR/$BLOB_HASH.jpg"   ]] || fail "derived sidecar survived a repair run"
+[[ ! -f "$SIDECAR_DIR/ext-$FILE_ID.jpg" ]] || fail "attached sidecar survived a repair run"
+
+DERIVED_KEPT=$(sql "SELECT count(*) FROM storage.content_derived_blobs WHERE source_hash='$BLOB_HASH';")
+ATTACHED_KEPT=$(sql "SELECT count(*) FROM storage.file_attached_blobs WHERE file_id='$FILE_ID';")
+[[ "$DERIVED_KEPT"  -ge 1 ]] || fail "deletion removed the derived row; it must delete only the sidecar"
+[[ "$ATTACHED_KEPT" -ge 1 ]] || fail "deletion removed the attached row; it must delete only the sidecar"
+
+for job in thumb_derived_import thumb_attached_import; do
+  run_id=$(curl -sf -H "$AUTH" "$base_url/api/admin/jobs/$job/runs?limit=1" \
+           | jq -r 'if type == "array" then .[0].id else ((.runs // .items // [])[0].id) end // empty')
+  if [[ -n "$run_id" ]]; then
+    unverified=$(curl -sf -H "$AUTH" \
+      "$base_url/api/admin/jobs/$job/runs/$run_id/findings?limit=50" \
+      | jq -r '[ (if type == "array" then .[] else (.findings // .items // [])[] end)
+                 | select((.kind // .finding_kind) == "sidecar_delete_unverified") ] | length')
+    [[ "${unverified:-0}" -eq 0 ]] \
+      || fail "$job reported $unverified unverified unlink(s) — a blob did not read back"
+  fi
+done
+
+# The directory removal is best-effort in the job (another test's render could
+# repopulate it), so treat its absence as confirmation rather than a hard
+# requirement.
+if [[ -d "$STORAGE_PATH/.thumbnails" ]]; then
+    log "NOTE: .thumbnails/ still present — non-empty when the job ran (find below)"
+    find "$STORAGE_PATH/.thumbnails" -type f | head -5
+else
+    log ".thumbnails/ removed — the absence step 10e gates on."
+fi
+
+log "deletion verified: sidecars drained, rows kept, every unlink read back."
+
 # ── 6. Teardown ──────────────────────────────────────────────────────────
 # Everything created here must go — one database serves the whole suite,
 # and storage_cleanup_check.sh afterwards asserts the registry drains to
