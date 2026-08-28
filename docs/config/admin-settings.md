@@ -93,7 +93,7 @@ Runs are recoverable — status, cursor, and per-blob failure findings all live 
 If an entry is renamed or removed from `.env` while the DB pointer still names the old one, boot aborts with a clear error pointing at:
 
 ```
-oxicloud --select-storage <name>
+oxicloud storage select <name>
 ```
 
 This one-shot repair command re-runs the same env-parse the server does at boot, verifies `<name>` is declared in `OXICLOUD_STORAGE_ENTRIES`, updates `admin_settings.storage.active_backend_name` in the DB, and exits. Operator then restarts normally. See [Environment Variables — Storage Entries](/config/env#storage-entries-multi-entry-recommended) for the model, and [`oxicloud --help`](https://github.com/oxicloud/oxicloud/blob/main/src/main.rs) for the full flag list.

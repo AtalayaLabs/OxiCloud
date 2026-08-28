@@ -42,11 +42,8 @@ COPY build.rs ./
 # Create a minimal project to download and cache dependencies
 RUN mkdir -p src/bin && \
     echo 'fn main() { println!("Dummy build for caching dependencies"); }' > src/main.rs && \
-    echo 'fn main() {}' > src/bin/generate-openapi.rs && \
-    echo 'fn main() {}' > src/bin/migrate-nfc-filenames.rs && \
-    echo 'fn main() {}' > src/bin/oxicloud-cli.rs && \
     echo 'fn main() {}' > src/bin/opaque-hurl-helper.rs && \
-    cargo build --release --bin oxicloud --bin generate-openapi --bin migrate-nfc-filenames --bin oxicloud-cli && \
+    cargo build --release --bin oxicloud && \
     rm -rf src static-dist target/release/deps/oxicloud* target/release/build/oxicloud-*
 
 # ─── Stage 3: Build the application ──────────────────────────────────────────
@@ -86,7 +83,7 @@ RUN DATABASE_URL="${DATABASE_URL}" \
     GITHUB_SHA="${GITHUB_SHA}" \
     GITHUB_REF_NAME="${GITHUB_REF_NAME}" \
     GITHUB_HEAD_REF="${GITHUB_HEAD_REF}" \
-    cargo build --release --bin oxicloud --bin generate-openapi --bin migrate-nfc-filenames --bin oxicloud-cli
+    cargo build --release --bin oxicloud
 # The SPA is built by the Vite frontend stage; bring it in for the runtime copy
 # below (build.rs has no asset pipeline — it only injects git metadata).
 COPY --from=frontend /static-dist ./static-dist
@@ -126,21 +123,24 @@ RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharin
     GITHUB_HEAD_REF="${GITHUB_HEAD_REF}" \
     cargo build --release && \
     mkdir -p /app/bin && \
-    cp target/release/oxicloud /app/bin/oxicloud && \
-    cp target/release/migrate-nfc-filenames /app/bin/migrate-nfc-filenames && \
-    cp target/release/oxicloud-cli /app/bin/oxicloud-cli
+    cp target/release/oxicloud /app/bin/oxicloud
 
 # ─── Stage 3c: Select the builder & normalise the binary path ─────────────────
 # FROM expands the global ${BUILDER} arg to alias the chosen builder stage
 # (`builder` for CI/release, `builder-cache` for the e2e image). It then copies
-# the two shipped binaries from the builder-specific ${BIN_DIR} into a single
-# stable path (/app/release) so the runtime stage's COPYs are independent of
-# which builder ran. `static-dist` already lives at /app/static-dist in both
+# the shipped binary from the builder-specific ${BIN_DIR} into a single stable
+# path (/app/release) so the runtime stage's COPY is independent of which
+# builder ran. `static-dist` already lives at /app/static-dist in both
 # builders, so it needs no normalisation.
+#
+# Single `oxicloud` binary since v0.9.0 — the operator toolbox
+# (`opaque setup`, `migrate nfc-filenames`, …) now lives under
+# `oxicloud <subcommand>` rather than in standalone `oxicloud-cli` /
+# `migrate-nfc-filenames` bins. See docs/plan/bundled-binary.md § 1b.
 FROM ${BUILDER} AS app
 ARG BIN_DIR
 RUN mkdir -p /app/release && \
-    cp "${BIN_DIR}/oxicloud" "${BIN_DIR}/migrate-nfc-filenames" "${BIN_DIR}/oxicloud-cli" /app/release/
+    cp "${BIN_DIR}/oxicloud" /app/release/
 
 # ─── Stage 4: Minimal runtime image ──────────────────────────────────────────
 FROM alpine:3.24.0
@@ -163,21 +163,18 @@ RUN apk --no-cache upgrade && \
     addgroup -g 1001 -S oxicloud && \
     adduser -u 1001 -S oxicloud -G oxicloud
 
-# Copy the compiled binary and entrypoint (--chmod avoids extra RUN chmod layers)
+# Copy the compiled binary and entrypoint (--chmod avoids extra RUN chmod layers).
+#
+# Single `oxicloud` binary — since v0.9.0 the operator toolbox lives
+# under `oxicloud <subcommand>` rather than as standalone helper bins:
+#
+#   docker run --rm <image> oxicloud opaque setup           # print OPAQUE ServerSetup
+#   docker exec <container> oxicloud migrate nfc-filenames --dry-run
+#     # NFC-normalize storage.files.name (pre-June-2026 dbs; safe on new installs)
+#
+# Bare `oxicloud` (Docker CMD default) still starts the server — backwards
+# compat preserved. See docs/plan/bundled-binary.md § 1b.
 COPY --from=app --chmod=755 /app/release/oxicloud /usr/local/bin/
-# Ship the NFC filename migration binary alongside the server so
-# operators can run it inside the container without a separate Rust
-# toolchain — `docker exec <container> migrate-nfc-filenames --dry-run`
-# to preview, drop `--dry-run` to execute. One-shot tool, safe to
-# ship; it only mutates `storage.files` rows whose name ≠ NFC(name).
-COPY --from=app --chmod=755 /app/release/migrate-nfc-filenames /usr/local/bin/
-# Ship the OPAQUE server-setup generator alongside the server so operators
-# can generate their `OXICLOUD_AUTH_OPAQUE_SERVER_SETUP` value inside the
-# container without a separate Rust toolchain:
-#   docker run --rm <image> oxicloud-cli opaque setup   # prints the base64 value
-# One-shot, side-effect-free — safe to include; the runtime doesn't
-# invoke it, admins do (see docs/config/authentication.md §OPAQUE).
-COPY --from=app --chmod=755 /app/release/oxicloud-cli /usr/local/bin/
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN sed -i 's/\r//' /usr/local/bin/entrypoint.sh && \
     chmod 755 /usr/local/bin/entrypoint.sh

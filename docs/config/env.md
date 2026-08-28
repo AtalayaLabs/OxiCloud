@@ -58,7 +58,7 @@ OPAQUE (RFC 9807) is a zero-knowledge password-authenticated key exchange: the p
 | Variable | Default | Description |
 |---|---|---|
 | `OXICLOUD_AUTH_OPAQUE_MODE` | `off` | Runtime mode. `off` = endpoints 404 (default). `migrate` = endpoints live, legacy `POST /api/auth/login` still accepted. `opaque_only` = endpoints live, legacy refused for users with an envelope. **Effective-mode cross-check**: when `password` is not in `OXICLOUD_AUTH_METHODS`, the mode is auto-downgraded to `off` with an audit-channel INFO line (OPAQUE only replaces the password path — nothing to shadow in an OIDC-only or magic-link-only deployment). So OIDC / magic-link-only operators can safely ignore every `OXICLOUD_AUTH_OPAQUE_*` variable. |
-| `OXICLOUD_AUTH_OPAQUE_SERVER_SETUP` | — | Base64-encoded `ServerSetup` blob. **Required** when `OXICLOUD_AUTH_OPAQUE_MODE != off` AND password is enabled — the server refuses to start with a helpful error otherwise. Generate once with the `oxicloud-cli opaque setup` subcommand and persist the value like your JWT secret. **Never rotate** — rotating invalidates every user's envelope (they'd all need to reset their passphrase). |
+| `OXICLOUD_AUTH_OPAQUE_SERVER_SETUP` | — | Base64-encoded `ServerSetup` blob. **Required** when `OXICLOUD_AUTH_OPAQUE_MODE != off` AND password is enabled — the server refuses to start with a helpful error otherwise. Generate once with the `oxicloud opaque setup` subcommand and persist the value like your JWT secret. **Never rotate** — rotating invalidates every user's envelope (they'd all need to reset their passphrase). |
 | `OXICLOUD_AUTH_OPAQUE_KSF_MEMORY_KIB` | `47104` | Client-side Argon2id memory cost in KiB (46 MiB — matches OWASP interactive-auth recommendation). Runs on the user's device during OPAQUE login/registration, TWICE per login. Distinct from `OXICLOUD_HASH_MEMORY_COST` (server-side legacy path). Bumping raises brute-force cost after a hypothetical envelope leak but also raises login latency and risks WASM heap OOM on low-memory devices — see `authentication.md § OPAQUE — KSF parameters` for the full rationale + per-device latency table. |
 | `OXICLOUD_AUTH_OPAQUE_KSF_ITERATIONS` | `1` | Client-side Argon2id iteration count (OWASP interactive-auth recommendation). |
 | `OXICLOUD_AUTH_OPAQUE_KSF_PARALLELISM` | `1` | Client-side Argon2id parallelism lanes (OWASP recommendation). Higher only helps on multi-core hardware and can hurt single-core / older mobile devices. |
@@ -131,7 +131,7 @@ Each declared name `<N>` then reads its own set of per-entry variables:
 
 - A declared name whose required per-entry fields are missing (`_BACKEND` never set, S3 with no `_S3_BUCKET`, Azure with no `_AZURE_CONTAINER`).
 - Setting `OXICLOUD_STORAGE_ENTRIES` alongside any of the legacy flat vars below (`OXICLOUD_STORAGE_BACKEND`, `OXICLOUD_S3_*`, `OXICLOUD_AZURE_*`, `OXICLOUD_STORAGE_ENCRYPTION_*`). Pick one mode; the error lists every conflicting var to remove.
-- A DB pointer (`admin_settings.storage.active_backend_name`) that names an entry not in the current `_ENTRIES`. The error points at the repair flag `oxicloud --select-storage <name>` — verify + UPDATE DB + exit.
+- A DB pointer (`admin_settings.storage.active_backend_name`) that names an entry not in the current `_ENTRIES`. The error points at the repair flag `oxicloud storage select <name>` — verify + UPDATE DB + exit.
 
 **Example** — two entries, local disk plus an S3 target for planned migration:
 

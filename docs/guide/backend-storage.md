@@ -167,13 +167,13 @@ If you rename or remove a backend from `.env` while it was still the active one,
 ```
 active_backend_name = `s3_prod`, but no entry with that name is declared in
 OXICLOUD_STORAGE_ENTRIES. Available: [local_main]. […]
-oxicloud --select-storage <one-of-the-available-names>
+oxicloud storage select <one-of-the-available-names>
 ```
 
 Run the command it suggests to pick a still-declared backend and the server will boot again on the next start:
 
 ```
-oxicloud --select-storage local_main
+oxicloud storage select local_main
 ```
 
 This just updates which backend OxiCloud considers active — it doesn't move any data.

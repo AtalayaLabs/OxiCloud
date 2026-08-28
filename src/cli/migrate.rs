@@ -1,44 +1,64 @@
-//! `migrate-nfc-filenames` — one-shot CLI to NFC-normalize
-//! `storage.files.name` across an OxiCloud instance.
+//! `migrate` subcommand domain — one-time data migrations.
 //!
-//! Why: PostgreSQL compares bytes literally and the `UNIQUE`
-//! index on `(folder_id, name, user_id) WHERE NOT is_trashed`
-//! does not catch Unicode normalization differences. macOS APFS
-//! stores filenames in NFD; browsers post NFC. A file uploaded
-//! from the web ("café.txt", NFC) and the same name re-uploaded
-//! from a NextCloud desktop client on macOS (round-tripped to
-//! NFD: `e` + combining acute) lands as two distinct rows, both
-//! visible in the listing, both pointing at the same blob.
+//! Sqlx schema migrations run automatically at boot via
+//! `sqlx::migrate!()` — this domain is reserved for **data** migrations
+//! that need explicit operator invocation (data-loss ambiguity, long
+//! runtime, or historical schema-drift cleanup).
 //!
-//! What this does:
+//! Currently ships one action: `nfc-filenames` — cleans up NFD/NFC
+//! filename collisions in databases populated before the June 2026
+//! write-time fix at `src/domain/services/path_service.rs::normalize_storage_name`
+//! (called from `src/infrastructure/repositories/pg/file_blob_read_repository.rs`
+//! during file operations). New installs never need this migration;
+//! only pre-June-2026 databases do.
 //!
-//! 1. Scans every non-trashed file row.
-//! 2. For each row whose name ≠ NFC(name):
-//!    - If no other row in the same `(folder_id, user_id)` already
-//!      holds the NFC form → UPDATE the row's name to NFC.
-//!    - If a collision exists with **same blob_hash**: trash the
-//!      newer of the two (`is_trashed = true`, `trashed_at = NOW()`).
-//!      User can restore from the trash UI if needed.
-//!    - If a collision exists with **different blob_hash**: rename
-//!      the newer row to `{nfc_name}.duplicate`, incrementing the
-//!      suffix (`.duplicate-1`, `.duplicate-2`, …) until a free name
-//!      is found. Preserves both files; user can inspect and resolve.
-//!    - In both collision cases, the surviving (older) row's name
-//!      is also normalized to NFC.
+//! Previously lived in a standalone `migrate-nfc-filenames` binary
+//! before the v0.9.0 CLI/server merge — see docs/plan/bundled-binary.md § 1b.
+//! The 149-line body of `main()` moved here as `run_nfc_filenames()`
+//! with `env::args()` parsing replaced by clap.
 //!
-//! Run:
-//!   `cargo run --bin migrate-nfc-filenames -- --dry-run`
-//!   `cargo run --bin migrate-nfc-filenames`
-//!
-//! Folder rows are NOT touched in this pass — trashing a folder
-//! affects descendants; that pass is deferred to a follow-up.
+//! Future removal target: v1.0. Databases upgraded through v0.9.0
+//! will have run this migration (or been unaffected because they were
+//! post-fix installs); by v1.0 no user should still need it. Drop
+//! the `NfcFilenames` variant + this module's `run_nfc_filenames()`
+//! function together at that point.
+
+use std::env;
 
 use chrono::{DateTime, Utc};
+use clap::Subcommand;
 use sqlx::{PgPool, Row};
-use std::env;
 use uuid::Uuid;
 
-use oxicloud::domain::services::path_service::normalize_storage_name;
+use crate::domain::services::path_service::normalize_storage_name;
+
+#[derive(Subcommand)]
+pub enum Action {
+    /// NFC-normalize storage.files.name across the instance.
+    ///
+    /// Historical cleanup for databases populated before June 2026.
+    /// New installs (post-`normalize_storage_name` write-time fix)
+    /// never need this — file operations already write NFC form.
+    ///
+    /// Collision handling:
+    /// * No collision → UPDATE row name to NFC.
+    /// * Same blob content → trash the newer row.
+    /// * Different content → rename the newer to `{name}.duplicate[-N]`.
+    ///
+    /// In all collision cases, the surviving (older) row's name is
+    /// also normalized to NFC.
+    NfcFilenames {
+        /// Print what would change without touching the DB.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+pub async fn run(action: Action) -> u8 {
+    match action {
+        Action::NfcFilenames { dry_run } => run_nfc_filenames(dry_run).await,
+    }
+}
 
 #[derive(Debug, Clone)]
 struct FileRow {
@@ -59,15 +79,22 @@ struct Stats {
     renamed_duplicate: u64,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = env::args().collect();
-    let dry_run = args.iter().any(|a| a == "--dry-run");
+async fn run_nfc_filenames(dry_run: bool) -> u8 {
+    let database_url = match env::var("DATABASE_URL") {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("migrate nfc-filenames: DATABASE_URL not set");
+            return 2;
+        }
+    };
 
-    let database_url =
-        env::var("DATABASE_URL").expect("DATABASE_URL must be set in the environment");
-
-    let pool = PgPool::connect(&database_url).await?;
+    let pool = match PgPool::connect(&database_url).await {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("migrate nfc-filenames: failed to connect to database: {e}");
+            return 1;
+        }
+    };
 
     println!(
         "=== NFC filename migration ({}) ===",
@@ -79,7 +106,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!();
 
-    let rows = load_non_trashed_files(&pool).await?;
+    let rows = match load_non_trashed_files(&pool).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("migrate nfc-filenames: initial scan failed: {e}");
+            return 1;
+        }
+    };
     println!("Loaded {} non-trashed file rows", rows.len());
     println!();
 
@@ -98,7 +131,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Row is in non-NFC form. Look for a collision in the same
         // (folder_id, user_id) scope, including rows that may also
         // be non-NFC but happen to normalize to the same NFC value.
-        let collision = find_collision(&pool, row, &nfc_name).await?;
+        let collision = match find_collision(&pool, row, &nfc_name).await {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!(
+                    "migrate nfc-filenames: collision query failed for {}: {e}",
+                    row.id
+                );
+                return 1;
+            }
+        };
 
         match collision {
             None => {
@@ -106,12 +148,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "NORMALIZE  {}  user={}  '{}' → '{}'",
                     row.id, row.user_id, row.name, nfc_name
                 );
-                if !dry_run {
-                    sqlx::query("UPDATE storage.files SET name = $1 WHERE id = $2")
+                if !dry_run
+                    && let Err(e) = sqlx::query("UPDATE storage.files SET name = $1 WHERE id = $2")
                         .bind(&nfc_name)
                         .bind(row.id)
                         .execute(&pool)
-                        .await?;
+                        .await
+                {
+                    eprintln!("migrate nfc-filenames: rename failed for {}: {e}", row.id);
+                    return 1;
                 }
                 stats.normalized_in_place += 1;
             }
@@ -134,7 +179,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &older.blob_hash[..16.min(older.blob_hash.len())]
                     );
                     if !dry_run {
-                        sqlx::query(
+                        if let Err(e) = sqlx::query(
                             "UPDATE storage.files
                                 SET is_trashed = TRUE,
                                     trashed_at = NOW()
@@ -142,25 +187,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         )
                         .bind(newer.id)
                         .execute(&pool)
-                        .await?;
-                        normalize_survivor_name(&pool, older, &nfc_name).await?;
+                        .await
+                        {
+                            eprintln!("migrate nfc-filenames: trash failed for {}: {e}", newer.id);
+                            return 1;
+                        }
+                        if let Err(e) = normalize_survivor_name(&pool, older, &nfc_name).await {
+                            eprintln!(
+                                "migrate nfc-filenames: survivor rename failed for {}: {e}",
+                                older.id
+                            );
+                            return 1;
+                        }
                     }
                     stats.deduped_same_content += 1;
                 } else {
                     // Different content → rename newer to a free
                     // `{nfc_name}.duplicate[-N]`; promote older to NFC.
-                    let disambiguated = find_free_duplicate_name(&pool, newer, &nfc_name).await?;
+                    let disambiguated = match find_free_duplicate_name(&pool, newer, &nfc_name)
+                        .await
+                    {
+                        Ok(n) => n,
+                        Err(e) => {
+                            eprintln!(
+                                "migrate nfc-filenames: duplicate-name search failed for {}: {e}",
+                                newer.id
+                            );
+                            return 1;
+                        }
+                    };
                     println!(
                         "RENAME     newer={} (different blob)  older={}  '{}' → '{}'",
                         newer.id, older.id, newer.name, disambiguated
                     );
                     if !dry_run {
-                        sqlx::query("UPDATE storage.files SET name = $1 WHERE id = $2")
-                            .bind(&disambiguated)
-                            .bind(newer.id)
-                            .execute(&pool)
-                            .await?;
-                        normalize_survivor_name(&pool, older, &nfc_name).await?;
+                        if let Err(e) =
+                            sqlx::query("UPDATE storage.files SET name = $1 WHERE id = $2")
+                                .bind(&disambiguated)
+                                .bind(newer.id)
+                                .execute(&pool)
+                                .await
+                        {
+                            eprintln!(
+                                "migrate nfc-filenames: disambiguation rename failed for {}: {e}",
+                                newer.id
+                            );
+                            return 1;
+                        }
+                        if let Err(e) = normalize_survivor_name(&pool, older, &nfc_name).await {
+                            eprintln!(
+                                "migrate nfc-filenames: survivor rename failed for {}: {e}",
+                                older.id
+                            );
+                            return 1;
+                        }
                     }
                     stats.renamed_duplicate += 1;
                 }
@@ -192,7 +272,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("DRY RUN — no rows were written. Re-run without --dry-run to apply.");
     }
 
-    Ok(())
+    0
 }
 
 async fn load_non_trashed_files(pool: &PgPool) -> Result<Vec<FileRow>, Box<dyn std::error::Error>> {

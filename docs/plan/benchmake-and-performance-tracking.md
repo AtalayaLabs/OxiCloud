@@ -41,7 +41,9 @@ Mirrors the `tests/api/` shell pattern (run.sh, test.env, separate server port).
 
 ### 2. Rust bulk seeder — `src/bin/load-seed.rs`
 
-New binary registered in `Cargo.toml` alongside `generate-openapi` and `migrate-nfc-filenames`.
+New binary registered in `Cargo.toml` alongside `generate-openapi`
+(the historical `migrate-nfc-filenames` bin has since been folded into
+`oxicloud migrate nfc-filenames` — see `docs/plan/bundled-binary.md` § 1b).
 
 **CLI:**
 ```
@@ -158,7 +160,7 @@ Matches existing recipe naming (`test-*`, `front-*`, `api-test`).
 - `.github/workflows/load-nightly.yml`, `load-smoke.yml`
 
 **Modify:**
-- `Cargo.toml` — add `[[bin]] name = "load-seed" path = "src/bin/load-seed.rs"` after the `migrate-nfc-filenames` entry
+- `Cargo.toml` — add `[[bin]] name = "load-seed" path = "src/bin/load-seed.rs"` after the `generate-openapi` entry (the `migrate-nfc-filenames` bin referenced in earlier drafts has been folded into `oxicloud migrate nfc-filenames`)
 - `justfile` — append four `load*` recipes
 - `.gitignore` — add `tests/load/results/*.json` and `tests/load/storage/`
 

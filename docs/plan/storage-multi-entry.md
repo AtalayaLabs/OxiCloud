@@ -324,7 +324,7 @@ at), boot fails fast with a clear error. Operator has two ways out:
    restart.
 2. **CLI repair flag on the `oxicloud` binary itself**:
    ```
-   oxicloud --select-storage <name>
+   oxicloud storage select <name>
    ```
    Behaviour: parse `.env`, verify `<name>` exists in `_ENTRIES` (fail-fast
    with the available names listed if not), connect to DB, UPDATE
@@ -334,7 +334,7 @@ at), boot fails fast with a clear error. Operator has two ways out:
 
 The bare-flag on the shipped binary is chosen over a separate `just`
 recipe or auxiliary bin because:
-- **Docker-friendly**: `docker exec oxicloud oxicloud --select-storage foo`
+- **Docker-friendly**: `docker exec oxicloud oxicloud storage select foo`
   — no need to install extra tooling in the container.
 - **Systemd-friendly**: can be run as a `ExecStartPre=` one-shot before the
   main service unit.
@@ -377,7 +377,7 @@ foundational; the rest layer on top independently within reason.
 | 5 | Cutover state machine: on migration `Completed`, write `active_backend_name = target_name`, keep read-only on. Boot on new backend after operator restart. | 4 | ~half day |
 | 6 | Admin storage tab rewrite: list entries, show active, migrate dropdown, read-only banner. Delete Save form + S3 field editors + .env cutover hint. | 1, 3, 4 | 1 day |
 | 7 | `?storage=<name>` on `blobs_consistency` + `backend_consistency`. `JobRunArgs.storage` plumbing, `TriggerJobQuery.storage`, entry-resolver at run start, params records probed name. Retire `verify_migration` + its DTO + its route + its handler. | 1, 3 | 1 day |
-| 8 | `oxicloud --select-storage <name>` bare-flag repair command on the main binary. Parses `.env`, verifies entry exists, UPDATEs DB, exits. Boot-time missing-entry error message points at it. See §Fallback. | 2 | ~quarter day |
+| 8 | `oxicloud storage select <name>` bare-flag repair command on the main binary. Parses `.env`, verifies entry exists, UPDATEs DB, exits. Boot-time missing-entry error message points at it. See §Fallback. | 2 | ~quarter day |
 
 **Total: ~5-6 days end to end.** Slices 6 and 7 can proceed in parallel with
 each other once 1-5 land. Slice 8 is an ops nicety, could ship whenever.
@@ -414,8 +414,8 @@ Per slice, plus these end-to-end scenarios in Hurl:
    → 400 with known-names list. No run row created.
 9. **Missing entry at boot**: `active_backend_name = "gone"` but `_ENTRIES`
    doesn't include it → boot aborts with the specific message pointing at
-   `oxicloud --select-storage <name>` (with the available names filled in).
-   Re-run the binary with `--select-storage local_main` → verifies + updates
+   `oxicloud storage select <name>` (with the available names filled in).
+   Re-run the binary with `storage select local_main` → verifies + updates
    DB + exits 0. Restart the server → boots cleanly on `local_main`.
 10. **Encryption key invalid**: `OXICLOUD_STORAGE_<N>_ENCRYPTION_KEY=badbase64`
     → boot aborts with entry name + reason (not valid base64 / wrong length).

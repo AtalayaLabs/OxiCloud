@@ -512,7 +512,7 @@ impl KeyPair {
     /// truncation as the v1 header's `<key_fp>` field and the
     /// `head_key_fp` reported by `backend_rotate` on completion, so
     /// operators can cross-reference the boot log against a rotate
-    /// report or the CLI's `oxicloud --fingerprint <base64key>`
+    /// report or the CLI's `oxicloud storage fingerprint <base64key>`
     /// output without any format conversion.
     ///
     /// Returns `None` for `CipherKind::None` (nothing to
@@ -723,7 +723,7 @@ pub fn parse_encryption_pair_list(entry_name: &str, raw: &str) -> Result<Vec<Key
 /// with the same base64 / length validation the pair-list parser
 /// uses, so callers don't have to reimplement it.
 ///
-/// Used by the `oxicloud --fingerprint <base64>` CLI subcommand so
+/// Used by the `oxicloud storage fingerprint <base64>` CLI subcommand so
 /// admins can identify which key in their `.env` corresponds to the
 /// `head_key_fp` a `backend_rotate` run reported on completion —
 /// see `docs/plan/storage-key-rotation.md`.
@@ -4330,7 +4330,7 @@ mod tests {
             // SSH-style 8-byte colon-hex (16 hex + 7 colons = 23 chars)
             // so operators can cross-reference against the v1 header's
             // `<key_fp>` field + `backend_rotate`'s `head_key_fp`
-            // output + the `oxicloud --fingerprint` CLI.
+            // output + the `oxicloud storage fingerprint` CLI.
             let pairs =
                 parse_encryption_pair_list("t", &format!("aes-256-gcm:{K1_B64},none:")).unwrap();
             let fp0 = pairs[0].fingerprint_short().unwrap();

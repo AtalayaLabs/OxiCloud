@@ -192,7 +192,7 @@ audit:
     cargo audit
 
 openapi:
-    cargo run --bin generate-openapi
+    cargo run --features dev_tools --bin generate-openapi
 
 db:
     docker compose up -d postgres

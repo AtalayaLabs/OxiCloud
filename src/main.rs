@@ -126,6 +126,29 @@ fn make_socket(addr: &SocketAddr, reuse_port: bool) -> std::io::Result<Socket> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // ── Operator subcommand dispatch ─────────────────────────────────
+    //
+    // If argv[1] matches a known subcommand domain, hand off to the
+    // clap-driven CLI tree in `src/cli/` and exit with its ExitCode.
+    // Bare `oxicloud` (or oxicloud with legacy top-level flags below)
+    // falls through to the server startup path — backwards compat with
+    // every existing Docker CMD line, systemd unit, and docker-compose
+    // entry that just runs `oxicloud` with no args.
+    //
+    // Absorbed here from the standalone `oxicloud-cli` +
+    // `migrate-nfc-filenames` binaries in v0.9.0 so the release tarball
+    // ships one executable. See docs/plan/bundled-binary.md § 1b.
+    if let Some(first) = std::env::args().nth(1)
+        && matches!(first.as_str(), "opaque" | "migrate" | "storage")
+    {
+        // `oxicloud::cli::run()` returns a plain `u8` exit-code, which
+        // widens exactly into `i32` for `std::process::exit`. Values are
+        // 0/1/2 today; the widening is loss-free by construction.
+        std::process::exit(i32::from(oxicloud::cli::run()));
+    }
+
+    // ── Legacy top-level flags (server-startup path) ─────────────────
+    //
     // Minimal CLI:
     //   --version                   Print version + branch + commit hash and exit.
     //   --config <path>             Load env from this file. When given, the default
@@ -133,16 +156,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //                               use this to isolate from a developer's repo-root
     //                               `.env`, and operators get a reproducible "this
     //                               file and nothing else" boot.
-    //   --select-storage <name>     One-shot repair: verify the named entry exists
-    //                               in the current .env, UPDATE
-    //                               admin_settings.storage.active_backend_name in
-    //                               the DB, and exit. Does NOT boot the server.
-    //                               Use to recover from the "boot fails on missing
-    //                               entry" case — see
-    //                               `docs/plan/storage-multi-entry.md` §Fallback.
+    //
+    // NB: `--select-storage <name>` and `--fingerprint <key>` moved to
+    // subcommands in v0.9.0 as `oxicloud storage select <name>` and
+    // `oxicloud storage fingerprint <key>` respectively — dispatched
+    // above via the `matches!` guard. See docs/plan/bundled-binary.md § 1c.
     let mut args = std::env::args().skip(1);
     let mut config_path: Option<String> = None;
-    let mut select_storage: Option<String> = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--version" | "-V" => {
@@ -160,57 +180,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     std::process::exit(2);
                 };
                 config_path = Some(p);
-            }
-            "--select-storage" => {
-                let Some(name) = args.next() else {
-                    eprintln!("--select-storage requires an entry name");
-                    std::process::exit(2);
-                };
-                select_storage = Some(name);
-            }
-            "--fingerprint" => {
-                // One-shot helper: compute the SSH-style colon-hex
-                // fingerprint of a base64-encoded AES-256 key and
-                // print to stdout. Same truncation used by the v1
-                // header's `<key_fp>` field + the `backend_rotate`
-                // completion summary — so an admin can:
-                //   1. Look at the `head_key_fp` reported by the
-                //      last rotate run.
-                //   2. Run `oxicloud --fingerprint <base64key>` for
-                //      each candidate in `.env`.
-                //   3. Match — the key that produces the reported
-                //      fingerprint is the current head; any other
-                //      key in `_ENCRYPTION_KEY` no longer decrypts
-                //      any live blob and can be dropped.
-                //
-                // Also accepts `-` for stdin so keys never touch the
-                // shell history:
-                //     echo -n '<base64>' | oxicloud --fingerprint -
-                let Some(key_b64) = args.next() else {
-                    eprintln!("--fingerprint requires a base64 key argument (or `-` for stdin)");
-                    std::process::exit(2);
-                };
-                let key_b64 = if key_b64 == "-" {
-                    use std::io::Read;
-                    let mut buf = String::new();
-                    if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
-                        eprintln!("failed to read key from stdin: {e}");
-                        std::process::exit(2);
-                    }
-                    buf.trim().to_string()
-                } else {
-                    key_b64
-                };
-                match oxicloud::common::config::fingerprint_from_base64_key(&key_b64) {
-                    Ok(fp) => {
-                        println!("{fp}");
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        eprintln!("--fingerprint: {e}");
-                        std::process::exit(2);
-                    }
-                }
             }
             "--help" | "-h" => {
                 print_help();
@@ -256,14 +225,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `build_runtime`.
     let runtime = build_runtime()?;
 
-    // Repair-flag short-circuit. `--select-storage` runs the small
-    // "verify entry + UPDATE pointer + exit" path and NEVER falls
-    // through to booting the server — the operator restarts normally
-    // after this exits.
-    if let Some(name) = select_storage {
-        return runtime.block_on(run_select_storage(&name));
-    }
-
     runtime.block_on(run())
 }
 
@@ -291,19 +252,42 @@ fn print_help() {
     println!("  oxicloud [--config <path>]              Boot the server. This is the normal");
     println!("                                          invocation for a docker/systemd unit.");
     println!();
-    println!("  oxicloud --select-storage <name>        One-shot repair — set the active");
-    println!("                                          storage entry in the DB and exit.");
-    println!();
-    println!("  oxicloud --fingerprint <base64key|->    One-shot helper — print the SSH-style");
-    println!("                                          fingerprint of a base64 AES-256 key.");
-    println!("                                          Same shape used by the v1 blob header");
-    println!("                                          + `backend_rotate` completion summary.");
-    println!("                                          Read stdin with `-` to keep keys out");
-    println!("                                          of shell history.");
+    println!("  oxicloud <subcommand> [args...]         Operator toolbox — one-shot tools that");
+    println!("                                          exit after completing (see SUBCOMMANDS).");
     println!();
     println!("  oxicloud --version                      Print version + commit and exit.");
     println!();
     println!("  oxicloud --help                         Print this help and exit.");
+    println!();
+    println!();
+    println!("SUBCOMMANDS:");
+    println!("  opaque <action>       OPAQUE aPAKE substrate management.");
+    println!("      setup             Print a fresh ServerSetup (persist as");
+    println!("                        OXICLOUD_AUTH_OPAQUE_SERVER_SETUP). Runs once per");
+    println!("                        deployment. Rotating invalidates every user's envelope.");
+    println!("      reset             Clear envelope(s) so silent-migration re-mints under");
+    println!("                        the current KSF. Use after KSF rotation. Flags:");
+    println!("                        --user <email|username> | --all, plus --dry-run.");
+    println!();
+    println!("  migrate <action>      One-time data migrations (historical schema/data fixes).");
+    println!("      nfc-filenames     NFC-normalize storage.files.name across the instance.");
+    println!("                        Cleanup for databases populated before the June 2026");
+    println!("                        write-time fix; new installs never need it. Flag:");
+    println!("                        --dry-run to preview without writing.");
+    println!();
+    println!("  storage <action>      Storage-config repair + crypto helpers.");
+    println!("      select <name>     Set the active storage-entry backend and exit. Use to");
+    println!("                        unblock boot after renaming/removing an entry in `.env`");
+    println!("                        while the DB still points at the old name. Was");
+    println!("                        `--select-storage <name>` before v0.9.0.");
+    println!("      fingerprint <k|-> Print the SSH-style colon-hex fingerprint of a base64");
+    println!("                        AES-256 key. Same shape as the v1 blob header's");
+    println!("                        <key_fp> field and the `backend_rotate` completion");
+    println!("                        summary. Read stdin with `-` to keep keys out of shell");
+    println!("                        history. Was `--fingerprint <k|->` before v0.9.0.");
+    println!();
+    println!("  Each subcommand has its own `--help`, e.g. `oxicloud opaque reset --help`.");
+    println!("  Subcommands require the same env vars as the server (DATABASE_URL etc.).");
     println!();
     println!();
     println!("OPTIONS:");
@@ -315,28 +299,6 @@ fn print_help() {
     println!("      config. Without this flag, the default `./.env` probe is");
     println!("      non-overriding — shell exports win — matching dev convenience.");
     println!();
-    println!("  --select-storage <name>");
-    println!("      Verify <name> is declared in `OXICLOUD_STORAGE_ENTRIES`, then set");
-    println!("      `admin_settings.storage.active_backend_name = <name>` in the DB and");
-    println!("      exit. Does NOT boot the server. Use to unblock boot after renaming");
-    println!("      or removing a storage entry in `.env` while the DB still points at");
-    println!("      the old name (the server aborts boot with a pointer to this flag");
-    println!("      when that happens). See `docs/plan/storage-multi-entry.md`");
-    println!("      §Fallback for the full recovery flow.");
-    println!();
-    println!("  --fingerprint <base64key | ->");
-    println!("      Compute the SSH-style colon-hex fingerprint (16-hex, 8-byte");
-    println!("      truncation of sha256) of a base64-encoded AES-256 key. Matches the");
-    println!("      `head_key_fp` field the `backend_rotate` job reports on completion,");
-    println!("      and the raw <key_fp> field embedded in every v1 blob header. Used");
-    println!("      to identify which key in `OXICLOUD_STORAGE_<N>_ENCRYPTION_KEY`");
-    println!("      corresponds to the current on-disk head — safe to drop any key");
-    println!("      whose fingerprint does NOT match the last-successful rotate's");
-    println!("      `head_key_fp`. Pass `-` to read the key from stdin so it never");
-    println!("      touches shell history:");
-    println!();
-    println!("          echo -n '<base64>' | oxicloud --fingerprint -");
-    println!();
     println!("  --version, -V");
     println!("      Print the version, git branch, and commit hash. Exits 0.");
     println!();
@@ -346,7 +308,7 @@ fn print_help() {
     println!();
     println!("ENVIRONMENT:");
     println!("  DATABASE_URL          PostgreSQL connection string (required for boot and");
-    println!("                        for --select-storage).");
+    println!("                        for `storage select`).");
     println!();
     println!("  OXICLOUD_SERVER_HOST  Bind host (default: 127.0.0.1).");
     println!("  OXICLOUD_SERVER_PORT  Bind port (default: 8086).");
@@ -362,64 +324,6 @@ fn print_help() {
     println!("                        synthesised.");
     println!();
     println!("The full env-var surface is documented in `example.env` at the repo root.");
-}
-
-/// Repair-flag body. Loads env config, parses entries, verifies the
-/// requested name is declared, connects to PG, upserts
-/// `admin_settings.storage.active_backend_name`. Never touches the
-/// server — the operator restarts after this exits.
-///
-/// Exit codes:
-/// - `0` on success.
-/// - Non-zero via `std::process::exit` on every failure path (name
-///   not declared, DB unreachable, upsert failed). Printed to stderr.
-async fn run_select_storage(name: &str) -> Result<(), Box<dyn std::error::Error>> {
-    use common::config::AppConfig;
-    use infrastructure::services::entry_backend::persist_active_backend_name;
-
-    // Parse entries + validate `name` is declared. Loading AppConfig
-    // here re-runs the same env-parse the server does at boot, so a
-    // successful --select-storage guarantees a subsequent normal
-    // boot will find the entry (no drift between the two code paths).
-    let config = AppConfig::from_env();
-    if config.storage_entries.is_empty() {
-        eprintln!(
-            "OXICLOUD_STORAGE_ENTRIES is not set (or synthesised — legacy path). \
-             `--select-storage` needs at least one named entry to switch to."
-        );
-        std::process::exit(2);
-    }
-    if !config.storage_entries.iter().any(|e| e.name == name) {
-        let available = config
-            .storage_entries
-            .iter()
-            .map(|e| e.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        eprintln!(
-            "entry `{name}` is not declared in OXICLOUD_STORAGE_ENTRIES. Available: [{available}]"
-        );
-        std::process::exit(2);
-    }
-
-    // Connect to PG using the same DATABASE_URL the server uses.
-    let db_url = std::env::var("DATABASE_URL").map_err(
-        |_| "DATABASE_URL not set — `--select-storage` needs the same DB the server would boot on",
-    )?;
-    let pool = sqlx::PgPool::connect(&db_url)
-        .await
-        .map_err(|e| format!("failed to connect to DATABASE_URL: {e}"))?;
-
-    persist_active_backend_name(&pool, name)
-        .await
-        .map_err(|e| {
-            format!("failed to write admin_settings.storage.active_backend_name = `{name}`: {e}")
-        })?;
-
-    println!(
-        "active_backend_name = `{name}` written to admin_settings. Restart the server to switch."
-    );
-    Ok(())
 }
 
 /// Construct the multi-threaded Tokio runtime with explicit, CFS-quota-aware

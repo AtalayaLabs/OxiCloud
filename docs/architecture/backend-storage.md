@@ -26,7 +26,7 @@ probe, and lifecycle behaviour are uniform.
 
 Every entry is declared in `OXICLOUD_STORAGE_ENTRIES` (comma-separated
 list of names). The active entry is stored in `admin_settings` and
-switched via `oxicloud --select-storage <name>` on the command line
+switched via `oxicloud storage select <name>` on the command line
 or automatically at the end of a successful `backend_migration`.
 Non-active entries stay reachable through the multi-entry API (test,
 audit, migrate-into).
@@ -119,7 +119,7 @@ Rendered visually via `xxd -l 15 <blob>`:
 
 Fingerprints are rendered the same colon-hex form (`15:f3:…:50`)
 everywhere they appear: boot log, admin panel pair chain, `xxd`
-inspection, `oxicloud --fingerprint <base64>` CLI, and the rotate /
+inspection, `oxicloud storage fingerprint <base64>` CLI, and the rotate /
 migration audit lines. That means an admin can cross-reference by
 eye — same string means same key.
 
@@ -336,7 +336,7 @@ readonly (source stays active — writes safe there), and returns
 `RunOutcome::Failed`. Operator inspects findings, then either
 retries (walk short-circuits on head-format matches → cheap
 re-attempt), fixes the source, or explicitly accepts the partial
-via `oxicloud --select-storage <target>`.
+via `oxicloud storage select <target>`.
 
 ---
 

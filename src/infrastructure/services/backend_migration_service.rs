@@ -894,14 +894,14 @@ impl BackendMigrationService {
                 source_missing = source_missing,
                 "🛑 backend_migration aborted — {failed} blob(s) failed, active backend left at \
                  `{previous_active}`, readonly cleared. Inspect findings and retry, or accept \
-                 the partial migration via `oxicloud --select-storage {target_name}`."
+                 the partial migration via `oxicloud storage select {target_name}`."
             );
             return RunOutcome::Failed {
                 message: format!(
                     "{failed} blob(s) failed to migrate — active backend NOT switched \
                      (still `{previous_active}`). Retry the run (short-circuits on already-copied \
                      blobs) or accept the partial migration manually via \
-                     `oxicloud --select-storage {target_name}`."
+                     `oxicloud storage select {target_name}`."
                 ),
             };
         }

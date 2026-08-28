@@ -313,7 +313,7 @@ impl AppServiceFactory {
                     tracing::info!(
                         "Storage: no active_backend_name set in DB — defaulting to first entry \
                          `{}` (declared first in OXICLOUD_STORAGE_ENTRIES). Set explicitly via \
-                         the admin storage tab or `oxicloud --select-storage <name>` to pin.",
+                         the admin storage tab or `oxicloud storage select <name>` to pin.",
                         first.name,
                     );
                     first

@@ -168,6 +168,12 @@ faces-onnx = ["dep:ort", "dep:ndarray"]
 # `examples/` can measure them. Off by default — adds nothing to prod builds.
 # Run with: `cargo bench --features bench` / `cargo run --release --features bench --example bench_thumbnails_mem`.
 bench = []
+# Empty marker feature that gates the `generate-openapi` binary out of the
+# default release build set. `just openapi` flips it when the SPA needs a
+# regenerated openapi.json; end-user release builds never do. Kept separate
+# from `test_utils` for the same reason `load_seed_bin` is — enabling
+# `dev_tools` on the CLI must not perturb the oxicloud dependency graph.
+dev_tools = []
 
 [dev-dependencies]
 criterion = "0.5"
@@ -186,19 +192,12 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(integration_tests)'] }
 [[bin]]
 name = "generate-openapi"
 path = "src/bin/generate-openapi.rs"
-
-[[bin]]
-name = "migrate-nfc-filenames"
-path = "src/bin/migrate-nfc-filenames.rs"
-
-[[bin]]
-name = "oxicloud-cli"
-path = "src/bin/oxicloud-cli.rs"
-# Operator toolbox — subcommand-driven CLI for tasks that don't belong
-# in the main server. Currently: `oxicloud-cli opaque {setup,reset}`.
-# Ships in the release Dockerfile as the single operator-facing helper
-# (replaces the earlier per-task `opaque-setup` bin, which was folded
-# into `oxicloud-cli opaque setup`).
+# Dev-only: regenerates `resources/gen/openapi.json` from the utoipa
+# `#[utoipa::path]` annotations in the API handlers. Gated behind the
+# `dev_tools` feature so `cargo build --release --bins` (and the prod
+# Dockerfile) skip it entirely — end users have no reason to run it.
+# Invoked by `just openapi`, which passes `--features dev_tools`.
+required-features = ["dev_tools"]
 
 [[bin]]
 name = "opaque-hurl-helper"
@@ -207,7 +206,10 @@ path = "src/bin/opaque-hurl-helper.rs"
 # handshake against a running server. Invoked from tests/api/run.sh
 # after opaque_substrate.hurl to cover the parts Hurl can't (OPRF
 # blinding, AKE nonces are per-attempt-random). Not shipped in the
-# release Dockerfile (nothing outside tests/ calls it).
+# release Dockerfile (nothing outside tests/ calls it). Gated behind
+# `test_utils` so `cargo build --release --bins` skips it; `run.sh`
+# enables the feature explicitly when building the helper on demand.
+required-features = ["test_utils"]
 
 [[bin]]
 name = "dpop-hurl-helper"
@@ -216,7 +218,8 @@ path = "src/bin/dpop-hurl-helper.rs"
 # the DPoP-Nonce challenge/retry loop, and covers the wire-protocol
 # scenarios Hurl can't express (per-request fresh jti/iat, replay
 # detection, malformed proofs, wrong htm/htu/alg/typ). Same
-# no-ship-in-release status as opaque-hurl-helper.
+# no-ship-in-release status as opaque-hurl-helper — gated identically.
+required-features = ["test_utils"]
 
 [[bin]]
 name = "load-seed"
