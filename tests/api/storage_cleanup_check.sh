@@ -447,8 +447,21 @@ if [[ -n "$BLOB_FILES" ]]; then
                  || ' blob_refs='     || COALESCE((SELECT ref_count::text FROM storage.blobs           WHERE hash='$h'), '-')
                  || ' files='         || (SELECT count(*) FROM storage.files                 WHERE blob_hash='$h')
                  || ' derived='       || (SELECT count(*) FROM storage.content_derived_blobs WHERE blob_hash='$h')
-                 || ' attached='      || (SELECT count(*) FROM storage.file_attached_blobs   WHERE blob_hash='$h');" \
+                 || ' attached='      || (SELECT count(*) FROM storage.file_attached_blobs   WHERE blob_hash='$h')
+                 -- When a derived row is what pins the blob, the question is
+                 -- why its SOURCE was never reaped — purge_derived_blobs only
+                 -- runs from the source's reap. Print the source and whether
+                 -- anything still holds it.
+                 || COALESCE((SELECT ' src=' || d.source_hash
+                            || ' src_files='    || (SELECT count(*) FROM storage.files WHERE blob_hash = d.source_hash)
+                            || ' src_manifest=' || COALESCE((SELECT ref_count::text FROM storage.chunk_manifests WHERE file_hash = d.source_hash), '-')
+                            || ' src_blob='     || COALESCE((SELECT ref_count::text FROM storage.blobs WHERE hash = d.source_hash), '-')
+                       FROM storage.content_derived_blobs d WHERE d.blob_hash='$h' LIMIT 1), '');" \
+          < /dev/null \
           2> >(grep -v 'Executing external compose provider' >&2) || true
+    # `< /dev/null`: `docker compose exec -T` reads stdin, and without this it
+    # consumes the rest of the here-string — so only the FIRST leftover was
+    # ever diagnosed and the others vanished silently.
     done <<< "$BLOB_FILES"
 
     log "Leftover blob files ($BLOB_COUNT):"
