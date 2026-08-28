@@ -41,8 +41,8 @@ use tokio::fs;
 
 use crate::application::ports::thumbnail_ports::{ThumbnailFormat, ThumbnailSize};
 use crate::infrastructure::scheduler::{
-    JobRegistry, JobRunArgs, JobStore, JobStoreProvider, RecoverableJobHandler, RunOutcome,
-    RunStatus, record_or_log,
+    JobRegistry, JobRunArgs, JobStore, JobStoreProvider, Mutates, RecoverableJobHandler,
+    RunOutcome, RunStatus, record_or_log,
 };
 use crate::infrastructure::services::dedup_service::DedupService;
 
@@ -230,6 +230,29 @@ impl RecoverableJobHandler for ThumbDerivedImport {
         THUMB_DERIVED_IMPORT_JOB_NAME
     }
 
+    fn description(&self) -> &'static str {
+        "Migrates server-rendered thumbnails from the legacy .thumbnails/ \
+         directory into content-addressed blob storage. Local-disk sidecars \
+         are invisible to other instances and are not carried by a backend \
+         migration; importing them is what lets that directory be deleted."
+    }
+
+    /// `Always`: a plain run inserts rows and writes blobs. Repair-capable on
+    /// top of that, which is why the two are independent.
+    fn mutates(&self) -> Mutates {
+        Mutates::Always
+    }
+
+    fn repair_description(&self) -> Option<&'static str> {
+        Some(
+            "Also DELETES each sidecar once its replacement has been read \
+             back from blob storage, and removes the directory when empty. \
+             Files whose source no longer exists are deleted without a \
+             readback — they cannot be imported and nothing can reference \
+             them. Irreversible.",
+        )
+    }
+
     async fn count_total(&self) -> Option<u64> {
         let mut total = 0u64;
         for size in ThumbnailSize::all() {
@@ -390,10 +413,12 @@ impl RecoverableJobHandler for ThumbDerivedImport {
                     // since there is nothing to read back and nothing to
                     // regenerate from.
                     dead_source += 1;
+                    let mut removed = false;
                     if delete_imported {
                         let path = self.thumbnails_root.join(dir_name).join(&name);
                         if fs::remove_file(&path).await.is_ok() {
                             deleted += 1;
+                            removed = true;
                             // Audited explicitly: this unlink bypasses
                             // verify_and_unlink, which has nothing to verify
                             // against here.
@@ -405,22 +430,39 @@ impl RecoverableJobHandler for ThumbDerivedImport {
                                 &path,
                             );
                         }
-                    } else {
-                        record_or_log(
-                            store,
-                            THUMB_DERIVED_IMPORT_JOB_NAME,
-                            "sidecar_source_gone",
-                            "anomaly",
-                            None,
-                            serde_json::json!({
-                                "path":        position,
-                                "source_hash": hash,
-                                "note": "source Blob no longer exists; the thumbnail is \
-                                         unimportable and is deleted on a repair run",
-                            }),
-                        )
-                        .await;
                     }
+                    // Recorded in BOTH modes. The finding used to be the
+                    // `else` of the deletion, so a repair run unlinked files
+                    // and reported a clean sweep — the audit stream held the
+                    // only trace, and the run drawer an operator actually
+                    // looks at said zero. A deletion is the outcome most
+                    // worth a finding, not least.
+                    record_or_log(
+                        store,
+                        THUMB_DERIVED_IMPORT_JOB_NAME,
+                        "sidecar_source_gone",
+                        // `anomaly` in both modes — it is what the panel
+                        // renders as "notices", and `detail.deleted` carries
+                        // whether the run left the sidecar alone or removed
+                        // it. A separate severity for the deleted case would
+                        // render identically and split one badge across two
+                        // values.
+                        "anomaly",
+                        None,
+                        serde_json::json!({
+                            "path":        position,
+                            "source_hash": hash,
+                            "deleted":     removed,
+                            "note": if removed {
+                                "source Blob no longer exists; sidecar was unimportable and \
+                                 has been deleted"
+                            } else {
+                                "source Blob no longer exists; the thumbnail is unimportable \
+                                 and is deleted on a repair run"
+                            },
+                        }),
+                    )
+                    .await;
                 } else {
                     let path = self.thumbnails_root.join(dir_name).join(&name);
                     match fs::read(&path).await {
@@ -553,7 +595,17 @@ impl RecoverableJobHandler for ThumbDerivedImport {
              {dead_source} skipped (source gone)"
         );
 
-        RunOutcome::completed()
+        // Surfaced on the run row, not just in the process log. A repair run
+        // that unlinks hundreds of files while reporting only a finding
+        // total tells an operator nothing about what it did with them.
+        RunOutcome::completed_with(serde_json::json!({
+            "imported":        imported,
+            "already_present": already,
+            "deleted":         deleted,
+            "unverified":      unverified,
+            "dead_source":     dead_source,
+            "failed":          failed,
+        }))
     }
 }
 

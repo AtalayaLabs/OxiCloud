@@ -171,6 +171,58 @@ Native services implement this trait on an existing service type (no
 new wrapper) and register a single `Arc<dyn JobHandler>` with the
 scheduler.
 
+### Self-description — `description` / `mutates` / `repair_description`
+
+Three defaulted methods on both `JobHandler` and `RecoverableJobHandler`
+let a job tell the admin UI what it is. `RecoverableAdapter` forwards
+them, since the registry only ever holds `dyn JobHandler`.
+
+```rust
+fn description(&self) -> &'static str { "" }
+fn mutates(&self) -> Mutates { Mutates::Never }
+fn repair_description(&self) -> Option<&'static str> { None }
+
+pub enum Mutates { Never, Always, OnRepairOnly }
+```
+
+They surface on `JobSummary` (`GET /api/admin/jobs`) and drive the
+panel: `Never` earns a read-only badge and triggers straight through,
+`Always` confirms first, `OnRepairOnly` is safe to run and confirms only
+when the repair variant is picked. `repair_description.is_some()` is
+what renders the repair toggle at all, and its text is the confirmation
+copy.
+
+**Why three values and not a boolean.** A job can be read-only by
+default and destructive under `?repair=true`; a boolean has to answer
+wrongly for one of those two modes, and `false` on something that
+deletes files is the dangerous direction to be wrong in. It is also
+where the recovery framework is heading — discovery-only default,
+mutation behind an opt-in — so a tenant that later grows a repair arm
+changes this one value and nothing else.
+
+**Why `Option<&str>` and not `supports_repair: bool` + prose.**
+Presence gates the toggle, content supplies the wording. Split across
+two methods they can disagree; and the frontend cannot invent the
+wording itself, because correcting a counter and unlinking files off
+disk are not the same warning. The two are independent, not derived
+from each other: the thumbnail imports are `Always` *and*
+repair-capable.
+
+`OnRepairOnly` with no `repair_description` is rejected at registration
+— it claims to mutate only under a flag it does not support, and would
+render as safe with no reachable mutating path.
+
+**Why English in the trait, not `locales/*.json`.** A description that
+lives away from the behaviour rots the moment a job changes, invisibly,
+and a translator cannot know what `manifests_consistency` reconciles.
+i18n can layer on later keyed by job name with these as the fallback,
+matching the frontend's `t(key, params, fallback)` — a missing
+translation then degrades to English from code rather than to a blank
+panel. No rework needed to get there.
+
+Defaults exist so the methods could be added without touching every
+job at once; every registered job declares all three today.
+
 ### `JobOutcome`
 
 ```rust

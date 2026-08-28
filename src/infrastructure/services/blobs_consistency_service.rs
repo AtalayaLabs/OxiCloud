@@ -67,8 +67,8 @@ use crate::application::ports::blob_reference_ports::{BlobReferenceRegistry, Ref
 use crate::application::ports::blob_storage_ports::BlobStorageBackend;
 use crate::common::config::NamedStorageEntry;
 use crate::infrastructure::scheduler::{
-    JobRegistry, JobRunArgs, JobStore, JobStoreProvider, RecoverableJobHandler, RunOutcome,
-    RunStatus, record_or_log,
+    JobRegistry, JobRunArgs, JobStore, JobStoreProvider, Mutates, RecoverableJobHandler,
+    RunOutcome, RunStatus, record_or_log,
 };
 use crate::infrastructure::services::entry_backend::build_entry_backend;
 
@@ -221,6 +221,29 @@ struct BlobRow {
 impl RecoverableJobHandler for BlobsConsistencyCheck {
     fn name(&self) -> &str {
         BLOBS_CONSISTENCY_JOB_NAME
+    }
+
+    fn description(&self) -> &'static str {
+        "Walks storage.blobs and checks each row against the reference- \
+         counting invariants dedup_gc relies on, and probes the backend \
+         once per row for missing bytes. That probe costs one backend \
+         call per blob — backend_consistency finds the same missing \
+         bytes in a single merge-join pass, and orphaned bytes too, so \
+         prefer it on large installs. Add ?deep=true to re-read and \
+         re-hash every blob for bit-rot; that is a full read of storage."
+    }
+
+    fn mutates(&self) -> Mutates {
+        Mutates::OnRepairOnly
+    }
+
+    fn repair_description(&self) -> Option<&'static str> {
+        Some(
+            "Rewrites drifted ref_count values to the recomputed truth. \
+             Does not delete blobs or resurrect missing bytes — an \
+             over-counted blob simply becomes eligible for the next \
+             dedup_gc sweep.",
+        )
     }
 
     /// Definitive count. `storage.blobs` PK scan is index-only;

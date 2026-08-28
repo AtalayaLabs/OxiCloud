@@ -147,6 +147,14 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
         BACKEND_CONSISTENCY_JOB_NAME
     }
 
+    fn description(&self) -> &'static str {
+        "Merge-joins the storage backend's blob enumeration against \
+         storage.blobs, both ordered by hash, so one pass yields the delta \
+         in both directions: bytes on the backend no DB row claims, and \
+         rows whose bytes are gone. Read-only — nothing is uploaded or \
+         deleted."
+    }
+
     /// Approximate total: on a healthy install every backend blob
     /// has a `storage.blobs` row, so the DB count is a proxy for
     /// the backend count. The fraction deviating from 1.0 at run

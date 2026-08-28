@@ -204,6 +204,15 @@ impl RecoverableJobHandler for SatellitesConsistencyCheck {
         SATELLITES_CONSISTENCY_JOB_NAME
     }
 
+    fn description(&self) -> &'static str {
+        "Walks both satellite tables — content_derived_blobs (thumbnails \
+         keyed by source content) and file_attached_blobs (previews keyed \
+         by file) — and reports mappings whose source or target no longer \
+         exists. Nothing else finds these: every other job reasons from a \
+         Blob outwards, and a satellite row pointing at a deleted source \
+         breaks none of their invariants. Read-only."
+    }
+
     async fn count_total(&self) -> Option<u64> {
         sqlx::query_as::<_, (i64,)>(
             "SELECT (SELECT COUNT(*) FROM storage.content_derived_blobs)

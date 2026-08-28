@@ -46,8 +46,8 @@ use uuid::Uuid;
 
 use crate::application::ports::thumbnail_ports::ThumbnailSize;
 use crate::infrastructure::scheduler::{
-    JobRegistry, JobRunArgs, JobStore, JobStoreProvider, RecoverableJobHandler, RunOutcome,
-    RunStatus, record_or_log,
+    JobRegistry, JobRunArgs, JobStore, JobStoreProvider, Mutates, RecoverableJobHandler,
+    RunOutcome, RunStatus, record_or_log,
 };
 use crate::infrastructure::services::dedup_service::DedupService;
 // The readback-then-unlink rule is shared, not copied: two versions of it
@@ -165,6 +165,28 @@ impl ThumbAttachedImport {
 impl RecoverableJobHandler for ThumbAttachedImport {
     fn name(&self) -> &str {
         THUMB_ATTACHED_IMPORT_JOB_NAME
+    }
+
+    fn description(&self) -> &'static str {
+        "Migrates USER-UPLOADED previews (ext-{file_id}.jpg) into \
+         file-keyed blob storage. Until a row exists, copying a file loses \
+         its preview: the sidecar is keyed by file id and no copy path \
+         duplicates it. These bytes have no server-side render path, so \
+         unlike rendered thumbnails they cannot be regenerated."
+    }
+
+    fn mutates(&self) -> Mutates {
+        Mutates::Always
+    }
+
+    fn repair_description(&self) -> Option<&'static str> {
+        Some(
+            "Also DELETES each sidecar once its replacement has been read \
+             back. Previews whose file no longer exists are deleted without \
+             a readback — nothing can reference them again. Irreversible, \
+             and these bytes cannot be regenerated, so the readback is the \
+             only safeguard.",
+        )
     }
 
     async fn count_total(&self) -> Option<u64> {
@@ -308,10 +330,12 @@ impl RecoverableJobHandler for ThumbAttachedImport {
                     // there is no row and no blob to read back, and nothing to
                     // regenerate from either.
                     orphaned += 1;
+                    let mut removed = false;
                     if delete_imported {
                         let path = self.thumbnails_root.join(&dir_name).join(&name);
                         if fs::remove_file(&path).await.is_ok() {
                             deleted += 1;
+                            removed = true;
                             // Explicit: nothing to verify against, so this
                             // bypasses verify_and_unlink. Worth auditing
                             // loudest of all — these bytes were
@@ -325,22 +349,35 @@ impl RecoverableJobHandler for ThumbAttachedImport {
                                 &path,
                             );
                         }
-                    } else {
-                        record_or_log(
-                            store,
-                            THUMB_ATTACHED_IMPORT_JOB_NAME,
-                            "attached_sidecar_orphan",
-                            "anomaly",
-                            None,
-                            serde_json::json!({
-                                "path":    position,
-                                "file_id": file_id_str,
-                                "note":    "no storage.files row; unimportable, and deleted on a \
-                                            repair run since nothing can reference it again",
-                            }),
-                        )
-                        .await;
                     }
+                    // Recorded in BOTH modes — see the twin in
+                    // thumb_derived_import. Deleting a non-regenerable
+                    // user-uploaded preview and reporting nothing is the
+                    // worst version of this: the one outcome an operator
+                    // needs in the run drawer was the one it withheld.
+                    record_or_log(
+                        store,
+                        THUMB_ATTACHED_IMPORT_JOB_NAME,
+                        "attached_sidecar_orphan",
+                        // `anomaly` renders as "notices"; `detail.deleted`
+                        // is what says whether the run acted. See the
+                        // derived twin.
+                        "anomaly",
+                        None,
+                        serde_json::json!({
+                            "path":    position,
+                            "file_id": file_id_str,
+                            "deleted": removed,
+                            "note": if removed {
+                                "no storage.files row; sidecar was unimportable and has been \
+                                 deleted — nothing can reference it again"
+                            } else {
+                                "no storage.files row; unimportable, and deleted on a repair \
+                                 run since nothing can reference it again"
+                            },
+                        }),
+                    )
+                    .await;
                 } else {
                     let path = self.thumbnails_root.join(&dir_name).join(&name);
                     match fs::read(&path).await {
@@ -458,7 +495,16 @@ impl RecoverableJobHandler for ThumbAttachedImport {
              {unverified} kept unverified"
         );
 
-        RunOutcome::completed()
+        // Same reasoning as the derived twin: what the run did belongs on
+        // the run row, not only in the process log.
+        RunOutcome::completed_with(serde_json::json!({
+            "imported":        imported,
+            "already_present": already,
+            "deleted":         deleted,
+            "unverified":      unverified,
+            "orphaned":        orphaned,
+            "failed":          failed,
+        }))
     }
 }
 

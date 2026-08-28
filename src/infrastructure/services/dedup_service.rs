@@ -3675,6 +3675,20 @@ impl crate::infrastructure::scheduler::JobHandler for DedupService {
         DEDUP_GC_JOB_NAME
     }
 
+    fn description(&self) -> &'static str {
+        "Reclaims blobs and chunk manifests that no file, thumbnail or \
+         preview references any more, once they are past the orphan grace \
+         window. Trash cleanup already runs this as its tail step; \
+         triggering it here is for reclaiming immediately rather than at \
+         the next tick. Add ?force=true to skip the grace window."
+    }
+
+    /// Deletes bytes. `force` is its accelerator, not a repair flag —
+    /// there is nothing this job reports without also acting on it.
+    fn mutates(&self) -> crate::infrastructure::scheduler::Mutates {
+        crate::infrastructure::scheduler::Mutates::Always
+    }
+
     /// Runs one `garbage_collect` sweep — the same reclamation that
     /// `TrashCleanupService` invokes inline as its tail step, exposed
     /// through the scheduler so operators can trigger it uniformly via

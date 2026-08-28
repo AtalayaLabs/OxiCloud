@@ -59,7 +59,7 @@ use std::sync::{Arc, Weak};
 use async_trait::async_trait;
 use serde_json::json;
 
-use crate::infrastructure::scheduler::{JobHandler, JobOutcome, JobRegistry, JobRunArgs};
+use crate::infrastructure::scheduler::{JobHandler, JobOutcome, JobRegistry, JobRunArgs, Mutates};
 
 pub const CONSISTENCY_BATCH_JOB_NAME: &str = "consistency_batch";
 
@@ -88,6 +88,28 @@ impl ConsistencyBatch {
 impl JobHandler for ConsistencyBatch {
     fn name(&self) -> &str {
         CONSISTENCY_BATCH_JOB_NAME
+    }
+
+    fn description(&self) -> &'static str {
+        "Runs every registered consistency check in sequence — one click \
+         for 'check everything'. New tenants are picked up automatically \
+         by name, so nothing needs updating here when one is added. Flags \
+         are forwarded to each sub-job."
+    }
+
+    /// Read-only on a plain run because every tenant it dispatches is, but
+    /// `?repair=true` reaches whichever of them act on it — so the batch
+    /// inherits the strongest mode any sub-job can be put into.
+    fn mutates(&self) -> Mutates {
+        Mutates::OnRepairOnly
+    }
+
+    fn repair_description(&self) -> Option<&'static str> {
+        Some(
+            "Forwards ?repair=true to every sub-check, so the ones that \
+             support it fix what they find (today: refcount drift on blobs \
+             and manifests) instead of only reporting it.",
+        )
     }
 
     async fn run(&self, args: &JobRunArgs) -> JobOutcome {

@@ -113,6 +113,40 @@ jsonpath "$[*].name" contains "consistency_batch"
 jsonpath "$[*].name" contains "backend_migration"
 jsonpath "$[*].name" contains "backend_rotate"
 
+# Job metadata — `description` / `mutates` / `repair_description`.
+# The admin panel keys the read-only badge and the repair toggle off
+# these, so a handler that stops declaring them degrades the UI
+# silently: a mutating job renders as safe to click, and a repair-
+# capable one loses its toggle entirely. That second failure is the
+# bug this replaced — a name-based allowlist in the panel that never
+# grew past the two refcount tenants, leaving the thumbnail imports
+# unrunnable in repair mode from the UI.
+#
+# Per-job pins use scalar equality on a single-match filter — NOT
+# `count`, which trips Hurl's "filter matched one item → scalar, not
+# list" quirk. See memory `hurl-jsonpath-filter-empty-result`.
+#
+# `mutates` is a closed enum the UI switches on, so all three wire
+# spellings are pinned; a rename would break the panel silently.
+jsonpath "$..mutates" contains "never"
+jsonpath "$..mutates" contains "always"
+jsonpath "$..mutates" contains "on_repair_only"
+# Read-only tenant — safe to trigger, earns the read-only badge.
+jsonpath "$[?(@.name=='files_consistency')].mutates" == "never"
+# Repairs refcounts under ?repair=true, read-only otherwise.
+jsonpath "$[?(@.name=='blobs_consistency')].mutates" == "on_repair_only"
+# Destructive on a plain run AND repair-capable — the combination a
+# boolean could not express, and the reason `Mutates` has three values
+# rather than two.
+jsonpath "$[?(@.name=='thumb_derived_import')].mutates" == "always"
+# Floors, not totals: every job registered today declares a
+# description, and five declare a repair arm (both imports, both
+# refcount tenants, consistency_batch). New tenants only push these
+# up. Registration itself already rejects `on_repair_only` without a
+# repair_description, so the contradictory pairing can't reach here.
+jsonpath "$..description" count >= 10
+jsonpath "$..repair_description" count >= 5
+
 
 # ─────────────────────────────────────────────────────────────
 # Step 3 — Trigger `trash_cleanup`. Envelope shape:

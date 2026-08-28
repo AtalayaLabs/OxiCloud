@@ -167,9 +167,51 @@ impl fmt::Display for ErrCause {
     }
 }
 
+/// When a job changes state.
+///
+/// Drives how the admin UI presents a trigger: `Never` earns a read-only
+/// badge, `OnRepairOnly` is safe to run and warns only when the toggle is on,
+/// `Always` warns regardless.
+///
+/// Three values rather than a boolean because there are three cases, and the
+/// interesting one is conditional. `false` on a job that can delete files
+/// under `?repair=true` is actively misleading; `true` on one that is
+/// read-only by default is equally wrong. `OnRepairOnly` names the case a
+/// boolean cannot, and it is where the recovery framework is heading —
+/// discovery-only by default, mutation behind an explicit opt-in — so a
+/// consistency tenant that later grows a repair arm changes this one value
+/// and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mutates {
+    /// Read-only under every flag. All consistency tenants.
+    Never,
+    /// Changes state on a plain run. GC, janitors, the import jobs.
+    Always,
+    /// Read-only by default; mutates only under `?repair=true`. Pairing this
+    /// with `repair_description() == None` is contradictory — a job claiming
+    /// it mutates only under a flag it does not support.
+    OnRepairOnly,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mutates_serialises_snake_case() {
+        // The admin UI switches on these strings — a rename is a breaking
+        // change to the panel, not just to Rust callers.
+        assert_eq!(serde_json::to_string(&Mutates::Never).unwrap(), "\"never\"");
+        assert_eq!(
+            serde_json::to_string(&Mutates::Always).unwrap(),
+            "\"always\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Mutates::OnRepairOnly).unwrap(),
+            "\"on_repair_only\""
+        );
+    }
 
     #[test]
     fn joboutcome_kind_label() {

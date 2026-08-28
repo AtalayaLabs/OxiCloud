@@ -38,4 +38,4 @@ pub use recoverable::{
     record_or_log, run_or_resume,
 };
 pub use registry::{JobEntry, JobRegistry, JobSummary, PausedRunBrief, RegisterError};
-pub use types::{ErrCause, JobOutcome, JobRunArgs};
+pub use types::{ErrCause, JobOutcome, JobRunArgs, Mutates};

@@ -148,6 +148,13 @@ impl RecoverableJobHandler for FilesConsistencyCheck {
         FILES_CONSISTENCY_JOB_NAME
     }
 
+    fn description(&self) -> &'static str {
+        "Walks storage.files and reports rows whose parent-folder state, \
+         blob reference or denormalised size has drifted from what the \
+         join with folders and blobs says is true. Read-only — the fixes \
+         live in other jobs (trash cascade, dedup_gc, blob resurrection)."
+    }
+
     /// Definitive count — one row per file. This is the largest table
     /// of the trio (millions on big installs); COUNT(*) is still an
     /// index-only scan but can take ~seconds. The tradeoff is worth
