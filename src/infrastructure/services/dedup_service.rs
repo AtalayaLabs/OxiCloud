@@ -711,9 +711,31 @@ impl DedupService {
         let derived_hash = stored.hash().to_string();
 
         let inserted = sqlx::query(
+            // The source must still EXIST, or this row can never be cleaned
+            // up. `purge_derived_blobs` runs from the source's reap, so a
+            // mapping written after that reap is unreachable forever: nothing
+            // will reap that hash a second time, and the orphaned row holds
+            // its derived blob's ref_count at 1, which GC is then correct to
+            // refuse. Permanent leak, three rows per image.
+            //
+            // It is not hypothetical. Background thumbnail generation is
+            // spawned and unawaited, so an upload deleted promptly — which a
+            // test suite does constantly, and users do occasionally — has its
+            // render finish AFTER the blob was reaped and then record a
+            // mapping to a corpse.
+            //
+            // Checking both tables because `source_hash` names a Blob:
+            // a manifest for CDC content, a bare blob row for legacy
+            // whole-file content.
+            //
+            // Zero rows here is indistinguishable from the ON CONFLICT case,
+            // and both want the same handling — release the reference the
+            // blob write just took — which the caller already does.
             "INSERT INTO storage.content_derived_blobs
                  (source_hash, kind, variant, blob_hash, content_type)
-             VALUES ($1, $2, $3, $4, $5)
+             SELECT $1, $2, $3, $4, $5
+              WHERE EXISTS (SELECT 1 FROM storage.chunk_manifests WHERE file_hash = $1)
+                 OR EXISTS (SELECT 1 FROM storage.blobs           WHERE hash      = $1)
              ON CONFLICT (source_hash, kind, variant) DO NOTHING",
         )
         .bind(source_hash)
@@ -727,9 +749,14 @@ impl DedupService {
         .rows_affected();
 
         if inserted == 0 {
-            // Someone else already mapped this variant. Our reference has no
-            // row behind it; leaving it would inflate ref_count on every
-            // re-render and pin the blob forever.
+            // Two causes, one correct response.
+            //
+            // Either someone else already mapped this variant (ON CONFLICT),
+            // or the source Blob no longer exists so the WHERE EXISTS above
+            // refused the row. Both leave our blob write with no mapping
+            // behind it, and in both cases keeping the reference would pin
+            // the blob forever — inflating ref_count on every re-render in
+            // the first case, stranding an unreachable blob in the second.
             if let Err(e) = self.remove_reference(&derived_hash).await {
                 tracing::warn!(
                     target: "oxicloud::dedup",
@@ -837,6 +864,31 @@ impl DedupService {
                 return;
             }
         };
+
+        // Silent on success until now, which made three distinct outcomes
+        // indistinguishable from the outside: never called, called and found
+        // nothing, or found rows whose release then failed. Chasing an
+        // orphaned-derived-row leak cost several full suite runs for exactly
+        // that reason, so the call announces itself.
+        //
+        // `info` when it actually deleted something — that is rare (only when
+        // a source Blob dies) and it is the line that proves the reap path
+        // reached here. `debug` for the common no-op.
+        if derived.is_empty() {
+            tracing::debug!(
+                target: "oxicloud::dedup",
+                "purge_derived_blobs: no rows for {}",
+                &source_hash[..source_hash.len().min(12)],
+            );
+        } else {
+            tracing::info!(
+                target: "oxicloud::dedup",
+                rows = derived.len(),
+                "purge_derived_blobs: releasing {} derived row(s) for {}",
+                derived.len(),
+                &source_hash[..source_hash.len().min(12)],
+            );
+        }
 
         for (blob_hash,) in derived {
             if let Err(e) = self.remove_reference(&blob_hash).await {
