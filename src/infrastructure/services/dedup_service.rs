@@ -2971,6 +2971,28 @@ impl DedupService {
             // and accounting remain below and run only after refcounts succeed.
             for (file_hash, _, _) in &batch {
                 self.manifest_cache.invalidate(file_hash).await;
+
+                // Drop everything derived FROM this Blob, exactly as
+                // `reap_blob` does for the single-blob path.
+                //
+                // Without this, bulk manifest reaping orphans the rows: the
+                // reap predicate protects a manifest that IS a derived
+                // artifact (`content_derived_blobs.blob_hash`), but
+                // deliberately not one that is the SOURCE of them — counting
+                // `source_hash` as a reference would pin every original for
+                // as long as a thumbnail existed. So the source is reaped
+                // correctly, and the purge has to follow it.
+                //
+                // It did not, and the leak is permanent rather than cosmetic:
+                // the orphaned row holds `chunk_manifests.ref_count` at 1 on
+                // the thumbnail's own blob, so GC is thereafter *correct* to
+                // refuse it and those bytes are never reclaimed. Every
+                // deleted image left three of them behind — one per size.
+                //
+                // Found by storage_cleanup_check.sh: three leftover blobs,
+                // all `derived=1`, all naming one `src` whose manifest, blob
+                // row and files were already gone.
+                self.purge_derived_blobs(file_hash).await;
             }
 
             if batch.len() == 1 {
