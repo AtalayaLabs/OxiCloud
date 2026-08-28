@@ -47,6 +47,12 @@ futures = "0.3.32"
 async-stream = "0.3.6"
 async-trait = "0.1.89"
 mime_guess = "2.0.5"
+# `rust-embed` — compile-time asset embedding for the `bundled-assets` feature.
+# Optional so default builds never pull it in. `compression` deflate-compresses
+# each embedded file at compile time; the handler decompresses lazily on first
+# read (cached per-file in a `OnceCell`). See src/interfaces/web/embedded.rs
+# for the actual embed struct + handlers.
+rust-embed = { version = "8", features = ["compression", "include-exclude"], optional = true }
 uuid = { version = "1.23.3", features = ["v4", "v7", "serde"] }
 thiserror = "2.0.18"
 arc-swap = "1.9"
@@ -174,6 +180,25 @@ bench = []
 # from `test_utils` for the same reason `load_seed_bin` is — enabling
 # `dev_tools` on the CLI must not perturb the oxicloud dependency graph.
 dev_tools = []
+# Bake the SvelteKit build output (`static-dist/` at repo root) into the
+# binary at compile time via `rust-embed`. Opt-in and off by default — the
+# regular `cargo build --release` still produces a filesystem-served
+# binary (matching the current Docker image where assets are separate
+# layers, and the `just dev` HMR loop where Vite serves live). Release
+# tarballs (`docs/plan/bundled-binary.md` § 2) build with this flag to
+# ship a single self-contained executable.
+#
+# Precedence rule preserved: even when this feature is on, if
+# OXICLOUD_STATIC_PATH points at an existing directory, that wins over
+# the embedded fallback — ops can override embedded assets for locale
+# patches or theming without a rebuild.
+#
+# Build-time invariant: `cargo build --features bundled-assets` requires
+# `static-dist/` at the repo root (SvelteKit adapter-static emits there
+# — `frontend/svelte.config.js`'s `pages: '../static-dist'`). `build.rs`
+# fails fast with a pointer to `(cd frontend && npm run build)` when the
+# directory is missing.
+bundled-assets = ["dep:rust-embed"]
 
 [dev-dependencies]
 criterion = "0.5"

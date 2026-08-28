@@ -58,7 +58,7 @@ use common::di::AppServiceFactory;
 use infrastructure::db::create_database_pools;
 use interfaces::{
     create_api_routes, create_health_routes, create_public_api_routes,
-    web::{create_web_routes, resolve_static_path},
+    web::{StaticSource, create_web_routes, resolve_static_source},
 };
 
 fn parse_addr(host: &str, port: u16) -> Result<SocketAddr, String> {
@@ -350,6 +350,92 @@ fn build_runtime() -> std::io::Result<tokio::runtime::Runtime> {
         .build()
 }
 
+/// Resolve where locale JSON files are read from at boot time.
+///
+/// Under the default (filesystem) build: return the same path the
+/// filesystem `ServeDir` serves from, with a fallback to
+/// `frontend/static/locales` for `just dev` checkouts where the SPA
+/// build hasn't run.
+///
+/// Under `--features bundled-assets`, when `resolve_static_source`
+/// returns `Embedded` (i.e. no filesystem override is present), extract
+/// the embedded `locales/*.json` files to a boot-time tempdir and
+/// return that path. Runtime code (`LocaleRegistry::discover`,
+/// `FileSystemI18nService`) is unchanged: it still reads locale JSON
+/// from a directory. The tempdir is process-scoped; `LocaleRegistry`
+/// caches everything in-memory at boot, so the extracted files are
+/// unused after the initial scan and can leak on abrupt process death
+/// without affecting subsequent boots.
+fn resolve_locales_path(source: &StaticSource) -> std::path::PathBuf {
+    match source {
+        StaticSource::Filesystem(path) => {
+            let served = path.join("locales");
+            if served.is_dir() {
+                served
+            } else {
+                std::path::PathBuf::from("frontend/static/locales")
+            }
+        }
+        #[cfg(feature = "bundled-assets")]
+        StaticSource::Embedded => extract_embedded_locales(),
+    }
+}
+
+/// Extract the embedded `locales/*.json` corpus to a boot-time tempdir
+/// so the existing filesystem-based locale loader can consume it
+/// unchanged. Called once at boot in the embedded-assets path.
+///
+/// Cost: ~50 ms for 16 JSON files totalling ~2.2 MB. The tempdir lives
+/// under `std::env::temp_dir()` (respects `$TMPDIR`); no cleanup is
+/// registered because `LocaleRegistry::discover` reads every file into
+/// memory at boot, so the extracted copy is dead weight once boot
+/// completes. On a graceful shutdown the tempdir persists until the
+/// OS's tmpfs / cron reaper collects it; on abrupt kill likewise. Safe:
+/// no secrets touch these files.
+#[cfg(feature = "bundled-assets")]
+fn extract_embedded_locales() -> std::path::PathBuf {
+    use interfaces::web::embedded::EmbeddedAssets;
+    let dir = std::env::temp_dir().join(format!("oxicloud-locales-{}", std::process::id()));
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        panic!(
+            "FATAL: failed to create embedded-locales staging dir at {}: {e}",
+            dir.display()
+        );
+    }
+    let mut count = 0usize;
+    for path in EmbeddedAssets::iter() {
+        let s: &str = path.as_ref();
+        // Root-level `locales/*.json` only. SvelteKit copies
+        // `frontend/static/locales/*.json` here at build time.
+        if !s.starts_with("locales/") || !s.ends_with(".json") {
+            continue;
+        }
+        let name = &s["locales/".len()..];
+        if name.contains('/') {
+            continue; // no nested subdirs today
+        }
+        let Some(file) = EmbeddedAssets::get(s) else {
+            continue;
+        };
+        let out = dir.join(name);
+        if let Err(e) = std::fs::write(&out, file.data.as_ref()) {
+            panic!(
+                "FATAL: failed to stage embedded locale {} at {}: {e}",
+                s,
+                out.display()
+            );
+        }
+        count += 1;
+    }
+    tracing::info!(
+        staging_dir = %dir.display(),
+        count,
+        "static-assets: staged {count} embedded locale file(s) for the boot-time \
+         LocaleRegistry scan (bundled-assets feature)."
+    );
+    dir
+}
+
 /// Async entrypoint, driven by the runtime built in [`main`].
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing.
@@ -500,14 +586,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // /app/static). Fail-fast if the path is missing rather than silently
     // creating an empty directory and limping along with a "translation missing"
     // error on every request later.
-    let locales_path = {
-        let served = resolve_static_path(&config).join("locales");
-        if served.is_dir() {
-            served
-        } else {
-            std::path::PathBuf::from("frontend/static/locales")
-        }
-    };
+    // Resolve the static-assets source ONCE at boot — the resolution
+    // logs a single line describing which path was chosen. Reused
+    // downstream for both the locale loader (below) and the web router
+    // (`create_web_routes`), so neither has to re-parse env or re-log.
+    let static_source = resolve_static_source(&config);
+    let locales_path = resolve_locales_path(&static_source);
     if !locales_path.is_dir() {
         panic!(
             "FATAL: locales directory not found at {}. \
@@ -532,7 +616,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let api_routes = create_api_routes(&app_state);
     let public_api_routes = create_public_api_routes(&app_state);
     let health_routes = create_health_routes(&app_state);
-    let web_routes = create_web_routes(app_state.clone());
+    let web_routes = create_web_routes(app_state.clone(), static_source);
 
     let mut app;
 
