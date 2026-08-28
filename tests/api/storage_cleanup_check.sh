@@ -18,6 +18,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 STORAGE_PATH="${OXICLOUD_STORAGE_PATH:-$REPO_ROOT/tests/api/storage}"
+# Needed by the leftover diagnosis below. Without it `docker compose -f ""`
+# fails and the `|| true` there swallows it, so the diagnosis silently prints
+# nothing and the failure looks exactly as uninformative as before.
+COMPOSE_FILE="$REPO_ROOT/tests/common/docker-compose.test.yml"
 
 # shellcheck source=test.env
 source "$SCRIPT_DIR/test.env"
