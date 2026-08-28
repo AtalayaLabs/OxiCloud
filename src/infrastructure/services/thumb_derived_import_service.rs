@@ -236,6 +236,7 @@ impl RecoverableJobHandler for ThumbDerivedImport {
         let mut failed = 0u64;
         let mut deleted = 0u64;
         let mut unverified = 0u64;
+        let mut dead_source = 0u64;
         let mut since_checkpoint = 0usize;
         // The DIRECTORY is `{size}` on disk; the VARIANT is `{size}.{ext}`
         // since migration `20261022000000`. Conflating them is a real trap:
@@ -316,6 +317,50 @@ impl RecoverableJobHandler for ThumbDerivedImport {
                             )
                             .await;
                         }
+                    }
+                } else if !self.dedup.blob_exists(hash).await {
+                    // The source is gone, so this sidecar cannot be imported:
+                    // a mapping to a dead source is precisely the orphan row
+                    // `store_derived_blob` now refuses, because nothing would
+                    // ever reap that hash again and the row would pin its
+                    // artifact forever.
+                    //
+                    // Checked BEFORE the read and the blob write, not after.
+                    // Without this the refusal still happens, but only once
+                    // the bytes have been stored — so every run writes a blob
+                    // and immediately deletes its manifest again, per dead
+                    // sidecar, forever. On a real install where `.thumbnails/`
+                    // has outlived years of deleted files, that is most of
+                    // them.
+                    //
+                    // It also matters for the tail: these files are
+                    // unimportable by definition, so a run that keeps
+                    // rediscovering them never reports zero and step 10e's
+                    // gate never opens. Under `repair` they are deleted —
+                    // safe, and the only unlink here that needs no readback,
+                    // since there is nothing to read back and nothing to
+                    // regenerate from.
+                    dead_source += 1;
+                    if delete_imported {
+                        let path = self.thumbnails_root.join(dir_name).join(&name);
+                        if fs::remove_file(&path).await.is_ok() {
+                            deleted += 1;
+                        }
+                    } else {
+                        record_or_log(
+                            store,
+                            THUMB_DERIVED_IMPORT_JOB_NAME,
+                            "sidecar_source_gone",
+                            "anomaly",
+                            None,
+                            serde_json::json!({
+                                "path":        position,
+                                "source_hash": hash,
+                                "note": "source Blob no longer exists; the thumbnail is \
+                                         unimportable and is deleted on a repair run",
+                            }),
+                        )
+                        .await;
                     }
                 } else {
                     let path = self.thumbnails_root.join(dir_name).join(&name);
@@ -441,8 +486,10 @@ impl RecoverableJobHandler for ThumbDerivedImport {
             failed = failed,
             deleted = deleted,
             unverified = unverified,
+            dead_source = dead_source,
             "thumb_derived_import: {imported} imported, {already} already present, \
-             {failed} failed, {deleted} sidecar(s) deleted, {unverified} kept unverified"
+             {failed} failed, {deleted} sidecar(s) deleted, {unverified} kept unverified, \
+             {dead_source} skipped (source gone)"
         );
 
         RunOutcome::completed()
