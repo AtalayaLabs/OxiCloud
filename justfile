@@ -377,6 +377,10 @@ load-baseline:
 load-seed:
     cargo run --bin load-seed -- --depth 5 --fanout 4 --files-per-leaf 3
 
+# Unit-test the Docker publish tag-policy script (sub-second).
+test-docker-tags:
+    @bash scripts/test-docker-publish-tags.sh
+
 # Check and test everything
 # recommanded before pull request
-pre-pull-request: check fe-check audit check-migrations test test-integration fe-test build api-test fe-build-e2e  front-test
+pre-pull-request: test-docker-tags check fe-check audit check-migrations test test-integration fe-test build api-test fe-build-e2e  front-test
