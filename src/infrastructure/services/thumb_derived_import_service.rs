@@ -48,6 +48,41 @@ use crate::infrastructure::services::dedup_service::DedupService;
 
 pub const THUMB_DERIVED_IMPORT_JOB_NAME: &str = "thumb_derived_import";
 
+/// Record a sidecar deletion on the audit channel.
+///
+/// Both import jobs delete user-visible files during a one-way migration, so
+/// the trail has to survive the run history: findings are per-run and get
+/// purged, whereas `target: "audit"` is separable and retained. If a preview
+/// later turns out to be missing, this is the only record that says the
+/// migration removed it, when, and on whose behalf.
+///
+/// `owner` is the id the file belonged to — a `source_hash` for content-keyed
+/// sidecars, a `file_id` for uploaded ones. That is the field an
+/// investigation starts from, and the raw `NEW BLOB` logs cannot supply it:
+/// they name the hash of the stored bytes, which is a different value from
+/// the sidecar's own name.
+///
+/// `reason` is a stable machine-readable key, per the convention: `imported`
+/// (replaced by a verified blob), `source_gone`, `orphaned`.
+pub(crate) fn audit_sidecar_deleted(
+    job: &str,
+    reason: &str,
+    owner: &str,
+    blob_hash: &str,
+    path: &std::path::Path,
+) {
+    tracing::info!(
+        target: "audit",
+        event = "thumbnail.sidecar_deleted",
+        reason = reason,
+        job = job,
+        owner = owner,
+        blob_hash = blob_hash,
+        path = %path.display(),
+        "👮🏻‍♂️ migration deleted a thumbnail sidecar ({reason})",
+    );
+}
+
 /// Files handled between checkpoints. Each one is a read plus (at most) a
 /// blob write, so this is deliberately smaller than a pure-DB sweep's page.
 const BATCH_SIZE: usize = 100;
@@ -142,6 +177,8 @@ impl ThumbDerivedImport {
     /// and two copies of that rule would be two chances to weaken one.
     pub(crate) async fn verify_and_unlink(
         dedup: &DedupService,
+        job: &str,
+        owner: &str,
         stored_hash: &str,
         path: &std::path::Path,
     ) -> bool {
@@ -154,7 +191,11 @@ impl ThumbDerivedImport {
         if stored.is_empty() || stored.len() as u64 != meta.len() {
             return false;
         }
-        fs::remove_file(path).await.is_ok()
+        if fs::remove_file(path).await.is_err() {
+            return false;
+        }
+        audit_sidecar_deleted(job, "imported", owner, stored_hash, path);
+        true
     }
 
     /// Sorted sidecar filenames for one size directory.
@@ -299,7 +340,15 @@ impl RecoverableJobHandler for ThumbDerivedImport {
                     already += 1;
                     if delete_imported {
                         let path = self.thumbnails_root.join(dir_name).join(&name);
-                        if Self::verify_and_unlink(&self.dedup, &existing.blob_hash, &path).await {
+                        if Self::verify_and_unlink(
+                            &self.dedup,
+                            THUMB_DERIVED_IMPORT_JOB_NAME,
+                            hash,
+                            &existing.blob_hash,
+                            &path,
+                        )
+                        .await
+                        {
                             deleted += 1;
                         } else {
                             unverified += 1;
@@ -345,6 +394,16 @@ impl RecoverableJobHandler for ThumbDerivedImport {
                         let path = self.thumbnails_root.join(dir_name).join(&name);
                         if fs::remove_file(&path).await.is_ok() {
                             deleted += 1;
+                            // Audited explicitly: this unlink bypasses
+                            // verify_and_unlink, which has nothing to verify
+                            // against here.
+                            audit_sidecar_deleted(
+                                THUMB_DERIVED_IMPORT_JOB_NAME,
+                                "source_gone",
+                                hash,
+                                "-",
+                                &path,
+                            );
                         }
                     } else {
                         record_or_log(
@@ -382,6 +441,8 @@ impl RecoverableJobHandler for ThumbDerivedImport {
                                     if delete_imported {
                                         if Self::verify_and_unlink(
                                             &self.dedup,
+                                            THUMB_DERIVED_IMPORT_JOB_NAME,
+                                            hash,
                                             &derived_hash,
                                             &path,
                                         )

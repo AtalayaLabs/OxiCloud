@@ -262,6 +262,8 @@ impl RecoverableJobHandler for ThumbAttachedImport {
                         let path = self.thumbnails_root.join(&dir_name).join(&name);
                         if ThumbDerivedImport::verify_and_unlink(
                             &self.dedup,
+                            THUMB_ATTACHED_IMPORT_JOB_NAME,
+                            &file_id_str,
                             &existing.blob_hash,
                             &path,
                         )
@@ -286,24 +288,59 @@ impl RecoverableJobHandler for ThumbAttachedImport {
                         }
                     }
                 } else if !self.file_exists(file_id).await {
-                    // The file is gone; the sidecar outlived it. Reported
-                    // rather than deleted — this job imports, it does not
-                    // reclaim, and a destructive default on a migration is
-                    // exactly what `no silent auto-repair` forbids.
+                    // The file is gone, so this sidecar is unimportable: the
+                    // FK on `file_id` would reject the row. Mirrors the
+                    // dead-source case in thumb_derived_import.
+                    //
+                    // Reported by default — a destructive default on a
+                    // migration is what no-silent-auto-repair forbids — and
+                    // deleted under `repair`, because otherwise it is
+                    // rediscovered on every run, the tail never empties, and
+                    // step 10e's gate never opens.
+                    //
+                    // Safe to delete despite these being the non-regenerable
+                    // bytes: the preview is keyed to a `file_id` that no
+                    // longer exists, so nothing can ever reference it again.
+                    // Unrecoverable and unreachable are different things, and
+                    // this is both.
+                    //
+                    // No readback before unlinking, unlike the imported path:
+                    // there is no row and no blob to read back, and nothing to
+                    // regenerate from either.
                     orphaned += 1;
-                    record_or_log(
-                        store,
-                        THUMB_ATTACHED_IMPORT_JOB_NAME,
-                        "attached_sidecar_orphan",
-                        "anomaly",
-                        None,
-                        serde_json::json!({
-                            "path":    position,
-                            "file_id": file_id_str,
-                            "note":    "no storage.files row; sidecar left in place for the operator",
-                        }),
-                    )
-                    .await;
+                    if delete_imported {
+                        let path = self.thumbnails_root.join(&dir_name).join(&name);
+                        if fs::remove_file(&path).await.is_ok() {
+                            deleted += 1;
+                            // Explicit: nothing to verify against, so this
+                            // bypasses verify_and_unlink. Worth auditing
+                            // loudest of all — these bytes were
+                            // user-supplied and cannot be regenerated, even
+                            // though the file that owned them is gone.
+                            crate::infrastructure::services::thumb_derived_import_service::audit_sidecar_deleted(
+                                THUMB_ATTACHED_IMPORT_JOB_NAME,
+                                "orphaned",
+                                &file_id_str,
+                                "-",
+                                &path,
+                            );
+                        }
+                    } else {
+                        record_or_log(
+                            store,
+                            THUMB_ATTACHED_IMPORT_JOB_NAME,
+                            "attached_sidecar_orphan",
+                            "anomaly",
+                            None,
+                            serde_json::json!({
+                                "path":    position,
+                                "file_id": file_id_str,
+                                "note":    "no storage.files row; unimportable, and deleted on a \
+                                            repair run since nothing can reference it again",
+                            }),
+                        )
+                        .await;
+                    }
                 } else {
                     let path = self.thumbnails_root.join(&dir_name).join(&name);
                     match fs::read(&path).await {
@@ -328,6 +365,8 @@ impl RecoverableJobHandler for ThumbAttachedImport {
                                     if delete_imported {
                                         if ThumbDerivedImport::verify_and_unlink(
                                             &self.dedup,
+                                            THUMB_ATTACHED_IMPORT_JOB_NAME,
+                                            &file_id_str,
                                             &attached_hash,
                                             &path,
                                         )
