@@ -85,9 +85,15 @@ pub trait ImageTranscodePort: Send + Sync + 'static {
     /// Returns `(content, mime_type, was_transcoded)`.
     /// If transcoding is not beneficial (output larger than input), returns the
     /// original content with `was_transcoded = false`.
+    ///
+    /// `source_hash` is the BLAKE3 of the original content, which is how the
+    /// durable derived tier is keyed. `None` restricts the implementation to
+    /// its local cache — correct for callers with no hash (external mounts),
+    /// and the behaviour of every caller before that tier existed.
     async fn get_transcoded(
         &self,
         file_id: &str,
+        source_hash: Option<&str>,
         original_content: Bytes,
         original_mime: &str,
         target_format: OutputFormat,

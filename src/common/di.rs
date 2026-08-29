@@ -451,6 +451,17 @@ impl AppServiceFactory {
         );
         dedup_service.initialize().await?;
 
+        // Hand the transcode service its derived tier.
+        //
+        // Deferred rather than injected at construction because that happens
+        // ~240 lines above this, before `DedupService` exists, and the
+        // retrieval path that needs the transcode service is wired earlier
+        // still. Reordering DI to make the dependency a constructor argument
+        // would move more than it is worth; the service treats a missing
+        // handle as "local cache only", which is exactly its pre-derived-tier
+        // behaviour.
+        image_transcode_service.attach_dedup(dedup_service.clone());
+
         // One-time background migration: re-chunk pre-CDC whole-file blobs
         // into chunk manifests so Range reads (and, with encryption, partial
         // decrypts) stop paying for the entire blob. No-op once converged.

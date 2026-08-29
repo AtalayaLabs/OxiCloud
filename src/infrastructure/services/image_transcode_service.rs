@@ -147,6 +147,20 @@ pub struct ImageTranscodeService {
     memory_cache: moka::future::Cache<String, Bytes>,
     /// Lock-free statistics
     stats: Arc<AtomicTranscodeStats>,
+    /// The derived tier, attached after construction.
+    ///
+    /// A constructor parameter would be cleaner but does not fit: DI builds
+    /// this service before `DedupService` exists, and reordering is worse
+    /// than a one-shot — the transcode service is needed by the retrieval
+    /// path, which is wired early. `ThumbnailService` met the same wall and
+    /// took a per-call parameter instead; that does not work here because
+    /// the caller (`FileRetrievalService`) holds no dedup handle either, so
+    /// threading one through would push the dependency into a service that
+    /// has no other use for it.
+    ///
+    /// `OnceLock` rather than a `Mutex`: set exactly once at boot, read on
+    /// every request, never replaced.
+    dedup: OnceLock<Arc<crate::infrastructure::services::dedup_service::DedupService>>,
 }
 
 impl ImageTranscodeService {
@@ -176,10 +190,37 @@ impl ImageTranscodeService {
             cache_dir,
             memory_cache,
             stats: Arc::new(AtomicTranscodeStats::default()),
+            dedup: OnceLock::new(),
         }
     }
 
-    /// Initialize the service (create cache directories)
+    /// Attach the derived tier. Called once from DI, after `DedupService`
+    /// exists. Until then — and in tests that never call it — the service
+    /// behaves exactly as before, reading and writing only its local cache.
+    pub fn attach_dedup(
+        &self,
+        dedup: Arc<crate::infrastructure::services::dedup_service::DedupService>,
+    ) {
+        if self.dedup.set(dedup).is_err() {
+            tracing::warn!(
+                target: "oxicloud::transcode",
+                "attach_dedup called twice — the first handle is kept"
+            );
+        }
+    }
+
+    /// The `content_derived_blobs.kind` for everything this service writes.
+    const DERIVED_KIND: &'static str = "transcode";
+
+    /// Initialize the service.
+    ///
+    /// Still creates the local cache directories, because this service DOES
+    /// still write them — unlike `ThumbnailService`, whose sidecar writes
+    /// are gone. When the transcode write path moves fully to the derived
+    /// tier, these two `create_dir_all` calls have to go at the same time:
+    /// leaving them would recreate the tree on every boot and make the
+    /// absence that `transcode_import` works toward unreachable, which is
+    /// exactly the bug that kept `.thumbnails/` alive across restarts.
     pub async fn initialize(&self) -> std::io::Result<()> {
         fs::create_dir_all(&self.cache_dir).await?;
         fs::create_dir_all(self.cache_dir.join("webp")).await?;
@@ -213,13 +254,28 @@ impl ImageTranscodeService {
     ///
     /// Accepts `Bytes` (ref-counted) so callers avoid copying the buffer.
     /// Cloning `Bytes` is O(1) — only an atomic increment.
+    ///
+    /// `source_hash` is the BLAKE3 of the ORIGINAL content — the key the
+    /// derived tier uses. `None` falls back to the local cache alone, which
+    /// is what happens for callers that have no hash (external mounts) and
+    /// what the whole service did before the derived tier existed.
+    ///
+    /// It is a parameter rather than something computed here on purpose:
+    /// hashing `original_content` per request would be a BLAKE3 over the
+    /// whole file on every GET, and the caller already has the value.
     pub async fn get_transcoded(
         &self,
         file_id: &str,
+        source_hash: Option<&str>,
         original_content: Bytes,
         original_mime: &str,
         target_format: OutputFormat,
     ) -> Result<(Bytes, String, bool), String> {
+        // Keyed by file_id, not content hash. Deliberate: this cache is
+        // per-request-path and short-lived (10 min TTL), and the file id is
+        // what the caller has in hand on every request. The DURABLE tier
+        // below is content-keyed, which is where dedup across identical
+        // files actually pays.
         let cache_key = format!("{}:{}", file_id, target_format.extension());
 
         // ── 1. Fast path: moka memory cache (lock-free read) ──
@@ -248,8 +304,14 @@ impl ImageTranscodeService {
         let cached = self
             .memory_cache
             .try_get_with(cache_key, async {
-                self.compute_transcode(file_id, original_for_loader, original_mime, target_format)
-                    .await
+                self.compute_transcode(
+                    file_id,
+                    source_hash,
+                    original_for_loader,
+                    original_mime,
+                    target_format,
+                )
+                .await
             })
             .await
             // try_get_with shares one `Arc<String>` across waiters; DomainError
@@ -271,11 +333,62 @@ impl ImageTranscodeService {
     async fn compute_transcode(
         &self,
         file_id: &str,
+        source_hash: Option<&str>,
         original_content: Bytes,
         original_mime: &str,
         target_format: OutputFormat,
     ) -> Result<Bytes, String> {
-        // ── Disk cache (async fs) ──
+        // ── Derived tier, ahead of the local cache ──
+        //
+        // Content-keyed, so it is shared across every file with these bytes
+        // and survives both a restart and a backend migration — neither of
+        // which the local `.transcoded/` tree does. Read first for the same
+        // reason the thumbnail read-order flip put it first: the local tree
+        // is the legacy tier being drained, and a fallback that is consulted
+        // first never stops being load-bearing.
+        let derived = match (source_hash, self.dedup.get()) {
+            (Some(hash), Some(dedup)) => Some((hash, dedup)),
+            _ => None,
+        };
+        if let Some((hash, dedup)) = derived {
+            use crate::application::ports::dedup_ports::DerivedLookup;
+            match dedup
+                .lookup_derived(hash, Self::DERIVED_KIND, target_format.extension())
+                .await
+            {
+                DerivedLookup::Found(r) => match dedup.read_blob_bytes(&r.blob_hash).await {
+                    Ok(bytes) if !bytes.is_empty() => {
+                        self.stats.disk_hits.fetch_add(1, Ordering::Relaxed);
+                        tracing::debug!("🧱 Transcode derived tier HIT: {}", file_id);
+                        return Ok(bytes);
+                    }
+                    // The row promised bytes that are gone or empty. Fall
+                    // through and re-derive rather than serving nothing —
+                    // a transcode is a pure function of its source, so this
+                    // is recoverable by construction. `satellites_consistency`
+                    // reports the dangling row separately.
+                    _ => tracing::warn!(
+                        target: "oxicloud::transcode",
+                        source_hash = %hash,
+                        blob_hash = %r.blob_hash,
+                        "derived transcode row points at unreadable bytes; re-deriving"
+                    ),
+                },
+                // Known not worth transcoding for this content. This is the
+                // whole point of persisting the verdict: without it every GET
+                // repeats a full decode + encode to throw the result away.
+                DerivedLookup::NotDerivable => {
+                    self.stats.disk_hits.fetch_add(1, Ordering::Relaxed);
+                    tracing::debug!("🧱 Transcode negative derived row HIT: {}", file_id);
+                    return Ok(Bytes::new());
+                }
+                DerivedLookup::Missing => {}
+            }
+        }
+
+        // ── Legacy local cache (async fs) ──
+        //
+        // Drained by `transcode_import`; kept as a fallback until it is gone.
         let cache_path = self.get_cache_path(file_id, target_format);
         if tokio::fs::try_exists(&cache_path).await.unwrap_or(false) {
             match fs::read(&cache_path).await {
@@ -326,35 +439,103 @@ impl ImageTranscodeService {
                 original_size,
                 transcoded_size
             );
-            // Remember the negative verdict so the next GET doesn't repeat the
-            // decode + encode: the caller caches the empty-Bytes sentinel (TTL)
-            // and we drop a zero-byte marker on disk (survives restarts;
-            // removed by `invalidate` when the file changes).
-            let marker = self.get_skip_marker_path(file_id, target_format);
-            tokio::spawn(async move {
-                if let Some(parent) = marker.parent() {
-                    let _ = fs::create_dir_all(parent).await;
+            // Remember the verdict so the next GET does not repeat the decode
+            // + encode. The caller caches the empty-Bytes sentinel in RAM
+            // (10 min TTL); this row is what makes it survive eviction, a
+            // restart, and a move to another instance.
+            //
+            // Safe to persist because it is deterministic in the CONTENT:
+            // these exact bytes will always re-encode larger. A timeout or a
+            // read error would not be — those return `Err` above and are
+            // deliberately not recorded, since a momentary failure written
+            // here would mark a perfectly transcodable image as hopeless
+            // with nothing to ever retry it.
+            match derived {
+                Some((hash, dedup)) => {
+                    if let Err(e) = dedup
+                        .store_derived_negative(hash, Self::DERIVED_KIND, target_format.extension())
+                        .await
+                    {
+                        tracing::warn!(
+                            target: "oxicloud::transcode",
+                            source_hash = %hash,
+                            error = %e,
+                            "failed to persist negative transcode verdict; it will be recomputed"
+                        );
+                    }
                 }
-                if let Err(e) = fs::write(&marker, b"").await {
-                    tracing::warn!("Failed to persist transcode skip marker: {}", e);
+                // Hash-less callers still get the zero-byte marker, for the
+                // same reason they still get the local cache write: the
+                // content-keyed tier cannot hold a verdict for content it
+                // cannot name. Dropping this would make every external-mount
+                // GET of a non-shrinking image re-decode once moka's TTL
+                // expires.
+                None => {
+                    let marker = self.get_skip_marker_path(file_id, target_format);
+                    tokio::spawn(async move {
+                        if let Some(parent) = marker.parent() {
+                            let _ = fs::create_dir_all(parent).await;
+                        }
+                        if let Err(e) = fs::write(&marker, b"").await {
+                            tracing::warn!("Failed to persist transcode skip marker: {}", e);
+                        }
+                    });
                 }
-            });
+            }
             return Ok(Bytes::new());
         }
 
         let saved = original_size - transcoded_size;
 
-        // ── Persist to disk cache (fire-and-forget) ──
-        let cache_path_clone = cache_path.clone();
-        let transcoded_for_disk = transcoded_bytes.clone();
-        tokio::spawn(async move {
-            if let Some(parent) = cache_path_clone.parent() {
-                let _ = fs::create_dir_all(parent).await;
+        // ── Persist ──
+        //
+        // Derived tier when we have a source hash, local cache otherwise.
+        // Not both: writing the sidecar too would mean `transcode_import`
+        // chases a tail that keeps being refilled, which is the trap the
+        // thumbnail migration hit — four render paths wrote the sidecar and
+        // one wrote the row, so the tail never emptied.
+        //
+        // The local write survives only for hash-less callers (external
+        // mounts), which the derived tier cannot serve at all. When those
+        // gain a hash this branch goes, and `initialize`'s `create_dir_all`
+        // calls go with it.
+        match derived {
+            Some((hash, dedup)) => {
+                let dedup = dedup.clone();
+                let hash = hash.to_string();
+                let variant = target_format.extension().to_string();
+                let mime = target_format.mime_type().to_string();
+                let bytes = transcoded_bytes.clone();
+                // Fire-and-forget, as the disk write was: the bytes are
+                // already on their way to the client, and a storage hiccup
+                // should cost a re-derive later rather than this response.
+                tokio::spawn(async move {
+                    if let Err(e) = dedup
+                        .store_derived_blob(&hash, Self::DERIVED_KIND, &variant, &mime, bytes)
+                        .await
+                    {
+                        tracing::warn!(
+                            target: "oxicloud::transcode",
+                            source_hash = %hash,
+                            error = %e,
+                            "failed to store derived transcode; it will be recomputed"
+                        );
+                    }
+                });
             }
-            if let Err(e) = fs::write(&cache_path_clone, &transcoded_for_disk).await {
-                tracing::warn!("Failed to cache transcoded image: {}", e);
+            None => {
+                let cache_path_clone = cache_path.clone();
+                let transcoded_for_disk = transcoded_bytes.clone();
+                tokio::spawn(async move {
+                    if let Some(parent) = cache_path_clone.parent() {
+                        let _ = fs::create_dir_all(parent).await;
+                    }
+                    if let Err(e) = fs::write(&cache_path_clone, &transcoded_for_disk).await {
+                        tracing::warn!("Failed to cache transcoded image: {}", e);
+                    }
+                });
             }
-        });
+        }
 
         // ── Update stats (lock-free atomics) ──
         self.stats.transcodes.fetch_add(1, Ordering::Relaxed);
@@ -476,12 +657,14 @@ impl ImageTranscodePort for ImageTranscodeService {
     async fn get_transcoded(
         &self,
         file_id: &str,
+        source_hash: Option<&str>,
         original_content: Bytes,
         original_mime: &str,
         target_format: PortOutputFormat,
     ) -> Result<(Bytes, String, bool), DomainError> {
         self.get_transcoded(
             file_id,
+            source_hash,
             original_content,
             original_mime,
             target_format.into(),

@@ -34,6 +34,29 @@ pub struct DerivedBlobRef {
     pub content_type: String,
 }
 
+/// What the derived tier knows about one `(source_hash, kind, variant)`.
+///
+/// Three answers, not two. `Option<DerivedBlobRef>` could only say
+/// "have it" or "don't", which collapses the two cases that matter most
+/// to a caller deciding whether to spend a decode:
+///
+/// * [`Missing`](Self::Missing) — never attempted. Derive it.
+/// * [`NotDerivable`](Self::NotDerivable) — attempted, and the attempt
+///   is known to be a waste for this content: the transcode came out
+///   larger than the original, the source cannot be decoded, the source
+///   is over the decode ceiling. Serve the original and do not retry.
+/// * [`Found`](Self::Found) — here are the bytes.
+///
+/// Only failures that are deterministic in the CONTENT may be recorded
+/// as `NotDerivable`. A timeout or an I/O error is a property of the
+/// moment; persisting one would mark a good image underivable forever.
+#[derive(Debug, Clone)]
+pub enum DerivedLookup {
+    Missing,
+    NotDerivable,
+    Found(DerivedBlobRef),
+}
+
 /// Result of a deduplication store operation.
 #[derive(Debug, Clone)]
 pub enum DedupResultDto {

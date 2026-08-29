@@ -392,6 +392,15 @@ impl BlobReferenceSource for ContentDerivedReferenceSource {
         // Paged by `blob_hash` itself — unlike files it IS the value we
         // return, and DISTINCT keeps a Blob shared by several variants from
         // appearing more than once per page.
+        //
+        // `IS NOT NULL` is load-bearing, not defensive. A NEGATIVE row —
+        // "this content is not worth transcoding" — carries a NULL
+        // blob_hash, and this query decodes into `String`, so the first one
+        // ever written would fail the decode and take the whole enumeration
+        // down. It would also be wrong if it decoded: a negative row holds
+        // no reference on any Blob, which is exactly why the counting forms
+        // above (`WHERE blob_hash = <hash>`) already exclude it for free —
+        // NULL equals nothing.
         let after: Option<String> = match cursor {
             Some(bytes) => Some(String::from_utf8(bytes).map_err(|e| {
                 DomainError::internal_error("BlobRefSource", format!("bad derived cursor: {e}"))
@@ -401,7 +410,8 @@ impl BlobReferenceSource for ContentDerivedReferenceSource {
 
         let rows: Vec<(String,)> = sqlx::query_as(
             "SELECT DISTINCT blob_hash FROM storage.content_derived_blobs
-              WHERE ($1::text IS NULL OR blob_hash > $1)
+              WHERE blob_hash IS NOT NULL
+                AND ($1::text IS NULL OR blob_hash > $1)
               ORDER BY blob_hash
               LIMIT $2",
         )
