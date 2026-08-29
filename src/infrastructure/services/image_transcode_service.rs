@@ -606,6 +606,65 @@ impl ImageTranscodeService {
 
 // ─── CPU-bound transcoding (runs on rayon, never on Tokio) ───────────────────
 
+#[cfg(test)]
+mod fixture_premise {
+    //! Pins the property `tests/api/transcode_cache.hurl` is built on: one
+    //! fixture WebP shrinks, one it does not.
+    //!
+    //! The negative half was hard to come by and the reason is worth
+    //! recording. Synthetic images do not reproduce it — flat colour goes
+    //! 4780 → 186 bytes, a gradient 24852 → 102, and even uniform RGBA
+    //! noise still loses by ~242 bytes at any size, a margin that is
+    //! constant in absolute terms and so never flips.
+    //!
+    //! Two things have to be true at once, and only real content does
+    //! both. The encoder here is the `image` crate's own minimal VP8L
+    //! writer, not libwebp — it does none of libwebp's search over
+    //! predictors, colour transforms and Huffman groups — so it only wins
+    //! where redundancy is extreme enough that any encoder finds it. And
+    //! the original has to be near PNG-optimal, which a screenshot from a
+    //! real capture tool is: a 2× Retina UI is long identical runs, flat
+    //! panels and sharp edges, exactly what PNG's scanline filters plus
+    //! zlib were designed around.
+    //!
+    //! So the negative verdict this service persists is partly a property
+    //! of THIS encoder, not of the content. Swapping in libwebp would
+    //! likely flip most of these to positive and leave the stored negative
+    //! rows stale — an encoder change has to purge them.
+
+    use super::*;
+
+    fn webp_len(path: &str) -> (usize, usize) {
+        let png = std::fs::read(path).expect("fixture present");
+        let webp =
+            transcode_image_blocking(&Bytes::from(png.clone()), "image/png", OutputFormat::WebP)
+                .expect("fixture decodes");
+        (png.len(), webp.len())
+    }
+
+    /// If this ever fails, the hurl scenario's negative half has silently
+    /// become a second positive test — it would still pass while checking
+    /// nothing it was written to check.
+    #[test]
+    fn screenshot_fixture_is_a_genuine_negative() {
+        let (png, webp) = webp_len("tests/fixtures/negative-cache-transcode.png");
+        assert!(
+            webp >= png,
+            "negative-cache-transcode.png no longer defeats the WebP encoder: \
+             png={png} webp={webp}"
+        );
+    }
+
+    #[test]
+    fn flat_colour_fixture_is_a_genuine_positive() {
+        let (png, webp) = webp_len("tests/fixtures/red-image.png");
+        assert!(
+            webp < png,
+            "red-image.png stopped shrinking: png={png} webp={webp}"
+        );
+    }
+}
+
 /// Perform actual image transcoding. This is a pure CPU function — safe to call
 /// from `rayon::spawn` or `spawn_blocking`.
 fn transcode_image_blocking(
