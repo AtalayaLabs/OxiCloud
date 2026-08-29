@@ -217,11 +217,25 @@ else
 fi
 
 # 6g. Locale JSON reachable AND is valid JSON with expected shape.
-locale_body=$(curl -sf "$base_url/locales/en.json" || echo '')
-if echo "$locale_body" | head -c 1 | grep -q '{'; then
-  pass "GET /locales/en.json → JSON body"
+#
+# `curl -w` captures status + content-type in the same call as the body
+# so a failure surfaces WHAT the server actually returned (an HTML SPA
+# fallback? a 404? a redirect?) instead of hiding it behind an empty
+# string. Avoids the `head -c 1 | grep` pipeline that emits a spurious
+# "broken pipe" under `set -euo pipefail`.
+locale_status=$(curl -s -o /tmp/oxicloud-bundled-locale-$$ -w '%{http_code}|%{content_type}' "$base_url/locales/en.json")
+locale_body=$(cat /tmp/oxicloud-bundled-locale-$$ 2>/dev/null || echo '')
+rm -f /tmp/oxicloud-bundled-locale-$$
+locale_code="${locale_status%%|*}"
+locale_ct="${locale_status##*|}"
+locale_first_char="${locale_body:0:1}"
+if [[ "$locale_code" == "200" ]] && [[ "$locale_first_char" == "{" ]]; then
+  pass "GET /locales/en.json → 200 JSON body (content-type=$locale_ct)"
 else
-  fail "GET /locales/en.json didn't return a JSON body"
+  fail "GET /locales/en.json → code=$locale_code content-type=$locale_ct first-char='$locale_first_char' body-len=${#locale_body}"
+  # Diagnostic dump — first 200 bytes so we can see what the server
+  # actually served (SPA fallback? empty? something else?).
+  echo "[bundled-binary]   body head: $(printf '%.200s' "$locale_body")" >&2
 fi
 
 # 6h. Immutable-asset cache header is applied by the `_app/immutable`
