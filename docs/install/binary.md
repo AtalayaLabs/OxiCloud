@@ -11,21 +11,27 @@ oxicloud` picks the right archive for your host automatically.
 
 ## Which tarball do I want?
 
-Every release attaches four tarballs plus a `SHA256SUMS` manifest. Pick
-by your host's architecture and OS:
+Every release attaches three tarballs plus a `SHA256SUMS` manifest.
+Pick by your host's architecture and OS:
 
 | Host | Tarball |
 |---|---|
 | Linux x86-64 (Intel / AMD servers, most VPS, WSL) | `oxicloud-<version>-x86_64-unknown-linux-musl.tar.gz` |
 | Linux ARM64 (Raspberry Pi 4/5, Ampere, Graviton, ARM servers) | `oxicloud-<version>-aarch64-unknown-linux-musl.tar.gz` |
 | macOS Apple Silicon (M-series) | `oxicloud-<version>-aarch64-apple-darwin.tar.gz` |
-| macOS Intel | `oxicloud-<version>-x86_64-apple-darwin.tar.gz` |
 
 The Linux tarballs link against musl, so they run on ANY glibc version
 — Alpine, Debian, Ubuntu, Fedora, Arch, Rocky, and every version in
 between. You never need to worry about `GLIBC_x.yy not found`.
 
-Windows and 32-bit ARM are not currently shipped.
+**Intel macOS, Windows, and 32-bit ARM are not currently shipped as
+prebuilt tarballs.** Intel Mac users have three fallbacks:
+
+1. `cargo install oxicloud --locked --features bundled-assets` from
+   source (needs the Rust toolchain).
+2. Docker: `docker pull --platform linux/amd64 ghcr.io/atalayalabs/oxicloud`.
+3. Run one of the two Linux musl tarballs inside a Linux VM
+   (Multipass, Lima, UTM, etc.).
 
 ## Hardware notes
 

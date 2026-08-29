@@ -433,14 +433,28 @@ its cache).
 
 ### 3. Target matrix — musl-only Linux
 
-Four triples cover the practical need:
+Three triples cover the practical need:
 
 | Triple | Runner + toolchain | Notes |
 |---|---|---|
-| `x86_64-unknown-linux-musl` | `ubuntu-22.04` running `rust:1.96-alpine3.24` container | Static, no glibc dep, runs on ANY Linux distro from Alpine to CentOS 7 to Debian 10 to Ubuntu 25.04. Parity with existing Docker image. |
-| `aarch64-unknown-linux-musl` | `ubuntu-22.04-arm` running `rust:1.96-alpine3.24` container | Native ARM64 runner (no QEMU), same container as amd64 for byte-for-byte parity. Pi 4/5, ARM servers, Graviton. |
+| `x86_64-unknown-linux-musl` | `ubuntu-22.04` + `musl-tools` + `rustup target add` | Static, no glibc dep, runs on ANY Linux distro from Alpine to CentOS 7 to Debian 10 to Ubuntu 25.04. Cross-compiled natively with glibc host + musl target; produces same output as the alpine-container path we originally planned. |
+| `aarch64-unknown-linux-musl` | `ubuntu-22.04-arm` + `musl-tools` + `rustup target add` | Same shape as the amd64 twin. Native ARM64 runner (no QEMU). Pi 4/5, ARM servers, Graviton. |
 | `aarch64-apple-darwin` | `macos-latest` | Apple Silicon, native |
-| `x86_64-apple-darwin` | `macos-13` | last Intel-runner tier |
+
+**Historical note — Intel macOS dropped 2026-08-29** (Apple phasing
+out `macos-13`; runner-availability tax exceeded value). Intel Mac
+users fall back to `cargo install`, Docker `--platform linux/amd64`,
+or one of the Linux musl tarballs inside a Linux VM.
+
+**Historical note — Alpine-container approach abandoned 2026-08-29**
+in favour of native cross-compile. Original plan built inside the
+Dockerfile's `rust:1.96-alpine3.24` for byte-for-byte parity with
+Docker; broke on `ubuntu-22.04-arm` because JS-based GitHub Actions
+(checkout, artifact steps, setup-node) can't run inside Alpine on
+ARM64 (Node.js binary requires glibc; the x64-Alpine workaround
+doesn't extend to arm64). Native `ubuntu-22.04` + `musl-tools` +
+`rustup target add` produces the same `--target *-musl` output
+without the container gymnastics.
 
 **Rationale for musl-only Linux**:
 
@@ -524,7 +538,6 @@ Per-target baseline for `release-binaries.yml`:
 | `x86_64-unknown-linux-musl` | `-C target-cpu=x86-64-v2` |
 | `aarch64-unknown-linux-musl` | `-C target-cpu=generic` (safe ARMv8-A baseline) |
 | `aarch64-apple-darwin` | `-C target-cpu=apple-m1` |
-| `x86_64-apple-darwin` | `-C target-cpu=x86-64-v2` |
 
 `x86-64-v2` covers ~2010+ processors (Nehalem, Bulldozer). Widest
 realistic install base for a "runs everywhere" tarball. Notably

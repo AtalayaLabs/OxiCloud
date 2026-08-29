@@ -87,8 +87,21 @@ jobs:
 
   # ── Stage 2: Build one binary per target ────────────────────────────
   #
-  # 4-way matrix — 2 musl-linux (native amd64 + arm64) + 2 macOS
-  # (Apple Silicon + last Intel runner tier). Windows is deferred.
+  # 3-way matrix — 2 musl-linux (native amd64 + arm64) + macOS Apple
+  # Silicon. Windows and Intel macOS are deferred:
+  #
+  #   * Intel macOS (`x86_64-apple-darwin` / macos-13 runner) — dropped
+  #     2026-08-29. Apple is phasing out Intel Macs from GitHub's hosted
+  #     runners; the `macos-13` tier is scheduled for deprecation and
+  #     queues stretched past 1 h during v0.9.0-rc1 build. Intel Mac
+  #     users have three fallbacks: (1) `cargo install oxicloud
+  #     --locked --features bundled-assets` from source, (2) `docker
+  #     pull --platform linux/amd64 ghcr.io/atalayalabs/oxicloud`,
+  #     (3) any of the two Linux musl tarballs via a Linux VM. The
+  #     Intel-Mac install base is small and shrinking (Apple Silicon
+  #     >90% of new sales) so first-class shipping isn't worth the
+  #     CI-availability tax.
+  #   * Windows — separate work when demand appears.
   #
   # All targets run natively on GitHub-hosted runners with the host's
   # glibc + rustup, then cross-compile to their target triple via
@@ -128,9 +141,6 @@ jobs:
           - triple: aarch64-apple-darwin
             runner: macos-latest
             rustflags: "-C target-cpu=apple-m1"
-          - triple: x86_64-apple-darwin
-            runner: macos-13
-            rustflags: "-C target-cpu=x86-64-v2"
     steps:
       - uses: actions/checkout@v4
         with:
