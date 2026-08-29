@@ -577,7 +577,32 @@ impl RecoverableJobHandler for ThumbDerivedImport {
                 let dir = self.thumbnails_root.join(size.dir_name());
                 let _ = fs::remove_dir(&dir).await;
             }
-            let _ = fs::remove_dir(&self.thumbnails_root).await;
+            // Report the root, rather than discarding the result as the size
+            // directories do. This is the one outcome an operator is waiting
+            // for — absence is what makes the fallback inert — and it fails
+            // for a reason worth naming: on macOS Finder leaves a `.DS_Store`
+            // in the root, so `remove_dir` refuses forever while every
+            // sidecar underneath is long gone.
+            match fs::remove_dir(&self.thumbnails_root).await {
+                Ok(()) => tracing::info!(
+                    target: "oxicloud::dedup",
+                    event = "thumb_derived_import.root_removed",
+                    run_id = %store.run_id(),
+                    path = %self.thumbnails_root.display(),
+                    "🧹 legacy sidecar directory removed — the fallback read path \
+                     is inert from the next restart"
+                ),
+                Err(e) => tracing::info!(
+                    target: "oxicloud::dedup",
+                    event = "thumb_derived_import.root_kept",
+                    run_id = %store.run_id(),
+                    path = %self.thumbnails_root.display(),
+                    reason = %e,
+                    "legacy sidecar directory not removed; if this says \
+                     'directory not empty' with no sidecars left, something \
+                     else put a file there (a .DS_Store, typically)"
+                ),
+            }
         }
 
         tracing::info!(

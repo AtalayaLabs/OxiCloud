@@ -17,6 +17,7 @@ use rayon::prelude::*;
  */
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::fs;
 use tokio::sync::Semaphore;
@@ -199,6 +200,15 @@ pub struct ThumbnailService {
     /// Timeout for thumbnail generation operations to prevent hanging on large images.
     /// Defaults to 30 seconds.
     generation_timeout: Duration,
+    /// Whether the legacy sidecar tier still exists on disk, probed once by
+    /// [`Self::initialize`]. `false` short-circuits every fallback read
+    /// without a syscall.
+    ///
+    /// Starts `true` so a service used without `initialize()` (tests, and any
+    /// future construction path) keeps the old behaviour: fall back and let
+    /// the open fail. Failing open is the safe direction — the wrong value
+    /// costs syscalls, the opposite would hide sidecars that are still there.
+    legacy_sidecars: AtomicBool,
 }
 
 impl ThumbnailService {
@@ -239,20 +249,93 @@ impl ThumbnailService {
             max_cache_bytes: max_cache_bytes as u64,
             decode_semaphore: Arc::new(Semaphore::new(max_concurrent_decodes())),
             generation_timeout: generation_timeout.unwrap_or(Duration::from_secs(30)),
+            legacy_sidecars: AtomicBool::new(true),
         }
     }
 
-    /// Initialize the thumbnail directories
+    /// Probe the legacy sidecar tier and record whether it still holds
+    /// anything.
+    ///
+    /// **This no longer creates the directories.** It used to `create_dir_all`
+    /// every size directory at boot, which silently undid the migration: the
+    /// import job removes them once drained, the next restart put them back,
+    /// and the absence step 10e gates on could never be reached. Nothing has
+    /// written a sidecar since step 10d2, so there is nothing to create them
+    /// for.
+    ///
+    /// The probe tests the SIZE directories, not the root. On macOS Finder
+    /// drops a `.DS_Store` in the root, which blocks `remove_dir` there
+    /// forever — gating on the root would keep the fallback alive on every
+    /// developer machine for a reason that has nothing to do with thumbnails.
+    /// If no size directory exists, no sidecar can exist.
+    ///
+    /// Result is cached for the process lifetime. It can only be stale in the
+    /// harmless direction: a drain completing mid-life leaves the flag `true`
+    /// until restart, which costs the same failed opens as today. It never
+    /// goes `false` while sidecars remain.
     pub async fn initialize(&self) -> std::io::Result<()> {
+        let mut present = false;
         for size in ThumbnailSize::all() {
-            let dir = self.thumbnails_root.join(size.dir_name());
-            fs::create_dir_all(&dir).await?;
+            if fs::metadata(self.thumbnails_root.join(size.dir_name()))
+                .await
+                .is_ok()
+            {
+                present = true;
+                break;
+            }
         }
-        tracing::info!(
-            "🖼️ Thumbnail service initialized at {:?}",
-            self.thumbnails_root
-        );
+        self.legacy_sidecars.store(present, Ordering::Relaxed);
+
+        // Asymmetric on purpose. "Present" is actionable and temporary — it
+        // names the two jobs that clear it and stops appearing once they
+        // have. "Absent" is the steady state of every drained deployment
+        // forever, so at info it would be pure boot noise.
+        if present {
+            tracing::info!(
+                target: "oxicloud::thumbnails",
+                event = "thumbnail.legacy_tier_present",
+                root = ?self.thumbnails_root,
+                "🖼️ legacy sidecar tier present — reads fall back to it. Run \
+                 thumb_derived_import and thumb_attached_import with ?repair=true \
+                 to drain it."
+            );
+        } else {
+            tracing::debug!(
+                target: "oxicloud::thumbnails",
+                event = "thumbnail.legacy_tier_absent",
+                root = ?self.thumbnails_root,
+                "🖼️ no legacy sidecar tier — fallback reads are skipped entirely"
+            );
+        }
         Ok(())
+    }
+
+    /// Whether the legacy sidecar tier is worth touching at all.
+    ///
+    /// This is the whole of step 10e. Removing the fallback in a release was
+    /// never workable: sidecars are local disk, so no release can know that
+    /// every instance has drained. Making the path self-disabling costs one
+    /// relaxed atomic load and needs no coordination — once a deployment has
+    /// drained, the code is inert and can be deleted whenever, or never.
+    fn legacy_tier_active(&self) -> bool {
+        self.legacy_sidecars.load(Ordering::Relaxed)
+    }
+
+    /// Read a legacy sidecar, or `None` when the tier is inert.
+    ///
+    /// Every sidecar read goes through here so the guard exists once rather
+    /// than at each of the dozen sites that used to build a path and read it.
+    async fn read_sidecar(&self, path: &Path) -> Option<Bytes> {
+        if !self.legacy_tier_active() {
+            return None;
+        }
+        fs::read(path).await.ok().map(Bytes::from)
+    }
+
+    /// Presence test with the same guard — for the paths that only need to
+    /// know whether a sidecar is there.
+    async fn sidecar_exists(&self, path: &Path) -> bool {
+        self.legacy_tier_active() && fs::metadata(path).await.is_ok()
     }
 
     /// Check if a file is an image that can have thumbnails
@@ -375,13 +458,13 @@ impl ThumbnailService {
             .entry(cache_key)
             .or_insert_with(async {
                 // 1. Try loading from disk
-                if let Ok(data) = fs::read(&thumb_path).await {
+                if let Some(bytes) = self.read_sidecar(&thumb_path).await {
                     tracing::debug!(
                         "💾 Thumbnail loaded from disk: {} {:?}",
                         file_id_owned,
                         size
                     );
-                    return Bytes::from(data);
+                    return bytes;
                 }
 
                 // 2. Generate thumbnail (CPU-bound, runs in spawn_blocking)
@@ -454,13 +537,13 @@ impl ThumbnailService {
             .cache
             .entry(cache_key)
             .or_insert_with(async move {
-                if let Ok(data) = fs::read(&thumb_path).await {
+                if let Some(bytes) = self.read_sidecar(&thumb_path).await {
                     tracing::debug!(
                         "💾 Thumbnail loaded from disk: {} {:?}",
                         file_id_owned,
                         size
                     );
-                    return Bytes::from(data);
+                    return bytes;
                 }
 
                 let Ok(_permit) = self.decode_semaphore.acquire().await else {
@@ -519,13 +602,13 @@ impl ThumbnailService {
             .cache
             .entry(cache_key)
             .or_insert_with(async move {
-                if let Ok(data) = fs::read(&thumb_path).await {
+                if let Some(bytes) = self.read_sidecar(&thumb_path).await {
                     tracing::debug!(
                         "💾 Thumbnail loaded from disk: {} {:?}",
                         file_id_owned,
                         size
                     );
-                    return Bytes::from(data);
+                    return bytes;
                 }
 
                 let Ok(_permit) = self.decode_semaphore.acquire().await else {
@@ -752,8 +835,7 @@ impl ThumbnailService {
             .thumbnails_root
             .join(size.dir_name())
             .join(format!("ext-{}.jpg", file_id));
-        if let Ok(data) = fs::read(&ext_path).await {
-            let bytes = Bytes::from(data);
+        if let Some(bytes) = self.read_sidecar(&ext_path).await {
             // Cache under a Jpeg-pinned key: these bytes are always JPEG, so the
             // key's format must describe them. Inserting under `cache_key` (whose
             // format is the *requested* format, possibly Webp) would store JPEG
@@ -847,8 +929,7 @@ impl ThumbnailService {
         // 5. Blob-hash sidecar — fallback for content not yet imported, and
         //    the only content tier a non-WebP request can reach.
         let thumb_path = self.get_thumbnail_path(hash, size, format);
-        if let Ok(data) = fs::read(&thumb_path).await {
-            let bytes = Bytes::from(data);
+        if let Some(bytes) = self.read_sidecar(&thumb_path).await {
             self.cache
                 .insert(
                     ThumbnailCacheKey::content(hash, size, format),
@@ -1271,7 +1352,7 @@ impl ThumbnailService {
                 for size in ThumbnailSize::all() {
                     let thumb_path =
                         self.get_thumbnail_path(&blob_hash, *size, ThumbnailFormat::Webp);
-                    if fs::metadata(&thumb_path).await.is_err() {
+                    if !self.sidecar_exists(&thumb_path).await {
                         ok = false;
                         break;
                     }
@@ -1282,10 +1363,10 @@ impl ThumbnailService {
                 for size in ThumbnailSize::all() {
                     let thumb_path =
                         self.get_thumbnail_path(&blob_hash, *size, ThumbnailFormat::Webp);
-                    if let Ok(data) = fs::read(&thumb_path).await {
+                    if let Some(bytes) = self.read_sidecar(&thumb_path).await {
                         let cache_key =
                             ThumbnailCacheKey::content(&blob_hash, *size, ThumbnailFormat::Webp);
-                        self.cache.insert(cache_key, Bytes::from(data)).await;
+                        self.cache.insert(cache_key, bytes).await;
                     }
                 }
                 tracing::info!(
@@ -1389,7 +1470,7 @@ impl ThumbnailService {
                 for size in ThumbnailSize::all() {
                     let thumb_path =
                         self.get_thumbnail_path(&blob_hash, *size, ThumbnailFormat::Webp);
-                    if fs::metadata(&thumb_path).await.is_err() {
+                    if !self.sidecar_exists(&thumb_path).await {
                         ok = false;
                         break;
                     }
@@ -1400,10 +1481,10 @@ impl ThumbnailService {
                 for size in ThumbnailSize::all() {
                     let thumb_path =
                         self.get_thumbnail_path(&blob_hash, *size, ThumbnailFormat::Webp);
-                    if let Ok(data) = fs::read(&thumb_path).await {
+                    if let Some(bytes) = self.read_sidecar(&thumb_path).await {
                         let cache_key =
                             ThumbnailCacheKey::content(&blob_hash, *size, ThumbnailFormat::Webp);
-                        self.cache.insert(cache_key, Bytes::from(data)).await;
+                        self.cache.insert(cache_key, bytes).await;
                     }
                 }
                 tracing::info!(
@@ -1523,7 +1604,7 @@ impl ThumbnailService {
                 let mut ok = true;
                 for size in ThumbnailSize::all() {
                     let p = self.get_thumbnail_path(&blob_hash, *size, ThumbnailFormat::Webp);
-                    if fs::metadata(&p).await.is_err() {
+                    if !self.sidecar_exists(&p).await {
                         ok = false;
                         break;
                     }
@@ -1533,10 +1614,10 @@ impl ThumbnailService {
             if all_exist {
                 for size in ThumbnailSize::all() {
                     let p = self.get_thumbnail_path(&blob_hash, *size, ThumbnailFormat::Webp);
-                    if let Ok(data) = fs::read(&p).await {
+                    if let Some(bytes) = self.read_sidecar(&p).await {
                         let key =
                             ThumbnailCacheKey::content(&blob_hash, *size, ThumbnailFormat::Webp);
-                        self.cache.insert(key, Bytes::from(data)).await;
+                        self.cache.insert(key, bytes).await;
                     }
                 }
                 return;
@@ -1664,7 +1745,7 @@ impl ThumbnailService {
                 .thumbnails_root
                 .join(size.dir_name())
                 .join(format!("ext-{}.jpg", file_id));
-            if fs::metadata(&ext_path).await.is_ok() {
+            if self.sidecar_exists(&ext_path).await {
                 let _ = fs::remove_file(&ext_path).await;
             }
         }
@@ -1682,7 +1763,7 @@ impl ThumbnailService {
             // Delete both the primary WebP and any lazily-materialized JPEG.
             for format in [ThumbnailFormat::Webp, ThumbnailFormat::Jpeg] {
                 let path = self.get_thumbnail_path(blob_hash, *size, format);
-                if fs::metadata(&path).await.is_ok() {
+                if self.sidecar_exists(&path).await {
                     let _ = fs::remove_file(&path).await;
                 }
             }
@@ -2115,6 +2196,66 @@ mod tier_selection_tests {
         tokio::fs::write(dir.join(format!("{HASH}.{}", FMT.ext())), bytes)
             .await
             .unwrap();
+    }
+
+    /// `initialize()` must not recreate what the import job removed.
+    ///
+    /// It used to `create_dir_all` every size directory at boot, so a drained
+    /// deployment grew its `.thumbnails/` tree back on the next restart and
+    /// the absence the fallback gates on was unreachable. Found on a sandbox
+    /// where the job had removed the directories and a restart put three
+    /// empty ones back.
+    #[tokio::test]
+    async fn initialize_does_not_recreate_a_drained_tier() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = service(tmp.path());
+
+        svc.initialize().await.unwrap();
+
+        assert!(
+            tokio::fs::metadata(tmp.path().join(".thumbnails"))
+                .await
+                .is_err(),
+            "boot recreated the legacy sidecar tree"
+        );
+        assert!(
+            !svc.legacy_tier_active(),
+            "no directories on disk, so the fallback must be inert"
+        );
+    }
+
+    /// The other direction: a tier that still holds sidecars stays live, or
+    /// the migration would strand every un-imported thumbnail.
+    #[tokio::test]
+    async fn initialize_keeps_the_fallback_when_sidecars_remain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = service(tmp.path());
+        write_blob_sidecar(tmp.path(), b"legacy").await;
+
+        svc.initialize().await.unwrap();
+
+        assert!(svc.legacy_tier_active());
+        let got = svc
+            .get_cached_thumbnail(FILE_ID, Some(HASH), SIZE, FMT, None)
+            .await;
+        assert_eq!(got.as_deref(), Some(&b"legacy"[..]));
+    }
+
+    /// With the tier inert, a sidecar on disk is deliberately NOT served —
+    /// the guard short-circuits before the read. This is what makes the
+    /// fallback free rather than merely cheap, and it is only sound because
+    /// nothing has written a sidecar since step 10d2.
+    #[tokio::test]
+    async fn inert_tier_skips_the_read_entirely() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = service(tmp.path());
+        write_blob_sidecar(tmp.path(), b"legacy").await;
+        svc.legacy_sidecars.store(false, Ordering::Relaxed);
+
+        let got = svc
+            .get_cached_thumbnail(FILE_ID, Some(HASH), SIZE, FMT, None)
+            .await;
+        assert!(got.is_none(), "inert tier must not touch the filesystem");
     }
 
     /// The bug from 2026-08-25: a render cached under the content key

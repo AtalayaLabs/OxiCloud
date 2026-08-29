@@ -1299,8 +1299,37 @@ Register it as a **scheduled tick**, not a boot-time trigger: it is
 idempotent and resumable, so periodic is safe, whereas walking a large
 `.thumbnails/` during startup delays readiness for nothing.
 
-The only remaining *release* is removing the fallback read path once the
-directories are empty — by which point no data is at stake.
+**Phase 4: the fallback disables itself.** *(revised 2026-08-29 —
+supersedes "the only remaining release is removing the fallback read
+path")*
+
+Removing the fallback in a release has the same flaw as gating deletion
+on an empty tail, one level up: sidecars are local disk, so no release
+can know that every instance has drained. Ed's framing is the answer —
+the only removal you can actually write is `if the tier is gone, return`.
+
+So `ThumbnailService::initialize` probes the size directories once at
+boot and stores the result. When absent, every fallback read
+short-circuits on a relaxed atomic load, no syscall. The code stays,
+costs nothing, and can be deleted whenever — or never. No coordination,
+no named release.
+
+Two things had to change for absence to be reachable at all:
+
+- **`initialize` no longer creates the directories.** It
+  `create_dir_all`-ed all three at every boot, so the job removed them
+  and the next restart put them back; the absence this gates on was
+  unreachable by construction. Nothing has written a sidecar since step
+  10d2, so there was nothing to create them for.
+- **The probe tests the size directories, not the root.** On macOS
+  Finder leaves a `.DS_Store` in the root, which blocks `remove_dir`
+  there permanently. Gating on the root would keep the fallback alive on
+  every developer machine for a reason unrelated to thumbnails. No size
+  directory means no sidecar.
+
+The root removal now reports its outcome instead of discarding it —
+it is the one result an operator is waiting for, and `.DS_Store` is a
+failure worth naming rather than a silent no-op.
 
 ### Prerequisite: one persist function (found 2026-08-26)
 
