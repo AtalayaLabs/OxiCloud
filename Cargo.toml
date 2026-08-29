@@ -4,6 +4,24 @@ version = "0.8.7"
 edition = "2024"
 default-run = "oxicloud"
 
+# `cargo binstall oxicloud` — fetches the prebuilt release tarball for the
+# host triple from GitHub Releases (attached by
+# `.github/workflows/release-binaries.yml`) instead of compiling from
+# source. Templates match the tarball naming
+# `oxicloud-<version>-<triple>.tar.gz` produced by that workflow.
+#
+# `pkg-fmt = "tgz"` — otherwise binstall guesses from the URL extension;
+# being explicit lets `cargo binstall oxicloud` succeed on Windows too
+# (where the URL string parsing differs).
+#
+# Once the first tagged release lands on GitHub, this becomes a one-line
+# install for anyone with the Rust toolchain who prefers not to build
+# from source and doesn't want Docker either.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/oxicloud-{ version }-{ target }.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "oxicloud-{ version }-{ target }/{ bin }{ binary-ext }"
+
 
 [dependencies]
 mimalloc = { version = "0.1.52", default-features = false }
@@ -979,11 +997,20 @@ opt-level = 1
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
 # Incremental compilation caches per-function IR fingerprints so a
-# small edit only recompiles what changed. On a single-crate rebuild
-# (oxicloud is one crate) the savings are modest — worth < the ~7 GB
-# incremental/ cache costs on disk. Rust-analyzer uses `cargo check`,
-# which has its own cache, so LSP responsiveness is unaffected.
-incremental = false
+# small edit only recompiles what changed. The `target/incremental/`
+# cache costs ~7 GB per profile, but at the current codebase size a
+# full rebuild is ~10 minutes and an incremental single-file edit is
+# seconds — the disk is worth it and then some. Rust-analyzer's own
+# `cargo check` cache is separate; LSP responsiveness is unaffected
+# either way.
+#
+# History: this was `= false` early on when the crate was small and
+# incremental's savings didn't cover the disk cost. Re-enabled
+# 2026-08-29 as the full-rebuild time crossed the "feels annoying"
+# threshold on typical dev-loop edits. If disk pressure ever spikes,
+# `cargo clean -p oxicloud --profile dev` clears the incremental cache
+# without wiping compiled deps.
+incremental = true
 
 [profile.bench]
 lto = "fat"
