@@ -1,0 +1,288 @@
+name: "Release Binaries (musl-linux + macOS)"
+
+# Per-run title shown in the Actions tab — makes it obvious at a
+# glance which tag is being packaged and whether a manual run is a
+# dry-run (build tarballs into workflow artifacts, DON'T attach to
+# any GitHub Release).
+run-name: >-
+  Release Binaries
+  ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '[DRY-RUN]' || '' }}
+  — ${{ github.event.inputs.version || github.ref_name }}
+
+# TRIGGERS — deliberately narrow. This workflow builds 4 platform
+# binaries (~15-25 min wall-clock, matrix of native runners) and
+# attaches them to a GitHub Release. Running on every push to main
+# would be gratuitous CI cost + noise — the point is to package
+# releases, not to sanity-check the tip. The bundled-binary
+# integration test in ci.yml already covers "does the embed still
+# work" on every PR.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Existing tag to package (e.g. v0.9.0). Must exist on origin.'
+        required: true
+      dry_run:
+        description: 'Dry run — build + upload tarballs as workflow artifacts, skip attaching to a Release. Use to smoke-test workflow edits without publishing.'
+        required: false
+        type: boolean
+        default: false
+
+# Concurrency key includes the tag ref so different tags don't cancel
+# each other; `cancel-in-progress: false` because tag builds are
+# unique + immutable — a superseded release build has nothing to cancel.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  # ── Stage 1: Build the SPA once, share across all platforms ─────────
+  #
+  # The SvelteKit build is arch-independent so a single ubuntu runner
+  # produces static-dist/ for every downstream binary-build matrix
+  # entry — saves ~2 min × 4 = 8 min vs building it per platform.
+  frontend-build:
+    name: Build SPA (Vite → static-dist/)
+    # Publish gate — same fork-friendly pattern as docker-publish.yml.
+    # Canonical repo always builds; forks stay quiet unless the fork
+    # owner opts in via `vars.ENABLE_BINARY_RELEASE=true` under Settings
+    # → Secrets and variables → Actions → Variables.
+    if: |
+      github.repository == 'AtalayaLabs/OxiCloud' ||
+      vars.ENABLE_BINARY_RELEASE == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Build the exact tag being packaged. `github.ref` is
+          # refs/tags/vX.Y.Z on push, refs/heads/... on dispatch (we
+          # override via `inputs.version` in that case).
+          ref: ${{ github.event.inputs.version || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.3.0
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build SPA
+        working-directory: frontend
+        run: npm ci && npm run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: static-dist
+          # Repo-root output (SvelteKit adapter-static's `pages:
+          # '../static-dist'`). Downstream jobs restore it to the same
+          # location so rust-embed's `#[folder = "static-dist/"]`
+          # resolves without any path juggling.
+          path: static-dist/
+          retention-days: 1
+
+  # ── Stage 2: Build one binary per target ────────────────────────────
+  #
+  # 3-way matrix — 2 musl-linux (native amd64 + arm64) + macOS Apple
+  # Silicon. Windows and Intel macOS are deferred:
+  #
+  #   * Intel macOS (`x86_64-apple-darwin` / macos-13 runner) — dropped
+  #     2026-08-29. Apple is phasing out Intel Macs from GitHub's hosted
+  #     runners; the `macos-13` tier is scheduled for deprecation and
+  #     queues stretched past 1 h during v0.9.0-rc1 build. Intel Mac
+  #     users have three fallbacks: (1) `cargo install oxicloud
+  #     --locked --features bundled-assets` from source, (2) `docker
+  #     pull --platform linux/amd64 ghcr.io/atalayalabs/oxicloud`,
+  #     (3) any of the two Linux musl tarballs via a Linux VM. The
+  #     Intel-Mac install base is small and shrinking (Apple Silicon
+  #     >90% of new sales) so first-class shipping isn't worth the
+  #     CI-availability tax.
+  #   * Windows — separate work when demand appears.
+  #
+  # All targets run natively on GitHub-hosted runners with the host's
+  # glibc + rustup, then cross-compile to their target triple via
+  # `rustup target add`. The musl-linux targets install `musl-tools`
+  # (which provides `musl-gcc`) so aws-lc-sys and friends can link
+  # against musl. macOS runners already have the apple-* triples
+  # pre-installed.
+  #
+  # History: an earlier draft ran Linux builds INSIDE the
+  # `rust:1.96-alpine3.24` container the Dockerfile uses — matched
+  # Docker image byte-for-byte. Broke on `ubuntu-22.04-arm`: GitHub
+  # Actions JS-based actions (`actions/checkout`, artifact steps,
+  # setup-node) can't run inside Alpine on ARM64 — the Node.js binary
+  # they ship depends on glibc, and the x64-Alpine workaround doesn't
+  # extend to arm64. Native ubuntu + musl-tools sidesteps the whole
+  # thing and produces the same output (both are `cargo build
+  # --target x86_64-unknown-linux-musl` / `aarch64-...-musl`).
+  binary-build:
+    name: Build ${{ matrix.triple }}
+    needs: frontend-build
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      # `fail-fast: false` — one platform's compile failure shouldn't
+      # cancel the other three. Partial releases are better than none.
+      fail-fast: false
+      matrix:
+        include:
+          - triple: x86_64-unknown-linux-musl
+            runner: ubuntu-22.04
+            rustflags: "-C target-cpu=x86-64-v2"
+          - triple: aarch64-unknown-linux-musl
+            runner: ubuntu-22.04-arm
+            # ARMv8-A baseline — covers Pi 4/5, Graviton, every 64-bit
+            # ARM Linux server. `generic` is rustc's neutral baseline.
+            rustflags: "-C target-cpu=generic"
+          - triple: aarch64-apple-darwin
+            runner: macos-latest
+            rustflags: "-C target-cpu=apple-m1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.version || github.ref }}
+
+      # musl-tools ships `musl-gcc` — the C-compiler wrapper that rustc
+      # invokes for -musl targets. Without it, `cargo build --target
+      # aarch64-unknown-linux-musl` fails with "linker `musl-gcc` not
+      # found" on any C-linked dep (aws-lc-sys, ring, sqlx's native
+      # backend when enabled).
+      - name: Install musl-tools (Linux only)
+        if: contains(matrix.triple, '-linux-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.triple }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Key by triple so the 4 targets don't share caches
+          # (different feature set + different target triple = different
+          # compiled artefacts).
+          key: ${{ matrix.triple }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: static-dist
+          path: static-dist/
+
+      # `--features bundled-assets` bakes static-dist/ into the binary
+      # via rust-embed. `--bin oxicloud` — the single binary the merge
+      # (Deliverable 1b) consolidated everything into.
+      - name: Build binary
+        env:
+          # Per-triple CPU baseline — release binaries target the widest
+          # realistic install base for their arch. See
+          # docs/plan/bundled-binary.md § 3.
+          RUSTFLAGS: ${{ matrix.rustflags }}
+          # Git metadata injection — build.rs reads these env vars to
+          # stamp GIT_HASH / GIT_BRANCH into the binary. Without them
+          # `oxicloud --version` reports "unknown".
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          cargo build --release --features bundled-assets --bin oxicloud --target ${{ matrix.triple }}
+
+      # Assemble the tarball layout documented in
+      # docs/plan/bundled-binary.md § 4: oxicloud + example.env +
+      # LICENSE + README-install.md, rooted under a per-version-per-
+      # triple directory so `tar xzf` lands cleanly.
+      - name: Package tarball
+        run: |
+          set -euo pipefail
+          # Version = tag stripped of leading `v` (workflow_dispatch)
+          # or ref_name stripped (push tag). Falls back to ref_name
+          # verbatim if neither strip matches.
+          RAW_REF="${{ github.event.inputs.version || github.ref_name }}"
+          VERSION="${RAW_REF#v}"
+          DIST="oxicloud-${VERSION}-${{ matrix.triple }}"
+          mkdir -p "dist/${DIST}"
+          cp "target/${{ matrix.triple }}/release/oxicloud" "dist/${DIST}/oxicloud"
+          cp example.env  "dist/${DIST}/example.env"
+          cp LICENSE      "dist/${DIST}/LICENSE"
+          # README-install.md may not exist yet in early releases —
+          # ship a stub that points at the docs site so users have
+          # something in the tarball. Deliverable 6 replaces it with
+          # a proper install guide.
+          if [ -f docs/install/binary.md ]; then
+            cp docs/install/binary.md "dist/${DIST}/README-install.md"
+          else
+            cat > "dist/${DIST}/README-install.md" <<'MD'
+          # OxiCloud — Installation
+
+          Full documentation: https://github.com/AtalayaLabs/OxiCloud/tree/main/docs
+
+          Quickstart:
+            1. Set DATABASE_URL to a PostgreSQL 13+ instance
+               (with pg_trgm + ltree extensions).
+            2. Copy example.env → .env, edit as needed.
+            3. Run ./oxicloud.
+
+          Optional: install ffmpeg for server-side video thumbnails
+          (or set OXICLOUD_ENABLE_VIDEO_THUMBNAILS=false to disable).
+          MD
+          fi
+          # Deterministic tar (owner/group/mtime pinned) so re-running
+          # the build produces byte-identical archives — helps with
+          # reproducible-build audits and cheap hash verification.
+          tar --owner=0 --group=0 -czf "dist/${DIST}.tar.gz" -C dist "${DIST}"
+          ls -la "dist/${DIST}.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tarball-${{ matrix.triple }}
+          path: dist/*.tar.gz
+          retention-days: 1
+
+  # ── Stage 3: Attach all tarballs + SHA256SUMS to the Release ────────
+  #
+  # `dry_run: true` (workflow_dispatch only) skips this job — the
+  # binary tarballs stay as workflow artifacts (accessible from the
+  # run page for 1 day) but nothing lands on any Release.
+  release:
+    name: Attach tarballs to GitHub Release
+    needs: binary-build
+    if: |
+      needs.binary-build.result == 'success' &&
+      (github.event_name != 'workflow_dispatch' || github.event.inputs.dry_run != 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tarball-*
+          path: dist/
+          merge-multiple: true
+
+      - name: Compute SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd dist
+          # Sort output for stable ordering across re-runs — the file
+          # doubles as a manifest an operator can `diff` between two
+          # release runs to prove they're identical.
+          sha256sum *.tar.gz | sort > SHA256SUMS
+          cat SHA256SUMS
+
+      # softprops/action-gh-release@v2 semantics:
+      #  - If the Release for this tag EXISTS (created by release.yml
+      #    which runs in parallel on the same tag push), attaches the
+      #    files to it.
+      #  - If it doesn't yet exist (race — release.yml still running),
+      #    creates a bare Release which release.yml then fills in with
+      #    notes when it finishes.
+      # Benign either way; see docs/plan/bundled-binary.md § 5
+      # "Parallel-fire behaviour on tag push".
+      - name: Attach to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -68,6 +68,16 @@ docker compose up -d
 
 Open `http://localhost:8086`.
 
+### Prebuilt binary
+
+Binary releases (Linux musl amd64/arm64, macOS Intel/Apple Silicon)
+are attached to every tagged release on GitHub — the whole SPA + all
+operator subcommands + migrations bake into a single self-contained
+executable. See [`docs/install/binary.md`](docs/install/binary.md) for
+the download / verify / systemd walkthrough.
+
+`cargo binstall oxicloud` works too once a release is out.
+
 ### Run from source
 
 Requires Rust 1.93+ and PostgreSQL.

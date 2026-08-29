@@ -168,7 +168,7 @@ pub async fn resolve_active_entry<'a>(
                     "auth.admin_settings.storage.active_backend_name = `{name}`, but no entry \
                      with that name is declared in OXICLOUD_STORAGE_ENTRIES. Available: [{available}]. \
                      Either add `{name}` back to your .env, or repair the DB pointer with:\n    \
-                     oxicloud --select-storage <one-of-the-available-names>"
+                     oxicloud storage select <one-of-the-available-names>"
                 ))
             }
         },

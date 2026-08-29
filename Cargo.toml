@@ -4,6 +4,24 @@ version = "0.8.7"
 edition = "2024"
 default-run = "oxicloud"
 
+# `cargo binstall oxicloud` — fetches the prebuilt release tarball for the
+# host triple from GitHub Releases (attached by
+# `.github/workflows/release-binaries.yml`) instead of compiling from
+# source. Templates match the tarball naming
+# `oxicloud-<version>-<triple>.tar.gz` produced by that workflow.
+#
+# `pkg-fmt = "tgz"` — otherwise binstall guesses from the URL extension;
+# being explicit lets `cargo binstall oxicloud` succeed on Windows too
+# (where the URL string parsing differs).
+#
+# Once the first tagged release lands on GitHub, this becomes a one-line
+# install for anyone with the Rust toolchain who prefers not to build
+# from source and doesn't want Docker either.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/oxicloud-{ version }-{ target }.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "oxicloud-{ version }-{ target }/{ bin }{ binary-ext }"
+
 
 [dependencies]
 mimalloc = { version = "0.1.52", default-features = false }
@@ -47,6 +65,25 @@ futures = "0.3.32"
 async-stream = "0.3.6"
 async-trait = "0.1.89"
 mime_guess = "2.0.5"
+# `rust-embed` — compile-time asset embedding for the `bundled-assets` feature.
+# Optional so default builds never pull it in.
+#
+# Features:
+# * `compression` — deflate-compress each embedded file at compile time; the
+#   handler decompresses lazily on first read (cached per-file in a
+#   `OnceCell`). Halves the on-disk contribution to the final binary.
+# * `include-exclude` — enables the `#[include]` / `#[exclude]` glob
+#   attributes on the derive.
+# * `debug-embed` — CRITICAL. Without this, debug builds read files from
+#   disk at runtime (dynamic mode) instead of compiling them in. The
+#   runtime read is fragile (`CARGO_MANIFEST_DIR` resolution + working
+#   directory dependency) and returned `total=0` for us on 2026-08-28.
+#   With `debug-embed`, both `cargo build` and `cargo build --release`
+#   produce a truly self-contained binary — the only sensible default
+#   for the `bundled-assets` feature.
+#
+# See src/interfaces/web/embedded.rs for the actual embed struct + handlers.
+rust-embed = { version = "8", features = ["compression", "include-exclude", "debug-embed"], optional = true }
 uuid = { version = "1.23.3", features = ["v4", "v7", "serde"] }
 thiserror = "2.0.18"
 arc-swap = "1.9"
@@ -168,6 +205,31 @@ faces-onnx = ["dep:ort", "dep:ndarray"]
 # `examples/` can measure them. Off by default — adds nothing to prod builds.
 # Run with: `cargo bench --features bench` / `cargo run --release --features bench --example bench_thumbnails_mem`.
 bench = []
+# Empty marker feature that gates the `generate-openapi` binary out of the
+# default release build set. `just openapi` flips it when the SPA needs a
+# regenerated openapi.json; end-user release builds never do. Kept separate
+# from `test_utils` for the same reason `load_seed_bin` is — enabling
+# `dev_tools` on the CLI must not perturb the oxicloud dependency graph.
+dev_tools = []
+# Bake the SvelteKit build output (`static-dist/` at repo root) into the
+# binary at compile time via `rust-embed`. Opt-in and off by default — the
+# regular `cargo build --release` still produces a filesystem-served
+# binary (matching the current Docker image where assets are separate
+# layers, and the `just dev` HMR loop where Vite serves live). Release
+# tarballs (`docs/plan/bundled-binary.md` § 2) build with this flag to
+# ship a single self-contained executable.
+#
+# Precedence rule preserved: even when this feature is on, if
+# OXICLOUD_STATIC_PATH points at an existing directory, that wins over
+# the embedded fallback — ops can override embedded assets for locale
+# patches or theming without a rebuild.
+#
+# Build-time invariant: `cargo build --features bundled-assets` requires
+# `static-dist/` at the repo root (SvelteKit adapter-static emits there
+# — `frontend/svelte.config.js`'s `pages: '../static-dist'`). `build.rs`
+# fails fast with a pointer to `(cd frontend && npm run build)` when the
+# directory is missing.
+bundled-assets = ["dep:rust-embed"]
 
 [dev-dependencies]
 criterion = "0.5"
@@ -186,19 +248,12 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(integration_tests)'] }
 [[bin]]
 name = "generate-openapi"
 path = "src/bin/generate-openapi.rs"
-
-[[bin]]
-name = "migrate-nfc-filenames"
-path = "src/bin/migrate-nfc-filenames.rs"
-
-[[bin]]
-name = "oxicloud-cli"
-path = "src/bin/oxicloud-cli.rs"
-# Operator toolbox — subcommand-driven CLI for tasks that don't belong
-# in the main server. Currently: `oxicloud-cli opaque {setup,reset}`.
-# Ships in the release Dockerfile as the single operator-facing helper
-# (replaces the earlier per-task `opaque-setup` bin, which was folded
-# into `oxicloud-cli opaque setup`).
+# Dev-only: regenerates `resources/gen/openapi.json` from the utoipa
+# `#[utoipa::path]` annotations in the API handlers. Gated behind the
+# `dev_tools` feature so `cargo build --release --bins` (and the prod
+# Dockerfile) skip it entirely — end users have no reason to run it.
+# Invoked by `just openapi`, which passes `--features dev_tools`.
+required-features = ["dev_tools"]
 
 [[bin]]
 name = "opaque-hurl-helper"
@@ -207,7 +262,10 @@ path = "src/bin/opaque-hurl-helper.rs"
 # handshake against a running server. Invoked from tests/api/run.sh
 # after opaque_substrate.hurl to cover the parts Hurl can't (OPRF
 # blinding, AKE nonces are per-attempt-random). Not shipped in the
-# release Dockerfile (nothing outside tests/ calls it).
+# release Dockerfile (nothing outside tests/ calls it). Gated behind
+# `test_utils` so `cargo build --release --bins` skips it; `run.sh`
+# enables the feature explicitly when building the helper on demand.
+required-features = ["test_utils"]
 
 [[bin]]
 name = "dpop-hurl-helper"
@@ -216,7 +274,8 @@ path = "src/bin/dpop-hurl-helper.rs"
 # the DPoP-Nonce challenge/retry loop, and covers the wire-protocol
 # scenarios Hurl can't express (per-request fresh jti/iat, replay
 # detection, malformed proofs, wrong htm/htu/alg/typ). Same
-# no-ship-in-release status as opaque-hurl-helper.
+# no-ship-in-release status as opaque-hurl-helper — gated identically.
+required-features = ["test_utils"]
 
 [[bin]]
 name = "load-seed"
@@ -938,11 +997,20 @@ opt-level = 1
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
 # Incremental compilation caches per-function IR fingerprints so a
-# small edit only recompiles what changed. On a single-crate rebuild
-# (oxicloud is one crate) the savings are modest — worth < the ~7 GB
-# incremental/ cache costs on disk. Rust-analyzer uses `cargo check`,
-# which has its own cache, so LSP responsiveness is unaffected.
-incremental = false
+# small edit only recompiles what changed. The `target/incremental/`
+# cache costs ~7 GB per profile, but at the current codebase size a
+# full rebuild is ~10 minutes and an incremental single-file edit is
+# seconds — the disk is worth it and then some. Rust-analyzer's own
+# `cargo check` cache is separate; LSP responsiveness is unaffected
+# either way.
+#
+# History: this was `= false` early on when the crate was small and
+# incremental's savings didn't cover the disk cost. Re-enabled
+# 2026-08-29 as the full-rebuild time crossed the "feels annoying"
+# threshold on typical dev-loop edits. If disk pressure ever spikes,
+# `cargo clean -p oxicloud --profile dev` clears the incremental cache
+# without wiping compiled deps.
+incremental = true
 
 [profile.bench]
 lto = "fat"

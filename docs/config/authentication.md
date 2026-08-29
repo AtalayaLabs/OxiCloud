@@ -135,12 +135,12 @@ Password-using deployments will opt in via three env vars:
 2. **`OXICLOUD_AUTH_OPAQUE_SERVER_SETUP`** — generated once and persisted like your JWT secret. Rotating this invalidates every user's registration; treat it as one of the crown jewels. Two ways to generate:
    ```bash
    # Docker (recommended in production — no toolchain needed):
-   docker run --rm ghcr.io/atalayalabs/oxicloud:latest oxicloud-cli opaque setup
+   docker run --rm ghcr.io/atalayalabs/oxicloud:latest oxicloud opaque setup
 
    # From a source checkout:
-   cargo run --bin oxicloud-cli -- opaque setup
+   cargo run --bin oxicloud -- opaque setup
    ```
-   Both print the base64 value on stdout (with guidance on stderr, so shell pipelines like `$(docker run ... oxicloud-cli opaque setup)` capture cleanly).
+   Both print the base64 value on stdout (with guidance on stderr, so shell pipelines like `$(docker run ... oxicloud opaque setup)` capture cleanly).
 3. **`OXICLOUD_AUTH_OPAQUE_KSF_*`** — client-side Argon2id key-stretching cost. Defaults (46 MiB / 1 iter / 1 lane) match OWASP's interactive-auth recommendation. See the next section for the rationale + when to bump.
 
 The `OXICLOUD_HASH_*` variables (server-side legacy Argon2) and `OXICLOUD_AUTH_OPAQUE_KSF_*` (client-side OPAQUE Argon2) are intentionally separate: the server-side path is RAM-bounded by concurrent-login traffic and needs to stay modest; the client-side path is single-user per attempt and can be tuned independently. Tuning them together would force a bad compromise in one direction or the other.
