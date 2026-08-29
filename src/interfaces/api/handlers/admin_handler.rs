@@ -159,6 +159,11 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         // `/blob/{hash}`) stay at `/api/dedup/*`.
         .route("/dedup/stats", get(get_stats))
         .route("/dedup/recalculate", post(recalculate_stats))
+        // Transcode effectiveness. Nothing exposed these before, so there
+        // was no way to tell a served-from-cache response from one that
+        // re-ran the decode + encode — not from the outside, and not from
+        // a test either.
+        .route("/transcode/stats", get(get_transcode_stats))
         // SMTP diagnostics
         .route("/smtp/info", get(get_smtp_info))
         .route("/smtp/test", post(send_smtp_test))
@@ -2502,6 +2507,47 @@ pub async fn delete_drive_admin(
 ///
 /// Production endpoint, always on. Read-only, so no audit line —
 /// the standard admin-middleware auth check is enough.
+/// `GET /api/admin/transcode/stats` — WebP transcode effectiveness.
+///
+/// The four counters distinguish where a response came from, which is
+/// otherwise invisible: `transcodes` is work actually done, while
+/// `cache_hits` (in-memory, keyed by file id) and `disk_hits` (the
+/// durable content-keyed tier, plus the legacy local cache) are work
+/// avoided. A rising `transcodes` against a flat `disk_hits` means the
+/// derived tier is not being consulted — which is exactly the
+/// regression a migration can introduce silently.
+///
+/// `bytes_saved` counts only successful transcodes; images the encoder
+/// could not shrink contribute nothing to it and are remembered as
+/// negative rows instead.
+///
+/// Read-only, so no audit line — the admin middleware gate is enough.
+#[utoipa::path(
+    get,
+    path = "/api/admin/transcode/stats",
+    responses(
+        (status = 200, description = "Transcode statistics"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn get_transcode_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let s = state.core.image_transcode_service.get_stats().await;
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "cache_hits":       s.cache_hits,
+            "disk_hits":        s.disk_hits,
+            "transcodes":       s.transcodes,
+            "bytes_saved":      s.bytes_saved,
+            "transcode_errors": s.transcode_errors,
+        })),
+    )
+        .into_response()
+}
+
 #[utoipa::path(
     get,
     path = "/api/admin/jobs",
