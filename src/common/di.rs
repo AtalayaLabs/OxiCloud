@@ -2835,6 +2835,108 @@ impl AppServiceFactory {
             registered
         );
 
+        // `OXICLOUD_STARTUP_JOBS` — dispatch each named job once, now.
+        //
+        // Exists for the migration jobs. Their scheduled ticks import but
+        // never delete (`repair` defaults false, per no-silent-auto-repair),
+        // so a deployment whose operator never opens the admin panel keeps
+        // importing sidecars it already imported and never drains the
+        // directory. Naming the job in configuration IS the deliberate
+        // consent that rule asks for; it is simply given once, at boot,
+        // rather than per run.
+        //
+        // Validated here, dispatched in the background:
+        //
+        // * Unknown names **panic**. The registry is fully populated at this
+        //   point, so a name that does not resolve is a typo or a rename, and
+        //   the failure mode of ignoring it is a migration that silently
+        //   never runs. Fail at boot, where the operator is watching.
+        // * Dispatch is `tokio::spawn` — readiness must never wait on a job
+        //   that walks a filesystem for hours.
+        // * Sequential within the task, not concurrent: these jobs contend
+        //   for the same directory and DB, and the exclusivity gate would
+        //   turn overlap into a skipped run rather than a queued one.
+        // * Safe on every boot, including a crash loop: each is idempotent
+        //   and resumable, and once drained a run is a `read_dir` that
+        //   returns nothing.
+        //
+        // **Killed mid-run, this resumes from the cursor.** The boot
+        // recovery sweep runs earlier in this function and flips every row
+        // the dead process abandoned in `Running` to `Paused`, keeping its
+        // cursor. `run_or_resume` then picks Resume over a fresh start, so
+        // a job interrupted by a restart continues where it stopped rather
+        // than rescanning from the beginning — and a long migration
+        // completes across however many restarts it takes.
+        //
+        // That is a deliberate exception to `boot_recovery_sweep`'s "we do
+        // not auto-resume; operators trigger the resume explicitly". The
+        // rule exists so a restart never silently resumes work nobody
+        // asked for. Here somebody did ask, in configuration, and the whole
+        // point of the option is not having to ask again. The exception is
+        // scoped to the named jobs; every other paused run still waits for
+        // an operator.
+        //
+        // The resumed run keeps the flags it started with — `repair` and
+        // `deep` are persisted to the run's `params` on the fresh open and
+        // read back on resume — so editing the config mid-migration does
+        // not retroactively change a run already in flight.
+        if !self.config.startup_jobs.is_empty() {
+            let mut planned = Vec::with_capacity(self.config.startup_jobs.len());
+            for job in &self.config.startup_jobs {
+                if app_state.core.job_registry.get(&job.name).await.is_none() {
+                    panic!(
+                        "OXICLOUD_STARTUP_JOBS names `{}`, which is not a registered job. \
+                         Check the spelling against GET /api/admin/jobs.",
+                        job.name
+                    );
+                }
+                planned.push(job.clone());
+            }
+
+            let registry = app_state.core.job_registry.clone();
+            tokio::spawn(async move {
+                for job in planned {
+                    // Audited, not merely logged: a startup job may delete
+                    // files, and "who asked for this" must be answerable
+                    // afterwards. The answer is the configuration, which is
+                    // exactly what this line records.
+                    tracing::info!(
+                        target: "audit",
+                        event = "job.startup_trigger",
+                        job = %job.name,
+                        force = job.args.force,
+                        deep = job.args.deep,
+                        repair = job.args.repair,
+                        storage = ?job.args.storage,
+                        "👮🏻‍♂️ dispatching `{}` from OXICLOUD_STARTUP_JOBS",
+                        job.name,
+                    );
+                    match registry.trigger(&job.name, &job.args).await {
+                        Some(outcome) => tracing::info!(
+                            target: "oxicloud::scheduler",
+                            event = "job.startup_completed",
+                            job = %job.name,
+                            outcome = outcome.kind(),
+                            "startup job `{}` finished ({})",
+                            job.name,
+                            outcome.kind(),
+                        ),
+                        // Unreachable — the name was resolved above, and
+                        // nothing unregisters. Logged rather than panicking
+                        // because this is a detached task by then.
+                        None => tracing::error!(
+                            target: "oxicloud::scheduler",
+                            event = "job.startup_vanished",
+                            job = %job.name,
+                            "startup job `{}` disappeared from the registry between \
+                             validation and dispatch",
+                            job.name,
+                        ),
+                    }
+                }
+            });
+        }
+
         Ok(app_state)
     }
 }

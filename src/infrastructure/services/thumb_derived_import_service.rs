@@ -48,6 +48,15 @@ use crate::infrastructure::services::dedup_service::DedupService;
 
 pub const THUMB_DERIVED_IMPORT_JOB_NAME: &str = "thumb_derived_import";
 
+/// Where the legacy tree is moved when it cannot be deleted.
+///
+/// Deletion is always attempted first — this is the fallback for the one
+/// case `remove_dir` refuses: a file that is not a sidecar sitting in the
+/// directory (Finder's `.DS_Store`, most often). What matters to the read
+/// path is that `.thumbnails` stops existing, so moving the tree aside
+/// achieves the same thing while preserving whatever the stray file was.
+pub(crate) const PARKED_DIR_NAME: &str = ".thumbnails.migrated";
+
 /// Record a sidecar deletion on the audit channel.
 ///
 /// Both import jobs delete user-visible files during a one-way migration, so
@@ -182,13 +191,36 @@ impl ThumbDerivedImport {
         stored_hash: &str,
         path: &std::path::Path,
     ) -> bool {
-        let Ok(meta) = fs::metadata(path).await else {
+        // Compare CONTENT, not length.
+        //
+        // This is the only thing standing between a storage bug and
+        // permanent loss — `thumb_attached_import` deletes user-uploaded
+        // previews that have no render path to rebuild them, and with the
+        // startup-job default it does so on first boot after an upgrade,
+        // in every deployment at once. A guard that load-bearing should
+        // prove the bytes are the bytes.
+        //
+        // Length alone did not. A blob of the right size and the wrong
+        // content passed: a key-mapping bug handing back another file's
+        // preview at the same length would have deleted the original and
+        // kept the impostor, and thumbnails cluster tightly enough in size
+        // for that to be a real coincidence rather than a theoretical one.
+        //
+        // Re-reading the sidecar costs a few KB of I/O, once per file ever
+        // migrated. The import path already has these bytes in hand, but
+        // taking them as an argument would leave the already-imported path
+        // (which has no bytes, only a file) on a weaker check — one code
+        // path, one guarantee.
+        let Ok(sidecar) = fs::read(path).await else {
             return false;
         };
+        // `read_blob_bytes` streams from the backend, reassembling chunks
+        // if the blob is chunked — no cache sits in front of it, so this
+        // proves durability and not merely that a write was acknowledged.
         let Ok(stored) = dedup.read_blob_bytes(stored_hash).await else {
             return false;
         };
-        if stored.is_empty() || stored.len() as u64 != meta.len() {
+        if stored.is_empty() || stored.as_ref() != sidecar.as_slice() {
             return false;
         }
         if fs::remove_file(path).await.is_err() {
@@ -592,16 +624,47 @@ impl RecoverableJobHandler for ThumbDerivedImport {
                     "🧹 legacy sidecar directory removed — the fallback read path \
                      is inert from the next restart"
                 ),
-                Err(e) => tracing::info!(
-                    target: "oxicloud::dedup",
-                    event = "thumb_derived_import.root_kept",
-                    run_id = %store.run_id(),
-                    path = %self.thumbnails_root.display(),
-                    reason = %e,
-                    "legacy sidecar directory not removed; if this says \
-                     'directory not empty' with no sidecars left, something \
-                     else put a file there (a .DS_Store, typically)"
-                ),
+                // Something unrelated to thumbnails is in the directory, so
+                // `remove_dir` refuses. On macOS that is Finder's `.DS_Store`,
+                // and it would otherwise keep the fallback alive forever on
+                // every developer machine.
+                //
+                // Move the whole tree aside instead. The sidecars are already
+                // imported and verified, so nothing here is load-bearing; what
+                // matters is that `.thumbnails` stops existing, because its
+                // absence is what the read path tests. Renaming preserves the
+                // stray file for whoever put it there, and keeps the check a
+                // single `stat` rather than a directory walk.
+                Err(_) => {
+                    // `with_file_name`, NOT `with_extension`: the directory is
+                    // `.thumbnails`, and a leading-dot name has no extension as
+                    // far as `Path` is concerned — its whole name is the stem.
+                    // `with_extension("thumbnails.migrated")` would have
+                    // produced `.thumbnails.thumbnails.migrated`.
+                    let parked = self.thumbnails_root.with_file_name(PARKED_DIR_NAME);
+                    match fs::rename(&self.thumbnails_root, &parked).await {
+                        Ok(()) => tracing::info!(
+                            target: "oxicloud::dedup",
+                            event = "thumb_derived_import.root_parked",
+                            run_id = %store.run_id(),
+                            from = %self.thumbnails_root.display(),
+                            to = %parked.display(),
+                            "🧹 legacy sidecar directory could not be removed (a \
+                             non-sidecar file remains) — moved aside instead. The \
+                             fallback read path is inert from the next restart; \
+                             the directory is safe to delete by hand."
+                        ),
+                        Err(e) => tracing::warn!(
+                            target: "oxicloud::dedup",
+                            event = "thumb_derived_import.root_kept",
+                            run_id = %store.run_id(),
+                            path = %self.thumbnails_root.display(),
+                            reason = %e,
+                            "legacy sidecar directory could be neither removed nor \
+                             moved aside — the fallback read path stays live"
+                        ),
+                    }
+                }
             }
         }
 
@@ -645,6 +708,24 @@ pub(crate) mod tests {
     const H: &str = "0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9";
     /// A second hash, for the JPEG sidecar in `legacy_tree`.
     const H2: &str = "c222222222222222222222222222222222222222222222222222222222222222";
+
+    /// The park path must be a SIBLING of `.thumbnails`, not a suffixed
+    /// child of its name.
+    ///
+    /// `Path::with_extension` looks right and is wrong here: a leading-dot
+    /// name has no extension as far as `Path` is concerned — `.thumbnails`
+    /// is entirely stem — so `with_extension("thumbnails.migrated")`
+    /// yields `.thumbnails.thumbnails.migrated`. The rename would still
+    /// have "worked", leaving a directory nobody documented and an
+    /// operator hunting for the name the runbook promised.
+    #[test]
+    fn parked_directory_is_a_sibling_named_thumbnails_migrated() {
+        let root = std::path::Path::new("/srv/storage/.thumbnails");
+        assert_eq!(
+            root.with_file_name(PARKED_DIR_NAME),
+            std::path::Path::new("/srv/storage/.thumbnails.migrated"),
+        );
+    }
 
     /// BOTH codecs are claimed, and the format comes from the extension.
     ///

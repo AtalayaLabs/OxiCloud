@@ -860,6 +860,31 @@
 									{mutatesLabel(job)}
 								</span>
 							{/if}
+							<!-- Configured to fire at boot. Called out because the
+							     row is otherwise silent about the most consequential
+							     fact on it: with repair on, this job deletes files
+							     on every restart, not only when someone clicks Run.
+							     Warn-coloured in that case, neutral otherwise. -->
+							{#if job.startup}
+								<span
+									class="jobs-panel__pill"
+									class:jobs-panel__pill--paused={job.startup.repair}
+									class:jobs-panel__pill--neutral={!job.startup.repair}
+									title={job.startup.repair
+										? t(
+												'admin.jobs.startup_repair_tooltip',
+												'Configured in OXICLOUD_STARTUP_JOBS to run in repair mode at every boot.'
+											)
+										: t(
+												'admin.jobs.startup_tooltip',
+												'Configured in OXICLOUD_STARTUP_JOBS to run at every boot.'
+											)}
+								>
+									{job.startup.repair
+										? t('admin.jobs.startup_repair', 'at boot · repair')
+										: t('admin.jobs.startup', 'at boot')}
+								</span>
+							{/if}
 						</td>
 						<td class="jobs-panel__muted">{cadenceLabel(job)}</td>
 						<td class="jobs-panel__muted">{timeAgo(job.last_run_at)}</td>

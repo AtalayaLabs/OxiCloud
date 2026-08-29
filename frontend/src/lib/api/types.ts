@@ -663,6 +663,19 @@ export interface JobSummary {
 	 *  for this job. Distinct from `running` — a paused run is
 	 *  resumable via the same trigger endpoint. */
 	paused_run?: PausedRunBrief;
+	/** Present iff `OXICLOUD_STARTUP_JOBS` names this job — the flags it
+	 *  is dispatched with at every boot. Worth showing: a job configured
+	 *  with `repair: true` deletes on every restart, and the row would
+	 *  otherwise suggest that only happens when someone clicks Run. */
+	startup?: StartupTrigger;
+}
+
+/** Flags a job configured in `OXICLOUD_STARTUP_JOBS` runs with. */
+export interface StartupTrigger {
+	force: boolean;
+	deep: boolean;
+	repair: boolean;
+	storage?: string;
 }
 
 /**

@@ -236,11 +236,12 @@ impl JobRegistry {
                     last_outcome,
                     running: state.current_run_start.is_some(),
                     recoverable: entry.handler.is_recoverable(),
-                    // Populated in `list_jobs` handler via a single
-                    // DB round-trip — kept out of the registry
-                    // snapshot to avoid pulling a DB dependency into
-                    // the in-memory scheduler state.
+                    // Both populated in the `list_jobs` handler — one
+                    // from a DB round-trip, one from AppConfig. Kept
+                    // out of the registry snapshot so the in-memory
+                    // scheduler state pulls in neither dependency.
                     paused_run: None,
+                    startup: None,
                 }
             })
             .collect()
@@ -346,6 +347,32 @@ pub struct JobSummary {
     /// picks Resume when the latest row is Paused).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paused_run: Option<PausedRunBrief>,
+    /// Populated iff `OXICLOUD_STARTUP_JOBS` names this job — the flags
+    /// it will be dispatched with at every boot.
+    ///
+    /// Surfaced because the panel would otherwise be silently wrong
+    /// about the most consequential thing on the row: a job configured
+    /// with `repair=true` deletes files on every restart, and reading
+    /// the row you would think that only happens when someone clicks.
+    /// Filled by the `list_jobs` handler, which has the config; the
+    /// registry deliberately doesn't.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub startup: Option<StartupTrigger>,
+}
+
+/// The flags a job configured in `OXICLOUD_STARTUP_JOBS` runs with.
+///
+/// Mirrors `JobRunArgs` on the wire rather than embedding it, because
+/// this is an API shape the admin panel switches on, and `JobRunArgs`
+/// is an internal dispatch type free to change without a frontend
+/// release.
+#[derive(Debug, Clone, Serialize)]
+pub struct StartupTrigger {
+    pub force: bool,
+    pub deep: bool,
+    pub repair: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage: Option<String>,
 }
 
 /// Enough info about a paused recoverable run for the admin panel to

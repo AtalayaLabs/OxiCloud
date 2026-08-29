@@ -263,27 +263,19 @@ impl ThumbnailService {
     /// written a sidecar since step 10d2, so there is nothing to create them
     /// for.
     ///
-    /// The probe tests the SIZE directories, not the root. On macOS Finder
-    /// drops a `.DS_Store` in the root, which blocks `remove_dir` there
-    /// forever — gating on the root would keep the fallback alive on every
-    /// developer machine for a reason that has nothing to do with thumbnails.
-    /// If no size directory exists, no sidecar can exist.
+    /// One `stat` on the root. The import job guarantees that is enough: it
+    /// removes the directory once drained, and when something unrelated
+    /// keeps `remove_dir` from succeeding — Finder's `.DS_Store`, typically
+    /// — it renames the tree to `.thumbnails.migrated` rather than leaving
+    /// it in place. So `.thumbnails` existing always means "there may be
+    /// sidecars under here", and a stray file cannot pin the fallback open.
     ///
     /// Result is cached for the process lifetime. It can only be stale in the
     /// harmless direction: a drain completing mid-life leaves the flag `true`
     /// until restart, which costs the same failed opens as today. It never
     /// goes `false` while sidecars remain.
     pub async fn initialize(&self) -> std::io::Result<()> {
-        let mut present = false;
-        for size in ThumbnailSize::all() {
-            if fs::metadata(self.thumbnails_root.join(size.dir_name()))
-                .await
-                .is_ok()
-            {
-                present = true;
-                break;
-            }
-        }
+        let present = fs::metadata(&self.thumbnails_root).await.is_ok();
         self.legacy_sidecars.store(present, Ordering::Relaxed);
 
         // Asymmetric on purpose. "Present" is actionable and temporary — it
