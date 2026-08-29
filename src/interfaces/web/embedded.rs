@@ -108,9 +108,8 @@ fn asset_response(path: &str, bytes: std::borrow::Cow<'static, [u8]>) -> Respons
     let mut resp = Response::new(Body::from(bytes.into_owned()));
     resp.headers_mut().insert(
         CONTENT_TYPE,
-        HeaderValue::from_str(mime.as_ref()).unwrap_or(HeaderValue::from_static(
-            "application/octet-stream",
-        )),
+        HeaderValue::from_str(mime.as_ref())
+            .unwrap_or(HeaderValue::from_static("application/octet-stream")),
     );
     resp
 }
@@ -119,8 +118,10 @@ fn spa_shell_response() -> Response {
     match EmbeddedAssets::get("index.html") {
         Some(shell) => {
             let mut resp = Response::new(Body::from(shell.data.into_owned()));
-            resp.headers_mut()
-                .insert(CONTENT_TYPE, HeaderValue::from_static("text/html; charset=utf-8"));
+            resp.headers_mut().insert(
+                CONTENT_TYPE,
+                HeaderValue::from_static("text/html; charset=utf-8"),
+            );
             // Belt: the parent module also stamps this on unset,
             // but stamp it here too so the shell never accidentally
             // ends up cacheable in front of a deploy.

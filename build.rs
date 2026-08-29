@@ -45,15 +45,9 @@ fn bundled_assets_guard() {
         // when cargo's default output is quiet; the panic below turns
         // them into a compile-time error so the missing prerequisite
         // can't slip past a distracted dev.
-        println!(
-            "cargo:warning=`bundled-assets` feature requires static-dist/ at the repo root."
-        );
-        println!(
-            "cargo:warning=Build the SvelteKit SPA first:  (cd frontend && npm run build)"
-        );
-        println!(
-            "cargo:warning=Or via the workspace shortcut:   just fe-build"
-        );
+        println!("cargo:warning=`bundled-assets` feature requires static-dist/ at the repo root.");
+        println!("cargo:warning=Build the SvelteKit SPA first:  (cd frontend && npm run build)");
+        println!("cargo:warning=Or via the workspace shortcut:   just fe-build");
         panic!(
             "build.rs: missing {}/index.html — see the cargo:warning lines above",
             dist.display()

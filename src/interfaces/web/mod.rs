@@ -126,10 +126,7 @@ pub fn resolve_static_path(config: &AppConfig) -> PathBuf {
 /// Caching: content-hashed assets under `/_app/immutable` are cached forever;
 /// everything else — crucially the `index.html` shell — is `no-cache` so a deploy
 /// can't leave a stale app pinned in browsers.
-pub fn create_web_routes(
-    app_state: Arc<AppState>,
-    source: StaticSource,
-) -> Router<Arc<AppState>> {
+pub fn create_web_routes(app_state: Arc<AppState>, source: StaticSource) -> Router<Arc<AppState>> {
     // `source` is resolved ONCE at boot in `main.rs::run()` and passed
     // in — see the sequence there. Previously this fn called
     // `AppConfig::from_env()` + `resolve_static_source(&config)` itself

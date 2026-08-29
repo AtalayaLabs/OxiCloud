@@ -252,10 +252,10 @@ front-design:
 #                                     real browser, which the curl-driven
 #                                     suite above can't observe.
 #
-# Same chain runs in CI under the `api-test` job in
+# Same chain runs in CI under the `test-api` job in
 # .github/workflows/ci.yml; keep the order in sync so a local pass means
 # CI passes.
-api-test:
+test-api:
     #!/usr/bin/env bash
     set -x
     set -euo pipefail
@@ -270,6 +270,12 @@ api-test:
         echo "XXX litmus webdav not found, ignore test"
     fi
 
+# backward compat
+api-test: test-api
+
+test-bundle:
+    ./tests/bundled-binary/run.sh
+
 # CalDAV client-driven conformance suite.
 #
 # Drives OxiCloud through the maintained `python-caldav` client library
@@ -279,9 +285,9 @@ api-test:
 # (RFC 5545 §3.8.4.4), and all-day masters (the shape #528 was filed
 # against).
 #
-# Not chained into `api-test` because it needs python3; run explicitly.
+# Not chained into `test-api` because it needs python3; run explicitly.
 # The orchestrator spawns its own postgres + server on port 8091 so it
-# can run in parallel with api-test/webdav.
+# can run in parallel with test-api/webdav.
 #
 # Runs `cargo build` first so the orchestrator always sees a fresh
 # binary. run-pycaldav.sh itself doesn't rebuild — it uses whatever
@@ -301,7 +307,7 @@ test-caldav:
 
 # Manual, human-run: launches OxiCloud with OIDC as the ONLY login method
 # (fake IdP on :1081, server on :8090) and waits for you to eyeball the
-# /login auto-redirect in a real browser. Not part of `just api-test` —
+# /login auto-redirect in a real browser. Not part of `just test-api` —
 # there's no automated assertion here, it's a visual check. Ctrl-C to stop.
 #oidc-manual-sso-only:
 #    bash tests/oidc/run-manual-sso-only.sh
@@ -383,4 +389,4 @@ test-docker-tags:
 
 # Check and test everything
 # recommanded before pull request
-pre-pull-request: test-docker-tags check fe-check audit check-migrations test test-integration fe-test build api-test fe-build-e2e  front-test
+pre-pull-request: test-docker-tags check fe-check audit check-migrations test test-integration fe-test build test-bundle test-api fe-build-e2e  front-test
