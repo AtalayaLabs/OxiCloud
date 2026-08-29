@@ -90,11 +90,22 @@ jobs:
   # 4-way matrix — 2 musl-linux (native amd64 + arm64) + 2 macOS
   # (Apple Silicon + last Intel runner tier). Windows is deferred.
   #
-  # Linux builds run inside the `rust:1.96-alpine3.24` container the
-  # Dockerfile already uses — guarantees byte-for-byte parity with the
-  # published Docker image; zero new toolchain to maintain. macOS builds
-  # run natively (no cross-compile). See docs/plan/bundled-binary.md § 3
-  # for the target-matrix rationale.
+  # All targets run natively on GitHub-hosted runners with the host's
+  # glibc + rustup, then cross-compile to their target triple via
+  # `rustup target add`. The musl-linux targets install `musl-tools`
+  # (which provides `musl-gcc`) so aws-lc-sys and friends can link
+  # against musl. macOS runners already have the apple-* triples
+  # pre-installed.
+  #
+  # History: an earlier draft ran Linux builds INSIDE the
+  # `rust:1.96-alpine3.24` container the Dockerfile uses — matched
+  # Docker image byte-for-byte. Broke on `ubuntu-22.04-arm`: GitHub
+  # Actions JS-based actions (`actions/checkout`, artifact steps,
+  # setup-node) can't run inside Alpine on ARM64 — the Node.js binary
+  # they ship depends on glibc, and the x64-Alpine workaround doesn't
+  # extend to arm64. Native ubuntu + musl-tools sidesteps the whole
+  # thing and produces the same output (both are `cargo build
+  # --target x86_64-unknown-linux-musl` / `aarch64-...-musl`).
   binary-build:
     name: Build ${{ matrix.triple }}
     needs: frontend-build
@@ -108,35 +119,35 @@ jobs:
         include:
           - triple: x86_64-unknown-linux-musl
             runner: ubuntu-22.04
-            container: rust:1.96-alpine3.24
             rustflags: "-C target-cpu=x86-64-v2"
           - triple: aarch64-unknown-linux-musl
             runner: ubuntu-22.04-arm
-            container: rust:1.96-alpine3.24
             # ARMv8-A baseline — covers Pi 4/5, Graviton, every 64-bit
             # ARM Linux server. `generic` is rustc's neutral baseline.
             rustflags: "-C target-cpu=generic"
           - triple: aarch64-apple-darwin
             runner: macos-latest
-            container: ""
             rustflags: "-C target-cpu=apple-m1"
           - triple: x86_64-apple-darwin
             runner: macos-13
-            container: ""
             rustflags: "-C target-cpu=x86-64-v2"
-    container: ${{ matrix.container || null }}
     steps:
-      # Alpine container image doesn't ship the deps our build needs
-      # (git for build.rs's GIT_HASH stamping, musl-dev for aws-lc-sys
-      # C parts, plus the toolchain scaffold from the Dockerfile
-      # builder stage). Install once at job start.
-      - name: Install Alpine build deps
-        if: matrix.container != ''
-        run: apk add --no-cache musl-dev pkgconfig gcc perl make bash git curl tar
-
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.version || github.ref }}
+
+      # musl-tools ships `musl-gcc` — the C-compiler wrapper that rustc
+      # invokes for -musl targets. Without it, `cargo build --target
+      # aarch64-unknown-linux-musl` fails with "linker `musl-gcc` not
+      # found" on any C-linked dep (aws-lc-sys, ring, sqlx's native
+      # backend when enabled).
+      - name: Install musl-tools (Linux only)
+        if: contains(matrix.triple, '-linux-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.triple }}
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -149,14 +160,6 @@ jobs:
         with:
           name: static-dist
           path: static-dist/
-
-      # rustup targets are pre-installed for the runner's own host
-      # triple; other targets need explicit `rustup target add`. macOS
-      # runners already have both apple-* triples; only touch this in
-      # the container path where rustup's default target list is minimal.
-      - name: Add rustup target
-        if: matrix.container == '' && matrix.triple != ''
-        run: rustup target add ${{ matrix.triple }}
 
       # `--features bundled-assets` bakes static-dist/ into the binary
       # via rust-embed. `--bin oxicloud` — the single binary the merge
