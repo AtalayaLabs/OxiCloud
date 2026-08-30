@@ -121,6 +121,21 @@ const BATCH_SIZE: usize = 100;
 /// claims (Finder's `.DS_Store`) blocking `remove_dir` forever, which
 /// would keep the read fallback alive on every developer machine.
 pub(crate) async fn teardown_if_drained(root: &std::path::Path, job: &str, run_id: &str) {
+    // Already gone — an earlier run drained it. This is the END STATE, not a
+    // failure, and it is what every boot after the migration looks like.
+    // Falling through would `remove_dir` a missing directory and report
+    // ENOENT as "could not be removed", warning about success forever.
+    if fs::metadata(root).await.is_err() {
+        tracing::debug!(
+            target: "oxicloud::dedup",
+            event = "thumbnail.teardown_noop",
+            job = job,
+            run_id = run_id,
+            "no legacy sidecar directory — nothing to tear down"
+        );
+        return;
+    }
+
     let mut claimed_remaining = 0usize;
     let mut foreign_remaining = 0usize;
 
