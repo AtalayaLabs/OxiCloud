@@ -234,6 +234,31 @@ impl ImageTranscodeService {
     /// The `content_derived_blobs.kind` for everything this service writes.
     const DERIVED_KIND: &'static str = "transcode";
 
+    /// Memory-cache key: by CONTENT when the caller supplied a hash, by
+    /// file id only when it could not.
+    ///
+    /// Transcoding is a pure function of the source bytes, so file keying
+    /// was always the wrong axis for this cache — it just predated the
+    /// content-keyed tier. Two files with identical content held two
+    /// entries for identical bytes, and the second file missed RAM and
+    /// paid a DB lookup plus a blob read to fetch what was already in
+    /// memory under another key.
+    ///
+    /// The `c:` / `f:` prefixes keep the two namespaces disjoint. A
+    /// 64-hex hash and a UUID cannot collide in practice, but relying on
+    /// "in practice" for a cache key is how a file ends up served another
+    /// file's bytes.
+    ///
+    /// Same shape as `ThumbnailCacheKey`'s `content` / `external` split,
+    /// for the same reason: hash-less callers (external mounts) have no
+    /// content identity to key on, so they keep the per-file entry.
+    fn cache_key(source_hash: Option<&str>, file_id: &str, format: OutputFormat) -> String {
+        match source_hash {
+            Some(hash) => format!("c:{}:{}", hash, format.extension()),
+            None => format!("f:{}:{}", file_id, format.extension()),
+        }
+    }
+
     /// Initialize the service.
     ///
     /// Still creates the local cache directories, because this service DOES
@@ -329,12 +354,7 @@ impl ImageTranscodeService {
         original_mime: &str,
         target_format: OutputFormat,
     ) -> Result<(Bytes, String, bool), String> {
-        // Keyed by file_id, not content hash. Deliberate: this cache is
-        // per-request-path and short-lived (10 min TTL), and the file id is
-        // what the caller has in hand on every request. The DURABLE tier
-        // below is content-keyed, which is where dedup across identical
-        // files actually pays.
-        let cache_key = format!("{}:{}", file_id, target_format.extension());
+        let cache_key = Self::cache_key(source_hash, file_id, target_format);
 
         // ── 1. Fast path: moka memory cache (lock-free read) ──
         // An empty-Bytes entry is the negative sentinel: "transcoding this
@@ -650,7 +670,18 @@ impl ImageTranscodeService {
 
     /// Invalidate cached transcodes for a file
     pub async fn invalidate(&self, file_id: &str) {
-        let cache_key = format!("{}:{}", file_id, OutputFormat::WebP.extension());
+        // Only the FILE-keyed entry, deliberately.
+        //
+        // Content-keyed entries must not be dropped here: this file's
+        // content changing says nothing about the other files sharing the
+        // old bytes, and evicting theirs would make one user's edit cost
+        // everyone else a re-transcode. They need no eviction anyway —
+        // new content is a new hash, so the old key is simply never
+        // consulted again, and moka's TTL reclaims it.
+        //
+        // What remains here is the fallback entry for hash-less callers,
+        // plus the legacy on-disk pair, which are genuinely per-file.
+        let cache_key = Self::cache_key(None, file_id, OutputFormat::WebP);
         self.memory_cache.invalidate(&cache_key).await;
 
         let cache_path = self.get_cache_path(file_id, OutputFormat::WebP);

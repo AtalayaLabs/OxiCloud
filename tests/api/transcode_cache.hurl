@@ -20,13 +20,20 @@
 #
 # ## Why each case uploads the same bytes twice
 #
-# The in-memory cache is keyed `{file_id}:{ext}`, so re-fetching the SAME
-# file proves only that moka works. Uploading identical content as a
-# SECOND file gives a different file id and therefore a guaranteed memory
-# miss — but the same content hash. If the second fetch still avoids a
-# transcode, only the content-keyed tier can have answered it. That is
-# precisely what the migration bought, and it is unobservable any other
-# way.
+# Re-fetching the SAME file proves only that a cache exists. Uploading
+# identical content as a SECOND file gives a different file id but the
+# same content hash, which is the case that distinguishes content keying
+# from file keying — and both caches here are now content-keyed.
+#
+# So the assertion is that the second file costs NO transcode, and is
+# served from RAM. Under the previous file-keyed memory cache it was a
+# guaranteed RAM miss: two entries for identical bytes, and a DB lookup
+# plus a blob read to fetch what was already in memory under another key.
+#
+# What this can no longer isolate is the DURABLE tier, because the RAM
+# cache now answers first for anything within one process lifetime.
+# That tier is covered instead by `satellites_consistency` (every row
+# points at a live blob) and by a restart, which hurl cannot perform.
 #
 # ## Fixtures
 #
@@ -160,6 +167,7 @@ HTTP 200
 [Captures]
 after_positive: jsonpath "$.transcodes"
 after_positive_disk: jsonpath "$.disk_hits"
+after_positive_ram: jsonpath "$.cache_hits"
 [Asserts]
 jsonpath "$.not_beneficial" == {{base_not_beneficial}}
 
@@ -210,9 +218,17 @@ Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
+# The property that matters, whichever tier answered: identical content is
+# transcoded ONCE, however many files carry it.
 jsonpath "$.transcodes" == {{after_positive}}
 jsonpath "$.not_beneficial" == {{base_not_beneficial}}
-jsonpath "$.disk_hits" != {{after_positive_disk}}
+# Served from RAM, and that is the point of the memory cache being keyed by
+# CONTENT rather than by file id. Under file keying this second file was a
+# guaranteed RAM miss that fell through to a DB lookup plus a blob read to
+# fetch bytes already in memory under another key — `disk_hits` moved and
+# `cache_hits` did not. Now it is the other way round.
+jsonpath "$.cache_hits" != {{after_positive_ram}}
+jsonpath "$.disk_hits" == {{after_positive_disk}}
 
 
 # ═════════════════════════════════════════════════════════════
