@@ -2543,6 +2543,10 @@ pub async fn get_transcode_stats(State(state): State<Arc<AppState>>) -> impl Int
             "transcodes":       s.transcodes,
             "bytes_saved":      s.bytes_saved,
             "transcode_errors": s.transcode_errors,
+            // Decodes that produced something larger. Work done for no
+            // gain — the thing the stored negative verdict prevents
+            // repeating, and invisible before this counter existed.
+            "not_beneficial":   s.not_beneficial,
         })),
     )
         .into_response()

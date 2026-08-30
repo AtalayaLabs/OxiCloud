@@ -112,6 +112,16 @@ struct AtomicTranscodeStats {
     transcodes: AtomicU64,
     bytes_saved: AtomicU64,
     transcode_errors: AtomicU64,
+    /// Decodes + encodes that produced something LARGER than the original.
+    ///
+    /// Counted separately because `transcodes` means "work that paid off"
+    /// — it is incremented only on the success path, alongside
+    /// `bytes_saved`. Without this counter the most expensive failure mode
+    /// is invisible: the full decode and re-encode of a multi-megapixel
+    /// image, repeated for every file sharing that content, producing
+    /// nothing. That is precisely the cost the persisted negative verdict
+    /// exists to eliminate, so it needs to be measurable before and after.
+    not_beneficial: AtomicU64,
 }
 
 /// Snapshot of transcoding statistics
@@ -122,6 +132,7 @@ pub struct TranscodeStats {
     pub transcodes: u64,
     pub bytes_saved: u64,
     pub transcode_errors: u64,
+    pub not_beneficial: u64,
 }
 
 impl AtomicTranscodeStats {
@@ -132,6 +143,7 @@ impl AtomicTranscodeStats {
             transcodes: self.transcodes.load(Ordering::Relaxed),
             bytes_saved: self.bytes_saved.load(Ordering::Relaxed),
             transcode_errors: self.transcode_errors.load(Ordering::Relaxed),
+            not_beneficial: self.not_beneficial.load(Ordering::Relaxed),
         }
     }
 }
@@ -433,6 +445,10 @@ impl ImageTranscodeService {
         let transcoded_size = transcoded_bytes.len();
 
         if transcoded_size >= original_size {
+            // Counted here, not with `transcodes` — the work happened but
+            // paid nothing, and conflating the two would hide the cost this
+            // whole negative-verdict mechanism exists to stop paying.
+            self.stats.not_beneficial.fetch_add(1, Ordering::Relaxed);
             tracing::debug!(
                 "⚠️ Transcode not beneficial for {}: {} -> {} bytes",
                 file_id,

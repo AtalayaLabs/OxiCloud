@@ -76,6 +76,26 @@ folder_id: jsonpath "$.id"
 
 
 # ─────────────────────────────────────────────────────────────
+# Step 2b – A second folder, for the duplicate uploads.
+#
+# Re-uploading the same filename into the SAME folder overwrites the
+# existing file and returns its id, so both halves of a "two distinct
+# files, one content" pair would be the same row and the test would
+# assert nothing. A second folder keeps the name free.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/folders
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{
+  "name": "hurl-transcode-cache-dup"
+}
+
+HTTP 201
+[Captures]
+folder_dup_id: jsonpath "$.id"
+
+
+# ─────────────────────────────────────────────────────────────
 # Step 3 – Baseline counters.
 #
 # Absolute values are meaningless here — earlier scenarios in the same
@@ -89,7 +109,7 @@ Authorization: Bearer {{token}}
 HTTP 200
 [Captures]
 base_transcodes: jsonpath "$.transcodes"
-base_disk_hits: jsonpath "$.disk_hits"
+base_not_beneficial: jsonpath "$.not_beneficial"
 
 
 # ═════════════════════════════════════════════════════════════
@@ -117,7 +137,7 @@ pos_hash: jsonpath "$.content_hash"
 # `Accept: image/webp` is what selects the transcode path;
 # `BrowserCapabilities::from_accept_header` looks for exactly this.
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/files/{{pos_a_id}}/content
+GET {{base_url}}/api/files/{{pos_a_id}}
 Authorization: Bearer {{token}}
 Accept: image/webp,image/png,*/*
 
@@ -139,8 +159,9 @@ Authorization: Bearer {{token}}
 HTTP 200
 [Captures]
 after_positive: jsonpath "$.transcodes"
+after_positive_disk: jsonpath "$.disk_hits"
 [Asserts]
-jsonpath "$.transcodes" > {{base_transcodes}}
+jsonpath "$.not_beneficial" == {{base_not_beneficial}}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -153,7 +174,7 @@ jsonpath "$.transcodes" > {{base_transcodes}}
 POST {{base_url}}/api/files/upload
 Authorization: Bearer {{token}}
 [MultipartFormData]
-folder_id: {{folder_id}}
+folder_id: {{folder_dup_id}}
 file: file,fixtures/red-image.png; image/png
 
 HTTP 201
@@ -167,7 +188,7 @@ jsonpath "$.id" != "{{pos_a_id}}"
 # ─────────────────────────────────────────────────────────────
 # Step 8 – Fetching the second file still yields WebP.
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/files/{{pos_b_id}}/content
+GET {{base_url}}/api/files/{{pos_b_id}}
 Authorization: Bearer {{token}}
 Accept: image/webp,image/png,*/*
 
@@ -190,7 +211,8 @@ Authorization: Bearer {{token}}
 HTTP 200
 [Asserts]
 jsonpath "$.transcodes" == {{after_positive}}
-jsonpath "$.disk_hits" > {{base_disk_hits}}
+jsonpath "$.not_beneficial" == {{base_not_beneficial}}
+jsonpath "$.disk_hits" != {{after_positive_disk}}
 
 
 # ═════════════════════════════════════════════════════════════
@@ -218,7 +240,7 @@ neg_hash: jsonpath "$.content_hash"
 # Not a failure: transcoding to something larger would cost the client
 # bandwidth, so the service serves the PNG and remembers why.
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/files/{{neg_a_id}}/content
+GET {{base_url}}/api/files/{{neg_a_id}}
 Authorization: Bearer {{token}}
 Accept: image/webp,image/png,*/*
 
@@ -235,9 +257,11 @@ Authorization: Bearer {{token}}
 
 HTTP 200
 [Captures]
-after_negative: jsonpath "$.transcodes"
+after_negative: jsonpath "$.not_beneficial"
 [Asserts]
-jsonpath "$.transcodes" > {{after_positive}}
+# The decode + encode ran and produced nothing usable, which is counted
+# separately from `transcodes` — that only counts work that paid off.
+jsonpath "$.transcodes" == {{after_positive}}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -246,7 +270,7 @@ jsonpath "$.transcodes" > {{after_positive}}
 POST {{base_url}}/api/files/upload
 Authorization: Bearer {{token}}
 [MultipartFormData]
-folder_id: {{folder_id}}
+folder_id: {{folder_dup_id}}
 file: file,fixtures/negative-cache-transcode.png; image/png
 
 HTTP 201
@@ -260,7 +284,7 @@ jsonpath "$.id" != "{{neg_a_id}}"
 # ─────────────────────────────────────────────────────────────
 # Step 14 – Original again, as expected.
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/files/{{neg_b_id}}/content
+GET {{base_url}}/api/files/{{neg_b_id}}
 Authorization: Bearer {{token}}
 Accept: image/webp,image/png,*/*
 
@@ -283,7 +307,8 @@ Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.transcodes" == {{after_negative}}
+jsonpath "$.not_beneficial" == {{after_negative}}
+jsonpath "$.transcodes" == {{after_positive}}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -296,15 +321,28 @@ Authorization: Bearer {{token}}
 HTTP 204
 
 
-GET {{base_url}}/api/trash
+DELETE {{base_url}}/api/folders/{{folder_dup_id}}
+Authorization: Bearer {{token}}
+
+HTTP 204
+
+
+GET {{base_url}}/api/trash/resources
 Authorization: Bearer {{token}}
 
 HTTP 200
 [Captures]
 trash_id: jsonpath "$.items[?(@.resource.id == '{{folder_id}}')].resource.id"
+trash_dup_id: jsonpath "$.items[?(@.resource.id == '{{folder_dup_id}}')].resource.id"
 
 
 DELETE {{base_url}}/api/trash/{{trash_id}}
+Authorization: Bearer {{token}}
+
+HTTP 200
+
+
+DELETE {{base_url}}/api/trash/{{trash_dup_id}}
 Authorization: Bearer {{token}}
 
 HTTP 200
