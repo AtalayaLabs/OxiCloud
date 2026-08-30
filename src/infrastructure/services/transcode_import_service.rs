@@ -86,16 +86,14 @@ impl TranscodeImport {
         registry: &JobRegistry,
         provider: &Arc<dyn JobStoreProvider>,
     ) -> Arc<Self> {
-        // Daily, matching the thumbnail imports: idempotent and resumable,
-        // so periodic is safe, and a migration nobody remembers to trigger
-        // never finishes. The tick imports but does not delete — `repair`
-        // defaults false.
+        // On-demand, matching the thumbnail imports. The boot run in repair
+        // mode IS the migration: nothing writes a hash-keyed entry here any
+        // more, so the tail cannot grow after startup, and a periodic tick
+        // could not finish the job anyway because ticks never pass
+        // `repair`. Once drained it would be a `read_dir` returning
+        // nothing, every day, forever.
         registry
-            .register_recoverable_job(
-                self.clone(),
-                provider.clone(),
-                Some(std::time::Duration::from_secs(24 * 3600)),
-            )
+            .register_recoverable_job(self.clone(), provider.clone(), None)
             .await;
         self
     }
