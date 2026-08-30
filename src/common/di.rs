@@ -2912,7 +2912,15 @@ impl AppServiceFactory {
                         job.name,
                     );
                     match registry.trigger(&job.name, &job.args).await {
-                        Some(outcome) => tracing::info!(
+                        // Debug, not info. The engine already logs every
+                        // dispatch as `job.run` with the outcome and timing —
+                        // that is the point of routing through `trigger`
+                        // rather than calling handlers directly. An info line
+                        // here made every startup job report completion
+                        // twice, from two layers, saying the same thing. The
+                        // `job.startup_trigger` audit line above already
+                        // records that the startup path was the caller.
+                        Some(outcome) => tracing::debug!(
                             target: "oxicloud::scheduler",
                             event = "job.startup_completed",
                             job = %job.name,
