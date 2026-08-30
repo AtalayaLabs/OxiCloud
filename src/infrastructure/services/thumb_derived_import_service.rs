@@ -96,6 +96,123 @@ pub(crate) fn audit_sidecar_deleted(
 /// blob write, so this is deliberately smaller than a pure-DB sweep's page.
 const BATCH_SIZE: usize = 100;
 
+/// Remove `.thumbnails/` — but only once BOTH import jobs have drained it.
+///
+/// The directory is shared and each job owns half of it: hash-named
+/// sidecars belong to `thumb_derived_import`, `ext-{file_id}.jpg` to
+/// `thumb_attached_import`. Whichever runs first therefore finds the
+/// other's files still present.
+///
+/// The first version let the derived job tear down unilaterally. It ran
+/// first, deleted its own sidecars, found `remove_dir` refused because the
+/// `ext-*` previews were still there, and fell back to renaming the tree
+/// to `.thumbnails.migrated`. The attached job then looked in
+/// `.thumbnails/`, found nothing, and reported zeros — stranding the
+/// user-uploaded previews, which are the one class of file here that
+/// cannot be regenerated. The rename fired for exactly the wrong reason:
+/// it exists for files NEITHER job claims, and it fired for the sibling's
+/// work-in-progress.
+///
+/// So the rule is: if anything remains that either job would claim, do
+/// nothing at all and let the sibling finish. Whichever job runs last then
+/// finds a genuinely empty tree and removes it, in the same boot.
+///
+/// The rename survives for its original purpose only — a file no job
+/// claims (Finder's `.DS_Store`) blocking `remove_dir` forever, which
+/// would keep the read fallback alive on every developer machine.
+pub(crate) async fn teardown_if_drained(root: &std::path::Path, job: &str, run_id: &str) {
+    let mut claimed_remaining = 0usize;
+    let mut foreign_remaining = 0usize;
+
+    for size in ThumbnailSize::all() {
+        let dir = root.join(size.dir_name());
+        let Ok(mut entries) = fs::read_dir(&dir).await else {
+            continue; // already gone
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            match entry.file_name().to_str() {
+                // Either job's file. `hash_from_sidecar_name` covers the
+                // content-keyed sidecars, the `ext-` prefix the file-keyed
+                // previews; between them that is everything a migration
+                // still has to move.
+                Some(name)
+                    if ThumbDerivedImport::hash_from_sidecar_name(name).is_some()
+                        || name.starts_with("ext-") =>
+                {
+                    claimed_remaining += 1;
+                }
+                _ => foreign_remaining += 1,
+            }
+        }
+    }
+
+    if claimed_remaining > 0 {
+        tracing::info!(
+            target: "oxicloud::dedup",
+            event = "thumbnail.teardown_deferred",
+            job = job,
+            run_id = run_id,
+            remaining = claimed_remaining,
+            "legacy sidecar directory left in place — {claimed_remaining} file(s) still \
+             belong to the sibling import job, which has not finished draining them"
+        );
+        return;
+    }
+
+    for size in ThumbnailSize::all() {
+        let _ = fs::remove_dir(root.join(size.dir_name())).await;
+    }
+
+    match fs::remove_dir(root).await {
+        Ok(()) => tracing::info!(
+            target: "oxicloud::dedup",
+            event = "thumbnail.root_removed",
+            job = job,
+            run_id = run_id,
+            path = %root.display(),
+            "🧹 legacy sidecar directory removed — the fallback read path is inert \
+             from the next restart"
+        ),
+        Err(e) if foreign_remaining > 0 => {
+            // `with_file_name`, NOT `with_extension`: `.thumbnails` is all
+            // stem to `Path`, so `with_extension` would have produced
+            // `.thumbnails.thumbnails.migrated`.
+            let parked = root.with_file_name(PARKED_DIR_NAME);
+            match fs::rename(root, &parked).await {
+                Ok(()) => tracing::info!(
+                    target: "oxicloud::dedup",
+                    event = "thumbnail.root_parked",
+                    job = job,
+                    run_id = run_id,
+                    to = %parked.display(),
+                    foreign = foreign_remaining,
+                    "🧹 legacy sidecar directory holds {foreign_remaining} file(s) no import \
+                     job claims — moved aside instead of deleted, so nothing of anyone \
+                     else's is destroyed. Safe to remove by hand."
+                ),
+                Err(e) => tracing::warn!(
+                    target: "oxicloud::dedup",
+                    event = "thumbnail.root_kept",
+                    job = job,
+                    run_id = run_id,
+                    reason = %e,
+                    "legacy sidecar directory neither removed nor moved aside — the \
+                     fallback read path stays live"
+                ),
+            }
+            let _ = e;
+        }
+        Err(e) => tracing::warn!(
+            target: "oxicloud::dedup",
+            event = "thumbnail.root_kept",
+            job = job,
+            run_id = run_id,
+            reason = %e,
+            "legacy sidecar directory could not be removed"
+        ),
+    }
+}
+
 pub struct ThumbDerivedImport {
     thumbnails_root: PathBuf,
     dedup: Arc<DedupService>,
@@ -124,12 +241,19 @@ impl ThumbDerivedImport {
         // per no-silent-auto-repair. Once drained, a run is a `read_dir` over
         // three directories that returns nothing — and after the directory is
         // removed, not even that.
+        // On-demand, NOT periodic.
+        //
+        // `OXICLOUD_STARTUP_JOBS` runs this at boot in repair mode, and that
+        // is the whole migration: nothing has written a sidecar since step
+        // 10d2, so the tail cannot grow after startup. A daily tick could
+        // only ever redo work the boot run already did — and it would do it
+        // WITHOUT repair, so it could not even finish the job. Once drained
+        // it is a `read_dir` returning nothing, every day, forever.
+        //
+        // The admin trigger remains for operators who want to re-run it by
+        // hand, which is the case registration exists for.
         registry
-            .register_recoverable_job(
-                self.clone(),
-                provider.clone(),
-                Some(std::time::Duration::from_secs(24 * 3600)),
-            )
+            .register_recoverable_job(self.clone(), provider.clone(), None)
             .await;
         self
     }
@@ -605,67 +729,12 @@ impl RecoverableJobHandler for ThumbDerivedImport {
         // emptiness check of its own and cannot race a concurrent write into
         // deleting live files.
         if delete_imported {
-            for size in ThumbnailSize::all() {
-                let dir = self.thumbnails_root.join(size.dir_name());
-                let _ = fs::remove_dir(&dir).await;
-            }
-            // Report the root, rather than discarding the result as the size
-            // directories do. This is the one outcome an operator is waiting
-            // for — absence is what makes the fallback inert — and it fails
-            // for a reason worth naming: on macOS Finder leaves a `.DS_Store`
-            // in the root, so `remove_dir` refuses forever while every
-            // sidecar underneath is long gone.
-            match fs::remove_dir(&self.thumbnails_root).await {
-                Ok(()) => tracing::info!(
-                    target: "oxicloud::dedup",
-                    event = "thumb_derived_import.root_removed",
-                    run_id = %store.run_id(),
-                    path = %self.thumbnails_root.display(),
-                    "🧹 legacy sidecar directory removed — the fallback read path \
-                     is inert from the next restart"
-                ),
-                // Something unrelated to thumbnails is in the directory, so
-                // `remove_dir` refuses. On macOS that is Finder's `.DS_Store`,
-                // and it would otherwise keep the fallback alive forever on
-                // every developer machine.
-                //
-                // Move the whole tree aside instead. The sidecars are already
-                // imported and verified, so nothing here is load-bearing; what
-                // matters is that `.thumbnails` stops existing, because its
-                // absence is what the read path tests. Renaming preserves the
-                // stray file for whoever put it there, and keeps the check a
-                // single `stat` rather than a directory walk.
-                Err(_) => {
-                    // `with_file_name`, NOT `with_extension`: the directory is
-                    // `.thumbnails`, and a leading-dot name has no extension as
-                    // far as `Path` is concerned — its whole name is the stem.
-                    // `with_extension("thumbnails.migrated")` would have
-                    // produced `.thumbnails.thumbnails.migrated`.
-                    let parked = self.thumbnails_root.with_file_name(PARKED_DIR_NAME);
-                    match fs::rename(&self.thumbnails_root, &parked).await {
-                        Ok(()) => tracing::info!(
-                            target: "oxicloud::dedup",
-                            event = "thumb_derived_import.root_parked",
-                            run_id = %store.run_id(),
-                            from = %self.thumbnails_root.display(),
-                            to = %parked.display(),
-                            "🧹 legacy sidecar directory could not be removed (a \
-                             non-sidecar file remains) — moved aside instead. The \
-                             fallback read path is inert from the next restart; \
-                             the directory is safe to delete by hand."
-                        ),
-                        Err(e) => tracing::warn!(
-                            target: "oxicloud::dedup",
-                            event = "thumb_derived_import.root_kept",
-                            run_id = %store.run_id(),
-                            path = %self.thumbnails_root.display(),
-                            reason = %e,
-                            "legacy sidecar directory could be neither removed nor \
-                             moved aside — the fallback read path stays live"
-                        ),
-                    }
-                }
-            }
+            teardown_if_drained(
+                &self.thumbnails_root,
+                THUMB_DERIVED_IMPORT_JOB_NAME,
+                &store.run_id().to_string(),
+            )
+            .await;
         }
 
         tracing::info!(

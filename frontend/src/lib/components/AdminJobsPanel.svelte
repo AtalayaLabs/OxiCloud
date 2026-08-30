@@ -860,11 +860,17 @@
 									{mutatesLabel(job)}
 								</span>
 							{/if}
-							<!-- Configured to fire at boot. Called out because the
-							     row is otherwise silent about the most consequential
-							     fact on it: with repair on, this job deletes files
-							     on every restart, not only when someone clicks Run.
-							     Warn-coloured in that case, neutral otherwise. -->
+						</td>
+						<!-- "At boot" belongs in the cadence column: it answers
+						     WHEN this job runs, which is the same question
+						     `interval_ms` answers. Beside the name it read as a
+						     property of the job rather than of its schedule, and
+						     these two facts have to be read together — a job with
+						     no interval that fires at boot is not on-demand, and
+						     the row said "on-demand" next to a badge saying
+						     otherwise. -->
+						<td class="jobs-panel__muted">
+							{cadenceLabel(job)}
 							{#if job.startup}
 								<span
 									class="jobs-panel__pill"
@@ -886,7 +892,6 @@
 								</span>
 							{/if}
 						</td>
-						<td class="jobs-panel__muted">{cadenceLabel(job)}</td>
 						<td class="jobs-panel__muted">{timeAgo(job.last_run_at)}</td>
 						<td>
 							<div class="jobs-panel__outcome-cell">

@@ -89,15 +89,11 @@ impl ThumbAttachedImport {
         registry: &JobRegistry,
         provider: &Arc<dyn JobStoreProvider>,
     ) -> Arc<Self> {
-        // Daily, matching `thumb_derived_import` — and it does not delete on
-        // the tick either, since `repair` defaults false. See that job for
-        // the reasoning.
+        // On-demand, matching `thumb_derived_import` — the boot run in repair
+        // mode is the migration, and a tick could not finish it anyway
+        // because ticks never pass `repair`. See that job for the reasoning.
         registry
-            .register_recoverable_job(
-                self.clone(),
-                provider.clone(),
-                Some(std::time::Duration::from_secs(24 * 3600)),
-            )
+            .register_recoverable_job(self.clone(), provider.clone(), None)
             .await;
         self
     }
@@ -478,6 +474,20 @@ impl RecoverableJobHandler for ThumbAttachedImport {
                     since_checkpoint = 0;
                 }
             }
+        }
+
+        // Both jobs attempt the teardown, and it no-ops unless the tree is
+        // drained of files EITHER of them claims. Without this, whichever
+        // job runs last leaves an empty `.thumbnails/` behind until the
+        // next boot; with it, the tree disappears in the same run that
+        // empties it, whatever order the two ran in.
+        if delete_imported {
+            crate::infrastructure::services::thumb_derived_import_service::teardown_if_drained(
+                &self.thumbnails_root,
+                THUMB_ATTACHED_IMPORT_JOB_NAME,
+                &store.run_id().to_string(),
+            )
+            .await;
         }
 
         tracing::info!(
