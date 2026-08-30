@@ -1621,6 +1621,48 @@ hardcoded SQL). New sources bolt on independently.
       `data_loss`). Anything joining on `blob_hash` must decide which
       of the two it wants.
 
+    * **A diagram**, because the security boundary is a shape before it
+      is a rule — two arrows starting from different places is the
+      whole argument, and it lands faster than any paragraph:
+
+      ```mermaid
+      erDiagram
+          FILES  ||--o{ ATTACHED : "file_id — per FILE"
+          FILES  }o--|| BLOBS    : "blob_hash (content)"
+          BLOBS  ||--o{ DERIVED  : "source_hash — per CONTENT"
+          DERIVED }o--o| ARTIFACT : "blob_hash (NULL = negative)"
+          ATTACHED }o--|| ARTIFACT : "blob_hash"
+
+          FILES {
+              uuid id
+              text blob_hash
+          }
+          DERIVED {
+              text source_hash PK
+              text kind        PK
+              text variant     PK
+              text blob_hash   "NULL = not worth deriving"
+              text content_type "NULL iff blob_hash NULL"
+          }
+          ATTACHED {
+              uuid file_id  PK
+              text kind     PK
+              text variant  PK
+              text blob_hash
+              uuid uploaded_by "no FK; nil = imported"
+          }
+          ARTIFACT {
+              text hash PK
+          }
+      ```
+
+      What a reader should take from it: `DERIVED` hangs off **content**,
+      so two files with identical bytes reach the same row — good for a
+      render, catastrophic for an upload. `ATTACHED` hangs off the
+      **file**, so those rows are duplicated on copy and never shared.
+      Both point at the same artifact space, which is why one table
+      could not simply be folded into the other with a `kind` column.
+
     Home: `docs/architecture/`, alongside `backend-storage.md`, which
     already documents the blob layer these sit on top of. Operator-
     facing rather than end-user, so schema and SQL are appropriate
