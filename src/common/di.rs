@@ -1505,6 +1505,24 @@ impl AppServiceFactory {
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
         .await;
 
+        // Step 7 migration tenant: drains `.transcoded/` the same way the
+        // thumbnail imports drain `.thumbnails/`, with one extra step —
+        // the legacy tree is keyed by FILE (`{file_id}.webp`) while the
+        // destination is keyed by CONTENT, so every entry is re-keyed
+        // through `storage.files` on the way in. Entries naming the same
+        // content collapse into one row, which is the saving this migration
+        // exists for; a sandbox with five `.skip` markers had three of them
+        // describing one image.
+        let _ = Arc::new(
+            crate::infrastructure::services::transcode_import_service::TranscodeImport::new(
+                std::path::Path::new(&self.storage_path).join(".transcoded"),
+                core.dedup_service.clone(),
+                maintenance_pool.clone(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
         // Both satellite tables, checked for mappings whose Blob is gone.
         // Nothing else can: a row whose SOURCE was reaped still holds a valid
         // reference to a real artifact with a correct refcount, so every

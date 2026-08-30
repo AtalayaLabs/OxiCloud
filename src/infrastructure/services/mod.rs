@@ -64,6 +64,7 @@ pub mod thumb_derived_import_service;
 pub mod thumbnail_service;
 #[cfg(test)]
 mod thumbnail_service_test;
+pub mod transcode_import_service;
 pub mod trash_cleanup_service;
 pub mod tree_etag_flush_service;
 pub mod webdav_dead_property_store;
