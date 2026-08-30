@@ -253,6 +253,8 @@ impl RecoverableJobHandler for TranscodeImport {
         let mut unverified = 0u64;
         let mut failed = 0u64;
         let mut since_checkpoint = 0usize;
+        // Last entry visited, for the tail flush below.
+        let mut last_name: Option<String> = None;
 
         for name in Self::entry_names(&dir).await {
             if let Some(c) = &cursor
@@ -464,9 +466,33 @@ impl RecoverableJobHandler for TranscodeImport {
             }
 
             since_checkpoint += 1;
+            last_name = Some(name.clone());
             if let Some(failure) = checkpoint_if_due(store, &name, &mut since_checkpoint).await {
                 return failure;
             }
+        }
+
+        // Flush the tail.
+        //
+        // `checkpoint_if_due` only fires on a full batch, so a run shorter
+        // than BATCH_SIZE never checkpointed at all and reported
+        // `scanned_count: 0` against a known `total_rows` — the admin
+        // progress bar sat at zero through the whole run and finished
+        // there. Longer runs were wrong too, just less visibly: the
+        // remainder after the last full batch was never counted.
+        //
+        // Cursor-wise this is a no-op — the walk is finished, so nothing
+        // will resume from it — but the scanned delta is what the progress
+        // display reads, and it has to include the last partial batch.
+        if since_checkpoint > 0
+            && let Some(name) = last_name
+            && let Err(e) = store
+                .checkpoint(name.into_bytes(), since_checkpoint as u64)
+                .await
+        {
+            return RunOutcome::Failed {
+                message: format!("final checkpoint: {e}"),
+            };
         }
 
         // Remove the tree once drained. Deletion first, rename only if a

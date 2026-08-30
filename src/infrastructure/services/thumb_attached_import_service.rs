@@ -476,6 +476,18 @@ impl RecoverableJobHandler for ThumbAttachedImport {
             }
         }
 
+        // Flush the tail — see the derived twin. The loop only checkpoints
+        // on a full batch, so the remainder went uncounted: a 105-file run
+        // reported `scanned_count: 100`, and a run shorter than one batch
+        // reported zero and left the progress bar at zero throughout.
+        if since_checkpoint > 0
+            && let Err(e) = store.checkpoint(Vec::new(), since_checkpoint as u64).await
+        {
+            return RunOutcome::Failed {
+                message: format!("final checkpoint: {e}"),
+            };
+        }
+
         // Both jobs attempt the teardown, and it no-ops unless the tree is
         // drained of files EITHER of them claims. Without this, whichever
         // job runs last leaves an empty `.thumbnails/` behind until the
