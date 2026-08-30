@@ -16,7 +16,7 @@
 use bytes::Bytes;
 use image::ImageFormat;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use tokio::fs;
 
@@ -173,6 +173,15 @@ pub struct ImageTranscodeService {
     /// `OnceLock` rather than a `Mutex`: set exactly once at boot, read on
     /// every request, never replaced.
     dedup: OnceLock<Arc<crate::infrastructure::services::dedup_service::DedupService>>,
+    /// Whether `.transcoded/` still exists, probed once by
+    /// [`Self::initialize`]. `false` short-circuits the local-cache reads
+    /// without a syscall.
+    ///
+    /// Starts `true` so a service constructed without `initialize` (tests)
+    /// behaves as before. Failing open is the safe direction: the wrong
+    /// value costs syscalls, the opposite would hide cached entries that
+    /// are still there.
+    legacy_cache: AtomicBool,
 }
 
 impl ImageTranscodeService {
@@ -203,6 +212,7 @@ impl ImageTranscodeService {
             memory_cache,
             stats: Arc::new(AtomicTranscodeStats::default()),
             dedup: OnceLock::new(),
+            legacy_cache: AtomicBool::new(true),
         }
     }
 
@@ -234,14 +244,50 @@ impl ImageTranscodeService {
     /// absence that `transcode_import` works toward unreachable, which is
     /// exactly the bug that kept `.thumbnails/` alive across restarts.
     pub async fn initialize(&self) -> std::io::Result<()> {
-        fs::create_dir_all(&self.cache_dir).await?;
-        fs::create_dir_all(self.cache_dir.join("webp")).await?;
+        // Probes, does NOT create.
+        //
+        // Creating the tree at boot is what kept `.thumbnails/` alive across
+        // restarts: the import removed it, the next boot put it back, and
+        // the absence the read path gates on was unreachable by
+        // construction. The write path below already calls `create_dir_all`
+        // on the parent before writing, so nothing needs it created eagerly
+        // — the only thing eager creation achieved was defeating the drain.
+        //
+        // One `stat` on the root, cached for the process lifetime. It can
+        // only be stale in the harmless direction: a drain completing
+        // mid-life leaves the flag true until restart, costing the same
+        // failed opens as before. It never goes false while entries remain,
+        // because only `transcode_import` removes the tree and it removes
+        // the whole thing at once.
+        let present = fs::metadata(&self.cache_dir).await.is_ok();
+        self.legacy_cache.store(present, Ordering::Relaxed);
+
         tracing::info!(
-            "🖼️ Image transcode service initialized (rayon pool: {} threads, cache dir: {:?})",
+            "🖼️ Image transcode service initialized (rayon pool: {} threads)",
             transcode_thread_count(),
-            self.cache_dir
         );
+        if present {
+            tracing::info!(
+                target: "oxicloud::transcode",
+                event = "transcode.legacy_cache_present",
+                path = ?self.cache_dir,
+                "legacy transcode cache present — reads fall back to it. Run \
+                 transcode_import with ?repair=true to drain it."
+            );
+        }
         Ok(())
+    }
+
+    /// Whether the legacy local cache is worth touching.
+    ///
+    /// Unlike the thumbnail tiers this may legitimately never reach `false`:
+    /// callers with no content hash (external mounts) cannot use the
+    /// content-keyed tier at all, so they still read and write here. On an
+    /// install without such mounts the directory drains once and stays
+    /// gone; on one with them it persists, and that is correct rather than
+    /// a stalled migration.
+    fn legacy_cache_active(&self) -> bool {
+        self.legacy_cache.load(Ordering::Relaxed)
     }
 
     /// Check if a mime type can be transcoded.
@@ -402,7 +448,7 @@ impl ImageTranscodeService {
         //
         // Drained by `transcode_import`; kept as a fallback until it is gone.
         let cache_path = self.get_cache_path(file_id, target_format);
-        if tokio::fs::try_exists(&cache_path).await.unwrap_or(false) {
+        if self.legacy_cache_active() && tokio::fs::try_exists(&cache_path).await.unwrap_or(false) {
             match fs::read(&cache_path).await {
                 Ok(data) => {
                     self.stats.disk_hits.fetch_add(1, Ordering::Relaxed);
@@ -417,7 +463,8 @@ impl ImageTranscodeService {
 
         // ── Negative verdict persisted on disk (survives restarts) ──
         let skip_marker = self.get_skip_marker_path(file_id, target_format);
-        if tokio::fs::try_exists(&skip_marker).await.unwrap_or(false) {
+        if self.legacy_cache_active() && tokio::fs::try_exists(&skip_marker).await.unwrap_or(false)
+        {
             self.stats.disk_hits.fetch_add(1, Ordering::Relaxed);
             tracing::debug!("💾 Transcode negative disk marker HIT: {}", file_id);
             return Ok(Bytes::new());

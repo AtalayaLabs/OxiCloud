@@ -746,7 +746,7 @@ optionally with the same query syntax the admin trigger URL uses.
 **The default is both migration jobs, in repair mode:**
 
 ```
-OXICLOUD_STARTUP_JOBS=thumb_derived_import?repair=true,thumb_attached_import?repair=true
+OXICLOUD_STARTUP_JOBS=thumb_derived_import?repair=true,thumb_attached_import?repair=true,transcode_import?repair=true
 ```
 
 An explicit value replaces that list; an empty value disables startup
