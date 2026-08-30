@@ -569,22 +569,36 @@ impl ImageTranscodeService {
                 let variant = target_format.extension().to_string();
                 let mime = target_format.mime_type().to_string();
                 let bytes = transcoded_bytes.clone();
-                // Fire-and-forget, as the disk write was: the bytes are
-                // already on their way to the client, and a storage hiccup
-                // should cost a re-derive later rather than this response.
-                tokio::spawn(async move {
-                    if let Err(e) = dedup
-                        .store_derived_blob(&hash, Self::DERIVED_KIND, &variant, &mime, bytes)
-                        .await
-                    {
-                        tracing::warn!(
-                            target: "oxicloud::transcode",
-                            source_hash = %hash,
-                            error = %e,
-                            "failed to store derived transcode; it will be recomputed"
-                        );
-                    }
-                });
+                // Awaited, NOT spawned.
+                //
+                // Fire-and-forget looked free — the bytes are already on
+                // their way to the client — but it raced its own purpose. A
+                // second request for the SAME content arriving before the
+                // spawn lands finds no row, re-runs the whole decode +
+                // encode, and stores the identical blob again. The point of
+                // keying by content is that identical content is derived
+                // once; a write that has not landed yet cannot deliver
+                // that, and the window is milliseconds wide precisely when
+                // it matters most (a page loading many images at once).
+                //
+                // Caught by `transcode_cache.hurl`, which asserts the second
+                // distinct file with identical bytes does not re-transcode
+                // — it had been passing on timing luck.
+                //
+                // The cost is bounded: this path has just spent a full
+                // decode and re-encode, so one blob write is marginal
+                // beside it, and it only runs on a genuine miss.
+                if let Err(e) = dedup
+                    .store_derived_blob(&hash, Self::DERIVED_KIND, &variant, &mime, bytes)
+                    .await
+                {
+                    tracing::warn!(
+                        target: "oxicloud::transcode",
+                        source_hash = %hash,
+                        error = %e,
+                        "failed to store derived transcode; it will be recomputed"
+                    );
+                }
             }
             None => {
                 let cache_path_clone = cache_path.clone();
