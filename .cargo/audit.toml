@@ -82,6 +82,35 @@ ignore = [
     #     with its own Store (see infrastructure/services/plugins/runtime.rs).
     "RUSTSEC-2026-0222",
 
+    # wasmtime 43.0.2 — "Filesystem sandbox escape when paths or symlinks
+    # contain trailing slashes" (RUSTSEC-2026-0269, 8.8 high). Same crate,
+    # same chain and same absent upgrade path as RUSTSEC-2026-0222 above:
+    # extism 1.30.0 is the latest published and pins wasmtime 43, while the
+    # advisory's fixed releases are >=24.0.13 <25, >=36.0.14 <37,
+    # >=46.0.3 <47, >=47.0.4 — none in the 43.x line, so there is no
+    # version satisfying extism's requirement that carries the fix.
+    #
+    # NOT REACHABLE, and for a stronger reason than the build-feature
+    # gating: this is a WASI filesystem sandbox escape, and OxiCloud's
+    # plugin runtime gives plugins no filesystem to escape from.
+    # `plugins/runtime.rs::compile` builds every plugin with
+    # `.with_wasi(false)` and declares no `allowed_paths`, so there are no
+    # preopened directories — the escape needs one to traverse out of.
+    # `.disallow_all_hosts()` removes outbound network on the same path.
+    #
+    # The build-level gating from the entry above still applies on top:
+    # `plugins` is opt-in and absent from `default`, so the CI release
+    # binary does not link wasmtime; runtime activation additionally needs
+    # OXICLOUD_ENABLE_PLUGINS=true; and plugin binaries are admin-supplied,
+    # not attacker input.
+    #
+    # Un-ignore trigger: EITHER extism releases a version on wasmtime
+    # >=46.0.3 (check with `cargo tree -i wasmtime --features plugins`),
+    # OR `plugins/runtime.rs` gains `allowed_paths` / `with_wasi(true)` —
+    # at which point this stops being unreachable and blocks release
+    # rather than being ignored.
+    "RUSTSEC-2026-0269",
+
     # astral-tokio-tar 0.5.6 — tar extraction advisories, transitive via
     # testcontainers → testcontainers-modules, a DEV-dependency used only by
     # the `--cfg integration_tests` harness to spin up throwaway Postgres
