@@ -1663,10 +1663,15 @@ hardcoded SQL). New sources bolt on independently.
       Both point at the same artifact space, which is why one table
       could not simply be folded into the other with a `kind` column.
 
-    Home: `docs/architecture/`, alongside `backend-storage.md`, which
-    already documents the blob layer these sit on top of. Operator-
-    facing rather than end-user, so schema and SQL are appropriate
-    here in a way they are not in `docs/guide/`.
+    **Landed** as `docs/architecture/derived-and-attached-blobs.md`,
+    beside `backend-storage.md`, which documents the blob layer these
+    sit on top of. Operator-facing rather than end-user, so schema and
+    SQL belong here in a way they do not in `docs/guide/`.
+
+    Named for the two things rather than for "satellite tables" —
+    that is internal shorthand nobody would search for, whereas
+    *derived* and *attached* are the words the schema and the import
+    jobs already use.
 
 Tracked separately, **not** part of this plan: the
 `storage.copy_folder_tree` refcount bug (see the copy section). It is
