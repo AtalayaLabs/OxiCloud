@@ -1567,6 +1567,112 @@ hardcoded SQL). New sources bolt on independently.
     land at any point; last is easiest, since every earlier slice
     would otherwise rebase across it.
 
+12. **Document the two satellite tables** — `storage.content_derived_blobs`
+    and `storage.file_attached_blobs`, with worked examples. **Not
+    started.**
+
+    The tables exist and each carries `COMMENT ON` text, but nothing
+    explains the pair *together*, and the thing that matters about them
+    is the relationship: they hold the same kind of artifact under two
+    different keys, and **the keying difference is the security
+    boundary**. Someone adding a third artifact type has to get that
+    right, and today the only place it is written down is prose
+    scattered through this plan and two job doc-comments.
+
+    What the page needs:
+
+    * **Column-by-column structure** of both tables, including the
+      parts that are easy to get wrong: `blob_hash` is nullable on
+      `content_derived_blobs` (a NULL is a NEGATIVE row — the
+      derivation was attempted and is known not to be worth storing),
+      paired with `content_type` by a CHECK; `uploaded_by` on
+      `file_attached_blobs` is `NOT NULL` with no FK, so provenance
+      survives a user deletion, and imported rows carry the nil-UUID
+      sentinel rather than a fabricated owner.
+    * **Why two tables and not one with a discriminator.**
+      `content_derived_blobs` is keyed by the BLAKE3 of the SOURCE, so
+      identical content shares one derivation — which is exactly what
+      must NOT happen for user-supplied bytes, or one user's uploaded
+      preview would be served for every file with matching content.
+      That is the poisoning vector; the split is what prevents it, and
+      a `kind` column on a single table would not.
+    * **Worked examples**, which is what turns the rule into something
+      checkable:
+      - the same image uploaded twice → one `content_derived_blobs` row,
+        two files, one thumbnail blob;
+      - a PDF with a client-uploaded preview → one `file_attached_blobs`
+        row per file, duplicated on copy, never shared;
+      - a screenshot WebP cannot shrink → a negative row with NULL
+        `blob_hash`, and what a reader is expected to conclude from it;
+      - the same content transcoded and thumbnailed → two rows, same
+        `source_hash`, different `kind`.
+    * **Lifecycle**: which rows hold a reference (positive
+      `blob_hash` bumps `chunk_manifests.ref_count`; a negative row
+      holds none), what reaps them (`purge_derived_blobs` on source
+      reap; the decrement trigger on `file_attached_blobs`), and which
+      consistency job covers which failure — the point being that a
+      satellite row whose SOURCE is gone breaks no refcount invariant,
+      which is why `satellites_consistency` had to exist at all.
+    * **The NULL-handling trap**, worth a paragraph because it has
+      already bitten twice: SQL comparison against NULL is NULL, so
+      `EXISTS (… WHERE blob_hash = h)` silently excludes negative rows.
+      That is correct for refcounts (a negative row holds none) and
+      WRONG for dangling checks (it reported every negative row as
+      `data_loss`). Anything joining on `blob_hash` must decide which
+      of the two it wants.
+
+    * **A diagram**, because the security boundary is a shape before it
+      is a rule — two arrows starting from different places is the
+      whole argument, and it lands faster than any paragraph:
+
+      ```mermaid
+      erDiagram
+          FILES  ||--o{ ATTACHED : "file_id — per FILE"
+          FILES  }o--|| BLOBS    : "blob_hash (content)"
+          BLOBS  ||--o{ DERIVED  : "source_hash — per CONTENT"
+          DERIVED }o--o| ARTIFACT : "blob_hash (NULL = negative)"
+          ATTACHED }o--|| ARTIFACT : "blob_hash"
+
+          FILES {
+              uuid id
+              text blob_hash
+          }
+          DERIVED {
+              text source_hash PK
+              text kind        PK
+              text variant     PK
+              text blob_hash   "NULL = not worth deriving"
+              text content_type "NULL iff blob_hash NULL"
+          }
+          ATTACHED {
+              uuid file_id  PK
+              text kind     PK
+              text variant  PK
+              text blob_hash
+              uuid uploaded_by "no FK; nil = imported"
+          }
+          ARTIFACT {
+              text hash PK
+          }
+      ```
+
+      What a reader should take from it: `DERIVED` hangs off **content**,
+      so two files with identical bytes reach the same row — good for a
+      render, catastrophic for an upload. `ATTACHED` hangs off the
+      **file**, so those rows are duplicated on copy and never shared.
+      Both point at the same artifact space, which is why one table
+      could not simply be folded into the other with a `kind` column.
+
+    **Landed** as `docs/architecture/derived-and-attached-blobs.md`,
+    beside `backend-storage.md`, which documents the blob layer these
+    sit on top of. Operator-facing rather than end-user, so schema and
+    SQL belong here in a way they do not in `docs/guide/`.
+
+    Named for the two things rather than for "satellite tables" —
+    that is internal shorthand nobody would search for, whereas
+    *derived* and *attached* are the words the schema and the import
+    jobs already use.
+
 Tracked separately, **not** part of this plan: the
 `storage.copy_folder_tree` refcount bug (see the copy section). It is
 a production data-loss bug on a path this plan doesn't otherwise
