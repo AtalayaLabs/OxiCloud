@@ -48,6 +48,7 @@
   },
   "dependencies": {
     "@serenity-kit/opaque": "^1.1.0",
+    "@svar-ui/svelte-calendar": "^2.6.0",
     "loglevel": "^1.9.2"
   }
 }
