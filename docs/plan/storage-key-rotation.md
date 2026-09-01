@@ -179,7 +179,17 @@ Guardrail:
   head pair's fingerprint differs from the second entry's — signals "you
   added new keys but haven't rotated legacy blobs yet".
 * A **legacy-blob counter** is surfaced in the admin panel per storage entry.
-  The counter is maintained by `blobs_consistency`: during its normal walk it
+
+  > **Retarget (post-split).** This plan names `blobs_consistency` as the
+  > host for the magic-byte branch throughout. That is no longer the right
+  > tenant: `blobs_consistency` became database-only and opens no backend,
+  > while `backend_consistency` owns every physical check and already holds
+  > the enumeration. Read `backend_consistency` wherever the sections below
+  > say `blobs_consistency`. Nothing else about the design changes — the
+  > magic-byte check still rides along on an existing walk, and still lands
+  > in the run's `stats` bag.
+
+  The counter is maintained by that scan: during its normal walk it
   branches on the magic-byte check and records the legacy count as a run
   statistic on `jobs.recoverable_runs` (existing surface, no schema hit). The
   admin panel reads the most recent count and displays it. Refresh cadence is

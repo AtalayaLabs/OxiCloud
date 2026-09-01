@@ -130,9 +130,11 @@ impl FileBlobWriteRepository {
                 DomainError::internal_error("FileBlobWrite", format!("parent lookup: {e}"))
             })?
             .ok_or_else(|| DomainError::not_found("Folder", fid)),
-            None => Err(DomainError::internal_error(
-                "FileBlobWrite",
-                "folder_id is required to determine the target drive",
+            // Same reasoning as the owner lookup below: caller error, not
+            // server error.
+            None => Err(DomainError::validation_error(
+                "folder_id is required: the destination folder determines the \
+                 target drive",
             )),
         }
     }
@@ -289,9 +291,15 @@ impl FileBlobWriteRepository {
                     rollback_err
                 );
             }
-            return Err(DomainError::internal_error(
-                "FileBlobWrite",
-                "folder_id is required to determine file owner",
+            // A missing required field is the caller's error, not the
+            // server's. As `internal_error` this surfaced as 500 /
+            // `error_type: Internal Error`, which the SPA cannot tell apart
+            // from the server breaking — so a malformed upload looked like an
+            // outage. The OpenAPI body description called the field optional,
+            // which is how it came to be omitted in the first place.
+            return Err(DomainError::validation_error(
+                "folder_id is required: the destination folder determines the \
+                 file's owner and drive",
             ));
         };
 
@@ -596,8 +604,25 @@ impl FileWritePort for FileBlobWriteRepository {
         new_name: Option<&str>,
         caller_id: Uuid,
     ) -> Result<File, DomainError> {
-        // Atomic CTE: read source file → insert new row with same blob_hash → increment ref_count.
-        // Single round-trip; blob content is NOT copied (dedup makes this zero-copy).
+        // Two statements in one transaction: insert the new row (same
+        // blob_hash — blob content is never copied, dedup makes this
+        // zero-copy), then run the shared satellite fan-out.
+        //
+        // `storage.copy_file_satellites` is the single home for everything
+        // that follows a file on copy — dead properties and the
+        // manifest-aware blob reference — shared with
+        // `storage.copy_folder_tree`. Two sites implementing that
+        // separately is what let the tree path ship a version that missed
+        // manifests entirely (migration `20261019000000`).
+        //
+        // It cannot be a CTE arm: data-modifying CTEs all observe the same
+        // snapshot, so a function called alongside the INSERT would not see
+        // the new `storage.files` row it needs to read `blob_hash` from,
+        // and the dead-property INSERT would fail its foreign key. Hence a
+        // real transaction — which also fixes the reference being
+        // best-effort before: a failed `add_reference` used to log a
+        // warning and leave a copy holding no reference at all, the exact
+        // shape that gets its content reaped.
         //
         // §14: `created_by = $4 = updated_by = caller_id` — the caller
         // authored this copy. The previous binding used
@@ -607,8 +632,10 @@ impl FileWritePort for FileBlobWriteRepository {
         let target_fid = target_folder_id.clone();
         let rename_to = new_name.map(|s| s.to_string());
 
-        let row = retry_on_deadlock("files.copy", || {
-            sqlx::query_as::<
+        let row = retry_on_deadlock("files.copy", || async {
+            let mut tx = self.pool.begin().await?;
+
+            let row = sqlx::query_as::<
                 _,
                 (
                     String,
@@ -662,20 +689,6 @@ impl FileWritePort for FileBlobWriteRepository {
                               blob_hash,
                               created_by,
                               updated_by
-                ),
-                -- RFC 4918 §8.8 — dead properties MUST be duplicated on
-                -- COPY. With the id-keyed store (migration
-                -- 20260830000001) this is a single batch INSERT keyed on
-                -- the new file's id. Runs in the same query as the file
-                -- INSERT so either both land or neither does — atomic
-                -- by virtue of being one statement.
-                dead_prop_copy AS (
-                    INSERT INTO storage.webdav_dead_properties
-                        (file_id, namespace, local_name, value)
-                    SELECT (SELECT id FROM new_file),
-                           dp.namespace, dp.local_name, dp.value
-                      FROM storage.webdav_dead_properties dp
-                     WHERE dp.file_id = $1::uuid
                 )
                 SELECT id_text, name, folder_id, size, mime_type,
                        created_at, updated_at,
@@ -687,7 +700,22 @@ impl FileWritePort for FileBlobWriteRepository {
             .bind(&target_fid)
             .bind(&rename_to)
             .bind(caller_id)
-            .fetch_optional(self.pool.as_ref())
+            .fetch_optional(&mut *tx)
+            .await?;
+
+            if let Some(ref new_row) = row {
+                // `new_row.0` is the new file's id as text; PG casts it.
+                sqlx::query(
+                    "SELECT storage.copy_file_satellites(ARRAY[$1::uuid], ARRAY[$2::uuid])",
+                )
+                .bind(file_id)
+                .bind(&new_row.0)
+                .execute(&mut *tx)
+                .await?;
+            }
+
+            tx.commit().await?;
+            Ok(row)
         })
         .await
         .map_err(|e| {
@@ -705,14 +733,8 @@ impl FileWritePort for FileBlobWriteRepository {
 
         let blob_hash = &row.7;
 
-        // Increment blob reference count (best-effort; INSERT already succeeded)
-        if let Err(e) = self.dedup.add_reference(blob_hash).await {
-            tracing::warn!(
-                "Failed to increment blob ref for copy {}: {}",
-                &blob_hash[..12],
-                e
-            );
-        }
+        // No `add_reference` here: `copy_file_satellites` took it inside the
+        // transaction above, so a copy that exists always holds a reference.
 
         tracing::info!(
             "📋 BLOB COPY: {} (hash: {}, zero-copy via dedup)",

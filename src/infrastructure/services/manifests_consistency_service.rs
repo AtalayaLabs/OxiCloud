@@ -46,8 +46,8 @@ use sqlx::PgPool;
 
 use crate::application::ports::blob_reference_ports::{BlobReferenceRegistry, RefLevel};
 use crate::infrastructure::scheduler::{
-    JobRegistry, JobRunArgs, JobStore, JobStoreProvider, RecoverableJobHandler, RunOutcome,
-    RunStatus, record_or_log,
+    JobRegistry, JobRunArgs, JobStore, JobStoreProvider, Mutates, RecoverableJobHandler,
+    RunOutcome, RunStatus, record_or_log,
 };
 
 pub const MANIFESTS_CONSISTENCY_JOB_NAME: &str = "manifests_consistency";
@@ -137,6 +137,26 @@ struct ManifestRow {
 impl RecoverableJobHandler for ManifestsConsistencyCheck {
     fn name(&self) -> &str {
         MANIFESTS_CONSISTENCY_JOB_NAME
+    }
+
+    fn description(&self) -> &'static str {
+        "Reconciles storage.chunk_manifests.ref_count against its actual \
+         referrers. There are two reference counters — a chunk reference \
+         lands on storage.blobs.ref_count, a whole-Blob reference on the \
+         manifest — and only the first was ever verified; this covers the \
+         other half."
+    }
+
+    fn mutates(&self) -> Mutates {
+        Mutates::OnRepairOnly
+    }
+
+    fn repair_description(&self) -> Option<&'static str> {
+        Some(
+            "Rewrites drifted manifest ref_count values to the recomputed \
+             truth. Nothing is deleted here — a corrected count only makes \
+             the manifest eligible for a later dedup_gc sweep.",
+        )
     }
 
     async fn count_total(&self) -> Option<u64> {
@@ -404,9 +424,6 @@ impl RecoverableJobHandler for ManifestsConsistencyCheck {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::repositories::pg::blob_reference_sources::{
-        ChunksReferenceSource, FilesReferenceSource,
-    };
 
     fn default_registry() -> BlobReferenceRegistry {
         let pool = Arc::new(
@@ -414,10 +431,7 @@ mod tests {
                 .connect_lazy("postgres://invalid/invalid")
                 .expect("lazy pool never connects"),
         );
-        let mut registry = BlobReferenceRegistry::new();
-        registry.register(Arc::new(FilesReferenceSource::new(pool.clone())));
-        registry.register(Arc::new(ChunksReferenceSource::new(pool)));
-        registry
+        crate::infrastructure::repositories::pg::blob_reference_sources::built_in_registry(pool)
     }
 
     /// Golden test — the statement is assembled from the registry, so pin it
@@ -437,7 +451,9 @@ mod tests {
      m.total_size AS total_size,
      m.chunk_count AS chunk_count,
      ((SELECT COUNT(*) FROM storage.files cnt_f
-               WHERE cnt_f.blob_hash = m.file_hash))::bigint AS actual_ref_count
+               WHERE cnt_f.blob_hash = m.file_hash)
+ + (SELECT COUNT(*) FROM storage.content_derived_blobs cnt_d WHERE cnt_d.blob_hash = m.file_hash)
+ + (SELECT COUNT(*) FROM storage.file_attached_blobs cnt_a WHERE cnt_a.blob_hash = m.file_hash))::bigint AS actual_ref_count
    FROM storage.chunk_manifests m
   WHERE ($1::text IS NULL OR m.file_hash > $1)
   ORDER BY m.file_hash

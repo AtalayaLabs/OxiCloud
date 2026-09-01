@@ -59,8 +59,8 @@ use crate::application::ports::blob_storage_ports::BlobStorageBackend;
 use crate::common::config::NamedStorageEntry;
 use crate::common::errors::DomainError;
 use crate::infrastructure::scheduler::{
-    JobRegistry, JobRunArgs, JobStore, JobStoreProvider, RecoverableJobHandler, RunOutcome,
-    RunStatus, record_or_log,
+    JobRegistry, JobRunArgs, JobStore, JobStoreProvider, Mutates, RecoverableJobHandler,
+    RunOutcome, RunStatus, record_or_log,
 };
 use crate::infrastructure::services::encrypted_blob_backend::{EncryptedBlobBackend, HeadCheck};
 use crate::infrastructure::services::entry_backend::{
@@ -186,6 +186,20 @@ impl BackendMigrationService {
 impl RecoverableJobHandler for BackendMigrationService {
     fn name(&self) -> &str {
         BACKEND_MIGRATION_JOB_NAME
+    }
+
+    fn description(&self) -> &'static str {
+        "Copies every blob payload from the backend the server booted with \
+         to the one the current storage settings describe. Covers legacy \
+         whole-file blobs and CDC chunks in a single walk. Resumable — a \
+         paused or crashed run continues from its cursor rather than \
+         restarting."
+    }
+
+    /// Writes bytes to the target backend. Source bytes are left in place —
+    /// the copy is additive, so an aborted migration loses nothing.
+    fn mutates(&self) -> Mutates {
+        Mutates::Always
     }
 
     /// Definitive count — one row per blob. `SELECT COUNT(*) FROM

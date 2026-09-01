@@ -357,3 +357,25 @@ Authorization: Bearer {{token}}
 HTTP 200
 [Asserts]
 header "Content-Type" startsWith "image/"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 23 – Upload without folder_id is a CLIENT error
+#
+# The destination folder determines the file's owner and drive, so the
+# field is required. It used to answer 500 / `error_type: Internal
+# Error`, which the SPA cannot distinguish from the server breaking — a
+# malformed request looked like an outage. The OpenAPI body description
+# called the field optional, which is how it came to be omitted.
+#
+# Asserts the status AND the error_type, because the contract the SPA
+# switches on is `error_type`, not the message.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/files/upload
+Authorization: Bearer {{token}}
+[MultipartFormData]
+file: file,fixtures/hello.txt; text/plain
+
+HTTP 400
+[Asserts]
+jsonpath "$.error_type" != "Internal Error"

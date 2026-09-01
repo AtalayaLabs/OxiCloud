@@ -65,6 +65,32 @@ impl S3BlobBackend {
         let prefix = &hash[0..2];
         format!("{}/{}.blob", prefix, hash)
     }
+
+    /// Inverse of [`Self::object_key`] — the hash a key names, or `None`
+    /// when the key is not one we wrote.
+    ///
+    /// Deliberately strict, and paired with `object_key` so the round-trip
+    /// stays honest. Enumeration passes no prefix to S3, so this filter is
+    /// the *only* thing separating our namespace from everything else in
+    /// the bucket; a lenient match would feed a non-hash into
+    /// `object_key`, which slices `[0..2]` and would produce a nonsense
+    /// resume position.
+    fn hash_from_object_key(key: &str) -> Option<String> {
+        let (prefix, rest) = key.split_once('/')?;
+        if prefix.len() != 2 || !prefix.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        let stem = rest.strip_suffix(".blob")?;
+        if stem.len() != 64 || !stem.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        // The shard must be the hash's own first two characters, or
+        // `object_key(hash)` would not reproduce this key.
+        if !stem.starts_with(prefix) {
+            return None;
+        }
+        Some(stem.to_string())
+    }
 }
 
 impl BlobStorageBackend for S3BlobBackend {
@@ -464,14 +490,21 @@ impl BlobStorageBackend for S3BlobBackend {
         None // Remote backend — no local path
     }
 
-    /// Enumerate blobs via S3 `ListObjectsV2`. Cursor is the S3
-    /// continuation token verbatim (opaque). Filter: keys must
-    /// match `<xx>/<64-hex>.blob` — matches how `blob_key` writes
-    /// them — so any future non-blob namespace living in the same
-    /// bucket (e.g. `thumbnails/<hash>.jpg`) is skipped
-    /// automatically. No prefix passed to S3 so we get everything
-    /// in one paginated scan; the client-side filter enforces
-    /// correctness.
+    /// Enumerate blobs via S3 `ListObjectsV2`, in ascending hash order.
+    ///
+    /// The cursor is a **hash**, per the port contract — resumed via
+    /// `StartAfter`, not a continuation token. That is what lets a caller
+    /// resume the backend side of a merge-join from a checkpoint it
+    /// already holds; a continuation token would force re-enumeration
+    /// from the start on every resume.
+    ///
+    /// No prefix is passed to S3, so the scan covers the whole bucket and
+    /// [`Self::hash_from_object_key`] does the filtering. Keys that are
+    /// not ours come back as `unknowns` rather than being dropped, so an
+    /// operator can see what is sharing the bucket. **On a bucket shared
+    /// with other workloads that means every foreign object is reported
+    /// as an unknown on every sweep** — give OxiCloud its own bucket, or
+    /// expect the noise.
     fn list_blob_hashes(
         &self,
         cursor: Option<String>,
@@ -492,63 +525,110 @@ impl BlobStorageBackend for S3BlobBackend {
         };
 
         Box::pin(async move {
-            let mut req = self
-                .client
-                .list_objects_v2()
-                .bucket(&self.bucket)
-                .max_keys(limit.min(1000) as i32);
-            if let Some(c) = cursor {
-                req = req.continuation_token(c);
-            }
+            // A page's cursor can only be the last blob hash on it, because
+            // the contract says the cursor IS a hash and `StartAfter` needs
+            // `object_key()` applied to it. A page holding only foreign keys
+            // therefore yields no cursor — and returning `None` there would
+            // end enumeration while the bucket still has objects, making an
+            // audit job under-report. That is the worst failure shape for a
+            // check whose entire purpose is finding missing data.
+            //
+            // So keep listing until the accumulated page holds at least one
+            // blob, or the bucket is exhausted. The continuation token is
+            // used only INSIDE this call and never escapes as a cursor.
+            // Bounded on foreign keys accumulated rather than on requests
+            // made: the request count scales with the caller's `limit`, so a
+            // request cap would fire on a healthy bucket merely because the
+            // caller paged finely.
+            const MAX_UNKNOWNS: usize = 10_000;
 
-            let resp = req.send().await.map_err(|e| {
-                DomainError::new(
-                    ErrorKind::InternalError,
-                    "Blob",
-                    format!("S3 ListObjectsV2 failed: {e}"),
-                )
-            })?;
-
-            let objects = resp.contents.unwrap_or_default();
-            let mut blobs: Vec<BackendBlobEntry> = Vec::with_capacity(objects.len());
+            let mut blobs: Vec<BackendBlobEntry> = Vec::new();
             let mut unknowns: Vec<BackendUnknownEntry> = Vec::new();
+            let mut continuation: Option<String> = None;
+            let mut requests = 0usize;
+            // Assigned on every path through the loop body before any exit.
+            let mut truncated;
 
-            for obj in objects {
-                let Some(key) = obj.key else { continue };
-                let mtime = obj.last_modified.and_then(|ts| {
-                    let secs = ts.secs();
-                    let nsecs = ts.subsec_nanos();
-                    chrono::DateTime::<chrono::Utc>::from_timestamp(secs, nsecs)
-                });
+            loop {
+                let mut req = self
+                    .client
+                    .list_objects_v2()
+                    .bucket(&self.bucket)
+                    .max_keys(limit.min(1000) as i32);
+                match (&continuation, &cursor) {
+                    // Mid-loop: continue exactly where the last inner
+                    // request stopped.
+                    (Some(token), _) => req = req.continuation_token(token),
+                    // First request: resume after the caller's hash.
+                    (None, Some(c)) => req = req.start_after(Self::object_key(c)),
+                    (None, None) => {}
+                }
 
-                // Canonical S3 key shape: `<xx>/<64-hex>.blob`.
-                // Anything else is a sidecar or foreign namespace
-                // (e.g. future `thumbnails/<hash>.jpg` if Ed adds
-                // that) — surface as an unknown so operators know
-                // it's there. Recovery framework can decide per-
-                // pattern how to act.
-                let is_canonical = key.split_once('/').and_then(|(prefix, rest)| {
-                    if prefix.len() != 2 || !prefix.chars().all(|c| c.is_ascii_hexdigit()) {
-                        return None;
+                let resp = req.send().await.map_err(|e| {
+                    DomainError::new(
+                        ErrorKind::InternalError,
+                        "Blob",
+                        format!("S3 ListObjectsV2 failed: {e}"),
+                    )
+                })?;
+
+                requests += 1;
+                truncated = resp.is_truncated.unwrap_or(false);
+                continuation = resp.next_continuation_token;
+
+                for obj in resp.contents.unwrap_or_default() {
+                    let Some(key) = obj.key else { continue };
+                    let mtime = obj.last_modified.and_then(|ts| {
+                        chrono::DateTime::<chrono::Utc>::from_timestamp(
+                            ts.secs(),
+                            ts.subsec_nanos(),
+                        )
+                    });
+
+                    match Self::hash_from_object_key(&key) {
+                        Some(hash) => blobs.push(BackendBlobEntry { hash, mtime }),
+                        // Not ours: a spool file, a sidecar, or another
+                        // workload sharing the bucket. Surfaced rather than
+                        // dropped so operators can see it; the recovery
+                        // framework decides per pattern how to act.
+                        None => unknowns.push(BackendUnknownEntry { path: key, mtime }),
                     }
-                    rest.strip_suffix(".blob")
-                        .filter(|stem| {
-                            stem.len() == 64 && stem.chars().all(|c| c.is_ascii_hexdigit())
-                        })
-                        .map(|s| s.to_string())
-                });
+                }
 
-                match is_canonical {
-                    Some(hash) => blobs.push(BackendBlobEntry { hash, mtime }),
-                    None => unknowns.push(BackendUnknownEntry { path: key, mtime }),
+                if !blobs.is_empty() || !truncated {
+                    break;
+                }
+
+                // `is_truncated` with no token is a protocol violation, and a
+                // huge run of foreign keys means we would buffer the bucket to
+                // find one blob. Neither can produce a valid cursor, so fail
+                // loudly: a visible job failure beats a sweep that silently
+                // reports "no missing blobs" having read a fraction of them.
+                if continuation.is_none() || unknowns.len() >= MAX_UNKNOWNS {
+                    return Err(DomainError::new(
+                        ErrorKind::InternalError,
+                        "Blob",
+                        format!(
+                            "S3 enumeration stalled after {requests} request(s) and {} \
+                             non-blob key(s) without reaching a blob, so no resume cursor \
+                             can be produced. Bucket '{}' likely holds a large foreign \
+                             namespace — give OxiCloud a dedicated bucket.",
+                            unknowns.len(),
+                            self.bucket,
+                        ),
+                    ));
                 }
             }
 
-            let next_cursor = if resp.is_truncated.unwrap_or(false) {
-                resp.next_continuation_token
+            // Always a real hash: the loop above only exits with an empty
+            // `blobs` when the listing is exhausted, and then there is
+            // nothing to resume from.
+            let next_cursor = if truncated {
+                blobs.last().map(|entry| entry.hash.clone())
             } else {
                 None
             };
+
             Ok(BlobListPage {
                 blobs,
                 unknowns,
@@ -621,5 +701,48 @@ where
         }
         SdkError::ConstructionFailure(c) => format!("request construction failed: {c:?}"),
         _ => format!("unknown SDK error: {err:?}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const H: &str = "0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9";
+
+    /// The enumeration cursor is fed straight back into `object_key`, so a
+    /// key that does not round-trip would resume at the wrong position.
+    #[test]
+    fn object_key_round_trips_through_hash_from_object_key() {
+        let key = S3BlobBackend::object_key(H);
+        assert_eq!(key, format!("0a/{H}.blob"));
+        assert_eq!(
+            S3BlobBackend::hash_from_object_key(&key).as_deref(),
+            Some(H)
+        );
+    }
+
+    /// Each of these previously risked being treated as a hash and sliced
+    /// `[0..2]` to build a resume position.
+    #[test]
+    fn non_canonical_keys_are_rejected() {
+        let cases = [
+            "0a/junk.tmp".to_string(),        // spool file
+            "junk.tmp".to_string(),           // no shard
+            "0a/junk".to_string(),            // no suffix
+            "thumbnails/abc.jpg".to_string(), // foreign namespace
+            format!("0a/{H}.blob.corrupt"),   // sidecar
+            format!("0a/{H}"),                // suffix missing
+            format!("zz/{H}.blob"),           // non-hex shard
+            format!("ff/{H}.blob"),           // shard != hash prefix
+            format!("0a/{}.blob", &H[..63]),  // wrong length
+        ];
+        for key in &cases {
+            assert_eq!(
+                S3BlobBackend::hash_from_object_key(key),
+                None,
+                "must not be read as a blob: {key}"
+            );
+        }
     }
 }

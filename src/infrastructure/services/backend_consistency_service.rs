@@ -1,18 +1,53 @@
 //! Fifth tenant of Part 2 (recoverable-run engine).
 //!
-//! Iterates the storage backend's blob-enumeration surface and
-//! reports every blob physically present on the backend that has NO
-//! matching row in `storage.blobs`. Complements
-//! `blobs_consistency` (which walks the DB and probes the backend):
-//! together they close the reference graph.
+//! **Merge-joins** the backend's blob enumeration against
+//! `storage.blobs`, both ordered by hash, so a single pass yields the
+//! delta in *both* directions rather than one.
 //!
-//! ### Per-row check
+//! It previously walked the backend and probed the DB with
+//! `WHERE hash = ANY($1)` over each page, which could only ever see
+//! backend-only entries: a row whose bytes are gone never appears in a
+//! backend listing, so it was invisible here by construction. That half
+//! was left to `blobs_consistency`'s per-row HEAD probe, which does not
+//! survive the row counts this plan produces — see
+//! `docs/plan/derived-blobs.md`. That probe is now gone: this tenant
+//! owns every backend-side check, and `blobs_consistency` is DB-only.
+//!
+//! ### Per-row checks
 //!
 //! * `orphan_blob` (severity `inconsistent`) — bytes on disk / S3 /
 //!   Azure with no registry row. Not data-loss (nothing broken —
 //!   just storage overhead), but points at dedup_gc or
 //!   ingest-path drift. Recovery = register-registry-row (if the
 //!   bytes are still needed) OR delete the file (if truly orphan).
+//! * `blob_missing_from_backend` (severity `data_loss`) — a registry
+//!   row whose bytes are absent. The opposite direction and the more
+//!   serious one: an orphan wastes space, this loses a file.
+//! * `blob_corrupted` (severity `data_loss`, `?deep=true` only) —
+//!   the key exists on both sides but the bytes behind it no longer
+//!   hash to it. Silent bit-rot.
+//! * `blob_unreadable` (severity `data_loss`, `?deep=true` only) —
+//!   the key exists but the bytes cannot be read at all: decrypt
+//!   failure (missing key), transport error, permissions. Same impact
+//!   as corruption from a file's point of view, different remedy,
+//!   hence a separate kind. Triage on the recorded `error`.
+//!
+//! ### Deep mode
+//!
+//! The last two moved here from `blobs_consistency`, which used to
+//! carry a backend solely for them. Re-hashing is backend work end to
+//! end — the only DB input is the hash — and this walk already holds
+//! the matched key pairs, which is exactly the set worth reading. It
+//! costs a full read of every blob, so it is opt-in.
+//!
+//! ### Why the two orderings agree
+//!
+//! The merge-join's premise is that the backend's byte order and the
+//! database's `ORDER BY hash` rank identically. They do, because hashes
+//! are lowercase BLAKE3 hex of fixed length: over `[0-9a-f]` digits
+//! precede letters in both, and there is no case to fold. A hash column
+//! that ever admitted uppercase or variable length would break this
+//! silently and in both directions at once.
 //!
 //! ### Run-level check
 //!
@@ -42,7 +77,6 @@
 //! denominator (backend count ≈ blob count on a healthy install;
 //! deviation IS the finding).
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -54,14 +88,18 @@ use crate::infrastructure::scheduler::{
     JobRegistry, JobRunArgs, JobStore, JobStoreProvider, ProgressKind, RecoverableJobHandler,
     RunOutcome, RunStatus, record_or_log,
 };
+use crate::infrastructure::services::blob_diagnostics::affected_files;
 
 pub const BACKEND_CONSISTENCY_JOB_NAME: &str = "backend_consistency";
 
-/// Same `params` JSONB key `blobs_consistency` uses — kept identical
-/// so operators grepping run rows see the same convention across
-/// both storage-audit tenants.
-pub const PROBED_STORAGE_PARAM: &str =
-    crate::infrastructure::services::blobs_consistency_service::PROBED_STORAGE_PARAM;
+/// `params` JSONB key under which the entry name being enumerated is
+/// stashed on a Fresh run (matches `TARGET_NAME_PARAM` on
+/// `backend_migration`). Resumed runs re-read it so a paused audit
+/// survives restart without the admin re-specifying the target.
+///
+/// Defined here rather than in `blobs_consistency`, which no longer
+/// touches a backend and so has no entry to scope.
+pub const PROBED_STORAGE_PARAM: &str = "probed_storage";
 
 /// Batch size for backend enumeration + DB probe. 500 is enough to
 /// amortise the DB round-trip while keeping the cancel-poll cadence
@@ -128,6 +166,16 @@ impl BackendConsistencyCheck {
 impl RecoverableJobHandler for BackendConsistencyCheck {
     fn name(&self) -> &str {
         BACKEND_CONSISTENCY_JOB_NAME
+    }
+
+    fn description(&self) -> &'static str {
+        "Merge-joins the storage backend's blob enumeration against \
+         storage.blobs, both ordered by hash, so one pass yields the delta \
+         in both directions: bytes on the backend no DB row claims, and \
+         rows whose bytes are gone. Add ?deep=true to also read every \
+         matched blob back and re-hash it, catching silent bit-rot — that \
+         is a full read of storage and can take hours. Read-only in both \
+         modes: nothing is uploaded or deleted."
     }
 
     /// Approximate total: on a healthy install every backend blob
@@ -231,6 +279,49 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                 probed_storage = %name,
                 "backend_consistency enumerating entry `{name}` (via ?storage=<name>) instead \
                  of live backend"
+            );
+        }
+
+        // Deep mode — read every matched blob back and re-hash it, rather
+        // than trusting that a key present on both sides means the bytes
+        // behind it are still the bytes that key names.
+        //
+        // It lives here rather than in `blobs_consistency` because it is
+        // a backend operation end to end: the only DB input is the hash,
+        // which this merge-join already holds. Keeping it there forced
+        // that tenant to carry a backend for one flag, which is the
+        // overlap this split removes.
+        //
+        // Persisted to `params.deep` on a Fresh run so a Resume picks up
+        // the same mode (a Paused deep scan must not silently continue
+        // shallow) and the admin run-detail view can show what the scan
+        // actually verified. Written BEFORE the walk so a crash mid-batch
+        // still leaves the marker.
+        let deep = if is_fresh {
+            let v = if args.deep { "true" } else { "false" };
+            if let Err(e) = store.set_string_param("deep", v).await {
+                return RunOutcome::Failed {
+                    message: format!("failed to persist deep flag to params: {e}"),
+                };
+            }
+            args.deep
+        } else {
+            match store.get_string_param("deep").await {
+                Ok(Some(v)) => v == "true",
+                Ok(None) => false,
+                Err(e) => {
+                    return RunOutcome::Failed {
+                        message: format!("read `deep` from params: {e}"),
+                    };
+                }
+            }
+        };
+        if deep {
+            tracing::info!(
+                target: "oxicloud::consistency",
+                event = "backend_consistency.deep_mode_active",
+                run_id = %store.run_id(),
+                "deep mode: re-reading + re-hashing every matched blob (bit-rot detection)"
             );
         }
 
@@ -376,60 +467,174 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                 return RunOutcome::completed();
             }
 
-            // Batch DB probe: which of these hashes have a
-            // `storage.blobs` row? One `WHERE hash = ANY($1)` per
-            // batch — indexed lookup, cheap even on millions of
-            // rows.
-            let batch_hashes: Vec<String> = page.blobs.iter().map(|e| e.hash.clone()).collect();
-            let db_present: HashSet<String> = if batch_hashes.is_empty() {
-                HashSet::new()
-            } else {
-                match sqlx::query_as::<_, (String,)>(
-                    r#"SELECT hash FROM storage.blobs WHERE hash = ANY($1)"#,
-                )
-                .bind(&batch_hashes[..])
-                .fetch_all(self.pool.as_ref())
-                .await
-                {
-                    Ok(rows) => rows.into_iter().map(|(h,)| h).collect(),
-                    Err(e) => {
-                        return RunOutcome::Failed {
-                            message: format!("db probe: {e}"),
-                        };
-                    }
+            // ── Merge-join, not a one-sided probe ────────────────
+            //
+            // Both sides are ordered by hash ascending — the backend by
+            // contract (`BlobStorageBackend::list_blob_hashes`), the DB by
+            // `ORDER BY hash` — so one pass yields BOTH deltas instead of
+            // one:
+            //
+            //   * present on the backend, absent from the DB → `orphan_blob`
+            //   * present in the DB, absent from the backend →
+            //     `blob_missing_from_backend` (data loss, not overhead)
+            //
+            // The old form probed `WHERE hash = ANY($1)` over the backend
+            // page, so it could only ever see the first kind: a row whose
+            // bytes are gone never appears in a backend listing and was
+            // invisible here by construction.
+            //
+            // Ordering is the whole premise, so it is worth being explicit
+            // about why the two agree. Hashes are lowercase BLAKE3 hex of
+            // fixed length, and over `[0-9a-f]` the database collation and
+            // byte order rank identically (digits before letters in both,
+            // no case folding to disagree about). A hash column that ever
+            // admitted uppercase or variable length would break this
+            // silently, in both directions.
+            let db_hashes: Vec<String> = match sqlx::query_as::<_, (String,)>(
+                r#"SELECT hash FROM storage.blobs
+                    WHERE ($1::text IS NULL OR hash > $1)
+                    ORDER BY hash
+                    LIMIT $2"#,
+            )
+            .bind(cursor.as_deref())
+            .bind(BATCH_SIZE as i64)
+            .fetch_all(self.pool.as_ref())
+            .await
+            {
+                Ok(rows) => rows.into_iter().map(|(h,)| h).collect(),
+                Err(e) => {
+                    return RunOutcome::Failed {
+                        message: format!("db page: {e}"),
+                    };
                 }
             };
 
-            for entry in &page.blobs {
-                if db_present.contains(&entry.hash) {
-                    continue;
-                }
-                if let Some(mtime) = entry.mtime
-                    && mtime > grace_cutoff
-                {
-                    continue;
-                }
+            // The two pages cover different ranges, so only the overlap can
+            // be judged. Beyond `horizon` a hash missing from one side may
+            // simply be on the next page of the other, and emitting there
+            // would invent findings in both directions. When a side is
+            // exhausted its entries cannot be "on a later page", so the
+            // other side's tail becomes judgeable.
+            let backend_last = page.blobs.last().map(|e| e.hash.as_str());
+            let db_last = db_hashes.last().map(|s| s.as_str());
+            let backend_done = page.next_cursor.is_none();
+            let db_done = db_hashes.len() < BATCH_SIZE;
 
-                finding_count += 1;
-                record_or_log(
-                    store,
-                    BACKEND_CONSISTENCY_JOB_NAME,
-                    "orphan_blob",
-                    "inconsistent",
-                    None,
-                    serde_json::json!({
-                        "hash":    entry.hash,
-                        "mtime":   entry.mtime.map(|t| t.to_rfc3339()),
-                        "backend": backend.backend_type(),
-                    }),
-                )
-                .await;
+            let horizon: Option<&str> = match (backend_last, db_last) {
+                _ if backend_done && db_done => None, // judge everything
+                (Some(b), Some(d)) if backend_done => Some(b.max(d)),
+                (Some(b), Some(d)) if db_done => Some(b.max(d)),
+                (Some(b), Some(d)) => Some(b.min(d)),
+                (Some(b), None) => Some(b),
+                (None, Some(d)) => Some(d),
+                (None, None) => None,
+            };
+            let in_range = |h: &str| horizon.is_none_or(|limit| h <= limit);
+
+            let mut bi = page.blobs.iter().peekable();
+            let mut di = db_hashes.iter().peekable();
+            loop {
+                match (bi.peek(), di.peek()) {
+                    // Present on both sides. Shallow: nothing to say — the
+                    // key exists where the registry claims. Deep: the key
+                    // matching says nothing about the bytes behind it, so
+                    // read them back and re-hash.
+                    //
+                    // Guarded by `in_range` so a pair past the horizon is
+                    // not read twice — the cursor stops at the horizon, so
+                    // that pair comes round again next batch and is
+                    // verified then.
+                    (Some(b), Some(d)) if b.hash == **d => {
+                        if deep && in_range(&b.hash) {
+                            finding_count +=
+                                self.verify_bytes(store, backend.as_ref(), &b.hash).await;
+                        }
+                        bi.next();
+                        di.next();
+                    }
+                    // Backend-only: bytes with no registry row.
+                    (Some(b), d_opt)
+                        if d_opt.is_none_or(|d| b.hash.as_str() < d.as_str())
+                            && in_range(&b.hash) =>
+                    {
+                        // Grace window: the write path is
+                        // durability-before-visibility, so bytes exist
+                        // briefly before their row does. Without this every
+                        // in-flight upload reads as an orphan.
+                        if !matches!(b.mtime, Some(m) if m > grace_cutoff) {
+                            finding_count += 1;
+                            record_or_log(
+                                store,
+                                BACKEND_CONSISTENCY_JOB_NAME,
+                                "orphan_blob",
+                                "inconsistent",
+                                None,
+                                serde_json::json!({
+                                    "hash":    b.hash,
+                                    "mtime":   b.mtime.map(|t| t.to_rfc3339()),
+                                    "backend": backend.backend_type(),
+                                }),
+                            )
+                            .await;
+                        }
+                        bi.next();
+                    }
+                    // DB-only: a row whose bytes are gone. Severity is
+                    // `data_loss`, not `inconsistent` — an orphan wastes
+                    // space, this loses a file.
+                    (b_opt, Some(d))
+                        if b_opt.is_none_or(|b| d.as_str() < b.hash.as_str()) && in_range(d) =>
+                    {
+                        finding_count += 1;
+                        record_or_log(
+                            store,
+                            BACKEND_CONSISTENCY_JOB_NAME,
+                            "blob_missing_from_backend",
+                            "data_loss",
+                            None,
+                            serde_json::json!({
+                                "hash":    d,
+                                "backend": backend.backend_type(),
+                                "note":    "registry row with no bytes on the backend",
+                            }),
+                        )
+                        .await;
+                        di.next();
+                    }
+                    // Past the horizon on both sides, or both exhausted.
+                    _ => break,
+                }
             }
 
-            // Advance cursor + checkpoint. Scanned count tracks
-            // both blobs and unknowns since we walked both.
+            // Advance to the horizon, not the backend's own cursor.
+            //
+            // One hash serves both sides: they share an ordering, so "resume
+            // after H" means `start_after(H)` on the backend and
+            // `WHERE hash > H` in the DB. Advancing past the horizon would
+            // skip the un-judged tail of whichever side reached further.
+            //
+            // Scanned count covers blobs and unknowns, since both were
+            // walked.
             let batch_len = (page.blobs.len() + page.unknowns.len()) as u64;
-            cursor = page.next_cursor;
+            let exhausted = backend_done && db_done;
+            cursor = if exhausted {
+                None
+            } else {
+                horizon.map(|h| h.to_string())
+            };
+
+            // Neither side exhausted yet no horizon means neither returned a
+            // row — nothing left to compare, and continuing would spin on the
+            // same empty pages forever.
+            if cursor.is_none() && !exhausted && horizon.is_none() {
+                tracing::debug!(
+                    target: "oxicloud::consistency",
+                    event = "backend_consistency.no_horizon",
+                    run_id = %store.run_id(),
+                    "both sides returned no rows before exhaustion; ending the sweep"
+                );
+            }
+
             let cursor_bytes = cursor
                 .as_ref()
                 .map(|s| s.as_bytes().to_vec())
@@ -440,8 +645,7 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                 };
             }
 
-            // Backend returned no next_cursor → enumeration
-            // complete. Emit the completion log and return.
+            // Both sides drained → the sweep is complete.
             if cursor.is_none() {
                 tracing::info!(
                     target: "oxicloud::consistency",
@@ -455,4 +659,107 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
             }
         }
     }
+}
+
+impl BackendConsistencyCheck {
+    /// Deep-mode per-blob verification. Reads the blob back, re-hashes it,
+    /// and records what it finds. Returns the number of findings recorded
+    /// (0 or 1) so the caller's counter stays the single tally.
+    ///
+    /// Moved here from `blobs_consistency` along with the rest of the
+    /// backend-touching work: the merge-join already holds a verified
+    /// key pair, which is exactly the set worth reading.
+    async fn verify_bytes(
+        &self,
+        store: &dyn JobStore,
+        backend: &dyn BlobStorageBackend,
+        hash: &str,
+    ) -> u64 {
+        match recompute_hash(backend, hash).await {
+            // The bytes still hash to the key they are filed under.
+            Ok(computed) if computed == hash => 0,
+            // Silent bit-rot. `computed_hash` is reported rather than a
+            // bare "mismatch" because the value is diagnostic: a one-bit
+            // flip, a truncation and a whole-object swap leave distinct
+            // signatures.
+            Ok(computed) => {
+                let affected = affected_files(self.pool.as_ref(), hash).await;
+                record_or_log(
+                    store,
+                    BACKEND_CONSISTENCY_JOB_NAME,
+                    "blob_corrupted",
+                    "data_loss",
+                    None,
+                    serde_json::json!({
+                        "hash":           hash,
+                        "computed_hash":  computed,
+                        "backend":        backend.backend_type(),
+                        "affected_files": affected,
+                    }),
+                )
+                .await;
+                1
+            }
+            // Bytes are there by key but cannot be read at all: decrypt
+            // failure (missing key), transport error, permissions. Same
+            // impact as corruption from a file's point of view — the
+            // content is inaccessible — but a different remedy, which is
+            // why it is a separate kind rather than folded into
+            // `blob_corrupted`. Operators triage on `error`.
+            Err(e) => {
+                let affected = affected_files(self.pool.as_ref(), hash).await;
+                record_or_log(
+                    store,
+                    BACKEND_CONSISTENCY_JOB_NAME,
+                    "blob_unreadable",
+                    "data_loss",
+                    None,
+                    serde_json::json!({
+                        "hash":           hash,
+                        "backend":        backend.backend_type(),
+                        "affected_files": affected,
+                        "error":          e.to_string(),
+                    }),
+                )
+                .await;
+                tracing::warn!(
+                    target: "oxicloud::consistency",
+                    event = "backend_consistency.blob_unreadable",
+                    run_id = %store.run_id(),
+                    hash = %hash,
+                    error = %e,
+                    "🚨 blob unreadable in deep mode — recorded finding, continuing"
+                );
+                1
+            }
+        }
+    }
+}
+
+/// Deep-mode helper — read the blob from the backend and recompute its
+/// BLAKE3 hash. Returns the recomputed hex string; callers compare it
+/// against the expected hash themselves. Returning the actual hash (not
+/// a bool) lets the finding surface WHAT the bytes now hash to, which is
+/// diagnostic gold: a one-bit flip has a very different signature from a
+/// chunk-boundary corruption or a truncated read. `Err(_)` on any
+/// backend-side error — the caller records that as `blob_unreadable`
+/// rather than as corruption.
+async fn recompute_hash(
+    backend: &dyn BlobStorageBackend,
+    expected_hash: &str,
+) -> Result<String, crate::common::errors::DomainError> {
+    use crate::common::errors::DomainError;
+    use futures::StreamExt;
+
+    let mut stream = backend.get_blob_stream(expected_hash).await?;
+    let mut hasher = blake3::Hasher::new();
+
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(|e| {
+            DomainError::internal_error("BackendConsistency", format!("stream read: {e}"))
+        })?;
+        hasher.update(&bytes);
+    }
+
+    Ok(hasher.finalize().to_hex().to_string())
 }

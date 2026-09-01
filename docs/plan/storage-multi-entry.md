@@ -407,10 +407,12 @@ Per slice, plus these end-to-end scenarios in Hurl:
 6. **In-place encryption rotation refused**: two entries, same S3 bucket,
    different encryption keys. Trigger migration → refuses with the specific
    error message pointing at the encryption case and the two-step workaround.
-7. **`?storage=<name>` on blobs_consistency**: run against `s3_prod` before
+7. **`?storage=<name>` on backend_consistency**: run against `s3_prod` before
    cutover. Full walk, `probed_storage` in run row. Then cutover, then rerun
    against `local_main` — verifies old backend still has everything.
-8. **Unknown storage name**: `POST /admin/jobs/blobs_consistency/trigger?storage=nope`
+   (This scenario named `blobs_consistency` until that tenant became
+   database-only; entry scoping belongs to whichever job opens a backend.)
+8. **Unknown storage name**: `POST /admin/jobs/backend_consistency/trigger?storage=nope`
    → 400 with known-names list. No run row created.
 9. **Missing entry at boot**: `active_backend_name = "gone"` but `_ENTRIES`
    doesn't include it → boot aborts with the specific message pointing at

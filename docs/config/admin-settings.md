@@ -100,11 +100,15 @@ This one-shot repair command re-runs the same env-parse the server does at boot,
 
 ### Auditing entries other than the active one
 
-`blobs_consistency` and `backend_consistency` (recoverable jobs on the Jobs tab) accept `?storage=<name>` to probe any declared entry — not just the live one. Use this to verify a migration target before cutover, or to audit an old backend after cutover but before decommissioning:
+`backend_consistency` (a recoverable job on the Jobs tab) accepts `?storage=<name>` to audit any declared entry — not just the live one. Use this to verify a migration target before cutover, or to audit an old backend after cutover but before decommissioning:
 
 ```
-POST /api/admin/jobs/blobs_consistency/trigger?storage=<name>
+POST /api/admin/jobs/backend_consistency/trigger?storage=<name>
 ```
+
+Add `?deep=true` to also read every blob back and re-hash it, which catches silent bit-rot. That is a full read of the entry and can take hours.
+
+`blobs_consistency` does *not* accept `?storage=<name>`: it only reads the database, so there is no entry for it to scope.
 
 Unknown names 400 at the HTTP layer.
 

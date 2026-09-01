@@ -171,6 +171,58 @@ Native services implement this trait on an existing service type (no
 new wrapper) and register a single `Arc<dyn JobHandler>` with the
 scheduler.
 
+### Self-description — `description` / `mutates` / `repair_description`
+
+Three defaulted methods on both `JobHandler` and `RecoverableJobHandler`
+let a job tell the admin UI what it is. `RecoverableAdapter` forwards
+them, since the registry only ever holds `dyn JobHandler`.
+
+```rust
+fn description(&self) -> &'static str { "" }
+fn mutates(&self) -> Mutates { Mutates::Never }
+fn repair_description(&self) -> Option<&'static str> { None }
+
+pub enum Mutates { Never, Always, OnRepairOnly }
+```
+
+They surface on `JobSummary` (`GET /api/admin/jobs`) and drive the
+panel: `Never` earns a read-only badge and triggers straight through,
+`Always` confirms first, `OnRepairOnly` is safe to run and confirms only
+when the repair variant is picked. `repair_description.is_some()` is
+what renders the repair toggle at all, and its text is the confirmation
+copy.
+
+**Why three values and not a boolean.** A job can be read-only by
+default and destructive under `?repair=true`; a boolean has to answer
+wrongly for one of those two modes, and `false` on something that
+deletes files is the dangerous direction to be wrong in. It is also
+where the recovery framework is heading — discovery-only default,
+mutation behind an opt-in — so a tenant that later grows a repair arm
+changes this one value and nothing else.
+
+**Why `Option<&str>` and not `supports_repair: bool` + prose.**
+Presence gates the toggle, content supplies the wording. Split across
+two methods they can disagree; and the frontend cannot invent the
+wording itself, because correcting a counter and unlinking files off
+disk are not the same warning. The two are independent, not derived
+from each other: the thumbnail imports are `Always` *and*
+repair-capable.
+
+`OnRepairOnly` with no `repair_description` is rejected at registration
+— it claims to mutate only under a flag it does not support, and would
+render as safe with no reachable mutating path.
+
+**Why English in the trait, not `locales/*.json`.** A description that
+lives away from the behaviour rots the moment a job changes, invisibly,
+and a translator cannot know what `manifests_consistency` reconciles.
+i18n can layer on later keyed by job name with these as the fallback,
+matching the frontend's `t(key, params, fallback)` — a missing
+translation then degrades to English from code rather than to a blank
+panel. No rework needed to get there.
+
+Defaults exist so the methods could be added without touching every
+job at once; every registered job declares all three today.
+
 ### `JobOutcome`
 
 ```rust
@@ -684,6 +736,98 @@ trigger) resumes any `Paused` row per the normal flow.
 
 Consistency-check.md's existing consistency-scoped sweep collapses
 into this general one.
+
+### Startup jobs — `OXICLOUD_STARTUP_JOBS`
+
+A comma-separated list of jobs to dispatch once, in the background,
+after the scheduler is ready. Each entry is a registered job name,
+optionally with the same query syntax the admin trigger URL uses.
+
+**The default is both migration jobs, in repair mode:**
+
+```
+OXICLOUD_STARTUP_JOBS=thumb_derived_import?repair=true,thumb_attached_import?repair=true
+```
+
+An explicit value replaces that list; an empty value disables startup
+jobs entirely.
+
+**Why it exists.** Scheduled ticks deliberately never pass `repair` — a
+job that deletes on its default setting is what no-silent-auto-repair
+forbids. But that left the migration jobs unable to finish on their
+own: a deployment whose operator never opens the admin panel re-imports
+sidecars it already imported, forever, and never drains the directory.
+
+**Why the default deletes anyway.** Relying on operators to edit `.env`
+has the same failure mode one level up — the ones who never edit it are
+exactly the ones whose migration never completes. So this is a
+deliberate exception to no-silent-auto-repair, and it rests on three
+properties that must keep holding:
+
+- **Nothing is deleted before its replacement has been read back.**
+  `verify_and_unlink` imports, reads the blob back through the normal
+  stack, and only then unlinks; a store that reported success but landed
+  unreadable keeps its sidecar. This matters most for
+  `thumb_attached_import`, whose bytes are user-uploaded previews with
+  no render path — a wrong deletion there is permanent, where a wrong
+  deletion of a server-rendered thumbnail costs a re-render.
+- **Sidecars whose source is gone are deleted without a readback**,
+  because there is nothing to read back and nothing can reference them
+  again. Unrecoverable and unreachable are different things; these are
+  both.
+- **Every deletion is audited**, so what a boot removed, and from which
+  source, is reconstructable afterwards.
+
+The consequence to hold in mind: an upgrade deletes on first boot, in
+every deployment at once, with no operator action. A regression in the
+readback path would be simultaneous and unrecoverable, so that code is
+load-bearing. Operators who want to inspect before committing set
+`OXICLOUD_STARTUP_JOBS=thumb_derived_import,thumb_attached_import` —
+same jobs, import only.
+
+It is not a "run everything in repair mode" switch. Each job is named
+individually and carries its own flags.
+
+**Validation is fail-fast.** An unknown job name panics at boot — the
+registry is fully populated by then, so a name that doesn't resolve is a
+typo or a stale rename, and ignoring it would leave a migration that
+silently never runs. Unknown flags panic too: a dropped `?repare=true`
+would leave the job in discovery-only mode while the operator believed
+the tier was draining, and the symptom ("it never finished") surfaces
+months later with nothing pointing back at the config.
+
+**Dispatch is non-blocking.** `tokio::spawn`, so readiness never waits
+on a job that may walk a filesystem for hours. Jobs in the list run
+sequentially within that task, not concurrently: they contend for the
+same directories and pool, and the exclusivity gate would turn overlap
+into a *skipped* run rather than a queued one.
+
+**Interrupted runs resume.** The boot recovery sweep above runs first
+and flips every abandoned `Running` row to `Paused` with its cursor
+intact; `run_or_resume` then picks Resume over a fresh start. So a
+migration killed by a restart continues where it stopped, and completes
+across however many restarts it takes.
+
+That is a deliberate exception to "do NOT auto-resume" — scoped to the
+named jobs only. The rule protects against a restart silently resuming
+work nobody asked for; here somebody did ask, in configuration, and not
+having to ask again is the entire point. Every other paused run still
+waits for an operator.
+
+A resumed run keeps the flags it started with (`repair` / `deep` are
+persisted to `params` on the fresh open and read back on resume), so
+editing the config mid-migration does not retroactively change a run
+already in flight.
+
+**Safe to leave set.** Each job is idempotent and resumable; once the
+tier has drained, a run is a `read_dir` over three directories that
+returns nothing — and after the directory is removed, not even that.
+
+**Visible in the admin panel.** These are ordinary registered jobs:
+they appear in `GET /api/admin/jobs`, are triggerable by hand, and
+record the same runs and findings. Rows named here additionally carry a
+`startup` object with the configured flags, so an operator can see that
+a job deletes files on every boot rather than only when someone clicks.
 
 ### Admin surface (recoverable runs)
 

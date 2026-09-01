@@ -2,6 +2,8 @@ use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::infrastructure::scheduler::JobRunArgs;
+
 /// Cache configuration
 #[derive(Debug, Clone)]
 pub struct CacheConfig {
@@ -2280,6 +2282,148 @@ pub struct GrantCleanupConfig {
     pub interval_hours: u64,
 }
 
+/// One job to dispatch once at startup, parsed from an entry of
+/// `OXICLOUD_STARTUP_JOBS`.
+///
+/// **Why this exists.** Scheduled ticks deliberately never pass
+/// `repair` — a job that deletes on its default setting is the thing
+/// no-silent-auto-repair forbids. But that leaves the migration jobs in
+/// a state where an operator who never opens the admin panel imports
+/// forever and never drains: the sidecars are fully redundant, and
+/// nothing removes them. Naming the job in configuration IS the
+/// deliberate operator action; it just gets taken once, at boot,
+/// instead of every time.
+///
+/// Not a general "run everything in repair mode" switch. Each job is
+/// named individually, and the flags are per job.
+/// Holds a [`JobRunArgs`] rather than re-listing its fields. They are
+/// the same four flags with the same meanings, and a copy here would
+/// have to be found and updated the next time the scheduler grows a
+/// fifth — silently ignoring it in configuration until someone noticed.
+#[derive(Debug, Clone, Default)]
+pub struct StartupJob {
+    /// Registered job name — must match `JobHandler::name`.
+    pub name: String,
+    /// Forwarded verbatim to `JobRegistry::trigger`.
+    pub args: JobRunArgs,
+}
+
+/// Parse one `OXICLOUD_STARTUP_JOBS` entry: `name`, or
+/// `name?repair=true&deep=true`.
+///
+/// The query syntax is the one an operator already types at
+/// `POST /api/admin/jobs/{name}/trigger?repair=true`, so the value is
+/// literally the request they would otherwise make by hand.
+///
+/// **Errors on anything it does not recognise**, rather than ignoring
+/// it. A silently-dropped `?repare=true` typo would leave the job
+/// running in discovery-only mode forever while the operator believed
+/// the tier was draining — the failure would surface as "the migration
+/// never finishes" months later, with nothing in the logs pointing at
+/// the config. Same reasoning as fail-fast on any broken config.
+fn parse_startup_job(raw: &str) -> Result<StartupJob, String> {
+    let raw = raw.trim();
+    let (name, query) = match raw.split_once('?') {
+        Some((n, q)) => (n.trim(), q),
+        None => (raw, ""),
+    };
+    if name.is_empty() {
+        return Err("empty job name".to_string());
+    }
+
+    let mut job = StartupJob {
+        name: name.to_string(),
+        args: JobRunArgs::default(),
+    };
+
+    for pair in query.split('&').filter(|p| !p.is_empty()) {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("`{pair}` is not key=value (job `{name}`)"))?;
+        // Booleans accept only `true`/`false` — the same rule the HTTP
+        // trigger enforces, so a value that works in one place works in
+        // the other. See memory `bug_axum_query_bool_only_accepts_true_false`.
+        let as_bool = || match value {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            other => Err(format!(
+                "`{key}={other}` on job `{name}`: expected true or false"
+            )),
+        };
+        match key {
+            "force" => job.args.force = as_bool()?,
+            "deep" => job.args.deep = as_bool()?,
+            "repair" => job.args.repair = as_bool()?,
+            "storage" => job.args.storage = Some(value.to_string()),
+            other => {
+                return Err(format!(
+                    "unknown flag `{other}` on job `{name}`: expected force, deep, repair \
+                     or storage"
+                ));
+            }
+        }
+    }
+    Ok(job)
+}
+
+/// What runs at boot when `OXICLOUD_STARTUP_JOBS` is unset.
+///
+/// **Both migration jobs, both in repair mode** — they import their
+/// sidecars and then delete them. Chosen deliberately: an operator who
+/// never edits `.env` is the normal case, and a migration nobody
+/// triggers never finishes, so a default that only imports would leave
+/// every untouched deployment carrying a fully-redundant `.thumbnails/`
+/// forever.
+///
+/// This is a destructive default, which is a real exception to
+/// no-silent-auto-repair, so what makes it safe has to hold:
+///
+/// * **Nothing is deleted before its replacement has been read back.**
+///   `verify_and_unlink` imports, reads the blob back through the normal
+///   stack, and only then unlinks. A store that reported success but
+///   landed unreadable keeps its sidecar. That readback is the whole
+///   safety argument — it matters most for `thumb_attached_import`,
+///   whose bytes are user-uploaded previews with no render path, so a
+///   wrong deletion there is permanent where a wrong deletion of a
+///   server-rendered thumbnail costs only a re-render.
+/// * **Sidecars whose source is gone are deleted without a readback**,
+///   because there is nothing to read back and nothing can ever
+///   reference them again. Unrecoverable and unreachable are different
+///   things; these are both.
+/// * **Every deletion is audited**, so an operator can reconstruct what
+///   a boot removed and from which source.
+///
+/// The consequence to be aware of when changing this: an upgrade
+/// deletes on first boot, in every deployment at once, with no operator
+/// action. A regression in the readback path would therefore be
+/// simultaneous and unrecoverable. Treat that code as load-bearing.
+///
+/// Set `OXICLOUD_STARTUP_JOBS=` (empty) to disable startup jobs
+/// entirely; any explicit value replaces this list rather than adding
+/// to it.
+const DEFAULT_STARTUP_JOBS: &str =
+    "thumb_derived_import?repair=true,thumb_attached_import?repair=true";
+
+/// Parse the whole `OXICLOUD_STARTUP_JOBS` value. Empty → no startup
+/// jobs (an explicit opt-out); unset → [`DEFAULT_STARTUP_JOBS`].
+///
+/// # Panics
+///
+/// On any malformed entry. A startup-job list that half-parses is worse
+/// than one that fails: the server would come up looking healthy with a
+/// migration that never runs.
+fn parse_startup_jobs(raw: &str) -> Vec<StartupJob> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|entry| {
+            parse_startup_job(entry).unwrap_or_else(|e| {
+                panic!("OXICLOUD_STARTUP_JOBS: {e}");
+            })
+        })
+        .collect()
+}
+
 impl Default for GrantCleanupConfig {
     fn default() -> Self {
         Self {
@@ -2543,6 +2687,17 @@ pub struct AppConfig {
     /// bind to loopback / a private interface without exposing
     /// metrics publicly.
     pub metrics_listen: Option<std::net::SocketAddr>,
+    /// Jobs to dispatch once, in the background, after the scheduler is
+    /// ready. Env: `OXICLOUD_STARTUP_JOBS` — comma-separated, each entry
+    /// `name` or `name?repair=true`, mirroring the admin trigger URL.
+    ///
+    /// Empty by default. Intended for the migration jobs, whose
+    /// scheduled ticks import but deliberately never delete: naming one
+    /// here is the operator's standing consent to the deletion, given
+    /// once in configuration instead of per run in the panel.
+    ///
+    /// Dispatch is non-blocking — readiness never waits on a job.
+    pub startup_jobs: Vec<StartupJob>,
     /// Cache configuration
     pub cache: CacheConfig,
     /// Timeout configuration
@@ -2671,6 +2826,7 @@ impl Default for AppConfig {
             plugins: PluginConfig::default(),
             faces: FacesConfig::default(),
             metrics_listen: None,
+            startup_jobs: parse_startup_jobs(DEFAULT_STARTUP_JOBS),
         }
     }
 }
@@ -2716,6 +2872,19 @@ impl AppConfig {
                      — metrics endpoint will NOT be exposed"
                 ),
             }
+        }
+
+        // Jobs to fire once at boot. Unset keeps DEFAULT_STARTUP_JOBS (set
+        // by `Default`); any explicit value REPLACES it, and an empty value
+        // is the opt-out.
+        //
+        // Panics on a malformed entry rather than warning: unlike metrics,
+        // a startup job that silently fails to parse leaves a migration
+        // that never runs, and the symptom ("the tier never drained")
+        // surfaces months later with nothing pointing back at the config
+        // line.
+        if let Ok(raw) = env::var("OXICLOUD_STARTUP_JOBS") {
+            config.startup_jobs = parse_startup_jobs(&raw);
         }
 
         // Database configuration
@@ -3782,6 +3951,89 @@ pub fn default_config() -> AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_job_parses_name_and_flags() {
+        let jobs = parse_startup_jobs(
+            "thumb_derived_import?repair=true, thumb_attached_import ,blobs_consistency?deep=true&force=false",
+        );
+        assert_eq!(jobs.len(), 3);
+
+        assert_eq!(jobs[0].name, "thumb_derived_import");
+        assert!(jobs[0].args.repair);
+        assert!(!jobs[0].args.deep);
+
+        // Bare name → all flags default off, which is the discovery-only
+        // run. Naming a migration job without `repair` imports and stops.
+        assert_eq!(jobs[1].name, "thumb_attached_import");
+        assert!(!jobs[1].args.repair);
+
+        assert!(jobs[2].args.deep);
+        assert!(!jobs[2].args.force);
+    }
+
+    #[test]
+    fn startup_job_accepts_storage_scope() {
+        let jobs = parse_startup_jobs("backend_consistency?storage=s3_prod&deep=true");
+        assert_eq!(jobs[0].args.storage.as_deref(), Some("s3_prod"));
+        assert!(jobs[0].args.deep);
+    }
+
+    #[test]
+    fn startup_jobs_empty_value_is_the_opt_out() {
+        assert!(parse_startup_jobs("").is_empty());
+        assert!(parse_startup_jobs("  , ,").is_empty());
+    }
+
+    /// Both migration jobs drain themselves out of the box, deletion
+    /// included. Pinned rather than left implicit because this is a
+    /// destructive default: it deletes on first boot after an upgrade,
+    /// everywhere, with no operator action. Whoever changes this line
+    /// should have to change a test that says so.
+    ///
+    /// What keeps it safe is the readback in `verify_and_unlink` — import,
+    /// read the blob back through the normal stack, and only then unlink.
+    /// That matters most for `thumb_attached_import`, whose bytes are
+    /// user-uploaded and have no render path to rebuild them.
+    #[test]
+    fn default_startup_jobs_drain_both_thumbnail_tiers() {
+        let jobs = AppConfig::default().startup_jobs;
+        let names: Vec<&str> = jobs.iter().map(|j| j.name.as_str()).collect();
+        assert_eq!(names, ["thumb_derived_import", "thumb_attached_import"]);
+        assert!(jobs.iter().all(|j| j.args.repair));
+        assert!(jobs.iter().all(|j| !j.args.deep && !j.args.force));
+    }
+
+    /// A misspelled flag must not parse. Silently ignoring `repare=true`
+    /// leaves the job in discovery-only mode while the operator believes
+    /// the tier is draining — a failure that surfaces months later as
+    /// "the migration never finished", with nothing pointing at the
+    /// config line.
+    #[test]
+    #[should_panic(expected = "unknown flag `repare`")]
+    fn startup_job_rejects_a_misspelled_flag() {
+        parse_startup_jobs("thumb_derived_import?repare=true");
+    }
+
+    /// Booleans take only true/false — the same rule the HTTP trigger
+    /// enforces, so a value that works in one place works in the other.
+    #[test]
+    #[should_panic(expected = "expected true or false")]
+    fn startup_job_rejects_a_non_boolean_flag_value() {
+        parse_startup_jobs("thumb_derived_import?repair=yes");
+    }
+
+    #[test]
+    #[should_panic(expected = "not key=value")]
+    fn startup_job_rejects_a_valueless_flag() {
+        parse_startup_jobs("thumb_derived_import?repair");
+    }
+
+    #[test]
+    #[should_panic(expected = "empty job name")]
+    fn startup_job_rejects_flags_with_no_job() {
+        parse_startup_jobs("?repair=true");
+    }
 
     #[test]
     fn empty_allowlist_accepts_any_email() {

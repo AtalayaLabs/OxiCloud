@@ -15,7 +15,9 @@ use async_trait::async_trait;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
-use crate::application::ports::blob_reference_ports::{BlobReferenceSource, RefLevel};
+use crate::application::ports::blob_reference_ports::{
+    BlobReferenceRegistry, BlobReferenceSource, RefLevel,
+};
 use crate::domain::errors::DomainError;
 
 /// Aliases used inside the emitted fragments.
@@ -26,6 +28,8 @@ use crate::domain::errors::DomainError;
 /// sweep and silently correlate against itself.
 const FILES_ALIAS: &str = "cnt_f";
 const MANIFEST_ALIAS: &str = "cnt_m";
+const DERIVED_ALIAS: &str = "cnt_d";
+const ATTACHED_ALIAS: &str = "cnt_a";
 
 /// Fragment for [`FilesReferenceSource`], as a free function so the SQL
 /// shape can be tested without constructing a pool — it is a property of
@@ -85,6 +89,81 @@ fn chunks_ref_sql(level: RefLevel, outer_hash_expr: &str) -> Option<String> {
         // A manifest is never referenced by another manifest.
         RefLevel::Manifest => None,
     }
+}
+
+/// Fragment for [`ContentDerivedReferenceSource`].
+///
+/// **Manifest level only.** A derived artifact's `blob_hash` names a Blob
+/// (its own manifest), never a chunk. Contributing at the chunk level would
+/// double-count, because a thumbnail is almost always single-chunk and its
+/// manifest hash therefore equals its lone chunk's hash.
+fn content_derived_ref_sql(level: RefLevel, outer_hash_expr: &str) -> Option<String> {
+    match level {
+        RefLevel::Chunk => None,
+        RefLevel::Manifest => Some(format!(
+            "(SELECT COUNT(*) FROM storage.content_derived_blobs {DERIVED_ALIAS} \
+             WHERE {DERIVED_ALIAS}.blob_hash = {outer_hash_expr})"
+        )),
+    }
+}
+
+/// Short-circuiting existence form, used by `dedup_gc`'s reap predicate.
+fn content_derived_exists_sql(level: RefLevel, outer_hash_expr: &str) -> Option<String> {
+    match level {
+        RefLevel::Chunk => None,
+        RefLevel::Manifest => Some(format!(
+            "EXISTS (SELECT 1 FROM storage.content_derived_blobs {DERIVED_ALIAS} \
+             WHERE {DERIVED_ALIAS}.blob_hash = {outer_hash_expr})"
+        )),
+    }
+}
+
+/// Fragment for [`FileAttachedReferenceSource`].
+///
+/// **Manifest level only**, for the same reason as the derived source: an
+/// attached artifact's `blob_hash` names a Blob, never a chunk, and these are
+/// almost always single-chunk — so contributing at the chunk level would
+/// double-count against the aliased hash.
+fn file_attached_ref_sql(level: RefLevel, outer_hash_expr: &str) -> Option<String> {
+    match level {
+        RefLevel::Chunk => None,
+        RefLevel::Manifest => Some(format!(
+            "(SELECT COUNT(*) FROM storage.file_attached_blobs {ATTACHED_ALIAS} \
+             WHERE {ATTACHED_ALIAS}.blob_hash = {outer_hash_expr})"
+        )),
+    }
+}
+
+/// Short-circuiting existence form, used by `dedup_gc`'s reap predicate.
+fn file_attached_exists_sql(level: RefLevel, outer_hash_expr: &str) -> Option<String> {
+    match level {
+        RefLevel::Chunk => None,
+        RefLevel::Manifest => Some(format!(
+            "EXISTS (SELECT 1 FROM storage.file_attached_blobs {ATTACHED_ALIAS} \
+             WHERE {ATTACHED_ALIAS}.blob_hash = {outer_hash_expr})"
+        )),
+    }
+}
+
+/// Every built-in blob-reference source, in one place.
+///
+/// THE definition of "what references a blob". `DedupService::new` uses it
+/// as its construction default and hands it to the consistency jobs via
+/// `reference_registry()`, so GC and the sweeps cannot disagree — and the
+/// golden tests that pin the generated SQL exercise the same set production
+/// runs, rather than a test-local approximation of it.
+pub fn built_in_registry(pool: Arc<PgPool>) -> BlobReferenceRegistry {
+    let mut registry = BlobReferenceRegistry::new();
+    registry.register(Arc::new(FilesReferenceSource::new(pool.clone())));
+    registry.register(Arc::new(ChunksReferenceSource::new(pool.clone())));
+    // Registered before anything writes a derived blob: dedup_gc's reap
+    // predicate must already know this table exists, or the first sweep
+    // after the first thumbnail deletes it.
+    registry.register(Arc::new(ContentDerivedReferenceSource::new(pool.clone())));
+    // Same rule as above: registered before the first attachment is written,
+    // so dedup_gc's reap predicate already knows the table exists.
+    registry.register(Arc::new(FileAttachedReferenceSource::new(pool)));
+    registry
 }
 
 // ─── storage.files ───────────────────────────────────────────────────────
@@ -259,6 +338,171 @@ fn decode_uuid_cursor(bytes: &[u8]) -> Result<Uuid, DomainError> {
         )
     })?;
     Ok(Uuid::from_bytes(raw))
+}
+
+// ─── storage.content_derived_blobs ───────────────────────────────────────
+
+/// References held by `storage.content_derived_blobs.blob_hash` — the
+/// DERIVED artifact, not the source it came from.
+///
+/// **`source_hash` is deliberately not a reference.** It is a dependent
+/// pointer: the source Blob is kept alive by the file that owns it, and when
+/// that Blob is reaped these rows go with it. Counting `source_hash` here
+/// would pin every source Blob for as long as a thumbnail existed.
+pub struct ContentDerivedReferenceSource {
+    pool: Arc<PgPool>,
+}
+
+impl ContentDerivedReferenceSource {
+    pub fn new(pool: Arc<PgPool>) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl BlobReferenceSource for ContentDerivedReferenceSource {
+    fn source_name(&self) -> &'static str {
+        "content_derived"
+    }
+
+    fn ref_count_sql(&self, level: RefLevel, outer_hash_expr: &str) -> Option<String> {
+        content_derived_ref_sql(level, outer_hash_expr)
+    }
+
+    fn ref_exists_sql(&self, level: RefLevel, outer_hash_expr: &str) -> Option<String> {
+        content_derived_exists_sql(level, outer_hash_expr)
+    }
+
+    async fn count_references(&self, blob_hash: &str) -> Result<u64, DomainError> {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM storage.content_derived_blobs WHERE blob_hash = $1",
+        )
+        .bind(blob_hash)
+        .fetch_one(self.pool.as_ref())
+        .await
+        .map_err(|e| DomainError::internal_error("BlobRefSource", format!("derived count: {e}")))?;
+        Ok(n.max(0) as u64)
+    }
+
+    async fn list_referenced_blobs(
+        &self,
+        cursor: Option<Vec<u8>>,
+        limit: usize,
+    ) -> Result<(Vec<String>, Option<Vec<u8>>), DomainError> {
+        // Paged by `blob_hash` itself — unlike files it IS the value we
+        // return, and DISTINCT keeps a Blob shared by several variants from
+        // appearing more than once per page.
+        let after: Option<String> = match cursor {
+            Some(bytes) => Some(String::from_utf8(bytes).map_err(|e| {
+                DomainError::internal_error("BlobRefSource", format!("bad derived cursor: {e}"))
+            })?),
+            None => None,
+        };
+
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT DISTINCT blob_hash FROM storage.content_derived_blobs
+              WHERE ($1::text IS NULL OR blob_hash > $1)
+              ORDER BY blob_hash
+              LIMIT $2",
+        )
+        .bind(after)
+        .bind(limit as i64)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| DomainError::internal_error("BlobRefSource", format!("derived page: {e}")))?;
+
+        let next = rows
+            .last()
+            .map(|(h,)| h.clone().into_bytes())
+            .filter(|_| rows.len() == limit);
+        Ok((rows.into_iter().map(|(h,)| h).collect(), next))
+    }
+}
+
+// ─── storage.file_attached_blobs ─────────────────────────────────────────
+
+/// References held by `storage.file_attached_blobs.blob_hash` — bytes a user
+/// supplied for one specific file.
+///
+/// Structurally the twin of [`ContentDerivedReferenceSource`]: same level,
+/// same shape, different table. The difference that matters is upstream — the
+/// row is keyed by `file_id` rather than by content, so the same bytes
+/// attached to two files are two rows and therefore two references. Dedup
+/// still applies to the bytes; what must not be shared is the mapping.
+///
+/// `file_id` is deliberately not a reference at this layer: it is an
+/// `ON DELETE CASCADE` foreign key, so the row disappears with the file, and
+/// the blob reference it held is released by the owning service's
+/// `on_file_deleted` hook.
+pub struct FileAttachedReferenceSource {
+    pool: Arc<PgPool>,
+}
+
+impl FileAttachedReferenceSource {
+    pub fn new(pool: Arc<PgPool>) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl BlobReferenceSource for FileAttachedReferenceSource {
+    fn source_name(&self) -> &'static str {
+        "file_attached"
+    }
+
+    fn ref_count_sql(&self, level: RefLevel, outer_hash_expr: &str) -> Option<String> {
+        file_attached_ref_sql(level, outer_hash_expr)
+    }
+
+    fn ref_exists_sql(&self, level: RefLevel, outer_hash_expr: &str) -> Option<String> {
+        file_attached_exists_sql(level, outer_hash_expr)
+    }
+
+    async fn count_references(&self, blob_hash: &str) -> Result<u64, DomainError> {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM storage.file_attached_blobs WHERE blob_hash = $1",
+        )
+        .bind(blob_hash)
+        .fetch_one(self.pool.as_ref())
+        .await
+        .map_err(|e| {
+            DomainError::internal_error("BlobRefSource", format!("attached count: {e}"))
+        })?;
+        Ok(n.max(0) as u64)
+    }
+
+    async fn list_referenced_blobs(
+        &self,
+        cursor: Option<Vec<u8>>,
+        limit: usize,
+    ) -> Result<(Vec<String>, Option<Vec<u8>>), DomainError> {
+        // Paged by `blob_hash`, same as the derived source: it IS the value
+        // returned, and DISTINCT collapses one Blob attached to several files.
+        let after: Option<String> = match cursor {
+            Some(bytes) => Some(String::from_utf8(bytes).map_err(|e| {
+                DomainError::internal_error("BlobRefSource", format!("bad attached cursor: {e}"))
+            })?),
+            None => None,
+        };
+
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT DISTINCT blob_hash FROM storage.file_attached_blobs
+              WHERE ($1::text IS NULL OR blob_hash > $1)
+              ORDER BY blob_hash
+              LIMIT $2",
+        )
+        .bind(after)
+        .bind(limit as i64)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| DomainError::internal_error("BlobRefSource", format!("attached page: {e}")))?;
+
+        let next = rows
+            .last()
+            .map(|(h,)| h.clone().into_bytes())
+            .filter(|_| rows.len() == limit);
+        Ok((rows.into_iter().map(|(h,)| h).collect(), next))
+    }
 }
 
 #[cfg(test)]

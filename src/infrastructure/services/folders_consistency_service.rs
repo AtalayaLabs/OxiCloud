@@ -120,6 +120,14 @@ impl RecoverableJobHandler for FoldersConsistencyCheck {
         FOLDERS_CONSISTENCY_JOB_NAME
     }
 
+    fn description(&self) -> &'static str {
+        "Walks storage.folders and reports rows whose materialised path \
+         and lpath have drifted from what walking the parent_id chain \
+         produces. Any write path that bypasses the ltree cascade trigger \
+         can leave these wrong, which silently breaks subtree queries. \
+         Read-only."
+    }
+
     /// Definitive count — one row per folder. Larger table than drives
     /// but the COUNT(*) is still index-only on PG. On multi-million-row
     /// deployments this is ~100ms at run start; acceptable given the

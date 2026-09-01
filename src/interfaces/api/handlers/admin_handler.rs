@@ -2562,6 +2562,28 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         }
     }
 
+    // Mark the jobs `OXICLOUD_STARTUP_JOBS` dispatches at boot. Without
+    // this the panel is silently wrong about the most consequential thing
+    // on the row: a job configured with `repair=true` deletes files on
+    // every restart, and the row would suggest that only ever happens
+    // when someone clicks Run.
+    for job in summary.iter_mut() {
+        if let Some(configured) = state
+            .core
+            .config
+            .startup_jobs
+            .iter()
+            .find(|s| s.name == job.name)
+        {
+            job.startup = Some(crate::infrastructure::scheduler::StartupTrigger {
+                force: configured.args.force,
+                deep: configured.args.deep,
+                repair: configured.args.repair,
+                storage: configured.args.storage.clone(),
+            });
+        }
+    }
+
     (StatusCode::OK, Json(summary)).into_response()
 }
 

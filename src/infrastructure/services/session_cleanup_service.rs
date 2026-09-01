@@ -35,7 +35,7 @@ use tracing::{error, info};
 
 use crate::domain::repositories::session_repository::SessionRepository;
 use crate::infrastructure::repositories::SessionPgRepository;
-use crate::infrastructure::scheduler::{JobHandler, JobOutcome, JobRegistry, JobRunArgs};
+use crate::infrastructure::scheduler::{JobHandler, JobOutcome, JobRegistry, JobRunArgs, Mutates};
 
 /// How long a session row survives past its `expires_at` before this
 /// janitor deletes it. Enough time for a security review of a
@@ -82,6 +82,17 @@ impl SessionCleanupService {
 impl JobHandler for SessionCleanupService {
     fn name(&self) -> &str {
         Self::JOB_NAME
+    }
+
+    fn description(&self) -> &'static str {
+        "Deletes session rows long past their expiry. They cannot \
+         authenticate — expiry is checked at every auth path — but the row \
+         keeps a forensic trail (which user, from which IP, minted how) \
+         for a retention window after expiry, then becomes dead weight."
+    }
+
+    fn mutates(&self) -> Mutates {
+        Mutates::Always
     }
 
     /// Runs one bulk-delete of long-expired session rows. `count` on

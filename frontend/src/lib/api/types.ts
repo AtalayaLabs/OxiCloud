@@ -618,8 +618,32 @@ export interface PausedRunBrief {
 	total?: number;
 }
 
+/**
+ * When a job changes state — `RecoverableJobHandler::mutates()` on the
+ * backend. Three values rather than a boolean because the interesting
+ * case is conditional: a job can be read-only by default and destructive
+ * under `?repair=true`.
+ *
+ * - `never` — read-only under every flag. Render a read-only badge; no
+ *   confirmation needed to trigger.
+ * - `always` — changes state on a plain run. Confirm before triggering.
+ * - `on_repair_only` — safe to trigger; confirm only when the repair
+ *   toggle is on.
+ */
+export type Mutates = 'never' | 'always' | 'on_repair_only';
+
 export interface JobSummary {
 	name: string;
+	/** One or two sentences on what the job does, in English, authored
+	 *  next to the handler. Absent for jobs that haven't declared one —
+	 *  omit the line rather than rendering an empty block. */
+	description?: string;
+	mutates: Mutates;
+	/** Present iff `?repair=true` does something beyond a default run;
+	 *  describes what it ADDS. Presence is what gates the repair toggle;
+	 *  the text is the confirmation copy. Independent of `mutates` — the
+	 *  thumbnail import jobs are `always` AND repair-capable. */
+	repair_description?: string;
 	interval_ms?: number;
 	next_run_at?: string;
 	last_run_at?: string;
@@ -639,6 +663,19 @@ export interface JobSummary {
 	 *  for this job. Distinct from `running` — a paused run is
 	 *  resumable via the same trigger endpoint. */
 	paused_run?: PausedRunBrief;
+	/** Present iff `OXICLOUD_STARTUP_JOBS` names this job — the flags it
+	 *  is dispatched with at every boot. Worth showing: a job configured
+	 *  with `repair: true` deletes on every restart, and the row would
+	 *  otherwise suggest that only happens when someone clicks Run. */
+	startup?: StartupTrigger;
+}
+
+/** Flags a job configured in `OXICLOUD_STARTUP_JOBS` runs with. */
+export interface StartupTrigger {
+	force: boolean;
+	deep: boolean;
+	repair: boolean;
+	storage?: string;
 }
 
 /**

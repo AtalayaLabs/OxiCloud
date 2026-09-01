@@ -166,6 +166,9 @@ hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test 
   "$API_DIR/recent.hurl" \
   "$API_DIR/batch_folder_copy.hurl" \
   "$API_DIR/dedup_blob_cleanup.hurl" \
+  "$API_DIR/derived_blob_copy.hurl" \
+  "$API_DIR/thumbnail_etag_content_keyed.hurl" \
+  "$API_DIR/attached_thumbnail_copy.hurl" \
   "$API_DIR/dedup_admin_gate.hurl" \
   "$API_DIR/admin_jobs.hurl" \
   "$API_DIR/recoverable_jobs.hurl" \
@@ -239,6 +242,10 @@ if ! hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --
   bash "$API_DIR/refcount_cascade_diag.sh" || true
   exit 1
 fi
+
+# Migration check runs BEFORE the cleanup sweep, which deletes everything
+# it would otherwise need.
+bash "$API_DIR/thumb_import_check.sh"
 
 bash "$API_DIR/storage_cleanup_check.sh"
 

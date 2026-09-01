@@ -18,6 +18,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 STORAGE_PATH="${OXICLOUD_STORAGE_PATH:-$REPO_ROOT/tests/api/storage}"
+# Needed by the leftover diagnosis below. Without it `docker compose -f ""`
+# fails and the `|| true` there swallows it, so the diagnosis silently prints
+# nothing and the failure looks exactly as uninformative as before.
+COMPOSE_FILE="$REPO_ROOT/tests/common/docker-compose.test.yml"
 
 # shellcheck source=test.env
 source "$SCRIPT_DIR/test.env"
@@ -61,8 +65,25 @@ HTTP_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" -H "$AUTH" \
 log "Thumbnail fetched (HTTP 200)."
 
 assert_local_blob_existsy "$FIXTURE" "$STORAGE_PATH" || fail "probe blob not found on disk"
-assert_preview_existsy    "$FIXTURE" "$STORAGE_PATH" || fail "probe thumbnail not found on disk"
-log "Probe blob and thumbnail confirmed present on disk."
+
+# The thumbnail must NOT be on disk — inverted at step 10d2, when the sidecar
+# write was removed.
+#
+# It used to assert the opposite, and that was right while `.thumbnails/` was
+# the durable store. Now the durable home is `content_derived_blobs` plus the
+# blob tier, and a sidecar reappearing here means a write path regressed to
+# the legacy shape — which would silently make `.thumbnails/` un-emptyable and
+# strand step 10e forever, since its gate is the directory being gone.
+#
+# The HTTP 200 above is what proves the thumbnail actually works; this proves
+# it got there the new way.
+# Both streams silenced: the helper reports absence loudly, with a red banner
+# and a `find` dump, because absence used to be the failure. Here it is the
+# expected result, so leaving that visible would cry wolf on every clean run.
+if assert_preview_existsy "$FIXTURE" "$STORAGE_PATH" >/dev/null 2>&1; then
+    fail "a thumbnail sidecar was written — the legacy write path is back (step 10d2 removed it)"
+fi
+log "Probe blob on disk; thumbnail served from the derived tier, no sidecar written."
 
 # ── 1c. Delete every non-admin user created by earlier Hurl tests ─────────────
 #
@@ -287,11 +308,76 @@ curl -sf -X POST -H "$AUTH" "$base_url/api/admin/jobs/usage_reconcile/trigger" >
     || fail "usage_reconcile trigger failed"
 log "Reconciliation sweep triggered."
 
-GC_RESULT=$(curl -sf -X POST -H "$AUTH" "$base_url/api/admin/jobs/dedup_gc/trigger?force=true")
-[[ -z "$GC_RESULT" ]] && fail "trigger-gc returned an empty body"
-GC_BLOBS=$(echo "$GC_RESULT" | jq -r '.outcome.count')
-GC_BYTES=$(echo "$GC_RESULT" | jq -r '.outcome.extra.bytes_reclaimed')
-log "GC reaped $GC_BLOBS blob(s), $GC_BYTES byte(s) freed."
+# One GC pass is NOT enough, and this is by design rather than a bug.
+# Reaping a source blob releases the references its DERIVED artifacts hold
+# (thumbnails live in storage.content_derived_blobs and each row pins a
+# manifest). Those releases happen mid-sweep, so the derived chunks are
+# only stamped orphaned as the pass is already walking past them —
+# `remove_manifest_reference` deliberately does not unlink, to avoid racing
+# a concurrent upload re-referencing the same chunk. They become
+# collectible on the NEXT sweep.
+#
+# Loop until a pass reclaims nothing rather than hardcoding two passes.
+# Two is correct only while the derivation graph is one level deep — a
+# thumbnail is derived from a file and nothing is derived from a thumbnail.
+# That is a property of the data, not an invariant the code enforces, so a
+# fixed count would silently under-drain the day transcodes-of-thumbnails
+# or E2E-wrapped derivatives appear, and the failure would surface as a
+# confusing leftover-file assertion rather than as the design change it is.
+#
+# Production does NOT need this loop: derived chunks land inside the 1-hour
+# orphan grace, so a second immediate pass would collect nothing and the
+# next scheduled sweep picks them up. It is only `force=true` (grace 0)
+# that can drain a cascade in one go, which is exactly this test.
+GC_TOTAL_BLOBS=0
+GC_TOTAL_BYTES=0
+GC_DRAINED=0
+for gc_pass in 1 2 3 4; do
+    GC_RESULT=$(curl -sf -X POST -H "$AUTH" "$base_url/api/admin/jobs/dedup_gc/trigger?force=true")
+    [[ -z "$GC_RESULT" ]] && fail "trigger-gc returned an empty body (pass $gc_pass)"
+    GC_BLOBS=$(echo "$GC_RESULT" | jq -r '.outcome.count // 0')
+    GC_BYTES=$(echo "$GC_RESULT" | jq -r '.outcome.extra.bytes_reclaimed // 0')
+    GC_TOTAL_BLOBS=$((GC_TOTAL_BLOBS + GC_BLOBS))
+    GC_TOTAL_BYTES=$((GC_TOTAL_BYTES + GC_BYTES))
+    log "GC pass $gc_pass reaped $GC_BLOBS blob(s), $GC_BYTES byte(s) freed."
+    # Break on TWO consecutive zero passes, not one.
+    #
+    # A single zero only says nothing was collectible *at that instant*.
+    # Releases cascade — reaping a source blob drops the references its
+    # derived and attached rows held, and `on_blob_deleted` does that from
+    # spawned tasks — so a pass can land in the gap between "source reaped"
+    # and "dependents released" and report zero while work remains. The
+    # import jobs added a level to that chain, which is when this started
+    # biting.
+    #
+    # Cheap insurance: one extra trigger over an empty store, versus a
+    # false pass that reports a clean disk while blobs remain.
+    if [[ "$GC_BLOBS" -eq 0 ]]; then
+        if [[ "${GC_ZERO_STREAK:-0}" -ge 1 ]]; then
+            GC_DRAINED=1
+            break
+        fi
+        GC_ZERO_STREAK=1
+    else
+        GC_ZERO_STREAK=0
+    fi
+    # Breathe before the next trigger, for two reasons:
+    #
+    #   * The JobRegistry serialises runs of the same job. Firing the next
+    #     trigger before the previous run has fully unwound risks it being
+    #     rejected as already-running — which would come back as 0 reaped
+    #     and exit this loop early, declaring success with blobs still on
+    #     disk. A false pass is worse than a slow one.
+    #   * `on_blob_deleted` spawns detached unlink tasks that nothing
+    #     awaits, so some of the previous pass's disk work may still be in
+    #     flight.
+    sleep 1
+done
+if [[ "$GC_DRAINED" -ne 1 ]]; then
+    log "WARNING: GC still reaping after 3 passes — the derivation graph may"
+    log "         be deeper than one level; raise the bound and check why."
+fi
+log "GC total: $GC_TOTAL_BLOBS blob(s), $GC_TOTAL_BYTES byte(s) freed."
 
 # ── 4. Disk verification ──────────────────────────────────────────────────────
 
@@ -343,6 +429,41 @@ fi
 
 if [[ -n "$BLOB_FILES" ]]; then
     BLOB_COUNT=$(echo "$BLOB_FILES" | wc -l | tr -d ' ')
+
+    # Say WHY each one survived, not just that it did. A path alone cannot
+    # distinguish the three causes, and they need opposite fixes: a positive
+    # refcount means something still references it (a release was missed), an
+    # orphan means GC never considered it (a reap predicate gap), and a row
+    # with no manifest means the registry itself is inconsistent. Diagnosing
+    # that by hand costs a round-trip through the whole suite.
+    log "Diagnosing leftovers (refcounts and referrers):"
+    while read -r f; do
+        [[ -z "$f" ]] && continue
+        h=$(basename "$f" .blob)
+        docker compose -f "$COMPOSE_FILE" exec -T postgres-test \
+          psql -U oxicloud_test -d oxicloud_test -tAqc "
+            SELECT '  $h'
+                 || ' manifest_refs=' || COALESCE((SELECT ref_count::text FROM storage.chunk_manifests WHERE file_hash='$h'), '-')
+                 || ' blob_refs='     || COALESCE((SELECT ref_count::text FROM storage.blobs           WHERE hash='$h'), '-')
+                 || ' files='         || (SELECT count(*) FROM storage.files                 WHERE blob_hash='$h')
+                 || ' derived='       || (SELECT count(*) FROM storage.content_derived_blobs WHERE blob_hash='$h')
+                 || ' attached='      || (SELECT count(*) FROM storage.file_attached_blobs   WHERE blob_hash='$h')
+                 -- When a derived row is what pins the blob, the question is
+                 -- why its SOURCE was never reaped — purge_derived_blobs only
+                 -- runs from the source's reap. Print the source and whether
+                 -- anything still holds it.
+                 || COALESCE((SELECT ' src=' || d.source_hash
+                            || ' src_files='    || (SELECT count(*) FROM storage.files WHERE blob_hash = d.source_hash)
+                            || ' src_manifest=' || COALESCE((SELECT ref_count::text FROM storage.chunk_manifests WHERE file_hash = d.source_hash), '-')
+                            || ' src_blob='     || COALESCE((SELECT ref_count::text FROM storage.blobs WHERE hash = d.source_hash), '-')
+                       FROM storage.content_derived_blobs d WHERE d.blob_hash='$h' LIMIT 1), '');" \
+          < /dev/null \
+          2> >(grep -v 'Executing external compose provider' >&2) || true
+    # `< /dev/null`: `docker compose exec -T` reads stdin, and without this it
+    # consumes the rest of the here-string — so only the FIRST leftover was
+    # ever diagnosed and the others vanished silently.
+    done <<< "$BLOB_FILES"
+
     log "Leftover blob files ($BLOB_COUNT):"
     echo "$BLOB_FILES"
     fail "$BLOB_COUNT blob file(s) remain on disk after full cleanup"
@@ -356,3 +477,122 @@ if [[ -n "$UPLOAD_FILES" ]]; then
 fi
 
 log "OK — no blobs, thumbnails, or chunked-upload leftovers remain on disk."
+
+# ── 4b. …and the registry agrees the store is empty ───────────────────────────
+#
+# The disk check above proves no BYTES are left. This proves no ROWS are,
+# which is the other direction and fails differently: a stale
+# `storage.blobs` row with nothing behind it means a reference was never
+# released, and the next `dedup_gc` will keep skipping it forever because
+# its count never reaches zero.
+#
+# Zero is the right assertion here, not "fewer than before". Everything the
+# suite created has been deleted by this point — the users, their drives,
+# and the cascade beneath them — and the disk check has already insisted the
+# blob store is empty. A non-zero registry alongside an empty disk is
+# precisely the divergence the consistency jobs below would report, caught
+# here first because a single number is easier to read than a findings list.
+STATS=$(curl -sf -H "$AUTH" "$base_url/api/admin/dedup/stats" || true)
+if [[ -z "$STATS" ]]; then
+    log "WARNING: /api/admin/dedup/stats unavailable — registry emptiness not checked"
+else
+    REMAINING_BLOBS=$(echo "$STATS" | jq -r '.unique_blobs // 0')
+    REMAINING_BYTES=$(echo "$STATS" | jq -r '.total_physical_bytes // 0')
+    if [[ "$REMAINING_BLOBS" -ne 0 ]]; then
+        log "Registry still reports $REMAINING_BLOBS blob(s), $REMAINING_BYTES physical byte(s):"
+        echo "$STATS" | jq -r 'to_entries[] | "    \(.key): \(.value)"' 2>/dev/null | head
+        fail "$REMAINING_BLOBS blob row(s) remain in the registry while the disk is empty"
+    fi
+    log "Registry clean: 0 blobs, 0 physical bytes."
+fi
+
+# ── 5. Whole-suite consistency sweep ──────────────────────────────────────────
+#
+# The disk checks above prove nothing LEAKED. These prove the bookkeeping
+# behind it is honest — that every refcount matches what the reference
+# sources actually hold, and that no row points at bytes that are gone.
+#
+# End of suite is the right place, and the only place it is cheap. One
+# database serves every hurl file (which is why each must tear down after
+# itself), so by the time we get here the counters have absorbed every
+# upload, copy, move, share, trash and purge the suite performed — across
+# both copy paths, the derived tier and the attached tier. A drift that no
+# single test would notice, because each only inspects its own file, shows
+# up here as a mismatch.
+#
+# It runs AFTER the GC drain deliberately: mid-sweep state is legitimately
+# inconsistent (a manifest can sit at zero waiting for the next pass), so
+# checking before the drain would report normal in-flight state as drift.
+#
+# Zero findings is the assertion. These jobs are read-only, so a finding
+# here is a real invariant violation, not a repair opportunity.
+
+# EVERY registered consistency tenant. Keep this list exhaustive: two of
+# these (drives, folders) were missing until 2026-08-28 and had never run
+# under test at all.
+CONSISTENCY_JOBS=(
+    files_consistency
+    folders_consistency
+    drives_consistency
+    blobs_consistency
+    manifests_consistency
+    backend_consistency
+    # Catches what the others structurally cannot: a satellite mapping whose
+    # source Blob is gone looks healthy to every refcount-based check — valid
+    # reference, correct count, bytes present — while pinning its artifact
+    # forever. That leak reached this suite as three unreclaimable blobs and
+    # took four runs to identify.
+    satellites_consistency
+)
+
+CONSISTENCY_FAILED=0
+for job in "${CONSISTENCY_JOBS[@]}"; do
+    # FAIL on an unknown job rather than warn-and-skip.
+    #
+    # The warning was there so a feature-gated build would not break, but the
+    # cost is worse than the case it protects: renaming a job (or a typo)
+    # silently removes it from the sweep, and the suite goes on reporting
+    # green over a check that no longer runs. This list said
+    # `derived_consistency` for exactly one commit after the rename and would
+    # have skipped it without comment.
+    TRIGGER=$(curl -sf -X POST -H "$AUTH" "$base_url/api/admin/jobs/$job/trigger") \
+        || fail "$job could not be triggered — renamed, unregistered, or a typo in CONSISTENCY_JOBS"
+    [[ -z "$TRIGGER" ]] && fail "$job returned an empty body"
+
+    # The trigger is synchronous for these tenants, but the run row is what
+    # carries the findings, so read it back rather than trusting the
+    # trigger's own summary.
+    # `list_job_runs` returns a bare JSON array, newest first. The `.runs` /
+    # `.items` fallbacks are there so a future wrapping of the response does
+    # not silently turn this check into a no-op.
+    RUN_ID=$(curl -sf -H "$AUTH" "$base_url/api/admin/jobs/$job/runs?limit=1" \
+             | jq -r 'if type == "array" then .[0].id
+                      else ((.runs // .items // [])[0].id) end // empty')
+    if [[ -z "$RUN_ID" ]]; then
+        log "WARNING: could not resolve a run id for $job — skipped"
+        continue
+    fi
+
+    FINDINGS=$(curl -sf -H "$AUTH" \
+        "$base_url/api/admin/jobs/$job/runs/$RUN_ID/findings?limit=100")
+    COUNT=$(echo "$FINDINGS" | jq -r \
+        'if type == "array" then length
+         else ((.findings // .items // []) | length) end')
+
+    if [[ "$COUNT" -gt 0 ]]; then
+        log "$job reported $COUNT finding(s):"
+        echo "$FINDINGS" | jq -r \
+            'if type == "array" then .[] else (.findings // .items // [])[] end
+             | "    \(.severity // "?") \(.kind // .finding_kind // "?") \(.details // {} | tostring)"' \
+            2>/dev/null | head -20
+        CONSISTENCY_FAILED=1
+    else
+        log "$job: clean."
+    fi
+done
+
+if [[ "$CONSISTENCY_FAILED" -eq 1 ]]; then
+    fail "consistency jobs reported findings after the full suite — see above"
+fi
+
+log "OK — all consistency jobs clean after the full suite."

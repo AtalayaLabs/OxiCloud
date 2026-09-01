@@ -17,6 +17,9 @@ use crate::application::ports::storage_ports::FileReadPort;
 use crate::application::ports::thumbnail_ports::{ThumbnailFormat, ThumbnailPort, ThumbnailSize};
 use crate::common::di::AppState;
 use crate::domain::services::authorization::{Permission, Resource, Subject};
+// One definition of the thumbnail cache policy, shared with the REST
+// endpoint: both are Permission::Read gated, so both must stay `private`.
+use crate::interfaces::api::handlers::file_handler::FileHandler;
 use crate::interfaces::middleware::auth::AuthUser;
 use uuid::Uuid;
 
@@ -137,31 +140,60 @@ pub async fn handle_preview(
         }
     };
 
-    // Conditional revalidation — the ETag is derived from (object id, size)
-    // only, so it is computable right here, BEFORE the blob-hash query and
-    // the thumbnail cache/disk read. NC clients revalidate gallery previews
-    // constantly; the REST thumbnail endpoint has honoured `If-None-Match`
-    // since PHOTOS-ETAG — this endpoint set an immutable ETag but never
-    // compared it, so every revalidation re-ran the whole pipeline and
-    // re-shipped the body (ROUND10). Authz already passed above; a 304
-    // must never skip the Read check.
-    let etag = {
-        let s = thumb_size.as_str();
-        let mut e = String::with_capacity(9 + object_id.len() + s.len());
-        e.push_str("\"thumb-");
-        e.push_str(&object_id);
-        e.push('-');
-        e.push_str(s);
-        e.push('"');
-        e
+    // Conditional revalidation. NC clients revalidate gallery previews
+    // constantly; this endpoint set an immutable ETag but never compared it,
+    // so every revalidation re-ran the whole pipeline and re-shipped the body
+    // (ROUND10). Authz already passed above; a 304 must never skip the Read
+    // check.
+    //
+    // Keyed on the CONTENT of the bytes served, matching the REST thumbnail
+    // endpoint. Keying on the object id meant replacing a file's content —
+    // which preserves the id — left the validator unchanged, and the response
+    // was `immutable` with a one-year max-age, so clients never revalidated
+    // and showed the old preview indefinitely. Both halves are fixed: the
+    // ETag names what is served (see `thumbnail_content_id`) and the policy
+    // is `private, no-cache` (see `FileHandler::THUMBNAIL_CACHE_CONTROL`).
+    //
+    // This moves the blob-hash query ahead of the 304 rather than adding one:
+    // the same lookup used to sit just below, on the path that renders.
+    let blob_hash = match state
+        .repositories
+        .file_read_repository
+        .get_blob_hash(&object_id)
+        .await
+    {
+        Ok(hash) => hash,
+        Err(_) => {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::from("File blob not found"))
+                .unwrap();
+        }
     };
+    // Same tier-precedence resolution as the REST endpoint: an uploaded
+    // preview's own hash, else a derived thumbnail's own hash, else the
+    // source-keyed form. NC pins JPEG, so that is the format asked for.
+    let etag = format!(
+        "\"{}\"",
+        state
+            .core
+            .thumbnail_service
+            .thumbnail_content_id(
+                &object_id,
+                &blob_hash,
+                thumb_size.into(),
+                ThumbnailFormat::Jpeg,
+                Some(&state.core.dedup_service),
+            )
+            .await
+    );
     if let Some(inm) = req.headers().get(header::IF_NONE_MATCH)
         && let Ok(client_etag) = inm.to_str()
         && (client_etag == etag || client_etag == "*")
     {
         return Response::builder()
             .status(StatusCode::NOT_MODIFIED)
-            .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+            .header(header::CACHE_CONTROL, FileHandler::THUMBNAIL_CACHE_CONTROL)
             .header(header::ETAG, etag)
             .body(Body::empty())
             .unwrap();
@@ -179,21 +211,7 @@ pub async fn handle_preview(
             .unwrap();
     }
 
-    // Resolve the blob hash (content-addressable storage)
-    let blob_hash = match state
-        .repositories
-        .file_read_repository
-        .get_blob_hash(&object_id)
-        .await
-    {
-        Ok(hash) => hash,
-        Err(_) => {
-            return Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .body(Body::from("File blob not found"))
-                .unwrap();
-        }
-    };
+    // `blob_hash` was resolved above to build the ETag.
     if let Some(data) = state
         .core
         .thumbnail_service
@@ -204,6 +222,7 @@ pub async fn handle_preview(
             Some(&blob_hash),
             thumb_size.into(),
             ThumbnailFormat::Jpeg,
+            Some(&state.core.dedup_service),
         )
         .await
     {
@@ -211,7 +230,7 @@ pub async fn handle_preview(
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "image/jpeg")
             .header(header::CONTENT_LENGTH, data.len())
-            .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+            .header(header::CACHE_CONTROL, FileHandler::THUMBNAIL_CACHE_CONTROL)
             .header(header::ETAG, etag)
             .body(Body::from(data))
             .unwrap();
@@ -236,7 +255,7 @@ pub async fn handle_preview(
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "image/jpeg")
             .header(header::CONTENT_LENGTH, data.len())
-            .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+            .header(header::CACHE_CONTROL, FileHandler::THUMBNAIL_CACHE_CONTROL)
             .header(header::ETAG, etag)
             .body(Body::from(data))
             .unwrap(),

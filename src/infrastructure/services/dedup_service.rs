@@ -523,18 +523,17 @@ impl DedupService {
         }
     }
 
-    /// The two sources that were implicit before the registry existed.
-    /// Keeping this as the default means every construction path — including
-    /// tests — has a manifest-level source, so the reap predicate can never
-    /// degenerate to "nothing references anything".
+    /// Every built-in blob-reference source, in one place.
+    ///
+    /// This is THE definition of "what references a blob" — DI does not
+    /// assemble its own, it reads this one back via
+    /// [`Self::reference_registry`] and hands it to the consistency jobs, so
+    /// GC and the sweeps cannot disagree. Keeping it as the construction
+    /// default also means every path — including tests — has a
+    /// manifest-level source, so the reap predicate can never degenerate to
+    /// "nothing references anything".
     fn default_reference_registry(pool: Arc<PgPool>) -> BlobReferenceRegistry {
-        use crate::infrastructure::repositories::pg::blob_reference_sources::{
-            ChunksReferenceSource, FilesReferenceSource,
-        };
-        let mut registry = BlobReferenceRegistry::new();
-        registry.register(Arc::new(FilesReferenceSource::new(pool.clone())));
-        registry.register(Arc::new(ChunksReferenceSource::new(pool)));
-        registry
+        crate::infrastructure::repositories::pg::blob_reference_sources::built_in_registry(pool)
     }
 
     /// See the `manifest_cache` field docs. Weight ≈ real heap bytes of one
@@ -558,6 +557,246 @@ impl DedupService {
         self
     }
 
+    /// Store a server-derived artifact and record the mapping from the
+    /// content it was derived from.
+    ///
+    /// One call does the whole contract, so no caller has to remember the
+    /// accounting:
+    ///
+    /// 1. writes the bytes through the normal CDC path — derived blobs get
+    ///    the same backend, encryption, migration and rotation as any other
+    ///    content, and `store_from_stream` takes exactly one reference;
+    /// 2. records `(source_hash, kind, variant) -> blob_hash`;
+    /// 3. **releases that reference if the mapping already existed**, because
+    ///    the row that would justify it is not ours — two instances racing
+    ///    to render the same thumbnail must leave `ref_count` at 1, not 2.
+    ///
+    /// `bytes` is expected to be small (a thumbnail is 3-90 KB, below
+    /// `CDC_MIN_CHUNK`, so this is a single chunk). See
+    /// `docs/plan/derived-blobs.md`.
+    ///
+    /// Returns the derived blob hash.
+    /// Attach user-supplied bytes to a FILE — the file-keyed twin of
+    /// [`Self::store_derived_blob`].
+    ///
+    /// Same storage path (the bytes are still content-addressed and still
+    /// deduplicated), different mapping: the row is keyed by `file_id`, so
+    /// two files holding identical attached bytes get two rows and two
+    /// references. Sharing the mapping is what must not happen — a
+    /// content-keyed client preview would let one user's upload be served
+    /// for another user's file.
+    ///
+    /// `ON CONFLICT … DO UPDATE`, unlike the derived twin: re-uploading a
+    /// preview for the same `(file_id, kind, variant)` is a deliberate
+    /// replacement, whereas a re-derived thumbnail is the same bytes again.
+    /// The reference held by the row being replaced is released.
+    pub async fn store_attached_blob(
+        &self,
+        file_id: &str,
+        kind: &str,
+        variant: &str,
+        content_type: &str,
+        bytes: Bytes,
+        uploaded_by: uuid::Uuid,
+    ) -> Result<String, DomainError> {
+        let stored = self
+            .store_from_stream(
+                stream::once(async move { Ok::<Bytes, std::io::Error>(bytes) }),
+                Some(content_type.to_string()),
+            )
+            .await?;
+        let attached_hash = stored.hash().to_string();
+
+        // Read the hash being superseded BEFORE upserting.
+        //
+        // It cannot come from `RETURNING`: PostgreSQL only permits `EXCLUDED`
+        // in the `SET` and `WHERE` of `DO UPDATE`, so a RETURNING clause
+        // comparing old against new is a syntax error — and one that surfaces
+        // only at runtime, where this method's best-effort caller swallows it
+        // into a warning while the sidecar keeps the feature looking healthy.
+        //
+        // The gap between this SELECT and the upsert is benign: losing the
+        // race leaves one stale reference, which the manifest recompute
+        // reports rather than anything being lost or served wrongly.
+        let previous: Option<(String,)> = sqlx::query_as(
+            "SELECT blob_hash FROM storage.file_attached_blobs
+              WHERE file_id = $1::uuid AND kind = $2 AND variant = $3",
+        )
+        .bind(file_id)
+        .bind(kind)
+        .bind(variant)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| DomainError::internal_error("Dedup", format!("read attached blob: {e}")))?;
+
+        sqlx::query(
+            "INSERT INTO storage.file_attached_blobs
+                 (file_id, kind, variant, blob_hash, content_type, uploaded_by)
+             VALUES ($1::uuid, $2, $3, $4, $5, $6)
+             ON CONFLICT (file_id, kind, variant) DO UPDATE
+                 SET blob_hash    = EXCLUDED.blob_hash,
+                     content_type = EXCLUDED.content_type,
+                     uploaded_by  = EXCLUDED.uploaded_by,
+                     created_at   = now()",
+        )
+        .bind(file_id)
+        .bind(kind)
+        .bind(variant)
+        .bind(&attached_hash)
+        .bind(content_type)
+        .bind(uploaded_by)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| DomainError::internal_error("Dedup", format!("record attached blob: {e}")))?;
+
+        // A replaced row's old blob loses its only reference from here. Not
+        // releasing it would pin those bytes forever — nothing else points at
+        // a superseded preview.
+        if let Some((old_hash,)) = previous
+            && old_hash != attached_hash
+            && let Err(e) = self.remove_reference(&old_hash).await
+        {
+            tracing::warn!(
+                target: "oxicloud::dedup",
+                error = %e,
+                "failed to release replaced attached-blob reference for {}",
+                &old_hash[..old_hash.len().min(12)],
+            );
+        }
+
+        Ok(attached_hash)
+    }
+
+    /// Look up bytes attached to a file. File-keyed counterpart of
+    /// [`Self::find_derived_blob`].
+    pub async fn find_attached_blob(
+        &self,
+        file_id: &str,
+        kind: &str,
+        variant: &str,
+    ) -> Option<crate::application::ports::dedup_ports::DerivedBlobRef> {
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT blob_hash, content_type FROM storage.file_attached_blobs
+              WHERE file_id = $1::uuid AND kind = $2 AND variant = $3",
+        )
+        .bind(file_id)
+        .bind(kind)
+        .bind(variant)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .ok()
+        .flatten()
+        .map(|(blob_hash, content_type)| {
+            crate::application::ports::dedup_ports::DerivedBlobRef {
+                blob_hash,
+                content_type,
+            }
+        })
+    }
+
+    pub async fn store_derived_blob(
+        &self,
+        source_hash: &str,
+        kind: &str,
+        variant: &str,
+        content_type: &str,
+        bytes: Bytes,
+    ) -> Result<String, DomainError> {
+        let stored = self
+            .store_from_stream(
+                stream::once(async move { Ok::<Bytes, std::io::Error>(bytes) }),
+                Some(content_type.to_string()),
+            )
+            .await?;
+        let derived_hash = stored.hash().to_string();
+
+        let inserted = sqlx::query(
+            // The source must still EXIST, or this row can never be cleaned
+            // up. `purge_derived_blobs` runs from the source's reap, so a
+            // mapping written after that reap is unreachable forever: nothing
+            // will reap that hash a second time, and the orphaned row holds
+            // its derived blob's ref_count at 1, which GC is then correct to
+            // refuse. Permanent leak, three rows per image.
+            //
+            // It is not hypothetical. Background thumbnail generation is
+            // spawned and unawaited, so an upload deleted promptly — which a
+            // test suite does constantly, and users do occasionally — has its
+            // render finish AFTER the blob was reaped and then record a
+            // mapping to a corpse.
+            //
+            // Checking both tables because `source_hash` names a Blob:
+            // a manifest for CDC content, a bare blob row for legacy
+            // whole-file content.
+            //
+            // Zero rows here is indistinguishable from the ON CONFLICT case,
+            // and both want the same handling — release the reference the
+            // blob write just took — which the caller already does.
+            "INSERT INTO storage.content_derived_blobs
+                 (source_hash, kind, variant, blob_hash, content_type)
+             SELECT $1, $2, $3, $4, $5
+              WHERE EXISTS (SELECT 1 FROM storage.chunk_manifests WHERE file_hash = $1)
+                 OR EXISTS (SELECT 1 FROM storage.blobs           WHERE hash      = $1)
+             ON CONFLICT (source_hash, kind, variant) DO NOTHING",
+        )
+        .bind(source_hash)
+        .bind(kind)
+        .bind(variant)
+        .bind(&derived_hash)
+        .bind(content_type)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| DomainError::internal_error("Dedup", format!("record derived blob: {e}")))?
+        .rows_affected();
+
+        if inserted == 0 {
+            // Two causes, one correct response.
+            //
+            // Either someone else already mapped this variant (ON CONFLICT),
+            // or the source Blob no longer exists so the WHERE EXISTS above
+            // refused the row. Both leave our blob write with no mapping
+            // behind it, and in both cases keeping the reference would pin
+            // the blob forever — inflating ref_count on every re-render in
+            // the first case, stranding an unreachable blob in the second.
+            if let Err(e) = self.remove_reference(&derived_hash).await {
+                tracing::warn!(
+                    target: "oxicloud::dedup",
+                    error = %e,
+                    "failed to release duplicate derived-blob reference for {}",
+                    &derived_hash[..derived_hash.len().min(12)],
+                );
+            }
+        }
+
+        Ok(derived_hash)
+    }
+
+    /// Look up a derived artifact by its source content. Read counterpart of
+    /// [`Self::store_derived_blob`].
+    pub async fn find_derived_blob(
+        &self,
+        source_hash: &str,
+        kind: &str,
+        variant: &str,
+    ) -> Option<crate::application::ports::dedup_ports::DerivedBlobRef> {
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT blob_hash, content_type FROM storage.content_derived_blobs
+              WHERE source_hash = $1 AND kind = $2 AND variant = $3",
+        )
+        .bind(source_hash)
+        .bind(kind)
+        .bind(variant)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .ok()
+        .flatten()
+        .map(|(blob_hash, content_type)| {
+            crate::application::ports::dedup_ports::DerivedBlobRef {
+                blob_hash,
+                content_type,
+            }
+        })
+    }
+
     /// The registry backing the reap predicate.
     ///
     /// Exposed so `blobs_consistency` recomputes refcounts from the *same*
@@ -577,6 +816,89 @@ impl DedupService {
     fn fire_blob_creation_hooks(&self, hash: &str, content_type: Option<&str>) {
         if let Some(lc) = &self.blob_lifecycle {
             lc.on_blob_created(hash, content_type);
+        }
+    }
+
+    /// Everything that must happen when a blob is permanently reaped:
+    /// drop the artifacts derived FROM it, then notify the lifecycle hooks.
+    ///
+    /// Boxed because it is mutually recursive with `remove_reference`:
+    /// releasing a thumbnail's reference can reap the thumbnail's own blob,
+    /// which comes back through here. It terminates after one level —
+    /// nothing is derived from a thumbnail, so the inner purge finds no rows.
+    fn reap_blob<'a>(
+        &'a self,
+        hash: &'a str,
+    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            self.purge_derived_blobs(hash).await;
+            self.fire_blob_hooks(hash);
+        })
+    }
+
+    /// Delete every artifact derived from `source_hash` and release the
+    /// manifest references those rows held.
+    ///
+    /// The delete counterpart of [`Self::store_derived_blob`]. Without it a
+    /// thumbnail pins its own blob forever: the mapping row keeps
+    /// `chunk_manifests.ref_count` at 1 with no file behind it, so GC never
+    /// reclaims the bytes and a full delete leaves orphans on disk.
+    async fn purge_derived_blobs(&self, source_hash: &str) {
+        let derived: Vec<(String,)> = match sqlx::query_as(
+            "DELETE FROM storage.content_derived_blobs
+              WHERE source_hash = $1
+              RETURNING blob_hash",
+        )
+        .bind(source_hash)
+        .fetch_all(self.pool.as_ref())
+        .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!(
+                    target: "oxicloud::dedup",
+                    error = %e,
+                    "failed to purge derived blobs for {}",
+                    &source_hash[..source_hash.len().min(12)],
+                );
+                return;
+            }
+        };
+
+        // Silent on success until now, which made three distinct outcomes
+        // indistinguishable from the outside: never called, called and found
+        // nothing, or found rows whose release then failed. Chasing an
+        // orphaned-derived-row leak cost several full suite runs for exactly
+        // that reason, so the call announces itself.
+        //
+        // `info` when it actually deleted something — that is rare (only when
+        // a source Blob dies) and it is the line that proves the reap path
+        // reached here. `debug` for the common no-op.
+        if derived.is_empty() {
+            tracing::debug!(
+                target: "oxicloud::dedup",
+                "purge_derived_blobs: no rows for {}",
+                &source_hash[..source_hash.len().min(12)],
+            );
+        } else {
+            tracing::info!(
+                target: "oxicloud::dedup",
+                rows = derived.len(),
+                "purge_derived_blobs: releasing {} derived row(s) for {}",
+                derived.len(),
+                &source_hash[..source_hash.len().min(12)],
+            );
+        }
+
+        for (blob_hash,) in derived {
+            if let Err(e) = self.remove_reference(&blob_hash).await {
+                tracing::warn!(
+                    target: "oxicloud::dedup",
+                    error = %e,
+                    "failed to release derived blob {}",
+                    &blob_hash[..blob_hash.len().min(12)],
+                );
+            }
         }
     }
 
@@ -1843,7 +2165,7 @@ impl DedupService {
             self.manifest_cache.invalidate(file_hash).await;
 
             // File content is gone — drop its blob-keyed thumbnails now.
-            self.fire_blob_hooks(file_hash);
+            self.reap_blob(file_hash).await;
 
             tracing::info!(
                 "MANIFEST DELETED: {} ({} chunks dereferenced; orphans reclaimed by GC)",
@@ -1922,7 +2244,7 @@ impl DedupService {
             }
 
             // Bug 3 fix: notify hooks — e.g. thumbnail cleanup keyed by hash
-            self.fire_blob_hooks(hash);
+            self.reap_blob(hash).await;
 
             tracing::info!("BLOB DELETED: {} (no more references)", &hash[..12]);
             Ok(true)
@@ -2011,7 +2333,7 @@ impl DedupService {
             if let Err(e) = self.backend.delete_blob(hash).await {
                 tracing::warn!("cleanup_if_orphaned: disk delete failed for {short}: {e}");
             }
-            self.fire_blob_hooks(hash);
+            self.reap_blob(hash).await;
             tracing::info!("cleanup_if_orphaned: removed orphaned legacy blob {short}");
         }
     }
@@ -2701,6 +3023,28 @@ impl DedupService {
             // and accounting remain below and run only after refcounts succeed.
             for (file_hash, _, _) in &batch {
                 self.manifest_cache.invalidate(file_hash).await;
+
+                // Drop everything derived FROM this Blob, exactly as
+                // `reap_blob` does for the single-blob path.
+                //
+                // Without this, bulk manifest reaping orphans the rows: the
+                // reap predicate protects a manifest that IS a derived
+                // artifact (`content_derived_blobs.blob_hash`), but
+                // deliberately not one that is the SOURCE of them — counting
+                // `source_hash` as a reference would pin every original for
+                // as long as a thumbnail existed. So the source is reaped
+                // correctly, and the purge has to follow it.
+                //
+                // It did not, and the leak is permanent rather than cosmetic:
+                // the orphaned row holds `chunk_manifests.ref_count` at 1 on
+                // the thumbnail's own blob, so GC is thereafter *correct* to
+                // refuse it and those bytes are never reclaimed. Every
+                // deleted image left three of them behind — one per size.
+                //
+                // Found by storage_cleanup_check.sh: three leftover blobs,
+                // all `derived=1`, all naming one `src` whose manifest, blob
+                // row and files were already gone.
+                self.purge_derived_blobs(file_hash).await;
             }
 
             if batch.len() == 1 {
@@ -2760,7 +3104,7 @@ impl DedupService {
                 // chunk-keyed hook never finds them. Symptom: orphan webp
                 // under `.thumbnails/{icon,preview,large}/<file_hash>.webp`
                 // after a user-cascade-delete of a video upload.
-                self.fire_blob_hooks(file_hash);
+                self.reap_blob(file_hash).await;
 
                 total_bytes += *size as u64;
                 tracing::debug!(
@@ -2843,7 +3187,7 @@ impl DedupService {
                 .await;
 
             for (hash, size) in &deleted {
-                self.fire_blob_hooks(hash);
+                self.reap_blob(hash).await;
                 total_bytes += *size as u64;
             }
             total_deleted += n as u64;
@@ -3228,6 +3572,15 @@ impl DedupPort for DedupService {
         self.blob_exists(hash).await
     }
 
+    async fn find_derived_blob(
+        &self,
+        source_hash: &str,
+        kind: &str,
+        variant: &str,
+    ) -> Option<crate::application::ports::dedup_ports::DerivedBlobRef> {
+        self.find_derived_blob(source_hash, kind, variant).await
+    }
+
     async fn get_blob_metadata(&self, hash: &str) -> Option<BlobMetadataDto> {
         self.get_blob_metadata(hash).await
     }
@@ -3322,6 +3675,20 @@ impl crate::infrastructure::scheduler::JobHandler for DedupService {
         DEDUP_GC_JOB_NAME
     }
 
+    fn description(&self) -> &'static str {
+        "Reclaims blobs and chunk manifests that no file, thumbnail or \
+         preview references any more, once they are past the orphan grace \
+         window. Trash cleanup already runs this as its tail step; \
+         triggering it here is for reclaiming immediately rather than at \
+         the next tick. Add ?force=true to skip the grace window."
+    }
+
+    /// Deletes bytes. `force` is its accelerator, not a repair flag —
+    /// there is nothing this job reports without also acting on it.
+    fn mutates(&self) -> crate::infrastructure::scheduler::Mutates {
+        crate::infrastructure::scheduler::Mutates::Always
+    }
+
     /// Runs one `garbage_collect` sweep — the same reclamation that
     /// `TrashCleanupService` invokes inline as its tail step, exposed
     /// through the scheduler so operators can trigger it uniformly via
@@ -3388,7 +3755,9 @@ mod tests {
      SELECT ctid
        FROM storage.chunk_manifests m
       WHERE m.ref_count <= 0
-         OR NOT (EXISTS (SELECT 1 FROM storage.files cnt_f WHERE cnt_f.blob_hash = m.file_hash))
+         OR NOT (EXISTS (SELECT 1 FROM storage.files cnt_f WHERE cnt_f.blob_hash = m.file_hash)
+        OR EXISTS (SELECT 1 FROM storage.content_derived_blobs cnt_d WHERE cnt_d.blob_hash = m.file_hash)
+        OR EXISTS (SELECT 1 FROM storage.file_attached_blobs cnt_a WHERE cnt_a.blob_hash = m.file_hash))
       LIMIT $1
  )
  RETURNING file_hash, chunk_hashes, total_size"#;

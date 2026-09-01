@@ -48,7 +48,7 @@ use uuid::Uuid;
 use crate::common::errors::DomainError;
 
 use super::handler::JobHandler;
-use super::types::{JobOutcome, JobRunArgs};
+use super::types::{JobOutcome, JobRunArgs, Mutates};
 
 // ─── Run status ─────────────────────────────────────────────────────────────
 
@@ -238,6 +238,47 @@ pub trait RecoverableJobHandler: Send + Sync {
     /// URL fragment: `POST /api/admin/jobs/{name}/trigger`.
     fn name(&self) -> &str;
 
+    /// What this job does, for the admin UI.
+    ///
+    /// English, in the trait, beside the behaviour it describes — not in
+    /// `locales/*.json`. A description that lives away from the code rots the
+    /// moment a job changes, invisibly, and a translator cannot know what
+    /// `manifests_consistency` reconciles. i18n can layer on later keyed by
+    /// job name, with this as the fallback, so a missing translation degrades
+    /// to English rather than a blank panel.
+    ///
+    /// Defaulted so adding it to ~15 existing jobs is incremental rather than
+    /// one breaking change.
+    fn description(&self) -> &'static str {
+        ""
+    }
+
+    /// Whether a run changes state, and under what conditions.
+    ///
+    /// Three values rather than a boolean because there are three cases, and
+    /// the interesting one is conditional: a job can be read-only by default
+    /// and destructive under `?repair=true`. A boolean forces that job to
+    /// answer wrongly for one of its two modes — `false` on something that
+    /// can delete files is actively misleading.
+    fn mutates(&self) -> Mutates {
+        Mutates::Never
+    }
+
+    /// `Some(..)` when `?repair=true` does something beyond a default run,
+    /// describing what it ADDS; `None` when the flag is inert.
+    ///
+    /// One method rather than a `supports_repair` boolean plus prose: its
+    /// presence drives whether the UI offers the toggle, its content drives
+    /// the confirmation text. A boolean would leave the frontend to invent
+    /// wording for a destructive action it does not understand.
+    ///
+    /// Independent of [`Self::mutates`], not derived from it — the import
+    /// jobs are [`Mutates::Always`] *and* repair-capable, inserting rows on a
+    /// plain run and additionally unlinking files under repair.
+    fn repair_description(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Long-running scan. See trait-level doc for the contract.
     ///
     /// `store` — bound to THIS run (a single row in
@@ -361,7 +402,15 @@ pub trait JobStore: Send + Sync {
     /// `"stale_used_bytes"`, `"missing_blob"`). Never rename across
     /// releases; new failure modes get new values.
     ///
-    /// `severity` — one of `"data_loss"`, `"inconsistent"`, `"anomaly"`.
+    /// `severity` — one of:
+    /// - `"data_loss"` — bytes / rows unreachable or gone.
+    /// - `"inconsistent"` — counters or materialised values wrong,
+    ///   content intact.
+    /// - `"anomaly"` — surprising state worth surfacing, no known impact.
+    ///   This is the level the admin panel labels "notices"; there is no
+    ///   separate `notice` severity, and a job that acted on what it found
+    ///   says so in `detail` rather than in a fourth severity that would
+    ///   render identically.
     ///
     /// `resource_id` — the file / folder / drive / blob the finding
     /// pertains to. `None` for run-wide findings (e.g. "backend
@@ -993,6 +1042,21 @@ impl JobHandler for RecoverableAdapter {
         // downstream.
         true
     }
+
+    // The registry only ever sees `dyn JobHandler`, so the tenant's own
+    // metadata has to be forwarded through the wrapper or it is invisible
+    // to `GET /api/admin/jobs`. Silently returning the JobHandler defaults
+    // here would leave every recoverable job undescribed and reported as
+    // read-only — including ones that delete files.
+    fn description(&self) -> &'static str {
+        self.inner.description()
+    }
+    fn mutates(&self) -> Mutates {
+        self.inner.mutates()
+    }
+    fn repair_description(&self) -> Option<&'static str> {
+        self.inner.repair_description()
+    }
 }
 
 // ─── Ergonomics: JobRegistry extension for recoverable jobs ─────────────────
@@ -1503,6 +1567,47 @@ mod tests {
     }
 
     // ─── Tests ─────────────────────────────────────────────────────────────
+
+    /// The registry only ever sees `dyn JobHandler`, so a recoverable
+    /// tenant's metadata reaches `GET /api/admin/jobs` only if the adapter
+    /// forwards it. Falling back to the `JobHandler` defaults here would
+    /// report every recoverable job as undescribed and read-only —
+    /// including the imports, which delete files under repair.
+    #[tokio::test]
+    async fn adapter_forwards_job_metadata_from_inner_handler() {
+        struct Annotated;
+        #[async_trait]
+        impl RecoverableJobHandler for Annotated {
+            fn name(&self) -> &str {
+                "annotated"
+            }
+            async fn run_resumable(
+                &self,
+                _store: &dyn JobStore,
+                _args: &JobRunArgs,
+                _resume_cursor: Option<Vec<u8>>,
+            ) -> RunOutcome {
+                RunOutcome::completed()
+            }
+            fn description(&self) -> &'static str {
+                "walks a thing"
+            }
+            fn mutates(&self) -> Mutates {
+                Mutates::OnRepairOnly
+            }
+            fn repair_description(&self) -> Option<&'static str> {
+                Some("fixes the thing")
+            }
+        }
+
+        let provider: Arc<dyn JobStoreProvider> = Arc::new(MemProvider::new());
+        let adapter = RecoverableAdapter::new(Arc::new(Annotated), provider);
+        let as_handler: &dyn JobHandler = &adapter;
+
+        assert_eq!(as_handler.description(), "walks a thing");
+        assert_eq!(as_handler.mutates(), Mutates::OnRepairOnly);
+        assert_eq!(as_handler.repair_description(), Some("fixes the thing"));
+    }
 
     #[tokio::test]
     async fn fresh_run_completes_and_marks_status_completed() {

@@ -339,6 +339,97 @@ Same trims as `content_derived_blobs` — no `size`, no `format`, no
 Generic naming rather than `file_previews` because the family is
 real, and each member would otherwise be a new table plus a new
 `BlobReferenceSource` plus a new term in the consistency recompute.
+
+### Negative verdicts — `blob_hash` must be nullable
+
+*(Resolved 2026-08-27. Supersedes the "`.skip` markers are an open
+question" note.)*
+
+The table says "here is the artifact". It cannot say **"there is
+deliberately no artifact"**, and absence of a row is ambiguous — it
+means both *never attempted* and *attempted, not worth it*. Collapsing
+those destroys the only information a negative cache exists to hold.
+
+Two live cases, not one:
+
+* **Transcode not beneficial.** `ImageTranscodeService` can only learn
+  whether WebP is smaller by doing the full decode + encode. When it is
+  not, it records a zero-byte `{file_id}.{ext}.skip` marker so the next
+  GET does not repeat the work.
+* **Thumbnail not renderable.** `generate_and_persist` returns empty
+  `Bytes` — "moka's zero-weight negative-entry convention" — for sources
+  over `MAX_DECODE_PIXELS` (50 MP) or that fail to decode. This one is
+  **RAM-only**: after moka evicts, a 60-megapixel upload has its full
+  decode attempted again, forever.
+
+So this is not a transcode quirk. The rule generalises to every `kind`:
+
+> **Any derivation whose failure is deterministic in the source content
+> is worth memoising negatively.**
+
+**The discriminator, or the table fills with noise.** Persist a negative
+only when it is *both* expensive to compute *and* deterministic in the
+content. `can_transcode(mime)` and "not an image" are cheap metadata
+checks — recomputing is free and a row would be pure overhead. It is the
+ones that cost a decode that earn a row.
+
+**Permanent vs transient is the load-bearing split.** "Deterministic"
+above means *a property of the content*, not merely *a failure that
+happened*:
+
+| Permanent — cache it | Transient — never cache it |
+|---|---|
+| decode failed (corrupt / unsupported) | generation timeout |
+| over `MAX_DECODE_PIXELS` | decode semaphore closed |
+| transcode result not smaller | blob read I/O error, OOM under load |
+
+**Today's code cannot tell them apart, and that must be fixed before any
+of this is persisted.** `generate_and_persist` collapses *every* error
+into empty `Bytes` — timeouts and semaphore closures included. That is
+survivable while the sentinel lives only in moka, which evicts; write
+the same signal to the database and a thumbnail that timed out once
+under load is marked unrenderable **forever**. So the renderer must
+return a typed outcome — rendered / permanently-unrenderable / transient
+failure — and only the middle one earns a row.
+
+The asymmetry sets the default. A wrongly-cached transient is silent and
+permanent; a not-cached permanent merely costs repeated work. **When in
+doubt, do not cache** — treat unclassified errors as transient.
+
+**Representation: nullable `blob_hash`.** A sentinel hash was considered
+and rejected — it stops `blob_hash` naming a real blob, and every future
+reader has to know the lie. NULL says what is true. Costs:
+
+* `ContentDerivedReferenceSource` needs `AND blob_hash IS NOT NULL`; a
+  row holding no blob holds no reference.
+* The dangling-derived check (row 9 of the coverage matrix) needs the
+  same guard, or every negative verdict reports as a broken row.
+* The `NOT NULL` constraint is dropped.
+
+**No TTL, and no renderer-version term either.** Both were considered.
+Time is the wrong axis: the verdict is deterministic in
+`(content, encoder)` and does not decay, so a TTL re-attempts an OOMing
+decode on a schedule — reintroducing the exact waste the negative
+exists to prevent — while still leaving staleness for most of the window
+after a deploy.
+
+What makes the mechanism unnecessary is that **negative rows are
+disposable**: they hold no data, so discarding one costs only a
+re-derivation. Upgrading the image library invalidates them with a line
+in the same migration as the dependency bump —
+
+```sql
+DELETE FROM storage.content_derived_blobs WHERE blob_hash IS NULL;
+```
+
+— which beats a version term that must be remembered and leaves dead
+rows behind when bumped. Write this down, or someone later builds the
+expiry logic this paragraph exists to prevent.
+
+Same shape, outside this table and not solved here:
+`blob_extracted_text` (no extractable text) and `faces.faces` (no faces
+detected) are both deterministic negatives currently indistinguishable
+from "never processed".
 With `kind` it's a one-line `ALTER … CHECK`:
 
 | Kind | Why it lands here |
@@ -858,8 +949,8 @@ Findings each job reports today, and where the new tables land:
 | # | Edge | Direction | Mechanism | Status |
 |---|---|---|---|---|
 | 1 | backend → `storage.blobs` | orphan bytes | `orphan_blob` (backend_consistency) | ✓ |
-| 2 | `storage.blobs` → backend | missing bytes | `blob_missing_from_backend` | ✓ |
-| 3 | chunk bytes | corruption | `blob_corrupted`, `blob_unreadable` | ✓ |
+| 2 | `storage.blobs` → backend | missing bytes | `blob_missing_from_backend` (backend_consistency) | ✓ |
+| 3 | chunk bytes | corruption | `blob_corrupted`, `blob_unreadable` (backend_consistency, `?deep=true`) | ✓ |
 | 4 | manifest → chunks | chunk reaped | `chunk_missing` (files_consistency) | ✓ |
 | 5 | `files` → Blob | dangling | `missing_blob` (files_consistency) | ✓ |
 | 6 | `storage.blobs.ref_count` | recompute | `refcount_mismatch` | ✓ chunk level only |
@@ -948,6 +1039,74 @@ the request. Read order:
 3. **`dedup.read_blob_bytes(derived_hash)`** — through the normal
    backend stack, which is where the disk cache lives.
 4. Generate only if step 2 found no row.
+
+### HTTP ETag — move to the derived hash when the order flips
+
+Shipped ahead of this plan (2026-08-24): the thumbnail ETag is
+`"thumb-{source_hash}-{size}-{format}"` on both the REST and the
+NextCloud preview endpoint. It replaced a `file_id`-keyed ETag that,
+combined with `Cache-Control: immutable`, meant replacing a file's
+content never invalidated the client's copy — `file_id` survives the
+replacement, so the ETag did too, for a year.
+
+**That key is still one term short.** A thumbnail is a function of
+`(source bytes, size, format, RENDERER)`. Change the encoder, a quality
+setting, or EXIF-rotation handling, and identical inputs produce
+different bytes under an unchanged ETag — the same staleness class, one
+level down. It bites when an already-cached thumbnail is re-rendered
+after a renderer change (sidecar evicted, regenerated on miss).
+
+**The fix is to key on the derived blob's own hash** — the ETag then
+*is* the hash of the bytes served, so any change in output invalidates
+by construction, with no version constant to remember to bump. It is
+self-consistent for free: `store_derived_blob` is
+`ON CONFLICT DO NOTHING`, so a re-render never displaces the stored
+row, and the ETag therefore always equals what the derived tier will
+serve.
+
+**It must land with the read-order flip, not before.** Today the
+derived tier is deliberately read LAST, so an ETag naming the derived
+hash would describe a tier the response probably did not come from.
+The two agree at creation — `render_and_persist_all_webp` writes both
+from the same bytes — but diverge if a sidecar is re-rendered while the
+derived row stays pinned by `DO NOTHING`. Sidecar is served, ETag
+describes the other one: an ETag that lies about the body is worse than
+one that is merely coarse. Two further reasons it has to wait: the
+derived tier is WebP-only (`variant = size.dir_name()`, no format in
+the key), so non-WebP clients have no row to key on; and nothing
+predating this work has a row until `derived_import` backfills.
+
+So at step 10, alongside the flip: ETag becomes the derived hash, with
+the current `source_hash` form kept as the fallback for a variant not
+yet generated and for formats the derived tier does not hold. The
+`LEFT JOIN` in step 2 above already returns the derived hash in the
+same query, so the ETag costs no extra round-trip.
+
+**Attempted early (2026-08-26) and reverted — the constraint above is
+load-bearing.** The attached half shipped and is correct, because an
+upload writes its row synchronously before any read can observe it. The
+*derived* half was brought forward at the same time and had to be backed
+out: the ETag is computed **before** the body, so on a cache miss no row
+exists and the handler emits the source-keyed form — then rendering
+creates the row, and the very next request resolves to the derived hash.
+The validator changed as a side effect of producing the body, so every
+first render was immediately stale. Caught by
+`thumbnail_etag_content_keyed.hurl`, where two consecutive GETs of an
+unchanged file stopped revalidating to 304.
+
+**The flip alone does NOT remove the hazard** *(corrected 2026-08-26 —
+an earlier revision of this paragraph claimed it did)*. A first render
+still creates the row as a side effect of producing the body, whatever
+the read order, so two consecutive reads would still straddle its
+appearance.
+
+What actually removes it is resolving the ETag **after** generation on
+the 200 path. A 304 can only fire when the client already holds a
+validator, which means it has been served before, which means the row
+exists — so the *conditional* path can safely consult the derived hash
+up front, while the *generating* path computes it from bytes it now
+holds. That is a handler restructure, not an ordering change, and it is
+the actual prerequisite for the derived-hash ETag.
 
 **The disk cache is `CachedBlobBackend`, reused unchanged.** No
 thumbnail-specific cache, no second root path. Routing derived
@@ -1109,8 +1268,101 @@ filesystem and a remote backend for hours). It sweeps the cold tail:
   reference forever.
 - Reports imported / skipped-orphan / skipped-jpeg / failed counts.
 
-**Phase 3 (release N+1): delete** the fallback module and the sidecar
-directories, gated on the job reporting an empty tail.
+**Phase 3: the job deletes, not a release.** *(revised 2026-08-26 —
+supersedes "delete in release N+1, gated on an empty tail")*
+
+Sidecars are **local disk**. A release cannot know whether every
+instance has drained, so gating deletion on "the tail is empty" asks an
+operator to coordinate a fact nothing reports — and there is no way to
+know when, or whether, they will trigger the jobs at all. Instead the
+import unlinks each sidecar it has successfully imported, so **each
+instance drains itself** and the directory becomes removable once
+genuinely empty.
+
+Three constraints on that:
+
+- **Verify readback before unlinking.** Import → read the derived blob
+  back through the normal stack → *then* delete. A store that reported
+  success but landed unreadable would otherwise take the last copy with
+  it. Cheap next to the decode already performed, and it is the
+  difference between a migration and a data-loss bug.
+- **Only after the read-order flip.** Deleting while the sidecar is
+  still read *first* sends reads to the derived tier as a side effect of
+  the migration — its first production traffic arriving by accident
+  rather than by decision.
+- **Opt-in** (`?delete_imported=true`). A migration that deletes on its
+  default setting is surprising, and it is the same instinct as
+  no-silent-auto-repair: early runs import only, so an operator can
+  inspect before committing.
+
+Register it as a **scheduled tick**, not a boot-time trigger: it is
+idempotent and resumable, so periodic is safe, whereas walking a large
+`.thumbnails/` during startup delays readiness for nothing.
+
+**Phase 4: the fallback disables itself.** *(revised 2026-08-29 —
+supersedes "the only remaining release is removing the fallback read
+path")*
+
+Removing the fallback in a release has the same flaw as gating deletion
+on an empty tail, one level up: sidecars are local disk, so no release
+can know that every instance has drained. Ed's framing is the answer —
+the only removal you can actually write is `if the tier is gone, return`.
+
+So `ThumbnailService::initialize` probes the size directories once at
+boot and stores the result. When absent, every fallback read
+short-circuits on a relaxed atomic load, no syscall. The code stays,
+costs nothing, and can be deleted whenever — or never. No coordination,
+no named release.
+
+Two things had to change for absence to be reachable at all:
+
+- **`initialize` no longer creates the directories.** It
+  `create_dir_all`-ed all three at every boot, so the job removed them
+  and the next restart put them back; the absence this gates on was
+  unreachable by construction. Nothing has written a sidecar since step
+  10d2, so there was nothing to create them for.
+- **The probe tests the size directories, not the root.** On macOS
+  Finder leaves a `.DS_Store` in the root, which blocks `remove_dir`
+  there permanently. Gating on the root would keep the fallback alive on
+  every developer machine for a reason unrelated to thumbnails. No size
+  directory means no sidecar.
+
+The root removal now reports its outcome instead of discarding it —
+it is the one result an operator is waiting for, and `.DS_Store` is a
+failure worth naming rather than a silent no-op.
+
+### Prerequisite: one persist function (found 2026-08-26)
+
+**Four render paths write a sidecar; only one also writes the derived
+row.** `store_derived_blob` has a single call site — in
+`render_and_persist_all_webp` — while `fs::write(&thumb_path, …)` has
+five. `get_thumbnail`, `generate_and_persist` and
+`generate_all_sizes_background` all persist sidecar-only.
+
+That breaks the migration's premise rather than merely being untidy: an
+on-demand render (cache miss, a size never generated, an evicted
+sidecar) keeps producing un-migrated state *after* the import runs, so
+the tail never empties and the deletion gate never opens.
+
+So before the imports can converge, all render paths must go through
+**one** `persist_thumbnail` that writes the sidecar, the derived blob
+and the moka entry together — the same single-source move as
+`storage.copy_file_satellites`. What it writes then becomes a policy in
+one place, so "stop writing sidecars" is later a one-line change rather
+than four edits.
+
+Interim setting is **dual-write**, for two reasons: it is what makes the
+backlog finite, and it leaves reads untouched while the derived tier is
+still unproven. Cost is one extra local `fs::write` per render,
+negligible beside the decode. Note the sidecar *read* path must survive
+until the directories are empty regardless, so stopping the write early
+buys nothing.
+
+Cost to be aware of: `ThumbnailService` holds no `DedupService` — it is
+a per-call parameter (`dedup: Option<&DedupService>`) — so the
+consolidation threads it through those paths, and
+`generate_and_persist` takes a `thumb_path` where it will need the
+`blob_hash` instead.
 
 ### The "just delete it" opt-out is no longer universally safe
 
@@ -1157,7 +1409,35 @@ hardcoded SQL). New sources bolt on independently.
    after, step 5 lands at scale; per-row HEADs do not survive a 4×
    row count.
 7. **`ImageTranscodeService`** — same shape, `kind = 'transcode'`,
-   no new table.
+   no new table. **Scoped 2026-08-27, not started.** The service does
+   not currently write the derived tier at all, which is the same gap
+   `persist_rendered` closed for thumbnails, and it must be closed
+   before `transcode_import` can converge.
+
+   Three concrete pieces, in order:
+
+   * **Thread the source hash to the call site.** `get_transcoded` takes
+     `file_id` only, and the table is content-keyed. The hash IS
+     available one frame up — `file_retrieval_service::try_transcode`
+     is called from a scope holding `dto.content_hash` — so it is a
+     parameter to add, not a lookup to invent. Do **not** hash
+     `original_content` on the fly: that is a BLAKE3 over the whole
+     file on every request.
+   * **Give the service a `BlobHandler`.** It has no field for one
+     (`cache_dir`, `memory_cache`, `stats`), so this is a constructor
+     and DI change — mind the construction order, as
+     `ThumbnailService` hit the same thing and solved it with a
+     per-call parameter instead.
+   * **Write the `.skip` markers as negative rows** — resolved: nullable
+     `blob_hash`, see *Negative verdicts*. Thumbnails need the same
+     treatment for undecodable and over-`MAX_DECODE_PIXELS` sources,
+     which are RAM-only today, so do both together rather than twice.
+
+   Note the cache is keyed `{file_id}:{ext}` in memory and
+   `.transcoded/{ext}/{file_id}.{ext}` on disk, so it also carries the
+   file-vs-content keying mismatch that `transcode_import` has to
+   re-key. Fixing the write path first means the import only has to
+   handle history, not a moving target.
 8. **`storage.copy_file_satellites` consolidation** — collapse the two
    copy paths onto one helper, with a manifest-aware reference bump.
    **Blocks step 9**: adding a file-keyed table before this means
@@ -1169,9 +1449,101 @@ hardcoded SQL). New sources bolt on independently.
    table. Lands with step 5. File-keyed, never in
    `content_derived_blobs`. Register it in `copy_file_satellites` and
    declare its version semantics.
-10. **`derived_import` job + the dual-read fallback** — see the
-   migration section. Phase 3 (deleting the fallback and the sidecar
-   dirs) is a separate later release, gated on an empty tail.
+10. **Import jobs + the dual-read fallback** — see the migration
+   section. Revised ordering as of 2026-08-26:
+
+   a. **Consolidate onto one `persist_rendered`** (dual-write) — **done
+      2026-08-26**. Was the blocker: only one of four render paths wrote
+      the derived row, so the import could never converge. Every live
+      render now dual-writes. Two paths still pass `None` and stay
+      sidecar-only, which is safe *only* because both are reachable
+      solely through the `ThumbnailPort` impl and nothing holds a
+      `dyn ThumbnailPort` — if either gains a real caller it must take a
+      `DedupService` first. See *Prerequisite: one persist function*.
+   b. **`thumb_derived_import`** (shipped) and **`thumb_attached_import`**
+      (shipped) — two jobs, not one, because the keying differs and that
+      difference is the security boundary. A third, `transcode_import`,
+      is still needed: `ImageTranscodeService` **already exists** and
+      caches `.transcoded/{ext}/{file_id}.{ext}`, so those must be
+      **re-keyed** file→content on import (legitimate only because a
+      transcode is derivable). Its `.skip` markers import as **negative
+      rows** with a NULL `blob_hash` — see *Negative verdicts* — so the
+      verdict survives the deletion of `.transcoded/`, which it
+      otherwise would not.
+
+      **Not next, and deliberately so.** Two prerequisites, both learned
+      the hard way on the thumbnail side:
+
+      * **Format must move into `variant` first.** Transcodes are
+        inherently multi-format, and `variant` is keyed on size alone —
+        the same gap that keeps JPEG thumbnails on the sidecar (see
+        10c). Importing before that means migrating into a schema that
+        cannot hold the data without collisions. One migration unblocks
+        both.
+      * **Step 7 before the import.** `ImageTranscodeService` writes only
+        its file-keyed cache today, so an import would run against a
+        cache still growing and never reach an empty tail — precisely
+        the trap `persist_rendered` had to close for thumbnails.
+
+      Order: format-in-`variant` → step 7 → `transcode_import`.
+   c. **Flip the read order**, derived first — **done 2026-08-26**. Two
+      things it is not: a two-line swap, and an ETag fix.
+
+      A derived miss must **fall through** to the sidecar, where the old
+      code terminated the lookup — while the imports drain, most content
+      has a sidecar and no row, so terminating would report "no
+      thumbnail" for nearly everything.
+
+      And it is **WebP-only**. `store_derived_blob` writes `image/webp`
+      with `variant` keyed on size alone, no format term, so a JPEG
+      request matches the WebP row and gets the wrong codec — a
+      regression the old ordering hid, because the `.jpg` sidecar won
+      first. JPEG clients therefore stay on the sidecar, **and the
+      sidecar cannot be deleted for them** until `variant` encodes
+      format. That is a new prerequisite for (e), not a detail: it means
+      a migration to `(kind, variant, format)` — or a format term inside
+      `variant` — has to land before the directories can go.
+   d. **Enable deletion** in the import jobs (opt-in, readback-verified)
+      — **done 2026-08-27**, both halves, sharing one
+      `verify_and_unlink`.
+
+   d2. **Stop writing sidecars.** *(Added 2026-08-27 — the sequence
+      above was missing this, and (e)'s gate is unreachable without
+      it: dual-write means any render or upload recreates the
+      directory seconds after the job removes it, so "no longer
+      exists" can never hold.)*
+
+      Two sides, and they differ in what a failed write costs:
+
+      * **Rendered / content-keyed — safe now.** Delete the `fs::write`
+        in `persist_rendered`. No gate beyond the read flip, which has
+        landed. Existing sidecars are untouched, so a box that has not
+        imported yet keeps its fallback for old content; new content
+        goes only to the derived tier, which the read path already
+        prefers. If the derived store fails the bytes are still served
+        and simply not cached — regenerable by definition.
+      * **Uploaded / file-keyed — needs a change first.**
+        `upload_thumbnail_impl` logs and still returns 201 when
+        `store_attached_blob` fails, which is safe *only* because the
+        `ext-` sidecar catches it. Remove that sidecar while the store
+        is best-effort and a user's uploaded preview can vanish
+        silently behind a success response. These are the
+        non-regenerable bytes, so **the PUT must fail** before the
+        write is removed.
+
+      Order matters: make the attached store fatal, *then* drop its
+      sidecar. Reversed, it trades a silent data-loss window for an
+      empty directory.
+
+   e. **Remove the fallback read path** once the directory no longer
+      *exists* — not merely once it is empty. Two reasons. Empty is a
+      momentary property an on-demand render can undo, whereas absence
+      is one-way and observable, so the job removes the directory after
+      draining it and that absence is the proof. And it is far cheaper
+      to test: existence is a single `stat`, while emptiness costs an
+      `opendir`/`readdir`/`closedir` — which matters if the fallback
+      ever gates on it per read rather than once at boot. The only
+      remaining release, and no data is at stake by then.
 11. **`DedupService` → `BlobHandler` rename** — decided, mechanical,
     34 files. Standalone commit, `src/AGENTS.md` updated with it. Can
     land at any point; last is easiest, since every earlier slice
@@ -1257,10 +1629,40 @@ Schema rename (deferred, requires migration):
 - `storage.chunk_manifests` → `storage.blob_manifests` (or keep — arguable)
 - `BlobStorageBackend` trait → `ChunkStorageBackend` — reads and
   writes physical chunks, not blobs
+- **`blobs_consistency` job → `chunks_consistency`** — it iterates
+  `storage.blobs`, so it inherits whatever that table is called.
 
-`file.blob_hash` semantics stay — references a Blob via its
-manifest OR (for pre-CDC legacy) points directly at a single-chunk
-Blob whose hash equals its lone chunk's hash.
+### The job rename has two rules of its own
+
+**Travel with the schema, never ahead of it.** A job named
+`chunks_consistency` iterating a table still called `storage.blobs` is
+*more* confusing than today's mismatch, not less.
+
+**Never recycle `blobs_consistency`.** Under the corrected taxonomy the
+manifest job *is* the blob-level job, so the freed name looks
+available — and reusing it would be the worst outcome available. A job
+name that survives a release while changing meaning silently breaks
+`POST /api/admin/jobs/<name>/trigger` URLs, every historical row in
+`background_runs.job_name`, and any dashboard or alert keyed on it.
+`manifests_consistency` is unambiguous under either taxonomy; leave it
+alone. Net effect: one job renamed, not two swapped.
+
+Budget for the operational cost either way — job names are not internal
+identifiers. A rename orphans past runs unless `background_runs.job_name`
+is migrated alongside, and any runbook naming the old one breaks. Worth
+an alias period or an explicit release note.
+
+### Explicitly NOT renamed
+
+- **The `.blob` on-disk suffix** (`<hash>.blob` in `LocalBlobBackend`
+  and `CachedBlobBackend`). Correcting it to `.chunk` would mean
+  renaming every file in every deployment's blob store — a migration
+  whose cost is wildly out of proportion to the clarity gained, and one
+  that can fail halfway. The suffix is an implementation detail no
+  consumer parses; leave it.
+- **`file.blob_hash`** — semantics stay. It references a Blob via its
+  manifest OR (for pre-CDC legacy) points directly at a single-chunk
+  Blob whose hash equals its lone chunk's hash.
 
 Scope for this rename: ~23 files touch the SQL, plus a migration
 for the table rename. Not free. Ship AFTER the tier-2 write-side

@@ -9,7 +9,7 @@
 
 use async_trait::async_trait;
 
-use super::types::{JobOutcome, JobRunArgs};
+use super::types::{JobOutcome, JobRunArgs, Mutates};
 
 /// Implemented by every service that wants to run on a fixed interval
 /// through the periodic scheduler.
@@ -91,5 +91,41 @@ pub trait JobHandler: Send + Sync {
     /// automatically at registration time.
     fn is_recoverable(&self) -> bool {
         false
+    }
+
+    /// What this job does, in one or two sentences, for the admin UI.
+    ///
+    /// English, in the trait, beside the behaviour it describes — not in
+    /// `locales/*.json`. A description that lives away from the code rots
+    /// the moment a job changes, invisibly, and a translator cannot know
+    /// what `manifests_consistency` reconciles. i18n can layer on later
+    /// keyed by job name with this as the fallback, so a missing
+    /// translation degrades to English rather than to a blank panel.
+    ///
+    /// Defaulted to `""` so adding it to the existing jobs is incremental
+    /// rather than one breaking change; the UI omits the line when empty.
+    fn description(&self) -> &'static str {
+        ""
+    }
+
+    /// Whether a run changes state, and under what conditions. See
+    /// [`Mutates`] for why this is not a boolean.
+    fn mutates(&self) -> Mutates {
+        Mutates::Never
+    }
+
+    /// `Some(..)` when `?repair=true` does something beyond a default run,
+    /// describing what it ADDS; `None` when the flag is inert.
+    ///
+    /// One method rather than a `supports_repair` boolean plus prose: its
+    /// presence drives whether the UI offers the toggle, its content drives
+    /// the confirmation text. A boolean would leave the frontend to invent
+    /// wording for a destructive action it does not understand.
+    ///
+    /// Independent of [`Self::mutates`], not derived from it — the thumbnail
+    /// import jobs are [`Mutates::Always`] *and* repair-capable, inserting
+    /// rows on a plain run and additionally unlinking sidecars under repair.
+    fn repair_description(&self) -> Option<&'static str> {
+        None
     }
 }

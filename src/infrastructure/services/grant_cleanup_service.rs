@@ -23,7 +23,7 @@ use tracing::{error, info};
 
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::common::errors::DomainError;
-use crate::infrastructure::scheduler::{JobHandler, JobOutcome, JobRegistry, JobRunArgs};
+use crate::infrastructure::scheduler::{JobHandler, JobOutcome, JobRegistry, JobRunArgs, Mutates};
 use crate::infrastructure::services::pg_acl_engine::PgAclEngine;
 use async_trait::async_trait;
 
@@ -120,6 +120,18 @@ impl GrantCleanupService {
 impl JobHandler for GrantCleanupService {
     fn name(&self) -> &str {
         GRANT_CLEANUP_JOB_NAME
+    }
+
+    fn description(&self) -> &'static str {
+        "Deletes expired role grants once they are past the retention \
+         window. Expired grants never leak permission — every AuthZ check \
+         filters on expires_at — they just accumulate. The window keeps \
+         'what happened to my access?' answerable for a few weeks after \
+         expiry."
+    }
+
+    fn mutates(&self) -> Mutates {
+        Mutates::Always
     }
 
     /// Runs one purge. `count` on the returned `JobOutcome::Ok` is
