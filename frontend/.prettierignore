@@ -11,6 +11,7 @@ src/lib/styles/base/
 src/lib/styles/ported/
 src/lib/styles/ported.css
 src/lib/icons/registry.ts
+src/lib/api/generated/
 static/locales/
 static/vendors/
 static/workers/
