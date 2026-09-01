@@ -274,9 +274,15 @@ impl FileRetrievalService {
     }
 
     /// Try to transcode image content to WebP and return transcoded variant.
+    ///
+    /// `source_hash` keys the durable derived tier. The caller has it as
+    /// `dto.content_hash`; passing it rather than hashing here matters,
+    /// because hashing would be a BLAKE3 over the whole file on every
+    /// request that reaches this path.
     async fn try_transcode(
         &self,
         id: &str,
+        source_hash: Option<&str>,
         content: &Bytes,
         mime: &str,
         file_size: u64,
@@ -291,7 +297,7 @@ impl FileRetrievalService {
         }
         let format = OutputFormat::WebP;
         match transcode
-            .get_transcoded(id, content.clone(), mime, format)
+            .get_transcoded(id, source_hash, content.clone(), mime, format)
             .await
         {
             Ok((transcoded, webp_mime, true)) => {
@@ -364,7 +370,16 @@ impl FileRetrievalService {
 
             if do_transcode
                 && let Some((t, m)) = self
-                    .try_transcode(id, &content_bytes, &mime_type, file_size, true)
+                    .try_transcode(
+                        id,
+                        // Empty on the hash-less stub DTOs (external mounts),
+                        // which the content-keyed tier cannot serve anyway.
+                        Some(&*dto.content_hash).filter(|h: &&str| !h.is_empty()),
+                        &content_bytes,
+                        &mime_type,
+                        file_size,
+                        true,
+                    )
                     .await
             {
                 return Ok((

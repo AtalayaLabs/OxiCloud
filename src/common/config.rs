@@ -2401,8 +2401,15 @@ fn parse_startup_job(raw: &str) -> Result<StartupJob, String> {
 /// Set `OXICLOUD_STARTUP_JOBS=` (empty) to disable startup jobs
 /// entirely; any explicit value replaces this list rather than adding
 /// to it.
-const DEFAULT_STARTUP_JOBS: &str =
-    "thumb_derived_import?repair=true,thumb_attached_import?repair=true";
+/// `transcode_import` joins them for the same reason and on the same
+/// terms. Its artifacts are the most disposable of the three — a
+/// transcode is a pure function of its source, so anything deleted in
+/// error is recomputed on the next request — and its `.skip` markers
+/// collapse to one row per distinct content, which is the saving that
+/// only happens once the import runs.
+const DEFAULT_STARTUP_JOBS: &str = "thumb_derived_import?repair=true,\
+     thumb_attached_import?repair=true,\
+     transcode_import?repair=true";
 
 /// Parse the whole `OXICLOUD_STARTUP_JOBS` value. Empty → no startup
 /// jobs (an explicit opt-out); unset → [`DEFAULT_STARTUP_JOBS`].
@@ -3999,7 +4006,14 @@ mod tests {
     fn default_startup_jobs_drain_both_thumbnail_tiers() {
         let jobs = AppConfig::default().startup_jobs;
         let names: Vec<&str> = jobs.iter().map(|j| j.name.as_str()).collect();
-        assert_eq!(names, ["thumb_derived_import", "thumb_attached_import"]);
+        assert_eq!(
+            names,
+            [
+                "thumb_derived_import",
+                "thumb_attached_import",
+                "transcode_import"
+            ]
+        );
         assert!(jobs.iter().all(|j| j.args.repair));
         assert!(jobs.iter().all(|j| !j.args.deep && !j.args.force));
     }

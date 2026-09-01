@@ -1409,7 +1409,25 @@ hardcoded SQL). New sources bolt on independently.
    after, step 5 lands at scale; per-row HEADs do not survive a 4×
    row count.
 7. **`ImageTranscodeService`** — same shape, `kind = 'transcode'`,
-   no new table. **Scoped 2026-08-27, not started.** The service does
+   no new table. **Done 2026-08-30**, validated on a snapshot restore
+   against S3: 13 cached transcodes imported, 5 `.skip` markers
+   collapsing to 3 negative rows (three of them named the same content),
+   `file_gone` exercised with a synthetic id, and every deletion
+   preceded by a byte-for-byte readback.
+
+   Two things landed beyond the three pieces below. The memory cache is
+   now keyed by content as well, not just the durable tier — it was
+   still `{file_id}:{ext}`, so identical content held two RAM entries
+   and the second file missed. And `run_or_resume` binds a run to the
+   flags it started with, so a paused `?repair=true` import can no
+   longer resume as import-only.
+
+   Still local-disk, deliberately: hash-less callers (external mounts)
+   have no content identity, so they keep `.transcoded/` and it will
+   not disappear on installs that have them. Absence is only expected
+   elsewhere.
+
+   *Original scoping, for the record.* The service does
    not currently write the derived tier at all, which is the same gap
    `persist_rendered` closed for thumbnails, and it must be closed
    before `transcode_import` can converge.

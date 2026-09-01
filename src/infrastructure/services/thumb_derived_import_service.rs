@@ -734,6 +734,19 @@ impl RecoverableJobHandler for ThumbDerivedImport {
             }
         }
 
+        // Flush the tail. The loop only checkpoints on a full batch, so the
+        // remainder after the last one was never counted — a run of fewer
+        // than BATCH_SIZE files reported `scanned_count: 0` against a known
+        // total and left the admin progress bar at zero for its whole life.
+        // Same fix in both imports and in transcode_import.
+        if since_checkpoint > 0
+            && let Err(e) = store.checkpoint(Vec::new(), since_checkpoint as u64).await
+        {
+            return RunOutcome::Failed {
+                message: format!("final checkpoint: {e}"),
+            };
+        }
+
         // Remove the size directories once genuinely empty, because ABSENCE
         // is what step 10e gates the fallback removal on — not emptiness.
         // Empty is momentary: an on-demand render can repopulate it the next

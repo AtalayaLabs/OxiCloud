@@ -92,7 +92,11 @@ struct DerivedRow {
     source_hash: String,
     kind: String,
     variant: String,
-    blob_hash: String,
+    /// `None` on a NEGATIVE row — the derivation was attempted and is
+    /// known not to be worth storing for this content (a transcode that
+    /// came out larger, an undecodable source). Those rows point at
+    /// nothing on purpose and must not be read as dangling.
+    blob_hash: Option<String>,
     source_exists: bool,
     artifact_exists: bool,
 }
@@ -132,8 +136,16 @@ impl SatellitesConsistencyCheck {
         "SELECT d.source_hash, d.kind, d.variant, d.blob_hash, ",
         blob_exists!("d.source_hash"),
         " AS source_exists, ",
+        // A NEGATIVE row (NULL blob_hash) has no artifact BY DESIGN, so it
+        // counts as satisfied. Without this it reads as dangling: SQL
+        // comparison against NULL is NULL, so `EXISTS` is false, and every
+        // "this content is not worth transcoding" verdict would be reported
+        // as `data_loss`. The check has to be here rather than in the Rust
+        // arm below, so the column means "this row is in the state it
+        // should be" for both row shapes.
+        "(d.blob_hash IS NULL OR ",
         blob_exists!("d.blob_hash"),
-        " AS artifact_exists
+        ") AS artifact_exists
            FROM storage.content_derived_blobs d
           WHERE ($1::text IS NULL
                  OR (d.source_hash, d.kind, d.variant) > ($1::text, $2::text, $3::text))

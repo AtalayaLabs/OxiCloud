@@ -778,7 +778,33 @@ impl DedupService {
         kind: &str,
         variant: &str,
     ) -> Option<crate::application::ports::dedup_ports::DerivedBlobRef> {
-        sqlx::query_as::<_, (String, String)>(
+        match self.lookup_derived(source_hash, kind, variant).await {
+            crate::application::ports::dedup_ports::DerivedLookup::Found(r) => Some(r),
+            _ => None,
+        }
+    }
+
+    /// Full three-way answer: no row, a negative verdict, or the blob.
+    ///
+    /// Callers deciding whether to spend a decode want the middle case,
+    /// which [`Self::find_derived_blob`] cannot express — it folds
+    /// "never attempted" and "attempted, not worth it" into the same
+    /// `None`, and a caller acting on that repeats the expensive work
+    /// forever. Use this wherever the derivation is costly; use
+    /// `find_derived_blob` when you only need the bytes.
+    ///
+    /// A query error reads as `Missing`, deliberately: a database blip
+    /// should cost a redundant render, never a wrong "not derivable"
+    /// that suppresses a derivation the content can support.
+    pub async fn lookup_derived(
+        &self,
+        source_hash: &str,
+        kind: &str,
+        variant: &str,
+    ) -> crate::application::ports::dedup_ports::DerivedLookup {
+        use crate::application::ports::dedup_ports::{DerivedBlobRef, DerivedLookup};
+
+        let row = sqlx::query_as::<_, (Option<String>, Option<String>)>(
             "SELECT blob_hash, content_type FROM storage.content_derived_blobs
               WHERE source_hash = $1 AND kind = $2 AND variant = $3",
         )
@@ -788,13 +814,59 @@ impl DedupService {
         .fetch_optional(self.pool.as_ref())
         .await
         .ok()
-        .flatten()
-        .map(|(blob_hash, content_type)| {
-            crate::application::ports::dedup_ports::DerivedBlobRef {
+        .flatten();
+
+        match row {
+            None => DerivedLookup::Missing,
+            // The CHECK constraint keeps blob_hash and content_type NULL
+            // together, so one NULL is the whole negative row.
+            Some((None, _)) | Some((_, None)) => DerivedLookup::NotDerivable,
+            Some((Some(blob_hash), Some(content_type))) => DerivedLookup::Found(DerivedBlobRef {
                 blob_hash,
                 content_type,
-            }
-        })
+            }),
+        }
+    }
+
+    /// Record that this derivation is not worth attempting again.
+    ///
+    /// For outcomes that are deterministic in the source content — a
+    /// transcode that came out larger, a source that will not decode, a
+    /// source over the decode ceiling. **Never** for a timeout, a closed
+    /// semaphore, or an I/O error: those are properties of the moment,
+    /// and a row written for one marks good content underivable forever
+    /// with nothing to retry it.
+    ///
+    /// Takes no reference on any Blob — there is no derived Blob to hold
+    /// one. The row is dependent on its source and is reaped with it,
+    /// same as a positive row.
+    ///
+    /// Guarded by the same source-exists check as `store_derived_blob`:
+    /// a row whose source has already been reaped is a permanent leak of
+    /// a mapping nothing will ever clean up.
+    pub async fn store_derived_negative(
+        &self,
+        source_hash: &str,
+        kind: &str,
+        variant: &str,
+    ) -> Result<(), DomainError> {
+        sqlx::query(
+            "INSERT INTO storage.content_derived_blobs
+                 (source_hash, kind, variant, blob_hash, content_type)
+             SELECT $1, $2, $3, NULL, NULL
+              WHERE EXISTS (SELECT 1 FROM storage.chunk_manifests WHERE file_hash = $1)
+                 OR EXISTS (SELECT 1 FROM storage.blobs           WHERE hash      = $1)
+             ON CONFLICT (source_hash, kind, variant) DO NOTHING",
+        )
+        .bind(source_hash)
+        .bind(kind)
+        .bind(variant)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| {
+            DomainError::internal_error("Dedup", format!("store_derived_negative: {e}"))
+        })?;
+        Ok(())
     }
 
     /// The registry backing the reap predicate.

@@ -451,6 +451,17 @@ impl AppServiceFactory {
         );
         dedup_service.initialize().await?;
 
+        // Hand the transcode service its derived tier.
+        //
+        // Deferred rather than injected at construction because that happens
+        // ~240 lines above this, before `DedupService` exists, and the
+        // retrieval path that needs the transcode service is wired earlier
+        // still. Reordering DI to make the dependency a constructor argument
+        // would move more than it is worth; the service treats a missing
+        // handle as "local cache only", which is exactly its pre-derived-tier
+        // behaviour.
+        image_transcode_service.attach_dedup(dedup_service.clone());
+
         // One-time background migration: re-chunk pre-CDC whole-file blobs
         // into chunk manifests so Range reads (and, with encryption, partial
         // decrypts) stop paying for the entire blob. No-op once converged.
@@ -1489,6 +1500,24 @@ impl AppServiceFactory {
             crate::infrastructure::services::thumb_derived_import_service::ThumbDerivedImport::new(
                 std::path::Path::new(&self.storage_path).join(".thumbnails"),
                 core.dedup_service.clone(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
+        // Step 7 migration tenant: drains `.transcoded/` the same way the
+        // thumbnail imports drain `.thumbnails/`, with one extra step —
+        // the legacy tree is keyed by FILE (`{file_id}.webp`) while the
+        // destination is keyed by CONTENT, so every entry is re-keyed
+        // through `storage.files` on the way in. Entries naming the same
+        // content collapse into one row, which is the saving this migration
+        // exists for; a sandbox with five `.skip` markers had three of them
+        // describing one image.
+        let _ = Arc::new(
+            crate::infrastructure::services::transcode_import_service::TranscodeImport::new(
+                std::path::Path::new(&self.storage_path).join(".transcoded"),
+                core.dedup_service.clone(),
+                maintenance_pool.clone(),
             ),
         )
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
