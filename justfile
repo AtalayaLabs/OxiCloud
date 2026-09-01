@@ -194,6 +194,11 @@ audit:
 openapi:
     cargo run --features dev_tools --bin generate-openapi
 
+# Regenerate the backend OpenAPI document and the typed frontend client.
+# The generated directory is disposable: never edit its contents by hand.
+api-client: openapi
+    cd frontend && npm run api:generate
+
 db:
     docker compose up -d postgres
 
