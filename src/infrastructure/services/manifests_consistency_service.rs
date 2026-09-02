@@ -534,4 +534,33 @@ mod tests {
     fn empty_registry_refuses_to_build_page_statement() {
         let _ = manifest_page_sql(&BlobReferenceRegistry::new());
     }
+
+    /// Golden test — the repair statement is assembled from the same
+    /// registry as `manifest_page_sql`, so pin it byte-for-byte too.
+    /// If the registry ever changes what it produces at
+    /// `RefLevel::Manifest`, BOTH this test and
+    /// `manifest_page_statement_is_stable` above break together — an
+    /// operator using `?repair=true` shouldn't see the detection
+    /// formula report drift the repair formula can't clear.
+    ///
+    /// Ships the three-term formula (`storage.files` +
+    /// `storage.content_derived_blobs` + `storage.file_attached_blobs`)
+    /// twice — once in SET, once in the `<>` guard. Both must stay
+    /// identical so the guard is meaningful (else the UPDATE would fire
+    /// on drift the SET doesn't fix).
+    #[tokio::test]
+    async fn manifest_repair_statement_is_stable() {
+        let sql = manifest_repair_sql(&default_registry());
+        let expected = r#"UPDATE storage.chunk_manifests m
+            SET ref_count = ((SELECT COUNT(*) FROM storage.files cnt_f
+               WHERE cnt_f.blob_hash = m.file_hash)
+ + (SELECT COUNT(*) FROM storage.content_derived_blobs cnt_d WHERE cnt_d.blob_hash = m.file_hash)
+ + (SELECT COUNT(*) FROM storage.file_attached_blobs cnt_a WHERE cnt_a.blob_hash = m.file_hash))::bigint
+          WHERE m.file_hash = $1
+            AND m.ref_count <> ((SELECT COUNT(*) FROM storage.files cnt_f
+               WHERE cnt_f.blob_hash = m.file_hash)
+ + (SELECT COUNT(*) FROM storage.content_derived_blobs cnt_d WHERE cnt_d.blob_hash = m.file_hash)
+ + (SELECT COUNT(*) FROM storage.file_attached_blobs cnt_a WHERE cnt_a.blob_hash = m.file_hash))::bigint"#;
+        assert_eq!(sql, expected, "manifest repair statement changed:\n{sql}");
+    }
 }

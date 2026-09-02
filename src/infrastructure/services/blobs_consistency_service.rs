@@ -569,4 +569,40 @@ mod tests {
     fn empty_registry_refuses_to_build_page_statement() {
         let _ = chunk_page_sql(&BlobReferenceRegistry::new());
     }
+
+    /// Golden test — the repair statement is assembled from the same
+    /// registry as `chunk_page_sql`, so pin it byte-for-byte too. If
+    /// the registry ever changes what it produces at
+    /// `RefLevel::Chunk`, BOTH this test and
+    /// `chunk_page_statement_is_stable` above break together — an
+    /// operator using `?repair=true` shouldn't see the detection
+    /// formula report drift the repair formula can't clear.
+    ///
+    /// Ships the two-term formula (`storage.files` legacy-path count +
+    /// `storage.chunk_manifests` chunk-membership count) twice — once
+    /// in SET, once in the `<>` guard. Both must stay identical so the
+    /// guard is meaningful.
+    #[tokio::test]
+    async fn chunk_repair_statement_is_stable() {
+        let sql = chunk_repair_sql(&default_registry());
+        let expected = r#"UPDATE storage.blobs b
+            SET ref_count = ((SELECT COUNT(*) FROM storage.files cnt_f
+               WHERE cnt_f.blob_hash = b.hash
+                 AND NOT EXISTS (
+                     SELECT 1 FROM storage.chunk_manifests cnt_m
+                      WHERE cnt_m.file_hash = cnt_f.blob_hash
+                 ))
+ + (SELECT COUNT(*) FROM storage.chunk_manifests cnt_m
+                   WHERE b.hash = ANY(cnt_m.chunk_hashes)))::bigint
+          WHERE b.hash = $1
+            AND b.ref_count <> ((SELECT COUNT(*) FROM storage.files cnt_f
+               WHERE cnt_f.blob_hash = b.hash
+                 AND NOT EXISTS (
+                     SELECT 1 FROM storage.chunk_manifests cnt_m
+                      WHERE cnt_m.file_hash = cnt_f.blob_hash
+                 ))
+ + (SELECT COUNT(*) FROM storage.chunk_manifests cnt_m
+                   WHERE b.hash = ANY(cnt_m.chunk_hashes)))::bigint"#;
+        assert_eq!(sql, expected, "chunk repair statement changed:\n{sql}");
+    }
 }
