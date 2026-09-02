@@ -64,6 +64,38 @@ ignore = [
     "RUSTSEC-2026-0195",
     "RUSTSEC-2026-0194",
 
+    # azure_core 0.21.0 — "Legacy azure_core writes the authorization
+    # header value to logs" (RUSTSEC-2026-0275, 6.5 medium). Same
+    # unofficial archived SDK, same absent upgrade path as the other
+    # 0.21.0-chain advisories above: the advisory's "upgrade to
+    # >=0.22.0" applies to the official azure_core crate line, not to
+    # the archived 0.21.0 we're pinned on via the unofficial
+    # azure_storage_blobs SDK. Real fix is the official azure_core 1.0 /
+    # azure_storage_blob 1.0 SDK migration tracked separately (memory
+    # project_azure_sdk_migration_pending) — blocked upstream by the
+    # 1.0 SDK dropping shared-key auth.
+    #
+    # Exposure in this codebase is narrow. The advisory covers the
+    # HTTP client emitting the `Authorization` header value into log
+    # records; for our Azure backend usage that header value is
+    # `SharedKey <account>:<HMAC-SHA256>` — the shared key itself
+    # never appears, only a per-request HMAC signature bound to the
+    # request's `x-ms-date` and unusable outside the ~15 min clock-skew
+    # window. Reaching the log path further requires (a) an Azure
+    # backend actually being configured (S3 and local are the
+    # alternatives) and (b) the tracing subscriber emitting DEBUG
+    # records for the `azure_core` target — production defaults are
+    # INFO. Under both conditions the worst-case leak is replay of
+    # individual object operations within the skew window by an
+    # attacker who already has production log read access; the shared
+    # key cannot be derived.
+    #
+    # Un-ignore trigger: the official azure_core 1.0 migration lands —
+    # at which point this entry and the other azure_core 0.21.0-chain
+    # entries above (RUSTSEC-2026-0097, -2024-0384, -2026-0195,
+    # -2026-0194) all go away together.
+    "RUSTSEC-2026-0275",
+
     # wasmtime 43.0.2 — "Stores can mix up type indices between engines"
     # (GHSA-hgjw-h833-99q9). Transitive via extism 1.30.0 (latest published;
     # extism `main` still pins wasmtime 43, no upgrade path). The advisory
