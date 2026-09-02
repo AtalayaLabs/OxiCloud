@@ -73,6 +73,18 @@ pub struct BlobsConsistencyCheck {
     /// fixed statement — same reasoning as `DedupService::manifest_reap_sql`.
     /// See `docs/plan/derived-blobs.md`.
     chunk_page_sql: String,
+    /// Per-row repair UPDATE, built from the SAME registry as
+    /// `chunk_page_sql` so detection and repair use identical formulas
+    /// by construction. A future `RefLevel::Chunk` ref source added to
+    /// the registry flows into both without a code change here.
+    ///
+    /// Previously the repair query was inlined with a hardcoded
+    /// 2-term formula (accidentally matching detection today). Would
+    /// silently diverge the moment a new chunk-level ref source
+    /// landed — same class of latent bug the sibling
+    /// `manifests_consistency` service hit 2026-09-02. Preemptively
+    /// pulled from the registry here to keep the pair symmetric.
+    chunk_repair_sql: String,
 }
 
 /// The chunk-level page query, with `actual_ref_count` summed from the
@@ -126,11 +138,33 @@ fn chunk_page_sql(registry: &BlobReferenceRegistry) -> String {
     )
 }
 
+/// Per-row corrective UPDATE for `storage.blobs.ref_count`, targeting
+/// one blob by `hash`. Uses the SAME registry-derived expression as
+/// [`chunk_page_sql`] so detection and repair agree on "actual" by
+/// construction. A future `RefLevel::Chunk` ref source added to the
+/// registry flows into both queries with no code change here.
+///
+/// The `<> (subquery)` guard makes the UPDATE a no-op when the value
+/// is already correct — idempotent under concurrent-repair races and
+/// under retry. The subquery re-reads inside the same statement, so a
+/// concurrent write between page fetch and this UPDATE can't leave a
+/// stale value.
+fn chunk_repair_sql(registry: &BlobReferenceRegistry) -> String {
+    let expected = registry.ref_count_expr(RefLevel::Chunk, "b.hash");
+    format!(
+        "UPDATE storage.blobs b
+            SET ref_count = ({expected})::bigint
+          WHERE b.hash = $1
+            AND b.ref_count <> ({expected})::bigint"
+    )
+}
+
 impl BlobsConsistencyCheck {
     pub fn new(pool: Arc<PgPool>, reference_registry: Arc<BlobReferenceRegistry>) -> Self {
         Self {
             pool,
             chunk_page_sql: chunk_page_sql(&reference_registry),
+            chunk_repair_sql: chunk_repair_sql(&reference_registry),
         }
     }
 
@@ -356,87 +390,100 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
             // longer looks at. The refcount comparison reads one
             // consistent DB snapshot, so there is nothing to wait for.
             for row in &rows {
-                if row.ref_count as i64 != row.actual_ref_count {
-                    finding_count += 1;
-                    let affected = affected_files(self.pool.as_ref(), &row.hash).await;
-                    record_or_log(
-                        store,
-                        BLOBS_CONSISTENCY_JOB_NAME,
-                        "refcount_mismatch",
-                        "inconsistent",
-                        None, // hash isn't a UUID; resource identifier lives in detail
-                        serde_json::json!({
-                            "hash":            row.hash,
-                            "stored":          row.ref_count,
-                            "actual":          row.actual_ref_count,
-                            "delta":           row.actual_ref_count - row.ref_count as i64,
-                            "size":            row.size,
-                            "affected_files":  affected,
-                        }),
-                    )
-                    .await;
+                if row.ref_count as i64 == row.actual_ref_count {
+                    continue;
+                }
+                finding_count += 1;
+                let affected = affected_files(self.pool.as_ref(), &row.hash).await;
+                let detail = serde_json::json!({
+                    "hash":            row.hash,
+                    "stored":          row.ref_count,
+                    "actual":          row.actual_ref_count,
+                    "delta":           row.actual_ref_count - row.ref_count as i64,
+                    "size":            row.size,
+                    "affected_files":  affected,
+                });
 
-                    // Repair pass — content-safe corrective UPDATE. Sets
-                    // `stored` to the value the auditor's two-term formula
-                    // would compute at UPDATE time (subquery mirrors
-                    // `chunk_page_sql`'s `actual_ref_count`), so a
-                    // concurrent write between our page fetch and this
-                    // UPDATE can't leave a stale value — the subquery
-                    // re-reads inside the same statement. The
-                    // `<> (subquery)` guard makes the UPDATE a no-op if
-                    // the drift has healed, making this idempotent under
-                    // retry.
-                    if repair {
-                        let expected = "( \
-                            (SELECT COUNT(*) FROM storage.files f \
-                              WHERE f.blob_hash = b.hash \
-                                AND NOT EXISTS ( \
-                                    SELECT 1 FROM storage.chunk_manifests m \
-                                     WHERE m.file_hash = f.blob_hash \
-                                )) \
-                          + (SELECT COUNT(*) FROM storage.chunk_manifests m \
-                              WHERE b.hash = ANY(m.chunk_hashes)) \
-                        )";
-                        let update_sql = format!(
-                            "UPDATE storage.blobs b \
-                                SET ref_count = {expected} \
-                              WHERE b.hash = $1 \
-                                AND b.ref_count <> {expected}",
-                        );
-                        match sqlx::query(&update_sql)
-                            .bind(&row.hash)
-                            .execute(self.pool.as_ref())
-                            .await
-                        {
-                            Ok(res) if res.rows_affected() > 0 => {
-                                repaired_count += 1;
-                                tracing::info!(
-                                    target: "audit",
-                                    event = "blobs_consistency.repaired",
-                                    run_id = %store.run_id(),
-                                    hash = %row.hash,
-                                    stored_was = row.ref_count,
-                                    actual = row.actual_ref_count,
-                                    "🩹 blob ref_count repaired"
-                                );
-                            }
-                            Ok(_) => {
-                                // No row touched — concurrent repair or
-                                // self-healing drift. Silent no-op.
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    target: "oxicloud::consistency",
-                                    event = "blobs_consistency.repair_failed",
-                                    run_id = %store.run_id(),
-                                    hash = %row.hash,
-                                    error = %e,
-                                    "blob ref_count repair UPDATE failed — finding stays"
-                                );
-                            }
+                // Repair pass — content-safe corrective UPDATE. Sets
+                // `stored` to the value the auditor formula would
+                // compute at UPDATE time (subquery matches
+                // `chunk_page_sql`'s `actual_ref_count`), so a
+                // concurrent write between our page fetch and this
+                // UPDATE can't leave a stale value — the subquery
+                // re-reads inside the same statement. The `<>`
+                // guard makes the UPDATE a no-op if the value is
+                // already correct, so this is idempotent under retry.
+                //
+                // `self.chunk_repair_sql` is built once at construction
+                // from the same `BlobReferenceRegistry` as the page
+                // query — detection and repair use identical formulas
+                // by construction. See `chunk_repair_sql`.
+                //
+                // Attempt repair FIRST, then record the finding with
+                // severity/kind reflecting the final state:
+                //   * repair succeeded  → severity "info",  kind "refcount_repaired"
+                //   * repair no-op      → severity "info",  kind "refcount_resolved"
+                //   * repair failed     → severity "inconsistent", kind "refcount_mismatch"
+                //   * no repair requested → severity "inconsistent", kind "refcount_mismatch"
+                //
+                // Parallels the WARN-then-INFO sequence in logs: an
+                // unresolved drift raises attention ("inconsistent"),
+                // a repaired one records the fix at info level without
+                // inflating the "needs action" tally the outcome UI
+                // shows. The detail JSON still carries `stored/actual/
+                // delta/affected_files` so the audit trail is complete
+                // either way.
+                let (kind, severity) = if repair {
+                    match sqlx::query(&self.chunk_repair_sql)
+                        .bind(&row.hash)
+                        .execute(self.pool.as_ref())
+                        .await
+                    {
+                        Ok(res) if res.rows_affected() > 0 => {
+                            repaired_count += 1;
+                            tracing::info!(
+                                target: "audit",
+                                event = "blobs_consistency.repaired",
+                                run_id = %store.run_id(),
+                                hash = %row.hash,
+                                stored_was = row.ref_count,
+                                actual = row.actual_ref_count,
+                                "🩹 blob ref_count repaired"
+                            );
+                            ("refcount_repaired", "info")
+                        }
+                        Ok(_) => {
+                            // Row not touched — either another
+                            // concurrent repair fixed it first, or
+                            // drift healed between page fetch and
+                            // UPDATE. Current state correct — info.
+                            ("refcount_resolved", "info")
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "oxicloud::consistency",
+                                event = "blobs_consistency.repair_failed",
+                                run_id = %store.run_id(),
+                                hash = %row.hash,
+                                error = %e,
+                                "blob ref_count repair UPDATE failed — finding stays"
+                            );
+                            ("refcount_mismatch", "inconsistent")
                         }
                     }
-                }
+                } else {
+                    ("refcount_mismatch", "inconsistent")
+                };
+
+                record_or_log(
+                    store,
+                    BLOBS_CONSISTENCY_JOB_NAME,
+                    kind,
+                    severity,
+                    None, // hash isn't a UUID; resource identifier lives in detail
+                    detail,
+                )
+                .await;
             }
 
             // Advance cursor + checkpoint.
@@ -521,5 +568,41 @@ mod tests {
     #[should_panic(expected = "no chunk-level blob reference source")]
     fn empty_registry_refuses_to_build_page_statement() {
         let _ = chunk_page_sql(&BlobReferenceRegistry::new());
+    }
+
+    /// Golden test — the repair statement is assembled from the same
+    /// registry as `chunk_page_sql`, so pin it byte-for-byte too. If
+    /// the registry ever changes what it produces at
+    /// `RefLevel::Chunk`, BOTH this test and
+    /// `chunk_page_statement_is_stable` above break together — an
+    /// operator using `?repair=true` shouldn't see the detection
+    /// formula report drift the repair formula can't clear.
+    ///
+    /// Ships the two-term formula (`storage.files` legacy-path count +
+    /// `storage.chunk_manifests` chunk-membership count) twice — once
+    /// in SET, once in the `<>` guard. Both must stay identical so the
+    /// guard is meaningful.
+    #[tokio::test]
+    async fn chunk_repair_statement_is_stable() {
+        let sql = chunk_repair_sql(&default_registry());
+        let expected = r#"UPDATE storage.blobs b
+            SET ref_count = ((SELECT COUNT(*) FROM storage.files cnt_f
+               WHERE cnt_f.blob_hash = b.hash
+                 AND NOT EXISTS (
+                     SELECT 1 FROM storage.chunk_manifests cnt_m
+                      WHERE cnt_m.file_hash = cnt_f.blob_hash
+                 ))
+ + (SELECT COUNT(*) FROM storage.chunk_manifests cnt_m
+                   WHERE b.hash = ANY(cnt_m.chunk_hashes)))::bigint
+          WHERE b.hash = $1
+            AND b.ref_count <> ((SELECT COUNT(*) FROM storage.files cnt_f
+               WHERE cnt_f.blob_hash = b.hash
+                 AND NOT EXISTS (
+                     SELECT 1 FROM storage.chunk_manifests cnt_m
+                      WHERE cnt_m.file_hash = cnt_f.blob_hash
+                 ))
+ + (SELECT COUNT(*) FROM storage.chunk_manifests cnt_m
+                   WHERE b.hash = ANY(cnt_m.chunk_hashes)))::bigint"#;
+        assert_eq!(sql, expected, "chunk repair statement changed:\n{sql}");
     }
 }

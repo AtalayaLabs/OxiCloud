@@ -93,6 +93,30 @@ fn manifest_page_sql(registry: &BlobReferenceRegistry) -> String {
     )
 }
 
+/// Repair statement targeting one manifest by `file_hash`. Uses the
+/// SAME registry-derived expression as [`manifest_page_sql`] so
+/// detection and repair agree on what "actual" means — any future
+/// manifest-level ref source added to the registry flows into both
+/// queries with no code change here.
+///
+/// The `<> (subquery)` guard makes the UPDATE a no-op when the value
+/// is already correct — so this is idempotent under concurrent-repair
+/// races AND under retry.
+///
+/// The subquery re-reads inside the same statement, so a concurrent
+/// insert/delete between page fetch and this UPDATE can't leave a
+/// stale value: PG's snapshot for the UPDATE sees the up-to-date row
+/// counts.
+fn manifest_repair_sql(registry: &BlobReferenceRegistry) -> String {
+    let expected = registry.ref_count_expr(RefLevel::Manifest, "m.file_hash");
+    format!(
+        "UPDATE storage.chunk_manifests m
+            SET ref_count = ({expected})::bigint
+          WHERE m.file_hash = $1
+            AND m.ref_count <> ({expected})::bigint"
+    )
+}
+
 pub struct ManifestsConsistencyCheck {
     pool: Arc<PgPool>,
     /// Built once from the blob-reference registry so this recompute and
@@ -100,6 +124,24 @@ pub struct ManifestsConsistencyCheck {
     /// identically. Assembled at construction rather than per page so the
     /// sweep runs a fixed statement.
     page_sql: String,
+    /// Repair statement — built from the SAME registry as `page_sql` so
+    /// detection and repair use identical formulas by construction. Any
+    /// future 4th manifest-level ref source added to the registry
+    /// automatically flows into both queries with no code change here.
+    ///
+    /// Previously the repair query was inlined with the files-only
+    /// formula, which meant drift from `content_derived_blobs` or
+    /// `file_attached_blobs` would be DETECTED but NOT repaired even
+    /// under `?repair=true`. Operators who added those tables saw
+    /// findings that couldn't be cleared by the repair path — bug fixed
+    /// 2026-09-02.
+    ///
+    /// The `?repair=true` gate on the trigger endpoint still stands as
+    /// the operator's explicit opt-in — this fix only widens what
+    /// repair CAN do when the operator chooses to run it. Discovery-
+    /// only remains the default so leaks in insert paths still surface
+    /// via findings between repair invocations.
+    repair_sql: String,
 }
 
 impl ManifestsConsistencyCheck {
@@ -107,6 +149,7 @@ impl ManifestsConsistencyCheck {
         Self {
             pool,
             page_sql: manifest_page_sql(&reference_registry),
+            repair_sql: manifest_repair_sql(&reference_registry),
         }
     }
 
@@ -308,25 +351,17 @@ impl RecoverableJobHandler for ManifestsConsistencyCheck {
                 }
                 finding_count += 1;
                 let delta = row.actual_ref_count - row.ref_count as i64;
-                record_or_log(
-                    store,
-                    MANIFESTS_CONSISTENCY_JOB_NAME,
-                    "manifest_refcount_mismatch",
-                    "inconsistent",
-                    None, // a hash isn't a UUID; the identifier lives in detail
-                    serde_json::json!({
-                        "file_hash":   row.file_hash,
-                        "stored":      row.ref_count,
-                        "actual":      row.actual_ref_count,
-                        "delta":       delta,
-                        "total_size":  row.total_size,
-                        "chunk_count": row.chunk_count,
-                        // Under-count is the dangerous direction: GC reaps a
-                        // manifest whose content is still reachable.
-                        "reap_risk":   delta > 0,
-                    }),
-                )
-                .await;
+                let detail = serde_json::json!({
+                    "file_hash":   row.file_hash,
+                    "stored":      row.ref_count,
+                    "actual":      row.actual_ref_count,
+                    "delta":       delta,
+                    "total_size":  row.total_size,
+                    "chunk_count": row.chunk_count,
+                    // Under-count is the dangerous direction: GC reaps
+                    // a manifest whose content is still reachable.
+                    "reap_risk":   delta > 0,
+                });
 
                 // Repair pass — content-safe corrective UPDATE. The
                 // stored counter is set to what the auditor formula
@@ -338,22 +373,30 @@ impl RecoverableJobHandler for ManifestsConsistencyCheck {
                 // The `<> (subquery)` guard makes the UPDATE a no-op
                 // if the value is already correct, so this is
                 // idempotent under retry.
-                if repair {
-                    match sqlx::query(
-                        "UPDATE storage.chunk_manifests m \
-                            SET ref_count = ( \
-                                SELECT COUNT(*) FROM storage.files \
-                                 WHERE blob_hash = m.file_hash \
-                            ) \
-                          WHERE m.file_hash = $1 \
-                            AND m.ref_count <> ( \
-                                SELECT COUNT(*) FROM storage.files \
-                                 WHERE blob_hash = m.file_hash \
-                            )",
-                    )
-                    .bind(&row.file_hash)
-                    .execute(self.pool.as_ref())
-                    .await
+                //
+                // `self.repair_sql` is built once at construction from
+                // the same `BlobReferenceRegistry` as the page query —
+                // detection and repair use identical formulas by
+                // construction. See `manifest_repair_sql` for the SQL.
+                //
+                // Attempt repair FIRST, then record the finding with
+                // severity/kind reflecting the final state:
+                //   * repair succeeded  → severity "info",  kind "manifest_refcount_repaired"
+                //   * repair no-op      → severity "info",  kind "manifest_refcount_resolved"
+                //   * repair failed     → severity "inconsistent", kind "manifest_refcount_mismatch"
+                //   * no repair requested → severity "inconsistent", kind "manifest_refcount_mismatch"
+                //
+                // Parallels the WARN-then-INFO sequence in logs: an
+                // unresolved drift raises attention ("inconsistent"),
+                // a repaired one records the fix at info level without
+                // inflating the "needs action" tally the outcome UI
+                // shows. The detail JSON still carries `stored/actual/
+                // delta` so the audit trail is complete either way.
+                let (kind, severity) = if repair {
+                    match sqlx::query(&self.repair_sql)
+                        .bind(&row.file_hash)
+                        .execute(self.pool.as_ref())
+                        .await
                     {
                         Ok(res) if res.rows_affected() > 0 => {
                             repaired_count += 1;
@@ -366,12 +409,15 @@ impl RecoverableJobHandler for ManifestsConsistencyCheck {
                                 actual = row.actual_ref_count,
                                 "🩹 manifest ref_count repaired"
                             );
+                            ("manifest_refcount_repaired", "info")
                         }
                         Ok(_) => {
-                            // Row not touched — either another concurrent
-                            // repair fixed it first, or the drift healed
-                            // itself between page fetch and UPDATE.
-                            // Silent no-op.
+                            // Row not touched — either another
+                            // concurrent repair fixed it first, or the
+                            // drift healed itself between page fetch
+                            // and UPDATE. Either way, current state
+                            // is correct — record as info.
+                            ("manifest_refcount_resolved", "info")
                         }
                         Err(e) => {
                             tracing::warn!(
@@ -382,9 +428,22 @@ impl RecoverableJobHandler for ManifestsConsistencyCheck {
                                 error = %e,
                                 "manifest ref_count repair UPDATE failed — finding stays"
                             );
+                            ("manifest_refcount_mismatch", "inconsistent")
                         }
                     }
-                }
+                } else {
+                    ("manifest_refcount_mismatch", "inconsistent")
+                };
+
+                record_or_log(
+                    store,
+                    MANIFESTS_CONSISTENCY_JOB_NAME,
+                    kind,
+                    severity,
+                    None, // a hash isn't a UUID; the identifier lives in detail
+                    detail,
+                )
+                .await;
             }
 
             // Advance cursor + checkpoint.
@@ -474,5 +533,34 @@ mod tests {
     #[should_panic(expected = "no manifest-level blob reference source")]
     fn empty_registry_refuses_to_build_page_statement() {
         let _ = manifest_page_sql(&BlobReferenceRegistry::new());
+    }
+
+    /// Golden test — the repair statement is assembled from the same
+    /// registry as `manifest_page_sql`, so pin it byte-for-byte too.
+    /// If the registry ever changes what it produces at
+    /// `RefLevel::Manifest`, BOTH this test and
+    /// `manifest_page_statement_is_stable` above break together — an
+    /// operator using `?repair=true` shouldn't see the detection
+    /// formula report drift the repair formula can't clear.
+    ///
+    /// Ships the three-term formula (`storage.files` +
+    /// `storage.content_derived_blobs` + `storage.file_attached_blobs`)
+    /// twice — once in SET, once in the `<>` guard. Both must stay
+    /// identical so the guard is meaningful (else the UPDATE would fire
+    /// on drift the SET doesn't fix).
+    #[tokio::test]
+    async fn manifest_repair_statement_is_stable() {
+        let sql = manifest_repair_sql(&default_registry());
+        let expected = r#"UPDATE storage.chunk_manifests m
+            SET ref_count = ((SELECT COUNT(*) FROM storage.files cnt_f
+               WHERE cnt_f.blob_hash = m.file_hash)
+ + (SELECT COUNT(*) FROM storage.content_derived_blobs cnt_d WHERE cnt_d.blob_hash = m.file_hash)
+ + (SELECT COUNT(*) FROM storage.file_attached_blobs cnt_a WHERE cnt_a.blob_hash = m.file_hash))::bigint
+          WHERE m.file_hash = $1
+            AND m.ref_count <> ((SELECT COUNT(*) FROM storage.files cnt_f
+               WHERE cnt_f.blob_hash = m.file_hash)
+ + (SELECT COUNT(*) FROM storage.content_derived_blobs cnt_d WHERE cnt_d.blob_hash = m.file_hash)
+ + (SELECT COUNT(*) FROM storage.file_attached_blobs cnt_a WHERE cnt_a.blob_hash = m.file_hash))::bigint"#;
+        assert_eq!(sql, expected, "manifest repair statement changed:\n{sql}");
     }
 }
