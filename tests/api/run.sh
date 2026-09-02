@@ -225,7 +225,15 @@ hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test 
   "$API_DIR/webdav_permissions.hurl" \
   "$API_DIR/webdav_nested_move_cascade.hurl" \
   "$API_DIR/wopi_authz.hurl" \
-  "$API_DIR/wopi_shared_drive.hurl"
+  "$API_DIR/wopi_shared_drive.hurl" \
+  `# LAST, deliberately — and kept last even though it no longer cuts` \
+  `# the storage pointer over. It is the only scenario that depends on a` \
+  `# second service (Azurite on 10000), so if that container is missing` \
+  `# or wedged the failure lands after everything else has reported,` \
+  `# rather than in the middle of an otherwise-green run. It is also` \
+  `# where a cutover comes back once the official Azure SDK lands (see` \
+  `# the file header), and that WILL need to be last.` \
+  "$API_DIR/backend_consistency_azure.hurl"
 
 #bash "$API_DIR/dedup_bulk_upload.sh"
 
