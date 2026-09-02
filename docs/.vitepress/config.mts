@@ -170,6 +170,7 @@ export default defineConfig({
             { text: "Storage Quotas", link: "/architecture/storage-quotas" },
             { text: "Backend Storage", link: "/architecture/backend-storage" },
             { text: "File and Blob lifecycle", link: "/architecture/file-and-blob-lifecycle" },
+            { text: "Derived and attached blobs", link: "/architecture/derived-and-attached-blobs" },
             { text: "ReBAC & Authorization", link: "/architecture/rebac-authorization" },
             { text: "User lifecycle", link: "/architecture/user-lifecycle" },
             { text: "Authentication model", link: "/architecture/auth-model" },
