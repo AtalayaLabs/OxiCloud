@@ -49,15 +49,38 @@
 //! that ever admitted uppercase or variable length would break this
 //! silently and in both directions at once.
 //!
-//! ### Run-level check
+//! ### When enumeration fails
 //!
-//! * `backend_unenumerable` (severity `anomaly`) — the backend
-//!   returned `operation_not_supported` on the first
-//!   `list_blob_hashes` call. Currently this fires when a
-//!   `MigrationBlobBackend` is active (refuses enumeration
-//!   mid-migration by design) or on an Azure backend (Azure impl
-//!   deferred). Informational — operators know they can't rely on
-//!   this scan under that config.
+//! **The run fails.** There is no degraded mode.
+//!
+//! There used to be: an error on the first `list_blob_hashes` call
+//! emitted a `backend_unenumerable` anomaly and fell back to
+//! `probe_each_row`, one `blob_exists` per `storage.blobs` row. That
+//! recovered `blob_missing_from_backend` (the direction that loses
+//! FILES) but never `orphan_blob`, since bytes no row claims are
+//! invisible to anything starting from the database.
+//!
+//! It was written for two cases, and neither exists:
+//!
+//! * **Azure** — enumerates since the 256-way shard walk (see
+//!   `AzureBlobBackend::list_blob_hashes` for why it needs one to do
+//!   what S3 gets from `StartAfter`).
+//! * **Mid-migration** — never applied. That justification named a
+//!   `MigrationBlobBackend` that does not exist;
+//!   `SwappableBlobBackend::list_blob_hashes` forwards to whatever is
+//!   currently active, as do the Encrypted, Cached and Retry wrappers.
+//!   Do not reintroduce the claim without grepping for the impl.
+//!
+//! So the only thing still reaching it was a *transient* failure — auth
+//! blip, throttle, network — being relabelled as a capability limit and
+//! silently costing orphan coverage. A failed run is louder than an
+//! anomaly on an otherwise-clean-looking scan, which was the fallback's
+//! own stated goal.
+//!
+//! The trait default still returns `operation_not_supported`, so a
+//! future write-only or read-only-mirror backend would fail every run
+//! here. **That is when the fallback should come back — with tests.**
+//! It had none, which is the other half of why it went.
 //!
 //! ### Grace window
 //!
@@ -116,10 +139,6 @@ const BATCH_SIZE: usize = 500;
 /// `blobs_consistency` + `dedup_gc`.
 const CREATE_GRACE: Duration = Duration::hours(1);
 
-/// Cap on affected-blob examples surfaced in the run-level
-/// `backend_unenumerable` finding. Keeps the finding detail bounded.
-const _MAX_EXAMPLES: usize = 5;
-
 pub struct BackendConsistencyCheck {
     pool: Arc<PgPool>,
     /// Default backend to enumerate when `args.storage` is `None` —
@@ -172,10 +191,12 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
         "Merge-joins the storage backend's blob enumeration against \
          storage.blobs, both ordered by hash, so one pass yields the delta \
          in both directions: bytes on the backend no DB row claims, and \
-         rows whose bytes are gone. Add ?deep=true to also read every \
-         matched blob back and re-hash it, catching silent bit-rot — that \
-         is a full read of storage and can take hours. Read-only in both \
-         modes: nothing is uploaded or deleted."
+         rows whose bytes are gone. If the backend cannot be enumerated \
+         the run fails rather than reporting partial coverage. \
+         Add ?deep=true to also read every matched blob back and re-hash \
+         it, catching silent bit-rot — that is a full read of storage and \
+         can take hours. Read-only in every mode: nothing is uploaded or \
+         deleted."
     }
 
     /// Approximate total: on a healthy install every backend blob
@@ -377,45 +398,25 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
             let page = match backend.list_blob_hashes(cursor.clone(), BATCH_SIZE).await {
                 Ok(v) => v,
                 Err(e) => {
-                    // Backend refuses / can't enumerate. First-batch
-                    // failure = we emit ONE run-level anomaly and
-                    // complete cleanly (the run stays useful — the
-                    // operator learns why nothing was checked
-                    // instead of getting a red error). Mid-scan
-                    // failure = we fail the run.
-
-                    let is_first_batch = cursor.is_none() && finding_count == 0;
-                    if is_first_batch {
-                        // No local increment — the local
-                        // `finding_count` is only used for the
-                        // completion log below, but this branch
-                        // returns immediately. The finding IS
-                        // persisted + counted in `stats.finding_count`
-                        // by `record_or_log` → `store.record_finding`.
-                        record_or_log(
-                            store,
-                            BACKEND_CONSISTENCY_JOB_NAME,
-                            "backend_unenumerable",
-                            "anomaly",
-                            None,
-                            serde_json::json!({
-                                "backend": backend.backend_type(),
-                                "error":   format!("{e}"),
-                                "note":    "backend refused enumeration; no per-blob orphan probes attempted",
-                            }),
-                        )
-                        .await;
-                        tracing::info!(
-                            target: "oxicloud::consistency",
-                            event = "backend_consistency.unenumerable",
-                            run_id = %store.run_id(),
-                            backend = backend.backend_type(),
-                            "backend refused enumeration (typical during migration or on backends without list support)"
-                        );
-                        return RunOutcome::completed();
-                    }
+                    // Fail loudly, first batch or not.
+                    //
+                    // A first-batch failure used to degrade to
+                    // `probe_each_row` instead. That was written for
+                    // backends which genuinely cannot enumerate, and none
+                    // ship today — see the module docs for why the two it
+                    // named do not apply. What was left reaching it was a
+                    // transient error relabelled as a capability limit, on
+                    // a run that then looked clean while having lost orphan
+                    // coverage entirely.
+                    //
+                    // Whether the enumeration died on page 1 or page 900,
+                    // the audit did not complete, and the operator needs to
+                    // know that rather than read a green run.
                     return RunOutcome::Failed {
-                        message: format!("backend list failed mid-scan: {e}"),
+                        message: format!(
+                            "backend enumeration failed on {}: {e}",
+                            backend.backend_type()
+                        ),
                     };
                 }
             };

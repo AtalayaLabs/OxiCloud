@@ -51,6 +51,33 @@ ignore = [
     # No direct security impact; no upgrade path exists.
     "RUSTSEC-2024-0384",
 
+    # azure_core 0.21.0 writes the `authorization` header value to logs —
+    # `policies/transport.rs` does `debug!("…{request:#?}")` over the whole
+    # request. For a SharedKey entry that value is the per-request HMAC
+    # signature; for a SAS entry it is the token. Severity 6.5 (medium).
+    #
+    # The advisory says "upgrade to >=0.22.0". That version does not exist:
+    # `azure_core` jumped 0.21 → 1.x, and `azure_storage_blobs` never left
+    # 0.21.0 before being archived. So the stated remedy IS the official-SDK
+    # migration, tracked separately alongside the quick-xml pair above.
+    #
+    # Not reachable at our log levels: the line is `debug!` on the
+    # `azure_core::policies::transport` target, and the default filter is
+    # `info`. It fires only if an operator explicitly asks for
+    # `RUST_LOG=…,azure_core=debug`, which is not hypothetical — that is the
+    # invocation used to diagnose the Azurite migration hang. **Do not run
+    # `azure_core=debug` against a real Azure account**; it prints request
+    # signatures to the terminal. Against Azurite it only exposes the
+    # published dev key's signatures.
+    #
+    # A subscriber-level directive pinning that target off was prototyped
+    # and rejected 2026-09-02 — not worth carrying a filter hack for a
+    # dependency being replaced.
+    #
+    # Un-ignore trigger: the azure_storage_blob 1.x migration lands
+    # (`cargo tree -i azure_core@0.21` returns no rows).
+    "RUSTSEC-2026-0275",
+
     # quick-xml 0.31.0 — transitive via azure_core 0.21.0 (unofficial SDK,
     # now archived). Our direct dep is already on 0.41.0; the 0.31 copy is
     # only reachable through the azure_storage_blobs chain, which parses
