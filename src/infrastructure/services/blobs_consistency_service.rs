@@ -1,20 +1,38 @@
 //! Fourth tenant of Part 2 (recoverable-run engine).
 //!
 //! Iterates `storage.blobs` — the content-addressable registry — and
-//! checks the reference-counting invariant `dedup_gc` relies on.
+//! checks the reference-counting invariants `dedup_gc` relies on.
 //!
 //! **Database only.** It opens no backend and makes no network call;
 //! `?storage=<name>` and `?deep=true` are both inert here.
 //!
-//! One per-row check:
+//! Two per-row checks share the same walk — one page fetch already
+//! has every column both need:
 //!
-//! * `refcount_mismatch` (severity `inconsistent`) —
+//! * `refcount_mismatch` (severity `inconsistent`, repairable) —
 //!   `storage.blobs.ref_count` disagrees with the actual reference
 //!   count computed from `storage.files.blob_hash` +
 //!   `storage.chunk_manifests.chunk_hashes[]`. Under-count means
 //!   dedup GC could prematurely reap a live blob; over-count means
 //!   a blob is being pinned longer than needed. Content-safe either
 //!   way (the storage.blobs row is fine, the counter is wrong).
+//!
+//! * `blob_orphan_stalled` (severity `anomaly`, discovery-only) —
+//!   the row satisfies every reap predicate `dedup_gc` uses
+//!   (`ref_count <= 0`, no chunk-level referrer) AND has been sitting
+//!   past a comfortable margin (default `STALL_GRACE_SECS` = 24 h,
+//!   comfortably exceeding the GC's own 1 h grace). Signal that the
+//!   GC pipeline itself is stuck — the job stopped running, is
+//!   failing on the same hash every tick, or a ghost row keeps
+//!   pinning the same set. No `?repair=true` path: per
+//!   [[feedback_no_silent_auto_repair]], papering over the symptom
+//!   here would hide the root cause (a wedged worker, a hanging
+//!   backend delete, a ghost referrer being recreated) — the
+//!   operator diagnoses first, then runs
+//!   `POST /api/admin/jobs/dedup_gc/trigger?force=true` themselves.
+//!   The two checks are orthogonal in-loop: a row with drift is NOT
+//!   also flagged as stalled — the drift IS why the GC hasn't taken
+//!   it, so fixing the counter is the whole story.
 //!
 //! ### Why nothing physical lives here any more
 //!
@@ -48,6 +66,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
 use crate::application::ports::blob_reference_ports::{BlobReferenceRegistry, RefLevel};
@@ -64,6 +83,18 @@ pub const BLOBS_CONSISTENCY_JOB_NAME: &str = "blobs_consistency";
 /// with no backend round-trip. 200 balances cancel-poll cadence
 /// against round-trip amortisation.
 const BATCH_SIZE: i64 = 200;
+
+/// Grace window for the `blob_orphan_stalled` check. Derived from
+/// `dedup_gc`'s own grace so the two stay coupled at the source: if an
+/// operator ever tunes GC's grace (e.g. long-network-upload profile),
+/// the stall threshold auto-scales — no second knob to keep in sync.
+///
+/// The `× 24` multiplier says "we tolerate up to 24 missed sweep ticks
+/// before crying stall". Discovery-only, so a false positive after a
+/// long maintenance pause costs nothing (operator glances at the
+/// finding, sees it clear on the next run, moves on).
+const STALL_GRACE_SECS: i64 =
+    crate::infrastructure::services::dedup_service::DedupService::GC_ORPHAN_GRACE_SECS * 24;
 
 pub struct BlobsConsistencyCheck {
     pool: Arc<PgPool>,
@@ -127,9 +158,10 @@ fn chunk_page_sql(registry: &BlobReferenceRegistry) -> String {
 
     format!(
         "SELECT
-     b.hash       AS hash,
-     b.size       AS size,
-     b.ref_count  AS ref_count,
+     b.hash        AS hash,
+     b.size        AS size,
+     b.ref_count   AS ref_count,
+     b.orphaned_at AS orphaned_at,
      ({expected})::bigint AS actual_ref_count
    FROM storage.blobs b
   WHERE ($1::text IS NULL OR b.hash > $1)
@@ -185,6 +217,13 @@ struct BlobRow {
     hash: String,
     size: i64,
     ref_count: i32,
+    /// Wall-clock instant this row hit `ref_count = 0` and became
+    /// eligible for GC. `NULL` for pre-migration rows or write-paths
+    /// that never stamped it — those the GC treats as immediately
+    /// reap-able (see `dedup_service.rs` phase-2 predicate), so the
+    /// stall check ignores them too: without a stamp we cannot say
+    /// how long a row has been sitting.
+    orphaned_at: Option<DateTime<Utc>>,
     /// Real reference count derived from the actual references —
     /// files' whole-file `blob_hash` PLUS every chunk hash across
     /// `storage.chunk_manifests`. Compared to `ref_count` (the
@@ -199,12 +238,20 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
     }
 
     fn description(&self) -> &'static str {
-        "Walks storage.blobs and reports rows whose ref_count disagrees \
-         with the references that actually exist. An under-count lets \
-         dedup_gc reap a blob that is still in use; an over-count pins \
-         one nothing needs. Database only — it never touches the storage \
-         backend, so it is cheap and safe to run at any time. Missing, \
-         orphaned or corrupted bytes are backend_consistency's job."
+        "Walks storage.blobs and checks two ref-counting invariants \
+         dedup_gc relies on. First: refcount_mismatch — the stored \
+         ref_count disagrees with the references that actually exist \
+         (under-count lets GC reap a live blob, over-count pins a dead \
+         one); repairable via ?repair=true. Second: blob_orphan_stalled \
+         — the row satisfies every reap predicate GC uses but is still \
+         present past 24× GC's grace, meaning the GC pipeline itself is \
+         stuck (worker crashed, backend delete hanging, ghost referrer \
+         being recreated); discovery-only, because a one-click repair \
+         would hide the root cause the operator needs to fix — after \
+         diagnosis, POST /api/admin/jobs/dedup_gc/trigger?force=true \
+         drains the backlog. Database only — cheap and safe to run at \
+         any time. Missing, orphaned or corrupted bytes are \
+         backend_consistency's job."
     }
 
     fn mutates(&self) -> Mutates {
@@ -282,6 +329,10 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
         // `manifests_consistency`; reported in completion log +
         // `extra_stats` so operators see "found N, fixed M" in one line.
         let mut repaired_count = 0u64;
+        // Stall-check finding counter. Reported alongside
+        // `finding_count` (which covers refcount findings) so the
+        // completion line separates the two invariant classes.
+        let mut stalled_count = 0u64;
 
         // `?deep=true` is not handled here. Re-reading and re-hashing
         // bytes is backend work end to end, so it moved to
@@ -332,6 +383,7 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                         event = "blobs_consistency.cancelled",
                         run_id = %store.run_id(),
                         finding_count = finding_count,
+                        stalled_count = stalled_count,
                         "blobs_consistency cancelled cooperatively, pausing"
                     );
                     return RunOutcome::Paused {
@@ -373,14 +425,18 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                     run_id = %store.run_id(),
                     finding_count = finding_count,
                     repaired_count = repaired_count,
+                    stalled_count = stalled_count,
                     repair_requested = repair,
-                    "blobs_consistency completed with {} finding(s), {} repaired",
+                    "blobs_consistency completed with {} refcount finding(s), \
+                     {} repaired, {} stalled",
                     finding_count,
-                    repaired_count
+                    repaired_count,
+                    stalled_count,
                 );
                 return RunOutcome::completed_with(serde_json::json!({
                     "repair_requested": repair,
                     "repaired_count":   repaired_count,
+                    "stalled_count":    stalled_count,
                 }));
             }
 
@@ -391,6 +447,63 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
             // consistent DB snapshot, so there is nothing to wait for.
             for row in &rows {
                 if row.ref_count as i64 == row.actual_ref_count {
+                    // No drift. Check for stall — orthogonal condition,
+                    // only meaningful when the counter is CORRECT: if
+                    // drift existed, the drift IS the reason the GC
+                    // hasn't taken this row, and firing stall on top
+                    // would mislead the operator into hunting a
+                    // GC-pipeline issue that isn't there. Fix the
+                    // counter → the row becomes eligible on the next
+                    // sweep. Only when counter == actual == 0 AND the
+                    // row has been sitting past `STALL_GRACE_SECS` is
+                    // this a genuine "the GC should have taken this
+                    // and hasn't" signal.
+                    if row.actual_ref_count == 0
+                        && let Some(orphaned_at) = row.orphaned_at
+                    {
+                        let stalled_secs = (Utc::now() - orphaned_at).num_seconds();
+                        if stalled_secs > STALL_GRACE_SECS {
+                            stalled_count += 1;
+                            let affected = affected_files(self.pool.as_ref(), &row.hash).await;
+                            let detail = serde_json::json!({
+                                "hash":              row.hash,
+                                "size":              row.size,
+                                "ref_count":         row.ref_count,
+                                "orphaned_at":       orphaned_at,
+                                "stalled_for_secs":  stalled_secs,
+                                "stall_grace_secs":  STALL_GRACE_SECS,
+                                "affected_files":    affected,
+                                // Inline hint the admin UI can render
+                                // on click. Not repaired here (see
+                                // module doc) — after operator has
+                                // diagnosed the root cause (worker
+                                // wedged, backend hang, ghost row),
+                                // this is the one-shot to drain the
+                                // backlog.
+                                "remediation_hint":  "Investigate why dedup_gc has not reaped this row \
+                            (worker running? advisory-lock contention? backend delete hanging? \
+                            ghost chunk_manifests/storage.files row?), then \
+                            POST /api/admin/jobs/dedup_gc/trigger?force=true to drain the backlog.",
+                            });
+                            record_or_log(
+                                store,
+                                BLOBS_CONSISTENCY_JOB_NAME,
+                                // Stable machine-readable kind — the
+                                // admin UI and log-aggregator queries
+                                // key off this string. Do not rename.
+                                "blob_orphan_stalled",
+                                // "anomaly" — surprising state worth
+                                // surfacing, no direct data impact.
+                                // The bytes are safe; their persistence
+                                // past grace means the reap pipeline
+                                // needs attention.
+                                "anomaly",
+                                None, // hash isn't a UUID; identifier lives in detail
+                                detail,
+                            )
+                            .await;
+                        }
+                    }
                     continue;
                 }
                 finding_count += 1;
@@ -543,9 +656,10 @@ mod tests {
     async fn chunk_page_statement_is_stable() {
         let sql = chunk_page_sql(&default_registry());
         let expected = r#"SELECT
-     b.hash       AS hash,
-     b.size       AS size,
-     b.ref_count  AS ref_count,
+     b.hash        AS hash,
+     b.size        AS size,
+     b.ref_count   AS ref_count,
+     b.orphaned_at AS orphaned_at,
      ((SELECT COUNT(*) FROM storage.files cnt_f
                WHERE cnt_f.blob_hash = b.hash
                  AND NOT EXISTS (

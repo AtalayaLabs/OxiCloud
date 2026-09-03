@@ -1116,7 +1116,15 @@ impl DedupService {
     /// chunks at `ref_count = 0` and is about to commit their manifest — cannot
     /// race the sweep. Must comfortably exceed the longest plausible gap
     /// between registering a chunk and referencing it (any in-flight upload).
-    const GC_ORPHAN_GRACE_SECS: i64 = 60 * 60; // 1 hour
+    ///
+    /// `pub` because sibling consistency tenants derive their own grace
+    /// windows from this value — notably `blobs_consistency`'s
+    /// `blob_orphan_stalled` check, which flags rows that have been sitting
+    /// past `GC_ORPHAN_GRACE_SECS × 24` (a healthy sweep would never trip
+    /// that). Keeping the two grace values coupled at the constant, rather
+    /// than at two hand-tuned magic numbers, means tuning this one auto-
+    /// scales the stall threshold too.
+    pub const GC_ORPHAN_GRACE_SECS: i64 = 60 * 60; // 1 hour
 
     /// Store content with CDC deduplication, straight from a byte stream —
     /// the single write path for every upload surface (REST multipart,
