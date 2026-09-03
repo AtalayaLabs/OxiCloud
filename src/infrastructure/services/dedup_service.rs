@@ -5326,3 +5326,317 @@ mod delta_upload_integration_tests {
         cleanup(&pool, &file_hash, file_id, &[]).await;
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Who decides a manifest is dead: the counter, or the reference registry?
+//
+// `manifest_reap_sql` asks
+//
+//     WHERE m.ref_count <= 0
+//        OR <no registered source references it>
+//
+// An **OR**, so either signal alone deletes. Each arm exists for a real
+// deletion path (see the comment in `garbage_collect_with_grace`): the
+// single-file path decrements `ref_count` via `cleanup_if_orphaned`, while
+// bulk paths — user cascade, empty_trash — only fire the `storage.blobs`
+// trigger and leave the counter untouched, so the registry arm is what
+// collects those.
+//
+// The cost of that disjunction is that `ref_count` is *authoritative on its
+// own*. Any code path that fails to take a reference does not merely
+// mis-report a number, it makes live content collectible — and the reference
+// registry, which knows the truth, is never consulted because the first arm
+// already matched.
+//
+// That is not hypothetical. `storage.copy_folder_tree` used to bump
+// refcounts with `UPDATE storage.blobs … WHERE hash = blob_hash`, which
+// matches nothing for a CDC file (whose `blob_hash` names a manifest, not a
+// chunk) and therefore took no reference at all. Copy a folder, delete the
+// original, and the copy's bytes were reaped. That specific bug is fixed —
+// both copy paths now go through `storage.add_blob_references` — but the
+// property that made it destructive rather than merely untidy is still here,
+// and there are now two implementations of the reference contract
+// (`storage.add_blob_references` in SQL, `DedupService::add_reference` in
+// Rust) that must agree forever.
+//
+// These tests pin the current behaviour of both arms so the OR cannot be
+// changed silently in either direction.
+//
+// `gc_reaps_a_manifest_on_zero_refcount_alone` DOCUMENTS THE HAZARD and
+// passes today. `gc_spares_a_manifest_with_a_live_referrer` asserts the
+// safer contract and is EXPECTED TO FAIL until the predicate requires both
+// signals. Read them as a pair: the first says what happens, the second says
+// what should. See `docs/plan/derived-blobs.md`.
+//
+// Gated on `--cfg integration_tests` like the other PG suites.
+// ─────────────────────────────────────────────────────────────────────────────
+// `allow(dead_code)`: the module is gated on a cfg flag, not on `test`, so a
+// plain `cargo build --cfg integration_tests` compiles the helpers while
+// `#[tokio::test]` drops their only callers. Same reason the rechunk suite
+// above carries it.
+#[cfg(integration_tests)]
+#[allow(dead_code)]
+mod gc_reference_authority_integration_tests {
+    use super::*;
+    use crate::infrastructure::services::local_blob_backend::LocalBlobBackend;
+    use crate::integration_test_support::{ensure_clean_test_db, test_db_url};
+    use sqlx::Row;
+    use sqlx::postgres::PgPoolOptions;
+    use tempfile::TempDir;
+    use uuid::Uuid;
+
+    async fn test_pool() -> Arc<PgPool> {
+        let pool = PgPoolOptions::new()
+            .max_connections(4)
+            .connect(&test_db_url())
+            .await
+            .expect("connect to test DB — run tests/common/spawn-db.sh first");
+        ensure_clean_test_db(&pool).await;
+        Arc::new(pool)
+    }
+
+    async fn seed_user(pool: &PgPool) -> Uuid {
+        sqlx::query("SELECT d.id AS drive_id FROM storage.drives d WHERE d.default_for_user IS NOT NULL LIMIT 1")
+            .fetch_one(pool)
+            .await
+            .map(|r| r.get::<Uuid, _>("drive_id"))
+            .expect("storage.drives must be seeded (init-test-schema.sh)")
+    }
+
+    async fn local_svc(pool: &Arc<PgPool>, dir: &TempDir) -> DedupService {
+        let backend = Arc::new(LocalBlobBackend::new(&dir.path().join("blobs")));
+        backend.initialize().await.expect("init backend");
+        DedupService::new(backend, pool.clone(), pool.clone())
+    }
+
+    /// Unique, poorly-compressible content of `len` bytes. The random tail
+    /// keeps every invocation's hash distinct, so rows left behind by a
+    /// panicking run can never collide with the current one.
+    fn content(len: usize) -> Vec<u8> {
+        let mut data: Vec<u8> = (0..len)
+            .map(|i| ((i % 251) as u8).wrapping_add((i / 7919) as u8))
+            .collect();
+        data.extend_from_slice(Uuid::new_v4().as_bytes());
+        data
+    }
+
+    /// A stored CDC blob plus a live `storage.files` row referencing it.
+    ///
+    /// The file row is inserted BEFORE the store, deliberately: phase 1 of
+    /// `garbage_collect` reaps manifests no source references, so with the
+    /// opposite order a concurrent GC from another test could reap ours in
+    /// the window between the two statements. BLAKE3 is deterministic, so
+    /// the hash is known in advance and the order costs nothing.
+    ///
+    /// Returns `(file_hash, chunk_hashes, file_id)`.
+    async fn seed_referenced_cdc_blob(
+        svc: &DedupService,
+        pool: &PgPool,
+        drive_id: Uuid,
+        data: &[u8],
+        label: &str,
+    ) -> (String, Vec<String>, Uuid) {
+        let file_hash = blake3::hash(data).to_hex().to_string();
+
+        let file_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO storage.files (name, drive_id, blob_hash, size)
+             VALUES ($1, $2, $3, $4) RETURNING id",
+        )
+        .bind(format!(
+            "rust-test-gcauth-{label}-{}",
+            &Uuid::new_v4().to_string()[..8]
+        ))
+        .bind(drive_id)
+        .bind(&file_hash)
+        .bind(data.len() as i64)
+        .fetch_one(pool)
+        .await
+        .expect("file row");
+
+        let source = stream::iter(vec![Ok::<_, std::io::Error>(Bytes::copy_from_slice(data))]);
+        let stored = svc
+            .store_from_stream(source, Some("application/octet-stream".into()))
+            .await
+            .expect("store");
+        assert_eq!(
+            stored.hash(),
+            file_hash,
+            "pre-computed BLAKE3 must match CDC-store output"
+        );
+
+        let chunks: Vec<String> = sqlx::query_scalar(
+            "SELECT UNNEST(chunk_hashes) FROM storage.chunk_manifests WHERE file_hash = $1",
+        )
+        .bind(&file_hash)
+        .fetch_all(pool)
+        .await
+        .expect("chunks");
+
+        // Fixture premise. A single-chunk blob has `file_hash == chunk_hash`
+        // (both BLAKE3 over the same bytes), which is the aliasing case the
+        // reference contract carries a `NOT EXISTS` guard for. This suite is
+        // about the multi-chunk shape — the one the copy bug broke, where
+        // `blob_hash` names a manifest that `storage.blobs` has no row for —
+        // so assert we actually got it rather than silently testing the easy
+        // case if CDC parameters change.
+        assert!(
+            chunks.len() > 1,
+            "fixture must be multi-chunk to exercise the manifest level, got {} \
+             chunk(s) for {} bytes (CDC_AVG_CHUNK = {CDC_AVG_CHUNK})",
+            chunks.len(),
+            data.len()
+        );
+
+        (file_hash, chunks, file_id)
+    }
+
+    async fn manifest_exists(pool: &PgPool, file_hash: &str) -> bool {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM storage.chunk_manifests WHERE file_hash = $1",
+        )
+        .bind(file_hash)
+        .fetch_one(pool)
+        .await
+        .expect("count manifests")
+            > 0
+    }
+
+    /// Simulate a reference that was never taken: the file row is live, the
+    /// counter says nothing needs the content. Exactly the state the
+    /// `copy_folder_tree` bug produced, and the state any future divergence
+    /// between the SQL and Rust reference contracts would produce.
+    async fn force_zero_manifest_refcount(pool: &PgPool, file_hash: &str) {
+        let updated =
+            sqlx::query("UPDATE storage.chunk_manifests SET ref_count = 0 WHERE file_hash = $1")
+                .bind(file_hash)
+                .execute(pool)
+                .await
+                .expect("zero the manifest refcount")
+                .rows_affected();
+        assert_eq!(updated, 1, "expected exactly one manifest for {file_hash}");
+    }
+
+    async fn cleanup(pool: &PgPool, file_hash: &str, file_id: Uuid, chunks: &[String]) {
+        let _ = sqlx::query("DELETE FROM storage.files WHERE id = $1")
+            .bind(file_id)
+            .execute(pool)
+            .await;
+        let _ = sqlx::query(
+            "DELETE FROM storage.files
+              WHERE blob_hash = $1 AND name LIKE 'rust-test-gcauth-%'",
+        )
+        .bind(file_hash)
+        .execute(pool)
+        .await;
+        let _ = sqlx::query("DELETE FROM storage.chunk_manifests WHERE file_hash = $1")
+            .bind(file_hash)
+            .execute(pool)
+            .await;
+        let mut to_drop = chunks.to_vec();
+        to_drop.push(file_hash.to_string());
+        let _ = sqlx::query("DELETE FROM storage.blobs WHERE hash = ANY($1)")
+            .bind(&to_drop)
+            .execute(pool)
+            .await;
+    }
+
+    /// **Documents the hazard.** Passes today, and its passing is the
+    /// problem: a zero counter is sufficient to delete content that a
+    /// registered source still references.
+    ///
+    /// If this test starts FAILING, the reap predicate has been tightened —
+    /// that is the intended direction. Delete this test and keep
+    /// [`gc_spares_a_manifest_with_a_live_referrer`], which asserts the
+    /// contract that replaced it.
+    #[tokio::test]
+    async fn gc_reaps_a_manifest_on_zero_refcount_alone() {
+        let pool = test_pool().await;
+        let drive_id = seed_user(&pool).await;
+        let dir = TempDir::new().expect("tempdir");
+        let svc = local_svc(&pool, &dir).await;
+
+        let data = content(2 * 1024 * 1024);
+        let (file_hash, chunks, file_id) =
+            seed_referenced_cdc_blob(&svc, &pool, drive_id, &data, "hazard").await;
+
+        force_zero_manifest_refcount(&pool, &file_hash).await;
+        svc.garbage_collect_force().await.expect("gc");
+
+        let survived = manifest_exists(&pool, &file_hash).await;
+        cleanup(&pool, &file_hash, file_id, &chunks).await;
+
+        assert!(
+            !survived,
+            "BEHAVIOUR CHANGE: the reap predicate no longer trusts ref_count \
+             alone. That is the desired direction — drop this test and keep \
+             gc_spares_a_manifest_with_a_live_referrer."
+        );
+    }
+
+    /// **The contract worth having, and it does not hold yet.**
+    ///
+    /// A manifest with a live `storage.files` referrer must survive GC no
+    /// matter what its counter says. `FilesReferenceSource` is registered and
+    /// `count_references` is implemented on it — the reap predicate simply
+    /// never asks, because `ref_count <= 0` short-circuits the OR.
+    ///
+    /// Expected to fail until `manifest_reap_sql` requires BOTH signals.
+    /// That change also needs the manifest-level refcount recompute
+    /// (`docs/plan/derived-blobs.md`, coverage matrix row 7), which takes
+    /// over the case this arm currently covers: a counter stuck high with no
+    /// referrers left, produced by the bulk-delete paths.
+    ///
+    /// `#[ignore]` only so a known-failing assertion does not turn CI red
+    /// while the fix is written — the test is complete and correct, and it
+    /// FAILS on purpose today. Run it with
+    /// `cargo test --workspace --tests gc_spares -- --ignored`, and remove
+    /// this attribute in the commit that tightens the predicate.
+    #[tokio::test]
+    #[ignore = "documents a real defect: GC trusts ref_count alone. Remove when \
+                manifest_reap_sql requires both signals."]
+    async fn gc_spares_a_manifest_with_a_live_referrer() {
+        let pool = test_pool().await;
+        let drive_id = seed_user(&pool).await;
+        let dir = TempDir::new().expect("tempdir");
+        let svc = local_svc(&pool, &dir).await;
+
+        let data = content(2 * 1024 * 1024);
+        let (file_hash, chunks, file_id) =
+            seed_referenced_cdc_blob(&svc, &pool, drive_id, &data, "spare").await;
+
+        force_zero_manifest_refcount(&pool, &file_hash).await;
+
+        // The file row is still there — this is the whole premise, so assert
+        // it rather than trusting that nothing else reaped it concurrently.
+        let referrers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM storage.files WHERE id = $1")
+            .bind(file_id)
+            .fetch_one(pool.as_ref())
+            .await
+            .expect("count referrers");
+        assert_eq!(
+            referrers, 1,
+            "fixture file row must still reference the blob"
+        );
+
+        svc.garbage_collect_force().await.expect("gc");
+
+        let survived = manifest_exists(&pool, &file_hash).await;
+        let readable = svc.read_blob_stream(&file_hash).await.is_ok();
+        cleanup(&pool, &file_hash, file_id, &chunks).await;
+
+        assert!(
+            survived,
+            "GC reaped a manifest that storage.files still references. \
+             ref_count was 0, but FilesReferenceSource knows better and was \
+             never consulted: manifest_reap_sql matches on \
+             `ref_count <= 0 OR <unreferenced>`, so the counter alone \
+             deletes. A reference that is never taken is therefore data \
+             loss, not a wrong number."
+        );
+        assert!(
+            readable,
+            "manifest survived but its content is unreadable — chunk-level \
+             reclamation followed the same zero counter"
+        );
+    }
+}
