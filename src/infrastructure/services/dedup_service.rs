@@ -478,6 +478,74 @@ async fn populate_integrity_blob_sizes<'a>(
 /// true for every row and this statement would delete every manifest in the
 /// database. `DedupService::new` always registers `FilesReferenceSource`, so
 /// the only way to reach this is to pass a deliberately empty registry.
+/// Build the chunk/blob reap statement (GC phase 2) from the registered
+/// reference sources.
+///
+/// Unlike [`manifest_reap_sql`], the registry predicate here is **added to**
+/// the hardcoded guards rather than replacing them. That asymmetry is
+/// deliberate and the reason this was not a mechanical swap.
+///
+/// `no_reference_predicate` is built from fragments designed for *counting*,
+/// and `FilesReferenceSource`'s chunk-level fragment deliberately excludes
+/// files whose `blob_hash` has a manifest — otherwise a single-chunk blob,
+/// where the file hash and its lone chunk hash are the same BLAKE3, would be
+/// counted at both levels. Correct for a recompute; too narrow for a reap
+/// guard. A `storage.blobs` row keyed by a MULTI-chunk file's hash — which
+/// exists transiently while `rechunk` migrates a legacy blob, and is not a
+/// member of its own manifest's `chunk_hashes` — would satisfy the registry's
+/// "unreferenced" test while a live `storage.files` row still points at it.
+/// Swapping the guards out would have reaped it mid-migration.
+///
+/// So the statement keeps `NOT EXISTS (manifest lists it as a chunk)` and
+/// `NOT EXISTS (any file points at it)`, and ANDs the registry predicate on
+/// top. Adding a conjunct can only ever spare more rows, never reap more, so
+/// this cannot regress; what it buys is that a future source contributing at
+/// [`RefLevel::Chunk`] is honoured automatically instead of being silently
+/// missed — the same failure that made Phase 1's hardcoded cross-check
+/// dangerous.
+///
+/// Today the registry adds nothing operationally:
+/// `content_derived_blobs` and `file_attached_blobs` both return `None` at
+/// `RefLevel::Chunk`, so its union is exactly manifests + legacy files. The
+/// point is what happens when that stops being true.
+///
+/// `$1` is the batch limit, `$2` the grace window in seconds.
+///
+/// # Panics
+///
+/// If no source contributes at [`RefLevel::Chunk`]. Same reasoning as
+/// [`manifest_reap_sql`]: a missing predicate must be loud rather than
+/// silently degrading to "nothing references anything".
+fn blob_reap_sql(registry: &BlobReferenceRegistry) -> String {
+    let unreferenced = registry
+        .no_reference_predicate(RefLevel::Chunk, "b.hash")
+        .expect(
+            "no chunk-level blob reference source registered: the reap \
+             predicate would lose its registry cross-check",
+        );
+
+    format!(
+        "DELETE FROM storage.blobs
+                  WHERE ctid = ANY(
+                      SELECT b.ctid FROM storage.blobs b
+                       WHERE b.ref_count <= 0
+                         AND (b.orphaned_at IS NULL
+                              OR b.orphaned_at < now() - ($2::int * interval '1 second'))
+                         AND NOT EXISTS (
+                             SELECT 1 FROM storage.chunk_manifests m
+                              WHERE m.chunk_hashes @> ARRAY[b.hash::text]
+                         )
+                         AND NOT EXISTS (
+                             SELECT 1 FROM storage.files f
+                              WHERE f.blob_hash = b.hash
+                         )
+                         AND {unreferenced}
+                       LIMIT $1
+                  )
+                  RETURNING hash, size"
+    )
+}
+
 fn manifest_reap_sql(registry: &BlobReferenceRegistry) -> String {
     let orphaned = registry
         .no_reference_predicate(RefLevel::Manifest, "m.file_hash")
@@ -526,6 +594,10 @@ pub struct DedupService {
     /// Kept as a field so `garbage_collect` runs a fixed statement rather
     /// than assembling SQL inside a delete loop — see `manifest_reap_sql`.
     manifest_reap_sql: String,
+    /// The chunk/blob reap statement (GC phase 2), same treatment — see
+    /// [`blob_reap_sql`], including why its registry predicate is additive
+    /// rather than a replacement for the hardcoded guards.
+    blob_reap_sql: String,
 }
 
 impl DedupService {
@@ -548,6 +620,7 @@ impl DedupService {
             manifest_cache: Self::build_manifest_cache(),
             reference_registry: registry.clone(),
             manifest_reap_sql: manifest_reap_sql(&registry),
+            blob_reap_sql: blob_reap_sql(&registry),
         }
     }
 
@@ -581,6 +654,7 @@ impl DedupService {
     /// entirely — see `docs/plan/derived-blobs.md`.
     pub fn with_reference_registry(mut self, registry: Arc<BlobReferenceRegistry>) -> Self {
         self.manifest_reap_sql = manifest_reap_sql(&registry);
+        self.blob_reap_sql = blob_reap_sql(&registry);
         self.reference_registry = registry;
         self
     }
@@ -1033,6 +1107,7 @@ impl DedupService {
             manifest_cache: Self::build_manifest_cache(),
             reference_registry: stub_registry.clone(),
             manifest_reap_sql: manifest_reap_sql(&stub_registry),
+            blob_reap_sql: blob_reap_sql(&stub_registry),
         }
     }
 
@@ -3230,41 +3305,29 @@ impl DedupService {
         //     NULL orphaned_at — a pre-migration row or a path that never
         //     stamped it; those are safe to take immediately), AND
         //   • no manifest still lists it as a chunk, AND
-        //   • no file still points at it directly (legacy whole-file blob).
+        //   • no file still points at it directly (legacy whole-file blob),
+        //     AND
+        //   • no registered reference source claims it at the chunk level.
         //
-        // The two NOT EXISTS guards mirror Phase 1's file cross-check: a stale
-        // ref_count = 0 on still-referenced content can then only delay
-        // collection, never delete live bytes. The grace window keeps a
+        // The NOT EXISTS guards mean a stale ref_count = 0 on still-referenced
+        // content can only delay collection, never delete live bytes — unlike
+        // Phase 1 before `manifest_reap_sql` dropped its ref_count arm, this
+        // phase always had that property. The registry conjunct is additive
+        // (see `blob_reap_sql`): it cannot reap anything the hardcoded guards
+        // would have spared, it just stops a future chunk-level source from
+        // being missed. The grace window keeps a
         // concurrent uploader that is about to pin a just-orphaned chunk from
         // racing the row-delete → file-unlink gap (see GC_ORPHAN_GRACE_SECS).
         // The ctid snapshot already protects against a pin that commits DURING
         // the DELETE (the pin rewrites the row's ctid, so it drops out of the
         // set); grace covers the remaining post-commit unlink window.
         loop {
-            let batch: Vec<(String, i64)> = sqlx::query_as(
-                "DELETE FROM storage.blobs
-                  WHERE ctid = ANY(
-                      SELECT b.ctid FROM storage.blobs b
-                       WHERE b.ref_count <= 0
-                         AND (b.orphaned_at IS NULL
-                              OR b.orphaned_at < now() - ($2::int * interval '1 second'))
-                         AND NOT EXISTS (
-                             SELECT 1 FROM storage.chunk_manifests m
-                              WHERE m.chunk_hashes @> ARRAY[b.hash::text]
-                         )
-                         AND NOT EXISTS (
-                             SELECT 1 FROM storage.files f
-                              WHERE f.blob_hash = b.hash
-                         )
-                       LIMIT $1
-                  )
-                  RETURNING hash, size",
-            )
-            .bind(BATCH_SIZE)
-            .bind(grace_secs as i32)
-            .fetch_all(self.maintenance_pool.as_ref())
-            .await
-            .map_err(|e| DomainError::internal_error("Dedup", format!("GC blobs: {e}")))?;
+            let batch: Vec<(String, i64)> = sqlx::query_as(&self.blob_reap_sql)
+                .bind(BATCH_SIZE)
+                .bind(grace_secs as i32)
+                .fetch_all(self.maintenance_pool.as_ref())
+                .await
+                .map_err(|e| DomainError::internal_error("Dedup", format!("GC blobs: {e}")))?;
 
             if batch.is_empty() {
                 break;
@@ -3888,6 +3951,96 @@ mod tests {
     #[should_panic(expected = "no manifest-level blob reference source")]
     fn empty_registry_refuses_to_build_reap_statement() {
         let _ = manifest_reap_sql(&BlobReferenceRegistry::new());
+    }
+
+    #[test]
+    #[should_panic(expected = "no chunk-level blob reference source")]
+    fn empty_registry_refuses_to_build_blob_reap_statement() {
+        let _ = blob_reap_sql(&BlobReferenceRegistry::new());
+    }
+
+    /// Golden test for GC phase 2, same purpose as the manifest one.
+    ///
+    /// Note what this pins that the manifest statement does not: the two
+    /// hardcoded `NOT EXISTS` guards **and** the registry predicate, ANDed.
+    /// The registry fragment is not a replacement here — see `blob_reap_sql`
+    /// for why substituting it would reap a legacy blob row mid-rechunk.
+    #[tokio::test]
+    async fn blob_reap_statement_is_stable() {
+        let sql = DedupService::new_stub().blob_reap_sql;
+        let expected = r#"DELETE FROM storage.blobs
+                  WHERE ctid = ANY(
+                      SELECT b.ctid FROM storage.blobs b
+                       WHERE b.ref_count <= 0
+                         AND (b.orphaned_at IS NULL
+                              OR b.orphaned_at < now() - ($2::int * interval '1 second'))
+                         AND NOT EXISTS (
+                             SELECT 1 FROM storage.chunk_manifests m
+                              WHERE m.chunk_hashes @> ARRAY[b.hash::text]
+                         )
+                         AND NOT EXISTS (
+                             SELECT 1 FROM storage.files f
+                              WHERE f.blob_hash = b.hash
+                         )
+                         AND NOT (EXISTS (SELECT 1 FROM storage.files cnt_f WHERE cnt_f.blob_hash = b.hash AND NOT EXISTS (SELECT 1 FROM storage.chunk_manifests cnt_m WHERE cnt_m.file_hash = cnt_f.blob_hash))
+        OR EXISTS (SELECT 1 FROM storage.chunk_manifests cnt_m WHERE b.hash = ANY(cnt_m.chunk_hashes)))
+                       LIMIT $1
+                  )
+                  RETURNING hash, size"#;
+        assert_eq!(sql, expected, "blob reap statement changed:\n{sql}");
+    }
+
+    /// The reason phase 2 became registry-driven at all.
+    ///
+    /// Today no source contributes at [`RefLevel::Chunk`] beyond files and
+    /// manifests, so the registry conjunct is operationally redundant and a
+    /// golden test alone would not notice if it stopped being wired up. This
+    /// registers a synthetic chunk-level source and asserts its fragment
+    /// reaches the statement — which is what stops a future
+    /// `content_derived_blobs`-style table from being silently missed the way
+    /// Phase 1's hardcoded cross-check missed them.
+    #[tokio::test]
+    async fn a_new_chunk_level_source_reaches_the_blob_reap_statement() {
+        use crate::application::ports::blob_reference_ports::BlobReferenceSource;
+
+        struct FakeChunkSource;
+
+        #[async_trait::async_trait]
+        impl BlobReferenceSource for FakeChunkSource {
+            fn source_name(&self) -> &'static str {
+                "fake_chunk_source"
+            }
+            fn ref_count_sql(&self, level: RefLevel, outer: &str) -> Option<String> {
+                self.ref_exists_sql(level, outer)
+            }
+            fn ref_exists_sql(&self, level: RefLevel, outer: &str) -> Option<String> {
+                match level {
+                    RefLevel::Chunk => Some(format!(
+                        "EXISTS (SELECT 1 FROM storage.zzz_fake WHERE blob_hash = {outer})"
+                    )),
+                    RefLevel::Manifest => None,
+                }
+            }
+            async fn count_references(&self, _hash: &str) -> Result<u64, DomainError> {
+                Ok(0)
+            }
+            async fn list_referenced_blobs(
+                &self,
+                _cursor: Option<Vec<u8>>,
+                _limit: usize,
+            ) -> Result<(Vec<String>, Option<Vec<u8>>), DomainError> {
+                Ok((Vec::new(), None))
+            }
+        }
+
+        let mut registry = BlobReferenceRegistry::new();
+        registry.register(Arc::new(FakeChunkSource));
+        let sql = blob_reap_sql(&registry);
+
+        assert!(
+            sql.contains("storage.zzz_fake"),
+            "a chunk-level source must reach the phase-2 reap guard:\n{sql}"
+        );
     }
     use std::collections::HashSet;
     use tempfile::NamedTempFile;
