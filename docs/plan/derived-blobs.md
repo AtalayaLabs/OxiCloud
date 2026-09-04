@@ -954,8 +954,8 @@ Findings each job reports today, and where the new tables land:
 | 4 | manifest → chunks | chunk reaped | `chunk_missing` (files_consistency) | ✓ |
 | 5 | `files` → Blob | dangling | `missing_blob` (files_consistency) | ✓ |
 | 6 | `storage.blobs.ref_count` | recompute | `refcount_mismatch` | ✓ chunk level only |
-| 7 | `chunk_manifests.ref_count` | recompute | — | ✗ gap, pre-existing |
-| 8 | manifest orphan reaping | GC predicate | `OR NOT EXISTS(files)` | ⚠ **breaks — see below** |
+| 7 | `chunk_manifests.ref_count` | recompute | `refcount_mismatch` (manifests_consistency) | ✓ manifest level |
+| 8 | manifest orphan reaping | GC predicate | registry `NOT EXISTS` union, no `ref_count` | ✓ |
 | 9 | derived/attached → Blob | dangling | — | ✗ new check needed |
 | 10 | `content_derived_blobs.source_hash` → Blob | orphan mapping | — | ✗ new check needed |
 | 11 | chunk at `ref_count = 0` past grace, still present | GC lag | — | ✗ a stalled GC is silent |
@@ -973,6 +973,28 @@ Rows 9-11 are new work; row 12 wants a check. Row 7 is the
 pre-existing hole. Row 8 is the blocker:
 
 ### ⚠ Blocker — `dedup_gc` will delete every derived blob
+
+> **RESOLVED.** Rows 7 and 8 are both closed, and this section is kept
+> because the reasoning explains why the predicate looks the way it does.
+>
+> * **Row 8** — the predicate is registry-driven and, since the
+>   `ref_count` arm was removed, contains no counter at all:
+>   `WHERE <no registered source references it>`. The counter could
+>   otherwise delete on its own, which made a reference that was never
+>   taken into data loss rather than a wrong number. GC phase 2 got the
+>   same treatment, with the registry predicate ANDed onto its existing
+>   guards rather than replacing them (the counting fragments are too
+>   narrow to be a reap guard — see `blob_reap_sql`).
+> * **Row 7** — `ManifestsConsistencyCheck`
+>   (`manifests_consistency_service.rs`) reconciles
+>   `chunk_manifests.ref_count` against the same registry, so the
+>   counter is corrected rather than trusted.
+>
+> The two were indeed coupled, as predicted below — but the resolution
+> inverted the dependency. Rather than the recompute making the counter
+> safe to trust, the reap predicate stopped trusting it, which demotes
+> counter drift from data loss to a space leak that the recompute then
+> reports.
 
 The zero-ref manifest sweep (`dedup_service.rs:2574`) is:
 
