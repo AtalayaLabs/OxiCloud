@@ -19,6 +19,7 @@ use crate::domain::entities::drive::{Drive, DriveKind};
 use crate::domain::repositories::drive_repository::{
     DriveRepository, DriveRepositoryError, DriveWithRootName,
 };
+use crate::domain::services::path_service::normalize_storage_name;
 
 /// Decode a `d.policies` JSONB column straight into `DrivePolicies` via
 /// `sqlx::types::Json<T>` — a single `serde_json::from_slice` over the raw JSONB
@@ -395,6 +396,13 @@ impl DriveRepository for DrivePgRepository {
         quota_bytes: Option<i64>,
         granted_by: Uuid,
     ) -> Result<DriveWithRootName, DriveRepositoryError> {
+        // NFC-normalize the admin-supplied shared-drive root name — same
+        // reasoning as `folder_db_repository::create_folder`. Even though
+        // this write is admin-only (not end-user-driven), the field feeds
+        // straight into `storage.folders.name` and WebDAV path lookups
+        // against it must match what NFC-normalizing clients send.
+        let name = normalize_storage_name(name);
+
         // Same four-write transaction shape as `create_personal_drive_atomic`
         // (see that method for the why-not-CTE explanation). Differences:
         //   - `kind='shared'`, `default_for_user=NULL`.
