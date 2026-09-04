@@ -427,20 +427,49 @@ async fn populate_integrity_blob_sizes<'a>(
 
 /// Build the manifest reap statement from the registered reference sources.
 ///
-/// A manifest is collectible when either:
-///   * `ref_count` reached 0 via `cleanup_if_orphaned` on the single-file
-///     delete path, **or**
-///   * nothing references it any more — the bulk-delete path (user cascade,
-///     `empty_trash`), where the PG trigger only touches `storage.blobs` and
-///     the per-file `cleanup_if_orphaned` call is skipped, so `ref_count` is
-///     never decremented and the second clause is the only thing that reaps.
+/// **A manifest is collectible when, and only when, no registered source
+/// references it.** The reference registry is the sole authority; `ref_count`
+/// does not appear in this predicate at all.
 ///
-/// The second clause used to name `storage.files` directly, which hardcoded
-/// "files is the only thing that can reference a manifest". Any new referring
-/// table — thumbnails via `storage.content_derived_blobs`, previews via
-/// `storage.file_attached_blobs` — would then have its manifests reaped on the
-/// next sweep *despite a correct `ref_count`*: clause one false, clause two
-/// true, `OR` fires, bytes gone. See `docs/plan/derived-blobs.md`.
+/// # Why `ref_count` was removed from it
+///
+/// This used to read `ref_count <= 0 OR <unreferenced>`. Each arm had a
+/// purpose — the single-file delete path decrements the counter via
+/// `cleanup_if_orphaned`, while bulk paths (user cascade, `empty_trash`) only
+/// fire the `storage.blobs` trigger and leave the counter untouched — so the
+/// disjunction looked like belt and braces.
+///
+/// It was the opposite. With `OR`, **either signal alone deletes**, so a
+/// counter that under-reports does not merely report a wrong number: it makes
+/// live content collectible, and the registry that knows better is never
+/// consulted because the first arm already matched. That is not hypothetical.
+/// `storage.copy_folder_tree` used to take references with
+/// `UPDATE storage.blobs … WHERE hash = blob_hash`, which matches nothing for
+/// a CDC file — whose `blob_hash` names a manifest, not a chunk — so it took
+/// no reference at all. Copy a folder, delete the original, and the copy's
+/// bytes were reaped.
+///
+/// Dropping the counter arm loses no coverage, because the single-file path
+/// deletes the `storage.files` row too, which makes the row unreferenced
+/// anyway. And it costs no performance: under `OR`, Postgres had to evaluate
+/// the `EXISTS` union for every row whose `ref_count` was above zero — which
+/// on a healthy install is nearly all of them — so the expensive predicate was
+/// already running unconditionally.
+///
+/// What it does change: a counter stuck *high* with no referrers left is no
+/// longer reaped here. That is the bulk-delete residue, and it now belongs to
+/// the manifest-level refcount recompute (`docs/plan/derived-blobs.md`,
+/// coverage matrix row 7) — a counter being wrong is a job for the thing that
+/// reconciles counters, not for the thing that deletes data.
+///
+/// The predicate is registry-driven rather than naming `storage.files`
+/// directly, so a new referring table — thumbnails via
+/// `storage.content_derived_blobs`, previews via
+/// `storage.file_attached_blobs` — is covered by registering its source.
+/// Hardcoded, each new table would have had its manifests reaped on the next
+/// sweep despite a correct `ref_count`.
+///
+/// Pinned by `gc_reference_authority_integration_tests`.
 ///
 /// # Panics
 ///
@@ -462,8 +491,7 @@ fn manifest_reap_sql(registry: &BlobReferenceRegistry) -> String {
  WHERE ctid = ANY(
      SELECT ctid
        FROM storage.chunk_manifests m
-      WHERE m.ref_count <= 0
-         OR {orphaned}
+      WHERE {orphaned}
       LIMIT $1
  )
  RETURNING file_hash, chunk_hashes, total_size"
@@ -3060,21 +3088,18 @@ impl DedupService {
         let mut total_bytes = 0u64;
 
         // ── Phase 1: GC orphaned manifests ───────────────────────
-        // A manifest is collectible when:
-        //   • ref_count has been decremented to 0 by cleanup_if_orphaned
-        //     on the single-file-delete service path, OR
-        //   • NO registered reference source references its file_hash
-        //     (covers bulk-delete paths: user cascade, empty_trash —
-        //     where the PG trigger only touches storage.blobs and the
-        //     per-file cleanup_if_orphaned call is skipped).
+        // A manifest is collectible when NO registered reference source
+        // references its file_hash. That single condition covers both
+        // delete paths: the single-file service path removes the
+        // storage.files row, and so do the bulk paths (user cascade,
+        // empty_trash) — whichever decrements ref_count along the way is
+        // irrelevant here.
         //
-        // The second clause used to name `storage.files` directly. That
-        // hardcoded "files is the only thing that can reference a manifest",
-        // so any new referring table (thumbnails via
-        // storage.content_derived_blobs, …) would see its manifests reaped
-        // on the next sweep despite a correct ref_count — the first clause
-        // is false, the second true, and the OR fires. It is now the union
-        // of every registered source; see docs/plan/derived-blobs.md.
+        // ref_count is deliberately NOT part of this. It used to be, as
+        // `ref_count <= 0 OR <unreferenced>`, which meant a counter that
+        // under-reported deleted live content without ever consulting the
+        // registry that knew better. See `manifest_reap_sql` for the full
+        // reasoning and for what moved to the refcount recompute instead.
         loop {
             // Keep the historically cheap DELETE-only shape for the dominant
             // no-work sweep. Embedding it in the delete/aggregate/update CTE
@@ -3827,6 +3852,13 @@ mod tests {
     /// branch must appear inside the `NOT (...)` group, ORed with the others.
     /// A branch landing outside that group inverts the predicate for every
     /// other source and reaps live manifests.
+    ///
+    /// **`ref_count` must not reappear in this statement.** It used to be
+    /// there as `ref_count <= 0 OR NOT (…)`, which let a counter that
+    /// under-reported delete content the registry still knew was referenced.
+    /// If a future change reintroduces it, this test fails, and that failure
+    /// is the point — see `manifest_reap_sql` and
+    /// `gc_reference_authority_integration_tests`.
     #[tokio::test]
     async fn manifest_reap_statement_is_stable() {
         let sql = DedupService::new_stub().manifest_reap_sql;
@@ -3834,14 +3866,18 @@ mod tests {
  WHERE ctid = ANY(
      SELECT ctid
        FROM storage.chunk_manifests m
-      WHERE m.ref_count <= 0
-         OR NOT (EXISTS (SELECT 1 FROM storage.files cnt_f WHERE cnt_f.blob_hash = m.file_hash)
+      WHERE NOT (EXISTS (SELECT 1 FROM storage.files cnt_f WHERE cnt_f.blob_hash = m.file_hash)
         OR EXISTS (SELECT 1 FROM storage.content_derived_blobs cnt_d WHERE cnt_d.blob_hash = m.file_hash)
         OR EXISTS (SELECT 1 FROM storage.file_attached_blobs cnt_a WHERE cnt_a.blob_hash = m.file_hash))
       LIMIT $1
  )
  RETURNING file_hash, chunk_hashes, total_size"#;
         assert_eq!(sql, expected, "reap statement changed:\n{sql}");
+        assert!(
+            !sql.contains("ref_count"),
+            "ref_count is back in the reap predicate — the counter must not be \
+             able to delete data on its own"
+        );
     }
 
     /// The reap predicate must never match a manifest that some source still
@@ -4686,6 +4722,30 @@ mod rechunk_integration_tests {
     }
 }
 
+/// Serializes every integration test that runs a **global** GC sweep.
+///
+/// GC sweeps the shared integration database, while each test intentionally
+/// owns a different `TempDir`-backed blob store. Two sweep tests running
+/// concurrently can therefore delete test A's row through test B's backend,
+/// leaving A's physical blob behind and failing an assertion that has nothing
+/// to do with the code under test. Production has one shared backend for the
+/// swept database; serializing only these tests models that invariant.
+///
+/// **Any new test that calls `garbage_collect*` must take this guard**,
+/// wherever it lives in this file. It sat inside
+/// `delta_upload_integration_tests` until `gc_reference_authority_integration_tests`
+/// was added without it and broke
+/// `garbage_collect_honours_grace_window_and_references` — a failure that
+/// appeared only in the full suite and pointed at the wrong test. Hoisted to
+/// module scope so the next suite finds it.
+///
+/// `allow(dead_code)`: gated on a cfg flag rather than on `test`, so a plain
+/// build with `--cfg integration_tests` compiles it while `#[tokio::test]`
+/// drops every caller.
+#[cfg(integration_tests)]
+#[allow(dead_code)]
+static GC_TEST_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Integration tests for the delta-upload primitives — the entitlement and
 // verification rules the chunk-negotiation protocol stands on. Same gating
@@ -4701,14 +4761,6 @@ mod delta_upload_integration_tests {
     use sqlx::postgres::PgPoolOptions;
     use tempfile::TempDir;
     use uuid::Uuid;
-
-    // GC sweeps the shared integration database globally, while every test
-    // intentionally owns a different TempDir-backed blob store. Running two
-    // sweep tests concurrently can therefore delete test A's row through test
-    // B's backend, leaving A's physical blob behind. Production has one shared
-    // backend for the swept database; serialize only these global-sweep tests
-    // so the integration topology models that invariant.
-    static GC_TEST_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     async fn test_pool() -> Arc<PgPool> {
         let pool = PgPoolOptions::new()
@@ -5330,45 +5382,40 @@ mod delta_upload_integration_tests {
 // ─────────────────────────────────────────────────────────────────────────────
 // Who decides a manifest is dead: the counter, or the reference registry?
 //
-// `manifest_reap_sql` asks
+// **The registry, and only the registry.** `manifest_reap_sql` asks
+// `WHERE <no registered source references it>` and does not mention
+// `ref_count` at all.
 //
-//     WHERE m.ref_count <= 0
-//        OR <no registered source references it>
+// It used to read `ref_count <= 0 OR <unreferenced>`. Each arm covered a
+// real deletion path — the single-file path decrements the counter via
+// `cleanup_if_orphaned`, bulk paths (user cascade, empty_trash) only fire the
+// `storage.blobs` trigger — so the disjunction looked like belt and braces.
+// It was the opposite: with OR, either signal alone deletes, so a counter
+// that under-reported made live content collectible and the registry that
+// knew better was never consulted.
 //
-// An **OR**, so either signal alone deletes. Each arm exists for a real
-// deletion path (see the comment in `garbage_collect_with_grace`): the
-// single-file path decrements `ref_count` via `cleanup_if_orphaned`, while
-// bulk paths — user cascade, empty_trash — only fire the `storage.blobs`
-// trigger and leave the counter untouched, so the registry arm is what
-// collects those.
-//
-// The cost of that disjunction is that `ref_count` is *authoritative on its
-// own*. Any code path that fails to take a reference does not merely
-// mis-report a number, it makes live content collectible — and the reference
-// registry, which knows the truth, is never consulted because the first arm
-// already matched.
-//
-// That is not hypothetical. `storage.copy_folder_tree` used to bump
-// refcounts with `UPDATE storage.blobs … WHERE hash = blob_hash`, which
-// matches nothing for a CDC file (whose `blob_hash` names a manifest, not a
-// chunk) and therefore took no reference at all. Copy a folder, delete the
-// original, and the copy's bytes were reaped. That specific bug is fixed —
-// both copy paths now go through `storage.add_blob_references` — but the
-// property that made it destructive rather than merely untidy is still here,
-// and there are now two implementations of the reference contract
+// Not hypothetical. `storage.copy_folder_tree` used to take references with
+// `UPDATE storage.blobs … WHERE hash = blob_hash`, which matches nothing for
+// a CDC file — whose `blob_hash` names a manifest, not a chunk — so it took
+// no reference at all. Copy a folder, delete the original, and the copy's
+// bytes were reaped. Both copy paths now go through
+// `storage.add_blob_references`, but that fix relied on getting the counter
+// right, and there are two implementations of the reference contract
 // (`storage.add_blob_references` in SQL, `DedupService::add_reference` in
-// Rust) that must agree forever.
+// Rust) that must agree forever. Removing the counter's authority is what
+// makes a future disagreement a leak rather than data loss.
 //
-// These tests pin the current behaviour of both arms so the OR cannot be
-// changed silently in either direction.
+// The two tests pin both directions, and they are only meaningful together:
 //
-// `gc_reaps_a_manifest_on_zero_refcount_alone` DOCUMENTS THE HAZARD and
-// passes today. `gc_spares_a_manifest_with_a_live_referrer` asserts the
-// safer contract and is EXPECTED TO FAIL until the predicate requires both
-// signals. Read them as a pair: the first says what happens, the second says
-// what should. See `docs/plan/derived-blobs.md`.
+//   * `gc_spares_a_manifest_with_a_live_referrer` — a wrong-LOW counter must
+//     not delete. This is the fix.
+//   * `gc_reaps_an_unreferenced_manifest_despite_a_high_refcount` — a
+//     wrong-HIGH counter must not veto. This is the coverage the removed arm
+//     used to provide, and dropping it must not have traded one failure for
+//     the other.
 //
-// Gated on `--cfg integration_tests` like the other PG suites.
+// See `docs/plan/derived-blobs.md`. Gated on `--cfg integration_tests` like
+// the other PG suites.
 // ─────────────────────────────────────────────────────────────────────────────
 // `allow(dead_code)`: the module is gated on a cfg flag, not on `test`, so a
 // plain `cargo build --cfg integration_tests` compiles the helpers while
@@ -5540,16 +5587,21 @@ mod gc_reference_authority_integration_tests {
             .await;
     }
 
-    /// **Documents the hazard.** Passes today, and its passing is the
-    /// problem: a zero counter is sufficient to delete content that a
-    /// registered source still references.
+    /// The coverage that dropping the `ref_count` arm had to preserve.
     ///
-    /// If this test starts FAILING, the reap predicate has been tightened —
-    /// that is the intended direction. Delete this test and keep
-    /// [`gc_spares_a_manifest_with_a_live_referrer`], which asserts the
-    /// contract that replaced it.
+    /// Bulk-delete paths (user cascade, `empty_trash`) remove
+    /// `storage.files` rows via a trigger that only touches `storage.blobs`,
+    /// so the manifest's counter is left **stuck high** with no referrers.
+    /// Under the old `OR` predicate the registry arm collected those. Now
+    /// that the registry is the sole authority it still does — a high counter
+    /// no longer keeps dead content alive, just as a zero one no longer kills
+    /// live content.
+    ///
+    /// This is the direction the counter can still be wrong in, and it is the
+    /// benign one: a leak, detected by the refcount recompute, not data loss.
     #[tokio::test]
-    async fn gc_reaps_a_manifest_on_zero_refcount_alone() {
+    async fn gc_reaps_an_unreferenced_manifest_despite_a_high_refcount() {
+        let _gc_test_guard = GC_TEST_SERIALIZER.lock().await;
         let pool = test_pool().await;
         let drive_id = seed_user(&pool).await;
         let dir = TempDir::new().expect("tempdir");
@@ -5557,44 +5609,53 @@ mod gc_reference_authority_integration_tests {
 
         let data = content(2 * 1024 * 1024);
         let (file_hash, chunks, file_id) =
-            seed_referenced_cdc_blob(&svc, &pool, drive_id, &data, "hazard").await;
+            seed_referenced_cdc_blob(&svc, &pool, drive_id, &data, "stuckhigh").await;
 
-        force_zero_manifest_refcount(&pool, &file_hash).await;
-        svc.garbage_collect_force().await.expect("gc");
+        // Simulate the bulk path: referrer gone, counter untouched.
+        sqlx::query("DELETE FROM storage.files WHERE id = $1")
+            .bind(file_id)
+            .execute(pool.as_ref())
+            .await
+            .expect("drop the referrer");
+        let bumped =
+            sqlx::query("UPDATE storage.chunk_manifests SET ref_count = 7 WHERE file_hash = $1")
+                .bind(&file_hash)
+                .execute(pool.as_ref())
+                .await
+                .expect("inflate the refcount")
+                .rows_affected();
+        assert_eq!(bumped, 1, "expected exactly one manifest for {file_hash}");
+
+        // Plain GC, NOT `garbage_collect_force`. Phase 1 has no time filter —
+        // the manifest predicate is purely "is it referenced" — so the grace
+        // window is irrelevant to what these tests assert. Forcing it would
+        // bypass the CHUNK-level grace for the whole shared test database and
+        // reap sibling tests' just-uploaded orphans; that is exactly how this
+        // suite first broke `claim_and_pin_respect_ownership_and_orphans`.
+        svc.garbage_collect().await.expect("gc");
 
         let survived = manifest_exists(&pool, &file_hash).await;
         cleanup(&pool, &file_hash, file_id, &chunks).await;
 
         assert!(
             !survived,
-            "BEHAVIOUR CHANGE: the reap predicate no longer trusts ref_count \
-             alone. That is the desired direction — drop this test and keep \
-             gc_spares_a_manifest_with_a_live_referrer."
+            "GC left a manifest nothing references, because its ref_count was \
+             above zero. Removing the `ref_count <= 0` arm must not have made \
+             the counter able to VETO collection either — the registry is the \
+             authority in both directions."
         );
     }
 
-    /// **The contract worth having, and it does not hold yet.**
+    /// **The contract.** A manifest with a live `storage.files` referrer
+    /// survives GC no matter what its counter says.
     ///
-    /// A manifest with a live `storage.files` referrer must survive GC no
-    /// matter what its counter says. `FilesReferenceSource` is registered and
-    /// `count_references` is implemented on it — the reap predicate simply
-    /// never asks, because `ref_count <= 0` short-circuits the OR.
-    ///
-    /// Expected to fail until `manifest_reap_sql` requires BOTH signals.
-    /// That change also needs the manifest-level refcount recompute
-    /// (`docs/plan/derived-blobs.md`, coverage matrix row 7), which takes
-    /// over the case this arm currently covers: a counter stuck high with no
-    /// referrers left, produced by the bulk-delete paths.
-    ///
-    /// `#[ignore]` only so a known-failing assertion does not turn CI red
-    /// while the fix is written — the test is complete and correct, and it
-    /// FAILS on purpose today. Run it with
-    /// `cargo test --workspace --tests gc_spares -- --ignored`, and remove
-    /// this attribute in the commit that tightens the predicate.
+    /// This failed until `manifest_reap_sql` dropped its `ref_count <= 0`
+    /// arm. The counter was a second, independent licence to delete, so a
+    /// reference that was never taken — the `copy_folder_tree` bug — destroyed
+    /// the copy's content rather than merely mis-reporting a number.
     #[tokio::test]
-    #[ignore = "documents a real defect: GC trusts ref_count alone. Remove when \
-                manifest_reap_sql requires both signals."]
     async fn gc_spares_a_manifest_with_a_live_referrer() {
+        let _gc_test_guard = GC_TEST_SERIALIZER.lock().await;
         let pool = test_pool().await;
         let drive_id = seed_user(&pool).await;
         let dir = TempDir::new().expect("tempdir");
@@ -5618,7 +5679,8 @@ mod gc_reference_authority_integration_tests {
             "fixture file row must still reference the blob"
         );
 
-        svc.garbage_collect_force().await.expect("gc");
+        // Plain GC — see the sibling test for why `force` is wrong here.
+        svc.garbage_collect().await.expect("gc");
 
         let survived = manifest_exists(&pool, &file_hash).await;
         let readable = svc.read_blob_stream(&file_hash).await.is_ok();
@@ -5627,11 +5689,10 @@ mod gc_reference_authority_integration_tests {
         assert!(
             survived,
             "GC reaped a manifest that storage.files still references. \
-             ref_count was 0, but FilesReferenceSource knows better and was \
-             never consulted: manifest_reap_sql matches on \
-             `ref_count <= 0 OR <unreferenced>`, so the counter alone \
-             deletes. A reference that is never taken is therefore data \
-             loss, not a wrong number."
+             ref_count was 0 and something let that alone decide — check \
+             whether `manifest_reap_sql` has regained a `ref_count` clause. \
+             FilesReferenceSource is registered and knows the row is live; it \
+             must be the only authority on collectibility."
         );
         assert!(
             readable,
