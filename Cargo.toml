@@ -1,6 +1,6 @@
 [package]
 name = "oxicloud"
-version = "0.8.7"
+version = "0.8.9"
 edition = "2024"
 default-run = "oxicloud"
 
