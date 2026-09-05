@@ -76,6 +76,27 @@ fn files_exists_sql(level: RefLevel, outer_hash_expr: &str) -> Option<String> {
     }
 }
 
+/// Short-circuiting existence form of [`chunks_ref_sql`].
+///
+/// Same motivation as [`files_exists_sql`], and it now matters more: this
+/// fragment sits in `dedup_gc`'s **phase-2 reap guard**, evaluated per
+/// candidate blob row. Without the override the trait default wraps the
+/// counting form as `(SELECT COUNT(*) …) > 0`, which scans every manifest
+/// listing the chunk before comparing — a heavily-deduplicated chunk is
+/// exactly the case where that is most expensive and least necessary.
+fn chunks_exists_sql(level: RefLevel, outer_hash_expr: &str) -> Option<String> {
+    match level {
+        RefLevel::Chunk => {
+            let m = MANIFEST_ALIAS;
+            Some(format!(
+                "EXISTS (SELECT 1 FROM storage.chunk_manifests {m} \
+                 WHERE {outer_hash_expr} = ANY({m}.chunk_hashes))"
+            ))
+        }
+        RefLevel::Manifest => None,
+    }
+}
+
 /// Fragment for [`ChunksReferenceSource`]. See [`files_ref_sql`].
 fn chunks_ref_sql(level: RefLevel, outer_hash_expr: &str) -> Option<String> {
     match level {
@@ -278,6 +299,10 @@ impl BlobReferenceSource for ChunksReferenceSource {
 
     fn ref_count_sql(&self, level: RefLevel, outer_hash_expr: &str) -> Option<String> {
         chunks_ref_sql(level, outer_hash_expr)
+    }
+
+    fn ref_exists_sql(&self, level: RefLevel, outer_hash_expr: &str) -> Option<String> {
+        chunks_exists_sql(level, outer_hash_expr)
     }
 
     async fn count_references(&self, blob_hash: &str) -> Result<u64, DomainError> {
