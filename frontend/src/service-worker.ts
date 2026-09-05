@@ -43,6 +43,7 @@
 
 import {
 	buildDpopProof,
+	hasNonce,
 	isDpopNonceChallenge,
 	updateNonceFromResponse
 } from '$lib/auth/dpop-proof';
@@ -79,7 +80,93 @@ self.addEventListener('fetch', (event) => {
 	event.respondWith(signAndFetch(req));
 });
 
+/**
+ * In-flight nonce discovery, or `null` when a nonce is already cached.
+ *
+ * Single-flight gate — see [`signAndFetch`].
+ */
+let nonceBootstrap: Promise<void> | null = null;
+
+/**
+ * Cap on how long a request will wait for someone else's bootstrap.
+ *
+ * The SW sits on the critical path for every thumbnail, so a hung or
+ * pathologically slow discovery must not stall the grid behind it. On
+ * expiry the waiter proceeds unsigned-by-nonce and takes its own
+ * challenge — exactly the pre-gate behaviour, so the worst case is what
+ * we had before rather than a stall.
+ */
+const NONCE_BOOTSTRAP_WAIT_MS = 5_000;
+
+/**
+ * DPoP-sign one request, with a **single-flight gate on the first
+ * nonce**.
+ *
+ * ## Why the gate
+ *
+ * A DPoP proof carries a server-issued nonce. With none cached the
+ * server answers `401 use_dpop_nonce`, the client harvests the nonce
+ * from the response and retries — one extra round trip, absorbed here
+ * so the caller never sees it.
+ *
+ * The SW's nonce cache is per-worker and **in memory only**: workers
+ * have no `sessionStorage`, and `seedNonceFromCookie` needs `document`,
+ * so neither mechanism that pre-seeds the page reaches this scope. A
+ * worker therefore always cold-starts with no nonce — and browsers
+ * terminate idle workers after ~30s, so that happens often.
+ *
+ * Without a gate, every request issued in that window discovers the
+ * nonce *independently*: N parallel requests → N challenges → 2N
+ * requests. The photo grid is exactly this shape, and it is the SW's
+ * main job (`<img src>` thumbnails can't sign themselves). Each wasted
+ * challenge also costs the server a full ECDSA verify, since
+ * `verify_proof` runs before the nonce check.
+ *
+ * So: the first request through discovers the nonce; the rest await it
+ * and then sign normally. N challenges collapse to 1.
+ *
+ * ## What this is not
+ *
+ * Not a correctness fix — the retry already made this invisible. It
+ * removes waste, and it keeps `dpop.nonce_challenged` rare enough in
+ * the audit log to be worth reading.
+ *
+ * Not a cure for cold starts. One challenge per worker lifetime
+ * remains; removing that needs the nonce persisted somewhere the worker
+ * can reach (IndexedDB already holds the keypair). Deliberately left
+ * out — it cannot replace the challenge path anyway, since a persisted
+ * nonce can be stale.
+ */
 async function signAndFetch(req: Request): Promise<Response> {
+	if (!hasNonce()) {
+		if (nonceBootstrap) {
+			// Someone else is already discovering it. Wait — but never
+			// indefinitely; on timeout fall through and take our own
+			// challenge.
+			await Promise.race([
+				nonceBootstrap,
+				new Promise<void>((resolve) => setTimeout(resolve, NONCE_BOOTSTRAP_WAIT_MS))
+			]);
+		} else {
+			// We own the discovery. `finally` releases on every path,
+			// including a thrown fetch — a waiter blocked on a promise
+			// that never settles would be worse than the stampede.
+			let release!: () => void;
+			nonceBootstrap = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			try {
+				return await signAndFetchOnce(req);
+			} finally {
+				nonceBootstrap = null;
+				release();
+			}
+		}
+	}
+	return signAndFetchOnce(req);
+}
+
+async function signAndFetchOnce(req: Request): Promise<Response> {
 	const firstProof = await buildDpopProof(req.method, req.url).catch(() => null);
 	// No keypair (IndexedDB blocked, SubtleCrypto missing, etc.) — pass
 	// through unsigned. Unbound sessions still work; bound sessions in
