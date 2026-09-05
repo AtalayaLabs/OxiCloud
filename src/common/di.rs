@@ -2330,19 +2330,29 @@ impl AppServiceFactory {
             mock_email_sender: None,              // populated below
             magic_link_invite_service: None,      // populated below
             recipient_notification_service: None, // populated below alongside magic_link_invite_service
-            // 60 lookups / minute / caller; cap at 50 000 tracked
-            // callers to bound memory. The same limiter instance is
-            // shared by every clone of AppState since it lives in an
-            // Arc.
+            // Per-caller limits, configurable since the hardcoded ceilings
+            // had no escape hatch for deployments where several actors share
+            // one identity — a CI suite running as a single `admin` shares
+            // one bucket and trips a limit sized for one human. Defaults
+            // match the literals these replaced, so an operator who sets
+            // nothing sees no change. `OXICLOUD_RATE_LIMIT_USER_PROFILE_*` /
+            // `OXICLOUD_RATE_LIMIT_DELTA_UPLOAD_*`.
+            //
+            // 50 000 tracked callers caps memory in both cases. The limiter
+            // lives in an Arc, so every clone of AppState shares the counts.
             user_profile_rate_limiter: Arc::new(
-                crate::interfaces::middleware::rate_limit::RateLimiter::new(60, 60, 50_000),
+                crate::interfaces::middleware::rate_limit::RateLimiter::new(
+                    self.config.auth.rate_limit.user_profile_max_requests,
+                    self.config.auth.rate_limit.user_profile_window_secs,
+                    50_000,
+                ),
             ),
-            // Delta upload: 240 requests / minute / caller. Generous for a
-            // real client (chunk PUTs carry up to 100 MB each) while
-            // stopping pin/negotiate floods; 50 000 tracked callers bound
-            // the memory like the other limiters.
             delta_upload_rate_limiter: Arc::new(
-                crate::interfaces::middleware::rate_limit::RateLimiter::new(240, 60, 50_000),
+                crate::interfaces::middleware::rate_limit::RateLimiter::new(
+                    self.config.auth.rate_limit.delta_upload_max_requests,
+                    self.config.auth.rate_limit.delta_upload_window_secs,
+                    50_000,
+                ),
             ),
             // PR 12 — per-sharer email-invite ceiling: caller_id-keyed.
             // Defends against a compromised account spamming external
