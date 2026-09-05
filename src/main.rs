@@ -141,6 +141,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(first) = std::env::args().nth(1)
         && matches!(first.as_str(), "opaque" | "migrate" | "storage")
     {
+        // Load `.env` from CWD before dispatching so subcommands see the
+        // same `DATABASE_URL` / `OXICLOUD_*` variables the server-startup
+        // path does. Without this, `oxicloud migrate nfc-filenames`
+        // errors out with `DATABASE_URL not set` for any operator who
+        // keeps their config in `.env` (i.e. every self-host on a
+        // homelab, per the standard project layout).
+        //
+        // Non-overriding `dotenv()` — a live shell export still wins,
+        // matching the server path's default-branch behaviour at
+        // line ~219 below. `--config <path>` (line ~177+ below) is
+        // NOT yet supported for subcommands — that would require
+        // hoisting the `--config` parse above this dispatch and is
+        // tracked as follow-up work. Operators needing pinned config
+        // for a subcommand today: `env $(cat prod.env | xargs)
+        // oxicloud migrate nfc-filenames`, or run under a systemd
+        // EnvironmentFile= directive.
+        dotenvy::dotenv().ok();
+
         // `oxicloud::cli::run()` returns a plain `u8` exit-code, which
         // widens exactly into `i32` for `std::process::exit`. Values are
         // 0/1/2 today; the widening is loss-free by construction.

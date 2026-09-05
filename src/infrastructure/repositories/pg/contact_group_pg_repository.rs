@@ -11,6 +11,7 @@ use crate::domain::entities::contact::{Contact, ContactGroup};
 use crate::domain::repositories::contact_repository::{
     ContactGroupRepository, ContactRepositoryResult,
 };
+use crate::domain::services::path_service::normalize_storage_name;
 
 pub struct ContactGroupPgRepository {
     pool: Arc<PgPool>,
@@ -24,12 +25,19 @@ impl ContactGroupPgRepository {
 
 impl ContactGroupRepository for ContactGroupPgRepository {
     async fn create_group(&self, group: ContactGroup) -> ContactRepositoryResult<ContactGroup> {
+        // NFC-normalize at the last touch before bind — same choke-point
+        // pattern as the storage.* / caldav.* / carddav.address_books
+        // repos. Group display names on macOS Contacts sync as NFD
+        // (Address Book pushes decomposed forms in vCard KIND=group);
+        // NC-desktop / Thunderbird would then miss the group on their
+        // NFC-normalized lookup.
+        let normalized_name = normalize_storage_name(group.name());
         sqlx::query(
             "INSERT INTO carddav.contact_groups (id, address_book_id, name, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)"
         )
         .bind(group.id())
         .bind(group.address_book_id())
-        .bind(group.name())
+        .bind(&normalized_name)
         .bind(group.created_at())
         .bind(group.updated_at())
         .execute(self.pool.as_ref())
@@ -40,8 +48,10 @@ impl ContactGroupRepository for ContactGroupPgRepository {
     }
 
     async fn update_group(&self, group: ContactGroup) -> ContactRepositoryResult<ContactGroup> {
+        // NFC-normalize on rename — see `create_group` for the why.
+        let normalized_name = normalize_storage_name(group.name());
         sqlx::query("UPDATE carddav.contact_groups SET name = $1, updated_at = $2 WHERE id = $3")
-            .bind(group.name())
+            .bind(&normalized_name)
             .bind(Utc::now())
             .bind(group.id())
             .execute(self.pool.as_ref())

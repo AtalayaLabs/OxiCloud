@@ -17,6 +17,7 @@ use crate::application::dtos::display_helpers::category_order_for;
 use crate::application::ports::storage_ports::{CopyFolderTreeResult, FileWritePort};
 use crate::common::errors::DomainError;
 use crate::domain::entities::file::File;
+use crate::domain::services::path_service::{normalize_storage_name, normalize_storage_name_owned};
 
 use super::transaction_utils::retry_on_deadlock;
 use crate::infrastructure::services::dedup_service::DedupService;
@@ -281,6 +282,16 @@ impl FileBlobWriteRepository {
         size: u64,
         caller_id: Uuid,
     ) -> Result<File, DomainError> {
+        // NFC-normalize at the last touch before the DB bind. Same
+        // reasoning as `folder_db_repository::create_folder`: every write
+        // surface that lands here — REST multipart upload, by-hash instant
+        // upload, chunked-upload complete, WOPI create-fallback, WebDAV
+        // PUT, NC PUT, NC chunked-upload assemble — passes raw client
+        // bytes. macOS Finder emits NFD; canonicalising once here closes
+        // every audited entry-point at one choke-point. `is_nfc_quick`
+        // fast path is one table-lookup for the ~99% of names already NFC.
+        let name = normalize_storage_name_owned(name);
+
         // Root files have no parent folder to derive an owner from — keep the
         // previous resolve_user_id(None) contract (release the ref, error out).
         let Some(fid) = folder_id.as_deref() else {
@@ -630,7 +641,14 @@ impl FileWritePort for FileBlobWriteRepository {
         // folder's owner as the author when Adam copied a file into
         // Alice's folder.
         let target_fid = target_folder_id.clone();
-        let rename_to = new_name.map(|s| s.to_string());
+        // NFC-normalize the destination name at the last touch before the
+        // bind. `new_name = None` means "keep the source's stored name" —
+        // that path is already normalized (either by an earlier write here
+        // or, for pre-fix rows, deliberately left as-is per operator
+        // decision to not touch historical NFD content). Only fresh
+        // client-supplied `new_name` needs the pass; WebDAV `COPY` with a
+        // Destination header renaming a file is the canonical caller.
+        let rename_to = new_name.map(normalize_storage_name);
 
         let row = retry_on_deadlock("files.copy", || async {
             let mut tx = self.pool.begin().await?;
@@ -764,6 +782,11 @@ impl FileWritePort for FileBlobWriteRepository {
         new_name: &str,
         caller_id: Uuid,
     ) -> Result<File, DomainError> {
+        // NFC-normalize the client-supplied name at the last touch — same
+        // reasoning as `save_file_with_blob_impl`. REST rename, WebDAV
+        // MOVE-with-rename, NC MOVE-with-rename all funnel here.
+        let new_name = normalize_storage_name(new_name);
+
         // §14: `updated_by = $3` (caller_id), see move_file.
         let row = sqlx::query_as::<
             _,
@@ -789,7 +812,7 @@ impl FileWritePort for FileBlobWriteRepository {
                       created_by, updated_by
             "#,
         )
-        .bind(new_name)
+        .bind(&new_name)
         .bind(file_id)
         .bind(caller_id)
         .fetch_optional(self.pool.as_ref())
@@ -877,6 +900,14 @@ impl FileWritePort for FileBlobWriteRepository {
         size: u64,
         caller_id: Uuid,
     ) -> Result<(File, PathBuf), DomainError> {
+        // NFC-normalize at the last touch before the DB bind — same
+        // reasoning as `save_file_with_blob_impl`. Deferred registration
+        // is the write-behind cache's fast-path (row up first, blob
+        // hash filled in on the async callback); it takes fresh client
+        // input via chunked-upload finalize among others, so NFD is
+        // reachable here too.
+        let name = normalize_storage_name_owned(name);
+
         // For deferred registration we use a placeholder hash.
         // The write-behind cache will call update_file_content later.
         let placeholder_hash = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -1074,6 +1105,13 @@ impl FileWritePort for FileBlobWriteRepository {
         target_parent_id: Option<String>,
         dest_name: Option<String>,
     ) -> Result<CopyFolderTreeResult, DomainError> {
+        // NFC-normalize the caller-supplied rename before handing off to
+        // the PG stored function. `dest_name = None` keeps the source's
+        // stored name (already normalized on ingest for post-fix rows;
+        // pre-fix historical NFD deliberately preserved). Only WebDAV
+        // COPY-a-folder-tree-with-rename passes a fresh client string.
+        let dest_name = dest_name.map(normalize_storage_name_owned);
+
         let row = sqlx::query_as::<_, (String, i64, i64)>(
             "SELECT new_root_id, folders_copied, files_copied \
                FROM storage.copy_folder_tree($1::uuid, $2::uuid, $3)",

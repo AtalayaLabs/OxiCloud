@@ -7,6 +7,7 @@ use crate::domain::entities::contact::AddressBook;
 use crate::domain::repositories::address_book_repository::{
     AddressBookRepository, AddressBookRepositoryResult,
 };
+use crate::domain::services::path_service::normalize_storage_name;
 
 pub struct AddressBookPgRepository {
     pool: Arc<PgPool>,
@@ -40,6 +41,15 @@ impl AddressBookRepository for AddressBookPgRepository {
         &self,
         address_book: AddressBook,
     ) -> AddressBookRepositoryResult<AddressBook> {
+        // NFC-normalize the caller-supplied display name at the last
+        // touch before bind. Same choke-point pattern as the storage.*
+        // repos — the entity constructor's normalization is bypassed by
+        // every real production path (`AddressBook::from_raw`
+        // reconstructs from DB bytes; `AddressBook::new` goes through
+        // an inbound DTO that may or may not have been touched).
+        // Enforcing here means every carddav write surface — DAV
+        // `MKCOL`, REST create — lands in NFC regardless.
+        let normalized_name = normalize_storage_name(address_book.name());
         let row = sqlx::query(
             r#"
             INSERT INTO carddav.address_books (id, name, owner_id, description, color, is_public, created_at, updated_at)
@@ -48,7 +58,7 @@ impl AddressBookRepository for AddressBookPgRepository {
             "#
         )
         .bind(address_book.id())
-        .bind(address_book.name())
+        .bind(&normalized_name)
         .bind(address_book.owner_id())
         .bind(address_book.description())
         .bind(address_book.color())
@@ -76,6 +86,8 @@ impl AddressBookRepository for AddressBookPgRepository {
         &self,
         address_book: AddressBook,
     ) -> AddressBookRepositoryResult<AddressBook> {
+        // NFC-normalize on rename — see `create_address_book` for the why.
+        let normalized_name = normalize_storage_name(address_book.name());
         let now = Utc::now();
         let row = sqlx::query(
             r#"
@@ -85,7 +97,7 @@ impl AddressBookRepository for AddressBookPgRepository {
             RETURNING id, name, owner_id, description, color, is_public, created_at, updated_at
             "#,
         )
-        .bind(address_book.name())
+        .bind(&normalized_name)
         .bind(address_book.description())
         .bind(address_book.color())
         .bind(address_book.is_public())

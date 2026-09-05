@@ -36,6 +36,7 @@ use crate::application::services::folder_service::FolderService;
 use crate::common::di::AppState;
 use crate::domain::repositories::drive_repository::DriveRepository;
 use crate::domain::services::authorization::{Permission, Resource, Subject};
+use crate::domain::services::path_service::normalize_storage_name;
 use crate::infrastructure::services::path_resolver_service::ResolvedResource;
 use crate::infrastructure::services::webdav_dead_property_store::{DeadPropertyStore, ResourceRef};
 use crate::interfaces::errors::AppError;
@@ -2452,6 +2453,18 @@ async fn handle_mkcol(
         ));
     }
 
+    // Capture the URL-path segments BEFORE scope-resolution rewrites `path`
+    // to `scope.db_path` — we need the original request URL to reconstruct
+    // the canonical `Content-Location` when the last segment gets NFC-
+    // normalized. The last segment is the same either way (it's the target
+    // resource name), but the URL prefix (including any `@drive/<selector>`
+    // routing tokens the client used) is only preserved here.
+    let request_url_segments: Vec<String> = path
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
+
     // RFC 4918 §9.3.1: MKCOL on an existing URL MUST return 405.
     // RFC 4918 §9.3.1: MKCOL without an existing parent MUST return 409.
     // This handler only creates a single collection (the last path segment).
@@ -2556,8 +2569,15 @@ async fn handle_mkcol(
         }
     };
 
+    // NFC-normalize the client-supplied last segment so we can emit
+    // `Content-Location` when the canonical URL differs from what the
+    // client sent. The repo layer normalizes again on the way to the DB
+    // (idempotently — `is_nfc_quick` returns immediately for already-NFC
+    // input); doing it here too gives the handler a cheap way to know
+    // whether the URL changed. See AtalayaLabs/OxiCloud#706.
+    let normalized_segment = normalize_storage_name(new_segment);
     let create_dto = crate::application::dtos::folder_dto::CreateFolderDto {
-        name: new_segment.to_string(),
+        name: normalized_segment.clone(),
         parent_id,
     };
     folder_service
@@ -2565,10 +2585,57 @@ async fn handle_mkcol(
         .await
         .map_err(AppError::from)?;
 
-    Ok(Response::builder()
-        .status(StatusCode::CREATED)
-        .body(Body::empty())
-        .unwrap())
+    // If the client sent an NFD name (macOS Finder, some Android sync
+    // clients) and we canonicalised it, tell them the authoritative URL
+    // via `Content-Location` (RFC 7231 §3.1.4.2). Well-behaved clients
+    // (NextCloud desktop, rclone) update their local index; naive
+    // clients ignore the header (safely — status stays 201). Emitting
+    // only when the segment actually changed keeps the wire clean on
+    // the common ASCII / already-NFC path.
+    let mut response = Response::builder().status(StatusCode::CREATED);
+    if normalized_segment != new_segment {
+        response = response.header(
+            "Content-Location",
+            canonical_collection_url(&request_url_segments, &normalized_segment),
+        );
+    }
+    Ok(response.body(Body::empty()).unwrap())
+}
+
+/// Reconstruct the canonical `Content-Location` value for a WebDAV
+/// resource whose last URL segment was NFC-normalized server-side.
+///
+/// Takes the original request-URL segments (as split by `/` after the
+/// `/webdav/` prefix) and the canonical last-segment string, and
+/// returns a full `/webdav/…/` URL with each segment individually
+/// percent-encoded. Collection responses append a trailing `/` per
+/// RFC 4918 §5.2.
+fn canonical_collection_url(request_url_segments: &[String], canonical_last: &str) -> String {
+    let mut out = String::with_capacity(
+        request_url_segments.iter().map(|s| s.len()).sum::<usize>() + canonical_last.len() + 16,
+    );
+    out.push_str("/webdav/");
+    // Walk all segments except the last; the last is replaced with the
+    // canonical (normalized) form.
+    let prefix = if request_url_segments.len() > 1 {
+        &request_url_segments[..request_url_segments.len() - 1]
+    } else {
+        &[][..]
+    };
+    for seg in prefix {
+        let _ = std::fmt::Write::write_fmt(
+            &mut out,
+            format_args!("{}/", utf8_percent_encode(seg, PATH_SEGMENT_ENCODE_SET)),
+        );
+    }
+    let _ = std::fmt::Write::write_fmt(
+        &mut out,
+        format_args!(
+            "{}/",
+            utf8_percent_encode(canonical_last, PATH_SEGMENT_ENCODE_SET)
+        ),
+    );
+    out
 }
 
 /**
