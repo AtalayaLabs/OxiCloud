@@ -125,6 +125,13 @@ mp3-duration = "0.1"
 kamadak-exif = "0.6.1"
 md-5 = "0.11.0"
 sha2 = "0.11.0"
+# Constant-time equality primitives for security-sensitive comparisons.
+# Direct dep is free: `subtle` is already pulled in transitively via
+# sqlx-postgres → sha2 → digest, so this doesn't add a compile unit or
+# bytes — just makes the import explicit for our own callsites (WebDAV
+# lock-token comparison in `evaluate_if_header`, and any future
+# token/secret comparisons).
+subtle = "2.6"
 unicode-normalization = "0.1.25"
 blake3 = { version = "1.8.5", features = ["rayon", "mmap"] }
 hex = "0.4.3"
