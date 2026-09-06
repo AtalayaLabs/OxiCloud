@@ -7,6 +7,7 @@
     "node": ">=24"
   },
   "scripts": {
+    "api:generate": "svelte-kit sync && openapi-ts",
     "dev": "vite dev",
     "build": "vite build",
     "postbuild": "node scripts/emit-askama-common.mjs && node scripts/precompress.mjs ../static-dist",
@@ -21,6 +22,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@hey-api/openapi-ts": "0.99.0",
     "@sveltejs/adapter-static": "^3.0.10",
     "@sveltejs/kit": "^2.66.0",
     "@sveltejs/vite-plugin-svelte": "^5.1.1",

@@ -1,9 +1,10 @@
 /**
  * API wire types — ported from static/js/core/types.js.
  *
- * This is a focused, hand-ported subset covering the core resources. The plan
- * is to regenerate the full set from the backend OpenAPI (`just openapi` +
- * `openapi-typescript`) so these track the Rust DTOs; until then, extend here.
+ * This is the legacy, hand-ported subset used by endpoint modules that have not
+ * migrated to the Hey API client yet. New generated types and SDK functions
+ * live in `./generated`; refresh them from the Rust OpenAPI with
+ * `just api-client`.
  */
 
 export type ItemType = 'file' | 'folder';
