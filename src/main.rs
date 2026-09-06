@@ -57,7 +57,7 @@ use oxicloud::interfaces;
 use common::di::AppServiceFactory;
 use infrastructure::db::create_database_pools;
 #[cfg(feature = "opencloudmesh")]
-use interfaces::opencloudmesh::create_opencloudmesh_routes;
+use interfaces::opencloudmesh::routes::create_opencloudmesh_routes;
 use interfaces::{
     create_api_routes, create_health_routes, create_public_api_routes,
     web::{create_web_routes, resolve_static_path},
@@ -958,10 +958,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             ))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
-                require_internal_user_layer,
-            ))
-            .layer(axum::middleware::from_fn_with_state(
-                app_state.clone(),
                 auth_middleware,
             ));
 
@@ -1418,7 +1414,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(feature = "opencloudmesh")]
     let app = if let Some(opencloudmesh_routes) = opencloudmesh_routes {
-        // merge opencloudmesh_routes after adding app_state as they do NOT need app_state 
+        // merge opencloudmesh_routes after adding app_state as they do NOT need app_state
         app.merge(opencloudmesh_routes.layer(access_log!("http::opencloudmesh")))
     } else {
         app

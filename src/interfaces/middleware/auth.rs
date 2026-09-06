@@ -289,6 +289,66 @@ pub async fn auth_middleware(
                             // For DAV clients: include WWW-Authenticate so the client
                             // re-prompts for credentials rather than failing silently.
                             if is_dav_path(request.uri().path()) {
+                                #[cfg(feature = "opencloudmesh")]
+                                {
+                                    // legacy OCM shared secret flow uses Basic auth
+                                    // we use following scheme: providerId:user:token:
+                                    // the final : is added by Nextcloud, the
+                                    // providerId:user:token is controlled by us
+                                    if let Some(share_service) = state.share_service.clone() {
+                                        use crate::application::ports::share_ports::ShareUseCase;
+
+                                        let (user, token) =
+                                            password.trim_end_matches(":").split_once(":").unwrap();
+                                        // provider id is transported as username in OCM basic auth
+                                        let provider_id = username;
+
+                                        let share =
+                                            share_service.get_shared_link_by_token(token).await;
+                                        if let Ok(share) = share
+                                            && share.id == provider_id
+                                        {
+                                            use crate::application::dtos::user_dto::UserDto;
+                                            if let Some(auth_service) = state.auth_service.clone() {
+                                                if let Some(user) = auth_service
+                                                    .auth_application_service
+                                                    .get_user_by_id(Uuid::try_from(user).unwrap())
+                                                    .await
+                                                    .ok()
+                                                    && user.is_external
+                                                {
+                                                    let UserDto {
+                                                        id,
+                                                        username,
+                                                        email,
+                                                        role,
+                                                        ..
+                                                    } = user;
+
+                                                    let current_user = Arc::new(CurrentUser {
+                                                        id: Uuid::try_parse(&id).unwrap(),
+                                                        username: username
+                                                            .unwrap_or("".to_string())
+                                                            .into(),
+                                                        email: email.into(),
+                                                        role: role.into(),
+                                                        dpop_jkt: None,
+                                                    });
+                                                    request.extensions_mut().insert(current_user);
+                                                    request
+                                                        .extensions_mut()
+                                                        .insert(Arc::new(share));
+                                                    tracing::Span::current().record(
+                                                        "user_id",
+                                                        tracing::field::display(id),
+                                                    );
+                                                    return Ok(next.run(request).await);
+                                                }
+                                            };
+                                        }
+                                    }
+                                }
+
                                 return Ok(dav_basic_auth_challenge(
                                     "Invalid username or app password",
                                 ));

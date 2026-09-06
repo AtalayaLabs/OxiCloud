@@ -19,9 +19,6 @@ use quick_xml::Writer;
 use std::pin::Pin;
 use uuid::Uuid;
 
-use crate::application::adapters::webdav_adapter::{
-    LockInfo, PropFindRequest, PropPatchOp, QualifiedName, WebDavAdapter, is_protected_property,
-};
 use crate::application::dtos::display_helpers::intern_display;
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
@@ -33,6 +30,12 @@ use crate::application::ports::storage_ports::StorageUsagePort;
 use crate::application::services::file_retrieval_service::FileRetrievalService;
 use crate::application::services::file_upload_service::FileUploadService;
 use crate::application::services::folder_service::FolderService;
+use crate::application::{
+    adapters::webdav_adapter::{
+        LockInfo, PropFindRequest, PropPatchOp, QualifiedName, WebDavAdapter, is_protected_property,
+    },
+    dtos::share_dto::ShareDto,
+};
 use crate::common::di::AppState;
 use crate::domain::repositories::drive_repository::DriveRepository;
 use crate::domain::services::authorization::{Permission, Resource, Subject};
@@ -157,6 +160,10 @@ fn extract_user(req: &Request<Body>) -> Result<AuthUser, AppError> {
         .ok_or_else(|| AppError::unauthorized("Authentication required"))
 }
 
+fn extract_share(req: &Request<Body>) -> Option<Arc<ShareDto>> {
+    req.extensions().get::<Arc<ShareDto>>().cloned()
+}
+
 /**
  * Creates and returns the WebDAV router with all required endpoints.
  *
@@ -273,8 +280,66 @@ fn strip_prefix_slash<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
 async fn resolve_webdav_scope(
     state: &Arc<AppState>,
     user_id: Uuid,
+    share: Option<&ShareDto>,
     url_path: &str,
 ) -> Result<WebdavTarget, AppError> {
+    if let Some(share) = share {
+        return match share.item_type.as_ref() {
+            "folder" => {
+                let shared_folder = state
+                    .applications
+                    .folder_service
+                    .get_folder(&share.item_id)
+                    .await
+                    .map_err(|_| {
+                        AppError::not_found(format!("Resource not found: {}", url_path))
+                    })?;
+                let db_path = format!("{}/{url_path}", shared_folder.path);
+                Ok(WebdavTarget::Scope(DriveScope {
+                    drive_id: shared_folder.drive_id,
+                    db_path,
+                }))
+            }
+            "file" => {
+                let shared_file = state
+                    .applications
+                    .file_retrieval_service
+                    .get_file(&share.item_id)
+                    .await
+                    .map_err(|_| {
+                        AppError::not_found(format!("Resource not found: {}", url_path))
+                    })?;
+                let folder_id =
+                    shared_file
+                        .folder_id
+                        .as_ref()
+                        .ok_or(AppError::not_found(format!(
+                            "Resource not found: {}",
+                            url_path
+                        )))?;
+                let parent_folder = state
+                    .applications
+                    .folder_service
+                    .get_folder(folder_id)
+                    .await
+                    .map_err(|_| {
+                        AppError::not_found(format!("Resource not found: {}", url_path))
+                    })?;
+                let db_path = shared_file.path;
+                Ok(WebdavTarget::Scope(DriveScope {
+                    drive_id: parent_folder.drive_id,
+                    db_path,
+                }))
+            }
+            share_type => {
+                return Err(AppError::bad_request(format!(
+                    "ShareType not supported: {}",
+                    share_type
+                )));
+            }
+        };
+    };
+
     let drive_prefix = state
         .core
         .config
@@ -344,9 +409,10 @@ async fn resolve_webdav_scope(
 async fn resolve_webdav_scope_or_405(
     state: &Arc<AppState>,
     user_id: Uuid,
+    share: Option<&ShareDto>,
     url_path: &str,
 ) -> Result<DriveScope, AppError> {
-    match resolve_webdav_scope(state, user_id, url_path).await? {
+    match resolve_webdav_scope(state, user_id, share, url_path).await? {
         WebdavTarget::Scope(s) => Ok(s),
         WebdavTarget::ListDrives => Err(AppError::method_not_allowed(
             "Method not supported on the drive-listing pseudo-root",
@@ -504,6 +570,7 @@ async fn handle_propfind(
 
     // ── 2. Authenticate ──────────────────────────────────────────
     let user = extract_user(&req)?;
+    let share = extract_share(&req);
 
     // Client-facing path for href construction — must be extracted before
     // req.into_body() consumes the request. The `path` parameter already has
@@ -547,51 +614,52 @@ async fn handle_propfind(
     // drive scope or the synthetic drive-listing pseudo-root. Only
     // PROPFIND treats `ListDrives` as a valid target — other verbs use
     // `resolve_webdav_scope_or_405` which errors on that branch.
-    let (drive_id, path) = match resolve_webdav_scope(&state, user.id, &path).await? {
-        WebdavTarget::ListDrives => {
-            let root_folder = FolderDto {
-                id: "root".to_string(),
-                etag: "root".to_string(),
-                name: "".to_string(),
-                path: "".to_string(),
-                parent_id: None,
-                // Synthetic root — not a real DB row.
-                drive_id: Uuid::nil(),
-                created_at: Utc::now().timestamp() as u64,
-                modified_at: Utc::now().timestamp() as u64,
-                is_root: true,
-                icon_class: intern_display("fas fa-folder"),
-                icon_special_class: intern_display("folder-icon"),
-                category: intern_display("Folder"),
-                created_by: None,
-                updated_by: None,
-                // Synthetic root, not on the SPA path — safe default.
-                is_favorite: false,
-                is_shared: false,
-            };
-            // Skip the 2-query quota resolution when the request's prop list
-            // never mentions quota (benches/QUOTA-PATH.md).
-            let quota = if propfind_request.wants_quota() {
-                state.resolve_webdav_quota(user.id, Uuid::nil()).await
-            } else {
-                None
-            };
-            return build_streaming_propfind_response(
-                root_folder,
-                None, // folder_id = None → root children (drive-root folders)
-                &depth_owned,
-                &base_href,
-                propfind_request,
-                folder_service,
-                file_retrieval_service,
-                user.id,
-                state.webdav_dead_props.clone(),
-                quota,
-            )
-            .await;
-        }
-        WebdavTarget::Scope(scope) => (scope.drive_id, scope.db_path),
-    };
+    let (drive_id, path) =
+        match resolve_webdav_scope(&state, user.id, share.as_deref(), &path).await? {
+            WebdavTarget::ListDrives => {
+                let root_folder = FolderDto {
+                    id: "root".to_string(),
+                    etag: "root".to_string(),
+                    name: "".to_string(),
+                    path: "".to_string(),
+                    parent_id: None,
+                    // Synthetic root — not a real DB row.
+                    drive_id: Uuid::nil(),
+                    created_at: Utc::now().timestamp() as u64,
+                    modified_at: Utc::now().timestamp() as u64,
+                    is_root: true,
+                    icon_class: intern_display("fas fa-folder"),
+                    icon_special_class: intern_display("folder-icon"),
+                    category: intern_display("Folder"),
+                    created_by: None,
+                    updated_by: None,
+                    // Synthetic root, not on the SPA path — safe default.
+                    is_favorite: false,
+                    is_shared: false,
+                };
+                // Skip the 2-query quota resolution when the request's prop list
+                // never mentions quota (benches/QUOTA-PATH.md).
+                let quota = if propfind_request.wants_quota() {
+                    state.resolve_webdav_quota(user.id, Uuid::nil()).await
+                } else {
+                    None
+                };
+                return build_streaming_propfind_response(
+                    root_folder,
+                    None, // folder_id = None → root children (drive-root folders)
+                    &depth_owned,
+                    &base_href,
+                    propfind_request,
+                    folder_service,
+                    file_retrieval_service,
+                    user.id,
+                    state.webdav_dead_props.clone(),
+                    quota,
+                )
+                .await;
+            }
+            WebdavTarget::Scope(scope) => (scope.drive_id, scope.db_path),
+        };
 
     // Single-query path resolution: folder OR file in one DB round-trip.
     //
@@ -930,15 +998,17 @@ async fn handle_proppatch(
     path: String,
 ) -> Result<Response<Body>, AppError> {
     let user = extract_user(&req)?;
+    let share = extract_share(&req);
     // Client-facing path for href construction (without home folder prefix).
     let client_path = extract_webdav_path(req.uri());
     // Scope the URL → (drive_id, db_path). The synthetic drive-listing
     // pseudo-root has no DB row to anchor dead properties on; treat
     // it as an empty target and reject the PROPPATCH itself below.
-    let (drive_id, path) = match resolve_webdav_scope(&state, user.id, &path).await? {
-        WebdavTarget::ListDrives => (Uuid::nil(), String::new()),
-        WebdavTarget::Scope(scope) => (scope.drive_id, scope.db_path),
-    };
+    let (drive_id, path) =
+        match resolve_webdav_scope(&state, user.id, share.as_deref(), &path).await? {
+            WebdavTarget::ListDrives => (Uuid::nil(), String::new()),
+            WebdavTarget::Scope(scope) => (scope.drive_id, scope.db_path),
+        };
 
     // Active-lock guard (RFC 4918 §9.10.4): PROPPATCH writes properties,
     // so a lock on the target must release them via `If:`. Captured
@@ -1085,19 +1155,15 @@ async fn handle_get(
     path: String,
 ) -> Result<Response<Body>, AppError> {
     let user = extract_user(&req)?;
+    let share = extract_share(&req);
 
     // Get file service from state
     let file_retrieval_service = &state.applications.file_retrieval_service;
 
-    // Check if path is empty (root folder)
-    if path.is_empty() || path == "/" {
-        return Err(AppError::bad_request("Cannot GET a directory"));
-    }
-
     // `drive_id` is the path-lookup scope post-D0 (paths repeat across
     // drives), derived once from the caller's default drive and reused
     // by both the resolver + legacy fallback.
-    let scope = resolve_webdav_scope_or_405(&state, user.id, &path).await?;
+    let scope = resolve_webdav_scope_or_405(&state, user.id, share.as_deref(), &path).await?;
     let drive_id = scope.drive_id;
     let path = scope.db_path;
 
@@ -1209,6 +1275,7 @@ async fn handle_head(
     path: String,
 ) -> Result<Response<Body>, AppError> {
     let user = extract_user(&req)?;
+    let share = extract_share(&req);
     let file_retrieval_service = &state.applications.file_retrieval_service;
     let folder_service = &state.applications.folder_service;
 
@@ -1224,7 +1291,7 @@ async fn handle_head(
 
     // `drive_id` is the path-lookup scope post-D0 — derive once and
     // reuse across the resolver + fallback branches below.
-    let scope = resolve_webdav_scope_or_405(&state, user.id, &path).await?;
+    let scope = resolve_webdav_scope_or_405(&state, user.id, share.as_deref(), &path).await?;
     let drive_id = scope.drive_id;
     let path = scope.db_path;
 
@@ -1766,6 +1833,7 @@ async fn handle_put(
     use crate::interfaces::upload_ingest;
 
     let user = extract_user(&req)?;
+    let share = extract_share(&req);
 
     let file_upload_service = &state.applications.file_upload_service;
 
@@ -1808,7 +1876,7 @@ async fn handle_put(
     // `drive_id` is the path-lookup scope post-D0 — resolve once from
     // the caller's default drive, reused by the resolver checks below
     // and by the atomic-store call further down.
-    let scope = resolve_webdav_scope_or_405(&state, user.id, &path).await?;
+    let scope = resolve_webdav_scope_or_405(&state, user.id, share.as_deref(), &path).await?;
     let drive_id = scope.drive_id;
     let path = scope.db_path;
 
@@ -2212,6 +2280,7 @@ async fn handle_patch(
     use crate::interfaces::upload_ingest;
 
     let user = extract_user(&req)?;
+    let share = extract_share(&req);
     let file_upload_service = &state.applications.file_upload_service;
     let file_retrieval_service = &state.applications.file_retrieval_service;
 
@@ -2264,7 +2333,7 @@ async fn handle_patch(
         .to_string();
     let max_upload = state.core.config.storage.direct_put_max_bytes;
 
-    let scope = resolve_webdav_scope_or_405(&state, user.id, &path).await?;
+    let scope = resolve_webdav_scope_or_405(&state, user.id, share.as_deref(), &path).await?;
     let drive_id = scope.drive_id;
     let path = scope.db_path;
 
@@ -2410,6 +2479,7 @@ async fn handle_mkcol(
     path: String,
 ) -> Result<Response<Body>, AppError> {
     let user = extract_user(&req)?;
+    let share = extract_share(&req);
     let folder_service = &state.applications.folder_service;
 
     // Bare `/webdav/` handling: routed through `resolve_webdav_scope_or_405`
@@ -2457,7 +2527,7 @@ async fn handle_mkcol(
     // This handler only creates a single collection (the last path segment).
     // It does NOT auto-create intermediate ancestors ("mkdir -p" semantics
     // violate the RFC and were causing the test failures).
-    let scope = resolve_webdav_scope_or_405(&state, user.id, &path).await?;
+    let scope = resolve_webdav_scope_or_405(&state, user.id, share.as_deref(), &path).await?;
     let drive_id = scope.drive_id;
     let path = scope.db_path;
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
@@ -2587,6 +2657,7 @@ async fn handle_delete(
     path: String,
 ) -> Result<Response<Body>, AppError> {
     let user = extract_user(&req)?;
+    let share = extract_share(&req);
 
     // Refuse DELETE on the pseudo-root before any scope work — bare
     // `/webdav/` (empty-config drive listing OR classic-config default
@@ -2600,7 +2671,7 @@ async fn handle_delete(
     // registered the lock. Doing it in the reverse order (as before
     // the drive-scope refactor) silently defeated every LOCK because
     // the lock-store key mismatch made every DELETE look unlocked.
-    let scope = resolve_webdav_scope_or_405(&state, user.id, &path).await?;
+    let scope = resolve_webdav_scope_or_405(&state, user.id, share.as_deref(), &path).await?;
     let drive_id = scope.drive_id;
     let path = scope.db_path;
 
@@ -2684,6 +2755,7 @@ async fn handle_move(
     path: String,
 ) -> Result<Response<Body>, AppError> {
     let user = extract_user(&req)?;
+    let share = extract_share(&req);
     let source_path = path;
 
     // Captured up front so a rejected MOVE doesn't run any DB work.
@@ -2730,8 +2802,10 @@ async fn handle_move(
     // walk `storage.{folders,files}.path` need the RIGHT drive scope
     // for each side; we thread `src_drive_id` for source probes and
     // `dst_drive_id` for destination probes.
-    let src_scope = resolve_webdav_scope_or_405(&state, user.id, &source_path).await?;
-    let dst_scope = resolve_webdav_scope_or_405(&state, user.id, &destination_path).await?;
+    let src_scope =
+        resolve_webdav_scope_or_405(&state, user.id, share.as_deref(), &source_path).await?;
+    let dst_scope =
+        resolve_webdav_scope_or_405(&state, user.id, share.as_deref(), &destination_path).await?;
     let src_drive_id = src_scope.drive_id;
     let dst_drive_id = dst_scope.drive_id;
     let source_path = src_scope.db_path;
@@ -2981,6 +3055,7 @@ async fn handle_copy(
     path: String,
 ) -> Result<Response<Body>, AppError> {
     let user = extract_user(&req)?;
+    let share = extract_share(&req);
     let source_path = path;
 
     // Captured up front (cheap; used below for the destination lock guard).
@@ -3028,8 +3103,10 @@ async fn handle_copy(
     // Downstream probes need the right drive per side, so we thread
     // `src_drive_id` for source probes and `dst_drive_id` for
     // destination probes.
-    let src_scope = resolve_webdav_scope_or_405(&state, user.id, &source_path).await?;
-    let dst_scope = resolve_webdav_scope_or_405(&state, user.id, &destination_path).await?;
+    let src_scope =
+        resolve_webdav_scope_or_405(&state, user.id, share.as_deref(), &source_path).await?;
+    let dst_scope =
+        resolve_webdav_scope_or_405(&state, user.id, share.as_deref(), &destination_path).await?;
     let src_drive_id = src_scope.drive_id;
     let dst_drive_id = dst_scope.drive_id;
     let source_path = src_scope.db_path;
@@ -3231,6 +3308,7 @@ async fn handle_lock(
     path: String,
 ) -> Result<Response<Body>, AppError> {
     let user = extract_user(&req)?;
+    let share = extract_share(&req);
 
     // Scope resolution BEFORE the collection probe so `path` becomes
     // the drive-scoped DB path everywhere downstream — critically the
@@ -3243,7 +3321,7 @@ async fn handle_lock(
     let (drive_id, path) = if path.is_empty() || path == "/" {
         (Uuid::nil(), path)
     } else {
-        let scope = resolve_webdav_scope_or_405(&state, user.id, &path).await?;
+        let scope = resolve_webdav_scope_or_405(&state, user.id, share.as_deref(), &path).await?;
         (scope.drive_id, scope.db_path)
     };
 
@@ -3460,6 +3538,7 @@ async fn handle_unlock(
     path: String,
 ) -> Result<Response<Body>, AppError> {
     let user = extract_user(&req)?;
+    let share = extract_share(&req);
 
     // Get lock token from Lock-Token header
     let lock_token = req
@@ -3519,7 +3598,7 @@ async fn handle_unlock(
         && !path.is_empty()
         && path != "/"
     {
-        let scope = resolve_webdav_scope_or_405(&state, user.id, &path).await?;
+        let scope = resolve_webdav_scope_or_405(&state, user.id, share.as_deref(), &path).await?;
         let drive_id = scope.drive_id;
         let db_path = scope.db_path;
         if let Some(resource) = match resolve_or_legacy(&state, &db_path, drive_id).await {
