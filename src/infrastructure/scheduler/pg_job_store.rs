@@ -327,6 +327,56 @@ impl JobStore for PgJobStore {
         Ok(())
     }
 
+    async fn mark_paused_retryable(
+        &self,
+        cursor: Option<Vec<u8>>,
+        reason: &str,
+    ) -> Result<(), DomainError> {
+        // `status = 'Paused'`, so resume is the same operation an
+        // operator pause produces — the only difference is that
+        // `error_message` is populated, which is what lets the panel say
+        // WHY it stopped. `completed_at` stays NULL: the run is not
+        // over.
+        //
+        // One statement per cursor shape, matching `mark_paused`: a
+        // COALESCE would overwrite a real cursor with NULL when the
+        // handler had not advanced since the last checkpoint.
+        if let Some(c) = cursor {
+            sqlx::query(
+                r#"
+                UPDATE jobs.recoverable_runs
+                   SET status           = 'Paused',
+                       cursor           = $2,
+                       error_message    = $3,
+                       last_progress_at = NOW()
+                 WHERE id = $1
+                "#,
+            )
+            .bind(self.run_id)
+            .bind(&c[..])
+            .bind(reason)
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| map_sqlx_err("mark_paused_retryable", e))?;
+        } else {
+            sqlx::query(
+                r#"
+                UPDATE jobs.recoverable_runs
+                   SET status           = 'Paused',
+                       error_message    = $2,
+                       last_progress_at = NOW()
+                 WHERE id = $1
+                "#,
+            )
+            .bind(self.run_id)
+            .bind(reason)
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| map_sqlx_err("mark_paused_retryable", e))?;
+        }
+        Ok(())
+    }
+
     async fn mark_failed(&self, message: &str) -> Result<(), DomainError> {
         sqlx::query(
             r#"

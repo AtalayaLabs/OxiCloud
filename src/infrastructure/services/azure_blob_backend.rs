@@ -143,9 +143,10 @@ impl BlobStorageBackend for AzureBlobBackend {
             })?;
             let file_size = data.len() as u64;
 
-            client.put_block_blob(data).await.map_err(|e| {
-                DomainError::internal_error("Azure", format!("Failed to upload blob {hash}: {e}"))
-            })?;
+            client
+                .put_block_blob(data)
+                .await
+                .map_err(|e| azure_domain_error(format!("Failed to upload blob {hash}"), &e))?;
 
             let _ = fs::remove_file(&source_path).await;
             Ok(file_size)
@@ -169,9 +170,10 @@ impl BlobStorageBackend for AzureBlobBackend {
 
             // `Bytes` converts into `azure_core::Body` by reference count —
             // the old `data.to_vec()` copied every chunk once more.
-            client.put_block_blob(data).await.map_err(|e| {
-                DomainError::internal_error("Azure", format!("Failed to upload blob {hash}: {e}"))
-            })?;
+            client
+                .put_block_blob(data)
+                .await
+                .map_err(|e| azure_domain_error(format!("Failed to upload blob {hash}"), &e))?;
 
             Ok(size)
         })
@@ -190,9 +192,10 @@ impl BlobStorageBackend for AzureBlobBackend {
         Box::pin(async move {
             let client = self.blob_client(&hash);
             let size = data.len() as u64;
-            client.put_block_blob(data).await.map_err(|e| {
-                DomainError::internal_error("Azure", format!("Failed to upload blob {hash}: {e}"))
-            })?;
+            client
+                .put_block_blob(data)
+                .await
+                .map_err(|e| azure_domain_error(format!("Failed to upload blob {hash}"), &e))?;
             Ok(size)
         })
     }
@@ -371,9 +374,9 @@ impl BlobStorageBackend for AzureBlobBackend {
                     if status == Some(azure_core::StatusCode::NotFound) {
                         Ok(())
                     } else {
-                        Err(DomainError::internal_error(
-                            "Azure",
-                            format!("Failed to delete blob {hash}: {e}"),
+                        Err(azure_domain_error(
+                            format!("Failed to delete blob {hash}"),
+                            &e,
                         ))
                     }
                 }
@@ -558,12 +561,16 @@ impl BlobStorageBackend for AzureBlobBackend {
 
                 while let Some(page) = pages.next().await {
                     let page = page.map_err(|e| {
-                        DomainError::internal_error(
-                            "Blob",
+                        // Classified: `backend_consistency` fails the whole
+                        // run on an enumeration error, so a throttle
+                        // partway through the 256-shard walk should be
+                        // retryable rather than discarding the sweep.
+                        azure_domain_error(
                             format!(
-                                "Azure ListBlobs failed on shard {shard:02x} of container '{}': {e}",
+                                "Azure ListBlobs failed on shard {shard:02x} of container '{}'",
                                 self.container_name
                             ),
+                            &e,
                         )
                     })?;
 
@@ -651,6 +658,50 @@ impl BlobStorageBackend for AzureBlobBackend {
 
     fn local_blob_path(&self, _hash: &str) -> Option<PathBuf> {
         None
+    }
+}
+
+/// Wrap an `azure_core` error as a `DomainError` that says whether
+/// retrying it could help. Azure counterpart of `s3_domain_error`.
+///
+/// `azure_core::error::ErrorKind::HttpResponse` carries the status, so
+/// this works on the archived 0.21 SDK — no need to wait for the
+/// official-crate migration. That matters because Azure is the backend
+/// the retry-then-pause plan was written for: a ranged GET carrying
+/// `x-ms-range-get-content-crc64` that Azurite answers 500 to, retried
+/// forever by `azure_core` while `migration_readonly` refused writes
+/// application-wide.
+///
+/// Transient: 5xx, 429, 408. Also `Io` — connection resets, DNS, TLS.
+/// Permanent: other 4xx (credentials, missing container, malformed
+/// request), `DataConversion`, `Credential`.
+///
+/// **A deterministic 500 still classifies as transient**, and that is
+/// deliberate rather than an oversight. Nothing at this layer can tell
+/// "this provider is briefly unwell" from "this provider will answer
+/// 500 to this exact request forever" — the Azurite CRC64 case is the
+/// second wearing the clothes of the first. So the policy is to retry
+/// as if transient and let the bounded attempt cap turn the difference
+/// into a Paused run an operator can act on.
+pub(crate) fn azure_domain_error(context: String, err: &azure_core::Error) -> DomainError {
+    use azure_core::error::ErrorKind as AzKind;
+
+    let transient = match err.kind() {
+        AzKind::HttpResponse { status, .. } => {
+            let code = u16::from(*status);
+            code >= 500 || code == 429 || code == 408
+        }
+        AzKind::Io => true,
+        AzKind::DataConversion | AzKind::Credential | AzKind::MockFramework | AzKind::Other => {
+            false
+        }
+    };
+
+    let message = format!("{context}: {err}");
+    if transient {
+        DomainError::transient_backend("Azure", message)
+    } else {
+        DomainError::internal_error("Azure", message)
     }
 }
 

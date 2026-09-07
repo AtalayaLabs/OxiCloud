@@ -157,6 +157,32 @@ pub enum RunOutcome {
     Paused {
         cursor: Vec<u8>,
     },
+    /// The ENVIRONMENT failed after a bounded number of attempts, and
+    /// this is worth trying again later.
+    ///
+    /// Lands as `Paused` in the row, so resume works unchanged. What
+    /// differs is `error_message`: an operator has to be able to tell "I
+    /// paused this" from "the provider went down", and a paused run with
+    /// no explanation is an unexplained one.
+    ///
+    /// Distinct from both neighbours, and the distinction is the point:
+    ///
+    /// | outcome | meaning | resumes? |
+    /// |---|---|---|
+    /// | `Failed` | the data or the request is wrong | no — terminal |
+    /// | `Paused` | an operator asked it to stop | yes |
+    /// | `PausedRetryable` | the environment failed | yes, and says why |
+    ///
+    /// Reached only after the handler has already retried — see
+    /// `retry_transient` — because a single transient error is not news.
+    /// The cap exists because no status-based taxonomy can tell a
+    /// deterministic 5xx from a passing one (Azurite answers 500 to a
+    /// CRC64 ranged GET, every time), so the policy is deliberately
+    /// "retry as if transient, then hand the decision to a human".
+    PausedRetryable {
+        cursor: Vec<u8>,
+        reason: String,
+    },
     Failed {
         message: String,
     },
@@ -553,6 +579,27 @@ pub trait JobStore: Send + Sync {
     /// [`RunOutcome::Paused`]. `cursor` = the resume key the handler
     /// returned. Handler code MUST NOT call this.
     async fn mark_paused(&self, cursor: Option<Vec<u8>>) -> Result<(), DomainError>;
+
+    /// Engine-only. Called by [`run_or_resume`] on
+    /// [`RunOutcome::PausedRetryable`]. Handler code MUST NOT call this.
+    ///
+    /// Writes `status = Paused` — so resume is the same operation — plus
+    /// `error_message = reason`. The reason is the whole point: without
+    /// it the panel cannot distinguish an operator pause from a provider
+    /// outage, and a paused migration holding `migration_readonly` looks
+    /// like someone forgot about it.
+    ///
+    /// Separate method rather than an extra argument on
+    /// [`Self::mark_paused`] because the two carry different meaning and
+    /// only one of them writes `error_message`. A `reason: Option<&str>`
+    /// parameter would let a caller write a Paused row with an
+    /// error message and no error, which is the state this exists to
+    /// distinguish from.
+    async fn mark_paused_retryable(
+        &self,
+        cursor: Option<Vec<u8>>,
+        reason: &str,
+    ) -> Result<(), DomainError>;
 
     /// Engine-only. Called by [`run_or_resume`] on
     /// [`RunOutcome::Failed`]. Handler code MUST NOT call this.
@@ -1018,6 +1065,47 @@ pub async fn run_or_resume(
                 )
             }
         }
+        RunOutcome::PausedRetryable { cursor, reason } => {
+            let cursor_hex = hex::encode(&cursor);
+            log_terminal_write_err(
+                "mark_paused_retryable",
+                run_id,
+                store.mark_paused_retryable(Some(cursor), &reason).await,
+            );
+            // Audited, not merely logged. Writes are refused app-wide
+            // while `backend_migration` holds `migration_readonly`, so a
+            // run that stopped on a provider outage is an operational
+            // event someone has to act on — and "why is the app
+            // read-only" must be answerable afterwards.
+            tracing::info!(
+                target: "audit",
+                event = "job.paused_retryable",
+                reason = "backend_unavailable",
+                job = %job.name(),
+                run_id = %run_id,
+                cursor_hex = %cursor_hex,
+                detail = %reason,
+                "👮🏻‍♂️ `{}` paused after exhausting retries: {reason}",
+                job.name(),
+            );
+            // `ok`, not `err`: the run did not fail, it stopped and can
+            // be resumed. Reporting it as an error would put a red job
+            // in the panel that a Resume click fixes, which reads as a
+            // bug rather than as a decision waiting to be made.
+            JobOutcome::ok_with(
+                stats.finding_count,
+                serde_json::json!({
+                    "paused":            true,
+                    "retryable":         true,
+                    "reason":            reason,
+                    "run_id":            run_id.to_string(),
+                    "cursor_hex":        cursor_hex,
+                    "finding_count":     stats.finding_count,
+                    "scanned_count":     stats.scanned_count,
+                    "severity_counts":   stats.by_severity,
+                }),
+            )
+        }
         RunOutcome::Failed { message } => {
             log_terminal_write_err("mark_failed", run_id, store.mark_failed(&message).await);
             JobOutcome::err(format!("{message} (run_id={run_id})"))
@@ -1335,6 +1423,23 @@ mod tests {
         async fn mark_paused(&self, cursor: Option<Vec<u8>>) -> Result<(), DomainError> {
             let mut s = self.state.lock().unwrap();
             s.status = RunStatus::Paused;
+            if let Some(c) = cursor {
+                s.cursor = Some(c);
+            }
+            Ok(())
+        }
+        async fn mark_paused_retryable(
+            &self,
+            cursor: Option<Vec<u8>>,
+            reason: &str,
+        ) -> Result<(), DomainError> {
+            let mut s = self.state.lock().unwrap();
+            s.status = RunStatus::Paused;
+            // Both, deliberately: Paused so resume works, `error_message`
+            // so a test can assert the two pause shapes are
+            // distinguishable — which is the whole reason the variant
+            // exists.
+            s.error_message = Some(reason.to_string());
             if let Some(c) = cursor {
                 s.cursor = Some(c);
             }
