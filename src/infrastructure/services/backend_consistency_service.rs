@@ -506,12 +506,18 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                     // Whether the enumeration died on page 1 or page 900,
                     // the audit did not complete, and the operator needs to
                     // know that rather than read a green run.
-                    return RunOutcome::Failed {
-                        message: format!(
-                            "backend enumeration failed on {}: {e}",
-                            backend.backend_type()
-                        ),
-                    };
+                    // Transient (throttle, 5xx, connection reset) pauses at
+                    // the cursor so a resume continues the sweep;
+                    // everything else fails terminally. Losing a
+                    // half-finished audit of a million-object bucket to a
+                    // brief 503 is the case this distinction exists for —
+                    // the retry decorator has already given up by the time
+                    // the error arrives here.
+                    return RunOutcome::from_domain_error(
+                        cursor.as_ref().map(|s| s.as_bytes()),
+                        &format!("backend enumeration failed on {}", backend.backend_type()),
+                        &e,
+                    );
                 }
             };
 

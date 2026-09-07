@@ -223,6 +223,56 @@ impl RunOutcome {
             ),
         }
     }
+
+    /// Turn a failed operation into the right outcome:
+    /// [`RunOutcome::PausedRetryable`] when the error is transient,
+    /// [`RunOutcome::Failed`] otherwise.
+    ///
+    /// **This is where step 1's classification pays off.** Handlers
+    /// should route every backend error through here rather than
+    /// reaching for `Failed` directly, so "the provider is down" stops a
+    /// long scan at its cursor instead of discarding it.
+    ///
+    /// `cursor` is the resume position — normally the same value the
+    /// handler last checkpointed. Pass `None` only when nothing has been
+    /// settled yet; the run then resumes from the beginning.
+    ///
+    /// # Why the engine does not add its own retry loop
+    ///
+    /// The plan sketched bounded backoff *here*. Measuring first showed
+    /// two layers already exist below: the AWS SDK retries internally,
+    /// and `RetryBlobBackend` wraps every remote backend with its own
+    /// exponential backoff (defaults: 3 retries, 100 ms, ×2, 10 s cap —
+    /// all env-tunable). A third layer would multiply, not add: one
+    /// logical operation could span SDK × decorator × engine attempts,
+    /// turning a brief outage into minutes of held `migration_readonly`.
+    ///
+    /// The plan anticipated exactly this — "do not double-retry … the
+    /// AWS SDK already retries internally, so a second layer above it
+    /// multiplies" — so the retrying stays where it already is, at the
+    /// operation, and the engine supplies the part that was genuinely
+    /// missing: converting an exhausted-retry failure into a resumable
+    /// pause with a reason instead of a terminal `Failed`.
+    ///
+    /// Retrying at this level would also mean re-running a scan, not an
+    /// operation. Tuning attempts belongs in
+    /// `OXICLOUD_STORAGE_RETRY_*`, where it applies per request.
+    pub fn from_domain_error(
+        cursor: Option<&[u8]>,
+        context: &str,
+        err: &crate::domain::errors::DomainError,
+    ) -> Self {
+        if err.is_transient() {
+            RunOutcome::PausedRetryable {
+                cursor: cursor.map(<[u8]>::to_vec).unwrap_or_default(),
+                reason: format!("{context}: {err}"),
+            }
+        } else {
+            RunOutcome::Failed {
+                message: format!("{context}: {err}"),
+            }
+        }
+    }
 }
 
 /// Write `JobRunArgs` to `params` on a Fresh run, or read them back on a
@@ -1515,6 +1565,16 @@ mod tests {
                 .last()
                 .and_then(|s| s.state.lock().unwrap().cursor.clone())
         }
+
+        /// Test-only read — last-created run's `error_message`. What
+        /// separates an operator pause from a provider outage: both are
+        /// `Paused`, only one carries a reason.
+        fn last_error_message(&self) -> Option<String> {
+            let stores = self.stores.lock().unwrap();
+            stores
+                .last()
+                .and_then(|s| s.state.lock().unwrap().error_message.clone())
+        }
     }
 
     #[async_trait]
@@ -1739,6 +1799,51 @@ mod tests {
 
     // ─── Handlers ──────────────────────────────────────────────────────────
 
+    /// Hits a transient backend error partway through, exactly as a
+    /// remote backend does once its own retry decorator has given up.
+    struct TransientlyFailingHandler;
+    #[async_trait]
+    impl RecoverableJobHandler for TransientlyFailingHandler {
+        fn name(&self) -> &str {
+            "transient_failer"
+        }
+        async fn run_resumable(
+            &self,
+            store: &dyn JobStore,
+            _args: &JobRunArgs,
+            _resume_cursor: Option<Vec<u8>>,
+        ) -> RunOutcome {
+            store.checkpoint(vec![9, 9], 3).await.unwrap();
+            RunOutcome::from_domain_error(
+                Some(&[9, 9]),
+                "backend enumeration failed on s3",
+                &crate::domain::errors::DomainError::transient_backend("S3", "503 SlowDown"),
+            )
+        }
+    }
+
+    /// Same shape, but a permanent fault — the control that proves the
+    /// classification is doing the work rather than everything pausing.
+    struct PermanentlyFailingHandler;
+    #[async_trait]
+    impl RecoverableJobHandler for PermanentlyFailingHandler {
+        fn name(&self) -> &str {
+            "permanent_failer"
+        }
+        async fn run_resumable(
+            &self,
+            _store: &dyn JobStore,
+            _args: &JobRunArgs,
+            _resume_cursor: Option<Vec<u8>>,
+        ) -> RunOutcome {
+            RunOutcome::from_domain_error(
+                Some(&[9, 9]),
+                "backend enumeration failed on s3",
+                &crate::domain::errors::DomainError::internal_error("S3", "403 AccessDenied"),
+            )
+        }
+    }
+
     struct CompletingHandler;
     #[async_trait]
     impl RecoverableJobHandler for CompletingHandler {
@@ -1889,6 +1994,69 @@ mod tests {
             assert!(extra["run_id"].is_string());
         }
         assert_eq!(provider.last_status(), Some(RunStatus::Completed));
+    }
+
+    /// A transient backend failure must PAUSE with a reason, not fail.
+    ///
+    /// This is the whole point of the plan: `Failed` is terminal, so an
+    /// outage used to discard a partially-complete migration. The run has
+    /// to keep its cursor and stay resumable, and it has to say why it
+    /// stopped — a paused `backend_migration` still holds
+    /// `migration_readonly`, refusing writes application-wide, so
+    /// "someone paused this" and "the provider went down" cannot look
+    /// alike.
+    #[tokio::test]
+    async fn transient_failure_pauses_with_a_reason_and_keeps_the_cursor() {
+        let provider = Arc::new(MemProvider::new());
+        let provider_trait: Arc<dyn JobStoreProvider> = provider.clone();
+
+        let outcome = run_or_resume(
+            Arc::new(TransientlyFailingHandler),
+            provider_trait,
+            &JobRunArgs::default(),
+        )
+        .await;
+
+        // Reported Ok, not Err: the run did not fail, it stopped and can
+        // be resumed. A red job that a Resume click fixes reads as a bug
+        // rather than a decision waiting to be made.
+        assert!(outcome.is_ok(), "expected Ok, got {outcome:?}");
+        if let JobOutcome::Ok { extra, .. } = outcome {
+            assert_eq!(extra["paused"], true);
+            assert_eq!(extra["retryable"], true);
+            assert!(
+                extra["reason"].as_str().unwrap().contains("503"),
+                "the reason must reach the panel: {extra:?}"
+            );
+        }
+
+        assert_eq!(provider.last_status(), Some(RunStatus::Paused));
+        assert_eq!(
+            provider.last_cursor(),
+            Some(vec![9, 9]),
+            "resume position must survive, or the outage costs the whole scan"
+        );
+        let msg = provider.last_error_message().expect("reason recorded");
+        assert!(msg.contains("503"), "error_message names the cause: {msg}");
+    }
+
+    /// The control: a permanent fault still fails terminally. Without
+    /// this the classification could be doing nothing and everything
+    /// would simply pause, which looks like success in the test above.
+    #[tokio::test]
+    async fn permanent_failure_still_fails_terminally() {
+        let provider = Arc::new(MemProvider::new());
+        let provider_trait: Arc<dyn JobStoreProvider> = provider.clone();
+
+        let outcome = run_or_resume(
+            Arc::new(PermanentlyFailingHandler),
+            provider_trait,
+            &JobRunArgs::default(),
+        )
+        .await;
+
+        assert!(!outcome.is_ok(), "a 403 must not be retried forever");
+        assert_eq!(provider.last_status(), Some(RunStatus::Failed));
     }
 
     #[tokio::test]
