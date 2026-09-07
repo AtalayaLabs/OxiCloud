@@ -516,8 +516,32 @@
 		}
 	}
 
+	// A run that stopped because the backend was unreachable, rather than
+	// because an operator asked it to stop.
+	//
+	// It reports `outcome: 'ok'` on the wire — correctly, since it did
+	// not fail and a Resume continues it — but rendering that as a plain
+	// green "ok" hides the thing worth acting on. A paused
+	// `backend_migration` is still holding `migration_readonly` and
+	// refusing writes across the whole app; the row has to say so.
+	function stoppedOnBackendFailure(job: JobSummary): boolean {
+		return job.last_outcome?.outcome === 'ok' && job.last_outcome.extra?.retryable === true;
+	}
+
+	function backendFailureReason(job: JobSummary): string | undefined {
+		if (job.last_outcome?.outcome !== 'ok') return undefined;
+		const reason = job.last_outcome.extra?.reason;
+		return typeof reason === 'string' ? reason : undefined;
+	}
+
 	function outcomeLabel(job: JobSummary): string {
 		if (!job.last_outcome) return t('admin.jobs.never', 'never');
+		// Checked before the findings branches: a run that never finished
+		// has nothing meaningful to say about findings, and "0 issues" on
+		// an aborted scan is a worse answer than "blocked".
+		if (stoppedOnBackendFailure(job)) {
+			return t('admin.jobs.outcome_blocked', 'blocked');
+		}
 		if (job.last_outcome.outcome === 'ok') {
 			// `ok` on the wire = dispatch completed. If any actionable
 			// findings surfaced, we flip to "issues" (amber). If only
@@ -538,6 +562,14 @@
 		if (!job.last_outcome) return 'jobs-panel__pill jobs-panel__pill--neutral';
 		if (job.last_outcome.outcome !== 'ok') {
 			return 'jobs-panel__pill jobs-panel__pill--err';
+		}
+		// Amber, not red: nothing is broken and no data was lost — the
+		// run is waiting for the backend to come back and a Resume
+		// continues it. Red would read as "this job is failing" and
+		// invite a cancel, which for a migration also throws away the
+		// copy already done.
+		if (stoppedOnBackendFailure(job)) {
+			return 'jobs-panel__pill jobs-panel__pill--paused';
 		}
 		if (actionableFindingCount(job) > 0) {
 			return 'jobs-panel__pill jobs-panel__pill--paused';
@@ -912,7 +944,14 @@
 						<td class="jobs-panel__muted">{timeAgo(job.last_run_at)}</td>
 						<td>
 							<div class="jobs-panel__outcome-cell">
-								<span class={outcomeClass(job)}>{outcomeLabel(job)}</span>
+								<!-- The reason is on the pill itself, not only in the
+								     expanded drawer: it is the whole content of a
+								     "blocked" row, and folding it away is what made a
+								     migration paused by an unreachable endpoint read as
+								     a plain green "ok". -->
+								<span class={outcomeClass(job)} title={backendFailureReason(job)}
+									>{outcomeLabel(job)}</span
+								>
 								{#if actionableFindingCount(job) > 0}
 									{@const findings = actionableFindingCount(job)}
 									<span

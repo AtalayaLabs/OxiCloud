@@ -597,8 +597,32 @@ export interface FolderAncestorsResponse {
  * discriminant is the `outcome` field, not the object key.
  */
 export type JobOutcome =
-	| { outcome: 'ok'; count: number; extra?: unknown }
+	| { outcome: 'ok'; count: number; extra?: JobOutcomeExtra }
 	| { outcome: 'err'; message: string };
+
+/**
+ * The parts of a job outcome's free-form `extra` the panel reads.
+ *
+ * Deliberately narrow — most keys are per-job counters nothing generic
+ * should switch on. These three describe the RUN's shape rather than
+ * its work, and the panel has to render them:
+ *
+ * A run that stopped because the backend was unreachable reports
+ * `outcome: 'ok'` — it did not fail, it paused and can be resumed. Read
+ * alone that renders as a green "ok" pill, which is exactly wrong: a
+ * paused `backend_migration` still holds `migration_readonly` and is
+ * refusing writes application-wide. `retryable` is what lets the row
+ * say so.
+ */
+export interface JobOutcomeExtra {
+	/** The run stopped at its cursor and can be resumed. */
+	paused?: boolean;
+	/** It stopped because the ENVIRONMENT failed, not because an
+	 *  operator asked — `reason` says what. */
+	retryable?: boolean;
+	reason?: string;
+	[key: string]: unknown;
+}
 
 /**
  * `JobSummary` — one row per registered job in `GET /api/admin/jobs`.
