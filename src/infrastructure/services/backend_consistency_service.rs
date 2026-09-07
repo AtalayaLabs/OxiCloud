@@ -635,6 +635,11 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
 
             let mut bi = page.blobs.iter().peekable();
             let mut di = db_hashes.iter().peekable();
+            // Highest hash fully handled in THIS batch — findings
+            // recorded, bytes verified if deep. A mid-batch pause resumes
+            // here, so it must only advance once an arm is finished with
+            // its item, never on entry.
+            let mut settled: Option<String> = None;
             loop {
                 match (bi.peek(), di.peek()) {
                     // Present on both sides. Shallow: nothing to say — the
@@ -648,37 +653,62 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                     // verified then.
                     (Some(b), Some(d)) if b.hash == **d => {
                         if deep && in_range(&b.hash) {
-                            // Cancel poll INSIDE the verify loop. The
-                            // per-batch poll above bounds latency by one
-                            // batch, which is ~63 s of remote reads in
-                            // deep mode — a minute of an apparently
-                            // ignored Cancel on a run that may last
-                            // hours. Pausing here is safe and cheap: the
-                            // cursor still points at the last completed
-                            // batch, so resume re-verifies this batch's
-                            // handful of blobs rather than skipping them.
+                            // Cancel poll INSIDE the verify loop, because
+                            // the per-batch poll bounds latency by one
+                            // batch — ~63 s of remote reads in deep mode,
+                            // a minute of an apparently ignored Cancel on
+                            // a run that may last hours.
+                            //
+                            // Pauses at `settled`, the last pair fully
+                            // handled, NOT at the batch's start cursor.
+                            // The merge-join walks both sides in
+                            // ascending hash order, so everything at or
+                            // below `settled` has had its findings
+                            // recorded and its bytes verified — resuming
+                            // there re-does one pair, not five hundred.
+                            //
+                            // The batch-start cursor would have been
+                            // correct but wasteful: in the FIRST batch it
+                            // is empty, so a pause 27 s into a 63 s batch
+                            // threw away the whole scan.
                             if verified_count.is_multiple_of(DEEP_CANCEL_POLL_EVERY)
                                 && matches!(store.status().await, Ok(RunStatus::CancelRequested))
                             {
+                                let resume_at = settled.clone().or_else(|| cursor.clone());
                                 tracing::info!(
                                     target: "oxicloud::consistency",
                                     event = "backend_consistency.cancelled_mid_verify",
                                     run_id = %store.run_id(),
                                     verified = verified_count,
-                                    "deep verify cancelled mid-batch, pausing at the last checkpoint"
+                                    resume_at = resume_at.as_deref().unwrap_or("<start>"),
+                                    "deep verify cancelled mid-batch, pausing at the last settled hash"
                                 );
-                                return RunOutcome::Paused {
-                                    cursor: cursor
-                                        .as_ref()
-                                        .map(|s| s.as_bytes().to_vec())
-                                        .unwrap_or_default(),
-                                };
+                                // Checkpoint so the cursor survives even
+                                // if the engine's Paused write races a
+                                // restart; `scanned_count` is already
+                                // counted per batch, so add nothing here.
+                                let bytes = resume_at
+                                    .as_ref()
+                                    .map(|s| s.as_bytes().to_vec())
+                                    .unwrap_or_default();
+                                if let Err(e) = store.checkpoint(bytes.clone(), 0).await {
+                                    tracing::warn!(
+                                        target: "oxicloud::consistency",
+                                        event = "backend_consistency.pause_checkpoint_failed",
+                                        run_id = %store.run_id(),
+                                        error = %e,
+                                        "could not persist the mid-batch cursor; resume will \
+                                         restart from the previous batch"
+                                    );
+                                }
+                                return RunOutcome::Paused { cursor: bytes };
                             }
                             verified_count += 1;
                             finding_count += self
                                 .verify_bytes(store, verify_backend.as_ref(), &b.hash)
                                 .await;
                         }
+                        settled = Some(b.hash.clone());
                         bi.next();
                         di.next();
                     }
@@ -707,6 +737,7 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                             )
                             .await;
                         }
+                        settled = Some(b.hash.clone());
                         bi.next();
                     }
                     // DB-only: a row whose bytes are gone. Severity is
@@ -729,6 +760,7 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                             }),
                         )
                         .await;
+                        settled = Some((*d).clone());
                         di.next();
                     }
                     // Past the horizon on both sides, or both exhausted.
