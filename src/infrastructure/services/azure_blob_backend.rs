@@ -393,9 +393,13 @@ impl BlobStorageBackend for AzureBlobBackend {
                     if status == Some(azure_core::StatusCode::NotFound) {
                         Ok(false)
                     } else {
-                        Err(DomainError::internal_error(
-                            "Azure",
-                            format!("Failed to check blob {hash}: {e}"),
+                        // Only the 404 means "absent"; everything else keeps
+                        // its transient/permanent class so the migration's
+                        // source probe can pause on an outage instead of
+                        // recording a permanent finding.
+                        Err(azure_domain_error(
+                            format!("Failed to check blob {hash}"),
+                            &e,
                         ))
                     }
                 }

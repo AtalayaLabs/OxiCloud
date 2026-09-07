@@ -405,15 +405,17 @@ impl BlobStorageBackend for S3BlobBackend {
             {
                 Ok(_) => Ok(true),
                 Err(e) => {
-                    // Check if it's a 404 (not found) vs an actual error
-                    let service_err = e.into_service_error();
-                    if service_err.is_not_found() {
+                    // A 404 is the only answer that means "absent". Classify
+                    // before consuming the SdkError so everything else keeps
+                    // its transient/permanent class: this is the migration's
+                    // source probe, and a refused connection reported as a
+                    // plain failure would be treated as permanent.
+                    let classified =
+                        s3_domain_error("S3", format!("Failed to check blob {hash}"), &e);
+                    if e.into_service_error().is_not_found() {
                         Ok(false)
                     } else {
-                        Err(DomainError::internal_error(
-                            "S3",
-                            format!("Failed to check blob {}: {}", hash, service_err),
-                        ))
+                        Err(classified)
                     }
                 }
             }
