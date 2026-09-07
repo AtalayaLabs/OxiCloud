@@ -378,9 +378,11 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
             },
         };
         if let Err(e) = backend.initialize().await {
-            return RunOutcome::Failed {
-                message: format!("probed backend init: {e}"),
-            };
+            // Nothing has been scanned yet, so there is no cursor to keep
+            // — but the distinction still matters: an unreachable endpoint
+            // pauses and can be resumed once it is back, while a wrong
+            // bucket or bad credentials stays terminal.
+            return RunOutcome::from_domain_error(None, "probed backend init", &e);
         }
         if let Some(name) = &probed_storage {
             tracing::info!(

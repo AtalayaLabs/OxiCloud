@@ -452,9 +452,11 @@ impl RecoverableJobHandler for BackendMigrationService {
         // for the swap-hot-swap call in `finish_completed`.
         let target = build_entry_backend_typed(target_entry, &self.storage_path_fallback);
         if let Err(e) = target.initialize().await {
-            return RunOutcome::Failed {
-                message: format!("target backend init: {e}"),
-            };
+            // Runs BEFORE `migration_readonly` is engaged, so pausing
+            // here holds no write freeze — an operator can leave it
+            // paused indefinitely and resume when the target comes back.
+            // A wrong bucket or bad credentials still fails terminally.
+            return RunOutcome::from_domain_error(None, "target backend init", &e);
         }
 
         // All guards passed. Engage server-wide read-only mode for

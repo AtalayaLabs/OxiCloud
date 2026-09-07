@@ -105,10 +105,14 @@ impl BlobStorageBackend for S3BlobBackend {
                 .send()
                 .await
                 .map_err(|e| {
-                    DomainError::internal_error(
-                        "S3",
-                        format!("Cannot access bucket '{}': {}", self.bucket, e),
-                    )
+                    // Classified like every other SDK call. A refused
+                    // connection or a 5xx here is the endpoint being
+                    // down, not the configuration being wrong, and the
+                    // jobs that call `initialize()` should pause rather
+                    // than fail on it. A genuine misconfiguration —
+                    // wrong bucket, bad credentials — still lands as 4xx
+                    // and stays terminal.
+                    s3_domain_error("S3", format!("Cannot access bucket '{}'", self.bucket), &e)
                 })?;
 
             tracing::info!("S3 blob backend initialized: bucket={}", self.bucket);
