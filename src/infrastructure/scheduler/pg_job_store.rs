@@ -874,10 +874,18 @@ impl PgJobStoreProvider {
                         // In practice this is a rare edge case that
                         // ONLY hits if two admin triggers land in
                         // the same microsecond.
+                        //
+                        // `error_message` is cleared here: it records why
+                        // the LAST attempt stopped, so carrying it past a
+                        // resume leaves a Completed run still displaying a
+                        // transient error it recovered from — a failure
+                        // that did not happen. Same stale-state shape as
+                        // the read-only banner outliving its migration.
                         let row: Option<(DateTime<Utc>, Option<Vec<u8>>)> = sqlx::query_as(
                             r#"
                             UPDATE jobs.recoverable_runs
                                SET status           = 'Running',
+                                   error_message    = NULL,
                                    last_progress_at = NOW()
                              WHERE id = $1
                             RETURNING started_at, cursor
