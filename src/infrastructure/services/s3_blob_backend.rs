@@ -286,11 +286,30 @@ impl BlobStorageBackend for S3BlobBackend {
                 .send()
                 .await
                 .map_err(|e| {
-                    DomainError::new(
-                        ErrorKind::NotFound,
-                        "S3",
-                        format!("Failed to get blob {}: {}", hash, e),
-                    )
+                    // Only a real NoSuchKey is NotFound. This used to
+                    // label EVERY read failure that way — a refused
+                    // connection, a 503, an expired credential all
+                    // reported as "blob missing".
+                    //
+                    // That is the most dangerous wrong answer available
+                    // here, because callers ACT on NotFound by concluding
+                    // the bytes are gone. A migration reading its source
+                    // through this would treat an outage as "the source
+                    // does not have this blob" and move on.
+                    //
+                    // Everything else goes through the normal classifier,
+                    // so a 403 stays permanent rather than being retried
+                    // forever.
+                    if let aws_sdk_s3::error::SdkError::ServiceError(svc) = &e
+                        && svc.err().is_no_such_key()
+                    {
+                        return DomainError::new(
+                            ErrorKind::NotFound,
+                            "S3",
+                            format!("Failed to get blob {hash}: no such key"),
+                        );
+                    }
+                    s3_domain_error("S3", format!("Failed to get blob {hash}"), &e)
                 })?;
 
             // Convert S3 ByteStream into a Stream<Item = Result<Bytes, io::Error>>
@@ -325,11 +344,21 @@ impl BlobStorageBackend for S3BlobBackend {
                 .send()
                 .await
                 .map_err(|e| {
-                    DomainError::new(
-                        ErrorKind::NotFound,
-                        "S3",
-                        format!("Failed to get blob range {}: {}", hash, e),
-                    )
+                    // Same rule as the full read: only a real NoSuchKey
+                    // is NotFound. Ranged reads feed CDC reassembly and
+                    // deep verification, so mislabelling an outage here
+                    // reads as "this chunk is gone" — a data-loss
+                    // conclusion drawn from a network problem.
+                    if let aws_sdk_s3::error::SdkError::ServiceError(svc) = &e
+                        && svc.err().is_no_such_key()
+                    {
+                        return DomainError::new(
+                            ErrorKind::NotFound,
+                            "S3",
+                            format!("Failed to get blob range {hash}: no such key"),
+                        );
+                    }
+                    s3_domain_error("S3", format!("Failed to get blob range {hash}"), &e)
                 })?;
 
             let reader = output.body.into_async_read();
@@ -407,11 +436,19 @@ impl BlobStorageBackend for S3BlobBackend {
                 .send()
                 .await
                 .map_err(|e| {
-                    DomainError::new(
-                        ErrorKind::NotFound,
-                        "S3",
-                        format!("Failed to stat blob {}: {}", hash, e),
-                    )
+                    // `head_object` reports a missing key as NotFound
+                    // rather than NoSuchKey, so match on the typed
+                    // variant the SDK actually returns here.
+                    if let aws_sdk_s3::error::SdkError::ServiceError(svc) = &e
+                        && svc.err().is_not_found()
+                    {
+                        return DomainError::new(
+                            ErrorKind::NotFound,
+                            "S3",
+                            format!("Failed to stat blob {hash}: not found"),
+                        );
+                    }
+                    s3_domain_error("S3", format!("Failed to stat blob {hash}"), &e)
                 })?;
 
             Ok(output.content_length().unwrap_or(0) as u64)

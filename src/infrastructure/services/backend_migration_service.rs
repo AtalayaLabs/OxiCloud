@@ -690,21 +690,72 @@ impl RecoverableJobHandler for BackendMigrationService {
                         .await;
                         continue;
                     }
+                    Err(e) if e.is_transient() => {
+                        // PAUSE. Skipping here was a data-loss path.
+                        //
+                        // The old comment called this "a network blip"
+                        // and `continue`d, reasoning that a re-run would
+                        // re-probe. It would not: the cursor advances to
+                        // the batch's last hash regardless, so a skipped
+                        // row is never revisited by THIS run — and unlike
+                        // a copy failure it recorded no finding, so
+                        // `failed` stayed 0, the run reached
+                        // `finish_completed`, and the pointer flipped to
+                        // a target missing every blob the outage
+                        // covered.
+                        //
+                        // That is the worst shape available: a migration
+                        // reporting success while having silently
+                        // dropped whatever was unreachable at the time.
+                        tracing::warn!(
+                            target: "oxicloud::migration",
+                            event = "backend_migration.source_unreachable",
+                            run_id = %store.run_id(),
+                            hash = %hash,
+                            copied = copied_count,
+                            error = %e,
+                            "source unreachable while probing; pausing at the last checkpoint"
+                        );
+                        return RunOutcome::from_domain_error(
+                            cursor.as_ref().map(|s| s.as_bytes()),
+                            &format!(
+                                "source unreachable while probing ({copied_count} blob(s) \
+                                 copied so far)"
+                            ),
+                            &e,
+                        );
+                    }
                     Err(e) => {
-                        // Transient probe failure on source is NOT a
-                        // finding — treat like a network blip.
-                        // Skipping this row on this run; a re-run
-                        // will re-probe. If the failure is
-                        // persistent, `blobs_consistency` catches
-                        // it.
+                        // Permanent probe failure. Still skipped rather
+                        // than fatal — one unprobeable blob must not
+                        // abort the migration — but it now records a
+                        // finding, so the run cannot report clean while
+                        // having skipped rows, and `blobs_consistency`
+                        // is not the only thing that would ever notice.
                         tracing::warn!(
                             target: "oxicloud::migration",
                             event = "backend_migration.source_probe_error",
                             run_id = %store.run_id(),
                             hash = %hash,
                             error = %e,
-                            "source blob_exists probe failed; skipping this row"
+                            "source blob_exists probe failed; recording finding, skipping row"
                         );
+                        failed_count += 1;
+                        record_or_log(
+                            store,
+                            BACKEND_MIGRATION_JOB_NAME,
+                            "migration_failed",
+                            "data_loss",
+                            None,
+                            serde_json::json!({
+                                "hash":   hash,
+                                "size":   size,
+                                "source": source_kind,
+                                "target": target_kind,
+                                "error":  format!("source probe failed: {e}"),
+                            }),
+                        )
+                        .await;
                         continue;
                     }
                 }

@@ -615,13 +615,11 @@ impl BlobStorageBackend for LocalBlobBackend {
         let hash = hash.to_owned();
         Box::pin(async move {
             let blob_path = self.blob_path(&hash);
-            let file = File::open(&blob_path).await.map_err(|e| {
-                DomainError::new(
-                    ErrorKind::NotFound,
-                    "Blob",
-                    format!("Failed to open blob {}: {}", hash, e),
-                )
-            })?;
+            // Was unconditional NotFound: a stale NFS handle or an
+            // unmounted iSCSI target reported the blob as missing.
+            let file = File::open(&blob_path)
+                .await
+                .map_err(|e| local_io_error("Blob", format!("Failed to open blob {hash}"), &e))?;
             Ok(Box::pin(ReaderStream::with_capacity(file, STREAM_CHUNK_SIZE)) as BlobStream)
         })
     }
@@ -636,13 +634,9 @@ impl BlobStorageBackend for LocalBlobBackend {
         let hash = hash.to_owned();
         Box::pin(async move {
             let blob_path = self.blob_path(&hash);
-            let mut file = File::open(&blob_path).await.map_err(|e| {
-                DomainError::new(
-                    ErrorKind::NotFound,
-                    "Blob",
-                    format!("Failed to open blob {}: {}", hash, e),
-                )
-            })?;
+            let mut file = File::open(&blob_path)
+                .await
+                .map_err(|e| local_io_error("Blob", format!("Failed to open blob {hash}"), &e))?;
 
             file.seek(std::io::SeekFrom::Start(start))
                 .await
@@ -697,13 +691,9 @@ impl BlobStorageBackend for LocalBlobBackend {
         let hash = hash.to_owned();
         Box::pin(async move {
             let blob_path = self.blob_path(&hash);
-            let meta = fs::metadata(&blob_path).await.map_err(|e| {
-                DomainError::new(
-                    ErrorKind::NotFound,
-                    "Blob",
-                    format!("Failed to stat blob {}: {}", hash, e),
-                )
-            })?;
+            let meta = fs::metadata(&blob_path)
+                .await
+                .map_err(|e| local_io_error("Blob", format!("Failed to stat blob {hash}"), &e))?;
             Ok(meta.len())
         })
     }
@@ -918,6 +908,60 @@ impl BlobStorageBackend for LocalBlobBackend {
     }
 }
 
+/// Classify a filesystem error, because "local" does not mean
+/// "reliable".
+///
+/// A local backend is a PATH, and that path may be an iSCSI or NVMe-oF
+/// LUN, an NFS mount, or a disk with a failing sector. Those produce
+/// errors that clear on their own exactly like a remote 503 does, and
+/// treating every one as permanent means a migration off a briefly
+/// unreachable mount records data-loss findings for blobs that are
+/// perfectly intact.
+///
+/// It matters more here than for a remote backend, because
+/// `RetryBlobBackend` is only applied when the active backend is NOT
+/// Local (`di.rs`) — so nothing below this retries, and this
+/// classification is the only thing standing between a flaky mount and
+/// a run that concludes the data is gone.
+///
+/// **`NotFound` stays `NotFound`, and nothing else becomes it.** Callers
+/// act on that variant by concluding the bytes do not exist.
+///
+/// Transient: the network-mount family (timeouts, unreachable, reset,
+/// stale handle) plus `Interrupted` (EINTR) and `ResourceBusy` (EBUSY).
+///
+/// Permanent, deliberately: `PermissionDenied` and
+/// `ReadOnlyFilesystem` need an operator, retrying changes nothing.
+/// `StorageFull` likewise. `InvalidData` is corruption, which is a
+/// finding worth keeping. A bad sector surfaces as an uncategorised EIO
+/// and therefore lands here too — right, because the useful outcome is
+/// a `blob_corrupted`-style finding naming the blob, not a run that
+/// pauses forever waiting for a disk to heal.
+pub(crate) fn local_io_error(
+    entity: &'static str,
+    context: String,
+    err: &std::io::Error,
+) -> DomainError {
+    use std::io::ErrorKind as Io;
+
+    let message = format!("{context}: {err}");
+    match err.kind() {
+        Io::NotFound => DomainError::new(ErrorKind::NotFound, entity, message),
+        Io::TimedOut
+        | Io::HostUnreachable
+        | Io::NetworkUnreachable
+        | Io::NetworkDown
+        | Io::ConnectionReset
+        | Io::ConnectionAborted
+        | Io::NotConnected
+        | Io::BrokenPipe
+        | Io::StaleNetworkFileHandle
+        | Io::Interrupted
+        | Io::ResourceBusy => DomainError::transient_backend(entity, message),
+        _ => DomainError::internal_error(entity, message),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1084,5 +1128,57 @@ mod tests {
             expected,
             "resume must start STRICTLY after the given hash"
         );
+    }
+
+    /// "Local" does not mean reliable — the path can be an iSCSI LUN or
+    /// an NFS mount. The two directions this must never confuse:
+    ///
+    /// * a genuinely absent file must stay `NotFound`, because callers
+    ///   act on that by concluding the bytes do not exist;
+    /// * an unreachable mount must NOT become `NotFound`, which is what
+    ///   every one of these sites used to return unconditionally.
+    #[test]
+    fn local_io_errors_are_classified_not_all_notfound() {
+        use std::io::{Error, ErrorKind as Io};
+
+        let missing = local_io_error("Blob", "open".into(), &Error::from(Io::NotFound));
+        assert_eq!(missing.kind, ErrorKind::NotFound);
+        assert!(!missing.is_transient());
+
+        // Network-backed mounts and interrupted syscalls: retry helps.
+        for kind in [
+            Io::TimedOut,
+            Io::HostUnreachable,
+            Io::NetworkDown,
+            Io::ConnectionReset,
+            Io::StaleNetworkFileHandle,
+            Io::Interrupted,
+            Io::ResourceBusy,
+        ] {
+            let e = local_io_error("Blob", "open".into(), &Error::from(kind));
+            assert!(e.is_transient(), "{kind:?} should be retryable");
+            assert_ne!(
+                e.kind,
+                ErrorKind::NotFound,
+                "{kind:?} must never read as a missing blob"
+            );
+        }
+
+        // Operator-action or corruption: retrying changes nothing, and a
+        // finding naming the blob is the useful outcome.
+        for kind in [
+            Io::PermissionDenied,
+            Io::ReadOnlyFilesystem,
+            Io::StorageFull,
+            Io::InvalidData,
+        ] {
+            let e = local_io_error("Blob", "open".into(), &Error::from(kind));
+            assert!(!e.is_transient(), "{kind:?} should not be retryable");
+            assert_ne!(
+                e.kind,
+                ErrorKind::NotFound,
+                "{kind:?} is not a missing blob"
+            );
+        }
     }
 }

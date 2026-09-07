@@ -239,11 +239,7 @@ impl BlobStorageBackend for AzureBlobBackend {
             let first = match pages.next().await {
                 Some(Ok(response)) => response,
                 Some(Err(e)) => {
-                    return Err(DomainError::new(
-                        ErrorKind::NotFound,
-                        "Azure",
-                        format!("Failed to get blob {hash}: {e}"),
-                    ));
+                    return Err(azure_read_error(format!("Failed to get blob {hash}"), &e));
                 }
                 None => {
                     let empty: BlobStream =
@@ -324,10 +320,9 @@ impl BlobStorageBackend for AzureBlobBackend {
             let first = match pages.next().await {
                 Some(Ok(response)) => response,
                 Some(Err(e)) => {
-                    return Err(DomainError::new(
-                        ErrorKind::NotFound,
-                        "Azure",
-                        format!("Failed to get blob range {hash}: {e}"),
+                    return Err(azure_read_error(
+                        format!("Failed to get blob range {hash}"),
+                        &e,
                     ));
                 }
                 None => {
@@ -415,13 +410,10 @@ impl BlobStorageBackend for AzureBlobBackend {
         let hash = hash.to_owned();
         Box::pin(async move {
             let client = self.blob_client(&hash);
-            let props = client.get_properties().await.map_err(|e| {
-                DomainError::new(
-                    ErrorKind::NotFound,
-                    "Azure",
-                    format!("Failed to stat blob {hash}: {e}"),
-                )
-            })?;
+            let props = client
+                .get_properties()
+                .await
+                .map_err(|e| azure_read_error(format!("Failed to stat blob {hash}"), &e))?;
             Ok(props.blob.properties.content_length)
         })
     }
@@ -683,6 +675,33 @@ impl BlobStorageBackend for AzureBlobBackend {
 /// second wearing the clothes of the first. So the policy is to retry
 /// as if transient and let the bounded attempt cap turn the difference
 /// into a Paused run an operator can act on.
+/// Read-path variant of [`azure_domain_error`]: only a real 404 is
+/// `NotFound`.
+///
+/// Every Azure read used to label EVERY failure `NotFound` — a refused
+/// connection, a 503, an expired SAS token all reported as "blob
+/// missing". That is the most dangerous wrong answer available on a read
+/// path, because callers ACT on NotFound by concluding the bytes are
+/// gone: a migration reading its source would treat an outage as "the
+/// source does not have this blob" and move past it.
+///
+/// Everything that is not a 404 goes through the normal classifier, so a
+/// 403 stays permanent instead of being retried.
+pub(crate) fn azure_read_error(context: String, err: &azure_core::Error) -> DomainError {
+    use azure_core::error::ErrorKind as AzKind;
+
+    if let AzKind::HttpResponse { status, .. } = err.kind()
+        && u16::from(*status) == 404
+    {
+        return DomainError::new(
+            ErrorKind::NotFound,
+            "Azure",
+            format!("{context}: not found"),
+        );
+    }
+    azure_domain_error(context, err)
+}
+
 pub(crate) fn azure_domain_error(context: String, err: &azure_core::Error) -> DomainError {
     use azure_core::error::ErrorKind as AzKind;
 
