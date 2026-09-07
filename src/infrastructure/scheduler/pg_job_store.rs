@@ -229,19 +229,22 @@ impl JobStore for PgJobStore {
         Ok(row.and_then(|(v,)| v))
     }
 
-    async fn scanned_count(&self) -> Result<u64, DomainError> {
-        // `(stats->>'scanned_count')::BIGINT` — text cast rather than
-        // `->` numeric extraction because the stored value has been
-        // written via `((...)::text)::jsonb` in `checkpoint`, which
-        // may present as either a JSON number or a JSON string
-        // depending on prior versions. `::BIGINT` handles both.
+    // `(stats ->> $2)::BIGINT` — text extraction then cast, rather
+    // than `->` numeric extraction, because the stored value has been
+    // written via `((...)::text)::jsonb` in `checkpoint` and may
+    // present as either a JSON number or a JSON string depending on
+    // prior versions. `::BIGINT` handles both.
+    //
+    // `scanned_count()` is the trait's default wrapper around this.
+    async fn stat_u64(&self, key: &str) -> Result<u64, DomainError> {
         let row: Option<(Option<i64>,)> = sqlx::query_as(
-            "SELECT (stats ->> 'scanned_count')::BIGINT FROM jobs.recoverable_runs WHERE id = $1",
+            "SELECT (stats ->> $2)::BIGINT FROM jobs.recoverable_runs WHERE id = $1",
         )
         .bind(self.run_id)
+        .bind(key)
         .fetch_optional(self.pool.as_ref())
         .await
-        .map_err(|e| map_sqlx_err("scanned_count", e))?;
+        .map_err(|e| map_sqlx_err("stat_u64", e))?;
         Ok(row.and_then(|(v,)| v).unwrap_or(0).max(0) as u64)
     }
 

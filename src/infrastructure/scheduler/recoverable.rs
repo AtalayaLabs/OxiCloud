@@ -560,7 +560,44 @@ pub trait JobStore: Send + Sync {
     /// Returns `0` if the key is absent (fresh row) or not a
     /// number. Callers on a Fresh run can safely skip this — the
     /// answer is trivially 0 and the write path starts fresh.
-    async fn scanned_count(&self) -> Result<u64, DomainError>;
+    async fn scanned_count(&self) -> Result<u64, DomainError> {
+        self.stat_u64("scanned_count").await
+    }
+
+    /// Read any numeric key out of the run's `stats` JSONB.
+    ///
+    /// The generalisation of [`Self::scanned_count`], which is now
+    /// one caller of it. Handlers use this on a Resume path to
+    /// restore their own cumulative counters — see
+    /// [`Self::checkpoint_counters`].
+    ///
+    /// Returns `0` when the key is absent or not a number, so a
+    /// fresh run and a run that never wrote the key are the same
+    /// answer.
+    async fn stat_u64(&self, key: &str) -> Result<u64, DomainError>;
+
+    /// Handler-callable. Merge the handler's OWN cumulative counters
+    /// into `stats` mid-run.
+    ///
+    /// Distinct from [`Self::merge_stats`], which stays engine-only and
+    /// runs once at `Completed`. That timing is the problem this
+    /// solves: counters written only at the end are lost by a pause,
+    /// so every resumed segment restarts them at zero and the final
+    /// row reports the LAST segment rather than the run. `backend_
+    /// migration` showed this as `copied: 0` on a migration that had
+    /// copied plenty, next to a `scanned_count` that was cumulative
+    /// because `checkpoint` had been persisting it all along.
+    ///
+    /// Pass ABSOLUTE values, not deltas — the merge is
+    /// `stats = stats || $1`, so each write displaces the last. Keys
+    /// are the handler's own; do not write engine-owned
+    /// `scanned_count` / `finding_count` through here.
+    async fn checkpoint_counters(
+        &self,
+        counters: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), DomainError> {
+        self.merge_stats(counters).await
+    }
 
     /// Persist one finding to `jobs.run_findings` and bump
     /// `stats.finding_count` on the parent run. Consistency handlers
@@ -1453,8 +1490,14 @@ mod tests {
         async fn get_string_param(&self, key: &str) -> Result<Option<String>, DomainError> {
             Ok(self.state.lock().unwrap().string_params.get(key).cloned())
         }
-        async fn scanned_count(&self) -> Result<u64, DomainError> {
-            Ok(self.state.lock().unwrap().scanned_count)
+        /// Mirrors the PG row: `scanned_count` is its own column-like
+        /// field, every other counter lives in the merged stats map.
+        async fn stat_u64(&self, key: &str) -> Result<u64, DomainError> {
+            let s = self.state.lock().unwrap();
+            if key == "scanned_count" {
+                return Ok(s.scanned_count);
+            }
+            Ok(s.extra_stats.get(key).and_then(|v| v.as_u64()).unwrap_or(0))
         }
         async fn merge_stats(
             &self,
@@ -2124,6 +2167,40 @@ mod tests {
         )
         .await;
         assert_eq!(*seen.lock().unwrap(), Some(b"halfway".to_vec()));
+    }
+
+    /// Counters written mid-run must survive to be read back, because
+    /// that round-trip is the whole mechanism by which a resumed
+    /// segment continues its totals instead of restarting them at zero.
+    /// `backend_migration` reported `copied: 0` on a migration that had
+    /// copied thousands precisely because nothing persisted them until
+    /// `Completed`, which a paused run never reaches.
+    #[tokio::test]
+    async fn checkpoint_counters_round_trip_through_stats() {
+        let provider = Arc::new(MemProvider::new());
+        let store = provider.open_or_start("counter_job").await.unwrap();
+        let store: Arc<dyn JobStore> = match store {
+            OpenedRun::Fresh { store: s } | OpenedRun::Resumed { store: s, .. } => s,
+            OpenedRun::AlreadyActive { .. } => panic!("fresh provider cannot be active"),
+        };
+
+        // Absent keys read as 0, so a fresh run needs no special case.
+        assert_eq!(store.stat_u64("copied").await.unwrap(), 0);
+
+        let mut counters = serde_json::Map::new();
+        counters.insert("copied".into(), serde_json::json!(120u64));
+        counters.insert("skipped".into(), serde_json::json!(7u64));
+        store.checkpoint_counters(&counters).await.unwrap();
+
+        assert_eq!(store.stat_u64("copied").await.unwrap(), 120);
+        assert_eq!(store.stat_u64("skipped").await.unwrap(), 7);
+
+        // Absolute, not additive: a later batch's write displaces the
+        // earlier one rather than summing with it. The handler owns the
+        // running total; the store only records it.
+        counters.insert("copied".into(), serde_json::json!(300u64));
+        store.checkpoint_counters(&counters).await.unwrap();
+        assert_eq!(store.stat_u64("copied").await.unwrap(), 300);
     }
 
     #[tokio::test]

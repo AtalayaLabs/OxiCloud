@@ -557,16 +557,33 @@ impl RecoverableJobHandler for BackendMigrationService {
             },
         };
 
-        let mut copied_count = 0u64;
+        // Restored on Resume, exactly like `already_scanned` above.
+        //
+        // These used to start at zero on every segment while
+        // `scanned_count` was restored, so one counter described the
+        // migration and the other four described the current segment.
+        // A run that paused and resumed then reported `copied: 0`
+        // beside a `scanned_count` in the thousands — the numbers were
+        // measuring different things and only one of them said so.
+        // `checkpoint_counters` below persists them per batch so a
+        // pause cannot discard them.
+        let restore = |key: &'static str| async move {
+            if is_fresh {
+                0
+            } else {
+                store.stat_u64(key).await.unwrap_or(0)
+            }
+        };
+        let mut copied_count = restore("copied").await;
         // Populated by the smart-skip probe below: target blob
         // already exists at the current head format+key, so a
         // rewrite would be identical bytes. Cheap (15-byte range
         // read via `is_at_head_format`), massive latency win on
         // resume + on backends where the source was rotated to the
         // same key as the target already had.
-        let mut skipped_count: u64 = 0;
-        let mut failed_count = 0u64;
-        let mut source_missing_count = 0u64;
+        let mut skipped_count: u64 = restore("skipped").await;
+        let mut failed_count = restore("failed").await;
+        let mut source_missing_count = restore("source_missing").await;
 
         loop {
             // Cooperative cancel poll between batches.
@@ -922,6 +939,29 @@ impl RecoverableJobHandler for BackendMigrationService {
                 return RunOutcome::Failed {
                     message: format!("checkpoint: {e}"),
                 };
+            }
+            // Persist the counters alongside the cursor. Absolute
+            // values, not deltas — the merge is last-write-wins, and
+            // the checkpoint above already made this batch's work part
+            // of the durable position. A failure here is logged but
+            // does NOT fail the run: the cursor is the correctness-
+            // critical write, these are reporting.
+            let counters: serde_json::Map<String, serde_json::Value> = serde_json::json!({
+                "copied":         copied_count,
+                "skipped":        skipped_count,
+                "failed":         failed_count,
+                "source_missing": source_missing_count,
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+            if let Err(e) = store.checkpoint_counters(&counters).await {
+                tracing::warn!(
+                    target: "oxicloud::migration",
+                    event = "backend_migration.counter_persist_failed",
+                    error = %e,
+                    "could not persist per-batch counters; totals may under-report after a resume"
+                );
             }
             // Bump the shared progress snapshot so the server-status
             // header middleware surfaces fresh numbers on every
