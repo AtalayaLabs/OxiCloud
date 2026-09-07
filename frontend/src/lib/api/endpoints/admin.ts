@@ -793,6 +793,7 @@ export interface ExternalMount {
 export interface CreateExternalMountInput {
 	name: string;
 	host_path: string;
+	drive_id: string;
 	kind?: string;
 	read_only?: boolean;
 }
@@ -804,7 +805,7 @@ export function listExternalMounts(): Promise<ExternalMount[]> {
 	});
 }
 
-/** POST /api/admin/external-mounts — create a mount in the admin's drive. */
+/** POST /api/admin/external-mounts — create a mount in the selected drive. */
 export async function createExternalMount(input: CreateExternalMountInput): Promise<ExternalMount> {
 	const res = await apiFetch('/api/admin/external-mounts', {
 		method: 'POST',

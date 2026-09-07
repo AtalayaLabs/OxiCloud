@@ -1783,12 +1783,18 @@ mod mount_authz_integration {
     use crate::application::services::external_mount_router::{MountRouter, ResolvedId};
     use crate::application::services::file_retrieval_service::FileRetrievalService;
     use crate::application::services::mount_registry::MountRegistry;
+    use crate::domain::repositories::drive_repository::DriveRepository;
+    use crate::domain::repositories::folder_repository::FolderRepository;
+    use crate::domain::services::authorization::Subject;
     use crate::domain::services::external_mount_id::{NodeId, encode_child_id};
     use crate::infrastructure::repositories::pg::{
-        ExternalMountPgRepository, FileBlobReadRepository, SubjectGroupPgRepository,
+        DrivePgRepository, ExternalMountPgRepository, FileBlobReadRepository,
+        SubjectGroupPgRepository,
     };
     use crate::infrastructure::services::mount_provider_factory::DefaultMountProviderFactory;
-    use crate::mount_it_support::{fresh_db, insert_mount, make_user, provision_folder};
+    use crate::mount_it_support::{
+        Provisioned, fresh_db, insert_mount, make_user, provision_folder,
+    };
     use std::sync::Arc;
 
     fn opts<'a>() -> ListResourcesOptions<'a> {
@@ -2203,6 +2209,68 @@ mod mount_authz_integration {
             .list_mount_dir_with_perms(&cfg, &NodeId::default(), stranger, opts())
             .await
             .expect_err("stranger must be denied");
+        assert_eq!(err.kind, crate::domain::errors::ErrorKind::NotFound);
+    }
+
+    /// A mount attached to a shared drive inherits that drive's grants rather
+    /// than the identity of the administrator who configured the provider.
+    #[tokio::test]
+    async fn shared_drive_member_lists_mount_non_member_denied() {
+        let (_c, pool) = fresh_db().await;
+        let host = tempfile::tempdir().unwrap();
+        std::fs::write(host.path().join("shared.txt"), b"shared").unwrap();
+
+        let admin_id = make_user(&pool, "mount-admin").await;
+        let member_id = make_user(&pool, "drive-member").await;
+        let drive = DrivePgRepository::new(pool.clone())
+            .create_shared_drive_atomic("Shared media", Subject::User(member_id), None, admin_id)
+            .await
+            .expect("create shared drive");
+        let folder = FolderDbRepository::new(pool.clone())
+            .create_folder(
+                "Media".to_string(),
+                Some(drive.drive.root_folder_id.to_string()),
+                admin_id,
+            )
+            .await
+            .expect("create mount root in shared drive");
+        let mount_folder_id = Uuid::parse_str(folder.id()).expect("folder UUID");
+        let provisioned = Provisioned {
+            owner_id: admin_id,
+            drive_id: drive.drive.id,
+            mount_folder_id,
+        };
+        insert_mount(&pool, &provisioned, host.path().to_str().unwrap()).await;
+
+        let registry = Arc::new(MountRegistry::empty());
+        registry
+            .reload(
+                &ExternalMountPgRepository::new(pool.clone()),
+                &DefaultMountProviderFactory::new(),
+            )
+            .await;
+        let folder_service = FolderService::new(
+            Arc::new(FolderDbRepository::new(pool.clone())),
+            acl(&pool),
+            Arc::new(
+                crate::application::services::file_lifecycle_service::FileLifecycleService::new(),
+            ),
+            Arc::new(MountRouter::new(registry.clone())),
+        );
+        let cfg = registry.get(&mount_folder_id).expect("mount registered");
+
+        let (entries, _) = folder_service
+            .list_mount_dir_with_perms(&cfg, &NodeId::default(), member_id, opts())
+            .await
+            .expect("shared drive member may list mount");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "shared.txt");
+
+        let non_member = make_user(&pool, "non-member").await;
+        let err = folder_service
+            .list_mount_dir_with_perms(&cfg, &NodeId::default(), non_member, opts())
+            .await
+            .expect_err("non-member must be denied");
         assert_eq!(err.kind, crate::domain::errors::ErrorKind::NotFound);
     }
 
