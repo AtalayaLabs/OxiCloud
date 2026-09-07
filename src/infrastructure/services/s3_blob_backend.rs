@@ -7,6 +7,7 @@ use aws_sdk_s3::primitives::ByteStream;
 use bytes::Bytes;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::time::Duration;
 use tokio::fs;
 use tokio_util::io::ReaderStream;
 
@@ -39,9 +40,36 @@ impl S3BlobBackend {
             "oxicloud",
         );
 
+        // `Builder::new()` starts from nothing — in particular with no
+        // `TimeoutConfig` at all, which meant a lost network on an
+        // established connection produced no error until the OS gave up
+        // on TCP retransmission (~15 minutes). For that whole window a
+        // migration looked merely slow: no error, so no retry, no log
+        // and no pause. It also made the `SdkError::TimeoutError` arm of
+        // `s3_domain_error` unreachable.
+        //
+        // These bounds are deliberately not the ones in `TimeoutPolicy`:
+        // that decorator provides the configurable outer bound for every
+        // backend, while these are the SDK's finer, per-attempt
+        // instruments underneath it.
+        let timeouts = aws_sdk_s3::config::timeout::TimeoutConfig::builder()
+            .connect_timeout(Duration::from_secs(10))
+            // Time to first byte, not transfer duration — a large object
+            // is never punished for being large.
+            .read_timeout(Duration::from_secs(30))
+            .build();
+
         let mut builder = aws_sdk_s3::config::Builder::new()
             .region(aws_sdk_s3::config::Region::new(config.region.clone()))
             .credentials_provider(credentials)
+            .timeout_config(timeouts)
+            // The right tool for a network pulled mid-transfer: it
+            // measures throughput rather than elapsed time, so it can
+            // bound a streaming upload without capping how long a
+            // legitimately large one may take.
+            .stalled_stream_protection(
+                aws_sdk_s3::config::StalledStreamProtectionConfig::enabled().build(),
+            )
             .behavior_version_latest();
 
         if let Some(ref endpoint) = config.endpoint_url {

@@ -2,6 +2,8 @@ use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::infrastructure::services::timeout_blob_backend::TimeoutPolicy;
+
 /// Cache configuration
 #[derive(Debug, Clone)]
 pub struct CacheConfig {
@@ -268,6 +270,9 @@ pub struct StorageConfig {
     pub encryption: EncryptionConfig,
     /// Retry policy for remote backends.
     pub retry: RetryConfig,
+    /// Wall-clock bounds on backend calls, so a stalled endpoint
+    /// surfaces as a transient error instead of hanging indefinitely.
+    pub timeout: TimeoutPolicy,
 }
 
 /// Which blob storage backend to use.
@@ -1295,6 +1300,7 @@ impl Default for StorageConfig {
             cache: BlobCacheConfig::default(),
             encryption: EncryptionConfig::default(),
             retry: RetryConfig::default(),
+            timeout: TimeoutPolicy::default(),
         }
     }
 }
@@ -3720,6 +3726,29 @@ impl AppConfig {
             && let Ok(n) = v.parse::<f64>()
         {
             config.storage.retry.backoff_multiplier = n;
+        }
+
+        // Backend call timeouts. `0` means "unbounded" for that class,
+        // which is the default for writes — see `TimeoutPolicy`.
+        for (var, slot) in [
+            (
+                "OXICLOUD_STORAGE_TIMEOUT_METADATA_MS",
+                &mut config.storage.timeout.metadata,
+            ),
+            (
+                "OXICLOUD_STORAGE_TIMEOUT_OPEN_MS",
+                &mut config.storage.timeout.open,
+            ),
+            (
+                "OXICLOUD_STORAGE_TIMEOUT_WRITE_MS",
+                &mut config.storage.timeout.write,
+            ),
+        ] {
+            if let Ok(v) = env::var(var)
+                && let Ok(n) = v.parse::<u64>()
+            {
+                *slot = (n > 0).then(|| std::time::Duration::from_millis(n));
+            }
         }
 
         // OIDC configuration
