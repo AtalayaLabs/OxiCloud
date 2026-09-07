@@ -352,11 +352,33 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
         // actually verified.
         let deep = args.get_bool("deep");
 
+        // Verify through storage, never through a read-through cache.
+        //
+        // A cache answers from its own copy, so re-hashing through one
+        // checks the CACHE: rot on the remote is masked by a good cached
+        // copy, and rot in the cache is recorded as `blob_corrupted`
+        // against a healthy remote — sending an operator to the wrong
+        // layer. The finding names `backend.backend_type()`, so that
+        // attribution has to be true.
+        //
+        // Only the cache is peeled; the decryptor stays, because the
+        // cache holds plaintext and the content hash is over plaintext.
+        // `?storage=<entry>` already builds an uncached stack, so this
+        // only changes the live-backend path — which is the one that was
+        // silently fast.
+        let verify_backend = backend.uncached().unwrap_or_else(|| backend.clone());
+        // Counter, not just a flag: a deep run that verified nothing and
+        // a deep run that verified everything are otherwise
+        // indistinguishable in the outcome, which is exactly the
+        // ambiguity that made a 1.5s "deep" sweep over 2022 chunks look
+        // plausible.
+        let mut verified_count = 0u64;
         if deep {
             tracing::info!(
                 target: "oxicloud::consistency",
                 event = "backend_consistency.deep_mode_active",
                 run_id = %store.run_id(),
+                cached_read_bypassed = backend.uncached().is_some(),
                 "deep mode: re-reading + re-hashing every matched blob (bit-rot detection)"
             );
         }
@@ -477,10 +499,14 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                     event = "backend_consistency.completed",
                     run_id = %store.run_id(),
                     finding_count = finding_count,
+                    verified = verified_count,
                     "backend_consistency completed with {} finding(s)",
                     finding_count
                 );
-                return RunOutcome::completed();
+                return RunOutcome::completed_with(serde_json::json!({
+                    "deep":     deep,
+                    "verified": verified_count,
+                }));
             }
 
             // ── Merge-join, not a one-sided probe ────────────────
@@ -562,8 +588,10 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                     // verified then.
                     (Some(b), Some(d)) if b.hash == **d => {
                         if deep && in_range(&b.hash) {
-                            finding_count +=
-                                self.verify_bytes(store, backend.as_ref(), &b.hash).await;
+                            verified_count += 1;
+                            finding_count += self
+                                .verify_bytes(store, verify_backend.as_ref(), &b.hash)
+                                .await;
                         }
                         bi.next();
                         di.next();
@@ -668,10 +696,18 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                     event = "backend_consistency.completed",
                     run_id = %store.run_id(),
                     finding_count = finding_count,
+                    verified = verified_count,
                     "backend_consistency completed with {} finding(s)",
                     finding_count
                 );
-                return RunOutcome::completed();
+                // `verified` is reported on EVERY run, zero included:
+                // absent-vs-zero is exactly the distinction an operator
+                // needs, and omitting it on a shallow run would make
+                // "deep verified nothing" look like "this was shallow".
+                return RunOutcome::completed_with(serde_json::json!({
+                    "deep":     deep,
+                    "verified": verified_count,
+                }));
             }
         }
     }

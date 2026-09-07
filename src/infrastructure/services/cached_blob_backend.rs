@@ -413,6 +413,14 @@ impl BlobStorageBackend for CachedBlobBackend {
         if path.exists() { Some(path) } else { None }
     }
 
+    /// This decorator IS the cache, so peeling it yields the real
+    /// storage. See [`BlobStorageBackend::uncached`] for why an
+    /// integrity check must not read through here — every other caller
+    /// keeps using the cache.
+    fn uncached(&self) -> Option<Arc<dyn BlobStorageBackend>> {
+        Some(self.inner.clone())
+    }
+
     /// Enumeration MUST delegate to the primary (inner) backend, not
     /// the local cache. The cache is by definition a subset (only
     /// recently-accessed blobs); walking the cache would look like

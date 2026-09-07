@@ -205,6 +205,15 @@ impl BlobStorageBackend for SwappableBlobBackend {
         self.current().local_blob_path(hash)
     }
 
+    /// Resolved through `current()`, not captured once: this wrapper sits
+    /// OUTSIDE the cache, so a migration cutover replaces the entire
+    /// cached stack beneath it. A handle taken at DI time would keep
+    /// pointing at the pre-cutover storage and audit the backend that
+    /// was just migrated away from.
+    fn uncached(&self) -> Option<Arc<dyn BlobStorageBackend>> {
+        self.current().uncached()
+    }
+
     fn read_prefetch(&self) -> usize {
         self.current().read_prefetch()
     }

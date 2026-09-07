@@ -356,6 +356,14 @@ impl BlobStorageBackend for RetryBlobBackend {
         self.inner.local_blob_path(hash)
     }
 
+    /// Pass-through wrapper — forward, so an unwrap started above still
+    /// reaches the cache. Inheriting the `None` default would silently
+    /// end the search at this layer and leave verification reading
+    /// through the cache after all.
+    fn uncached(&self) -> Option<Arc<dyn BlobStorageBackend>> {
+        self.inner.uncached()
+    }
+
     /// Enumeration delegates to inner. Retry semantics apply per
     /// call, not per batch — a single list call that fails after
     /// exhausting retries surfaces the error to the tenant, which
