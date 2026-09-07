@@ -3873,18 +3873,33 @@ impl crate::infrastructure::scheduler::JobHandler for DedupService {
     /// the freed disk. GC returning `(0, 0)` is normal — it means trash
     /// cleanup already reaped everything.
     ///
-    /// `args.force = true` skips the orphan grace window
+    /// `force = true` skips the orphan grace window
     /// (`garbage_collect_force` — grace_secs = 0). Same semantic as
     /// `POST /api/admin/jobs/dedup_gc/trigger?force=true`. Unsafe
     /// under concurrent uploads: only reachable through the admin
     /// endpoint and only intentionally used by tests + operator
     /// diagnostic sessions.
+    fn parameters(&self) -> &'static [crate::infrastructure::scheduler::JobParam] {
+        use crate::infrastructure::scheduler::JobParam;
+        // A named `const` rather than a bare `&[…]` literal: implicit
+        // const promotion does not cover `const fn` calls, so the
+        // literal would be a temporary. Same shape in every job.
+        const PARAMS: &[JobParam] = &[JobParam::boolean(
+            "force",
+            false,
+            "Skip the orphan grace window. Unsafe under concurrent \
+             uploads — it reopens the TOCTOU window the grace closes.",
+        )];
+        PARAMS
+    }
+
     async fn run(
         &self,
         args: &crate::infrastructure::scheduler::JobRunArgs,
     ) -> crate::infrastructure::scheduler::JobOutcome {
         use crate::infrastructure::scheduler::JobOutcome;
-        let result = if args.force {
+        let force = args.get_bool("force");
+        let result = if force {
             self.garbage_collect_force().await
         } else {
             self.garbage_collect().await
@@ -3892,7 +3907,7 @@ impl crate::infrastructure::scheduler::JobHandler for DedupService {
         match result {
             Ok((items, bytes)) => JobOutcome::ok_with(
                 items,
-                serde_json::json!({ "bytes_reclaimed": bytes, "forced": args.force }),
+                serde_json::json!({ "bytes_reclaimed": bytes, "forced": force }),
             ),
             Err(e) => JobOutcome::err(format!("dedup GC failed: {e}")),
         }

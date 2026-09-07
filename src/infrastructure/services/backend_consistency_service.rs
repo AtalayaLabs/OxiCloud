@@ -199,6 +199,25 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
          deleted."
     }
 
+    fn parameters(&self) -> &'static [crate::infrastructure::scheduler::JobParam] {
+        use crate::infrastructure::scheduler::JobParam;
+        const PARAMS: &[JobParam] = &[
+            JobParam::boolean(
+                "deep",
+                false,
+                "Read every matched blob back and re-hash it, catching \
+                 silent bit-rot. A full read of storage — can take hours.",
+            ),
+            JobParam::string(
+                "storage",
+                "Name of the storage entry to audit. Absent audits the \
+                 active backend; naming an entry is how either side of a \
+                 migration gets audited directly.",
+            ),
+        ];
+        PARAMS
+    }
+
     /// Approximate total: on a healthy install every backend blob
     /// has a `storage.blobs` row, so the DB count is a proxy for
     /// the backend count. The fraction deviating from 1.0 at run
@@ -240,26 +259,40 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
         // `blobs_consistency` uses — Fresh + args.storage=Some stamps
         // probed_storage into params; Resumed reads it back so a
         // mid-audit restart re-uses the same target.
-        let is_fresh = resume_cursor.is_none();
-        let probed_storage: Option<String> = if is_fresh {
-            let name = args.storage.clone();
-            if let Some(n) = &name
-                && let Err(e) = store.set_string_param(PROBED_STORAGE_PARAM, n).await
-            {
-                return RunOutcome::Failed {
-                    message: format!("persist {PROBED_STORAGE_PARAM} to params: {e}"),
-                };
-            }
-            name
-        } else {
-            match store.get_string_param(PROBED_STORAGE_PARAM).await {
-                Ok(v) => v,
-                Err(e) => {
-                    return RunOutcome::Failed {
-                        message: format!("read {PROBED_STORAGE_PARAM} from params: {e}"),
-                    };
+        // `run_or_resume` persists and restores `storage` for us now, so
+        // the normal path is a plain read.
+        //
+        // The fallback is a MIGRATION concern, not defensiveness. This job
+        // used to persist the same value under its own
+        // `probed_storage` key; a run paused before this change has that
+        // key and no `storage` one. Without the fallback such a run would
+        // resume against the ACTIVE backend instead of the entry it was
+        // auditing — silently auditing the wrong thing, which is worse
+        // than failing. Removable once no pre-upgrade paused runs remain.
+        let probed_storage: Option<String> = match args.get_str("storage") {
+            Some(name) => Some(name.to_string()),
+            None if resume_cursor.is_some() => {
+                match store.get_string_param(PROBED_STORAGE_PARAM).await {
+                    Ok(legacy) => {
+                        if legacy.is_some() {
+                            tracing::info!(
+                                target: "oxicloud::consistency",
+                                event = "backend_consistency.legacy_storage_param",
+                                run_id = %store.run_id(),
+                                "resumed a run that recorded its target under the pre-declaration \
+                                 `probed_storage` key"
+                            );
+                        }
+                        legacy
+                    }
+                    Err(e) => {
+                        return RunOutcome::Failed {
+                            message: format!("read {PROBED_STORAGE_PARAM} from params: {e}"),
+                        };
+                    }
                 }
             }
+            None => None,
         };
         let backend: Arc<dyn BlobStorageBackend> = match &probed_storage {
             None => self.backend.clone(),
@@ -313,30 +346,12 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
         // that tenant to carry a backend for one flag, which is the
         // overlap this split removes.
         //
-        // Persisted to `params.deep` on a Fresh run so a Resume picks up
-        // the same mode (a Paused deep scan must not silently continue
-        // shallow) and the admin run-detail view can show what the scan
-        // actually verified. Written BEFORE the walk so a crash mid-batch
-        // still leaves the marker.
-        let deep = if is_fresh {
-            let v = if args.deep { "true" } else { "false" };
-            if let Err(e) = store.set_string_param("deep", v).await {
-                return RunOutcome::Failed {
-                    message: format!("failed to persist deep flag to params: {e}"),
-                };
-            }
-            args.deep
-        } else {
-            match store.get_string_param("deep").await {
-                Ok(Some(v)) => v == "true",
-                Ok(None) => false,
-                Err(e) => {
-                    return RunOutcome::Failed {
-                        message: format!("read `deep` from params: {e}"),
-                    };
-                }
-            }
-        };
+        // Persisted to `params.deep` and restored on resume by
+        // `run_or_resume`, so a Paused deep scan does not silently
+        // continue shallow and the run-detail view can show what the scan
+        // actually verified.
+        let deep = args.get_bool("deep");
+
         if deep {
             tracing::info!(
                 target: "oxicloud::consistency",

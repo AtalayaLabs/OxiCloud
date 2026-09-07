@@ -20,7 +20,7 @@ use serde::Serialize;
 use tokio::sync::{RwLock, Semaphore};
 
 use super::handler::JobHandler;
-use super::types::{JobOutcome, JobRunArgs, Mutates};
+use super::types::{JobOutcome, JobParam, JobParamValue, JobRunArgs, Mutates};
 
 /// A registered job plus its runtime state. Held as `Arc<JobEntry>`
 /// inside the registry so the engine can hold a snapshot across an
@@ -211,6 +211,18 @@ impl JobRegistry {
         guard.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 
+    /// The parameters `name` declares, or `None` when no such job is
+    /// registered.
+    ///
+    /// Callers need this BEFORE dispatch: raw query strings can only be
+    /// parsed against the declaration, and an undeclared parameter has
+    /// to be rejected rather than dropped. Returning `None` lets the
+    /// caller answer 404 for an unknown job without a second lookup.
+    pub async fn parameters_of(&self, name: &str) -> Option<&'static [JobParam]> {
+        let guard = self.entries.read().await;
+        guard.get(name).map(|e| e.handler.parameters())
+    }
+
     /// Serialisable snapshot for `GET /api/admin/jobs`. Each entry
     /// captures the operator-visible state: interval (null for on-
     /// demand), next scheduled dispatch (null for on-demand), when
@@ -230,6 +242,7 @@ impl JobRegistry {
                     description: entry.handler.description(),
                     mutates: entry.handler.mutates(),
                     repair_description: entry.handler.repair_description(),
+                    parameters: entry.handler.parameters(),
                     interval_ms: entry.interval.map(|d| d.as_millis() as u64),
                     next_run_at: state.next_run_at,
                     last_run_at,
@@ -331,6 +344,11 @@ pub struct JobSummary {
     /// is the confirmation text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repair_description: Option<&'static str>,
+    /// What this job accepts on a trigger. The panel renders exactly
+    /// these — previously it showed the same fixed checkboxes on every
+    /// job, most of which the job ignored with no way to tell.
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    pub parameters: &'static [JobParam],
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interval_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -360,19 +378,18 @@ pub struct JobSummary {
     pub startup: Option<StartupTrigger>,
 }
 
-/// The flags a job configured in `OXICLOUD_STARTUP_JOBS` runs with.
+/// The parameters a job configured in `OXICLOUD_STARTUP_JOBS` runs with.
 ///
-/// Mirrors `JobRunArgs` on the wire rather than embedding it, because
-/// this is an API shape the admin panel switches on, and `JobRunArgs`
-/// is an internal dispatch type free to change without a frontend
-/// release.
+/// A map keyed by parameter name, for the same reason `JobRunArgs` is:
+/// the four named fields it used to carry meant a job growing a
+/// parameter silently dropped it from the panel's "at boot" pill.
+///
+/// Still a distinct type rather than `JobRunArgs` itself — this is an
+/// API shape the admin panel switches on, and the dispatch type should
+/// stay free to change without a frontend release.
 #[derive(Debug, Clone, Serialize)]
 pub struct StartupTrigger {
-    pub force: bool,
-    pub deep: bool,
-    pub repair: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub storage: Option<String>,
+    pub params: std::collections::BTreeMap<String, JobParamValue>,
 }
 
 /// Enough info about a paused recoverable run for the admin panel to
@@ -498,6 +515,13 @@ mod tests {
             fn repair_description(&self) -> Option<&'static str> {
                 Some("also deletes the thing")
             }
+            fn parameters(&self) -> &'static [JobParam] {
+                const PARAMS: &[JobParam] = &[
+                    JobParam::boolean("force", false, "skip the grace window"),
+                    JobParam::string("storage", "entry to scope to"),
+                ];
+                PARAMS
+            }
         }
 
         let reg = JobRegistry::new();
@@ -507,6 +531,32 @@ mod tests {
         assert_eq!(row.description, "does a thing");
         assert_eq!(row.mutates, Mutates::Always);
         assert_eq!(row.repair_description, Some("also deletes the thing"));
+        assert_eq!(row.parameters.len(), 2);
+        assert_eq!(row.parameters[0].name, "force");
+
+        // The wire contract the admin panel renders from. Pinned as JSON
+        // because the panel switches on these exact strings — `type`
+        // (not `param_type`), snake_case values, and `default` inlined
+        // rather than tagged. Renaming any of them is a frontend break,
+        // the same way renaming a `Mutates` variant is.
+        let json = serde_json::to_value(row).unwrap();
+        assert_eq!(
+            json["parameters"],
+            serde_json::json!([
+                {
+                    "name": "force",
+                    "type": "boolean",
+                    "default": false,
+                    "description": "skip the grace window"
+                },
+                {
+                    "name": "storage",
+                    "type": "string",
+                    "default": null,
+                    "description": "entry to scope to"
+                }
+            ])
+        );
 
         // Undeclared jobs stay at the safe defaults so the panel can tell
         // "read-only" from "not yet described" — empty string, not prose.
@@ -516,6 +566,16 @@ mod tests {
         assert_eq!(bare.description, "");
         assert_eq!(bare.mutates, Mutates::Never);
         assert!(bare.repair_description.is_none());
+        // Omitted entirely rather than sent as `[]`, so the panel renders
+        // no parameter controls at all for a job that takes none.
+        assert!(bare.parameters.is_empty());
+        assert!(
+            serde_json::to_value(bare)
+                .unwrap()
+                .get("parameters")
+                .is_none(),
+            "an empty declaration must not reach the wire"
+        );
     }
 
     #[tokio::test]

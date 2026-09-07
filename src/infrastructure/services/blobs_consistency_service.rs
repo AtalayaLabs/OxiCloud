@@ -267,6 +267,21 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
         )
     }
 
+    fn parameters(&self) -> &'static [crate::infrastructure::scheduler::JobParam] {
+        use crate::infrastructure::scheduler::JobParam;
+        // No `deep` — re-reading bytes is backend work and moved to
+        // `backend_consistency`. Declaring it here would put a knob in
+        // the panel that this job ignores, which is the thing the
+        // declaration exists to stop.
+        const PARAMS: &[JobParam] = &[JobParam::boolean(
+            "repair",
+            false,
+            "Rewrite drifted ref_count values to the recomputed truth. \
+             Without this the run only reports them.",
+        )];
+        PARAMS
+    }
+
     /// Definitive count. `storage.blobs` PK scan is index-only;
     /// even at millions of rows it's sub-second on modern PG.
     async fn count_total(&self) -> Option<u64> {
@@ -299,12 +314,6 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
         // `backend_consistency`, which finds it in one enumeration pass
         // instead of one probe per row.
         //
-        // Snapshot "is this a Fresh run?" BEFORE the resume_cursor
-        // match consumes it — otherwise the `is_none()` check later
-        // borrows a partially-moved value. Fresh = no cursor bytes
-        // at all; Resumed = cursor bytes present (possibly empty).
-        let is_fresh = resume_cursor.is_none();
-
         // Cursor = the last-visited `hash` string, UTF-8-encoded. On
         // resume, we walk `WHERE hash > $cursor` in ASC order. First
         // batch: NULL cursor → start from the smallest hash.
@@ -340,30 +349,15 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
         // matched key pairs worth verifying. A deep flag on this tenant
         // would be a flag with nothing to do.
 
-        // Repair mode persisted to `params.repair` so the admin run-detail
-        // view can display it. Fresh persists what the trigger asked for;
-        // Resume reads back so a paused repair scan stays a repair
-        // scan (a mid-scan crash mustn't silently downgrade to
-        // discovery-only for the remaining rows).
-        let repair = if is_fresh {
-            let v = if args.repair { "true" } else { "false" };
-            if let Err(e) = store.set_string_param("repair", v).await {
-                return RunOutcome::Failed {
-                    message: format!("failed to persist repair flag to params: {e}"),
-                };
-            }
-            args.repair
-        } else {
-            match store.get_string_param("repair").await {
-                Ok(Some(v)) => v == "true",
-                Ok(None) => false,
-                Err(e) => {
-                    return RunOutcome::Failed {
-                        message: format!("read `repair` from params: {e}"),
-                    };
-                }
-            }
-        };
+        // Repair mode is persisted to `params.repair` so the admin
+        // run-detail view can display it, and restored on resume so a
+        // paused repair scan stays a repair scan — a mid-scan crash must
+        // not silently downgrade the remaining rows to discovery-only.
+        //
+        // Both happen in `run_or_resume`, for every declared parameter,
+        // under this same key. This job used to do it itself; that
+        // duplication is what the parameter declaration removes.
+        let repair = args.get_bool("repair");
 
         if repair {
             tracing::info!(

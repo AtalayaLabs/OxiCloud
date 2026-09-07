@@ -185,6 +185,17 @@ impl RecoverableJobHandler for ThumbAttachedImport {
         )
     }
 
+    fn parameters(&self) -> &'static [crate::infrastructure::scheduler::JobParam] {
+        use crate::infrastructure::scheduler::JobParam;
+        const PARAMS: &[JobParam] = &[JobParam::boolean(
+            "repair",
+            false,
+            "Delete each sidecar after its replacement has been read back. \
+             Without this the job imports and leaves the originals in place.",
+        )];
+        PARAMS
+    }
+
     async fn count_total(&self) -> Option<u64> {
         let mut total = 0u64;
         for size in ThumbnailSize::all() {
@@ -229,7 +240,7 @@ impl RecoverableJobHandler for ThumbAttachedImport {
         // PDF preview has no server-side render path — so it is not
         // belt-and-braces, it is the only thing between a migration and
         // permanent loss.
-        let delete_imported = args.repair;
+        let delete_imported = args.get_bool("repair");
         let mut failed = 0u64;
         let mut since_checkpoint = 0usize;
 

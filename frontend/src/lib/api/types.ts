@@ -632,6 +632,34 @@ export interface PausedRunBrief {
  */
 export type Mutates = 'never' | 'always' | 'on_repair_only';
 
+/** Wire type of a declared job parameter — `JobParamType` on the backend. */
+export type JobParamType = 'boolean' | 'string' | 'number';
+
+/**
+ * One run parameter a job accepts, declared by the handler itself
+ * (`JobHandler::parameters()`).
+ *
+ * This is how the panel knows which knobs a job actually reads. It used
+ * to guess: `deep` came from a hardcoded name allowlist here, so a job
+ * gaining a deep mode needed a frontend release, and a job losing one
+ * left a button that silently did nothing. `force` was offered on every
+ * job whether or not it was read.
+ *
+ * `default` is the value the run uses when the parameter is omitted —
+ * `null` for a string with no default.
+ */
+export interface JobParam {
+	name: string;
+	type: JobParamType;
+	default: boolean | number | string | null;
+	/** The job's own wording for THIS parameter, for the control's
+	 *  tooltip. Absent when the handler left it blank. */
+	description?: string;
+}
+
+/** Values for one trigger, keyed by declared parameter name. */
+export type JobParamValues = Record<string, boolean | number | string>;
+
 export interface JobSummary {
 	name: string;
 	/** One or two sentences on what the job does, in English, authored
@@ -644,6 +672,9 @@ export interface JobSummary {
 	 *  the text is the confirmation copy. Independent of `mutates` — the
 	 *  thumbnail import jobs are `always` AND repair-capable. */
 	repair_description?: string;
+	/** What this job accepts on a trigger. Absent — not `[]` — when the
+	 *  job takes none, so "render no controls" is the natural default. */
+	parameters?: JobParam[];
 	interval_ms?: number;
 	next_run_at?: string;
 	last_run_at?: string;
@@ -670,12 +701,16 @@ export interface JobSummary {
 	startup?: StartupTrigger;
 }
 
-/** Flags a job configured in `OXICLOUD_STARTUP_JOBS` runs with. */
+/**
+ * Parameters a job configured in `OXICLOUD_STARTUP_JOBS` runs with,
+ * keyed by declared name.
+ *
+ * A map for the same reason `JobSummary.parameters` is one: the four
+ * fixed fields it replaced meant a job growing a parameter silently
+ * dropped it from the "at boot" pill.
+ */
 export interface StartupTrigger {
-	force: boolean;
-	deep: boolean;
-	repair: boolean;
-	storage?: string;
+	params?: JobParamValues;
 }
 
 /**

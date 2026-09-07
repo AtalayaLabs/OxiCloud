@@ -34,7 +34,7 @@
 		cancelJob,
 		purgeJobRuns
 	} from '$lib/api/endpoints/adminJobs';
-	import type { Finding, JobSummary, RunSummary, RunStatus } from '$lib/api/types';
+	import type { Finding, JobParam, JobSummary, RunSummary, RunStatus } from '$lib/api/types';
 
 	// ─── State ────────────────────────────────────────────────────────
 
@@ -634,27 +634,43 @@
 		return null;
 	}
 
-	// Jobs that respect `?deep=true`:
-	//   * `consistency_batch` — propagates deep to every child that
-	//     understands it
-	//   * `backend_consistency` — deep mode re-reads + re-hashes every
-	//     matched blob for silent bit-rot detection (severity
-	//     `data_loss`). Full read of storage; can take hours on big
-	//     installs — the "Run" button on the same row does the
-	//     enumeration merge-join only. This was `blobs_consistency`
-	//     until that tenant became database-only.
-	function supportsDeep(name: string): boolean {
-		return name === 'consistency_batch' || name === 'backend_consistency';
+	// A declared parameter by name, or undefined.
+	//
+	// Everything below asks the JOB what it accepts
+	// (`JobHandler::parameters()` on the backend) rather than deciding
+	// here. `supportsDeep` used to be a hardcoded name allowlist —
+	// `consistency_batch || backend_consistency` — which meant a job
+	// gaining a deep mode needed a frontend release to become reachable,
+	// and a job losing one left a menu item that silently did nothing.
+	function paramOf(job: JobSummary, name: string): JobParam | undefined {
+		return job.parameters?.find((p) => p.name === name);
 	}
 
-	// Whether `?repair=true` does anything for this job — declared by the
-	// handler itself via `repair_description()`, not by a name allowlist
-	// here. The allowlist this replaces named only the two ref_count
-	// tenants and silently omitted every repair-capable job added since,
-	// so the thumbnail imports could not be run in repair mode from the
-	// panel at all despite supporting it.
+	function supportsDeep(job: JobSummary): boolean {
+		return !!paramOf(job, 'deep');
+	}
+
+	// Both signals must agree. `parameters` says the run accepts the
+	// flag; `repair_description` is the confirmation copy, and a repair
+	// action with no wording would be a destructive click with a blank
+	// dialog. A job declaring one without the other is a backend bug —
+	// render nothing rather than guess.
 	function supportsRepair(job: JobSummary): boolean {
-		return !!job.repair_description;
+		return !!paramOf(job, 'repair') && !!job.repair_description;
+	}
+
+	// Booleans the generic menu renders on its own, beyond the two with
+	// bespoke entries above. This is what makes a newly-declared flag
+	// appear with no frontend change.
+	//
+	// Booleans only: `storage` and any future string/number parameter
+	// need a value, and the places that supply one (the storage tab's
+	// audit / migrate actions) already pass it contextually. A generic
+	// text box in a run menu would be a worse way to ask.
+	function extraBooleanParams(job: JobSummary): JobParam[] {
+		return (job.parameters ?? []).filter(
+			(p) => p.type === 'boolean' && p.name !== 'deep' && p.name !== 'repair'
+		);
 	}
 
 	// What the repair adds, in the handler's own words. The backend owns
@@ -872,11 +888,12 @@
 						<td class="jobs-panel__muted">
 							{cadenceLabel(job)}
 							{#if job.startup}
+								{@const bootRepair = job.startup.params?.repair === true}
 								<span
 									class="jobs-panel__pill"
-									class:jobs-panel__pill--paused={job.startup.repair}
-									class:jobs-panel__pill--neutral={!job.startup.repair}
-									title={job.startup.repair
+									class:jobs-panel__pill--paused={bootRepair}
+									class:jobs-panel__pill--neutral={!bootRepair}
+									title={bootRepair
 										? t(
 												'admin.jobs.startup_repair_tooltip',
 												'Configured in OXICLOUD_STARTUP_JOBS to run in repair mode at every boot.'
@@ -886,7 +903,7 @@
 												'Configured in OXICLOUD_STARTUP_JOBS to run at every boot.'
 											)}
 								>
-									{job.startup.repair
+									{bootRepair
 										? t('admin.jobs.startup_repair', 'at boot · repair')
 										: t('admin.jobs.startup', 'at boot')}
 								</span>
@@ -974,7 +991,8 @@
 								     button — no chevron, no menu, no extra
 								     width. Preserves one-click discovery for
 								     the common case. -->
-								{@const hasRunVariants = supportsDeep(job.name) || supportsRepair(job)}
+								{@const hasRunVariants =
+									supportsDeep(job) || supportsRepair(job) || extraBooleanParams(job).length > 0}
 								<span class="jobs-panel__split">
 									<button
 										class="jobs-panel__btn jobs-panel__btn--small"
@@ -1000,16 +1018,17 @@
 										</button>
 										{#if runMenuOpen[job.name]}
 											<div class="jobs-panel__run-menu" role="menu">
-												{#if supportsDeep(job.name)}
+												{#if supportsDeep(job)}
 													<button
 														type="button"
 														class="jobs-panel__run-menu-item"
 														role="menuitem"
 														disabled={busyKeys.has(`trigger:${job.name}:deep`)}
-														title={t(
-															'admin.jobs.run_deep_hint',
-															'Also runs slow variants (blob re-hash, bitrot detection).'
-														)}
+														title={paramOf(job, 'deep')?.description ||
+															t(
+																'admin.jobs.run_deep_hint',
+																'Also runs slow variants (blob re-hash, bitrot detection).'
+															)}
 														onclick={() => {
 															closeAllRunMenus();
 															void onTrigger(job.name, { deep: true });
@@ -1035,6 +1054,36 @@
 														<span>{t('admin.jobs.run_repair', 'Repair')}</span>
 													</button>
 												{/if}
+												<!-- Every other boolean the job declares, rendered from
+												     the declaration alone. This is the part that makes a
+												     newly-declared flag reachable with no frontend
+												     change — `force` on dedup_gc and grant_cleanup
+												     arrives here today. Label falls back to the
+												     parameter name because the backend owns the
+												     wording; there is no i18n key to invent for a flag
+												     the frontend has never heard of. -->
+												{#each extraBooleanParams(job) as p (p.name)}
+													<button
+														type="button"
+														class="jobs-panel__run-menu-item"
+														role="menuitem"
+														disabled={busyKeys.has(`trigger:${job.name}:${p.name}`)}
+														title={p.description}
+														onclick={() => {
+															closeAllRunMenus();
+															void onTrigger(job.name, { [p.name]: true });
+														}}
+													>
+														<Icon name="play" />
+														<span
+															>{t(
+																'admin.jobs.run_with_param',
+																{ param: p.name },
+																'Run with {{param}}'
+															)}</span
+														>
+													</button>
+												{/each}
 											</div>
 										{/if}
 									{/if}

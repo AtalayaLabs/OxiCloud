@@ -214,6 +214,18 @@ impl RecoverableJobHandler for TranscodeImport {
         )
     }
 
+    fn parameters(&self) -> &'static [crate::infrastructure::scheduler::JobParam] {
+        use crate::infrastructure::scheduler::JobParam;
+        const PARAMS: &[JobParam] = &[JobParam::boolean(
+            "repair",
+            false,
+            "Delete each cached transcode after its replacement has been \
+             read back and compared byte for byte. Without this the job \
+             imports and leaves the originals in place.",
+        )];
+        PARAMS
+    }
+
     async fn count_total(&self) -> Option<u64> {
         Some(Self::entry_names(&self.variant_dir()).await.len() as u64)
     }
@@ -240,7 +252,7 @@ impl RecoverableJobHandler for TranscodeImport {
             },
         };
 
-        let delete_imported = args.repair;
+        let delete_imported = args.get_bool("repair");
         let dir = self.variant_dir();
 
         let mut imported = 0u64;

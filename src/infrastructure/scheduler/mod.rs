@@ -40,4 +40,7 @@ pub use recoverable::{
 pub use registry::{
     JobEntry, JobRegistry, JobSummary, PausedRunBrief, RegisterError, StartupTrigger,
 };
-pub use types::{ErrCause, JobOutcome, JobRunArgs, Mutates};
+pub use types::{
+    ErrCause, JobOutcome, JobParam, JobParamDefault, JobParamType, JobParamValue, JobRunArgs,
+    Mutates,
+};
