@@ -23,6 +23,30 @@ pub enum ErrorKind {
     AccessDenied,
     /// Timeout expired
     Timeout,
+    /// A dependency failed in a way that may clear on its own — an HTTP
+    /// 5xx or 429 from object storage, a connection reset, a DNS
+    /// failure.
+    ///
+    /// Distinct from [`ErrorKind::InternalError`] because the engine has
+    /// to tell "the provider is down" from "this data is wrong": the
+    /// first is worth retrying and then pausing so an operator can
+    /// resume, the second is terminal. Flattening both into
+    /// `InternalError` is what forced `RetryBlobBackend` to classify by
+    /// string-matching `Display` output — fragile in exactly the way
+    /// that turns an SDK's cosmetic reformat into a silent behaviour
+    /// change.
+    ///
+    /// **Set it deliberately, at the point where the status code is
+    /// still visible** — the port wrapping the SDK error. By the time an
+    /// error reaches the engine, the code survives only inside a
+    /// formatted string.
+    ///
+    /// Not a promise that a retry succeeds. A deterministic 500 (Azurite
+    /// answering the CRC64 ranged GET) is a permanent fault wearing a
+    /// retryable status code, which no status-based taxonomy can get
+    /// right — the bounded attempt cap is the safety net for exactly
+    /// that. See `docs/plan/jobs-handling-recoverable-error.md`.
+    TransientBackend,
     /// Internal system error
     InternalError,
     /// Functionality not implemented
@@ -58,6 +82,10 @@ impl ErrorKind {
             ErrorKind::InvalidInput => "Invalid Input",
             ErrorKind::AccessDenied => "Access Denied",
             ErrorKind::Timeout => "Timeout",
+            // Wire value — the SPA switches on `error_type`, so this
+            // string is a contract. Additive here; nothing keys off it
+            // yet.
+            ErrorKind::TransientBackend => "Transient Backend",
             ErrorKind::InternalError => "Internal Error",
             ErrorKind::NotImplemented => "Not Implemented",
             ErrorKind::UnsupportedOperation => "Unsupported Operation",
@@ -146,6 +174,36 @@ impl DomainError {
             message: message.into(),
             source: None,
         }
+    }
+
+    /// A dependency failed in a way that may clear on its own. See
+    /// [`ErrorKind::TransientBackend`] for what qualifies and why the
+    /// classification belongs at the port rather than downstream.
+    pub fn transient_backend<S: Into<String>>(entity_type: &'static str, message: S) -> Self {
+        Self {
+            kind: ErrorKind::TransientBackend,
+            entity_type,
+            entity_id: None,
+            message: message.into(),
+            source: None,
+        }
+    }
+
+    /// Whether retrying this operation could plausibly succeed.
+    ///
+    /// The single place that answers the question, so a retry decorator
+    /// and the job engine cannot disagree about the same error — they
+    /// did while the answer was `Display` string-matching in one of
+    /// them and nothing in the other.
+    ///
+    /// `Timeout` is included because it is transient by construction;
+    /// everything else must say so explicitly via
+    /// [`ErrorKind::TransientBackend`]. Defaulting to "not retryable" is
+    /// the safe direction: a missed retry surfaces as a visible failure,
+    /// whereas retrying a permanent fault burns attempts and, in the
+    /// job engine, holds `migration_readonly` while it does.
+    pub fn is_transient(&self) -> bool {
+        matches!(self.kind, ErrorKind::Timeout | ErrorKind::TransientBackend)
     }
 
     /// Creates an internal error
@@ -315,5 +373,43 @@ impl From<uuid::Error> for DomainError {
             message: format!("{}", err),
             source: Some(Box::new(err)),
         }
+    }
+}
+
+#[cfg(test)]
+mod transient_tests {
+    use super::*;
+
+    /// The retry decorator and the job engine both branch on this, so
+    /// the set has to be deliberate rather than incidental.
+    #[test]
+    fn only_timeout_and_transient_backend_are_retryable() {
+        assert!(DomainError::transient_backend("S3", "503").is_transient());
+        assert!(DomainError::timeout("S3", "read timed out").is_transient());
+
+        // Everything else defaults to permanent. Retrying a genuine
+        // fault burns attempts and, in the job engine, holds
+        // `migration_readonly` while it does — so the default has to be
+        // "no".
+        for e in [
+            DomainError::internal_error("S3", "decode failed"),
+            DomainError::new(ErrorKind::NotFound, "Blob", "missing"),
+            DomainError::new(ErrorKind::AccessDenied, "S3", "bad credentials"),
+            DomainError::new(ErrorKind::InvalidInput, "S3", "malformed key"),
+            DomainError::new(ErrorKind::UnsupportedOperation, "S3", "no enumeration"),
+        ] {
+            assert!(
+                !e.is_transient(),
+                "{:?} must not be retryable by default",
+                e.kind
+            );
+        }
+    }
+
+    /// `error_type` is a wire contract the SPA switches on, so this
+    /// string is not free to churn.
+    #[test]
+    fn transient_backend_has_a_stable_wire_name() {
+        assert_eq!(ErrorKind::TransientBackend.as_str(), "Transient Backend");
     }
 }

@@ -170,12 +170,7 @@ impl BlobStorageBackend for S3BlobBackend {
                 .body(body)
                 .send()
                 .await
-                .map_err(|e| {
-                    DomainError::internal_error(
-                        "S3",
-                        format!("Failed to upload blob {}: {}", hash, e),
-                    )
-                })?;
+                .map_err(|e| s3_domain_error("S3", format!("Failed to upload blob {hash}"), &e))?;
 
             // Clean up local source after successful upload
             let _ = fs::remove_file(&source_path).await;
@@ -215,12 +210,7 @@ impl BlobStorageBackend for S3BlobBackend {
                 .body(body)
                 .send()
                 .await
-                .map_err(|e| {
-                    DomainError::internal_error(
-                        "S3",
-                        format!("Failed to upload blob {}: {}", hash, e),
-                    )
-                })?;
+                .map_err(|e| s3_domain_error("S3", format!("Failed to upload blob {hash}"), &e))?;
 
             Ok(size)
         })
@@ -253,12 +243,7 @@ impl BlobStorageBackend for S3BlobBackend {
                 .body(ByteStream::from(data))
                 .send()
                 .await
-                .map_err(|e| {
-                    DomainError::internal_error(
-                        "S3",
-                        format!("Failed to upload blob {}: {}", hash, e),
-                    )
-                })?;
+                .map_err(|e| s3_domain_error("S3", format!("Failed to upload blob {hash}"), &e))?;
             Ok(size)
         })
     }
@@ -363,12 +348,7 @@ impl BlobStorageBackend for S3BlobBackend {
                 .key(&key)
                 .send()
                 .await
-                .map_err(|e| {
-                    DomainError::internal_error(
-                        "S3",
-                        format!("Failed to delete blob {}: {}", hash, e),
-                    )
-                })?;
+                .map_err(|e| s3_domain_error("S3", format!("Failed to delete blob {hash}"), &e))?;
 
             Ok(())
         })
@@ -565,11 +545,11 @@ impl BlobStorageBackend for S3BlobBackend {
                 }
 
                 let resp = req.send().await.map_err(|e| {
-                    DomainError::new(
-                        ErrorKind::InternalError,
-                        "Blob",
-                        format!("S3 ListObjectsV2 failed: {e}"),
-                    )
+                    // Classified, because `backend_consistency` fails the
+                    // whole run on an enumeration error — a throttle
+                    // midway through a million-object bucket should be
+                    // retryable rather than throwing the sweep away.
+                    s3_domain_error("Blob", "S3 ListObjectsV2 failed".to_string(), &e)
                 })?;
 
                 requests += 1;
@@ -638,6 +618,60 @@ impl BlobStorageBackend for S3BlobBackend {
     }
 }
 
+/// Wrap an SDK error as a `DomainError` that says whether retrying it
+/// could help.
+///
+/// The classification has to happen HERE. One layer up the status code
+/// survives only inside a formatted string, which is what forced
+/// `RetryBlobBackend` to grep its own error text for "503" — a check
+/// that silently stops working when an SDK reformats `Display`.
+///
+/// Transient: 5xx and 429 from the service, plus dispatch-level I/O and
+/// timeouts (DNS, TLS, connection refused, TCP reset). Permanent:
+/// everything 4xx except 429 — credentials, a missing bucket, a
+/// malformed request — and client-side construction failures, none of
+/// which a second attempt changes.
+///
+/// `ResponseError` (a reply the SDK could not parse) counts as
+/// transient: truncation on the wire is the usual cause, and the
+/// attempt cap bounds the cost of being wrong.
+pub(crate) fn s3_domain_error<E>(
+    entity: &'static str,
+    context: String,
+    err: &aws_sdk_s3::error::SdkError<E>,
+) -> DomainError
+where
+    E: aws_sdk_s3::error::ProvideErrorMetadata + std::fmt::Debug,
+{
+    use aws_sdk_s3::error::SdkError;
+
+    let transient = match err {
+        SdkError::ServiceError(svc) => {
+            let status = svc.raw().status().as_u16();
+            let code = svc.err().meta().code().unwrap_or_default();
+            status >= 500
+                || status == 429
+                // Throttling can arrive as 400 with a code rather than
+                // 429, so the status alone is not enough.
+                || code.eq_ignore_ascii_case("SlowDown")
+                || code.eq_ignore_ascii_case("RequestTimeout")
+                || code.eq_ignore_ascii_case("ThrottlingException")
+        }
+        SdkError::DispatchFailure(d) => d.is_io() || d.is_timeout(),
+        SdkError::TimeoutError(_) => true,
+        SdkError::ResponseError(_) => true,
+        SdkError::ConstructionFailure(_) => false,
+        _ => false,
+    };
+
+    let message = format!("{context}: {}", format_s3_error(err));
+    if transient {
+        DomainError::transient_backend(entity, message)
+    } else {
+        DomainError::internal_error(entity, message)
+    }
+}
+
 /// Extract an actionable error string from an aws-sdk-s3 error.
 ///
 /// `SdkError::Display` renders literally `"service error"` when the
@@ -656,6 +690,10 @@ impl BlobStorageBackend for S3BlobBackend {
 /// - `unknown SDK error: <debug>` — anything else, with the full
 ///   `Debug` output so the operator + audit stream see the real cause
 ///   instead of `"service error"`.
+///
+/// Formatting only. Whether the error is worth retrying is
+/// [`s3_domain_error`]'s job, from the structured variant rather than
+/// from this string.
 fn format_s3_error<E>(err: &aws_sdk_s3::error::SdkError<E>) -> String
 where
     E: aws_sdk_s3::error::ProvideErrorMetadata + std::fmt::Debug,
