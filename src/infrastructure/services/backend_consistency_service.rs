@@ -124,13 +124,36 @@ pub const BACKEND_CONSISTENCY_JOB_NAME: &str = "backend_consistency";
 /// touches a backend and so has no entry to scope.
 pub const PROBED_STORAGE_PARAM: &str = "probed_storage";
 
-/// Batch size for backend enumeration + DB probe. 500 is enough to
-/// amortise the DB round-trip while keeping the cancel-poll cadence
-/// sub-second (each batch = one backend list + one DB probe + Rust
-/// set-difference). Larger batches on S3 hit ListObjectsV2's
-/// per-request limit (1000) with wasted rows filtered client-side;
-/// smaller batches over-poll the DB.
+/// Batch size for backend enumeration + DB probe. 500 amortises the DB
+/// round-trip; larger batches on S3 hit ListObjectsV2's per-request
+/// limit (1000) with wasted rows filtered client-side, and smaller ones
+/// over-poll the DB.
+///
+/// **This is not the cancel cadence.** It used to be: a shallow batch is
+/// one backend list + one DB probe + a Rust set-difference, so polling
+/// once per batch kept cancel sub-second. Deep mode then moved into this
+/// tenant and added 500 full blob reads per batch — measured at 155 ms
+/// each against remote S3, so ~63 s per batch — and a cancel poll that
+/// only ran between batches left Pause/Cancel unresponsive for a minute
+/// on exactly the run an operator most wants to stop.
+///
+/// [`DEEP_CANCEL_POLL_EVERY`] decouples the two: cancellation is now
+/// checked inside the verify loop, so this constant went back to being
+/// purely about I/O batching.
 const BATCH_SIZE: usize = 500;
+
+/// How many deep verifications to run between cancel polls.
+///
+/// A poll is one small indexed DB read (~0.1 ms) against a blob read
+/// measured at 155 ms on remote storage, so polling every blob would
+/// cost well under 1%. 16 keeps even a local-backend deep run — where a
+/// verify is ~0.8 ms and the ratio is far less favourable — under a
+/// couple of percent, while capping cancel latency at well under a
+/// second on any backend.
+///
+/// Shallow batches do not need this: they are already fast enough that
+/// the per-batch poll bounds latency on its own.
+const DEEP_CANCEL_POLL_EVERY: u64 = 16;
 
 /// Grace window — orphans younger than this are skipped, since the
 /// write path is durability-before-visibility: bytes hit disk before
@@ -294,6 +317,40 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
             }
             None => None,
         };
+        // The entry name this run audits, recorded in the outcome so a
+        // finished run says WHAT it checked.
+        //
+        // Without it a completed run is silent about its target: findings
+        // carry `backend`, but a clean run has none, so after switching
+        // the active backend there is no way to tell which storage a
+        // previous green run actually verified. Ed hit exactly that —
+        // a 1.5s local sweep read as an S3 audit.
+        //
+        // Read from `admin_settings` rather than a boot-time snapshot,
+        // because a migration cutover rewrites it while the process
+        // lives; a cached copy would name the pre-cutover entry. Best
+        // effort: this is a label, and failing an audit over it would be
+        // the wrong trade.
+        let audited_entry: Option<String> = match &probed_storage {
+            Some(name) => Some(name.clone()),
+            None => {
+                match crate::infrastructure::services::entry_backend::resolve_active_entry(
+                    self.pool.as_ref(),
+                    &self.storage_entries,
+                )
+                .await
+                {
+                    Ok(crate::infrastructure::services::entry_backend::ActiveEntry::Explicit(
+                        e,
+                    )) => Some(e.name.clone()),
+                    // Unset means the boot fallback picked the first
+                    // entry; naming it would be a guess, and a wrong
+                    // label is worse than an absent one.
+                    _ => None,
+                }
+            }
+        };
+
         let backend: Arc<dyn BlobStorageBackend> = match &probed_storage {
             None => self.backend.clone(),
             Some(name) => match self.storage_entries.iter().find(|e| &e.name == name) {
@@ -504,8 +561,11 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                     finding_count
                 );
                 return RunOutcome::completed_with(serde_json::json!({
-                    "deep":     deep,
-                    "verified": verified_count,
+                    "deep":          deep,
+                    "verified":      verified_count,
+                    "backend":       backend.backend_type(),
+                    "storage_entry": audited_entry,
+                    "scoped":        probed_storage.is_some(),
                 }));
             }
 
@@ -588,6 +648,32 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                     // verified then.
                     (Some(b), Some(d)) if b.hash == **d => {
                         if deep && in_range(&b.hash) {
+                            // Cancel poll INSIDE the verify loop. The
+                            // per-batch poll above bounds latency by one
+                            // batch, which is ~63 s of remote reads in
+                            // deep mode — a minute of an apparently
+                            // ignored Cancel on a run that may last
+                            // hours. Pausing here is safe and cheap: the
+                            // cursor still points at the last completed
+                            // batch, so resume re-verifies this batch's
+                            // handful of blobs rather than skipping them.
+                            if verified_count.is_multiple_of(DEEP_CANCEL_POLL_EVERY)
+                                && matches!(store.status().await, Ok(RunStatus::CancelRequested))
+                            {
+                                tracing::info!(
+                                    target: "oxicloud::consistency",
+                                    event = "backend_consistency.cancelled_mid_verify",
+                                    run_id = %store.run_id(),
+                                    verified = verified_count,
+                                    "deep verify cancelled mid-batch, pausing at the last checkpoint"
+                                );
+                                return RunOutcome::Paused {
+                                    cursor: cursor
+                                        .as_ref()
+                                        .map(|s| s.as_bytes().to_vec())
+                                        .unwrap_or_default(),
+                                };
+                            }
                             verified_count += 1;
                             finding_count += self
                                 .verify_bytes(store, verify_backend.as_ref(), &b.hash)
@@ -705,8 +791,11 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                 // needs, and omitting it on a shallow run would make
                 // "deep verified nothing" look like "this was shallow".
                 return RunOutcome::completed_with(serde_json::json!({
-                    "deep":     deep,
-                    "verified": verified_count,
+                    "deep":          deep,
+                    "verified":      verified_count,
+                    "backend":       backend.backend_type(),
+                    "storage_entry": audited_entry,
+                    "scoped":        probed_storage.is_some(),
                 }));
             }
         }
