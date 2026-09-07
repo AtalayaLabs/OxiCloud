@@ -776,6 +776,58 @@ impl RecoverableJobHandler for BackendMigrationService {
                         }
                     }
                     Err(e) => {
+                        // A transient failure pauses IMMEDIATELY. Not
+                        // after a threshold — on the first one.
+                        //
+                        // The cursor advances to the batch's LAST hash,
+                        // after this loop. So continuing past a transient
+                        // failure lets the batch finish and the cursor
+                        // move BEYOND the blob that failed, and nothing
+                        // revisits it: the run would carry a `data_loss`
+                        // finding for a blob that was never damaged, only
+                        // briefly unreachable. Ed caught this in review of
+                        // a "tolerate N consecutive" version — that
+                        // version skipped up to N blobs per batch for
+                        // exactly this reason.
+                        //
+                        // Pausing here keeps the cursor at the PREVIOUS
+                        // batch's end, so a resume re-walks this batch
+                        // and retries the blob. Re-copying a few
+                        // already-present blobs is free — the walk
+                        // short-circuits on them.
+                        //
+                        // Tolerate-and-continue still applies to
+                        // PERMANENT failures, which is what it was built
+                        // for: one corrupt or unreadable blob must not
+                        // abort a migration of millions, and retrying it
+                        // would fail identically.
+                        //
+                        // The copy has already been retried beneath this
+                        // (RetryBlobBackend: 3 attempts with backoff), so
+                        // arriving here means 4 attempts failed.
+                        if e.is_transient() {
+                            tracing::warn!(
+                                target: "oxicloud::migration",
+                                event = "backend_migration.backend_unreachable",
+                                run_id = %store.run_id(),
+                                hash = %hash,
+                                copied = copied_count,
+                                error = %e,
+                                "backend unreachable; pausing at the last checkpoint so this \
+                                 blob is retried on resume"
+                            );
+                            // `migration_readonly` stays engaged — only
+                            // Cancel releases it. See
+                            // `release_readonly_on_terminal_cancel`.
+                            return RunOutcome::from_domain_error(
+                                cursor.as_ref().map(|s| s.as_bytes()),
+                                &format!(
+                                    "backend unreachable while copying ({copied_count} blob(s) \
+                                     copied so far)"
+                                ),
+                                &e,
+                            );
+                        }
                         failed_count += 1;
                         tracing::warn!(
                             target: "oxicloud::migration",
