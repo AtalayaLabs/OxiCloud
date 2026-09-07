@@ -20,7 +20,7 @@ use serde::Serialize;
 use tokio::sync::{RwLock, Semaphore};
 
 use super::handler::JobHandler;
-use super::types::{JobOutcome, JobRunArgs};
+use super::types::{JobOutcome, JobRunArgs, Mutates};
 
 /// A registered job plus its runtime state. Held as `Arc<JobEntry>`
 /// inside the registry so the engine can hold a snapshot across an
@@ -135,6 +135,13 @@ impl JobRegistry {
         timeout: Option<Duration>,
     ) -> Result<(), RegisterError> {
         let name = handler.name().to_string();
+        // A job declaring it mutates only under a flag it does not support
+        // is self-contradictory, and the UI would render it as safe with no
+        // way to reach the mutating path. Cheap to catch here, invisible
+        // otherwise.
+        if handler.mutates() == Mutates::OnRepairOnly && handler.repair_description().is_none() {
+            return Err(RegisterError::RepairOnlyWithoutRepair(name));
+        }
         let mut guard = self.entries.write().await;
         if guard.contains_key(&name) {
             return Err(RegisterError::DuplicateName(name));
@@ -220,17 +227,21 @@ impl JobRegistry {
                 };
                 JobSummary {
                     name,
+                    description: entry.handler.description(),
+                    mutates: entry.handler.mutates(),
+                    repair_description: entry.handler.repair_description(),
                     interval_ms: entry.interval.map(|d| d.as_millis() as u64),
                     next_run_at: state.next_run_at,
                     last_run_at,
                     last_outcome,
                     running: state.current_run_start.is_some(),
                     recoverable: entry.handler.is_recoverable(),
-                    // Populated in `list_jobs` handler via a single
-                    // DB round-trip — kept out of the registry
-                    // snapshot to avoid pulling a DB dependency into
-                    // the in-memory scheduler state.
+                    // Both populated in the `list_jobs` handler — one
+                    // from a DB round-trip, one from AppConfig. Kept
+                    // out of the registry snapshot so the in-memory
+                    // scheduler state pulls in neither dependency.
                     paused_run: None,
+                    startup: None,
                 }
             })
             .collect()
@@ -283,6 +294,11 @@ impl Default for JobRegistry {
 pub enum RegisterError {
     #[error("job name already registered: {0}")]
     DuplicateName(String),
+    #[error(
+        "job {0} declares mutates = OnRepairOnly but no repair_description() — \
+         it claims to mutate only under a flag it does not support"
+    )]
+    RepairOnlyWithoutRepair(String),
 }
 
 /// Per-job row in the `GET /api/admin/jobs` response.
@@ -304,6 +320,17 @@ pub enum RegisterError {
 #[derive(Debug, Clone, Serialize)]
 pub struct JobSummary {
     pub name: String,
+    /// One or two sentences on what the job does. Empty for jobs that
+    /// haven't declared one yet — the UI omits the line rather than
+    /// rendering a blank block.
+    #[serde(skip_serializing_if = "str::is_empty")]
+    pub description: &'static str,
+    pub mutates: Mutates,
+    /// `Some` iff the job does something extra under `?repair=true`.
+    /// Presence is what gates the repair toggle in the UI; the string
+    /// is the confirmation text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repair_description: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interval_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -320,6 +347,32 @@ pub struct JobSummary {
     /// picks Resume when the latest row is Paused).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paused_run: Option<PausedRunBrief>,
+    /// Populated iff `OXICLOUD_STARTUP_JOBS` names this job — the flags
+    /// it will be dispatched with at every boot.
+    ///
+    /// Surfaced because the panel would otherwise be silently wrong
+    /// about the most consequential thing on the row: a job configured
+    /// with `repair=true` deletes files on every restart, and reading
+    /// the row you would think that only happens when someone clicks.
+    /// Filled by the `list_jobs` handler, which has the config; the
+    /// registry deliberately doesn't.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub startup: Option<StartupTrigger>,
+}
+
+/// The flags a job configured in `OXICLOUD_STARTUP_JOBS` runs with.
+///
+/// Mirrors `JobRunArgs` on the wire rather than embedding it, because
+/// this is an API shape the admin panel switches on, and `JobRunArgs`
+/// is an internal dispatch type free to change without a frontend
+/// release.
+#[derive(Debug, Clone, Serialize)]
+pub struct StartupTrigger {
+    pub force: bool,
+    pub deep: bool,
+    pub repair: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage: Option<String>,
 }
 
 /// Enough info about a paused recoverable run for the admin panel to
@@ -391,6 +444,78 @@ mod tests {
             .await
             .expect_err("duplicate name must be rejected");
         assert!(matches!(err, RegisterError::DuplicateName(_)));
+    }
+
+    /// A job declaring `OnRepairOnly` without a `repair_description` has
+    /// no reachable mutating path — the UI gates the repair toggle on
+    /// that string's presence, so the job would render as safe and stay
+    /// read-only forever. Catch it at wiring time rather than let it read
+    /// as a working configuration.
+    #[tokio::test]
+    async fn repair_only_without_repair_description_rejected() {
+        struct Contradictory;
+        #[async_trait]
+        impl JobHandler for Contradictory {
+            fn name(&self) -> &str {
+                "contradictory"
+            }
+            async fn run(&self, _args: &JobRunArgs) -> JobOutcome {
+                JobOutcome::ok(0)
+            }
+            fn mutates(&self) -> Mutates {
+                Mutates::OnRepairOnly
+            }
+            // repair_description() left at its `None` default — the bug.
+        }
+
+        let reg = JobRegistry::new();
+        let err = reg
+            .try_register(Arc::new(Contradictory), None, None)
+            .await
+            .expect_err("OnRepairOnly without a repair_description must be rejected");
+        assert!(matches!(err, RegisterError::RepairOnlyWithoutRepair(_)));
+    }
+
+    /// The registry hands `dyn JobHandler` to the admin snapshot, so a
+    /// tenant's own metadata is only visible if it survives that erasure.
+    #[tokio::test]
+    async fn snapshot_carries_job_metadata() {
+        struct Described;
+        #[async_trait]
+        impl JobHandler for Described {
+            fn name(&self) -> &str {
+                "described"
+            }
+            async fn run(&self, _args: &JobRunArgs) -> JobOutcome {
+                JobOutcome::ok(0)
+            }
+            fn description(&self) -> &'static str {
+                "does a thing"
+            }
+            fn mutates(&self) -> Mutates {
+                Mutates::Always
+            }
+            fn repair_description(&self) -> Option<&'static str> {
+                Some("also deletes the thing")
+            }
+        }
+
+        let reg = JobRegistry::new();
+        reg.register(Arc::new(Described), None, None).await;
+        let snap = reg.snapshot().await;
+        let row = snap.iter().find(|j| j.name == "described").unwrap();
+        assert_eq!(row.description, "does a thing");
+        assert_eq!(row.mutates, Mutates::Always);
+        assert_eq!(row.repair_description, Some("also deletes the thing"));
+
+        // Undeclared jobs stay at the safe defaults so the panel can tell
+        // "read-only" from "not yet described" — empty string, not prose.
+        reg.register(handler("bare"), None, None).await;
+        let snap = reg.snapshot().await;
+        let bare = snap.iter().find(|j| j.name == "bare").unwrap();
+        assert_eq!(bare.description, "");
+        assert_eq!(bare.mutates, Mutates::Never);
+        assert!(bare.repair_description.is_none());
     }
 
     #[tokio::test]

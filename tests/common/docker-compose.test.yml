@@ -14,3 +14,32 @@ services:
       interval: 2s
       timeout: 5s
       retries: 10
+
+  # Azure Blob Storage emulator. Speaks the real Blob REST API, so it is
+  # the only way to exercise the Azure backend without an account — and
+  # the account it does ship is the fixed, publicly-documented dev pair
+  # (`devstoreaccount1` + the well-known key), so nothing here is a
+  # credential worth protecting.
+  #
+  # Blob service only: `--blobHost` with no queue/table, since the backend
+  # uses blobs exclusively and the other two would just be open ports.
+  #
+  # tmpfs for the same reason postgres uses it — a run must start from an
+  # empty container, or a previous run's blobs read as orphans in the very
+  # audit this exists to test.
+  azurite-test:
+    image: mcr.microsoft.com/azure-storage/azurite:3.36.0
+    command: azurite-blob --blobHost 0.0.0.0 --blobPort 10000 --location /data --skipApiVersionCheck
+    ports:
+      - "10000:10000"
+    tmpfs:
+      - /data
+    healthcheck:
+      # Azurite answers 400 to an unauthenticated root GET, which is proof
+      # enough that the HTTP listener is up — the SDK handshake is what
+      # validates credentials, and that happens later in the backend's
+      # own `initialize`.
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 10000 || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 15

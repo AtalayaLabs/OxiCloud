@@ -12,7 +12,7 @@ import type {
 	DriveMember,
 	DriveMemberSubject,
 	DriveRole,
-	User
+	FullUser
 } from '$lib/api/types';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
@@ -277,19 +277,24 @@ export function revokeAdminSession(sessionId: string): Promise<void> {
 
 // ── Users ───────────────────────────────────────────────────────────────
 
-/** List the compact rows rendered by the management table; full account
- * details remain available through {@link getUserAdmin}. */
+/** List admin users — always returns `FullUser` rows. The former
+ * `?summary` toggle is retired; a single canonical shape carries
+ * the vignette + admin-visible extras the table needs. Single-user
+ * details still available via {@link getUserAdmin}. */
 export function listUsers(limit: number, offset: number): Promise<AdminUsersPage> {
-	return apiJson<AdminUsersPage>(`/api/admin/users?limit=${limit}&offset=${offset}&summary=true`, {
+	return apiJson<AdminUsersPage>(`/api/admin/users?limit=${limit}&offset=${offset}`, {
 		credentials: 'same-origin'
 	});
 }
 
 /**
  * Admin-scoped single-user lookup — `GET /api/admin/users/{id}`.
- * Returns the full `User` DTO including `storage_quota_bytes` +
- * `storage_used_bytes` which the non-admin `/api/users/{id}`
- * response omits for privacy.
+ * Returns the full `FullUser` DTO (public identity in `.user` +
+ * admin-visible extras like `email_verified_at` / `has_password` /
+ * `opaque_registered` / `last_login_at` / quotas at top level) —
+ * same shape as one row of `/api/admin/users` list. The peer-view
+ * `/api/users/{id}` returns the slim `PublicUser` which omits those
+ * admin-only signals.
  *
  * Result promises are cached per id at module scope so multiple
  * callers for the same user (e.g. the admin drives table with N
@@ -301,14 +306,14 @@ export function listUsers(limit: number, offset: number): Promise<AdminUsersPage
  * still sees the cached value. Callers that need to refresh (e.g.
  * after `setUserQuota`) should call `invalidateAdminUserCache`.
  */
-const adminUserCache = new Map<string, Promise<User | null>>();
+const adminUserCache = new Map<string, Promise<FullUser | null>>();
 
-export function getUserAdmin(id: string): Promise<User | null> {
+export function getUserAdmin(id: string): Promise<FullUser | null> {
 	const hit = adminUserCache.get(id);
 	if (hit) return hit;
-	const pending = (async (): Promise<User | null> => {
+	const pending = (async (): Promise<FullUser | null> => {
 		try {
-			return await apiJson<User>(`/api/admin/users/${encodeURIComponent(id)}`, {
+			return await apiJson<FullUser>(`/api/admin/users/${encodeURIComponent(id)}`, {
 				credentials: 'same-origin'
 			});
 		} catch {
@@ -387,9 +392,30 @@ export interface DriveKindUsage {
 }
 
 export interface AdminDashboard {
+	// ── User accounts (static breakdown of auth.users) ──
+	// All four are counts of the same table under different
+	// predicates. Rendered as one grouped section on the dashboard.
 	total_users: number;
 	active_users: number;
 	admin_users: number;
+	/** Grant-only accounts (magic-link / OIDC-only / OCM recipients).
+	 * Filtered out of `total_users` / `active_users` — those count
+	 * operational seats. Surfaced here as its own metric because
+	 * external-heavy deployments (public-share collab, invited-only
+	 * shops) need the invited population at a glance. */
+	external_users: number;
+	// ── Live activity (projection over auth.sessions) ──
+	// Both change minute-to-minute — a whole different cadence from
+	// the account counts above. Rendered as a separate section on
+	// the dashboard with the presence-dot visual cue.
+	/** Distinct users behind non-revoked sessions active in the last
+	 * 5 min. Same 5-min window as the `oxicloud_sessions_online_users`
+	 * Prometheus gauge; single source of truth on the backend. */
+	online_users: number;
+	/** Non-revoked sessions active in the last 5 min. Ratio
+	 * `online_sessions / online_users` is the multi-device factor
+	 * (browser + desktop + phone). */
+	online_sessions: number;
 	server_version: string;
 	drive_usage: DriveKindUsage[];
 	auth_enabled: boolean;

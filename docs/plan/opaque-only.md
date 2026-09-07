@@ -62,7 +62,7 @@ and ordering are the load-bearing decisions here.
 ## Preconditions before we start the wipe
 
 Every one of these MUST hold. Adding a pre-flight check in
-`oxicloud-cli opaque wipe-legacy` (proposed below) that refuses to run
+`oxicloud opaque wipe-legacy` (proposed below) that refuses to run
 otherwise.
 
 1. **`OXICLOUD_AUTH_OPAQUE_MODE=opaque_only`** on the deployment for at
@@ -174,7 +174,7 @@ it can't, since login-link users just clicked email — no proof-of-current).
 
 ### The wipe migration
 
-Delivered as `oxicloud-cli opaque wipe-legacy` — a dedicated subcommand,
+Delivered as `oxicloud opaque wipe-legacy` — a dedicated subcommand,
 NOT a schema migration. Reasons:
 - Idempotent (won't re-wipe already-nulled rows)
 - Pre-flight refuses when preconditions aren't met (unlike a migration
@@ -207,7 +207,7 @@ UPDATE auth.users
 
 Output: `N password_hash columns nulled. M users still have password_hash
 because they don't meet the OPAQUE-migrated preconditions — inspect via
-`oxicloud-cli opaque wipe-legacy --dry-run` and address separately.`
+`oxicloud opaque wipe-legacy --dry-run` and address separately.`
 
 The `WHERE` clause is intentionally strict: OIDC users, externals, and
 under-migrated users are ALL left alone. The strict version is safer than
@@ -232,7 +232,7 @@ can drop the legacy password code:
 6. `has_password` field on `UserDto` / `AdminUserSummaryDto`: delete (always
    false, meaningless signal)
 7. `admin`-badge `password` chip: delete (same reason)
-8. `oxicloud-cli opaque reset --user X` for legacy-recovery: still useful
+8. `oxicloud opaque reset --user X` for legacy-recovery: still useful
    as an emergency lever (envelope somehow corrupted, need to force
    re-registration via recovery-magic-link), but its "silent-migration
    handles the recovery" semantics become "recovery-magic-link handles the
@@ -269,7 +269,7 @@ running smoothly for the indicated period."
 | G1 | Land task #31: change_password OPAQUE-lockout fix + hybrid-user password gate | Days |
 | G2 | Land recovery-magic-link admin reset flow | Weeks |
 | G3 | Land OPAQUE-verify-current + change_password redesign that COMPOSES the two (Argon2-verify AND OPAQUE-verify both work; use whichever the user has) | Weeks |
-| G4 | Ship `oxicloud-cli opaque wipe-legacy` (dry-run only initially, no destructive flag) | Days |
+| G4 | Ship `oxicloud opaque wipe-legacy` (dry-run only initially, no destructive flag) | Days |
 | G5 | Add admin-dashboard metric: "N users still on legacy (`password_hash IS NOT NULL AND !opaque_migrated`)" | Days |
 | G6 | Operator switches deployment to `opaque_only` mode | ✅ already possible |
 | G7 | Wait 90+ days at `opaque_only`, watch the metric drop to 0 | Months |

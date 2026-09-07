@@ -123,10 +123,10 @@ Content-Type: application/json
 
 HTTP 200
 [Asserts]
-jsonpath "$.user.username" == "oidc_user"
+jsonpath "$.user.full.user.username" == "oidc_user"
 # Group-to-role mapping worked — this is now the admin (and the only
 # user).
-jsonpath "$.user.role" == "admin"
+jsonpath "$.user.full.user.role" == "admin"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -138,7 +138,7 @@ GET {{base_url}}/api/auth/me
 
 HTTP 200
 [Asserts]
-jsonpath "$.username" == "oidc_user"
+jsonpath "$.full.user.username" == "oidc_user"
 
 
 # ─────────────────────────────────────────────────────────────

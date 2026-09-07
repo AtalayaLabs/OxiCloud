@@ -23,9 +23,60 @@ ignore = [
     "RUSTSEC-2026-0098",
     "RUSTSEC-2026-0099",
 
+    # h2 0.3.27 — RUSTSEC-2026-0258 "unbounded empty DATA frames"
+    # (GHSA-q83h-524g-xf6h). Transitive via aws-smithy-http-client 1.1.12
+    # → hyper 0.14.32 → h2 0.3.27. The patched line is 0.4.16+, but hyper
+    # 0.14's `h2 = "0.3"` requirement pins us to the 0.3.x branch which
+    # will not receive a backport — real fix requires aws-smithy-http-client
+    # to migrate to hyper 1.x (which our other h2 copy — 0.4.16, already
+    # bumped — is on). The 0.4.x copy is fixed via `cargo update`; this
+    # ignore covers only the 0.3.x chain.
+    #
+    # Severity: low (advisory's own classification). Attack is empty-DATA-
+    # frame flooding by a malicious HTTP/2 peer → memory pressure or panic.
+    # In this codebase h2 0.3.x runs strictly on the CLIENT side of AWS
+    # SDK requests to S3 endpoints. Exploitation requires either
+    # compromising AWS S3 (out-of-scope) or MitM with a valid TLS cert
+    # for the configured S3 host (bigger problem than the DoS). No
+    # data-integrity or auth impact; panic path contained by
+    # request-level unwind.
+    #
+    # Un-ignore trigger: aws-smithy-http-client releases a version that
+    # switches to hyper 1.x (checkable with `cargo tree -i h2@0.3` — the
+    # command returns no rows once the chain is gone). Track upstream at
+    # https://github.com/smithy-lang/smithy-rs/issues (search "hyper 1").
+    "RUSTSEC-2026-0258",
+
     # instant unmaintained — transitive via azure_core 0.21.0 (latest available).
     # No direct security impact; no upgrade path exists.
     "RUSTSEC-2024-0384",
+
+    # azure_core 0.21.0 writes the `authorization` header value to logs —
+    # `policies/transport.rs` does `debug!("…{request:#?}")` over the whole
+    # request. For a SharedKey entry that value is the per-request HMAC
+    # signature; for a SAS entry it is the token. Severity 6.5 (medium).
+    #
+    # The advisory says "upgrade to >=0.22.0". That version does not exist:
+    # `azure_core` jumped 0.21 → 1.x, and `azure_storage_blobs` never left
+    # 0.21.0 before being archived. So the stated remedy IS the official-SDK
+    # migration, tracked separately alongside the quick-xml pair above.
+    #
+    # Not reachable at our log levels: the line is `debug!` on the
+    # `azure_core::policies::transport` target, and the default filter is
+    # `info`. It fires only if an operator explicitly asks for
+    # `RUST_LOG=…,azure_core=debug`, which is not hypothetical — that is the
+    # invocation used to diagnose the Azurite migration hang. **Do not run
+    # `azure_core=debug` against a real Azure account**; it prints request
+    # signatures to the terminal. Against Azurite it only exposes the
+    # published dev key's signatures.
+    #
+    # A subscriber-level directive pinning that target off was prototyped
+    # and rejected 2026-09-02 — not worth carrying a filter hack for a
+    # dependency being replaced.
+    #
+    # Un-ignore trigger: the azure_storage_blob 1.x migration lands
+    # (`cargo tree -i azure_core@0.21` returns no rows).
+    "RUSTSEC-2026-0275",
 
     # quick-xml 0.31.0 — transitive via azure_core 0.21.0 (unofficial SDK,
     # now archived). Our direct dep is already on 0.41.0; the 0.31 copy is
@@ -39,6 +90,38 @@ ignore = [
     #   RUSTSEC-2026-0194: quadratic dup-attribute check → CPU-DoS
     "RUSTSEC-2026-0195",
     "RUSTSEC-2026-0194",
+
+    # azure_core 0.21.0 — "Legacy azure_core writes the authorization
+    # header value to logs" (RUSTSEC-2026-0275, 6.5 medium). Same
+    # unofficial archived SDK, same absent upgrade path as the other
+    # 0.21.0-chain advisories above: the advisory's "upgrade to
+    # >=0.22.0" applies to the official azure_core crate line, not to
+    # the archived 0.21.0 we're pinned on via the unofficial
+    # azure_storage_blobs SDK. Real fix is the official azure_core 1.0 /
+    # azure_storage_blob 1.0 SDK migration tracked separately (memory
+    # project_azure_sdk_migration_pending) — blocked upstream by the
+    # 1.0 SDK dropping shared-key auth.
+    #
+    # Exposure in this codebase is narrow. The advisory covers the
+    # HTTP client emitting the `Authorization` header value into log
+    # records; for our Azure backend usage that header value is
+    # `SharedKey <account>:<HMAC-SHA256>` — the shared key itself
+    # never appears, only a per-request HMAC signature bound to the
+    # request's `x-ms-date` and unusable outside the ~15 min clock-skew
+    # window. Reaching the log path further requires (a) an Azure
+    # backend actually being configured (S3 and local are the
+    # alternatives) and (b) the tracing subscriber emitting DEBUG
+    # records for the `azure_core` target — production defaults are
+    # INFO. Under both conditions the worst-case leak is replay of
+    # individual object operations within the skew window by an
+    # attacker who already has production log read access; the shared
+    # key cannot be derived.
+    #
+    # Un-ignore trigger: the official azure_core 1.0 migration lands —
+    # at which point this entry and the other azure_core 0.21.0-chain
+    # entries above (RUSTSEC-2026-0097, -2024-0384, -2026-0195,
+    # -2026-0194) all go away together.
+    "RUSTSEC-2026-0275",
 
     # wasmtime 43.0.2 — "Stores can mix up type indices between engines"
     # (GHSA-hgjw-h833-99q9). Transitive via extism 1.30.0 (latest published;
@@ -57,6 +140,35 @@ ignore = [
     #     OxiCloud's plugin runtime creates one fresh Plugin per invocation
     #     with its own Store (see infrastructure/services/plugins/runtime.rs).
     "RUSTSEC-2026-0222",
+
+    # wasmtime 43.0.2 — "Filesystem sandbox escape when paths or symlinks
+    # contain trailing slashes" (RUSTSEC-2026-0269, 8.8 high). Same crate,
+    # same chain and same absent upgrade path as RUSTSEC-2026-0222 above:
+    # extism 1.30.0 is the latest published and pins wasmtime 43, while the
+    # advisory's fixed releases are >=24.0.13 <25, >=36.0.14 <37,
+    # >=46.0.3 <47, >=47.0.4 — none in the 43.x line, so there is no
+    # version satisfying extism's requirement that carries the fix.
+    #
+    # NOT REACHABLE, and for a stronger reason than the build-feature
+    # gating: this is a WASI filesystem sandbox escape, and OxiCloud's
+    # plugin runtime gives plugins no filesystem to escape from.
+    # `plugins/runtime.rs::compile` builds every plugin with
+    # `.with_wasi(false)` and declares no `allowed_paths`, so there are no
+    # preopened directories — the escape needs one to traverse out of.
+    # `.disallow_all_hosts()` removes outbound network on the same path.
+    #
+    # The build-level gating from the entry above still applies on top:
+    # `plugins` is opt-in and absent from `default`, so the CI release
+    # binary does not link wasmtime; runtime activation additionally needs
+    # OXICLOUD_ENABLE_PLUGINS=true; and plugin binaries are admin-supplied,
+    # not attacker input.
+    #
+    # Un-ignore trigger: EITHER extism releases a version on wasmtime
+    # >=46.0.3 (check with `cargo tree -i wasmtime --features plugins`),
+    # OR `plugins/runtime.rs` gains `allowed_paths` / `with_wasi(true)` —
+    # at which point this stops being unreachable and blocks release
+    # rather than being ignored.
+    "RUSTSEC-2026-0269",
 
     # astral-tokio-tar 0.5.6 — tar extraction advisories, transitive via
     # testcontainers → testcontainers-modules, a DEV-dependency used only by

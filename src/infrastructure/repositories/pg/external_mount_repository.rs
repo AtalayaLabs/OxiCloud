@@ -13,6 +13,7 @@ use crate::application::ports::external_mount_ports::{
     ExternalMountRecord, ExternalMountRepositoryPort, NewExternalMount,
 };
 use crate::domain::errors::DomainError;
+use crate::domain::services::path_service::normalize_storage_name;
 
 /// PostgreSQL implementation of [`ExternalMountRepositoryPort`].
 pub struct ExternalMountPgRepository {
@@ -93,6 +94,14 @@ impl ExternalMountRepositoryPort for ExternalMountPgRepository {
     }
 
     async fn create(&self, mount: &NewExternalMount) -> Result<(), DomainError> {
+        // NFC-normalize the admin-supplied display label at the last
+        // touch before bind. Admin-facing (not end-user drag-drop) so
+        // NFD is unlikely, but the invariant matches the storage.*
+        // pattern — the sibling folder row (created via
+        // `folder_db_repository::create_folder`, which already
+        // normalizes) and this admin label should stay byte-consistent
+        // on any table.
+        let normalized_name = normalize_storage_name(&mount.name);
         sqlx::query(
             "INSERT INTO storage.external_mounts
                 (mount_folder_id, kind, config, name, owner_id, read_only)
@@ -101,7 +110,7 @@ impl ExternalMountRepositoryPort for ExternalMountPgRepository {
         .bind(mount.mount_folder_id)
         .bind(&mount.kind)
         .bind(&mount.config)
-        .bind(&mount.name)
+        .bind(&normalized_name)
         .bind(mount.owner_id)
         .bind(mount.read_only)
         .execute(self.pool.as_ref())

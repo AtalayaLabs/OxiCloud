@@ -45,7 +45,7 @@ Content-Type: application/json
 HTTP 200
 [Captures]
 alice_token: jsonpath "$.access_token"
-alice_user_id: jsonpath "$.user.id"
+alice_user_id: jsonpath "$.user.full.user.id"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -126,7 +126,7 @@ Content-Type: application/json
 HTTP 200
 [Captures]
 bob_token: jsonpath "$.access_token"
-bob_user_id: jsonpath "$.user.id"
+bob_user_id: jsonpath "$.user.full.user.id"
 
 
 # ─────────────────────────────────────────────────────────────

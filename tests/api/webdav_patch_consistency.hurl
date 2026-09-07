@@ -174,7 +174,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-quota_owner_id: jsonpath "$.id"
+quota_owner_id: jsonpath "$.user.id"
 
 
 PUT {{base_url}}/api/admin/users/{{quota_owner_id}}/quota

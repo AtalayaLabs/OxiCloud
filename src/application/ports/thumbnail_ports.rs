@@ -77,6 +77,12 @@ pub enum ThumbnailFormat {
 }
 
 impl ThumbnailFormat {
+    /// Every format, for callers that must handle all of them — notably
+    /// `thumb_derived_import`, which claims one sidecar extension per format
+    /// and would silently strand a codec if this list and the write path
+    /// drifted apart.
+    pub const ALL: [ThumbnailFormat; 2] = [ThumbnailFormat::Webp, ThumbnailFormat::Jpeg];
+
     /// Stable name, byte-identical to the derived `Debug` output (see
     /// [`ThumbnailSize::as_str`] — same ETag-stability contract).
     pub fn as_str(self) -> &'static str {
@@ -91,6 +97,18 @@ impl ThumbnailFormat {
         match self {
             ThumbnailFormat::Webp => "webp",
             ThumbnailFormat::Jpeg => "jpg",
+        }
+    }
+
+    /// Media type, for `content_derived_blobs.content_type` and for any
+    /// response serving these bytes.
+    ///
+    /// Beside `ext` deliberately: the two must agree, and an extension
+    /// without a matching media type is how a WebP ends up labelled JPEG.
+    pub fn mime(self) -> &'static str {
+        match self {
+            ThumbnailFormat::Webp => "image/webp",
+            ThumbnailFormat::Jpeg => "image/jpeg",
         }
     }
 

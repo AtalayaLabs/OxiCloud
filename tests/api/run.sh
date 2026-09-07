@@ -166,6 +166,11 @@ hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test 
   "$API_DIR/recent.hurl" \
   "$API_DIR/batch_folder_copy.hurl" \
   "$API_DIR/dedup_blob_cleanup.hurl" \
+  "$API_DIR/derived_blob_copy.hurl" \
+  "$API_DIR/thumbnail_etag_content_keyed.hurl" \
+  "$API_DIR/attached_thumbnail_copy.hurl" \
+  "$API_DIR/transcode_cache.hurl" \
+  "$API_DIR/transcode_import.hurl" \
   "$API_DIR/dedup_admin_gate.hurl" \
   "$API_DIR/admin_jobs.hurl" \
   "$API_DIR/recoverable_jobs.hurl" \
@@ -219,10 +224,39 @@ hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test 
   "$API_DIR/webdav_drive_root.hurl" \
   "$API_DIR/webdav_permissions.hurl" \
   "$API_DIR/webdav_nested_move_cascade.hurl" \
+  "$API_DIR/nfc_normalization.hurl" \
   "$API_DIR/wopi_authz.hurl" \
-  "$API_DIR/wopi_shared_drive.hurl"
+  "$API_DIR/wopi_shared_drive.hurl" \
+  `# LAST, deliberately — and kept last even though it no longer cuts` \
+  `# the storage pointer over. It is the only scenario that depends on a` \
+  `# second service (Azurite on 10000), so if that container is missing` \
+  `# or wedged the failure lands after everything else has reported,` \
+  `# rather than in the middle of an otherwise-green run. It is also` \
+  `# where a cutover comes back once the official Azure SDK lands (see` \
+  `# the file header), and that WILL need to be last.` \
+  "$API_DIR/backend_consistency_azure.hurl"
 
 #bash "$API_DIR/dedup_bulk_upload.sh"
+
+# ── 4b. copy-folder ref_count regression — dedicated block ──────────────
+# Ref_count mismatches surface as "expected 1 got 2" at hurl-assert
+# level, which doesn't tell you WHICH half of the invariant broke
+# (cascade delete missed rows vs decrement hook didn't fire). The
+# `_diag.sh` script inspects `storage.blobs.ref_count` and the
+# auditor's `actual_ref_count` formula on the two fixture hashes to
+# pin the mode. Extracted from the main hurl array so `set -e`
+# doesn't skip the diagnostic on failure — the `if !` guard runs
+# the diag first, THEN exits with hurl's failure code so CI still
+# reports the regression.
+if ! hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test --jobs 1 \
+     "$API_DIR/refcount_cascade.hurl"; then
+  bash "$API_DIR/refcount_cascade_diag.sh" || true
+  exit 1
+fi
+
+# Migration check runs BEFORE the cleanup sweep, which deletes everything
+# it would otherwise need.
+bash "$API_DIR/thumb_import_check.sh"
 
 bash "$API_DIR/storage_cleanup_check.sh"
 
@@ -238,8 +272,8 @@ OPAQUE_HELPER_BIN="$REPO_ROOT/target/$BUILD_TARGET/opaque-hurl-helper"
 if [[ ! -x "$OPAQUE_HELPER_BIN" ]]; then
   log "Building opaque-hurl-helper ($BUILD_TARGET)..."
   case "$BUILD_TARGET" in
-    debug)   (cd "$REPO_ROOT" && cargo build           --bin opaque-hurl-helper 2>&1 | tail -n 20) || die "opaque-hurl-helper build failed" ;;
-    release) (cd "$REPO_ROOT" && cargo build --release --bin opaque-hurl-helper 2>&1 | tail -n 20) || die "opaque-hurl-helper build failed" ;;
+    debug)   (cd "$REPO_ROOT" && cargo build           --features test_utils --bin opaque-hurl-helper 2>&1 | tail -n 20) || die "opaque-hurl-helper build failed" ;;
+    release) (cd "$REPO_ROOT" && cargo build --release --features test_utils --bin opaque-hurl-helper 2>&1 | tail -n 20) || die "opaque-hurl-helper build failed" ;;
   esac
 fi
 log "Running OPAQUE crypto handshake helper..."
@@ -262,8 +296,8 @@ DPOP_HELPER_BIN="$REPO_ROOT/target/$BUILD_TARGET/dpop-hurl-helper"
 if [[ ! -x "$DPOP_HELPER_BIN" ]]; then
   log "Building dpop-hurl-helper ($BUILD_TARGET)..."
   case "$BUILD_TARGET" in
-    debug)   (cd "$REPO_ROOT" && cargo build           --bin dpop-hurl-helper 2>&1 | tail -n 20) || die "dpop-hurl-helper build failed" ;;
-    release) (cd "$REPO_ROOT" && cargo build --release --bin dpop-hurl-helper 2>&1 | tail -n 20) || die "dpop-hurl-helper build failed" ;;
+    debug)   (cd "$REPO_ROOT" && cargo build           --features test_utils --bin dpop-hurl-helper 2>&1 | tail -n 20) || die "dpop-hurl-helper build failed" ;;
+    release) (cd "$REPO_ROOT" && cargo build --release --features test_utils --bin dpop-hurl-helper 2>&1 | tail -n 20) || die "dpop-hurl-helper build failed" ;;
   esac
 fi
 log "Running DPoP wire-protocol helper..."

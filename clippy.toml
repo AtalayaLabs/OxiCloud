@@ -1,0 +1,28 @@
+# Clippy configuration overrides. Kept minimal — each entry documents
+# what it's for and when it should be revisited.
+
+# `clippy::result_large_err` — raise the "big Err variant" ceiling to
+# 512 bytes.
+#
+# Rationale: axum handler signatures shaped as
+# `Result<impl IntoResponse, impl IntoResponse>` (or `AppError` variants
+# that wrap `axum::response::Response`) naturally exceed the default
+# 128-byte threshold. `Response` carries a `HeaderMap` (~256 B inline)
+# + status + body + extensions; a handful of handlers land in that
+# range without doing anything wrong. Fighting the lint per-handler
+# with `#[allow]` on every one is churn for zero runtime benefit —
+# these Results are constructed on the stack once per request and
+# never nested in a hot inner loop.
+#
+# 512 B keeps the lint's protective value: it still fires on genuinely
+# oversized Err variants (embedded `Vec<u8>` blobs, avatar payloads,
+# large enum aggregates) that WOULD be worth boxing.
+#
+# Revisit if:
+#   * A future refactor slims axum Response OR extracts a small error
+#     enum with an IntoResponse impl across the handler layer — then
+#     drop this override back to the default 128.
+#   * A specific handler exceeds 512 B and clippy re-fires — deal with
+#     that handler individually (boxed error / small enum) rather than
+#     raising the ceiling further.
+large-error-threshold = 512

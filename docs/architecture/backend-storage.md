@@ -26,7 +26,7 @@ probe, and lifecycle behaviour are uniform.
 
 Every entry is declared in `OXICLOUD_STORAGE_ENTRIES` (comma-separated
 list of names). The active entry is stored in `admin_settings` and
-switched via `oxicloud --select-storage <name>` on the command line
+switched via `oxicloud storage select <name>` on the command line
 or automatically at the end of a successful `backend_migration`.
 Non-active entries stay reachable through the multi-entry API (test,
 audit, migrate-into).
@@ -119,7 +119,7 @@ Rendered visually via `xxd -l 15 <blob>`:
 
 Fingerprints are rendered the same colon-hex form (`15:f3:…:50`)
 everywhere they appear: boot log, admin panel pair chain, `xxd`
-inspection, `oxicloud --fingerprint <base64>` CLI, and the rotate /
+inspection, `oxicloud storage fingerprint <base64>` CLI, and the rotate /
 migration audit lines. That means an admin can cross-reference by
 eye — same string means same key.
 
@@ -234,27 +234,38 @@ can be safely dropped.
 
 ---
 
-## 4. Blob consistency (`blobs_consistency`)
+## 4. Blob consistency — two jobs, split by what they read
 
-Read-only recoverable job that walks `storage.blobs` and reports
-divergence between the DB registry and the physical backend.
+The registry side and the physical side are separate tenants. They
+used to be one, with `blobs_consistency` probing the backend once per
+row; that probe found strictly less than the merge-join below, at N
+round-trips instead of one enumeration, so it was removed.
 
-### Shallow mode (default)
+### `blobs_consistency` — database only
 
-Per row:
+Walks `storage.blobs` and compares `ref_count` against the reference
+count computed from `storage.files.blob_hash` +
+`chunk_manifests.chunk_hashes[]`. On mismatch: `refcount_mismatch`
+(severity `inconsistent`), repairable under `?repair=true`.
 
-- `blob_exists(hash)` on the active backend → if false, record
-  `blob_missing_from_backend` (severity `data_loss`)
-- Compare `ref_count` against the actual reference count computed
-  from `SUM` over `storage.files.blob_hash` + `chunk_manifests.chunk_hashes[]`
-  → if mismatch, record `refcount_mismatch` (severity `inconsistent`)
+It opens no backend and makes no network call. `?storage=<name>` and
+`?deep=true` are inert. Cost is one aggregate SQL per row.
 
-Cost: one existence probe + one aggregate SQL per row. Fast on
-S3/Azure (single HEAD).
+### `backend_consistency` — everything physical
 
-### Deep mode (`?deep=true`)
+Merge-joins the backend's enumeration against `storage.blobs`, both
+ordered by hash, yielding both deltas in one pass:
 
-Adds a full read of every blob:
+- bytes with no registry row → `orphan_blob` (severity `inconsistent`)
+- a registry row with no bytes → `blob_missing_from_backend`
+  (severity `data_loss`)
+
+`?storage=<name>` scopes it to any declared entry rather than the live
+backend.
+
+### Deep mode (`?deep=true`, on `backend_consistency`)
+
+For every hash present on both sides, adds a full read:
 
 - Stream the blob through `EncryptedBlobBackend::get_blob_stream`
   (strips header, decrypts if needed, applies BLAKE3 rescue for
@@ -336,7 +347,7 @@ readonly (source stays active — writes safe there), and returns
 `RunOutcome::Failed`. Operator inspects findings, then either
 retries (walk short-circuits on head-format matches → cheap
 re-attempt), fixes the source, or explicitly accepts the partial
-via `oxicloud --select-storage <target>`.
+via `oxicloud storage select <target>`.
 
 ---
 

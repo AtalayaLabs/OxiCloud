@@ -15,23 +15,105 @@ use tower_http::compression::CompressionLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_header::SetResponseHeaderLayer;
 
-/// Resolve the directory the SPA is actually served from.
+#[cfg(feature = "bundled-assets")]
+pub mod embedded;
+
+/// Where the SPA + immutable assets are served from — filesystem
+/// (default and also the fallback on bundled builds when
+/// `OXICLOUD_STATIC_PATH` points at real files) or the compile-time
+/// embedded corpus (bundled-assets feature only).
 ///
-/// Prefers the Vite build output (`static-dist/`) sitting next to the configured
-/// static path, falling back to the configured path itself — the container ships
-/// the built SPA straight to `OXICLOUD_STATIC_PATH` (default `./static`), so there
-/// the fallback is what serves. Shared with the CSP layer in `main.rs` so the
-/// inline-script hashes are computed from exactly the bytes that get served.
-pub fn resolve_static_path(config: &AppConfig) -> PathBuf {
+/// Returned by [`resolve_static_source`]; matched at each of the four
+/// consumer sites (SPA `ServeDir`, `_app/immutable` `ServeDir`,
+/// CSP inline-script scan, and the locale-loader picker in `main.rs`).
+#[derive(Debug, Clone)]
+pub enum StaticSource {
+    Filesystem(PathBuf),
+    /// Serve from the `EmbeddedAssets` corpus in the [`embedded`] module.
+    /// Only reachable under `--features bundled-assets` — the variant is
+    /// cfg-gated so match arms in non-bundled builds stay exhaustive on
+    /// a single variant, giving zero runtime cost.
+    #[cfg(feature = "bundled-assets")]
+    Embedded,
+}
+
+/// Resolve where static assets come from.
+///
+/// Order of precedence (highest first):
+///  1. `<OXICLOUD_STATIC_PATH>/../static-dist/` when it exists — matches
+///     the SvelteKit adapter-static output at the repo root.
+///  2. `OXICLOUD_STATIC_PATH` itself when it exists — Docker image path
+///     (assets copied straight to `/app/static/`).
+///  3. Bundled-assets fallback (only when the feature is on) — the
+///     compile-time embedded corpus.
+///  4. Non-bundled fallback — return the configured path anyway, letting
+///     downstream `ServeDir` fail predictably at request time.
+///
+/// Rule (2) exists so ops running a bundled binary can still point
+/// `OXICLOUD_STATIC_PATH` at a live directory (locale patch, theme
+/// override) and see it win over the embedded copy without a rebuild.
+pub fn resolve_static_source(config: &AppConfig) -> StaticSource {
     let dist = config
         .static_path
         .parent()
         .unwrap_or(Path::new("."))
         .join("static-dist");
     if dist.exists() {
-        return dist;
+        tracing::info!(
+            source = %dist.display(),
+            "static-assets: serving from filesystem (Vite build output at <static>/../static-dist/)"
+        );
+        return StaticSource::Filesystem(dist);
     }
-    config.static_path.clone()
+    if config.static_path.exists() {
+        tracing::info!(
+            source = %config.static_path.display(),
+            "static-assets: serving from filesystem (OXICLOUD_STATIC_PATH)"
+        );
+        return StaticSource::Filesystem(config.static_path.clone());
+    }
+    #[cfg(feature = "bundled-assets")]
+    {
+        tracing::info!(
+            configured_static_path = %config.static_path.display(),
+            "static-assets: no filesystem source found, serving embedded corpus \
+             (bundled-assets feature). Set OXICLOUD_STATIC_PATH to override with a \
+             live directory."
+        );
+        StaticSource::Embedded
+    }
+    #[cfg(not(feature = "bundled-assets"))]
+    {
+        // Non-bundled build with no on-disk source. Return the configured
+        // path anyway — downstream `ServeDir` will fail predictably at
+        // request time. A separate boot-time warning wouldn't help; the
+        // real fix is to build the SPA or set OXICLOUD_STATIC_PATH.
+        StaticSource::Filesystem(config.static_path.clone())
+    }
+}
+
+/// Backwards-compat helper: resolve to a `PathBuf` directly.
+///
+/// Preserved for callers that predate the `StaticSource` enum. Only
+/// callable in configurations where a filesystem path exists — a
+/// bundled build whose `resolve_static_source` returned `Embedded`
+/// would panic here, so new code should always match on
+/// `resolve_static_source(...)` instead.
+pub fn resolve_static_path(config: &AppConfig) -> PathBuf {
+    match resolve_static_source(config) {
+        StaticSource::Filesystem(p) => p,
+        #[cfg(feature = "bundled-assets")]
+        StaticSource::Embedded => {
+            // Every migrated caller matches on StaticSource directly;
+            // this branch means someone called the legacy helper from
+            // a bundled build. Fix the caller, not the shim.
+            panic!(
+                "resolve_static_path() called on a bundled build with no filesystem \
+                 assets — migrate the caller to resolve_static_source() and match on \
+                 StaticSource::Embedded"
+            )
+        }
+    }
 }
 
 /// Serves the SvelteKit single-page app.
@@ -44,43 +126,33 @@ pub fn resolve_static_path(config: &AppConfig) -> PathBuf {
 /// Caching: content-hashed assets under `/_app/immutable` are cached forever;
 /// everything else — crucially the `index.html` shell — is `no-cache` so a deploy
 /// can't leave a stale app pinned in browsers.
-pub fn create_web_routes(app_state: Arc<AppState>) -> Router<Arc<AppState>> {
-    let config = AppConfig::from_env();
-    let static_path = resolve_static_path(&config);
+pub fn create_web_routes(app_state: Arc<AppState>, source: StaticSource) -> Router<Arc<AppState>> {
+    // `source` is resolved ONCE at boot in `main.rs::run()` and passed
+    // in — see the sequence there. Previously this fn called
+    // `AppConfig::from_env()` + `resolve_static_source(&config)` itself
+    // (duplicating the env parse + storage-summary log). Threading the
+    // resolved value through as an arg keeps this fn pure and eliminates
+    // both duplicates in the boot log (bug fixed 2026-08-28).
 
-    // SPA fallback: serve the file if it exists, else the app shell.
-    //
-    // `precompressed_*`: if the frontend build emitted a sibling `.br`/`.gz`
-    // (frontend/scripts/precompress.mjs runs at build time), serve those
-    // bytes directly with the right Content-Encoding instead of re-running
-    // Brotli over the same immutable bundle on EVERY request — the
-    // `CompressionLayer` below then skips the already-encoded response and
-    // remains only the fallback for assets without a precompressed sibling
-    // (benches/STATIC-PRECOMPRESSED.md).
-    let spa = ServeDir::new(&static_path)
-        .precompressed_br()
-        .precompressed_gzip()
-        .fallback(ServeFile::new(static_path.join("index.html")));
+    // Build the router — two shapes depending on `StaticSource`, but both
+    // wear the SAME outer layers below (compression fallback, no-cache
+    // default for the shell, OIDC login short-circuit). Keeping the
+    // layers common means the filesystem and embedded paths behave
+    // identically at the wire boundary.
+    let inner = match source {
+        StaticSource::Filesystem(static_path) => web_routes_filesystem(&static_path),
+        #[cfg(feature = "bundled-assets")]
+        StaticSource::Embedded => web_routes_embedded(),
+    };
 
-    // Hashed, immutable assets (SvelteKit emits these under /_app/immutable).
-    let app_immutable = ServeDir::new(static_path.join("_app").join("immutable"))
-        .precompressed_br()
-        .precompressed_gzip();
-
-    Router::new()
-        .nest_service(
-            "/_app/immutable",
-            get_service(app_immutable).layer(SetResponseHeaderLayer::overriding(
-                CACHE_CONTROL,
-                HeaderValue::from_static("public, max-age=31536000, immutable"),
-            )),
-        )
-        .fallback_service(spa)
-        // Fallback compression for assets without a precompressed sibling.
-        // Quality 4, NOT the default: the default maps to Brotli q11 —
-        // ~1.3 s of CPU per 700 KiB bundle per request (measured in
-        // benches/STATIC-PRECOMPRESSED.md; the .br siblings above carry the
-        // real q11 bytes, paid once at build time).
+    inner
+        // Fallback compression for assets without a precompressed sibling
+        // (filesystem) or for embedded assets that were compressed at
+        // compile time and decompressed on read (bundled). Quality 4,
+        // NOT the default: the default maps to Brotli q11 — ~1.3 s of
+        // CPU per 700 KiB bundle per request (benches/STATIC-PRECOMPRESSED.md;
+        // the .br siblings on the filesystem path carry the real q11
+        // bytes, paid once at build time).
         .layer(
             CompressionLayer::new()
                 .quality(tower_http::CompressionLevel::Precise(4))
@@ -103,6 +175,58 @@ pub fn create_web_routes(app_state: Arc<AppState>) -> Router<Arc<AppState>> {
             app_state,
             oidc_standalone_login_redirect,
         ))
+}
+
+/// Filesystem-served SPA — the historical shape. Two `ServeDir` instances
+/// with tower-http's `precompressed_br().precompressed_gzip()` picking up
+/// Vite's precompressed siblings when present.
+fn web_routes_filesystem(static_path: &Path) -> Router<Arc<AppState>> {
+    // SPA fallback: serve the file if it exists, else the app shell.
+    //
+    // `precompressed_*`: if the frontend build emitted a sibling `.br`/`.gz`
+    // (frontend/scripts/precompress.mjs runs at build time), serve those
+    // bytes directly with the right Content-Encoding instead of re-running
+    // Brotli over the same immutable bundle on EVERY request — the
+    // `CompressionLayer` in `create_web_routes` then skips the already-encoded
+    // response and remains only the fallback for assets without a
+    // precompressed sibling (benches/STATIC-PRECOMPRESSED.md).
+    let spa = ServeDir::new(static_path)
+        .precompressed_br()
+        .precompressed_gzip()
+        .fallback(ServeFile::new(static_path.join("index.html")));
+
+    // Hashed, immutable assets (SvelteKit emits these under /_app/immutable).
+    let app_immutable = ServeDir::new(static_path.join("_app").join("immutable"))
+        .precompressed_br()
+        .precompressed_gzip();
+
+    Router::new()
+        .nest_service(
+            "/_app/immutable",
+            get_service(app_immutable).layer(SetResponseHeaderLayer::overriding(
+                CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=31536000, immutable"),
+            )),
+        )
+        .fallback_service(spa)
+}
+
+/// Embedded-assets SPA — mirror of `web_routes_filesystem` using the
+/// [`embedded`] module's handlers instead of `ServeDir`. Same URL shape,
+/// same cache-header layers, same SPA-shell fallback semantics.
+#[cfg(feature = "bundled-assets")]
+fn web_routes_embedded() -> Router<Arc<AppState>> {
+    use axum::routing::get;
+    Router::new()
+        .route(
+            "/_app/immutable/{*path}",
+            get(embedded::serve_immutable).layer(SetResponseHeaderLayer::overriding(
+                CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=31536000, immutable"),
+            )),
+        )
+        .route("/", get(embedded::serve_root_index))
+        .fallback(get(embedded::serve_root))
 }
 
 /// Intercept `GET /login` and 302 to `/api/auth/oidc/authorize` when OIDC is
@@ -161,15 +285,31 @@ async fn oidc_standalone_login_redirect(
 ///   web worker from a blob URL; `'self'` covers same-origin workers like the
 ///   delta-upload worker.
 pub fn content_security_policy(config: &AppConfig) -> String {
-    let static_path = resolve_static_path(config);
-    let hashes = inline_script_csp_hashes(&static_path);
+    let source = resolve_static_source(config);
+    let hashes = match &source {
+        StaticSource::Filesystem(p) => inline_script_csp_hashes(p),
+        #[cfg(feature = "bundled-assets")]
+        StaticSource::Embedded => inline_script_csp_hashes_embedded(),
+    };
     if hashes.is_empty() {
-        tracing::warn!(
-            static_path = %static_path.display(),
-            "CSP: no inline <script> hashes computed — if the SPA shell ships \
-             inline scripts they will be blocked by script-src 'self'. Check the \
-             static asset path (OXICLOUD_STATIC_PATH)."
-        );
+        match &source {
+            StaticSource::Filesystem(p) => {
+                tracing::warn!(
+                    static_path = %p.display(),
+                    "CSP: no inline <script> hashes computed — if the SPA shell ships \
+                     inline scripts they will be blocked by script-src 'self'. Check the \
+                     static asset path (OXICLOUD_STATIC_PATH)."
+                );
+            }
+            #[cfg(feature = "bundled-assets")]
+            StaticSource::Embedded => {
+                tracing::warn!(
+                    "CSP: no inline <script> hashes computed from embedded corpus — \
+                     the SPA shell may boot with a blocked script-src. Rebuild with \
+                     an up-to-date static-dist/."
+                );
+            }
+        }
     }
 
     // `'wasm-unsafe-eval'` is required for WebAssembly compilation/instantiation
@@ -226,6 +366,28 @@ fn inline_script_csp_hashes(static_path: &Path) -> Vec<String> {
             continue;
         };
         for script in inline_scripts(&html) {
+            hashes.insert(csp_hash(script));
+        }
+    }
+    hashes.into_iter().collect()
+}
+
+/// Embedded-corpus twin of [`inline_script_csp_hashes`].
+///
+/// Same arithmetic — iterate root-level `.html` shells, extract every
+/// inline `<script>`, hash each — but pulls bytes from
+/// [`embedded::EmbeddedAssets`] instead of the filesystem. The two
+/// functions produce identical output for the same source tree, so
+/// `content_security_policy` can pick either without callers seeing a
+/// difference.
+#[cfg(feature = "bundled-assets")]
+fn inline_script_csp_hashes_embedded() -> Vec<String> {
+    let mut hashes = BTreeSet::new();
+    for (_name, bytes) in embedded::embedded_html_shells() {
+        let Ok(html) = std::str::from_utf8(&bytes) else {
+            continue;
+        };
+        for script in inline_scripts(html) {
             hashes.insert(csp_hash(script));
         }
     }

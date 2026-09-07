@@ -55,6 +55,17 @@ struct JwtClaims {
     /// Serialised as `{"cnf": {"jkt": "..."}}` to match RFC 9449.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cnf: Option<CnfClaim>,
+    /// OIDC-style `sid` claim (RFC 8417 §4.1) — carries the
+    /// `auth.sessions.id` this access token was minted for so the
+    /// auth middleware can stamp per-session liveness without a DB
+    /// round trip. `None` on tokens minted by pre-`sid` builds so
+    /// deserialisation stays backward-compatible during rollout.
+    /// Kept as `String` on the wire (Uuid parses at the port
+    /// boundary) so a malformed value fails at token-decode time
+    /// with a clear parse error instead of poisoning the field
+    /// silently.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sid: Option<String>,
 }
 
 /// RFC 9449 §5 confirmation-key wrapper. Only the `jkt` member is
@@ -72,6 +83,17 @@ impl From<JwtClaims> for TokenClaims {
         // signed always carries a UUID `sub`; nil is a safe sentinel the
         // middleware rejects. See benches/ROUND14.md §A3.
         let sub_id = uuid::Uuid::parse_str(&claims.sub).unwrap_or_else(|_| uuid::Uuid::nil());
+        // Parse `sid` at the boundary — same amortization rationale
+        // as `sub_id` above, and gives us a clean `Option<Uuid>` in
+        // `TokenClaims`. A parse failure (mint-time bug or hand-
+        // crafted claim) drops the sid to `None`; the middleware
+        // then simply skips the stamp — token still authenticates.
+        // Legitimate tokens minted by this codebase always carry a
+        // valid Uuid, so this only masks external drift.
+        let sid = claims
+            .sid
+            .as_deref()
+            .and_then(|s| uuid::Uuid::parse_str(s).ok());
         TokenClaims {
             sub_id,
             sub: claims.sub,
@@ -82,6 +104,7 @@ impl From<JwtClaims> for TokenClaims {
             email: claims.email,
             role: claims.role,
             dpop_jkt: claims.cnf.map(|c| c.jkt),
+            sid,
         }
     }
 }
@@ -196,6 +219,7 @@ impl TokenServicePort for JwtTokenService {
     fn generate_access_token(
         &self,
         user: &User,
+        session_id: Option<Uuid>,
         dpop_jkt: Option<&str>,
     ) -> Result<String, DomainError> {
         let now = Utc::now().timestamp();
@@ -219,6 +243,7 @@ impl TokenServicePort for JwtTokenService {
             cnf: dpop_jkt.map(|jkt| CnfClaim {
                 jkt: jkt.to_string(),
             }),
+            sid: session_id.map(|id| id.to_string()),
         };
 
         // Log JWT claims for debugging
@@ -331,7 +356,7 @@ mod tests {
 
         let user = create_test_user();
         let token = service
-            .generate_access_token(&user, None)
+            .generate_access_token(&user, Some(Uuid::new_v4()), None)
             .expect("Should generate token");
 
         let claims = service
@@ -370,7 +395,7 @@ mod tests {
 
         let user = create_test_user();
         let token = service
-            .generate_access_token(&user, None)
+            .generate_access_token(&user, Some(Uuid::new_v4()), None)
             .expect("Should generate token");
 
         // First call: cache miss — performs full HMAC verification
@@ -397,7 +422,7 @@ mod tests {
             86400,
         );
         let token = service
-            .generate_access_token(&create_test_user(), None)
+            .generate_access_token(&create_test_user(), Some(Uuid::new_v4()), None)
             .expect("Should generate token");
 
         // Miss populates the cache; hit must hand back the very same
@@ -424,5 +449,47 @@ mod tests {
 
         let (hits, _misses) = service.cache_stats();
         assert_eq!(hits, 0, "Invalid tokens should never produce cache hits");
+    }
+
+    /// Regression for the `sid` claim wiring — the auth middleware
+    /// stamps per-session liveness by reading this exact field. If
+    /// the mint stops setting the claim or the port stops parsing
+    /// it, every `LastSeenTracker::stamp` call goes silent and the
+    /// Prometheus gauges freeze at zero.
+    #[test]
+    fn access_token_round_trips_session_id_as_sid_claim() {
+        let service = JwtTokenService::new(
+            "test_secret_key_at_least_32_bytes_long".to_string(),
+            3600,
+            86400,
+        );
+        let user = create_test_user();
+        let session_id = Uuid::new_v4();
+        let token = service
+            .generate_access_token(&user, Some(session_id), None)
+            .expect("Should generate token");
+        let claims = service.validate_token(&token).expect("Should validate");
+        assert_eq!(claims.sid, Some(session_id));
+    }
+
+    /// Backward-compatibility guard: a mint call with `None`
+    /// omits the `sid` claim entirely (matches the pre-`sid`
+    /// on-wire shape), and the validated claims surface `None`
+    /// on the port. The middleware's `if let (Some(sid), ...)`
+    /// then simply skips the stamp — critical during rollout
+    /// where old tokens are still in flight.
+    #[test]
+    fn access_token_without_session_id_omits_sid_claim() {
+        let service = JwtTokenService::new(
+            "test_secret_key_at_least_32_bytes_long".to_string(),
+            3600,
+            86400,
+        );
+        let user = create_test_user();
+        let token = service
+            .generate_access_token(&user, None, None)
+            .expect("Should generate token");
+        let claims = service.validate_token(&token).expect("Should validate");
+        assert_eq!(claims.sid, None);
     }
 }

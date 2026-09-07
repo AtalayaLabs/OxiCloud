@@ -27,6 +27,7 @@ use crate::application::ports::trash_ports::TrashUseCase;
 use crate::common::di::AppState;
 use crate::common::mime_detect::filename_from_path;
 use crate::domain::services::authorization::{Permission, Resource, Subject};
+use crate::domain::services::path_service::normalize_storage_name;
 use crate::infrastructure::services::path_resolver_service::ResolvedResource;
 use crate::infrastructure::services::webdav_dead_property_store::ResourceRef;
 use crate::interfaces::api::handlers::webdav_handler::{
@@ -1295,6 +1296,13 @@ async fn handle_mkcol(
     }
     let (target_name, parent_segments) = segments.split_last().expect("checked non-empty above");
 
+    // NFC-normalize the client-supplied last segment so we can emit
+    // `Content-Location` if the canonical URL differs. Repo also
+    // normalizes (idempotent — `is_nfc_quick` fast path). See
+    // AtalayaLabs/OxiCloud#706 for the class of bug this closes on the
+    // NC surface (macOS Finder / NC desktop client emit NFD on macOS).
+    let normalized_target = normalize_storage_name(target_name);
+
     // Take POC's `chroot`-based root resolution (drive-aware mount
     // point) but keep HEAD's parent_path lookup pattern — the
     // continuation below uses `get_folder_by_path(&parent_path,
@@ -1320,7 +1328,7 @@ async fn handle_mkcol(
     };
 
     let dto = CreateFolderDto {
-        name: target_name.to_string(),
+        name: normalized_target.clone(),
         parent_id: Some(parent_folder.id.clone()),
     };
     // AuthZ audit #7 (2026-07-12): route `_with_perms` errors through
@@ -1332,10 +1340,25 @@ async fn handle_mkcol(
         .await
         .map_err(AppError::from)?;
 
-    Ok(Response::builder()
-        .status(StatusCode::CREATED)
-        .body(Body::empty())
-        .unwrap())
+    // Emit Content-Location (RFC 7231 §3.1.4.2) only when the URL
+    // canonicalization actually changed something — keeps the common
+    // ASCII / already-NFC path clean. Well-behaved clients (NC desktop,
+    // rclone) update their local index; naive clients ignore the
+    // header safely (status stays 201).
+    let mut response = Response::builder().status(StatusCode::CREATED);
+    if normalized_target != *target_name {
+        let mut canonical_subpath = String::with_capacity(subpath.len());
+        for seg in parent_segments {
+            canonical_subpath.push_str(seg);
+            canonical_subpath.push('/');
+        }
+        canonical_subpath.push_str(&normalized_target);
+        response = response.header(
+            "Content-Location",
+            nc_collection_href(&user.username, &canonical_subpath),
+        );
+    }
+    Ok(response.body(Body::empty()).unwrap())
 }
 
 // ──────────────────── DELETE ────────────────────

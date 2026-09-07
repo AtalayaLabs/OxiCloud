@@ -44,19 +44,22 @@ Authorization: Bearer {{admin_token}}
 HTTP 200
 [Asserts]
 # Two entries declared, in _ENTRIES order.
-jsonpath "$.entries" count == 2
+jsonpath "$.entries" count == 3
 jsonpath "$.entries[0].name" == "local_main"
 jsonpath "$.entries[1].name" == "s3_stub"
+jsonpath "$.entries[2].name" == "azurite"
 
 # Backend types match the declarations.
 jsonpath "$.entries[0].backend" == "local"
 jsonpath "$.entries[1].backend" == "s3"
+jsonpath "$.entries[2].backend" == "azure"
 
 # Active pointer: fresh DB has no `active_backend_name` row, so the
 # boot fallback picks the FIRST entry in _ENTRIES.
 jsonpath "$.active_entry_name" == "local_main"
 jsonpath "$.entries[0].is_active" == true
 jsonpath "$.entries[1].is_active" == false
+jsonpath "$.entries[2].is_active" == false
 
 # Read-only mode off on a fresh boot (no in-flight migration, no
 # stale flag in DB).

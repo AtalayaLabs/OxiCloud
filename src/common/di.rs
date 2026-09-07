@@ -313,7 +313,7 @@ impl AppServiceFactory {
                     tracing::info!(
                         "Storage: no active_backend_name set in DB — defaulting to first entry \
                          `{}` (declared first in OXICLOUD_STORAGE_ENTRIES). Set explicitly via \
-                         the admin storage tab or `oxicloud --select-storage <name>` to pin.",
+                         the admin storage tab or `oxicloud storage select <name>` to pin.",
                         first.name,
                     );
                     first
@@ -450,6 +450,17 @@ impl AppServiceFactory {
             .with_blob_lifecycle(blob_lifecycle),
         );
         dedup_service.initialize().await?;
+
+        // Hand the transcode service its derived tier.
+        //
+        // Deferred rather than injected at construction because that happens
+        // ~240 lines above this, before `DedupService` exists, and the
+        // retrieval path that needs the transcode service is wired earlier
+        // still. Reordering DI to make the dependency a constructor argument
+        // would move more than it is worth; the service treats a missing
+        // handle as "local cache only", which is exactly its pre-derived-tier
+        // behaviour.
+        image_transcode_service.attach_dedup(dedup_service.clone());
 
         // One-time background migration: re-chunk pre-CDC whole-file blobs
         // into chunk manifests so Range reads (and, with encryption, partial
@@ -1460,6 +1471,85 @@ impl AppServiceFactory {
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
         .await;
 
+        // Reconciles `chunk_manifests.ref_count` — the SECOND reference
+        // counter, and the one nothing verified before. add_reference bumps
+        // it first and only falls back to storage.blobs.ref_count, so every
+        // CDC file (and every derived artifact, once those land) counts here
+        // rather than at the chunk level. Uses the same registry dedup_gc
+        // reaps from, so the two cannot disagree.
+        // See docs/plan/derived-blobs.md.
+        let _ = Arc::new(
+            crate::infrastructure::services::manifests_consistency_service::ManifestsConsistencyCheck::new(
+                maintenance_pool.clone(),
+                core.dedup_service.reference_registry(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
+        // Step 10 migration tenant: backfills `content_derived_blobs` from
+        // the on-disk thumbnail sidecars that predate it. Idempotent, so it
+        // is safe to trigger repeatedly — Phase 3 (deleting the sidecars) is
+        // gated on a run reporting zero imported. Registered unconditionally
+        // rather than behind a flag: a migration nobody can find is a
+        // migration nobody runs.
+        //
+        // `.thumbnails` lives under the storage path, matching
+        // `ThumbnailService::new(&self.storage_path, …)` above.
+        let _ = Arc::new(
+            crate::infrastructure::services::thumb_derived_import_service::ThumbDerivedImport::new(
+                std::path::Path::new(&self.storage_path).join(".thumbnails"),
+                core.dedup_service.clone(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
+        // Step 7 migration tenant: drains `.transcoded/` the same way the
+        // thumbnail imports drain `.thumbnails/`, with one extra step —
+        // the legacy tree is keyed by FILE (`{file_id}.webp`) while the
+        // destination is keyed by CONTENT, so every entry is re-keyed
+        // through `storage.files` on the way in. Entries naming the same
+        // content collapse into one row, which is the saving this migration
+        // exists for; a sandbox with five `.skip` markers had three of them
+        // describing one image.
+        let _ = Arc::new(
+            crate::infrastructure::services::transcode_import_service::TranscodeImport::new(
+                std::path::Path::new(&self.storage_path).join(".transcoded"),
+                core.dedup_service.clone(),
+                maintenance_pool.clone(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
+        // Both satellite tables, checked for mappings whose Blob is gone.
+        // Nothing else can: a row whose SOURCE was reaped still holds a valid
+        // reference to a real artifact with a correct refcount, so every
+        // other check agrees the system is healthy while the artifact is
+        // pinned forever. Read-only.
+        let _ = Arc::new(
+            crate::infrastructure::services::satellites_consistency_service::SatellitesConsistencyCheck::new(
+                maintenance_pool.clone(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
+        // Its file-keyed twin: `ext-{file_id}.jpg` previews the user uploaded,
+        // which no copy path duplicates today. Separate job, separate keying —
+        // routing these into the content-keyed table would share one user's
+        // preview onto every file with identical content.
+        let _ = Arc::new(
+            crate::infrastructure::services::thumb_attached_import_service::ThumbAttachedImport::new(
+                std::path::Path::new(&self.storage_path).join(".thumbnails"),
+                core.dedup_service.clone(),
+                maintenance_pool.clone(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
         // Third recoverable-run tenant. Iterates `storage.files`
         // and reports parent-folder-trashed cascade misses,
         // `missing_blob` (data-loss indicator — file references
@@ -1475,24 +1565,24 @@ impl AppServiceFactory {
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
         .await;
 
-        // Fourth recoverable-run tenant. Iterates `storage.blobs`
-        // and verifies each row against the physical backend AND
-        // against the reference-counting invariants that `dedup_gc`
-        // relies on. Three per-row checks (subject-iteration in
-        // action): `blob_missing_from_backend` (data_loss, bytes
-        // gone from disk), `refcount_mismatch` (inconsistent,
-        // dedup counter drift), and `blob_corrupted` (data_loss,
-        // deep mode only — bit-rot). Complements
-        // `files_consistency` without doubling work: probing
-        // per-unique-blob preserves dedup savings vs probing
-        // per-file-chunk. See memory
-        // `project_cdc_dual_storage_registries` for the rationale.
+        // Fourth recoverable-run tenant. Iterates `storage.blobs` and
+        // checks the reference-counting invariant `dedup_gc` relies on:
+        // `refcount_mismatch` (inconsistent — an under-count lets GC reap
+        // a live blob, an over-count pins a dead one), repairable under
+        // `?repair=true`.
+        //
+        // DB-only, and takes no backend. Physical checks — missing bytes,
+        // orphaned bytes, bit-rot — all belong to `backend_consistency`,
+        // which merge-joins the backend enumeration against this same
+        // table in one pass. This tenant used to probe the backend once
+        // per row for missing bytes, which found strictly less than the
+        // merge-join at N round-trips instead of one enumeration.
         let _ = Arc::new(
             crate::infrastructure::services::blobs_consistency_service::BlobsConsistencyCheck::new(
                 maintenance_pool.clone(),
-                core.blob_backend.clone(),
-                core.config.storage_entries.clone(),
-                self.storage_path.clone(),
+                // Same registry instance GC reaps from — see
+                // DedupService::reference_registry.
+                core.dedup_service.reference_registry(),
             ),
         )
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
@@ -2126,6 +2216,38 @@ impl AppServiceFactory {
         let mut core = core;
         core.zip_service = Some(zip_service);
 
+        // Session liveness tracker — spawns its own 30 s flush
+        // loop at construction. Only built when auth (and thus
+        // sessions) exist; when auth is off this is `None` and
+        // the middleware never calls it. Uses the maintenance
+        // pool so background flushes don't compete with
+        // request-serving connections. See
+        // [`LastSeenTracker`](crate::infrastructure::services::last_seen_tracker).
+        let last_seen_tracker = if auth_services.is_some() {
+            Some(
+                crate::infrastructure::services::last_seen_tracker::LastSeenTracker::start(
+                    maintenance_pool.clone(),
+                ),
+            )
+        } else {
+            None
+        };
+
+        // Session-liveness Prometheus poller — three COUNT(*) reads
+        // every 30 s, publishing `oxicloud_sessions_active`,
+        // `_active_users`, `_total_non_revoked`. Only spawned when
+        // the Prometheus recorder is installed (i.e.,
+        // `OXICLOUD_METRICS_LISTEN` is set) — without the recorder
+        // the `metrics::gauge!(...)` calls are no-ops and the
+        // periodic PG hits would be pure waste. Requires auth for
+        // the same reason as `last_seen_tracker`: no sessions to
+        // count without it.
+        if auth_services.is_some() && self.config.metrics_listen.is_some() {
+            crate::infrastructure::services::session_liveness_gauges::spawn(
+                maintenance_pool.clone(),
+            );
+        }
+
         // 9. Assemble final AppState
         let mut app_state = AppState {
             core,
@@ -2158,6 +2280,7 @@ impl AppServiceFactory {
             people_service,
             storage_usage_service,
             grant_cleanup_service,
+            last_seen_tracker,
             calendar_service: None,
             calendar_use_case: None,
             addressbook_use_case: None,
@@ -2741,6 +2864,116 @@ impl AppServiceFactory {
             registered
         );
 
+        // `OXICLOUD_STARTUP_JOBS` — dispatch each named job once, now.
+        //
+        // Exists for the migration jobs. Their scheduled ticks import but
+        // never delete (`repair` defaults false, per no-silent-auto-repair),
+        // so a deployment whose operator never opens the admin panel keeps
+        // importing sidecars it already imported and never drains the
+        // directory. Naming the job in configuration IS the deliberate
+        // consent that rule asks for; it is simply given once, at boot,
+        // rather than per run.
+        //
+        // Validated here, dispatched in the background:
+        //
+        // * Unknown names **panic**. The registry is fully populated at this
+        //   point, so a name that does not resolve is a typo or a rename, and
+        //   the failure mode of ignoring it is a migration that silently
+        //   never runs. Fail at boot, where the operator is watching.
+        // * Dispatch is `tokio::spawn` — readiness must never wait on a job
+        //   that walks a filesystem for hours.
+        // * Sequential within the task, not concurrent: these jobs contend
+        //   for the same directory and DB, and the exclusivity gate would
+        //   turn overlap into a skipped run rather than a queued one.
+        // * Safe on every boot, including a crash loop: each is idempotent
+        //   and resumable, and once drained a run is a `read_dir` that
+        //   returns nothing.
+        //
+        // **Killed mid-run, this resumes from the cursor.** The boot
+        // recovery sweep runs earlier in this function and flips every row
+        // the dead process abandoned in `Running` to `Paused`, keeping its
+        // cursor. `run_or_resume` then picks Resume over a fresh start, so
+        // a job interrupted by a restart continues where it stopped rather
+        // than rescanning from the beginning — and a long migration
+        // completes across however many restarts it takes.
+        //
+        // That is a deliberate exception to `boot_recovery_sweep`'s "we do
+        // not auto-resume; operators trigger the resume explicitly". The
+        // rule exists so a restart never silently resumes work nobody
+        // asked for. Here somebody did ask, in configuration, and the whole
+        // point of the option is not having to ask again. The exception is
+        // scoped to the named jobs; every other paused run still waits for
+        // an operator.
+        //
+        // The resumed run keeps the flags it started with — `repair` and
+        // `deep` are persisted to the run's `params` on the fresh open and
+        // read back on resume — so editing the config mid-migration does
+        // not retroactively change a run already in flight.
+        if !self.config.startup_jobs.is_empty() {
+            let mut planned = Vec::with_capacity(self.config.startup_jobs.len());
+            for job in &self.config.startup_jobs {
+                if app_state.core.job_registry.get(&job.name).await.is_none() {
+                    panic!(
+                        "OXICLOUD_STARTUP_JOBS names `{}`, which is not a registered job. \
+                         Check the spelling against GET /api/admin/jobs.",
+                        job.name
+                    );
+                }
+                planned.push(job.clone());
+            }
+
+            let registry = app_state.core.job_registry.clone();
+            tokio::spawn(async move {
+                for job in planned {
+                    // Audited, not merely logged: a startup job may delete
+                    // files, and "who asked for this" must be answerable
+                    // afterwards. The answer is the configuration, which is
+                    // exactly what this line records.
+                    tracing::info!(
+                        target: "audit",
+                        event = "job.startup_trigger",
+                        job = %job.name,
+                        force = job.args.force,
+                        deep = job.args.deep,
+                        repair = job.args.repair,
+                        storage = ?job.args.storage,
+                        "👮🏻‍♂️ dispatching `{}` from OXICLOUD_STARTUP_JOBS",
+                        job.name,
+                    );
+                    match registry.trigger(&job.name, &job.args).await {
+                        // Debug, not info. The engine already logs every
+                        // dispatch as `job.run` with the outcome and timing —
+                        // that is the point of routing through `trigger`
+                        // rather than calling handlers directly. An info line
+                        // here made every startup job report completion
+                        // twice, from two layers, saying the same thing. The
+                        // `job.startup_trigger` audit line above already
+                        // records that the startup path was the caller.
+                        Some(outcome) => tracing::debug!(
+                            target: "oxicloud::scheduler",
+                            event = "job.startup_completed",
+                            job = %job.name,
+                            outcome = outcome.kind(),
+                            "startup job `{}` finished ({})",
+                            job.name,
+                            outcome.kind(),
+                        ),
+                        // Unreachable — the name was resolved above, and
+                        // nothing unregisters. Logged rather than panicking
+                        // because this is a detached task by then.
+                        None => tracing::error!(
+                            target: "oxicloud::scheduler",
+                            event = "job.startup_vanished",
+                            job = %job.name,
+                            "startup job `{}` disappeared from the registry between \
+                             validation and dispatch",
+                            job.name,
+                        ),
+                    }
+                }
+            });
+        }
+
         Ok(app_state)
     }
 }
@@ -2951,6 +3184,16 @@ pub struct AppState {
     /// the `?force=true` grace-override path.
     pub grant_cleanup_service: Option<
         Arc<crate::infrastructure::services::grant_cleanup_service::GrantCleanupService>,
+    >,
+    /// Per-session liveness tracker — the auth middleware calls
+    /// `stamp(session_id)` after every successful token validation,
+    /// and a background loop flushes the DashMap to `auth.sessions.
+    /// last_seen_at` every 30 s (batched UNNEST UPDATE). `None`
+    /// when auth is disabled — nothing to track. See
+    /// [`LastSeenTracker`](crate::infrastructure::services::last_seen_tracker)
+    /// for the contract and `docs/plan/sessions.md` for the design.
+    pub last_seen_tracker: Option<
+        Arc<crate::infrastructure::services::last_seen_tracker::LastSeenTracker>,
     >,
     pub calendar_service: Option<Arc<CalendarService>>,
     pub calendar_use_case: Option<Arc<CalendarService>>,

@@ -17,6 +17,7 @@ use crate::application::dtos::display_helpers::category_order_for;
 use crate::application::ports::storage_ports::{CopyFolderTreeResult, FileWritePort};
 use crate::common::errors::DomainError;
 use crate::domain::entities::file::File;
+use crate::domain::services::path_service::{normalize_storage_name, normalize_storage_name_owned};
 
 use super::transaction_utils::retry_on_deadlock;
 use crate::infrastructure::services::dedup_service::DedupService;
@@ -130,9 +131,11 @@ impl FileBlobWriteRepository {
                 DomainError::internal_error("FileBlobWrite", format!("parent lookup: {e}"))
             })?
             .ok_or_else(|| DomainError::not_found("Folder", fid)),
-            None => Err(DomainError::internal_error(
-                "FileBlobWrite",
-                "folder_id is required to determine the target drive",
+            // Same reasoning as the owner lookup below: caller error, not
+            // server error.
+            None => Err(DomainError::validation_error(
+                "folder_id is required: the destination folder determines the \
+                 target drive",
             )),
         }
     }
@@ -279,6 +282,16 @@ impl FileBlobWriteRepository {
         size: u64,
         caller_id: Uuid,
     ) -> Result<File, DomainError> {
+        // NFC-normalize at the last touch before the DB bind. Same
+        // reasoning as `folder_db_repository::create_folder`: every write
+        // surface that lands here — REST multipart upload, by-hash instant
+        // upload, chunked-upload complete, WOPI create-fallback, WebDAV
+        // PUT, NC PUT, NC chunked-upload assemble — passes raw client
+        // bytes. macOS Finder emits NFD; canonicalising once here closes
+        // every audited entry-point at one choke-point. `is_nfc_quick`
+        // fast path is one table-lookup for the ~99% of names already NFC.
+        let name = normalize_storage_name_owned(name);
+
         // Root files have no parent folder to derive an owner from — keep the
         // previous resolve_user_id(None) contract (release the ref, error out).
         let Some(fid) = folder_id.as_deref() else {
@@ -289,9 +302,15 @@ impl FileBlobWriteRepository {
                     rollback_err
                 );
             }
-            return Err(DomainError::internal_error(
-                "FileBlobWrite",
-                "folder_id is required to determine file owner",
+            // A missing required field is the caller's error, not the
+            // server's. As `internal_error` this surfaced as 500 /
+            // `error_type: Internal Error`, which the SPA cannot tell apart
+            // from the server breaking — so a malformed upload looked like an
+            // outage. The OpenAPI body description called the field optional,
+            // which is how it came to be omitted in the first place.
+            return Err(DomainError::validation_error(
+                "folder_id is required: the destination folder determines the \
+                 file's owner and drive",
             ));
         };
 
@@ -596,8 +615,25 @@ impl FileWritePort for FileBlobWriteRepository {
         new_name: Option<&str>,
         caller_id: Uuid,
     ) -> Result<File, DomainError> {
-        // Atomic CTE: read source file → insert new row with same blob_hash → increment ref_count.
-        // Single round-trip; blob content is NOT copied (dedup makes this zero-copy).
+        // Two statements in one transaction: insert the new row (same
+        // blob_hash — blob content is never copied, dedup makes this
+        // zero-copy), then run the shared satellite fan-out.
+        //
+        // `storage.copy_file_satellites` is the single home for everything
+        // that follows a file on copy — dead properties and the
+        // manifest-aware blob reference — shared with
+        // `storage.copy_folder_tree`. Two sites implementing that
+        // separately is what let the tree path ship a version that missed
+        // manifests entirely (migration `20261019000000`).
+        //
+        // It cannot be a CTE arm: data-modifying CTEs all observe the same
+        // snapshot, so a function called alongside the INSERT would not see
+        // the new `storage.files` row it needs to read `blob_hash` from,
+        // and the dead-property INSERT would fail its foreign key. Hence a
+        // real transaction — which also fixes the reference being
+        // best-effort before: a failed `add_reference` used to log a
+        // warning and leave a copy holding no reference at all, the exact
+        // shape that gets its content reaped.
         //
         // §14: `created_by = $4 = updated_by = caller_id` — the caller
         // authored this copy. The previous binding used
@@ -605,10 +641,19 @@ impl FileWritePort for FileBlobWriteRepository {
         // folder's owner as the author when Adam copied a file into
         // Alice's folder.
         let target_fid = target_folder_id.clone();
-        let rename_to = new_name.map(|s| s.to_string());
+        // NFC-normalize the destination name at the last touch before the
+        // bind. `new_name = None` means "keep the source's stored name" —
+        // that path is already normalized (either by an earlier write here
+        // or, for pre-fix rows, deliberately left as-is per operator
+        // decision to not touch historical NFD content). Only fresh
+        // client-supplied `new_name` needs the pass; WebDAV `COPY` with a
+        // Destination header renaming a file is the canonical caller.
+        let rename_to = new_name.map(normalize_storage_name);
 
-        let row = retry_on_deadlock("files.copy", || {
-            sqlx::query_as::<
+        let row = retry_on_deadlock("files.copy", || async {
+            let mut tx = self.pool.begin().await?;
+
+            let row = sqlx::query_as::<
                 _,
                 (
                     String,
@@ -662,20 +707,6 @@ impl FileWritePort for FileBlobWriteRepository {
                               blob_hash,
                               created_by,
                               updated_by
-                ),
-                -- RFC 4918 §8.8 — dead properties MUST be duplicated on
-                -- COPY. With the id-keyed store (migration
-                -- 20260830000001) this is a single batch INSERT keyed on
-                -- the new file's id. Runs in the same query as the file
-                -- INSERT so either both land or neither does — atomic
-                -- by virtue of being one statement.
-                dead_prop_copy AS (
-                    INSERT INTO storage.webdav_dead_properties
-                        (file_id, namespace, local_name, value)
-                    SELECT (SELECT id FROM new_file),
-                           dp.namespace, dp.local_name, dp.value
-                      FROM storage.webdav_dead_properties dp
-                     WHERE dp.file_id = $1::uuid
                 )
                 SELECT id_text, name, folder_id, size, mime_type,
                        created_at, updated_at,
@@ -687,7 +718,22 @@ impl FileWritePort for FileBlobWriteRepository {
             .bind(&target_fid)
             .bind(&rename_to)
             .bind(caller_id)
-            .fetch_optional(self.pool.as_ref())
+            .fetch_optional(&mut *tx)
+            .await?;
+
+            if let Some(ref new_row) = row {
+                // `new_row.0` is the new file's id as text; PG casts it.
+                sqlx::query(
+                    "SELECT storage.copy_file_satellites(ARRAY[$1::uuid], ARRAY[$2::uuid])",
+                )
+                .bind(file_id)
+                .bind(&new_row.0)
+                .execute(&mut *tx)
+                .await?;
+            }
+
+            tx.commit().await?;
+            Ok(row)
         })
         .await
         .map_err(|e| {
@@ -705,14 +751,8 @@ impl FileWritePort for FileBlobWriteRepository {
 
         let blob_hash = &row.7;
 
-        // Increment blob reference count (best-effort; INSERT already succeeded)
-        if let Err(e) = self.dedup.add_reference(blob_hash).await {
-            tracing::warn!(
-                "Failed to increment blob ref for copy {}: {}",
-                &blob_hash[..12],
-                e
-            );
-        }
+        // No `add_reference` here: `copy_file_satellites` took it inside the
+        // transaction above, so a copy that exists always holds a reference.
 
         tracing::info!(
             "📋 BLOB COPY: {} (hash: {}, zero-copy via dedup)",
@@ -742,6 +782,11 @@ impl FileWritePort for FileBlobWriteRepository {
         new_name: &str,
         caller_id: Uuid,
     ) -> Result<File, DomainError> {
+        // NFC-normalize the client-supplied name at the last touch — same
+        // reasoning as `save_file_with_blob_impl`. REST rename, WebDAV
+        // MOVE-with-rename, NC MOVE-with-rename all funnel here.
+        let new_name = normalize_storage_name(new_name);
+
         // §14: `updated_by = $3` (caller_id), see move_file.
         let row = sqlx::query_as::<
             _,
@@ -767,7 +812,7 @@ impl FileWritePort for FileBlobWriteRepository {
                       created_by, updated_by
             "#,
         )
-        .bind(new_name)
+        .bind(&new_name)
         .bind(file_id)
         .bind(caller_id)
         .fetch_optional(self.pool.as_ref())
@@ -855,6 +900,14 @@ impl FileWritePort for FileBlobWriteRepository {
         size: u64,
         caller_id: Uuid,
     ) -> Result<(File, PathBuf), DomainError> {
+        // NFC-normalize at the last touch before the DB bind — same
+        // reasoning as `save_file_with_blob_impl`. Deferred registration
+        // is the write-behind cache's fast-path (row up first, blob
+        // hash filled in on the async callback); it takes fresh client
+        // input via chunked-upload finalize among others, so NFD is
+        // reachable here too.
+        let name = normalize_storage_name_owned(name);
+
         // For deferred registration we use a placeholder hash.
         // The write-behind cache will call update_file_content later.
         let placeholder_hash = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -1024,10 +1077,21 @@ impl FileWritePort for FileBlobWriteRepository {
                     DomainError::internal_error("FileBlobWrite", format!("fetch blob_hash: {e}"))
                 })?;
 
-        // DELETE fires trg_files_decrement_blob_ref → storage.blobs.ref_count--
+        // DELETE fires `trg_files_decrement_blob_ref` — post-2026-08-23
+        // it dispatches manifest-first (see migration
+        // `20261017000000_file_delete_trigger_manifest_aware.sql`):
+        // decrements `chunk_manifests.ref_count` if the hash names a
+        // manifest (walking chunks on last-ref), else falls back to
+        // `storage.blobs.ref_count`. Counter state after this call is
+        // already correct.
         self.delete_file(file_id).await?;
 
-        // If the blob is now unreferenced, remove disk file + thumbnails.
+        // Physical cleanup only. `cleanup_if_orphaned` was previously
+        // manifest-aware and did counter compensation for the old
+        // trigger's over-decrement; after the trigger rewrite it's a
+        // legacy-blob-eager-reap helper — safe to keep calling
+        // unconditionally (no-op for CDC hashes; reaps legacy blobs
+        // that reached ref_count = 0).
         if let Some(hash) = blob_hash {
             self.dedup.cleanup_if_orphaned(&hash).await;
         }
@@ -1041,6 +1105,13 @@ impl FileWritePort for FileBlobWriteRepository {
         target_parent_id: Option<String>,
         dest_name: Option<String>,
     ) -> Result<CopyFolderTreeResult, DomainError> {
+        // NFC-normalize the caller-supplied rename before handing off to
+        // the PG stored function. `dest_name = None` keeps the source's
+        // stored name (already normalized on ingest for post-fix rows;
+        // pre-fix historical NFD deliberately preserved). Only WebDAV
+        // COPY-a-folder-tree-with-rename passes a fresh client string.
+        let dest_name = dest_name.map(normalize_storage_name_owned);
+
         let row = sqlx::query_as::<_, (String, i64, i64)>(
             "SELECT new_root_id, folders_copied, files_copied \
                FROM storage.copy_folder_tree($1::uuid, $2::uuid, $3)",

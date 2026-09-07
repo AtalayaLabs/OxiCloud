@@ -1,15 +1,58 @@
-//! build.rs — injects git build metadata into the binary.
+//! build.rs — injects git build metadata into the binary and, under the
+//! optional `bundled-assets` feature, guards the compile-time embed
+//! precondition.
 //!
 //! Exposes `GIT_HASH` and `GIT_BRANCH` (consumed via `env!()` in `main.rs`).
-//! There is no Rust-side asset pipeline: the frontend is built by Vite into
-//! `static-dist/` and served directly by the web layer (`interfaces::web`).
+//! The frontend is built by Vite into `static-dist/` at the repo root and
+//! served directly by the web layer (`interfaces::web`); when
+//! `bundled-assets` is on, `src/interfaces/web/embedded.rs` bakes that
+//! directory into the binary at compile time via `rust-embed`.
 
 use std::env;
+use std::path::Path;
 use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     git_status();
+    bundled_assets_guard();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Bundled-assets precondition guard
+//
+// When `--features bundled-assets` is on, `rust-embed`'s `#[folder = "static-dist/"]`
+// scans that directory at compile time and errors with a not-very-helpful
+// "No such file or directory" if it's missing. Users hit this first when they
+// try `cargo build --release --features bundled-assets` before running the
+// frontend build — we intercept it here with a clear, actionable message.
+//
+// Also emits `cargo:rerun-if-changed=static-dist/` so a fresh frontend build
+// re-triggers the embed step without needing `cargo clean` — matches what a
+// dev on the bundled feature would expect after `just fe-build`.
+// ═══════════════════════════════════════════════════════════════════════════════
+fn bundled_assets_guard() {
+    if env::var("CARGO_FEATURE_BUNDLED_ASSETS").is_err() {
+        return;
+    }
+    println!("cargo:rerun-if-changed=static-dist");
+
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
+    let dist = Path::new(&manifest_dir).join("static-dist");
+    let index = dist.join("index.html");
+    if !index.exists() {
+        // `cargo:warning=` prefixes surface these in the terminal even
+        // when cargo's default output is quiet; the panic below turns
+        // them into a compile-time error so the missing prerequisite
+        // can't slip past a distracted dev.
+        println!("cargo:warning=`bundled-assets` feature requires static-dist/ at the repo root.");
+        println!("cargo:warning=Build the SvelteKit SPA first:  (cd frontend && npm run build)");
+        println!("cargo:warning=Or via the workspace shortcut:   just fe-build");
+        panic!(
+            "build.rs: missing {}/index.html — see the cargo:warning lines above",
+            dist.display()
+        );
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -437,11 +437,11 @@
 		{ mode: 'dark', icon: 'moon', label: t('user_menu.theme.dark', 'Dark') }
 	];
 
-	const storagePct = $derived(
-		session.user && session.user.storage_quota_bytes > 0
-			? Math.min(100, (session.user.storage_used_bytes / session.user.storage_quota_bytes) * 100)
-			: 0
-	);
+	const storagePct = $derived.by(() => {
+		const full = session.me?.full;
+		if (!full || full.storage_quota_bytes <= 0) return 0;
+		return Math.min(100, (full.storage_used_bytes / full.storage_quota_bytes) * 100);
+	});
 
 	const initials = $derived(userInitials(session.user?.username || session.user?.email));
 
@@ -655,12 +655,12 @@
 				<div class="storage-fill" style:width="{storagePct}%"></div>
 			</div>
 			<div class="storage-info">
-				{#if session.user.storage_quota_bytes > 0}
-					{Math.round(storagePct)}% · {formatBytes(session.user.storage_used_bytes)} / {formatBytes(
-						session.user.storage_quota_bytes
+				{#if (session.me?.full.storage_quota_bytes ?? 0) > 0}
+					{Math.round(storagePct)}% · {formatBytes(session.me?.full.storage_used_bytes ?? 0)} / {formatBytes(
+						session.me?.full.storage_quota_bytes ?? 0
 					)}
 				{:else}
-					{formatBytes(session.user.storage_used_bytes)}
+					{formatBytes(session.me?.full.storage_used_bytes ?? 0)}
 				{/if}
 			</div>
 		</div>
@@ -903,18 +903,18 @@
 								<div class="user-menu-storage-fill" style:width="{storagePct}%"></div>
 							</div>
 							<div class="user-menu-storage-text">
-								{#if session.user.storage_quota_bytes > 0}
+								{#if (session.me?.full.storage_quota_bytes ?? 0) > 0}
 									{t(
 										'storage.used',
 										{
 											percentage: Math.round(storagePct),
-											used: formatBytes(session.user.storage_used_bytes),
-											total: formatBytes(session.user.storage_quota_bytes)
+											used: formatBytes(session.me?.full.storage_used_bytes ?? 0),
+											total: formatBytes(session.me?.full.storage_quota_bytes ?? 0)
 										},
 										'{{percentage}}% used ({{used}} / {{total}})'
 									)}
 								{:else}
-									{formatBytes(session.user.storage_used_bytes)}
+									{formatBytes(session.me?.full.storage_used_bytes ?? 0)}
 								{/if}
 							</div>
 						</div>

@@ -5,7 +5,7 @@
  */
 import { ApiError, apiFetch } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
-import type { AuthResponse, User } from '$lib/api/types';
+import type { AuthResponse, SelfUser } from '$lib/api/types';
 
 /**
  * Best-effort parse of the backend `ErrorResponse` shape
@@ -45,7 +45,7 @@ const JSON_HEADERS = { 'Content-Type': 'application/json' };
  * Failure to build a proof (no keypair, missing WebCrypto) falls back to a
  * headerless request — the server still accepts it for unbound sessions.
  */
-export async function fetchMe(): Promise<User | null> {
+export async function fetchMe(): Promise<SelfUser | null> {
 	// Build + sign a DPoP proof, send with the header, harvest any
 	// `DPoP-Nonce` off the response into the shared client cache
 	// (so the NEXT apiFetch call reuses it — no wasted round trip).
@@ -80,7 +80,7 @@ export async function fetchMe(): Promise<User | null> {
 	if (dpopMod && dpopMod.isDpopNonceChallenge(res)) res = await send();
 	if (res.status === 401) return null;
 	if (!res.ok) throw new Error(`/api/auth/me failed: ${res.status}`);
-	return (await res.json()) as User;
+	return (await res.json()) as SelfUser;
 }
 
 /**
@@ -408,7 +408,7 @@ export async function setupAdmin(email: string, password: string): Promise<void>
  * failure, not an expired access token. Returns the user on success, null on
  * any failure so the caller can fall through to the normal login UI.
  */
-export async function exchangeOidcCode(code: string): Promise<User | null> {
+export async function exchangeOidcCode(code: string): Promise<SelfUser | null> {
 	try {
 		const res = await fetch('/api/auth/oidc/exchange', {
 			method: 'POST',
@@ -417,7 +417,7 @@ export async function exchangeOidcCode(code: string): Promise<User | null> {
 			body: JSON.stringify({ code })
 		});
 		if (!res.ok) return null;
-		const data = (await res.json()) as { user?: User };
+		const data = (await res.json()) as { user?: SelfUser };
 		return data.user ?? null;
 	} catch {
 		return null;
@@ -463,7 +463,7 @@ export async function register(email: string, password?: string, username?: stri
  * authenticated; a 401 here IS a genuine "session expired" and the
  * refresh interceptor is the right response.
  */
-export async function upgradeToInternal(password?: string): Promise<User> {
+export async function upgradeToInternal(password?: string): Promise<SelfUser> {
 	const body: Record<string, unknown> = {};
 	if (password) body.password = password;
 	const res = await apiFetch('/api/auth/upgrade-to-internal', {
@@ -482,7 +482,7 @@ export async function upgradeToInternal(password?: string): Promise<User> {
 			message
 		);
 	}
-	return (await res.json()) as User;
+	return (await res.json()) as SelfUser;
 }
 
 export type MagicLinkResult = 'sent' | 'unavailable';

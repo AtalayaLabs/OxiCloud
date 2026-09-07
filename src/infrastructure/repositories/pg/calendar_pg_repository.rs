@@ -7,6 +7,7 @@ use crate::domain::entities::calendar::Calendar;
 use crate::domain::repositories::calendar_repository::{
     CalendarRepository, CalendarRepositoryResult,
 };
+use crate::domain::services::path_service::normalize_storage_name;
 
 pub struct CalendarPgRepository {
     pool: Arc<PgPool>,
@@ -38,6 +39,15 @@ impl CalendarPgRepository {
 
 impl CalendarRepository for CalendarPgRepository {
     async fn create_calendar(&self, calendar: Calendar) -> CalendarRepositoryResult<Calendar> {
+        // NFC-normalize the caller-supplied display name at the last
+        // touch before bind — same choke-point pattern the storage.files
+        // / storage.folders repos use (see docs/plan/nfc-normalization.md
+        // / migrate.rs module doc). macOS CalDAV clients emit NFD in the
+        // display-name field just as Finder does in the filename field;
+        // NC-desktop / Thunderbird would then miss the calendar on their
+        // NFC-normalized lookup path. Same class of bug as
+        // AtalayaLabs/OxiCloud#706, different table.
+        let normalized_name = normalize_storage_name(calendar.name());
         let row = sqlx::query(
             r#"
             INSERT INTO caldav.calendars (id, name, owner_id, description, color, is_public, created_at, updated_at)
@@ -46,7 +56,7 @@ impl CalendarRepository for CalendarPgRepository {
             "#
         )
         .bind(calendar.id())
-        .bind(calendar.name())
+        .bind(&normalized_name)
         .bind(calendar.owner_id())
         .bind(calendar.description())
         .bind(calendar.color())
@@ -75,6 +85,8 @@ impl CalendarRepository for CalendarPgRepository {
     }
 
     async fn update_calendar(&self, calendar: Calendar) -> CalendarRepositoryResult<Calendar> {
+        // NFC-normalize on rename — see `create_calendar` for the why.
+        let normalized_name = normalize_storage_name(calendar.name());
         let now = Utc::now();
         let row = sqlx::query(
             r#"
@@ -84,7 +96,7 @@ impl CalendarRepository for CalendarPgRepository {
             RETURNING id, name, owner_id, description, color, is_public, created_at, updated_at
             "#,
         )
-        .bind(calendar.name())
+        .bind(&normalized_name)
         .bind(calendar.description())
         .bind(calendar.color())
         .bind(false) // is_public doesn't exist as a field

@@ -17,6 +17,7 @@ use rayon::prelude::*;
  */
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::fs;
 use tokio::sync::Semaphore;
@@ -59,6 +60,22 @@ impl ThumbnailSize {
         }
     }
 
+    /// The `content_derived_blobs.variant` value for this size and format.
+    ///
+    /// One place builds the string, because it is a primary-key component: a
+    /// writer and a reader that disagree do not fail loudly, they simply
+    /// never find each other's rows — the read falls back to the sidecar and
+    /// the derived tier silently looks empty.
+    ///
+    /// The format term is what lets one source hold both codecs at a size.
+    /// Without it a JPEG request matched the WebP row and would be served the
+    /// wrong codec, which is why the step-10c read flip had to be gated to
+    /// WebP and why JPEG clients could never leave the sidecar. See migration
+    /// `20261022000000`.
+    pub fn derived_variant(&self, format: ThumbnailFormat) -> String {
+        format!("{}.{}", self.dir_name(), format.ext())
+    }
+
     /// Get all thumbnail sizes
     pub fn all() -> &'static [ThumbnailSize] {
         &[
@@ -69,13 +86,58 @@ impl ThumbnailSize {
     }
 }
 
-/// Cache key for thumbnails. Includes `format` so WebP and the JPEG fallback for
-/// the same (file_id, size) are distinct entries (no cross-format collision).
+/// Cache key for the in-RAM thumbnail tier (moka). Includes `format` so WebP
+/// and the JPEG fallback for the same (content, size) are distinct entries
+/// (no cross-format collision).
+///
+/// Not to be confused with the two other caches on this path: the sidecar
+/// files under `thumbnails_root` (already blob-hash keyed), and
+/// `CachedBlobBackend`, the on-disk LRU in front of a remote blob backend
+/// that only comes into play when a derived blob is read through the dedup
+/// stack.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ThumbnailCacheKey {
-    file_id: String,
+    /// Content hash for rendered thumbnails; `ext-{file_id}` for
+    /// client-uploaded video frames, which really are per-file.
+    ///
+    /// Keying on the hash rather than the file id is what makes the tier
+    /// coherent with the HTTP ETag. When a file's content is replaced its
+    /// id survives, so a file-keyed entry stayed valid-looking and had to
+    /// be invalidated explicitly — which `on_file_updated` does from a
+    /// spawned task, leaving a window where the response carried the NEW
+    /// ETag over the OLD bytes. Since the response is `immutable` with a
+    /// one-year max-age, a client landing in that window cached stale
+    /// bytes permanently. Content keying removes the window rather than
+    /// narrowing it: new content is a different key, so it cannot hit.
+    ///
+    /// It also stops N copies of one photo occupying N entries for
+    /// identical bytes.
+    ///
+    /// The two namespaces cannot collide: hashes are 64 hex characters,
+    /// and the external form carries an `ext-` prefix and a UUID.
+    id: String,
     size: ThumbnailSize,
     format: ThumbnailFormat,
+}
+
+impl ThumbnailCacheKey {
+    /// Rendered thumbnail — keyed by the source content hash.
+    fn content(hash: &str, size: ThumbnailSize, format: ThumbnailFormat) -> Self {
+        Self {
+            id: hash.to_string(),
+            size,
+            format,
+        }
+    }
+
+    /// Client-uploaded video frame — genuinely per-file, always JPEG.
+    fn external(file_id: &str, size: ThumbnailSize) -> Self {
+        Self {
+            id: format!("ext-{file_id}"),
+            size,
+            format: ThumbnailFormat::Jpeg,
+        }
+    }
 }
 
 /// Maximum pixel count before rejecting decode (50 megapixels → ~200 MB RGBA).
@@ -138,6 +200,15 @@ pub struct ThumbnailService {
     /// Timeout for thumbnail generation operations to prevent hanging on large images.
     /// Defaults to 30 seconds.
     generation_timeout: Duration,
+    /// Whether the legacy sidecar tier still exists on disk, probed once by
+    /// [`Self::initialize`]. `false` short-circuits every fallback read
+    /// without a syscall.
+    ///
+    /// Starts `true` so a service used without `initialize()` (tests, and any
+    /// future construction path) keeps the old behaviour: fall back and let
+    /// the open fail. Failing open is the safe direction — the wrong value
+    /// costs syscalls, the opposite would hide sidecars that are still there.
+    legacy_sidecars: AtomicBool,
 }
 
 impl ThumbnailService {
@@ -178,20 +249,85 @@ impl ThumbnailService {
             max_cache_bytes: max_cache_bytes as u64,
             decode_semaphore: Arc::new(Semaphore::new(max_concurrent_decodes())),
             generation_timeout: generation_timeout.unwrap_or(Duration::from_secs(30)),
+            legacy_sidecars: AtomicBool::new(true),
         }
     }
 
-    /// Initialize the thumbnail directories
+    /// Probe the legacy sidecar tier and record whether it still holds
+    /// anything.
+    ///
+    /// **This no longer creates the directories.** It used to `create_dir_all`
+    /// every size directory at boot, which silently undid the migration: the
+    /// import job removes them once drained, the next restart put them back,
+    /// and the absence step 10e gates on could never be reached. Nothing has
+    /// written a sidecar since step 10d2, so there is nothing to create them
+    /// for.
+    ///
+    /// One `stat` on the root. The import job guarantees that is enough: it
+    /// removes the directory once drained, and when something unrelated
+    /// keeps `remove_dir` from succeeding — Finder's `.DS_Store`, typically
+    /// — it renames the tree to `.thumbnails.migrated` rather than leaving
+    /// it in place. So `.thumbnails` existing always means "there may be
+    /// sidecars under here", and a stray file cannot pin the fallback open.
+    ///
+    /// Result is cached for the process lifetime. It can only be stale in the
+    /// harmless direction: a drain completing mid-life leaves the flag `true`
+    /// until restart, which costs the same failed opens as today. It never
+    /// goes `false` while sidecars remain.
     pub async fn initialize(&self) -> std::io::Result<()> {
-        for size in ThumbnailSize::all() {
-            let dir = self.thumbnails_root.join(size.dir_name());
-            fs::create_dir_all(&dir).await?;
+        let present = fs::metadata(&self.thumbnails_root).await.is_ok();
+        self.legacy_sidecars.store(present, Ordering::Relaxed);
+
+        // Asymmetric on purpose. "Present" is actionable and temporary — it
+        // names the two jobs that clear it and stops appearing once they
+        // have. "Absent" is the steady state of every drained deployment
+        // forever, so at info it would be pure boot noise.
+        if present {
+            tracing::info!(
+                target: "oxicloud::thumbnails",
+                event = "thumbnail.legacy_tier_present",
+                root = ?self.thumbnails_root,
+                "🖼️ legacy sidecar tier present — reads fall back to it. Run \
+                 thumb_derived_import and thumb_attached_import with ?repair=true \
+                 to drain it."
+            );
+        } else {
+            tracing::debug!(
+                target: "oxicloud::thumbnails",
+                event = "thumbnail.legacy_tier_absent",
+                root = ?self.thumbnails_root,
+                "🖼️ no legacy sidecar tier — fallback reads are skipped entirely"
+            );
         }
-        tracing::info!(
-            "🖼️ Thumbnail service initialized at {:?}",
-            self.thumbnails_root
-        );
         Ok(())
+    }
+
+    /// Whether the legacy sidecar tier is worth touching at all.
+    ///
+    /// This is the whole of step 10e. Removing the fallback in a release was
+    /// never workable: sidecars are local disk, so no release can know that
+    /// every instance has drained. Making the path self-disabling costs one
+    /// relaxed atomic load and needs no coordination — once a deployment has
+    /// drained, the code is inert and can be deleted whenever, or never.
+    fn legacy_tier_active(&self) -> bool {
+        self.legacy_sidecars.load(Ordering::Relaxed)
+    }
+
+    /// Read a legacy sidecar, or `None` when the tier is inert.
+    ///
+    /// Every sidecar read goes through here so the guard exists once rather
+    /// than at each of the dozen sites that used to build a path and read it.
+    async fn read_sidecar(&self, path: &Path) -> Option<Bytes> {
+        if !self.legacy_tier_active() {
+            return None;
+        }
+        fs::read(path).await.ok().map(Bytes::from)
+    }
+
+    /// Presence test with the same guard — for the paths that only need to
+    /// know whether a sidecar is there.
+    async fn sidecar_exists(&self, path: &Path) -> bool {
+        self.legacy_tier_active() && fs::metadata(path).await.is_ok()
     }
 
     /// Check if a file is an image that can have thumbnails
@@ -216,6 +352,71 @@ impl ThumbnailService {
             .join(format!("{}.{}", blob_hash, format.ext()))
     }
 
+    /// Persist a freshly rendered thumbnail to every durable tier.
+    ///
+    /// **One place that knows what persisting a thumbnail means.** Before
+    /// this, four render paths each wrote the sidecar and exactly one also
+    /// recorded the `content_derived_blobs` row, so an on-demand render — a
+    /// cache miss, a size never generated, an evicted sidecar — produced
+    /// state the migration could never see. That is not untidy, it breaks
+    /// the migration's premise: `thumb_derived_import` would never reach an
+    /// empty tail, and the gate for deleting the sidecar would never open.
+    ///
+    /// Scope is deliberately *durable* tiers only. The moka entry is left to
+    /// callers because several persist through `cache.entry().or_insert_with`,
+    /// which already owns the insert; doing it here too would write twice.
+    ///
+    /// Dual-write is the interim setting, not the destination. Once the
+    /// derived tier is authoritative and the imports have drained, dropping
+    /// the sidecar becomes a one-line change *here* rather than four edits
+    /// spread across the file — which is the point of consolidating first.
+    ///
+    /// Both writes are best-effort and logged: the bytes are already rendered
+    /// and about to be served, so a persistence failure must cost a
+    /// re-render later, never the response now. `dedup: None` means
+    /// sidecar-only — a caller that could not supply one, which is visible at
+    /// the call site rather than hidden as a missing line.
+    async fn persist_rendered(
+        &self,
+        blob_hash: &str,
+        size: ThumbnailSize,
+        format: ThumbnailFormat,
+        bytes: &Bytes,
+        dedup: Option<&DedupService>,
+    ) {
+        // Step 10d2: the sidecar write is GONE. The derived tier is the only
+        // durable home for a rendered thumbnail now.
+        //
+        // Safe because the read flip landed first: reads already prefer the
+        // derived tier, so nothing depended on this write to be found. And a
+        // failure below costs a re-render rather than data — a rendered
+        // thumbnail is regenerable by definition, which is exactly why this
+        // side could stop before the uploaded one.
+        //
+        // Existing sidecars are untouched. They stay readable through the
+        // fallback tier until the import drains them, so a box that has not
+        // run the job yet loses nothing.
+        if let Some(dedup) = dedup
+            && let Err(e) = dedup
+                .store_derived_blob(
+                    blob_hash,
+                    "thumbnail",
+                    &size.derived_variant(format),
+                    format.mime(),
+                    bytes.clone(),
+                )
+                .await
+        {
+            tracing::warn!(
+                target: "oxicloud::dedup",
+                error = %e,
+                "failed to record derived blob for {} {:?}",
+                &blob_hash[..blob_hash.len().min(12)],
+                size,
+            );
+        }
+    }
+
     /// Get a thumbnail, generating it if needed.
     ///
     /// # Arguments
@@ -234,15 +435,12 @@ impl ThumbnailService {
         format: ThumbnailFormat,
         original_path: &Path,
     ) -> Result<Bytes, ThumbnailError> {
-        let cache_key = ThumbnailCacheKey {
-            file_id: file_id.to_string(),
-            size,
-            format,
-        };
+        let cache_key = ThumbnailCacheKey::content(blob_hash, size, format);
 
         let thumb_path = self.get_thumbnail_path(blob_hash, size, format);
         let original_owned = original_path.to_path_buf();
         let file_id_owned = file_id.to_string();
+        let blob_hash_owned = blob_hash.to_string();
 
         // Moka's entry().or_insert_with() guarantees that for the same key
         // only ONE init closure runs; concurrent callers await the same
@@ -252,24 +450,33 @@ impl ThumbnailService {
             .entry(cache_key)
             .or_insert_with(async {
                 // 1. Try loading from disk
-                if let Ok(data) = fs::read(&thumb_path).await {
+                if let Some(bytes) = self.read_sidecar(&thumb_path).await {
                     tracing::debug!(
                         "💾 Thumbnail loaded from disk: {} {:?}",
                         file_id_owned,
                         size
                     );
-                    return Bytes::from(data);
+                    return bytes;
                 }
 
                 // 2. Generate thumbnail (CPU-bound, runs in spawn_blocking)
                 tracing::info!("🎨 Generating thumbnail: {} {:?}", file_id_owned, size);
                 match self.generate_thumbnail(&original_owned, size, format).await {
                     Ok(bytes) => {
-                        // Save to disk (best-effort — don't fail the request)
-                        if let Some(parent) = thumb_path.parent() {
-                            let _ = fs::create_dir_all(parent).await;
-                        }
-                        let _ = fs::write(&thumb_path, &bytes).await;
+                        // `None` — sidecar-only, and that is acceptable here
+                        // ONLY because this path is production-unreachable:
+                        // its sole caller is the `ThumbnailPort` impl, and
+                        // nothing holds a `dyn ThumbnailPort` (checked). Live
+                        // renders go through `get_thumbnail_from_blob`, which
+                        // dual-writes.
+                        //
+                        // If this ever gains a real caller it must take a
+                        // `DedupService` first, or it reopens the gap
+                        // `persist_rendered` exists to close: sidecar-only
+                        // output the import can never see, so the tail never
+                        // empties.
+                        self.persist_rendered(&blob_hash_owned, size, format, &bytes, None)
+                            .await;
                         bytes
                     }
                     Err(e) => {
@@ -312,34 +519,42 @@ impl ThumbnailService {
         format: ThumbnailFormat,
         original_data: Bytes,
     ) -> Result<Bytes, ThumbnailError> {
-        let cache_key = ThumbnailCacheKey {
-            file_id: file_id.to_string(),
-            size,
-            format,
-        };
+        let cache_key = ThumbnailCacheKey::content(blob_hash, size, format);
 
         let thumb_path = self.get_thumbnail_path(blob_hash, size, format);
         let file_id_owned = file_id.to_string();
+        let blob_hash_owned = blob_hash.to_string();
 
         let entry = self
             .cache
             .entry(cache_key)
             .or_insert_with(async move {
-                if let Ok(data) = fs::read(&thumb_path).await {
+                if let Some(bytes) = self.read_sidecar(&thumb_path).await {
                     tracing::debug!(
                         "💾 Thumbnail loaded from disk: {} {:?}",
                         file_id_owned,
                         size
                     );
-                    return Bytes::from(data);
+                    return bytes;
                 }
 
                 let Ok(_permit) = self.decode_semaphore.acquire().await else {
                     tracing::warn!("Decode semaphore closed, skipping {}", file_id_owned);
                     return Bytes::new();
                 };
-                self.generate_and_persist(&file_id_owned, &thumb_path, size, format, original_data)
-                    .await
+                // `None`: this entry point takes the original bytes directly
+                // and has no DedupService, so it persists sidecar-only. The
+                // gap is visible here rather than hidden as a missing write,
+                // and closing it means threading dedup in from its callers.
+                self.generate_and_persist(
+                    &file_id_owned,
+                    &blob_hash_owned,
+                    size,
+                    format,
+                    original_data,
+                    None,
+                )
+                .await
             })
             .await;
 
@@ -369,11 +584,7 @@ impl ThumbnailService {
         format: ThumbnailFormat,
         dedup: Arc<DedupService>,
     ) -> Result<Bytes, ThumbnailError> {
-        let cache_key = ThumbnailCacheKey {
-            file_id: file_id.to_string(),
-            size,
-            format,
-        };
+        let cache_key = ThumbnailCacheKey::content(blob_hash, size, format);
 
         let thumb_path = self.get_thumbnail_path(blob_hash, size, format);
         let file_id_owned = file_id.to_string();
@@ -383,13 +594,13 @@ impl ThumbnailService {
             .cache
             .entry(cache_key)
             .or_insert_with(async move {
-                if let Ok(data) = fs::read(&thumb_path).await {
+                if let Some(bytes) = self.read_sidecar(&thumb_path).await {
                     tracing::debug!(
                         "💾 Thumbnail loaded from disk: {} {:?}",
                         file_id_owned,
                         size
                     );
-                    return Bytes::from(data);
+                    return bytes;
                 }
 
                 let Ok(_permit) = self.decode_semaphore.acquire().await else {
@@ -407,8 +618,19 @@ impl ThumbnailService {
                         return Bytes::new();
                     }
                 };
-                self.generate_and_persist(&file_id_owned, &thumb_path, size, format, original_data)
-                    .await
+                // The on-demand render the REST handler falls through to on a
+                // cache miss — the busiest path that previously wrote a
+                // sidecar and no row. `dedup` is already in scope here, so
+                // dual-writing costs nothing.
+                self.generate_and_persist(
+                    &file_id_owned,
+                    &blob_hash_owned,
+                    size,
+                    format,
+                    original_data,
+                    Some(dedup.as_ref()),
+                )
+                .await
             })
             .await;
 
@@ -431,10 +653,11 @@ impl ThumbnailService {
     async fn generate_and_persist(
         &self,
         file_id: &str,
-        thumb_path: &Path,
+        blob_hash: &str,
         size: ThumbnailSize,
         format: ThumbnailFormat,
         original_data: Bytes,
+        dedup: Option<&DedupService>,
     ) -> Bytes {
         tracing::info!("🎨 Generating thumbnail: {} {:?}", file_id, size);
         match Self::generate_thumbnail_from_data(
@@ -446,10 +669,8 @@ impl ThumbnailService {
         .await
         {
             Ok(bytes) => {
-                if let Some(parent) = thumb_path.parent() {
-                    let _ = fs::create_dir_all(parent).await;
-                }
-                let _ = fs::write(&thumb_path, &bytes).await;
+                self.persist_rendered(blob_hash, size, format, &bytes, dedup)
+                    .await;
                 bytes
             }
             Err(e) => {
@@ -472,20 +693,128 @@ impl ThumbnailService {
     /// `blob_hash` is used to locate the file on disk (dedup-aware).
     /// If `None`, only the in-memory cache is checked (used for video
     /// thumbnails where blob_hash is not yet resolved).
+    /// Identity of the bytes a thumbnail request will serve — the body of its
+    /// HTTP ETag.
+    ///
+    /// Mirrors the tier precedence in [`Self::get_cached_thumbnail`], because
+    /// an ETag that names a different tier than the one answering is worse
+    /// than a coarse one: it lets two resources serving different bytes share
+    /// a validator, and a shared cache may then hand either to either.
+    ///
+    /// * An **attached** blob wins, and its own hash is the identity. Nothing
+    ///   else works: uploading a preview does not change the file's content,
+    ///   so a source-keyed ETag would not change either — and with
+    ///   `immutable` set, clients would never revalidate. Worse, a copy
+    ///   inherits the source hash, so an original and a copy carrying
+    ///   *different* uploaded previews would collide on one ETag.
+    /// * Otherwise the **source-keyed** form, which identifies a render of
+    ///   known content at a known size and format.
+    ///
+    /// # Why the derived blob's own hash is NOT used yet
+    ///
+    /// It would be a better key — the hash *is* the bytes, so any change in
+    /// output invalidates by construction. But it cannot be resolved here
+    /// without flipping on the first render: the ETag is computed *before*
+    /// the body, so on a cache miss no `content_derived_blobs` row exists yet
+    /// and this returns the source-keyed form — then rendering *creates* that
+    /// row, and the next request resolves to the derived hash instead. The
+    /// validator would change as a side effect of producing the body, making
+    /// every first render immediately stale.
+    ///
+    /// It belongs with the read-order flip, when the derived tier becomes
+    /// authoritative and is populated before it is consulted. See
+    /// `docs/plan/derived-blobs.md`. The attached lookup above has no such
+    /// problem: an upload writes its row synchronously, before any read that
+    /// could observe it.
+    ///
+    /// Known gap: a legacy `ext-{file_id}.jpg` with no `file_attached_blobs`
+    /// row yet falls through to the source-keyed form, so those bytes keep
+    /// today's coarse validator until the import backfills the row. No worse
+    /// than current behaviour, and it disappears with the migration.
+    pub async fn thumbnail_content_id(
+        &self,
+        file_id: &str,
+        blob_hash: &str,
+        size: ThumbnailSize,
+        format: ThumbnailFormat,
+        dedup: Option<&DedupService>,
+    ) -> String {
+        if let Some(dedup) = dedup
+            && let Some(attached) = dedup
+                .find_attached_blob(file_id, "preview", size.dir_name())
+                .await
+        {
+            return attached.blob_hash;
+        }
+        format!(
+            "thumb-{}-{}-{}",
+            blob_hash,
+            size.dir_name(),
+            format.as_str()
+        )
+    }
+
+    /// Drain a blob through the dedup stack into memory.
+    ///
+    /// Shared by the attached and derived tiers — the only difference between
+    /// them is which table produced the hash, so the read itself belongs in
+    /// one place. Returns `None` on a read fault rather than propagating: a
+    /// missing satellite must degrade to the next tier, never break a gallery.
+    async fn read_blob_to_bytes(
+        dedup: &DedupService,
+        blob_hash: &str,
+        file_id: &str,
+        size: ThumbnailSize,
+    ) -> Option<Bytes> {
+        use futures::StreamExt;
+        let mut stream = dedup.read_blob_stream(blob_hash).await.ok()?;
+        let mut buf = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(part) => buf.extend_from_slice(&part),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "oxicloud::dedup",
+                        error = %e,
+                        "thumbnail blob read failed for {} {:?}",
+                        file_id,
+                        size,
+                    );
+                    return None;
+                }
+            }
+        }
+        Some(Bytes::from(buf))
+    }
+
     pub async fn get_cached_thumbnail(
         &self,
         file_id: &str,
         blob_hash: Option<&str>,
         size: ThumbnailSize,
         format: ThumbnailFormat,
+        // Concrete, and optional: `ThumbnailPort` is never used as a trait
+        // object (checked), and `DedupPort` uses native `async fn` so it is
+        // not dyn-compatible anyway. `None` means sidecar-only — exactly
+        // today's behaviour, which is what the port impl wants.
+        dedup: Option<&DedupService>,
     ) -> Option<Bytes> {
-        // 1. Check in-memory cache
-        let cache_key = ThumbnailCacheKey {
-            file_id: file_id.to_string(),
-            size,
-            format,
-        };
-        if let Some(bytes) = self.cache.get(&cache_key).await
+        // A file-specific override beats anything derived from the content,
+        // and that has to hold at EVERY tier — including RAM. Checking the
+        // content-keyed entry first would let a previously-rendered
+        // thumbnail shadow a preview the user has since uploaded: the render
+        // is cached under `content(hash)`, the upload lands under
+        // `external(file_id)`, and the content key would win forever.
+        //
+        // So the order is: per-file RAM, per-file disk, per-file DB, then the
+        // content-keyed tiers. Same precedence as the disk tiers below, just
+        // applied one level up.
+
+        // 1. Per-file override in RAM (uploaded preview / video frame).
+        if let Some(bytes) = self
+            .cache
+            .get(&ThumbnailCacheKey::external(file_id, size))
+            .await
             && !bytes.is_empty()
         {
             return Some(bytes);
@@ -498,32 +827,111 @@ impl ThumbnailService {
             .thumbnails_root
             .join(size.dir_name())
             .join(format!("ext-{}.jpg", file_id));
-        if let Ok(data) = fs::read(&ext_path).await {
-            let bytes = Bytes::from(data);
+        if let Some(bytes) = self.read_sidecar(&ext_path).await {
             // Cache under a Jpeg-pinned key: these bytes are always JPEG, so the
             // key's format must describe them. Inserting under `cache_key` (whose
             // format is the *requested* format, possibly Webp) would store JPEG
             // bytes behind a Webp key — a latent cross-format invariant violation.
-            let ext_key = ThumbnailCacheKey {
-                file_id: file_id.to_string(),
-                size,
-                format: ThumbnailFormat::Jpeg,
-            };
+            let ext_key = ThumbnailCacheKey::external(file_id, size);
             self.cache.insert(ext_key, bytes.clone()).await;
             return Some(bytes);
         }
 
-        // 3. Check disk for blob-hash thumbnails (needs blob_hash to locate)
-        let hash = blob_hash?;
-        let thumb_path = self.get_thumbnail_path(hash, size, format);
-        if let Ok(data) = fs::read(&thumb_path).await {
-            let bytes = Bytes::from(data);
-            // Populate in-memory cache for next hit
-            self.cache.insert(cache_key, bytes.clone()).await;
-            Some(bytes)
-        } else {
-            None
+        // 2b. Bytes the USER attached to this file, if any.
+        //
+        // Ahead of every content-derived tier below on purpose: an uploaded
+        // preview is an explicit choice about THIS file and must beat
+        // anything the server would render from its content. It is also the
+        // only tier a copy can inherit — the `ext-` sidecar above is keyed by
+        // file_id and is not copied, so without this branch a copied file
+        // silently falls back to a rendered thumbnail, or to none at all for
+        // a PDF that has no server-side render path.
+        if let Some(dedup) = dedup
+            && let Some(attached) = dedup
+                .find_attached_blob(file_id, "preview", size.dir_name())
+                .await
+            && let Some(bytes) =
+                Self::read_blob_to_bytes(dedup, &attached.blob_hash, file_id, size).await
+        {
+            // Cached under the per-file key: these bytes belong to this file,
+            // not to its content, so a content key would leak them to every
+            // other file sharing that content — the poisoning the file-keyed
+            // table exists to prevent.
+            self.cache
+                .insert(ThumbnailCacheKey::external(file_id, size), bytes.clone())
+                .await;
+            return Some(bytes);
         }
+
+        // 3. Content-keyed RAM tier. Below the per-file tiers by the rule
+        //    above; still ahead of every disk read.
+        //
+        //    A caller that did not resolve the hash cannot consult it and
+        //    falls through to disk. That is correct rather than merely
+        //    acceptable: a file-id key here would be the stale entry content
+        //    keying exists to avoid. Both HTTP handlers resolve the hash to
+        //    build the ETag, so the fall-through is confined to internal
+        //    callers that never had one.
+        let hash = blob_hash?;
+        if let Some(bytes) = self
+            .cache
+            .get(&ThumbnailCacheKey::content(hash, size, format))
+            .await
+            && !bytes.is_empty()
+        {
+            return Some(bytes);
+        }
+
+        // 4. Derived blob — the authoritative content tier (step 10c).
+        //
+        // Ahead of the sidecar now, rather than last. The sidecar is local
+        // disk: invisible to other instances, uncarried by a backend
+        // migration, uncovered by any consistency job. Reading the derived
+        // tier first is what lets that disk state become deletable, and it is
+        // not the cost it looks like — `CachedBlobBackend` gives the blob read
+        // a local disk cache, and moka absorbs the repeats above it.
+        //
+        // A miss FALLS THROUGH rather than ending the lookup. That is the
+        // whole reason this is not a two-line swap: while the imports are
+        // draining, most content has a sidecar and no row, and terminating
+        // here would return "no thumbnail" for all of it.
+        //
+        // All formats, since migration `20261022000000` put the output format
+        // inside `variant`. Before that, `variant` was the size alone, so a
+        // JPEG request matched the WebP row and would have been served the
+        // wrong codec — the flip had to be gated to WebP, which meant JPEG
+        // clients could never leave the sidecar and the sidecar could never
+        // be deleted. Now each codec has its own row.
+        if let Some(dedup) = dedup
+            && let Some(derived) = dedup
+                .find_derived_blob(hash, "thumbnail", &size.derived_variant(format))
+                .await
+            && let Some(bytes) =
+                Self::read_blob_to_bytes(dedup, &derived.blob_hash, file_id, size).await
+        {
+            self.cache
+                .insert(
+                    ThumbnailCacheKey::content(hash, size, format),
+                    bytes.clone(),
+                )
+                .await;
+            return Some(bytes);
+        }
+
+        // 5. Blob-hash sidecar — fallback for content not yet imported, and
+        //    the only content tier a non-WebP request can reach.
+        let thumb_path = self.get_thumbnail_path(hash, size, format);
+        if let Some(bytes) = self.read_sidecar(&thumb_path).await {
+            self.cache
+                .insert(
+                    ThumbnailCacheKey::content(hash, size, format),
+                    bytes.clone(),
+                )
+                .await;
+            return Some(bytes);
+        }
+
+        None
     }
 
     /// Store an externally-generated thumbnail (e.g. client-side video frame).
@@ -593,24 +1001,20 @@ impl ThumbnailService {
 
         let bytes = Bytes::from(jpeg_bytes);
 
-        // External thumbnails are stored by file_id (not dedup-able)
-        let thumb_path = self
-            .thumbnails_root
-            .join(size.dir_name())
-            .join(format!("ext-{}.jpg", file_id));
-        if let Some(parent) = thumb_path.parent() {
-            let _ = fs::create_dir_all(parent).await;
-        }
-        fs::write(&thumb_path, &bytes)
-            .await
-            .map_err(|e| ThumbnailError::IoError(e.to_string()))?;
-
-        // Populate in-memory cache (external thumbnails are JPEG)
-        let cache_key = ThumbnailCacheKey {
-            file_id: file_id.to_string(),
-            size,
-            format: ThumbnailFormat::Jpeg,
-        };
+        // Step 10d2: the `ext-{file_id}.jpg` sidecar write is GONE. The
+        // durable store is now `file_attached_blobs`, written by the caller —
+        // which is why that write had to become fatal first, in the same
+        // change. These bytes have no server-side render path, so a
+        // best-effort store with no sidecar behind it would lose a user's
+        // upload silently.
+        //
+        // This function now re-encodes and caches; it does not persist. The
+        // RAM entry stays because it is what serves the request that follows,
+        // and the caller drops it if the durable write fails.
+        //
+        // Existing `ext-` files remain readable through the fallback tier
+        // until `thumb_attached_import` drains them.
+        let cache_key = ThumbnailCacheKey::external(file_id, size);
         self.cache.insert(cache_key, bytes.clone()).await;
 
         tracing::info!("✅ Stored external thumbnail: {} {:?}", file_id, size);
@@ -940,7 +1344,7 @@ impl ThumbnailService {
                 for size in ThumbnailSize::all() {
                     let thumb_path =
                         self.get_thumbnail_path(&blob_hash, *size, ThumbnailFormat::Webp);
-                    if fs::metadata(&thumb_path).await.is_err() {
+                    if !self.sidecar_exists(&thumb_path).await {
                         ok = false;
                         break;
                     }
@@ -951,13 +1355,10 @@ impl ThumbnailService {
                 for size in ThumbnailSize::all() {
                     let thumb_path =
                         self.get_thumbnail_path(&blob_hash, *size, ThumbnailFormat::Webp);
-                    if let Ok(data) = fs::read(&thumb_path).await {
-                        let cache_key = ThumbnailCacheKey {
-                            file_id: file_id.clone(),
-                            size: *size,
-                            format: ThumbnailFormat::Webp,
-                        };
-                        self.cache.insert(cache_key, Bytes::from(data)).await;
+                    if let Some(bytes) = self.read_sidecar(&thumb_path).await {
+                        let cache_key =
+                            ThumbnailCacheKey::content(&blob_hash, *size, ThumbnailFormat::Webp);
+                        self.cache.insert(cache_key, bytes).await;
                     }
                 }
                 tracing::info!(
@@ -1006,22 +1407,21 @@ impl ThumbnailService {
                 }
             };
 
-            // Save each size to disk (keyed by blob_hash for dedup)
-            // AND populate moka (keyed by file_id for fast serving).
+            // Save each size to disk and populate moka — both keyed by
+            // blob_hash, so the two tiers agree and a copy shares them.
             for (size, bytes) in thumbnails {
-                let thumb_path = self.get_thumbnail_path(&blob_hash, size, ThumbnailFormat::Webp);
-                if let Some(parent) = thumb_path.parent() {
-                    let _ = fs::create_dir_all(parent).await;
-                }
-                if let Err(e) = fs::write(&thumb_path, &bytes).await {
-                    tracing::warn!("Failed to save thumbnail {} {:?}: {}", file_id, size, e);
-                } else {
+                // `None` — sidecar-only, acceptable for the same reason as
+                // `get_thumbnail`: the path variant is reached only through
+                // the unused `ThumbnailPort` impl. The live upload path is
+                // `generate_all_sizes_background_from_blob`, which carries a
+                // `DedupService` and dual-writes. Give this one a real caller
+                // and it needs one too.
+                self.persist_rendered(&blob_hash, size, ThumbnailFormat::Webp, &bytes, None)
+                    .await;
+                {
                     // Populate in-memory cache for instant first-hit serving
-                    let cache_key = ThumbnailCacheKey {
-                        file_id: file_id.clone(),
-                        size,
-                        format: ThumbnailFormat::Webp,
-                    };
+                    let cache_key =
+                        ThumbnailCacheKey::content(&blob_hash, size, ThumbnailFormat::Webp);
                     self.cache.insert(cache_key, bytes).await;
                     tracing::debug!("✅ Generated thumbnail: {} {:?}", file_id, size);
                 }
@@ -1062,7 +1462,7 @@ impl ThumbnailService {
                 for size in ThumbnailSize::all() {
                     let thumb_path =
                         self.get_thumbnail_path(&blob_hash, *size, ThumbnailFormat::Webp);
-                    if fs::metadata(&thumb_path).await.is_err() {
+                    if !self.sidecar_exists(&thumb_path).await {
                         ok = false;
                         break;
                     }
@@ -1073,13 +1473,10 @@ impl ThumbnailService {
                 for size in ThumbnailSize::all() {
                     let thumb_path =
                         self.get_thumbnail_path(&blob_hash, *size, ThumbnailFormat::Webp);
-                    if let Ok(data) = fs::read(&thumb_path).await {
-                        let cache_key = ThumbnailCacheKey {
-                            file_id: file_id.clone(),
-                            size: *size,
-                            format: ThumbnailFormat::Webp,
-                        };
-                        self.cache.insert(cache_key, Bytes::from(data)).await;
+                    if let Some(bytes) = self.read_sidecar(&thumb_path).await {
+                        let cache_key =
+                            ThumbnailCacheKey::content(&blob_hash, *size, ThumbnailFormat::Webp);
+                        self.cache.insert(cache_key, bytes).await;
                     }
                 }
                 tracing::info!(
@@ -1115,7 +1512,7 @@ impl ThumbnailService {
                 }
             };
 
-            self.render_and_persist_all_webp(&file_id, &blob_hash, original_data)
+            self.render_and_persist_all_webp(&file_id, &blob_hash, original_data, Some(&dedup))
                 .await;
 
             tracing::info!("✅ Background thumbnail generation complete: {}", file_id);
@@ -1126,7 +1523,21 @@ impl ThumbnailService {
     /// blob_hash (disk `{hash}.webp` + moka). Shared by the image upload path and
     /// the video path (which passes the extracted frame as the source), so both
     /// produce identical, dedup-able, content-negotiable thumbnails.
-    async fn render_and_persist_all_webp(&self, file_id: &str, blob_hash: &str, source: Bytes) {
+    /// `dedup` is `Some` on every path that has a handle, which is every
+    /// eager background path. When present each rendered size is ALSO stored
+    /// as a derived blob and recorded in `storage.content_derived_blobs`.
+    ///
+    /// The sidecar write is deliberately kept: this slice fills the table
+    /// while reads still come from disk, so a rollback at any point leaves
+    /// working thumbnails and the table can be inspected against real data
+    /// before anything depends on it. See `docs/plan/derived-blobs.md`.
+    async fn render_and_persist_all_webp(
+        &self,
+        file_id: &str,
+        blob_hash: &str,
+        source: Bytes,
+        dedup: Option<&DedupService>,
+    ) {
         let results = tokio::task::spawn_blocking(move || {
             Self::render_all_thumbnails_from_data(source.as_ref(), ThumbnailFormat::Webp)
         })
@@ -1145,21 +1556,16 @@ impl ThumbnailService {
         };
 
         for (size, bytes) in thumbnails {
-            let thumb_path = self.get_thumbnail_path(blob_hash, size, ThumbnailFormat::Webp);
-            if let Some(parent) = thumb_path.parent() {
-                let _ = fs::create_dir_all(parent).await;
-            }
-            if let Err(e) = fs::write(&thumb_path, &bytes).await {
-                tracing::warn!("Failed to save thumbnail {} {:?}: {}", file_id, size, e);
-            } else {
-                let cache_key = ThumbnailCacheKey {
-                    file_id: file_id.to_string(),
-                    size,
-                    format: ThumbnailFormat::Webp,
-                };
-                self.cache.insert(cache_key, bytes).await;
-                tracing::debug!("✅ Generated thumbnail: {} {:?}", file_id, size);
-            }
+            // Was the only path that wrote both tiers, with its own copy of
+            // the logic. Now the same `persist_rendered` every other render
+            // path uses, so there is one definition of what persisting means
+            // and the interim dual-write can be retired in one place.
+            self.persist_rendered(blob_hash, size, ThumbnailFormat::Webp, &bytes, dedup)
+                .await;
+
+            let cache_key = ThumbnailCacheKey::content(blob_hash, size, ThumbnailFormat::Webp);
+            self.cache.insert(cache_key, bytes).await;
+            tracing::debug!("✅ Generated thumbnail: {} {:?}", file_id, size);
         }
     }
 
@@ -1190,7 +1596,7 @@ impl ThumbnailService {
                 let mut ok = true;
                 for size in ThumbnailSize::all() {
                     let p = self.get_thumbnail_path(&blob_hash, *size, ThumbnailFormat::Webp);
-                    if fs::metadata(&p).await.is_err() {
+                    if !self.sidecar_exists(&p).await {
                         ok = false;
                         break;
                     }
@@ -1200,13 +1606,10 @@ impl ThumbnailService {
             if all_exist {
                 for size in ThumbnailSize::all() {
                     let p = self.get_thumbnail_path(&blob_hash, *size, ThumbnailFormat::Webp);
-                    if let Ok(data) = fs::read(&p).await {
-                        let key = ThumbnailCacheKey {
-                            file_id: file_id.clone(),
-                            size: *size,
-                            format: ThumbnailFormat::Webp,
-                        };
-                        self.cache.insert(key, Bytes::from(data)).await;
+                    if let Some(bytes) = self.read_sidecar(&p).await {
+                        let key =
+                            ThumbnailCacheKey::content(&blob_hash, *size, ThumbnailFormat::Webp);
+                        self.cache.insert(key, bytes).await;
                     }
                 }
                 return;
@@ -1251,7 +1654,7 @@ impl ThumbnailService {
                 Ok(p) => p,
                 Err(_) => return,
             };
-            self.render_and_persist_all_webp(&file_id, &blob_hash, frame)
+            self.render_and_persist_all_webp(&file_id, &blob_hash, frame, Some(&dedup))
                 .await;
             tracing::info!("✅ Video thumbnail generation complete: {}", file_id);
         });
@@ -1304,31 +1707,37 @@ impl ThumbnailService {
         Ok(tmp)
     }
 
-    /// Delete thumbnails for a file.
+    /// Delete the per-file thumbnail artifacts for a file.
     ///
-    /// Only invalidates the in-memory moka cache (keyed by file_id).
-    /// Disk thumbnails are keyed by blob_hash and may be shared by
-    /// other files with the same content — they are cleaned up via
-    /// `delete_blob_thumbnails` when the blob is garbage-collected.
-    /// Also removes any external (video-frame) thumbnails stored by file_id.
+    /// Only the external (video-frame) entries are file-keyed, so only those
+    /// are removed — from moka and from disk. Rendered thumbnails, in both
+    /// tiers, are keyed by blob_hash and may be shared with any other file
+    /// holding the same content; they are reclaimed by
+    /// `delete_blob_thumbnails` when the blob itself is garbage-collected.
+    ///
+    /// Content keying is also why this no longer has to win a race. When a
+    /// file's content is replaced the rendered entries are unreachable by
+    /// construction — a new hash is a new key — rather than needing explicit
+    /// invalidation before the next request arrives.
     pub async fn delete_thumbnails(&self, file_id: &str) -> Result<(), ThumbnailError> {
         for size in ThumbnailSize::all() {
-            // Remove from moka cache (lock-free invalidation) — both codecs.
-            for format in [ThumbnailFormat::Webp, ThumbnailFormat::Jpeg] {
-                let cache_key = ThumbnailCacheKey {
-                    file_id: file_id.to_string(),
-                    size: *size,
-                    format,
-                };
-                self.cache.invalidate(&cache_key).await;
-            }
+            // Only the external (per-file) entry needs invalidating. Rendered
+            // thumbnails are keyed by content hash, so replacing a file's
+            // content yields a different key and the old entry simply cannot
+            // be hit again — which is the point: correctness no longer depends
+            // on this call winning a race against the next request. And on
+            // deletion the entry stays valid for any other file sharing that
+            // content, so dropping it would only cost a re-read.
+            self.cache
+                .invalidate(&ThumbnailCacheKey::external(file_id, *size))
+                .await;
 
             // Remove external (video-frame) thumbnails stored by file_id (JPEG-only)
             let ext_path = self
                 .thumbnails_root
                 .join(size.dir_name())
                 .join(format!("ext-{}.jpg", file_id));
-            if fs::metadata(&ext_path).await.is_ok() {
+            if self.sidecar_exists(&ext_path).await {
                 let _ = fs::remove_file(&ext_path).await;
             }
         }
@@ -1346,7 +1755,7 @@ impl ThumbnailService {
             // Delete both the primary WebP and any lazily-materialized JPEG.
             for format in [ThumbnailFormat::Webp, ThumbnailFormat::Jpeg] {
                 let path = self.get_thumbnail_path(blob_hash, *size, format);
-                if fs::metadata(&path).await.is_ok() {
+                if self.sidecar_exists(&path).await {
                     let _ = fs::remove_file(&path).await;
                 }
             }
@@ -1567,7 +1976,10 @@ impl ThumbnailPort for ThumbnailService {
         blob_hash: Option<&str>,
         size: PortThumbnailSize,
     ) -> Option<Bytes> {
-        self.get_cached_thumbnail(file_id, blob_hash, size.into(), ThumbnailFormat::Webp)
+        // `None` — the abstract port has no DedupService handle, so it stays
+        // sidecar-only. Callers wanting the tier-3 fallback use the concrete
+        // method, which both handlers already do.
+        self.get_cached_thumbnail(file_id, blob_hash, size.into(), ThumbnailFormat::Webp, None)
             .await
     }
 
@@ -1684,12 +2096,346 @@ pub enum ThumbnailError {
     UnsupportedFormat,
 }
 
+impl ThumbnailError {
+    /// Is this failure a property of the CONTENT, rather than of the moment?
+    ///
+    /// Prerequisite for persisting negative verdicts to
+    /// `content_derived_blobs` (see `docs/plan/derived-blobs.md` §Negative
+    /// verdicts). Only a permanent failure may be recorded: it will give the
+    /// same answer forever, so remembering it saves a decode. A transient one
+    /// must never be recorded — the next attempt may well succeed, and a row
+    /// saying otherwise is silent, permanent data loss for that file.
+    ///
+    /// The asymmetry is why the default is `false`. A wrongly-persisted
+    /// transient marks a perfectly good image unrenderable for good; a
+    /// wrongly-omitted permanent merely costs a repeated decode. So anything
+    /// not clearly a content property is treated as transient.
+    ///
+    /// * [`Self::ImageError`] — the decoder rejected these bytes, or they
+    ///   exceed `MAX_DECODE_PIXELS`. Both are facts about the image.
+    /// * [`Self::UnsupportedFormat`] — likewise.
+    /// * [`Self::TaskError`] — timeout, closed decode semaphore, join
+    ///   failure. All say the machine was busy, not that the image is bad. A
+    ///   timeout under load is the exact case that must not be cached.
+    /// * [`Self::IoError`] — the source could not be read. Says nothing about
+    ///   whether it is renderable.
+    pub fn is_permanent(&self) -> bool {
+        match self {
+            ThumbnailError::ImageError(_) | ThumbnailError::UnsupportedFormat => true,
+            ThumbnailError::TaskError(_) | ThumbnailError::IoError(_) => false,
+        }
+    }
+}
+
 /// Statistics about the thumbnail cache
 #[derive(Debug, Clone)]
 pub struct ThumbnailStats {
     pub cached_thumbnails: usize,
     pub cache_size_bytes: usize,
     pub max_cache_bytes: usize,
+}
+
+#[cfg(test)]
+mod tier_selection_tests {
+    //! Precedence in [`ThumbnailService::get_cached_thumbnail`].
+    //!
+    //! This function produced four bugs in two days, every one of them an
+    //! ordering mistake rather than a logic error, and every one caught only
+    //! by an end-to-end run comparing bytes against something independent:
+    //!
+    //! * the content-keyed RAM entry shadowing an uploaded preview, so a PUT
+    //!   appeared to do nothing;
+    //! * the same precedence being right on disk but wrong in RAM;
+    //! * a validator flipping because a tier was populated as a side effect
+    //!   of producing the body;
+    //! * a decode error reading as "absent".
+    //!
+    //! The rule they all violate is one sentence: **a file-specific override
+    //! beats anything derived from the content, at every tier.** These tests
+    //! pin it, so the read-order flip (step 10c of
+    //! `docs/plan/derived-blobs.md`) is a change with a safety net rather
+    //! than another end-to-end guess.
+    //!
+    //! `dedup: None` throughout, which skips the two DB-backed tiers and
+    //! needs no database. What remains — per-file RAM, `ext-` disk, content
+    //! RAM, blob-hash sidecar — is exactly where the bugs were.
+
+    use super::*;
+    use std::time::Duration;
+
+    const HASH: &str = "0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9";
+    const FILE_ID: &str = "3f2b1c00-1111-2222-3333-444455556666";
+    const SIZE: ThumbnailSize = ThumbnailSize::Preview;
+    const FMT: ThumbnailFormat = ThumbnailFormat::Webp;
+
+    fn service(root: &std::path::Path) -> ThumbnailService {
+        ThumbnailService::new(root, 100, 10 * 1024 * 1024, Some(Duration::from_secs(5)))
+    }
+
+    /// Seed the per-file disk tier (`ext-{file_id}.jpg`).
+    async fn write_ext_sidecar(root: &std::path::Path, bytes: &[u8]) {
+        let dir = root.join(".thumbnails").join(SIZE.dir_name());
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(dir.join(format!("ext-{FILE_ID}.jpg")), bytes)
+            .await
+            .unwrap();
+    }
+
+    /// Seed the content-keyed disk tier (`{hash}.webp`).
+    async fn write_blob_sidecar(root: &std::path::Path, bytes: &[u8]) {
+        let dir = root.join(".thumbnails").join(SIZE.dir_name());
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(dir.join(format!("{HASH}.{}", FMT.ext())), bytes)
+            .await
+            .unwrap();
+    }
+
+    /// `initialize()` must not recreate what the import job removed.
+    ///
+    /// It used to `create_dir_all` every size directory at boot, so a drained
+    /// deployment grew its `.thumbnails/` tree back on the next restart and
+    /// the absence the fallback gates on was unreachable. Found on a sandbox
+    /// where the job had removed the directories and a restart put three
+    /// empty ones back.
+    #[tokio::test]
+    async fn initialize_does_not_recreate_a_drained_tier() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = service(tmp.path());
+
+        svc.initialize().await.unwrap();
+
+        assert!(
+            tokio::fs::metadata(tmp.path().join(".thumbnails"))
+                .await
+                .is_err(),
+            "boot recreated the legacy sidecar tree"
+        );
+        assert!(
+            !svc.legacy_tier_active(),
+            "no directories on disk, so the fallback must be inert"
+        );
+    }
+
+    /// The other direction: a tier that still holds sidecars stays live, or
+    /// the migration would strand every un-imported thumbnail.
+    #[tokio::test]
+    async fn initialize_keeps_the_fallback_when_sidecars_remain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = service(tmp.path());
+        write_blob_sidecar(tmp.path(), b"legacy").await;
+
+        svc.initialize().await.unwrap();
+
+        assert!(svc.legacy_tier_active());
+        let got = svc
+            .get_cached_thumbnail(FILE_ID, Some(HASH), SIZE, FMT, None)
+            .await;
+        assert_eq!(got.as_deref(), Some(&b"legacy"[..]));
+    }
+
+    /// With the tier inert, a sidecar on disk is deliberately NOT served —
+    /// the guard short-circuits before the read. This is what makes the
+    /// fallback free rather than merely cheap, and it is only sound because
+    /// nothing has written a sidecar since step 10d2.
+    #[tokio::test]
+    async fn inert_tier_skips_the_read_entirely() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = service(tmp.path());
+        write_blob_sidecar(tmp.path(), b"legacy").await;
+        svc.legacy_sidecars.store(false, Ordering::Relaxed);
+
+        let got = svc
+            .get_cached_thumbnail(FILE_ID, Some(HASH), SIZE, FMT, None)
+            .await;
+        assert!(got.is_none(), "inert tier must not touch the filesystem");
+    }
+
+    /// The bug from 2026-08-25: a render cached under the content key
+    /// shadowed a preview the user uploaded afterwards, permanently, because
+    /// the content tier was consulted first. The PUT looked like a no-op.
+    #[tokio::test]
+    async fn per_file_ram_beats_content_ram() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = service(tmp.path());
+
+        svc.cache
+            .insert(
+                ThumbnailCacheKey::content(HASH, SIZE, FMT),
+                Bytes::from_static(b"rendered-from-content"),
+            )
+            .await;
+        svc.cache
+            .insert(
+                ThumbnailCacheKey::external(FILE_ID, SIZE),
+                Bytes::from_static(b"uploaded-by-user"),
+            )
+            .await;
+
+        let got = svc
+            .get_cached_thumbnail(FILE_ID, Some(HASH), SIZE, FMT, None)
+            .await;
+        assert_eq!(got.as_deref(), Some(&b"uploaded-by-user"[..]));
+    }
+
+    /// Same rule one tier down: the per-file file on disk must win over a
+    /// content-keyed entry still sitting in RAM.
+    #[tokio::test]
+    async fn ext_disk_beats_content_ram() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = service(tmp.path());
+
+        svc.cache
+            .insert(
+                ThumbnailCacheKey::content(HASH, SIZE, FMT),
+                Bytes::from_static(b"rendered-from-content"),
+            )
+            .await;
+        write_ext_sidecar(tmp.path(), b"uploaded-on-disk").await;
+
+        let got = svc
+            .get_cached_thumbnail(FILE_ID, Some(HASH), SIZE, FMT, None)
+            .await;
+        assert_eq!(got.as_deref(), Some(&b"uploaded-on-disk"[..]));
+    }
+
+    /// Within the content-keyed tiers, RAM still beats disk — the ordinary
+    /// cache property, asserted so the flip cannot invert it by accident.
+    #[tokio::test]
+    async fn content_ram_beats_blob_sidecar() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = service(tmp.path());
+
+        write_blob_sidecar(tmp.path(), b"on-disk").await;
+        svc.cache
+            .insert(
+                ThumbnailCacheKey::content(HASH, SIZE, FMT),
+                Bytes::from_static(b"in-ram"),
+            )
+            .await;
+
+        let got = svc
+            .get_cached_thumbnail(FILE_ID, Some(HASH), SIZE, FMT, None)
+            .await;
+        assert_eq!(got.as_deref(), Some(&b"in-ram"[..]));
+    }
+
+    /// The sidecar answers when nothing above it does. After step 10c this
+    /// becomes the *fallback* rather than the primary content tier, and this
+    /// test is what proves it still answers at all.
+    #[tokio::test]
+    async fn blob_sidecar_answers_when_nothing_else_does() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = service(tmp.path());
+
+        write_blob_sidecar(tmp.path(), b"only-on-disk").await;
+
+        let got = svc
+            .get_cached_thumbnail(FILE_ID, Some(HASH), SIZE, FMT, None)
+            .await;
+        assert_eq!(got.as_deref(), Some(&b"only-on-disk"[..]));
+    }
+
+    /// Reading the `ext-` file must cache it under the PER-FILE key.
+    ///
+    /// Under a content key those bytes would be served for every other file
+    /// sharing the same content — one user's uploaded preview leaking across
+    /// files, which is the poisoning the keying split exists to prevent.
+    #[tokio::test]
+    async fn ext_disk_read_caches_under_the_per_file_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = service(tmp.path());
+        write_ext_sidecar(tmp.path(), b"uploaded").await;
+
+        svc.get_cached_thumbnail(FILE_ID, Some(HASH), SIZE, FMT, None)
+            .await;
+
+        assert_eq!(
+            svc.cache
+                .get(&ThumbnailCacheKey::external(FILE_ID, SIZE))
+                .await
+                .as_deref(),
+            Some(&b"uploaded"[..]),
+            "must populate the per-file key"
+        );
+        assert!(
+            svc.cache
+                .get(&ThumbnailCacheKey::content(HASH, SIZE, FMT))
+                .await
+                .is_none(),
+            "must NOT populate the content key — those bytes are not derived \
+             from this content and would leak to every file sharing it"
+        );
+    }
+
+    /// A caller with no hash cannot consult the content-keyed tiers, and must
+    /// fall through rather than guess. Yesterday's alternative — keying RAM
+    /// on `file_id` — is precisely the stale entry content-keying removed.
+    #[tokio::test]
+    async fn missing_hash_skips_content_tiers_but_still_reads_ext_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = service(tmp.path());
+
+        write_blob_sidecar(tmp.path(), b"content-keyed").await;
+        assert!(
+            svc.get_cached_thumbnail(FILE_ID, None, SIZE, FMT, None)
+                .await
+                .is_none(),
+            "without a hash the content tiers are unreachable"
+        );
+
+        write_ext_sidecar(tmp.path(), b"per-file").await;
+        assert_eq!(
+            svc.get_cached_thumbnail(FILE_ID, None, SIZE, FMT, None)
+                .await
+                .as_deref(),
+            Some(&b"per-file"[..]),
+            "the per-file tier needs no hash and must still answer"
+        );
+    }
+
+    /// A timeout must never be recorded as a permanent verdict.
+    ///
+    /// It is the case that turns a load spike into permanent data loss:
+    /// `generate_and_persist` collapses every error into empty `Bytes`, which
+    /// is survivable only while that sentinel lives in moka and evicts.
+    /// Before any of it reaches `content_derived_blobs`, timeouts must
+    /// classify as transient — so this pins the mapping rather than trusting
+    /// the variant names to stay put.
+    #[test]
+    fn only_content_failures_are_permanent() {
+        // Facts about the image — safe to remember.
+        assert!(ThumbnailError::ImageError("decode failed".into()).is_permanent());
+        assert!(ThumbnailError::UnsupportedFormat.is_permanent());
+
+        // Facts about the moment — must never be remembered. `timeout(...)`
+        // and the decode semaphore both surface as TaskError.
+        assert!(!ThumbnailError::TaskError("thumbnail generation timed out".into()).is_permanent());
+        assert!(!ThumbnailError::TaskError("Decode semaphore closed".into()).is_permanent());
+        assert!(!ThumbnailError::IoError("blob read failed".into()).is_permanent());
+    }
+
+    /// Empty bytes are moka's negative-entry convention (a previous render
+    /// failed). They must not be served as a thumbnail, or a failure gets
+    /// cached and returned as success.
+    #[tokio::test]
+    async fn empty_cache_entry_is_not_served() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = service(tmp.path());
+
+        svc.cache
+            .insert(ThumbnailCacheKey::content(HASH, SIZE, FMT), Bytes::new())
+            .await;
+        write_blob_sidecar(tmp.path(), b"real-bytes").await;
+
+        let got = svc
+            .get_cached_thumbnail(FILE_ID, Some(HASH), SIZE, FMT, None)
+            .await;
+        assert_eq!(
+            got.as_deref(),
+            Some(&b"real-bytes"[..]),
+            "a negative entry must fall through, not be served"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -80,7 +80,7 @@ Content-Type: application/json
 HTTP 200
 [Captures]
 user_token: jsonpath "$.access_token"
-user_user_id: jsonpath "$.user.id"
+user_user_id: jsonpath "$.user.full.user.id"
 
 
 # ─────────────────────────────────────────────────────────────

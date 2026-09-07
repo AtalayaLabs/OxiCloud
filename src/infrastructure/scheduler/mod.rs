@@ -37,5 +37,7 @@ pub use recoverable::{
     RecoverableJobHandler, RunOutcome, RunProgress, RunStatus, RunSummary, derive_progress,
     record_or_log, run_or_resume,
 };
-pub use registry::{JobEntry, JobRegistry, JobSummary, PausedRunBrief, RegisterError};
-pub use types::{ErrCause, JobOutcome, JobRunArgs};
+pub use registry::{
+    JobEntry, JobRegistry, JobSummary, PausedRunBrief, RegisterError, StartupTrigger,
+};
+pub use types::{ErrCause, JobOutcome, JobRunArgs, Mutates};

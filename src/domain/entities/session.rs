@@ -97,6 +97,16 @@ pub struct Session {
     /// construction so a callsite can't forget to record it (the
     /// admin sessions panel filters on this).
     origin: SessionOrigin,
+    /// Wall-clock time the session was last observed serving an
+    /// authenticated request. Set to `created_at` at construction so
+    /// a freshly-minted session immediately counts as "recently
+    /// active" for the liveness gauges; moved forward in batches by
+    /// [`LastSeenTracker`](crate::infrastructure::services::last_seen_tracker)
+    /// via a per-30 s UNNEST-based UPDATE, so per-request writes
+    /// stay in-process. Distinct from `created_at` — that only moves
+    /// on session rotation (silent refresh), so its resolution is
+    /// capped at the access-token TTL. See `docs/plan/sessions.md`.
+    last_seen_at: DateTime<Utc>,
 }
 
 impl Session {
@@ -129,6 +139,7 @@ impl Session {
             oidc_sid: None,
             dpop_jkt: None,
             origin,
+            last_seen_at: now,
         }
     }
 
@@ -180,6 +191,7 @@ impl Session {
         oidc_sid: Option<String>,
         dpop_jkt: Option<String>,
         origin: SessionOrigin,
+        last_seen_at: DateTime<Utc>,
     ) -> Self {
         Self {
             id,
@@ -195,6 +207,7 @@ impl Session {
             oidc_sid,
             dpop_jkt,
             origin,
+            last_seen_at,
         }
     }
 
@@ -258,6 +271,10 @@ impl Session {
     pub fn origin(&self) -> SessionOrigin {
         self.origin
     }
+
+    pub fn last_seen_at(&self) -> DateTime<Utc> {
+        self.last_seen_at
+    }
 }
 
 #[cfg(test)]
@@ -311,6 +328,7 @@ mod tests {
             None,
             Some("thumbprint-xyz".to_string()),
             SessionOrigin::Unknown,
+            Utc::now(),
         );
         assert_eq!(s.dpop_jkt(), Some("thumbprint-xyz"));
     }

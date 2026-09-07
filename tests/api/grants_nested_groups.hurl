@@ -44,7 +44,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-henry_user_id: jsonpath "$.id"
+henry_user_id: jsonpath "$.user.id"
 
 POST {{base_url}}/api/auth/login
 Content-Type: application/json

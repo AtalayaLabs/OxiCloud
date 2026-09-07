@@ -39,7 +39,7 @@ Content-Type: application/json
 HTTP 200
 [Captures]
 alice_token: jsonpath "$.access_token"
-alice_user_id: jsonpath "$.user.id"
+alice_user_id: jsonpath "$.user.full.user.id"
 
 
 GET {{base_url}}/api/folders
@@ -65,7 +65,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-bob_user_id: jsonpath "$.id"
+bob_user_id: jsonpath "$.user.id"
 
 
 POST {{base_url}}/api/auth/login

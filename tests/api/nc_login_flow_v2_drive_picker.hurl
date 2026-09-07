@@ -48,7 +48,7 @@ Content-Type: application/json
 HTTP 200
 [Captures]
 admin_token:   jsonpath "$.access_token"
-admin_user_id: jsonpath "$.user.id"
+admin_user_id: jsonpath "$.user.full.user.id"
 
 
 # ─────────────────────────────────────────────────────────────

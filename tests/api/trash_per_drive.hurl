@@ -51,7 +51,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-owner_user_id: jsonpath "$.id"
+owner_user_id: jsonpath "$.user.id"
 
 POST {{base_url}}/api/auth/login
 Content-Type: application/json
@@ -209,7 +209,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-viewer_user_id: jsonpath "$.id"
+viewer_user_id: jsonpath "$.user.id"
 
 POST {{base_url}}/api/auth/login
 Content-Type: application/json

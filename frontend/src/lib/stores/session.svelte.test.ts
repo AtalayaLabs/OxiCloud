@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { User } from '$lib/api/types';
+import type { SelfUser } from '$lib/api/types';
 
 // `vi.mock` is hoisted above imports, so the spy it references must be created
 // with `vi.hoisted` (a plain top-level const isn't initialised yet when the
@@ -14,7 +14,14 @@ vi.mock('$lib/api/endpoints/auth', () => ({
 
 import { session } from './session.svelte';
 
-const userWithUsage = (used: number) => ({ storage_used_bytes: used }) as unknown as User;
+// `storage_used_bytes` moved to `FullUser` (embedded inside `SelfUser`)
+// as part of the three-layer UserDto refactor
+// (`docs/plan/userdto-refactor.md`). Build a minimal SelfUser shape that
+// satisfies the type checker without hand-populating every field the
+// production shape carries — the test only cares about the usage read
+// path (`session.me.full.storage_used_bytes`).
+const userWithUsage = (used: number) =>
+	({ full: { storage_used_bytes: used } }) as unknown as SelfUser;
 
 describe('session.refresh', () => {
 	beforeEach(() => {
@@ -25,7 +32,7 @@ describe('session.refresh', () => {
 	it('pulls the fresh storage usage into the reactive user (upload/delete sync)', async () => {
 		fetchMeMock.mockResolvedValue(userWithUsage(2048));
 		await session.refresh();
-		expect(session.user?.storage_used_bytes).toBe(2048);
+		expect(session.me?.full.storage_used_bytes).toBe(2048);
 	});
 
 	it('leaves the current user intact when the probe returns null', async () => {
@@ -33,7 +40,7 @@ describe('session.refresh', () => {
 		await session.refresh();
 		fetchMeMock.mockResolvedValue(null);
 		await session.refresh();
-		expect(session.user?.storage_used_bytes).toBe(2048);
+		expect(session.me?.full.storage_used_bytes).toBe(2048);
 	});
 
 	it('leaves the current user intact when the probe throws', async () => {
@@ -41,6 +48,6 @@ describe('session.refresh', () => {
 		await session.refresh();
 		fetchMeMock.mockRejectedValue(new Error('network'));
 		await session.refresh();
-		expect(session.user?.storage_used_bytes).toBe(2048);
+		expect(session.me?.full.storage_used_bytes).toBe(2048);
 	});
 });

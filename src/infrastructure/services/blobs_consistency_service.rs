@@ -1,34 +1,15 @@
 //! Fourth tenant of Part 2 (recoverable-run engine).
 //!
-//! Iterates `storage.blobs` — the content-addressable registry —
-//! and verifies each row against the physical backend AND against
-//! the reference-counting invariants that `dedup_gc` relies on.
+//! Iterates `storage.blobs` — the content-addressable registry — and
+//! checks the reference-counting invariants `dedup_gc` relies on.
 //!
-//! Three per-row checks (subject-iteration principle in action —
-//! one walk, multiple branches):
+//! **Database only.** It opens no backend and makes no network call;
+//! `?storage=<name>` and `?deep=true` are both inert here.
 //!
-//! * `blob_missing_from_backend` (severity `data_loss`) — the DB
-//!   row says the hash exists but `BlobStorageBackend::blob_exists`
-//!   returns false. Bytes gone from disk / S3 / Azure. Any file
-//!   whose manifest references this hash (or whose whole-file
-//!   `blob_hash` points at it) will fail to read.
+//! Two per-row checks share the same walk — one page fetch already
+//! has every column both need:
 //!
-//! * `blob_corrupted` (severity `data_loss`, deep mode only) —
-//!   bytes exist on the backend but their BLAKE3 no longer matches
-//!   the hash under which they're indexed. Silent bit-rot. Only
-//!   runs when the operator passes `?deep=true` because it costs a
-//!   full read of every blob.
-//!
-//! * `blob_unreadable` (severity `data_loss`, deep mode only) —
-//!   `blob_exists` returned true but the read pipeline errored (can't
-//!   decrypt, network glitch, permission error, etc.). Distinct from
-//!   `blob_corrupted` (which requires successful read + hash mismatch);
-//!   here we can't get bytes out at all. Same operator impact — any
-//!   file referencing this hash is inaccessible — but the remedy
-//!   differs (key recovery, retry, or blob replacement, depending on
-//!   the recorded `error` field).
-//!
-//! * `refcount_mismatch` (severity `inconsistent`) —
+//! * `refcount_mismatch` (severity `inconsistent`, repairable) —
 //!   `storage.blobs.ref_count` disagrees with the actual reference
 //!   count computed from `storage.files.blob_hash` +
 //!   `storage.chunk_manifests.chunk_hashes[]`. Under-count means
@@ -36,98 +17,186 @@
 //!   a blob is being pinned longer than needed. Content-safe either
 //!   way (the storage.blobs row is fine, the counter is wrong).
 //!
-//! ### Complements `files_consistency`
+//! * `blob_orphan_stalled` (severity `anomaly`, discovery-only) —
+//!   the row satisfies every reap predicate `dedup_gc` uses
+//!   (`ref_count <= 0`, no chunk-level referrer) AND has been sitting
+//!   past a comfortable margin (default `STALL_GRACE_SECS` = 24 h,
+//!   comfortably exceeding the GC's own 1 h grace). Signal that the
+//!   GC pipeline itself is stuck — the job stopped running, is
+//!   failing on the same hash every tick, or a ghost row keeps
+//!   pinning the same set. No `?repair=true` path: per
+//!   [[feedback_no_silent_auto_repair]], papering over the symptom
+//!   here would hide the root cause (a wedged worker, a hanging
+//!   backend delete, a ghost referrer being recreated) — the
+//!   operator diagnoses first, then runs
+//!   `POST /api/admin/jobs/dedup_gc/trigger?force=true` themselves.
+//!   The two checks are orthogonal in-loop: a row with drift is NOT
+//!   also flagged as stalled — the drift IS why the GC hasn't taken
+//!   it, so fixing the counter is the whole story.
 //!
-//! `files_consistency` (Slice 6/10) iterates files and verifies DB
-//! integrity. `blobs_consistency` iterates the storage registry and
-//! verifies physical existence + counter integrity. Together they
-//! cover both sides of the reference graph. Neither doubles the
-//! other's work — probing per-blob (here) instead of per-file-chunk
-//! preserves dedup savings: a chunk shared by 5 files gets probed
-//! ONCE.
+//! ### Why nothing physical lives here any more
 //!
-//! ### Not covered here
+//! This tenant used to probe `BlobStorageBackend::blob_exists` once
+//! per row for `blob_missing_from_backend`, and under `?deep=true`
+//! read and re-hashed every blob for `blob_corrupted` /
+//! `blob_unreadable`.
 //!
-//! * **Orphan bytes on the backend** (files on disk with no DB row)
-//!   — belongs in the future `backend_consistency` tenant which
-//!   iterates the backend itself. Requires the `list_blob_hashes`
-//!   trait extension and per-backend enumeration impls.
+//! All three moved to `backend_consistency`, which merge-joins the
+//! backend's enumeration against this same table in one ordered pass.
+//! It reports the same missing bytes, plus the backend-only orphans a
+//! DB walk cannot see by construction, at one enumeration instead of
+//! N round-trips — and a deep pass there re-hashes the matched pairs
+//! it already holds. Keeping the probe here bought nothing and made
+//! every scheduled sweep pay for it.
+//!
+//! What is left is the half that needs no backend at all: a counter,
+//! and the two tables that determine what it should be.
+//!
+//! ### Elsewhere in the graph
+//!
+//! * **Physical existence, orphan bytes, bit-rot** —
+//!   `backend_consistency`.
+//! * **File-side DB integrity** (parent folder, blob reference,
+//!   denormalised size) — `files_consistency`.
 //! * **Manifest-level integrity** (`storage.chunk_manifests` rows
-//!   pointing at reaped chunks) — already covered by
-//!   `files_consistency::chunk_missing`.
+//!   pointing at reaped chunks) — `files_consistency::chunk_missing`.
+//! * **The OTHER refcount** (`chunk_manifests.ref_count`, which every
+//!   whole-Blob reference lands on) — `manifests_consistency`.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
-use crate::application::ports::blob_storage_ports::BlobStorageBackend;
-use crate::common::config::NamedStorageEntry;
+use crate::application::ports::blob_reference_ports::{BlobReferenceRegistry, RefLevel};
 use crate::infrastructure::scheduler::{
-    JobRegistry, JobRunArgs, JobStore, JobStoreProvider, RecoverableJobHandler, RunOutcome,
-    RunStatus, record_or_log,
+    JobRegistry, JobRunArgs, JobStore, JobStoreProvider, Mutates, RecoverableJobHandler,
+    RunOutcome, RunStatus, record_or_log,
 };
-use crate::infrastructure::services::entry_backend::build_entry_backend;
+use crate::infrastructure::services::blob_diagnostics::affected_files;
 
 pub const BLOBS_CONSISTENCY_JOB_NAME: &str = "blobs_consistency";
 
-/// `params` JSONB key under which the entry name being probed is
-/// stashed on a Fresh run (matches `TARGET_NAME_PARAM` on
-/// `backend_migration`). Resumed runs re-read it so a paused audit
-/// survives restart without the admin re-specifying the target.
-pub const PROBED_STORAGE_PARAM: &str = "probed_storage";
-
 /// Rows per batch. Blobs are numerous (millions on a busy install)
-/// but per-row work is one indexed backend probe + one indexed SQL
-/// ref-count query. 200 balances cancel-poll cadence against
-/// round-trip amortisation.
+/// but per-row work is now a single indexed SQL ref-count comparison,
+/// with no backend round-trip. 200 balances cancel-poll cadence
+/// against round-trip amortisation.
 const BATCH_SIZE: i64 = 200;
 
-/// Grace window — rows created within this window are skipped by
-/// the physical-existence probe because the write path is
-/// durability-before-visibility: `dedup_service` writes bytes, then
-/// registers the row a few ms later. A scan catching a row
-/// mid-write would false-positive it as `blob_missing_from_backend`.
-/// Same shape `dedup_gc` uses (see its `grace_secs`).
-const CREATE_GRACE: Duration = Duration::hours(1);
-
-/// Cap on reverse-lookup file names surfaced in a finding's detail.
-/// Keeps detail JSON size bounded when a broken blob is referenced
-/// by hundreds of files.
-const AFFECTED_FILES_SAMPLE: i64 = 5;
+/// Grace window for the `blob_orphan_stalled` check. Derived from
+/// `dedup_gc`'s own grace so the two stay coupled at the source: if an
+/// operator ever tunes GC's grace (e.g. long-network-upload profile),
+/// the stall threshold auto-scales — no second knob to keep in sync.
+///
+/// The `× 24` multiplier says "we tolerate up to 24 missed sweep ticks
+/// before crying stall". Discovery-only, so a false positive after a
+/// long maintenance pause costs nothing (operator glances at the
+/// finding, sees it clear on the next run, moves on).
+const STALL_GRACE_SECS: i64 =
+    crate::infrastructure::services::dedup_service::DedupService::GC_ORPHAN_GRACE_SECS * 24;
 
 pub struct BlobsConsistencyCheck {
     pool: Arc<PgPool>,
-    /// The default backend to probe when `args.storage` is `None` —
-    /// the currently-active LIVE backend, injected at DI time. Runs
-    /// with `?storage=<name>` build a fresh backend for the named
-    /// entry instead (via [`build_entry_backend`]).
-    backend: Arc<dyn BlobStorageBackend>,
-    /// Snapshot of `AppConfig.storage_entries` used to resolve
-    /// `args.storage` to a `NamedStorageEntry`. Empty for the
-    /// legacy zero-entries path — `?storage=<name>` runs then
-    /// fail-fast with a clear "no entries declared" message.
-    storage_entries: Vec<NamedStorageEntry>,
-    /// Ambient `AppConfig.storage_path` — used as the `root_dir`
-    /// fallback for a Local target entry with no `_ROOT_DIR`. Same
-    /// fallback rule the boot path uses.
-    storage_path_fallback: PathBuf,
+    /// The chunk-level page query, assembled once from the blob-reference
+    /// registry so this recompute and `dedup_gc` agree on what "referenced"
+    /// means. Built at construction rather than per page so the sweep runs a
+    /// fixed statement — same reasoning as `DedupService::manifest_reap_sql`.
+    /// See `docs/plan/derived-blobs.md`.
+    chunk_page_sql: String,
+    /// Per-row repair UPDATE, built from the SAME registry as
+    /// `chunk_page_sql` so detection and repair use identical formulas
+    /// by construction. A future `RefLevel::Chunk` ref source added to
+    /// the registry flows into both without a code change here.
+    ///
+    /// Previously the repair query was inlined with a hardcoded
+    /// 2-term formula (accidentally matching detection today). Would
+    /// silently diverge the moment a new chunk-level ref source
+    /// landed — same class of latent bug the sibling
+    /// `manifests_consistency` service hit 2026-09-02. Preemptively
+    /// pulled from the registry here to keep the pair symmetric.
+    chunk_repair_sql: String,
+}
+
+/// The chunk-level page query, with `actual_ref_count` summed from the
+/// registered reference sources.
+///
+/// `storage.blobs.ref_count` semantics — the invariant `dedup_service`
+/// actually maintains:
+///
+/// ```text
+/// ref_count = (number of chunk_manifests whose chunk_hashes[] contains
+///              this hash)
+///           + (number of files.blob_hash pointing at this hash on the
+///              LEGACY whole-file path — files with NO manifest for their
+///              blob_hash)
+/// ```
+///
+/// Naively `COUNT(files) + COUNT(manifests referring)` double-counts
+/// single-chunk CDC files: where a file's whole-file hash equals its lone
+/// chunk's hash (anything under one CDC chunk), the file appears BOTH in
+/// `files.blob_hash` and in the manifest's `chunk_hashes[]`. The
+/// `NOT EXISTS` guard inside `FilesReferenceSource`'s chunk-level fragment
+/// excludes CDC-path files from the legacy term so the two don't overlap.
+///
+/// The GIN index on `chunk_hashes` (migration
+/// `20260628000000_delta_upload_gin_index`) keeps the `= ANY(chunk_hashes)`
+/// probe cheap.
+///
+/// # Panics
+///
+/// If no source contributes at [`RefLevel::Chunk`] — a wiring bug that
+/// would make every blob look unreferenced and flag the whole table as
+/// `refcount_mismatch`.
+fn chunk_page_sql(registry: &BlobReferenceRegistry) -> String {
+    let expected = registry.ref_count_expr(RefLevel::Chunk, "b.hash");
+    assert!(
+        expected != "0",
+        "no chunk-level blob reference source registered: every blob would \
+         appear unreferenced"
+    );
+
+    format!(
+        "SELECT
+     b.hash        AS hash,
+     b.size        AS size,
+     b.ref_count   AS ref_count,
+     b.orphaned_at AS orphaned_at,
+     ({expected})::bigint AS actual_ref_count
+   FROM storage.blobs b
+  WHERE ($1::text IS NULL OR b.hash > $1)
+  ORDER BY b.hash
+  LIMIT $2"
+    )
+}
+
+/// Per-row corrective UPDATE for `storage.blobs.ref_count`, targeting
+/// one blob by `hash`. Uses the SAME registry-derived expression as
+/// [`chunk_page_sql`] so detection and repair agree on "actual" by
+/// construction. A future `RefLevel::Chunk` ref source added to the
+/// registry flows into both queries with no code change here.
+///
+/// The `<> (subquery)` guard makes the UPDATE a no-op when the value
+/// is already correct — idempotent under concurrent-repair races and
+/// under retry. The subquery re-reads inside the same statement, so a
+/// concurrent write between page fetch and this UPDATE can't leave a
+/// stale value.
+fn chunk_repair_sql(registry: &BlobReferenceRegistry) -> String {
+    let expected = registry.ref_count_expr(RefLevel::Chunk, "b.hash");
+    format!(
+        "UPDATE storage.blobs b
+            SET ref_count = ({expected})::bigint
+          WHERE b.hash = $1
+            AND b.ref_count <> ({expected})::bigint"
+    )
 }
 
 impl BlobsConsistencyCheck {
-    pub fn new(
-        pool: Arc<PgPool>,
-        backend: Arc<dyn BlobStorageBackend>,
-        storage_entries: Vec<NamedStorageEntry>,
-        storage_path_fallback: PathBuf,
-    ) -> Self {
+    pub fn new(pool: Arc<PgPool>, reference_registry: Arc<BlobReferenceRegistry>) -> Self {
         Self {
             pool,
-            backend,
-            storage_entries,
-            storage_path_fallback,
+            chunk_page_sql: chunk_page_sql(&reference_registry),
+            chunk_repair_sql: chunk_repair_sql(&reference_registry),
         }
     }
 
@@ -148,7 +217,13 @@ struct BlobRow {
     hash: String,
     size: i64,
     ref_count: i32,
-    created_at: DateTime<Utc>,
+    /// Wall-clock instant this row hit `ref_count = 0` and became
+    /// eligible for GC. `NULL` for pre-migration rows or write-paths
+    /// that never stamped it — those the GC treats as immediately
+    /// reap-able (see `dedup_service.rs` phase-2 predicate), so the
+    /// stall check ignores them too: without a stamp we cannot say
+    /// how long a row has been sitting.
+    orphaned_at: Option<DateTime<Utc>>,
     /// Real reference count derived from the actual references —
     /// files' whole-file `blob_hash` PLUS every chunk hash across
     /// `storage.chunk_manifests`. Compared to `ref_count` (the
@@ -160,6 +235,36 @@ struct BlobRow {
 impl RecoverableJobHandler for BlobsConsistencyCheck {
     fn name(&self) -> &str {
         BLOBS_CONSISTENCY_JOB_NAME
+    }
+
+    fn description(&self) -> &'static str {
+        "Walks storage.blobs and checks two ref-counting invariants \
+         dedup_gc relies on. First: refcount_mismatch — the stored \
+         ref_count disagrees with the references that actually exist \
+         (under-count lets GC reap a live blob, over-count pins a dead \
+         one); repairable via ?repair=true. Second: blob_orphan_stalled \
+         — the row satisfies every reap predicate GC uses but is still \
+         present past 24× GC's grace, meaning the GC pipeline itself is \
+         stuck (worker crashed, backend delete hanging, ghost referrer \
+         being recreated); discovery-only, because a one-click repair \
+         would hide the root cause the operator needs to fix — after \
+         diagnosis, POST /api/admin/jobs/dedup_gc/trigger?force=true \
+         drains the backlog. Database only — cheap and safe to run at \
+         any time. Missing, orphaned or corrupted bytes are \
+         backend_consistency's job."
+    }
+
+    fn mutates(&self) -> Mutates {
+        Mutates::OnRepairOnly
+    }
+
+    fn repair_description(&self) -> Option<&'static str> {
+        Some(
+            "Rewrites drifted ref_count values to the recomputed truth. \
+             Does not delete blobs or resurrect missing bytes — an \
+             over-counted blob simply becomes eligible for the next \
+             dedup_gc sweep.",
+        )
     }
 
     /// Definitive count. `storage.blobs` PK scan is index-only;
@@ -188,78 +293,12 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
         args: &JobRunArgs,
         resume_cursor: Option<Vec<u8>>,
     ) -> RunOutcome {
-        // Resolve the backend to probe. Two paths, mirroring the
-        // Fresh/Resumed split the backend_migration handler uses:
+        // No backend is resolved here, and `?storage=<name>` is inert:
+        // this tenant reads nothing but the database. Everything physical
+        // — existence, orphan bytes, bit-rot — belongs to
+        // `backend_consistency`, which finds it in one enumeration pass
+        // instead of one probe per row.
         //
-        // * Fresh + args.storage=Some — probe that named entry
-        //   instead of the live backend. Stamp probed_storage in
-        //   params so a mid-audit restart resumes against the same
-        //   entry without re-input.
-        // * Fresh + args.storage=None — probe the live backend
-        //   (today's default; audit of what the app is actually
-        //   using).
-        // * Resumed — read probed_storage from params; None means
-        //   the original run was against the live backend.
-        let is_fresh = resume_cursor.is_none();
-        let probed_storage: Option<String> = if is_fresh {
-            let name = args.storage.clone();
-            if let Some(n) = &name
-                && let Err(e) = store.set_string_param(PROBED_STORAGE_PARAM, n).await
-            {
-                return RunOutcome::Failed {
-                    message: format!("persist {PROBED_STORAGE_PARAM} to params: {e}"),
-                };
-            }
-            name
-        } else {
-            match store.get_string_param(PROBED_STORAGE_PARAM).await {
-                Ok(v) => v,
-                Err(e) => {
-                    return RunOutcome::Failed {
-                        message: format!("read {PROBED_STORAGE_PARAM} from params: {e}"),
-                    };
-                }
-            }
-        };
-        let backend: Arc<dyn BlobStorageBackend> = match &probed_storage {
-            None => self.backend.clone(),
-            Some(name) => match self.storage_entries.iter().find(|e| &e.name == name) {
-                Some(entry) => build_entry_backend(entry, &self.storage_path_fallback),
-                None => {
-                    let available = if self.storage_entries.is_empty() {
-                        "(none)".to_string()
-                    } else {
-                        self.storage_entries
-                            .iter()
-                            .map(|e| e.name.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    };
-                    return RunOutcome::Failed {
-                        message: format!(
-                            "storage entry `{name}` not found in OXICLOUD_STORAGE_ENTRIES. \
-                             Available: [{available}]"
-                        ),
-                    };
-                }
-            },
-        };
-        if let Err(e) = backend.initialize().await {
-            return RunOutcome::Failed {
-                message: format!("probed backend init: {e}"),
-            };
-        }
-        if let Some(name) = &probed_storage {
-            tracing::info!(
-                target: "audit",
-                event = "blobs_consistency.probe_scoped",
-                run_id = %store.run_id(),
-                probed_storage = %name,
-                "blobs_consistency probing entry `{name}` (via ?storage=<name>) instead of \
-                 live backend"
-            );
-        }
-
         // Snapshot "is this a Fresh run?" BEFORE the resume_cursor
         // match consumes it — otherwise the `is_none()` check later
         // borrows a partially-moved value. Fresh = no cursor bytes
@@ -286,55 +325,52 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
         // stats.finding_count — actual persistence happens in
         // `record_finding` on each emission).
         let mut finding_count = 0u64;
+        // Only touched when `args.repair == true`. Symmetric with
+        // `manifests_consistency`; reported in completion log +
+        // `extra_stats` so operators see "found N, fixed M" in one line.
+        let mut repaired_count = 0u64;
+        // Stall-check finding counter. Reported alongside
+        // `finding_count` (which covers refcount findings) so the
+        // completion line separates the two invariant classes.
+        let mut stalled_count = 0u64;
 
-        // Deep mode is a per-run flag with two consumers:
-        //  1. This handler — decides whether to re-hash bytes.
-        //  2. The admin panel — needs to display whether the run
-        //     was deep so operators know what the scan actually
-        //     verified.
-        //
-        // On a Fresh run we take it from `deep` (the trigger
-        // endpoint stamps `?deep=true` onto the args) and stash it
-        // in `params.deep` so:
-        //   * Resume picks up the same mode (would previously become
-        //     non-deep on Resume — a Paused deep scan silently lost
-        //     its `deep` intent).
-        //   * The admin panel run-detail view can render
-        //     `params.deep = "true"` alongside `target_name`,
-        //     `progress_kind`, etc.
-        //
-        // Persist BEFORE the walk so a mid-fresh-batch crash still
-        // leaves a Paused row with the right mode marker.
-        let deep = if is_fresh {
-            let deep = args.deep;
-            let v = if deep { "true" } else { "false" };
-            if let Err(e) = store.set_string_param("deep", v).await {
+        // `?deep=true` is not handled here. Re-reading and re-hashing
+        // bytes is backend work end to end, so it moved to
+        // `backend_consistency`, where the merge-join already holds the
+        // matched key pairs worth verifying. A deep flag on this tenant
+        // would be a flag with nothing to do.
+
+        // Repair mode persisted to `params.repair` so the admin run-detail
+        // view can display it. Fresh persists what the trigger asked for;
+        // Resume reads back so a paused repair scan stays a repair
+        // scan (a mid-scan crash mustn't silently downgrade to
+        // discovery-only for the remaining rows).
+        let repair = if is_fresh {
+            let v = if args.repair { "true" } else { "false" };
+            if let Err(e) = store.set_string_param("repair", v).await {
                 return RunOutcome::Failed {
-                    message: format!("failed to persist deep flag to params: {e}"),
+                    message: format!("failed to persist repair flag to params: {e}"),
                 };
             }
-            deep
+            args.repair
         } else {
-            // Resumed run — read the persisted flag. Default to
-            // false (fast mode) if the row is a pre-K3.5 Paused
-            // scan without the param stashed.
-            match store.get_string_param("deep").await {
+            match store.get_string_param("repair").await {
                 Ok(Some(v)) => v == "true",
                 Ok(None) => false,
                 Err(e) => {
                     return RunOutcome::Failed {
-                        message: format!("read `deep` from params: {e}"),
+                        message: format!("read `repair` from params: {e}"),
                     };
                 }
             }
         };
 
-        if deep {
+        if repair {
             tracing::info!(
                 target: "oxicloud::consistency",
-                event = "blobs_consistency.deep_mode_active",
+                event = "blobs_consistency.repair_mode_active",
                 run_id = %store.run_id(),
-                "deep mode: re-reading + re-hashing every blob (bit-rot detection)"
+                "repair mode: refcount_mismatch findings will trigger corrective UPDATE"
             );
         }
 
@@ -347,6 +383,7 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                         event = "blobs_consistency.cancelled",
                         run_id = %store.run_id(),
                         finding_count = finding_count,
+                        stalled_count = stalled_count,
                         "blobs_consistency cancelled cooperatively, pausing"
                     );
                     return RunOutcome::Paused {
@@ -364,58 +401,14 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                 }
             }
 
-            // Fetch the next batch. Per-row `actual_ref_count`
-            // computed inline via correlated subqueries — one for
-            // legacy whole-file references (`files.blob_hash`), one
-            // for CDC chunk references (`chunk_manifests.chunk_hashes`).
-            // GIN index on `chunk_hashes` (migration
-            // 20260628000000_delta_upload_gin_index) makes the
-            // `= ANY(chunk_hashes)` probe cheap.
-            // `storage.blobs.ref_count` semantics — what the invariant
-            // dedup_service maintains actually is:
-            //
-            //   ref_count = (number of chunk_manifests whose
-            //                chunk_hashes[] contains this hash)
-            //             + (number of files.blob_hash pointing at
-            //                this hash on the LEGACY whole-file path
-            //                — i.e. files with NO manifest for their
-            //                blob_hash)
-            //
-            // Naively `COUNT(files) + COUNT(manifests referring)`
-            // double-counts single-chunk CDC files: for a file whose
-            // whole-file hash == its single chunk's hash (any file
-            // small enough to fit in one CDC chunk — under ~256 KB
-            // average), the file appears BOTH in `files.blob_hash`
-            // AND in the manifest's `chunk_hashes[]`. The `NOT
-            // EXISTS` clause below excludes CDC-path files from the
-            // legacy count so the two terms don't overlap.
-            let rows: Vec<BlobRow> = match sqlx::query_as(
-                r#"
-                SELECT
-                    b.hash                                             AS hash,
-                    b.size                                             AS size,
-                    b.ref_count                                        AS ref_count,
-                    b.created_at                                       AS created_at,
-                    (
-                        (SELECT COUNT(*) FROM storage.files f
-                          WHERE f.blob_hash = b.hash
-                            AND NOT EXISTS (
-                                SELECT 1 FROM storage.chunk_manifests m
-                                 WHERE m.file_hash = f.blob_hash
-                            ))
-                      + (SELECT COUNT(*) FROM storage.chunk_manifests m
-                          WHERE b.hash = ANY(m.chunk_hashes))
-                    )::bigint                                          AS actual_ref_count
-                  FROM storage.blobs b
-                 WHERE ($1::text IS NULL OR b.hash > $1)
-                 ORDER BY b.hash
-                 LIMIT $2
-                "#,
-            )
-            .bind(cursor.as_deref())
-            .bind(BATCH_SIZE)
-            .fetch_all(self.pool.as_ref())
-            .await
+            // Fetch the next batch. `actual_ref_count` is summed from the
+            // registered reference sources — see `chunk_page_sql`, which
+            // documents the invariant and the single-chunk double-count trap.
+            let rows: Vec<BlobRow> = match sqlx::query_as(&self.chunk_page_sql)
+                .bind(cursor.as_deref())
+                .bind(BATCH_SIZE)
+                .fetch_all(self.pool.as_ref())
+                .await
             {
                 Ok(r) => r,
                 Err(e) => {
@@ -431,168 +424,179 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                     event = "blobs_consistency.completed",
                     run_id = %store.run_id(),
                     finding_count = finding_count,
-                    deep = deep,
-                    "blobs_consistency completed with {} finding(s)",
-                    finding_count
+                    repaired_count = repaired_count,
+                    stalled_count = stalled_count,
+                    repair_requested = repair,
+                    "blobs_consistency completed with {} refcount finding(s), \
+                     {} repaired, {} stalled",
+                    finding_count,
+                    repaired_count,
+                    stalled_count,
                 );
-                return RunOutcome::completed();
+                return RunOutcome::completed_with(serde_json::json!({
+                    "repair_requested": repair,
+                    "repaired_count":   repaired_count,
+                    "stalled_count":    stalled_count,
+                }));
             }
 
-            let grace_cutoff = Utc::now() - CREATE_GRACE;
-
+            // No grace window here any more. It existed to keep the
+            // physical probe from flagging a blob whose bytes had landed
+            // but whose row hadn't — a write-path race this tenant no
+            // longer looks at. The refcount comparison reads one
+            // consistent DB snapshot, so there is nothing to wait for.
             for row in &rows {
-                // (1) refcount_mismatch — content-safe check, cheap,
-                // always runs. Emitted BEFORE the physical probe so
-                // a broken-and-miscounted blob shows both findings.
-                if row.ref_count as i64 != row.actual_ref_count {
-                    finding_count += 1;
-                    let affected = affected_files(self.pool.as_ref(), &row.hash).await;
-                    record_or_log(
-                        store,
-                        BLOBS_CONSISTENCY_JOB_NAME,
-                        "refcount_mismatch",
-                        "inconsistent",
-                        None, // hash isn't a UUID; resource identifier lives in detail
-                        serde_json::json!({
-                            "hash":            row.hash,
-                            "stored":          row.ref_count,
-                            "actual":          row.actual_ref_count,
-                            "delta":           row.actual_ref_count - row.ref_count as i64,
-                            "size":            row.size,
-                            "affected_files":  affected,
-                        }),
-                    )
-                    .await;
-                }
-
-                // Skip physical probes for rows within the write
-                // grace window — writes-in-flight would false-positive.
-                if row.created_at > grace_cutoff {
-                    continue;
-                }
-
-                // (2) blob_missing_from_backend — normal mode
-                // physical existence probe. Fails-open on backend
-                // error (log + skip): a transient S3 network blip
-                // shouldn't produce a flood of false data_loss
-                // findings.
-                let exists = match backend.blob_exists(&row.hash).await {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::warn!(
-                            target: "oxicloud::consistency",
-                            event = "blobs_consistency.blob_exists_error",
-                            run_id = %store.run_id(),
-                            hash = %row.hash,
-                            error = %e,
-                            "blob_exists probe failed; skipping this row"
-                        );
-                        continue;
-                    }
-                };
-
-                if !exists {
-                    finding_count += 1;
-                    let affected = affected_files(self.pool.as_ref(), &row.hash).await;
-                    record_or_log(
-                        store,
-                        BLOBS_CONSISTENCY_JOB_NAME,
-                        "blob_missing_from_backend",
-                        "data_loss",
-                        None,
-                        serde_json::json!({
-                            "hash":            row.hash,
-                            "size":            row.size,
-                            "ref_count":       row.ref_count,
-                            "affected_files":  affected,
-                        }),
-                    )
-                    .await;
-                    // No point re-hashing bytes that aren't there.
-                    continue;
-                }
-
-                // (3) blob_corrupted — DEEP MODE only. Read the
-                // whole blob, recompute BLAKE3, compare to the hash
-                // it's indexed under. Any mismatch = silent bit-rot.
-                //
-                // Finding fields:
-                //   * `hash` — expected hash (the key the blob is
-                //     indexed under in `storage.blobs`).
-                //   * `computed_hash` — what BLAKE3 of the current
-                //     bytes actually produces. Diagnostic: a
-                //     one-bit flip vs a truncation vs a whole-file
-                //     swap all leave distinctive signatures.
-                //   `expected_hash` was NOT reused as a name to
-                //   avoid mistaking it for "the hash we expect to
-                //   see on disk (i.e. what will fix this)".
-                if deep {
-                    match recompute_hash(backend.as_ref(), &row.hash).await {
-                        Ok(computed_hash) if computed_hash == row.hash => {}
-                        Ok(computed_hash) => {
-                            finding_count += 1;
+                if row.ref_count as i64 == row.actual_ref_count {
+                    // No drift. Check for stall — orthogonal condition,
+                    // only meaningful when the counter is CORRECT: if
+                    // drift existed, the drift IS the reason the GC
+                    // hasn't taken this row, and firing stall on top
+                    // would mislead the operator into hunting a
+                    // GC-pipeline issue that isn't there. Fix the
+                    // counter → the row becomes eligible on the next
+                    // sweep. Only when counter == actual == 0 AND the
+                    // row has been sitting past `STALL_GRACE_SECS` is
+                    // this a genuine "the GC should have taken this
+                    // and hasn't" signal.
+                    if row.actual_ref_count == 0
+                        && let Some(orphaned_at) = row.orphaned_at
+                    {
+                        let stalled_secs = (Utc::now() - orphaned_at).num_seconds();
+                        if stalled_secs > STALL_GRACE_SECS {
+                            stalled_count += 1;
                             let affected = affected_files(self.pool.as_ref(), &row.hash).await;
+                            let detail = serde_json::json!({
+                                "hash":              row.hash,
+                                "size":              row.size,
+                                "ref_count":         row.ref_count,
+                                "orphaned_at":       orphaned_at,
+                                "stalled_for_secs":  stalled_secs,
+                                "stall_grace_secs":  STALL_GRACE_SECS,
+                                "affected_files":    affected,
+                                // Inline hint the admin UI can render
+                                // on click. Not repaired here (see
+                                // module doc) — after operator has
+                                // diagnosed the root cause (worker
+                                // wedged, backend hang, ghost row),
+                                // this is the one-shot to drain the
+                                // backlog.
+                                "remediation_hint":  "Investigate why dedup_gc has not reaped this row \
+                            (worker running? advisory-lock contention? backend delete hanging? \
+                            ghost chunk_manifests/storage.files row?), then \
+                            POST /api/admin/jobs/dedup_gc/trigger?force=true to drain the backlog.",
+                            });
                             record_or_log(
                                 store,
                                 BLOBS_CONSISTENCY_JOB_NAME,
-                                "blob_corrupted",
-                                "data_loss",
-                                None,
-                                serde_json::json!({
-                                    "hash":            row.hash,
-                                    "computed_hash":   computed_hash,
-                                    "size":            row.size,
-                                    "ref_count":       row.ref_count,
-                                    "affected_files":  affected,
-                                }),
+                                // Stable machine-readable kind — the
+                                // admin UI and log-aggregator queries
+                                // key off this string. Do not rename.
+                                "blob_orphan_stalled",
+                                // "anomaly" — surprising state worth
+                                // surfacing, no direct data impact.
+                                // The bytes are safe; their persistence
+                                // past grace means the reap pipeline
+                                // needs attention.
+                                "anomaly",
+                                None, // hash isn't a UUID; identifier lives in detail
+                                detail,
                             )
                             .await;
                         }
+                    }
+                    continue;
+                }
+                finding_count += 1;
+                let affected = affected_files(self.pool.as_ref(), &row.hash).await;
+                let detail = serde_json::json!({
+                    "hash":            row.hash,
+                    "stored":          row.ref_count,
+                    "actual":          row.actual_ref_count,
+                    "delta":           row.actual_ref_count - row.ref_count as i64,
+                    "size":            row.size,
+                    "affected_files":  affected,
+                });
+
+                // Repair pass — content-safe corrective UPDATE. Sets
+                // `stored` to the value the auditor formula would
+                // compute at UPDATE time (subquery matches
+                // `chunk_page_sql`'s `actual_ref_count`), so a
+                // concurrent write between our page fetch and this
+                // UPDATE can't leave a stale value — the subquery
+                // re-reads inside the same statement. The `<>`
+                // guard makes the UPDATE a no-op if the value is
+                // already correct, so this is idempotent under retry.
+                //
+                // `self.chunk_repair_sql` is built once at construction
+                // from the same `BlobReferenceRegistry` as the page
+                // query — detection and repair use identical formulas
+                // by construction. See `chunk_repair_sql`.
+                //
+                // Attempt repair FIRST, then record the finding with
+                // severity/kind reflecting the final state:
+                //   * repair succeeded  → severity "info",  kind "refcount_repaired"
+                //   * repair no-op      → severity "info",  kind "refcount_resolved"
+                //   * repair failed     → severity "inconsistent", kind "refcount_mismatch"
+                //   * no repair requested → severity "inconsistent", kind "refcount_mismatch"
+                //
+                // Parallels the WARN-then-INFO sequence in logs: an
+                // unresolved drift raises attention ("inconsistent"),
+                // a repaired one records the fix at info level without
+                // inflating the "needs action" tally the outcome UI
+                // shows. The detail JSON still carries `stored/actual/
+                // delta/affected_files` so the audit trail is complete
+                // either way.
+                let (kind, severity) = if repair {
+                    match sqlx::query(&self.chunk_repair_sql)
+                        .bind(&row.hash)
+                        .execute(self.pool.as_ref())
+                        .await
+                    {
+                        Ok(res) if res.rows_affected() > 0 => {
+                            repaired_count += 1;
+                            tracing::info!(
+                                target: "audit",
+                                event = "blobs_consistency.repaired",
+                                run_id = %store.run_id(),
+                                hash = %row.hash,
+                                stored_was = row.ref_count,
+                                actual = row.actual_ref_count,
+                                "🩹 blob ref_count repaired"
+                            );
+                            ("refcount_repaired", "info")
+                        }
+                        Ok(_) => {
+                            // Row not touched — either another
+                            // concurrent repair fixed it first, or
+                            // drift healed between page fetch and
+                            // UPDATE. Current state correct — info.
+                            ("refcount_resolved", "info")
+                        }
                         Err(e) => {
-                            // Blob can't be read at all — record as
-                            // `blob_unreadable`. Distinct from
-                            // `blob_corrupted` (hash mismatch = we
-                            // can read but content differs): here
-                            // we can't get bytes out to hash. Common
-                            // causes: decrypt failure (missing key),
-                            // network glitch on S3/Azure, missing
-                            // file on Local, permission error.
-                            //
-                            // Recorded as `data_loss` because from
-                            // the file's perspective the outcome is
-                            // the same as corruption: content is
-                            // inaccessible. Admins triage the error
-                            // string to distinguish transient
-                            // (retry-safe) from permanent (needs
-                            // key recovery or blob replacement).
-                            finding_count += 1;
-                            let affected = affected_files(self.pool.as_ref(), &row.hash).await;
-                            record_or_log(
-                                store,
-                                BLOBS_CONSISTENCY_JOB_NAME,
-                                "blob_unreadable",
-                                "data_loss",
-                                None,
-                                serde_json::json!({
-                                    "hash":           row.hash,
-                                    "size":           row.size,
-                                    "ref_count":      row.ref_count,
-                                    "affected_files": affected,
-                                    "error":          e.to_string(),
-                                }),
-                            )
-                            .await;
                             tracing::warn!(
                                 target: "oxicloud::consistency",
-                                event = "blobs_consistency.blob_unreadable",
+                                event = "blobs_consistency.repair_failed",
                                 run_id = %store.run_id(),
                                 hash = %row.hash,
                                 error = %e,
-                                "🚨 blob unreadable in deep mode — recorded finding, continuing"
+                                "blob ref_count repair UPDATE failed — finding stays"
                             );
+                            ("refcount_mismatch", "inconsistent")
                         }
                     }
-                }
+                } else {
+                    ("refcount_mismatch", "inconsistent")
+                };
+
+                record_or_log(
+                    store,
+                    BLOBS_CONSISTENCY_JOB_NAME,
+                    kind,
+                    severity,
+                    None, // hash isn't a UUID; resource identifier lives in detail
+                    detail,
+                )
+                .await;
             }
 
             // Advance cursor + checkpoint.
@@ -611,75 +615,108 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                     event = "blobs_consistency.completed",
                     run_id = %store.run_id(),
                     finding_count = finding_count,
-                    deep = deep,
-                    "blobs_consistency completed with {} finding(s)",
-                    finding_count
+                    repaired_count = repaired_count,
+                    repair_requested = repair,
+                    "blobs_consistency completed with {} finding(s), {} repaired",
+                    finding_count,
+                    repaired_count
                 );
-                return RunOutcome::completed();
+                return RunOutcome::completed_with(serde_json::json!({
+                    "repair_requested": repair,
+                    "repaired_count":   repaired_count,
+                }));
             }
         }
     }
 }
 
-/// Sample of file names that reference this blob — either directly
-/// (`files.blob_hash = $hash`, legacy pre-CDC) or transitively via a
-/// manifest (`chunk_hashes @> ARRAY[$hash]`, post-CDC dominant path).
-/// Capped so a chunk shared by 10 000 files doesn't blow up the
-/// finding detail JSON. Order is arbitrary — sampling for
-/// diagnosis, not enumeration.
-async fn affected_files(pool: &PgPool, hash: &str) -> Vec<String> {
-    let rows: Vec<(String,)> = sqlx::query_as(
-        r#"
-        SELECT DISTINCT f.name
-          FROM storage.files f
-         WHERE f.blob_hash = $1
-            OR EXISTS (
-                 SELECT 1 FROM storage.chunk_manifests m
-                  WHERE m.file_hash = f.blob_hash
-                    AND $1 = ANY(m.chunk_hashes)
-               )
-         LIMIT $2
-        "#,
-    )
-    .bind(hash)
-    .bind(AFFECTED_FILES_SAMPLE)
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
-    rows.into_iter().map(|(n,)| n).collect()
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Deep-mode helper — read the blob from the backend and recompute
-/// its BLAKE3 hash. Returns `Ok(true)` when the recomputed hash
-/// matches `expected_hash` (byte for byte), `Ok(false)` on mismatch
-/// (bit-rot), `Err(_)` on any backend-side error (network blip,
-/// permission issue) — callers log-and-skip errors since a transient
-/// failure isn't a corruption signal.
-/// Deep-mode helper — read the blob from the backend and recompute
-/// its BLAKE3 hash. Returns the recomputed hex string; callers
-/// compare against the expected hash themselves. Returning the
-/// actual hash (not just a bool) lets the finding surface WHAT the
-/// bytes now hash to, which is diagnostic gold: a specific one-bit
-/// flip has a very different signature from a chunk-boundary
-/// corruption or a truncated read. `Err(_)` on backend-side error
-/// (network blip, permission issue) — callers log-and-skip since
-/// transient failure isn't a corruption signal.
-async fn recompute_hash(
-    backend: &dyn BlobStorageBackend,
-    expected_hash: &str,
-) -> Result<String, crate::common::errors::DomainError> {
-    use crate::common::errors::DomainError;
-    use futures::StreamExt;
-
-    let mut stream = backend.get_blob_stream(expected_hash).await?;
-    let mut hasher = blake3::Hasher::new();
-
-    while let Some(chunk) = stream.next().await {
-        let bytes = chunk.map_err(|e| {
-            DomainError::internal_error("BlobsConsistency", format!("stream read: {e}"))
-        })?;
-        hasher.update(&bytes);
+    fn default_registry() -> BlobReferenceRegistry {
+        let pool = Arc::new(
+            sqlx::pool::PoolOptions::<sqlx::Postgres>::new()
+                .connect_lazy("postgres://invalid/invalid")
+                .expect("lazy pool never connects"),
+        );
+        crate::infrastructure::repositories::pg::blob_reference_sources::built_in_registry(pool)
     }
 
-    Ok(hasher.finalize().to_hex().to_string())
+    /// Golden test for the chunk-level recompute. Pins the statement
+    /// byte-for-byte because it is assembled from the registry rather than
+    /// written as a literal — the reviewer should read the SQL here.
+    ///
+    /// This expression must stay equal to what the query computed before the
+    /// registry existed: the legacy-files term guarded by `NOT EXISTS`, plus
+    /// the manifests-citing-this-chunk term. If a change makes those two
+    /// overlap, every single-chunk CDC file is counted twice and the whole
+    /// table reports `refcount_mismatch`.
+    #[tokio::test]
+    async fn chunk_page_statement_is_stable() {
+        let sql = chunk_page_sql(&default_registry());
+        let expected = r#"SELECT
+     b.hash        AS hash,
+     b.size        AS size,
+     b.ref_count   AS ref_count,
+     b.orphaned_at AS orphaned_at,
+     ((SELECT COUNT(*) FROM storage.files cnt_f
+               WHERE cnt_f.blob_hash = b.hash
+                 AND NOT EXISTS (
+                     SELECT 1 FROM storage.chunk_manifests cnt_m
+                      WHERE cnt_m.file_hash = cnt_f.blob_hash
+                 ))
+ + (SELECT COUNT(*) FROM storage.chunk_manifests cnt_m
+                   WHERE b.hash = ANY(cnt_m.chunk_hashes)))::bigint AS actual_ref_count
+   FROM storage.blobs b
+  WHERE ($1::text IS NULL OR b.hash > $1)
+  ORDER BY b.hash
+  LIMIT $2"#;
+        assert_eq!(sql, expected, "chunk page statement changed:\n{sql}");
+    }
+
+    /// With no chunk-level source every blob would look unreferenced and the
+    /// sweep would report the entire table as `refcount_mismatch`. Refuse to
+    /// build the statement instead.
+    #[test]
+    #[should_panic(expected = "no chunk-level blob reference source")]
+    fn empty_registry_refuses_to_build_page_statement() {
+        let _ = chunk_page_sql(&BlobReferenceRegistry::new());
+    }
+
+    /// Golden test — the repair statement is assembled from the same
+    /// registry as `chunk_page_sql`, so pin it byte-for-byte too. If
+    /// the registry ever changes what it produces at
+    /// `RefLevel::Chunk`, BOTH this test and
+    /// `chunk_page_statement_is_stable` above break together — an
+    /// operator using `?repair=true` shouldn't see the detection
+    /// formula report drift the repair formula can't clear.
+    ///
+    /// Ships the two-term formula (`storage.files` legacy-path count +
+    /// `storage.chunk_manifests` chunk-membership count) twice — once
+    /// in SET, once in the `<>` guard. Both must stay identical so the
+    /// guard is meaningful.
+    #[tokio::test]
+    async fn chunk_repair_statement_is_stable() {
+        let sql = chunk_repair_sql(&default_registry());
+        let expected = r#"UPDATE storage.blobs b
+            SET ref_count = ((SELECT COUNT(*) FROM storage.files cnt_f
+               WHERE cnt_f.blob_hash = b.hash
+                 AND NOT EXISTS (
+                     SELECT 1 FROM storage.chunk_manifests cnt_m
+                      WHERE cnt_m.file_hash = cnt_f.blob_hash
+                 ))
+ + (SELECT COUNT(*) FROM storage.chunk_manifests cnt_m
+                   WHERE b.hash = ANY(cnt_m.chunk_hashes)))::bigint
+          WHERE b.hash = $1
+            AND b.ref_count <> ((SELECT COUNT(*) FROM storage.files cnt_f
+               WHERE cnt_f.blob_hash = b.hash
+                 AND NOT EXISTS (
+                     SELECT 1 FROM storage.chunk_manifests cnt_m
+                      WHERE cnt_m.file_hash = cnt_f.blob_hash
+                 ))
+ + (SELECT COUNT(*) FROM storage.chunk_manifests cnt_m
+                   WHERE b.hash = ANY(cnt_m.chunk_hashes)))::bigint"#;
+        assert_eq!(sql, expected, "chunk repair statement changed:\n{sql}");
+    }
 }

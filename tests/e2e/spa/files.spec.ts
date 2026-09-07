@@ -74,7 +74,16 @@ test('upload a file via the hidden file input', async ({ page }) => {
   // Navigate straight into the (empty) folder by ID (the route keys on folder
   // id, not name) — avoids the crowded root listing and click ambiguity.
   await page.goto(`/files/${created.id}`);
-  await expect(page.getByTestId('files-upload-file-input')).toBeAttached({ timeout: 15_000 });
+  // The hidden file input renders unconditionally on mount, so waiting on
+  // `toBeAttached` fires BEFORE the page's `load()` populates `currentId`
+  // from the URL. Firing `setInputFiles` in that window used to race
+  // `load()` and post the upload with `folderId: null`, silently landing
+  // the file in the caller's home root — the guard in
+  // `guardUploadFolderReady` now refuses that upload with a toast. Wait
+  // for the empty-state hook instead — `ResourceList` only renders
+  // `EmptyState` once `load()` has definitively completed with zero
+  // items, so it doubles as a "folder is ready to accept uploads" signal.
+  await expect(page.getByTestId('empty-state')).toBeVisible({ timeout: 15_000 });
   // Now inside the folder; upload a text file by setting the hidden input.
   const f = SAMPLE_FILES.text();
   await page.getByTestId('files-upload-file-input').setInputFiles({

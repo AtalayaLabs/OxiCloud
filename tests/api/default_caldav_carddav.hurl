@@ -103,7 +103,7 @@ Content-Type: application/json
 
 HTTP *
 [Captures]
-fresh_user_id: jsonpath "$.id"
+fresh_user_id: jsonpath "$.user.id"
 
 
 # ─────────────────────────────────────────────────────────────

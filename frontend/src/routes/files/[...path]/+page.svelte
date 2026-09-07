@@ -713,8 +713,43 @@
 	 * Upload a batch of files into the current folder, reporting aggregate
 	 * progress through a single bell notification with a progress bar.
 	 */
+	/**
+	 * Cold-navigation upload guard.
+	 *
+	 * `currentId` starts `null` and is only populated inside `load()` AFTER
+	 * `session.loadHomeFolder()` resolves (see the `$effect` at the bottom of
+	 * this file that drives `load()`, and the assignment at `currentId =
+	 * folderId` inside `load()`). The hidden `<input data-testid=
+	 * "files-upload-file-input">` is unconditional in the template, so it's
+	 * in the DOM the moment the page shell mounts — before `load()` has
+	 * awaited its first HTTP round-trip.
+	 *
+	 * On a slow network / cold page / Playwright cold `page.goto` immediately
+	 * followed by `setInputFiles`, `onchange` can fire while `currentId` is
+	 * still `null`. Without this guard, `uploadBatch` / `uploadTree` post
+	 * with `folderId: null` and the file silently lands in the caller's
+	 * home root instead of the intended folder — a real user hitting Ctrl+U
+	 * or dropping a file within ~100 ms of navigation hits the same window.
+	 *
+	 * The e2e reproduction: `tests/e2e/spa/files.spec.ts::"upload a file via
+	 * the hidden file input"` flakes on CI where the mount→load round-trip
+	 * outruns Playwright's file-input dispatch.
+	 *
+	 * Returns `true` when it's safe to proceed; `false` + a user-visible
+	 * toast when the folder isn't ready.
+	 */
+	function guardUploadFolderReady(): boolean {
+		if (currentId !== null) return true;
+		ui.notify(
+			t('files.upload_folder_not_ready', 'Folder is still loading — please try again in a moment.'),
+			'warning'
+		);
+		return false;
+	}
+
 	async function uploadBatch(files: File[]) {
 		if (files.length === 0) return;
+		if (!guardUploadFolderReady()) return;
 		uploading = true;
 		// Arm the reload-guard + persist a "batch in flight" marker so a
 		// page refresh mid-upload (a) prompts the browser's "Leave site?"
@@ -1557,6 +1592,7 @@
 	 */
 	async function uploadTree(entries: { file: File; relativePath: string }[]) {
 		if (entries.length === 0) return;
+		if (!guardUploadFolderReady()) return;
 		uploading = true;
 		// Same reload-guard + interrupted-uploads breadcrumb as uploadBatch —
 		// the browser prompts on refresh, and if the user reloads anyway

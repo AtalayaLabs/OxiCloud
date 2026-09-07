@@ -244,10 +244,27 @@ pub trait BlobStorageBackend: Send + Sync + 'static {
     ///
     /// * `cursor` — opaque continuation token from a prior call, or
     ///   `None` to start from the beginning. Format is per-backend
-    ///   (local = last path visited; S3 = continuation token; Azure
-    ///   = list marker); callers treat it as opaque.
+    ///   — **the last blob hash returned by the previous page**.
+    ///   Enumeration resumes strictly AFTER that hash.
+    ///
+    ///   This is deliberately NOT an opaque backend token. Callers may
+    ///   synthesise a cursor from any hash they hold, which is what lets a
+    ///   consistency sweep merge-join this stream against a
+    ///   `storage.blobs` walk and resume both sides from one checkpoint.
+    ///   An opaque token would force the backend side to re-enumerate from
+    ///   the beginning on every resume.
     /// * `limit` — soft cap on batch size; backends may return
     ///   fewer (e.g. end of a shard directory).
+    ///
+    /// **Entries MUST be returned in ascending hash order**, and pages must
+    /// be contiguous in that order. Every shipped backend already satisfies
+    /// this — local sorts within each shard and walks shards `00`..`ff`
+    /// (the shard IS the hash prefix, so that is globally sorted); S3 and
+    /// Azure list lexicographically by key, and `blobs/<xx>/<hash>` sorts
+    /// identically to `<hash>`. It is stated here because the merge-join in
+    /// `backend_consistency` depends on it: an unordered backend would
+    /// silently emit bogus `blob_missing_from_backend` findings at
+    /// `data_loss` severity.
     ///
     /// Returns `(entries, next_cursor)`. `next_cursor = None` means
     /// enumeration is complete. Each `BackendBlobEntry` carries the

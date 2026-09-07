@@ -132,9 +132,9 @@ echo "  app password minted (id=$APP_PASSWORD_ID)"
 # failure path. `storage_quota_bytes == 0` is the unlimited
 # sentinel (see `check_storage_quota`); we read it back here in
 # case a prior test set a real value.
-ADMIN_ID=$(rest_get "/api/auth/me" | jq -r '.id')
+ADMIN_ID=$(rest_get "/api/auth/me" | jq -r '.full.user.id')
 [[ -n "$ADMIN_ID" && "$ADMIN_ID" != "null" ]] || fail "Failed to read admin user id"
-ORIGINAL_ADMIN_QUOTA=$(rest_get "/api/auth/me" | jq -r '.storage_quota_bytes // 0')
+ORIGINAL_ADMIN_QUOTA=$(rest_get "/api/auth/me" | jq -r '.full.storage_quota_bytes // 0')
 
 # Single cleanup on exit:
 #   - restore admin's original storage envelope (in case Case 3
@@ -247,7 +247,7 @@ echo "[3/3] QUOTA REJECTION — envelope tightened to (used + 100 B), PUT 200 B 
 #     `current + 100` — leaves enough headroom that MKCOL passes
 #     (`used + 0 = used < used + 100`) while a 200 B chunk PUT
 #     overflows by exactly 100 (`used + 0 + 200 > used + 100`).
-CURRENT_USED=$(rest_get "/api/auth/me" | jq -r '.storage_used_bytes')
+CURRENT_USED=$(rest_get "/api/auth/me" | jq -r '.full.storage_used_bytes')
 [[ -n "$CURRENT_USED" && "$CURRENT_USED" != "null" ]] || fail "Failed to read current used_bytes"
 TIGHT_QUOTA=$(( CURRENT_USED + 100 ))
 

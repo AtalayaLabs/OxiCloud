@@ -176,6 +176,21 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+
+      # `--all-features` includes `bundled-assets`, whose build.rs guard
+      # requires `static-dist/index.html` at compile time (rust-embed
+      # scans the folder). Build the SPA first so the lint pass covers
+      # the embed code paths without needing to enumerate features
+      # around it. ~90 s once, cached by npm-cache on repeats.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.3.0
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build SPA (needed for --all-features / bundled-assets)
+        working-directory: frontend
+        run: npm ci && npm run build
+
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
   # Mirrors the `wasm-check` justfile recipe. The wasm crate is a
@@ -305,6 +320,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      # `--all-features` enables `bundled-assets`, whose build.rs guard
+      # requires `static-dist/index.html` at compile time. Build the SPA
+      # first so tests can compile the embed code paths. ~90 s, cached.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.3.0
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build SPA (needed for --all-features / bundled-assets)
+        working-directory: frontend
+        run: npm ci && npm run build
 
       - name: Initialize test database
         # Applies every migration + seeds the integration-test admin row.
@@ -458,6 +485,79 @@ jobs:
         with:
           name: hurl-report
           path: tests/api/storage/
+          retention-days: 7
+
+  bundled-binary-test:
+    # `--features bundled-assets` end-to-end integration test.
+    #
+    # Builds oxicloud with the SPA baked in via rust-embed, boots it
+    # against a nonexistent OXICLOUD_STATIC_PATH so the embed path is
+    # forced, and asserts SPA + locales + immutable-cache headers +
+    # CSP all serve correctly from the embedded corpus. Guards against
+    # three failure classes that don't surface in filesystem-served CI:
+    #
+    #   1. rust-embed configuration (glob patterns silently producing a
+    #      0-file embed — hit 2026-08-28).
+    #   2. Debug-vs-release drift (rust-embed's dynamic-read mode in
+    #      debug builds masks embed bugs; `debug-embed` feature bakes
+    #      files in for both profiles).
+    #   3. Axum `Path` extractor on fallback routes returning 500 (the
+    #      `serve_root` handler needs `Request` extraction — hit 2026-08-28).
+    #
+    # See tests/bundled-binary/run.sh + docs/plan/bundled-binary.md § 2.
+    #
+    # Doesn't reuse the `build` job's artifact because that binary is
+    # compiled with `--features plugins`, not `--features bundled-assets`
+    # — different feature set = different target. `Swatinem/rust-cache`
+    # still shares dependency compilation between the two jobs.
+    name: Bundled-assets binary — embed + SPA-serve integration
+    needs: changes
+    if: |
+      github.event_name == 'pull_request' &&
+      (needs.changes.outputs.backend == 'true' || needs.changes.outputs.frontend == 'true')
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      # Same disk-hygiene pattern as the `build` job — cargo release
+      # link + full node_modules install would otherwise squeeze the
+      # runner disk budget under peak concurrency.
+      - uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.3.0
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # Build the SPA up front so the test script can run with
+      # `SKIP_FRONTEND_BUILD=1` — makes the test-runner log clean
+      # (no duplicated npm ci noise) and puts the SPA build's cost
+      # in its own step for CI-side timing visibility.
+      - name: Build SPA (Vite → static-dist/)
+        working-directory: frontend
+        run: npm ci && npm run build
+
+      - name: Run bundled-binary integration test
+        run: bash tests/bundled-binary/run.sh
+        env:
+          SKIP_FRONTEND_BUILD: "1"
+
+      # Preserve the server log even on failure so a red run doesn't
+      # require re-running locally to see what happened at boot.
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: bundled-binary-server-log
+          path: tests/bundled-binary/server.log
           retention-days: 7
 
   litmus:

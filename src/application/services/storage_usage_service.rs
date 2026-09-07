@@ -578,7 +578,7 @@ impl StorageUsageService {
 
 pub const USAGE_RECONCILE_JOB_NAME: &str = "usage_reconcile";
 
-use crate::infrastructure::scheduler::{JobHandler, JobOutcome, JobRegistry, JobRunArgs};
+use crate::infrastructure::scheduler::{JobHandler, JobOutcome, JobRegistry, JobRunArgs, Mutates};
 use async_trait::async_trait;
 
 impl StorageUsageService {
@@ -601,6 +601,19 @@ impl StorageUsageService {
 impl JobHandler for StorageUsageService {
     fn name(&self) -> &str {
         USAGE_RECONCILE_JOB_NAME
+    }
+
+    fn description(&self) -> &'static str {
+        "Recomputes the cached storage counters from the underlying file \
+         sizes — drives first, then the per-user envelope derived from \
+         them — and corrects any that drifted. This is the corrective \
+         counterpart to drives_consistency, which only reports the drift."
+    }
+
+    /// Rewrites the counters it finds wrong. Safe to trigger: it recomputes
+    /// from the files themselves, so a run is idempotent.
+    fn mutates(&self) -> Mutates {
+        Mutates::Always
     }
 
     /// Runs both reconciliation sweeps — drives first, then users —

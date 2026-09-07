@@ -23,7 +23,7 @@ Content-Type: application/json
 HTTP 200
 [Captures]
 alice_token: jsonpath "$.access_token"
-alice_user_id: jsonpath "$.user.id"
+alice_user_id: jsonpath "$.user.full.user.id"
 
 GET {{base_url}}/api/folders
 Authorization: Bearer {{alice_token}}
@@ -45,7 +45,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-dave_user_id: jsonpath "$.id"
+dave_user_id: jsonpath "$.user.id"
 
 POST {{base_url}}/api/admin/users
 Authorization: Bearer {{alice_token}}
@@ -54,7 +54,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-eve_user_id: jsonpath "$.id"
+eve_user_id: jsonpath "$.user.id"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -371,7 +371,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-adam_user_id: jsonpath "$.id"
+adam_user_id: jsonpath "$.user.id"
 
 POST {{base_url}}/api/auth/login
 Content-Type: application/json
@@ -1044,7 +1044,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-frank_user_id: jsonpath "$.id"
+frank_user_id: jsonpath "$.user.id"
 
 POST {{base_url}}/api/auth/login
 Content-Type: application/json

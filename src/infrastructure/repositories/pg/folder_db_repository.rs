@@ -18,7 +18,7 @@ use crate::common::errors::DomainError;
 use crate::domain::entities::folder::Folder;
 use crate::domain::repositories::folder_repository::FolderRepository;
 use crate::domain::services::authorization::ResourceKind;
-use crate::domain::services::path_service::StoragePath;
+use crate::domain::services::path_service::{StoragePath, normalize_storage_name_owned};
 
 /// Type alias for folder metadata rows from SQL queries.
 /// Tuple order: id, name, path, parent_id, drive_id, created_at,
@@ -261,6 +261,21 @@ impl FolderRepository for FolderDbRepository {
         parent_id: Option<String>,
         caller_id: Uuid,
     ) -> Result<Folder, DomainError> {
+        // Belt-and-suspenders NFC normalization at the last touch before the
+        // DB write. Every caller that lands here — REST `POST /api/folders`,
+        // WebDAV `MKCOL`, NextCloud `MKCOL`, batch create, WebDAV/NC `COPY`
+        // fall-through — passes the raw client-supplied name. macOS Finder /
+        // Android sync clients emit NFD path segments; if we bind them raw
+        // the DB row's bytes don't match NFC-normalizing clients' subsequent
+        // PROPFINDs (see AtalayaLabs/OxiCloud#706). Canonicalising here is
+        // the single choke-point that closes every entry-point audited on
+        // 2026-09-03 without asking each handler to remember. Fast-path
+        // `is_nfc_quick` inside `normalize_storage_name_owned` returns the
+        // owned string unchanged for names already in NFC — every visible
+        // ASCII name, every browser-composed non-ASCII name — so this costs
+        // one table-lookup on the hot path.
+        let name = normalize_storage_name_owned(name);
+
         // Derive `drive_id` from the parent folder. Root-level folders
         // are reserved for the atomic drive-creation transaction in
         // `DrivePgRepository::create_personal_drive_atomic` (see
@@ -689,6 +704,11 @@ impl FolderRepository for FolderDbRepository {
         new_name: String,
         caller_id: Uuid,
     ) -> Result<Folder, DomainError> {
+        // NFC-normalize the client-supplied new name — same reasoning as
+        // `create_folder` above (WebDAV `MOVE`, NC `MOVE`, REST rename all
+        // funnel here with raw client bytes). Cheap on the common path.
+        let new_name = normalize_storage_name_owned(new_name);
+
         // The BEFORE UPDATE trigger recomputes path/lpath for this row;
         // the AFTER UPDATE cascade trigger then batch-updates all
         // descendants in a single UPDATE using the GiST lpath index.

@@ -64,7 +64,7 @@ Content-Type: application/json
 HTTP 200
 [Captures]
 admin_token: jsonpath "$.access_token"
-admin_user_id: jsonpath "$.user.id"
+admin_user_id: jsonpath "$.user.full.user.id"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -113,7 +113,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-alice_user_id: jsonpath "$.id"
+alice_user_id: jsonpath "$.user.id"
 
 POST {{base_url}}/api/auth/login
 Content-Type: application/json
@@ -470,7 +470,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-bob_user_id: jsonpath "$.id"
+bob_user_id: jsonpath "$.user.id"
 
 POST {{base_url}}/api/auth/login
 Content-Type: application/json
@@ -657,7 +657,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-carol_user_id: jsonpath "$.id"
+carol_user_id: jsonpath "$.user.id"
 
 
 # 24a — Owner grants Carol Owner role (Owner-creates-Owner).
@@ -836,7 +836,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-dave_user_id: jsonpath "$.id"
+dave_user_id: jsonpath "$.user.id"
 
 POST {{base_url}}/api/auth/login
 Content-Type: application/json

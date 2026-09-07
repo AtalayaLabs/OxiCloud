@@ -21,6 +21,7 @@
 	import { SvelteSet } from 'svelte/reactivity';
 	import Icon from '$lib/icons/Icon.svelte';
 	import Modal from '$lib/components/Modal.svelte';
+	import { confirmDialog } from '$lib/stores/dialogs.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 	import { errorMessage } from '$lib/utils/errors';
 	import { ui } from '$lib/stores/ui.svelte';
@@ -65,6 +66,43 @@
 		if (on) busyKeys.add(key);
 		else busyKeys.delete(key);
 	}
+
+	// Per-job "Run" split-button menu state. Keyed by job name so
+	// two rows can open their menus independently (though the
+	// outside-click handler below closes all on any click outside
+	// any menu — matching the /files upload dropdown pattern). Only
+	// rows with `supportsDeep` OR `supportsRepair` render a chevron;
+	// the plain-Run rows (drives/folders/files/backend/… consistency,
+	// trash_cleanup, dedup_gc, …) show a bare "Run" button with no
+	// menu, keeping the common case one-click.
+	let runMenuOpen = $state<Record<string, boolean>>({});
+	function toggleRunMenu(name: string) {
+		runMenuOpen = { ...runMenuOpen, [name]: !runMenuOpen[name] };
+	}
+	function closeAllRunMenus() {
+		runMenuOpen = {};
+	}
+	// Global outside-click + Escape dismiss. Only registered while at
+	// least one menu is open — a background admin tab doesn't hold
+	// listeners.
+	$effect(() => {
+		const anyOpen = Object.values(runMenuOpen).some((v) => v);
+		if (!anyOpen) return;
+		const onDown = (e: MouseEvent) => {
+			if (!(e.target as HTMLElement).closest('.jobs-panel__split')) {
+				closeAllRunMenus();
+			}
+		};
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === 'Escape') closeAllRunMenus();
+		};
+		window.addEventListener('pointerdown', onDown);
+		window.addEventListener('keydown', onKey);
+		return () => {
+			window.removeEventListener('pointerdown', onDown);
+			window.removeEventListener('keydown', onKey);
+		};
+	});
 
 	// Purge-modal state. Null = closed; otherwise carries the
 	// draft retention days the operator's picking. Kept separate
@@ -129,7 +167,7 @@
 				.slice()
 				// `consistency_batch` is served by the top-bar
 				// action buttons; hiding it here removes the
-				// duplicate table row. `hasBatch` still checks the
+				// duplicate table row. `batchJob` still reads from the
 				// full fetched list so the top buttons only render
 				// when the coordinator is actually registered.
 				.filter((j) => j.name !== 'consistency_batch')
@@ -142,7 +180,7 @@
 			// Track whether the coordinator is registered so the
 			// top-bar buttons can gate on it without checking `jobs`
 			// (which now filters it out).
-			hasBatch = fetched.some((j) => j.name === 'consistency_batch');
+			batchJob = fetched.find((j) => j.name === 'consistency_batch') ?? null;
 			loadError = null;
 		} catch (e) {
 			loadError = errorMessage(e);
@@ -212,13 +250,15 @@
 
 	// ─── Expansion toggles ─────────────────────────────────────────────
 
-	function toggleJob(name: string) {
-		if (expandedJob === name) {
+	function toggleJob(job: JobSummary) {
+		if (expandedJob === job.name) {
 			expandedJob = null;
 		} else {
-			expandedJob = name;
-			// Lazy-load on first open, refresh on subsequent opens.
-			void loadRuns(name);
+			expandedJob = job.name;
+			// Lazy-load on first open, refresh on subsequent opens. Only
+			// recoverable jobs have runs to load — the others expand purely
+			// to show their description.
+			if (isRecoverable(job)) void loadRuns(job.name);
 		}
 	}
 
@@ -234,8 +274,10 @@
 
 	// ─── Actions ───────────────────────────────────────────────────────
 
-	async function onTrigger(name: string, opts: { deep?: boolean } = {}) {
-		const key = `trigger:${name}${opts.deep ? ':deep' : ''}`;
+	async function onTrigger(name: string, opts: { deep?: boolean; repair?: boolean } = {}) {
+		// Key suffix has to keep every dispatched variant distinct so the
+		// button-disabled state of one doesn't lock out another mid-flight.
+		const key = `trigger:${name}${opts.deep ? ':deep' : ''}${opts.repair ? ':repair' : ''}`;
 		markBusy(key, true);
 		try {
 			// Fire the trigger + a follow-up loadJobs after a short delay
@@ -265,10 +307,49 @@
 			if (!res.outcome) {
 				// dispatched (detached) — no outcome to render
 			} else if (res.outcome.outcome === 'ok') {
-				ui.notify(
-					t('admin.jobs.triggered_ok', { name }, '{{name}} triggered successfully'),
-					'success'
-				);
+				// Repair runs surface a rollup so the operator sees
+				// whether corrective UPDATEs actually fired. `extra`
+				// carries `repaired_count` on the two refcount tenants
+				// directly, and nested under `per_check[*].extra` when
+				// dispatched via `consistency_batch`. Sum across the
+				// per_check dict if present, else read the top-level.
+				let repairedTotal = 0;
+				let sawRepair = false;
+				const extra = (res.outcome.extra ?? {}) as {
+					repair_requested?: boolean;
+					repaired_count?: number;
+					per_check?: Record<
+						string,
+						{ extra?: { repair_requested?: boolean; repaired_count?: number } }
+					>;
+				};
+				if (extra.repair_requested) {
+					sawRepair = true;
+					repairedTotal += extra.repaired_count ?? 0;
+				}
+				if (extra.per_check) {
+					for (const child of Object.values(extra.per_check)) {
+						if (child?.extra?.repair_requested) {
+							sawRepair = true;
+							repairedTotal += child.extra.repaired_count ?? 0;
+						}
+					}
+				}
+				if (sawRepair) {
+					ui.notify(
+						t(
+							'admin.jobs.triggered_ok_repair',
+							{ name, n: repairedTotal },
+							'{{name}}: {{n}} counter(s) repaired'
+						),
+						'success'
+					);
+				} else {
+					ui.notify(
+						t('admin.jobs.triggered_ok', { name }, '{{name}} triggered successfully'),
+						'success'
+					);
+				}
 			} else {
 				ui.notify(
 					t(
@@ -379,8 +460,9 @@
 	 * Per-severity finding counts from `last_outcome.extra.severity_counts`
 	 * (a JSON object populated by `run_or_resume`). Missing / older
 	 * runs return an empty record — callers should tolerate absent keys.
-	 * The three severity values are the ones consistency tenants emit
-	 * today: `data_loss`, `inconsistent`, `anomaly`.
+	 * Severity values emitted today: `data_loss`, `inconsistent`,
+	 * `anomaly`. The set is open (the column is TEXT), so unknown keys
+	 * must degrade rather than throw.
 	 */
 	function lastSeverityCounts(job: JobSummary): Record<string, number> {
 		if (!job.last_outcome || job.last_outcome.outcome !== 'ok') return {};
@@ -401,6 +483,13 @@
 		return (s.data_loss ?? 0) + (s.inconsistent ?? 0);
 	}
 
+	/**
+	 * Informational findings. `anomaly` is the wire value; "notice" is
+	 * what the panel calls it — there is no separate `notice` severity.
+	 * A job that acted on what it found (a repair run deleting an
+	 * orphaned sidecar) records the same severity and says so in the
+	 * finding's `detail`.
+	 */
 	function anomalyFindingCount(job: JobSummary): number {
 		return lastSeverityCounts(job).anomaly ?? 0;
 	}
@@ -548,13 +637,75 @@
 	// Jobs that respect `?deep=true`:
 	//   * `consistency_batch` — propagates deep to every child that
 	//     understands it
-	//   * `blobs_consistency` — deep mode re-reads + re-hashes every
-	//     blob for silent bit-rot detection (severity `data_loss`).
-	//     Full read of storage; can take hours on big installs — the
-	//     "Run" (normal) button on the same row does the cheap
-	//     existence probes only.
+	//   * `backend_consistency` — deep mode re-reads + re-hashes every
+	//     matched blob for silent bit-rot detection (severity
+	//     `data_loss`). Full read of storage; can take hours on big
+	//     installs — the "Run" button on the same row does the
+	//     enumeration merge-join only. This was `blobs_consistency`
+	//     until that tenant became database-only.
 	function supportsDeep(name: string): boolean {
-		return name === 'consistency_batch' || name === 'blobs_consistency';
+		return name === 'consistency_batch' || name === 'backend_consistency';
+	}
+
+	// Whether `?repair=true` does anything for this job — declared by the
+	// handler itself via `repair_description()`, not by a name allowlist
+	// here. The allowlist this replaces named only the two ref_count
+	// tenants and silently omitted every repair-capable job added since,
+	// so the thumbnail imports could not be run in repair mode from the
+	// panel at all despite supporting it.
+	function supportsRepair(job: JobSummary): boolean {
+		return !!job.repair_description;
+	}
+
+	// What the repair adds, in the handler's own words. The backend owns
+	// this string precisely because the wording differs per job: correcting
+	// a counter and unlinking files off disk are not the same warning, and
+	// the frontend has no way to tell them apart.
+	async function onTriggerWithRepairConfirm(job: JobSummary) {
+		const ok = await confirmDialog({
+			title: t(
+				'admin.jobs.run_repair_confirm_title_scoped',
+				{ name: job.name },
+				'Run {{name}} in repair mode?'
+			),
+			message: job.repair_description ?? '',
+			confirmText: t('admin.jobs.run_repair_confirm', 'Repair'),
+			danger: true
+		});
+		if (ok) await onTrigger(job.name, { repair: true });
+	}
+
+	// Confirmation before a plain run of a job that writes. `never` jobs
+	// trigger straight through — that is the point of the flag — and
+	// `on_repair_only` jobs are read-only until the repair variant is
+	// picked, which carries its own confirm.
+	async function onTriggerGuarded(job: JobSummary) {
+		if (job.mutates === 'always') {
+			const ok = await confirmDialog({
+				title: t('admin.jobs.run_mutating_confirm_title', { name: job.name }, 'Run {{name}}?'),
+				message:
+					job.description ||
+					t('admin.jobs.run_mutating_confirm_body', 'This job changes stored state when it runs.'),
+				confirmText: t('admin.jobs.run', 'Run'),
+				danger: true
+			});
+			if (!ok) return;
+		}
+		await onTrigger(job.name);
+	}
+
+	// Row badge. `never` is the one worth stating outright — it is the
+	// answer to "is it safe to click this on production?", and it is the
+	// question an operator asks before every trigger.
+	function mutatesLabel(job: JobSummary): string | null {
+		switch (job.mutates) {
+			case 'never':
+				return t('admin.jobs.mutates_never', 'read-only');
+			case 'on_repair_only':
+				return t('admin.jobs.mutates_on_repair_only', 'read-only unless repaired');
+			default:
+				return null;
+		}
 	}
 
 	function isRunning(job: JobSummary): boolean {
@@ -575,11 +726,13 @@
 	// coordinator is registered (should always be true post-Slice 5,
 	// but check defensively so the button doesn't appear on an old
 	// deployment before this component is upgraded).
-	// Coordinator registration flag — set imperatively in
-	// `loadJobs` because `jobs` no longer contains the
-	// `consistency_batch` row (filtered out to avoid duplicating the
-	// top-bar action buttons).
-	let hasBatch = $state(false);
+	// Held as the whole summary rather than a boolean because the
+	// top-bar buttons need its `repair_description` — the coordinator
+	// describes its own repair semantics, same as every table row.
+	// Set imperatively in `loadJobs` because `jobs` no longer contains
+	// the `consistency_batch` row (filtered out to avoid duplicating
+	// the top-bar action buttons).
+	let batchJob = $state<JobSummary | null>(null);
 </script>
 
 <section class="jobs-panel">
@@ -593,10 +746,12 @@
 			</p>
 		</div>
 		<div class="jobs-panel__header-actions">
-			{#if hasBatch}
+			{#if batchJob}
+				{@const batch = batchJob}
 				<button
 					class="jobs-panel__btn jobs-panel__btn--primary"
 					disabled={busyKeys.has('trigger:consistency_batch')}
+					title={batch.description || undefined}
 					onclick={() => onTrigger('consistency_batch')}
 				>
 					<Icon name="play" />
@@ -614,10 +769,28 @@
 					<Icon name="play" />
 					{t('admin.jobs.run_deep', 'Run deep')}
 				</button>
+				<!-- Repair goes behind a confirm because it fans `?repair=true`
+				     out to every sub-check that acts on it. The confirmation
+				     text comes from the coordinator's own
+				     `repair_description` rather than being written here —
+				     what repair means changes as tenants gain repair arms,
+				     and this button would otherwise keep describing only the
+				     two refcount ones. -->
+				{#if batch.repair_description}
+					<button
+						class="jobs-panel__btn jobs-panel__btn--warn"
+						disabled={busyKeys.has('trigger:consistency_batch:repair')}
+						title={batch.repair_description}
+						onclick={() => onTriggerWithRepairConfirm(batch)}
+					>
+						<Icon name="cog" />
+						{t('admin.jobs.run_repair', 'Repair ref_counts')}
+					</button>
+				{/if}
 			{/if}
 			<!-- Purge is orthogonal to consistency — it works even
 			     when the batch coordinator isn't registered, so it
-			     lives outside the {#if hasBatch}. Opens a modal so
+			     lives outside the batch block. Opens a modal so
 			     the operator picks a retention window with intent
 			     (no accidental delete-all). -->
 			<button
@@ -661,7 +834,12 @@
 					{@const runsErr = runsErrorByJob[job.name]}
 					{@const runsLoading = runsLoadingByJob[job.name]}
 					{@const expandedRun = expandedRunByJob[job.name] ?? null}
-					{@const canExpand = isRecoverable(job)}
+					<!-- Expandable if there is anything to show: a run history,
+					     a description, or both. Gating on `recoverable` alone
+					     would leave the plain periodic jobs (dedup_gc,
+					     trash_cleanup, …) with no way to reach their
+					     description at all. -->
+					{@const canExpand = isRecoverable(job) || !!job.description}
 					<tr class="jobs-panel__row" class:jobs-panel__row--expanded={expandedJob === job.name}>
 						<td>
 							{#if canExpand}
@@ -669,7 +847,7 @@
 									type="button"
 									class="jobs-panel__expand"
 									aria-expanded={expandedJob === job.name}
-									onclick={() => toggleJob(job.name)}
+									onclick={() => toggleJob(job)}
 								>
 									<Icon name={expandedJob === job.name ? 'chevron-down' : 'chevron-right'} />
 									<span class="jobs-panel__name">{job.name}</span>
@@ -677,8 +855,43 @@
 							{:else}
 								<span class="jobs-panel__name jobs-panel__name--flat">{job.name}</span>
 							{/if}
+							{#if mutatesLabel(job)}
+								<span class="jobs-panel__pill jobs-panel__pill--readonly">
+									{mutatesLabel(job)}
+								</span>
+							{/if}
 						</td>
-						<td class="jobs-panel__muted">{cadenceLabel(job)}</td>
+						<!-- "At boot" belongs in the cadence column: it answers
+						     WHEN this job runs, which is the same question
+						     `interval_ms` answers. Beside the name it read as a
+						     property of the job rather than of its schedule, and
+						     these two facts have to be read together — a job with
+						     no interval that fires at boot is not on-demand, and
+						     the row said "on-demand" next to a badge saying
+						     otherwise. -->
+						<td class="jobs-panel__muted">
+							{cadenceLabel(job)}
+							{#if job.startup}
+								<span
+									class="jobs-panel__pill"
+									class:jobs-panel__pill--paused={job.startup.repair}
+									class:jobs-panel__pill--neutral={!job.startup.repair}
+									title={job.startup.repair
+										? t(
+												'admin.jobs.startup_repair_tooltip',
+												'Configured in OXICLOUD_STARTUP_JOBS to run in repair mode at every boot.'
+											)
+										: t(
+												'admin.jobs.startup_tooltip',
+												'Configured in OXICLOUD_STARTUP_JOBS to run at every boot.'
+											)}
+								>
+									{job.startup.repair
+										? t('admin.jobs.startup_repair', 'at boot · repair')
+										: t('admin.jobs.startup', 'at boot')}
+								</span>
+							{/if}
+						</td>
 						<td class="jobs-panel__muted">{timeAgo(job.last_run_at)}</td>
 						<td>
 							<div class="jobs-panel__outcome-cell">
@@ -754,24 +967,84 @@
 									{t('admin.jobs.cancel', 'Cancel')}
 								</button>
 							{:else}
-								<button
-									class="jobs-panel__btn jobs-panel__btn--small"
-									disabled={busyKeys.has(`trigger:${job.name}`)}
-									onclick={() => onTrigger(job.name)}
-								>
-									{t('admin.jobs.run', 'Run')}
-								</button>
-								{#if supportsDeep(job.name)}
+								<!-- Split-button: primary "Run" fires the default
+								     trigger; the chevron opens a menu with the
+								     tenant-specific variants (Run deep / Repair).
+								     Rows without any variant render a bare Run
+								     button — no chevron, no menu, no extra
+								     width. Preserves one-click discovery for
+								     the common case. -->
+								{@const hasRunVariants = supportsDeep(job.name) || supportsRepair(job)}
+								<span class="jobs-panel__split">
 									<button
 										class="jobs-panel__btn jobs-panel__btn--small"
-										disabled={busyKeys.has(`trigger:${job.name}:deep`)}
-										onclick={() => onTrigger(job.name, { deep: true })}
+										class:jobs-panel__split-main={hasRunVariants}
+										disabled={busyKeys.has(`trigger:${job.name}`)}
+										title={job.description || undefined}
+										onclick={() => {
+											closeAllRunMenus();
+											void onTriggerGuarded(job);
+										}}
 									>
-										{t('admin.jobs.run_deep', 'Run deep')}
+										{t('admin.jobs.run', 'Run')}
 									</button>
-								{/if}
+									{#if hasRunVariants}
+										<button
+											class="jobs-panel__btn jobs-panel__btn--small jobs-panel__split-toggle"
+											aria-haspopup="menu"
+											aria-expanded={runMenuOpen[job.name] ?? false}
+											aria-label={t('admin.jobs.run_variants_menu', 'Run variants menu')}
+											onclick={() => toggleRunMenu(job.name)}
+										>
+											<Icon name="caret-down" />
+										</button>
+										{#if runMenuOpen[job.name]}
+											<div class="jobs-panel__run-menu" role="menu">
+												{#if supportsDeep(job.name)}
+													<button
+														type="button"
+														class="jobs-panel__run-menu-item"
+														role="menuitem"
+														disabled={busyKeys.has(`trigger:${job.name}:deep`)}
+														title={t(
+															'admin.jobs.run_deep_hint',
+															'Also runs slow variants (blob re-hash, bitrot detection).'
+														)}
+														onclick={() => {
+															closeAllRunMenus();
+															void onTrigger(job.name, { deep: true });
+														}}
+													>
+														<Icon name="search" />
+														<span>{t('admin.jobs.run_deep', 'Run deep')}</span>
+													</button>
+												{/if}
+												{#if supportsRepair(job)}
+													<button
+														type="button"
+														class="jobs-panel__run-menu-item jobs-panel__run-menu-item--warn"
+														role="menuitem"
+														disabled={busyKeys.has(`trigger:${job.name}:repair`)}
+														title={job.repair_description}
+														onclick={() => {
+															closeAllRunMenus();
+															void onTriggerWithRepairConfirm(job);
+														}}
+													>
+														<Icon name="cog" />
+														<span>{t('admin.jobs.run_repair', 'Repair')}</span>
+													</button>
+												{/if}
+											</div>
+										{/if}
+									{/if}
+								</span>
 							{/if}
-							{#if isRunning(job) && canExpand}
+							<!-- `isRecoverable`, not `canExpand`: the latter now also
+							     covers rows that expand only to show a description,
+							     and those must not gain a Cancel button they never
+							     had. -->
+							{#if isRunning(job) && isRecoverable(job)}
 								{#if isRecoverable(job)}
 									<!-- Recoverable running: [Pause] preserves cursor
 									     for later resume; [Cancel] abandons terminally
@@ -811,7 +1084,20 @@
 						</td>
 					</tr>
 
-					{#if expandedJob === job.name}
+					<!-- First row of the expanded block, and only visible there:
+					     the description answers "what is this job" before the
+					     run history answers "what did it do", and keeping it
+					     folded keeps the collapsed table scannable — 17 rows of
+					     two-line prose is not a table any more. -->
+					{#if expandedJob === job.name && job.description}
+						<tr class="jobs-panel__desc-row">
+							<td colspan="6">
+								<p class="jobs-panel__description">{job.description}</p>
+							</td>
+						</tr>
+					{/if}
+
+					{#if expandedJob === job.name && isRecoverable(job)}
 						<tr class="jobs-panel__runs">
 							<td colspan="6">
 								<div class="jobs-panel__runs-inner">
@@ -1304,6 +1590,90 @@
 		color: var(--color-danger-text-alt);
 	}
 
+	/* Warn variant — used for actions that mutate data but are content-
+	   safe / reversible-in-outcome (e.g. Repair ref_counts). Signals
+	   "read the tooltip and the confirm before clicking" without the
+	   danger red reserved for destructive delete-style buttons. */
+	.jobs-panel__btn--warn {
+		border-color: var(--color-warning-border);
+		color: var(--color-warning-text);
+	}
+
+	/* Split-button — inline flex holding a primary "Run" (fires default
+	   action) and a chevron (opens the variants menu). `position:
+	   relative` anchors the menu below the toggle. Only rendered on
+	   rows whose job supports at least one variant; plain-Run rows
+	   sidestep this whole structure. */
+	.jobs-panel__split {
+		display: inline-flex;
+		position: relative;
+	}
+
+	/* Attached-button trick: main loses its right border-radius, toggle
+	   loses its left. Toggle also loses its left border so the two
+	   don't render a double-thick divider. */
+	.jobs-panel__split-main {
+		border-top-right-radius: 0;
+		border-bottom-right-radius: 0;
+	}
+
+	.jobs-panel__split-toggle {
+		border-top-left-radius: 0;
+		border-bottom-left-radius: 0;
+		border-left: none;
+		padding-left: 0.35rem;
+		padding-right: 0.35rem;
+	}
+
+	/* The variants menu — dropdown below the toggle, right-aligned so
+	   it doesn't overflow the Actions column edge into the next row's
+	   badge cell. Shadow + surface bg mirror the /files upload
+	   dropdown (`upload-dropdown-menu`); using local CSS here rather
+	   than the ported class so the jobs-panel keeps its scoped styling. */
+	.jobs-panel__run-menu {
+		position: absolute;
+		top: calc(100% + 2px);
+		right: 0;
+		z-index: 30;
+		min-width: 10rem;
+		background: var(--color-bg-surface);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md, 6px);
+		box-shadow: var(--shadow-md);
+		padding: 0.25rem 0;
+	}
+
+	.jobs-panel__run-menu-item {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		width: 100%;
+		padding: 0.4rem 0.75rem;
+		background: transparent;
+		border: none;
+		text-align: left;
+		font: inherit;
+		color: var(--color-text);
+		cursor: pointer;
+		white-space: nowrap;
+	}
+
+	.jobs-panel__run-menu-item:hover:not(:disabled) {
+		background: var(--color-bg-hover);
+	}
+
+	.jobs-panel__run-menu-item:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	/* Warn colour on the menu item mirrors the button variant so the
+	   Repair option carries the same "attention-worthy but not
+	   destructive" visual weight as its top-bar counterpart. */
+	.jobs-panel__run-menu-item--warn {
+		color: var(--color-warning-text);
+	}
+
 	.jobs-panel__pill {
 		display: inline-block;
 		padding: 0.1rem 0.5rem;
@@ -1340,6 +1710,34 @@
 	.jobs-panel__pill--neutral {
 		background: var(--color-bg-subtle);
 		color: var(--color-text-muted);
+	}
+
+	/* "read-only" sits beside the job name and answers the question an
+	   operator asks before every trigger. Deliberately quiet — it marks
+	   the safe case, so it should not compete with outcome pills. */
+	.jobs-panel__pill--readonly {
+		margin-left: 0.4rem;
+		background: var(--color-bg-subtle);
+		color: var(--color-text-muted);
+		font-size: 0.72rem;
+		font-weight: 400;
+		vertical-align: middle;
+	}
+
+	/* Opens the expanded block, so it carries the drawer's background and
+	   drops its own separator — the runs table below it is part of the
+	   same block, not a new entry. */
+	.jobs-panel__desc-row td {
+		padding-left: 2rem; /* clears the chevron, lines up with the name */
+		border-bottom-color: transparent;
+		background: var(--color-bg-subtle);
+	}
+
+	.jobs-panel__description {
+		margin: 0;
+		color: var(--color-text-muted);
+		font-size: 0.8rem;
+		line-height: 1.4;
 	}
 
 	.jobs-panel__runs {

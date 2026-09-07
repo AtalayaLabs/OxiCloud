@@ -62,8 +62,8 @@ use crate::application::ports::blob_storage_ports::BlobStorageBackend;
 use crate::common::config::NamedStorageEntry;
 use crate::common::migration_progress::MigrationProgress;
 use crate::infrastructure::scheduler::{
-    JobRegistry, JobRunArgs, JobStore, JobStoreProvider, RecoverableJobHandler, RunOutcome,
-    RunStatus, record_or_log,
+    JobRegistry, JobRunArgs, JobStore, JobStoreProvider, Mutates, RecoverableJobHandler,
+    RunOutcome, RunStatus, record_or_log,
 };
 use crate::infrastructure::services::encrypted_blob_backend::BlobFormat;
 use crate::infrastructure::services::entry_backend::build_entry_backend_typed;
@@ -133,6 +133,20 @@ impl BackendRotateService {
 impl RecoverableJobHandler for BackendRotateService {
     fn name(&self) -> &str {
         BACKEND_ROTATE_JOB_NAME
+    }
+
+    fn description(&self) -> &'static str {
+        "Brings every blob's on-disk format in line with the storage \
+         entry's current head key: encrypts plaintext, re-encrypts under a \
+         rotated key, decrypts when the head is 'none', and upgrades \
+         legacy blobs to v1. Blobs already in the right format are skipped, \
+         so re-running after a key change is cheap."
+    }
+
+    /// Rewrites blobs **in place**. Unlike a migration this has no additive
+    /// fallback — the previous ciphertext is gone once a blob is rewritten.
+    fn mutates(&self) -> Mutates {
+        Mutates::Always
     }
 
     /// Definitive count — one row per blob. Same query as

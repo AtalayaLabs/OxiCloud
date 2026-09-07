@@ -72,6 +72,13 @@ impl RecoverableJobHandler for DrivesConsistencyCheck {
         DRIVES_CONSISTENCY_JOB_NAME
     }
 
+    fn description(&self) -> &'static str {
+        "Compares each drive's cached used_bytes against the actual sum of \
+         its file sizes and reports the drift. Read-only — usage_reconcile \
+         is what corrects the counter; this surfaces WHEN it drifts so the \
+         cause can be traced (missed delta, silent failure, race)."
+    }
+
     /// Definitive count — one row per drive, table is tiny (dozens per
     /// install), COUNT(*) is trivially fast. Enables progress bar on
     /// the admin UI.

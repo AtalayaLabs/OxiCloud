@@ -393,21 +393,57 @@ impl FileHandler {
     //  THUMBNAILS
     // ═══════════════════════════════════════════════════════════════════════
 
+    /// Cache policy for every thumbnail response.
+    ///
+    /// **`private`**, because a thumbnail is authorization-gated: the handler
+    /// runs a `Permission::Read` check before serving it. `public` let any
+    /// shared cache — a corporate proxy, a CDN — store one user's thumbnail
+    /// and hand it to another. `Vary: Accept` did not help, because it does
+    /// not vary on `Authorization`.
+    ///
+    /// **`no-cache`**, not `immutable`, because this URL is keyed by file id
+    /// and its bytes are mutable: uploading a preview, replacing the file's
+    /// content, or removing an attachment all change what it serves.
+    /// `immutable` promises the opposite, so a client that fetched once would
+    /// not revalidate — for a year, under the previous `max-age` — and would
+    /// never see a new preview. That also made the content-keyed ETag
+    /// unobservable in a browser: a correct validator is worthless if nothing
+    /// asks.
+    ///
+    /// `no-cache` still stores the body; it only requires revalidation before
+    /// reuse, which the ETag answers with a body-less 304.
+    ///
+    /// The cost is a conditional request per thumbnail per page load. Buying
+    /// that back needs a content-addressed URL, where `immutable` would be
+    /// honest — but the hash would then be in the URL of an authorized
+    /// resource, so it stays `private` regardless. Separate change; it
+    /// touches the SPA and the file DTO.
+    /// Shared with the NextCloud preview endpoint, which is gated the same
+    /// way and must not drift from this policy.
+    pub(crate) const THUMBNAIL_CACHE_CONTROL: &'static str = "private, no-cache";
+
     /// Get a thumbnail for a file (image or video).
     ///
-    /// **Cache-first**: if the thumbnail already exists in the moka in-memory
-    /// cache or on disk, serve it immediately — **zero DB queries**.  The
-    /// ownership check was already performed when the thumbnail was first
-    /// generated (at upload) or uploaded (PUT by the owner).  UUIDv4 file IDs
-    /// have 122 bits of entropy, making enumeration infeasible.
+    /// **Cache-first**: once past the hash lookup below, a thumbnail already
+    /// in the moka in-memory cache or on disk is served without further DB
+    /// work.  The ownership check was already performed when the thumbnail
+    /// was first generated (at upload) or uploaded (PUT by the owner).
+    /// UUIDv4 file IDs have 122 bits of entropy, making enumeration
+    /// infeasible.
     ///
-    /// **ETag / 304**: responses carry an immutable ETag.  If the browser
-    /// sends `If-None-Match` matching the ETag, we return 304 Not Modified
-    /// without touching cache or DB — pure header round-trip.
+    /// **ETag / 304**: the ETag names the **blob actually served** — an
+    /// uploaded preview's hash, else a derived thumbnail's, else the
+    /// source-keyed form (see `ThumbnailService::thumbnail_content_id`). So
+    /// replacing content or uploading a preview invalidates correctly, and
+    /// two files serving identical bytes share a validator. Costs one or two
+    /// indexed lookups on the 304 path, which an id-keyed ETag avoided at the
+    /// price of never invalidating.  Cache policy is
+    /// [`Self::THUMBNAIL_CACHE_CONTROL`] — `private, no-cache`, since this
+    /// URL is authorization-gated and its bytes are mutable.
     ///
-    /// The DB path is only taken on a **cache miss for images** where the
-    /// thumbnail hasn't been generated yet (first access after upload if
-    /// background generation hasn't finished).
+    /// Beyond that, the DB path is only taken on a **cache miss for images**
+    /// where the thumbnail hasn't been generated yet (first access after
+    /// upload if background generation hasn't finished).
     pub(super) async fn get_thumbnail_impl(
         State(state): State<GlobalState>,
         auth_user: AuthUser,
@@ -449,23 +485,52 @@ impl FileHandler {
         let format =
             ThumbnailFormat::from_accept(headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()));
 
-        // ── ETag short-circuit (Solution C) ──────────────────────────
-        // Thumbnails are immutable — the ETag never changes for a given
-        // (file_id, size, format) triple.  If the browser already has it, return
-        // 304 with zero I/O or DB work. Format is in the ETag so a client that
-        // switched codecs doesn't get a stale 304.
-        let etag = {
-            let (s, f) = (thumb_size.as_str(), format.as_str());
-            let mut e = String::with_capacity(9 + id.len() + s.len() + f.len());
-            e.push_str("\"thumb-");
-            e.push_str(&id);
-            e.push('-');
-            e.push_str(s);
-            e.push('-');
-            e.push_str(f);
-            e.push('"');
-            e
+        // ── ETag short-circuit ───────────────────────────────────────
+        // Keyed on the CONTENT served, not the file id.
+        //
+        // Keying on `file_id` was wrong in both directions. Replacing a
+        // file's content preserves its id (`file_upload_service` rebuilds the
+        // entity with `parts.id` and a new hash, then fires
+        // `on_file_updated`, which regenerates the thumbnails), so the ETag
+        // never changed — and the response was `immutable` with a one-year
+        // max-age, so clients never revalidated and kept the old preview.
+        // Conversely a copy, or any dedup twin, got a *different* id and so
+        // refetched bytes it already held, even though the server serves both
+        // from the same derived blob.
+        //
+        // Cost: one PK lookup, where the id-keyed version needed none. It
+        // buys correct invalidation plus 304s shared across every file with
+        // the same content. The lookup runs after the authz check above,
+        // which has already hit the database.
+        //
+        // No new disclosure: `content_hash` is already on `FileDto` and
+        // returned by `GET /api/files/{id}`, so any caller who reaches here
+        // could read it anyway.
+        let blob_hash = match state
+            .repositories
+            .file_read_repository
+            .get_blob_hash(&id)
+            .await
+        {
+            Ok(h) => h,
+            Err(err) => return AppError::from(err).into_response(),
         };
+        // The identity of the bytes about to be served, resolved through the
+        // same tier precedence the read path uses — an uploaded preview's own
+        // hash, else a derived thumbnail's own hash, else the source-keyed
+        // form. See `ThumbnailService::thumbnail_content_id`.
+        let etag = format!(
+            "\"{}\"",
+            thumbnail_service
+                .thumbnail_content_id(
+                    &id,
+                    &blob_hash,
+                    thumb_size.into(),
+                    format,
+                    Some(&state.core.dedup_service),
+                )
+                .await
+        );
         if let Some(if_none_match) = headers.get(header::IF_NONE_MATCH)
             && let Ok(val) = if_none_match.to_str()
             && (val == etag || val == "*")
@@ -474,7 +539,7 @@ impl FileHandler {
                 .status(StatusCode::NOT_MODIFIED)
                 .header(header::ETAG, &etag)
                 .header(header::VARY, header::ACCEPT.as_str())
-                .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+                .header(header::CACHE_CONTROL, Self::THUMBNAIL_CACHE_CONTROL)
                 .body(Body::empty())
                 .unwrap()
                 .into_response();
@@ -484,7 +549,15 @@ impl FileHandler {
         // Try moka (RAM) → disk before touching the database.
         // If the thumbnail exists it was authorized at creation time.
         if let Some(data) = thumbnail_service
-            .get_cached_thumbnail(&id, None, thumb_size.into(), format)
+            .get_cached_thumbnail(
+                &id,
+                // Already resolved for the ETag above — hand it over rather
+                // than let the service look it up a second time.
+                Some(&blob_hash),
+                thumb_size.into(),
+                format,
+                Some(&state.core.dedup_service),
+            )
             .await
         {
             return Response::builder()
@@ -494,7 +567,7 @@ impl FileHandler {
                     crate::common::mime_detect::thumbnail_content_type(&data),
                 )
                 .header(header::CONTENT_LENGTH, data.len())
-                .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+                .header(header::CACHE_CONTROL, Self::THUMBNAIL_CACHE_CONTROL)
                 .header(header::ETAG, &etag)
                 .header(header::VARY, header::ACCEPT.as_str())
                 .body(Body::from(data))
@@ -528,20 +601,15 @@ impl FileHandler {
                 .into_response();
         }
 
-        // Resolve the blob hash (content-addressable storage).
-        let blob_hash = match state
-            .repositories
-            .file_read_repository
-            .get_blob_hash(&id)
-            .await
-        {
-            Ok(hash) => hash,
-            Err(_) => {
-                return AppError::internal_error("File blob not found").into_response();
-            }
-        };
+        // `blob_hash` was resolved above to build the ETag — no second lookup.
         if let Some(data) = thumbnail_service
-            .get_cached_thumbnail(&id, Some(&blob_hash), thumb_size.into(), format)
+            .get_cached_thumbnail(
+                &id,
+                Some(&blob_hash),
+                thumb_size.into(),
+                format,
+                Some(&state.core.dedup_service),
+            )
             .await
         {
             return Response::builder()
@@ -551,7 +619,7 @@ impl FileHandler {
                     crate::common::mime_detect::thumbnail_content_type(&data),
                 )
                 .header(header::CONTENT_LENGTH, data.len())
-                .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+                .header(header::CACHE_CONTROL, Self::THUMBNAIL_CACHE_CONTROL)
                 .header(header::ETAG, &etag)
                 .header(header::VARY, header::ACCEPT.as_str())
                 .body(Body::from(data))
@@ -572,6 +640,7 @@ impl FileHandler {
                     Some(&blob_hash),
                     thumb_size.into(),
                     ThumbnailFormat::Webp,
+                    Some(&state.core.dedup_service),
                 )
                 .await
             {
@@ -582,7 +651,7 @@ impl FileHandler {
                         crate::common::mime_detect::thumbnail_content_type(&data),
                     )
                     .header(header::CONTENT_LENGTH, data.len())
-                    .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+                    .header(header::CACHE_CONTROL, Self::THUMBNAIL_CACHE_CONTROL)
                     .header(header::ETAG, &etag)
                     .header(header::VARY, header::ACCEPT.as_str())
                     .body(Body::from(data))
@@ -614,7 +683,7 @@ impl FileHandler {
                     crate::common::mime_detect::thumbnail_content_type(&data),
                 )
                 .header(header::CONTENT_LENGTH, data.len())
-                .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+                .header(header::CACHE_CONTROL, Self::THUMBNAIL_CACHE_CONTROL)
                 .header(header::ETAG, &etag)
                 .header(header::VARY, header::ACCEPT.as_str())
                 .body(Body::from(data))
@@ -689,15 +758,71 @@ impl FileHandler {
             return AppError::from(err).into_response();
         }
 
-        // Validate, re-encode to WebP, and store
-        match thumbnail_service
+        // Validate, re-encode, and store the per-file sidecar.
+        let stored = match thumbnail_service
             .store_external_thumbnail(&id, thumb_size.into(), body)
             .await
         {
-            Ok(_) => StatusCode::CREATED.into_response(),
-            Err(err) => AppError::internal_error(format!("Failed to store thumbnail: {}", err))
-                .into_response(),
+            Ok(bytes) => bytes,
+            Err(err) => {
+                return AppError::internal_error(format!("Failed to store thumbnail: {}", err))
+                    .into_response();
+            }
+        };
+
+        // Also record it as a file-keyed attachment.
+        //
+        // The sidecar above is `ext-{file_id}.jpg` on local disk, which no
+        // copy path duplicates and no other instance can see. Without this
+        // row a copied file loses the preview its owner uploaded — falling
+        // back to a rendered thumbnail, or to nothing at all for a PDF, which
+        // has no server-side render path. `copy_file_satellites` duplicates
+        // the row, so the copy inherits the bytes.
+        //
+        // File-keyed, never content-keyed: these bytes are the uploader's
+        // claim about THIS file, and sharing them across files with identical
+        // content is the poisoning vector `storage.file_attached_blobs`
+        // exists to prevent.
+        //
+        // Best-effort: the sidecar already succeeded, so the user has their
+        // thumbnail. Failing the request here would report an error for an
+        // operation that visibly worked.
+        if let Err(e) = state
+            .core
+            .dedup_service
+            .store_attached_blob(
+                &id,
+                "preview",
+                thumb_size.dir_name(),
+                "image/jpeg",
+                stored,
+                auth_user.id,
+            )
+            .await
+        {
+            // FATAL as of step 10d2, where it used to warn and return 201.
+            //
+            // That was safe only while `ext-{file_id}.jpg` existed as a
+            // second copy. With the sidecar gone this is the ONLY durable
+            // home for bytes that have no server-side render path — a
+            // client-generated PDF preview cannot be recreated — so
+            // succeeding here would lose a user's upload behind a success
+            // response. Silent, and unrecoverable.
+            //
+            // The RAM entry is dropped too, or the cache would keep serving a
+            // preview that was never persisted and vanishes on eviction,
+            // contradicting the error the client just received.
+            let _ = thumbnail_service.delete_thumbnails(&id).await;
+            tracing::error!(
+                target: "oxicloud::dedup",
+                error = %e,
+                file_id = %id,
+                "failed to record attached thumbnail; upload rejected"
+            );
+            return AppError::internal_error("Failed to store thumbnail").into_response();
         }
+
+        StatusCode::CREATED.into_response()
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -1437,7 +1562,7 @@ pub async fn list_files_query(
 #[utoipa::path(
     post,
     path = "/api/files/upload",
-    request_body(content_type = "multipart/form-data", description = "File data + optional folder_id field"),
+    request_body(content_type = "multipart/form-data", description = "File data + folder_id (required: it determines the file's owner and drive)"),
     responses(
         (status = 201, description = "File uploaded", body = FileDto),
         (status = 400, description = "Invalid request"),

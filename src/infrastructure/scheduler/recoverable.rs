@@ -48,7 +48,7 @@ use uuid::Uuid;
 use crate::common::errors::DomainError;
 
 use super::handler::JobHandler;
-use super::types::{JobOutcome, JobRunArgs};
+use super::types::{JobOutcome, JobRunArgs, Mutates};
 
 // ─── Run status ─────────────────────────────────────────────────────────────
 
@@ -199,6 +199,63 @@ impl RunOutcome {
     }
 }
 
+/// Write `JobRunArgs` to `params` on a Fresh run, or read them back on a
+/// Resumed one.
+///
+/// Returns the args the handler should actually use. On resume that is
+/// whatever the original run recorded, NOT what the resuming caller
+/// passed — see the call site in [`run_or_resume`] for why changing mode
+/// mid-run is refused.
+///
+/// Every flag is stored as a string, matching the `params` convention the
+/// progress fields already use, and each is read back independently: a run
+/// paused before this existed simply has no keys, and each missing one
+/// falls back to `false` / `None`. That is the safe direction — a resumed
+/// legacy run under-acts rather than deleting under a flag nobody gave it.
+async fn persist_or_restore_args(
+    store: &dyn JobStore,
+    args: &JobRunArgs,
+    is_fresh: bool,
+) -> Result<JobRunArgs, String> {
+    const FLAGS: [&str; 3] = ["force", "deep", "repair"];
+
+    if is_fresh {
+        for (key, value) in FLAGS.iter().zip([args.force, args.deep, args.repair]) {
+            let v = if value { "true" } else { "false" };
+            store
+                .set_string_param(key, v)
+                .await
+                .map_err(|e| format!("persist `{key}` to params: {e}"))?;
+        }
+        // `storage` is absent rather than empty when unset, so a run that
+        // did not scope itself does not grow a key claiming it did.
+        if let Some(name) = &args.storage {
+            store
+                .set_string_param("storage", name)
+                .await
+                .map_err(|e| format!("persist `storage` to params: {e}"))?;
+        }
+        return Ok(args.clone());
+    }
+
+    let mut restored = JobRunArgs::default();
+    for (key, slot) in FLAGS.iter().zip([
+        &mut restored.force,
+        &mut restored.deep,
+        &mut restored.repair,
+    ]) {
+        *slot = match store.get_string_param(key).await {
+            Ok(v) => v.as_deref() == Some("true"),
+            Err(e) => return Err(format!("read `{key}` from params: {e}")),
+        };
+    }
+    restored.storage = store
+        .get_string_param("storage")
+        .await
+        .map_err(|e| format!("read `storage` from params: {e}"))?;
+    Ok(restored)
+}
+
 // ─── Traits — implementor + port ────────────────────────────────────────────
 
 /// The implementor-facing contract for a long-running, restart-tolerant
@@ -237,6 +294,47 @@ pub trait RecoverableJobHandler: Send + Sync {
     /// Stable snake_case identifier. Must match the eventual admin
     /// URL fragment: `POST /api/admin/jobs/{name}/trigger`.
     fn name(&self) -> &str;
+
+    /// What this job does, for the admin UI.
+    ///
+    /// English, in the trait, beside the behaviour it describes — not in
+    /// `locales/*.json`. A description that lives away from the code rots the
+    /// moment a job changes, invisibly, and a translator cannot know what
+    /// `manifests_consistency` reconciles. i18n can layer on later keyed by
+    /// job name, with this as the fallback, so a missing translation degrades
+    /// to English rather than a blank panel.
+    ///
+    /// Defaulted so adding it to ~15 existing jobs is incremental rather than
+    /// one breaking change.
+    fn description(&self) -> &'static str {
+        ""
+    }
+
+    /// Whether a run changes state, and under what conditions.
+    ///
+    /// Three values rather than a boolean because there are three cases, and
+    /// the interesting one is conditional: a job can be read-only by default
+    /// and destructive under `?repair=true`. A boolean forces that job to
+    /// answer wrongly for one of its two modes — `false` on something that
+    /// can delete files is actively misleading.
+    fn mutates(&self) -> Mutates {
+        Mutates::Never
+    }
+
+    /// `Some(..)` when `?repair=true` does something beyond a default run,
+    /// describing what it ADDS; `None` when the flag is inert.
+    ///
+    /// One method rather than a `supports_repair` boolean plus prose: its
+    /// presence drives whether the UI offers the toggle, its content drives
+    /// the confirmation text. A boolean would leave the frontend to invent
+    /// wording for a destructive action it does not understand.
+    ///
+    /// Independent of [`Self::mutates`], not derived from it — the import
+    /// jobs are [`Mutates::Always`] *and* repair-capable, inserting rows on a
+    /// plain run and additionally unlinking files under repair.
+    fn repair_description(&self) -> Option<&'static str> {
+        None
+    }
 
     /// Long-running scan. See trait-level doc for the contract.
     ///
@@ -361,7 +459,15 @@ pub trait JobStore: Send + Sync {
     /// `"stale_used_bytes"`, `"missing_blob"`). Never rename across
     /// releases; new failure modes get new values.
     ///
-    /// `severity` — one of `"data_loss"`, `"inconsistent"`, `"anomaly"`.
+    /// `severity` — one of:
+    /// - `"data_loss"` — bytes / rows unreachable or gone.
+    /// - `"inconsistent"` — counters or materialised values wrong,
+    ///   content intact.
+    /// - `"anomaly"` — surprising state worth surfacing, no known impact.
+    ///   This is the level the admin panel labels "notices"; there is no
+    ///   separate `notice` severity, and a job that acted on what it found
+    ///   says so in `detail` rather than in a fourth severity that would
+    ///   render identically.
     ///
     /// `resource_id` — the file / folder / drive / blob the finding
     /// pertains to. `None` for run-wide findings (e.g. "backend
@@ -748,10 +854,44 @@ pub async fn run_or_resume(
         }
     }
 
+    // Bind the run to the flags it started with.
+    //
+    // A Fresh run records its `JobRunArgs` in `params`; a Resumed run reads
+    // them back and runs with THOSE, ignoring whatever the resuming caller
+    // passed. Two reasons, and the engine is the only place both are
+    // guaranteed:
+    //
+    // **A resumed run must not change mode.** Handlers read `args` on every
+    // call, so a paused `?repair=true` import resumed by a plain trigger
+    // silently continued as import-only — the deletion half never finished
+    // and nothing said so. The same held for `?deep=true`: a paused bit-rot
+    // scan resumed shallow while still reporting as the run that started
+    // deep. Fixing it per-handler meant every job remembering, and three of
+    // them did not.
+    //
+    // **The run row should say what it did.** For a destructive job, "did
+    // this run delete anything?" is answerable only from `params`, and that
+    // is what an operator reads afterwards.
+    //
+    // Deliberately NOT overridable on resume. Adding `?repair=true` to a
+    // resume would apply it to the remaining entries only, producing a run
+    // that half-deleted — the honest way to change your mind is to cancel
+    // and start fresh.
+    let args = match persist_or_restore_args(&*store, args, is_fresh).await {
+        Ok(effective) => effective,
+        Err(e) => {
+            // Fail the run rather than guess. Proceeding would mean acting
+            // under flags nothing recorded, which for the jobs that delete
+            // is the one thing worth refusing.
+            log_terminal_write_err("mark_failed", run_id, store.mark_failed(&e).await);
+            return JobOutcome::err(e);
+        }
+    };
+
     // Dispatch. Terminal writes to `jobs.recoverable_runs` happen
     // here (NOT in the handler) so the row always ends in a state
     // that matches what the handler returned.
-    let outcome = job.run_resumable(&*store, args, resume_cursor).await;
+    let outcome = job.run_resumable(&*store, &args, resume_cursor).await;
 
     // Fetch the terminal run summary so we can surface aggregate
     // stats (finding_count, scanned_count) on the outer JobOutcome
@@ -992,6 +1132,21 @@ impl JobHandler for RecoverableAdapter {
         // let operators drill into. No name-based allowlists needed
         // downstream.
         true
+    }
+
+    // The registry only ever sees `dyn JobHandler`, so the tenant's own
+    // metadata has to be forwarded through the wrapper or it is invisible
+    // to `GET /api/admin/jobs`. Silently returning the JobHandler defaults
+    // here would leave every recoverable job undescribed and reported as
+    // read-only — including ones that delete files.
+    fn description(&self) -> &'static str {
+        self.inner.description()
+    }
+    fn mutates(&self) -> Mutates {
+        self.inner.mutates()
+    }
+    fn repair_description(&self) -> Option<&'static str> {
+        self.inner.repair_description()
     }
 }
 
@@ -1503,6 +1658,47 @@ mod tests {
     }
 
     // ─── Tests ─────────────────────────────────────────────────────────────
+
+    /// The registry only ever sees `dyn JobHandler`, so a recoverable
+    /// tenant's metadata reaches `GET /api/admin/jobs` only if the adapter
+    /// forwards it. Falling back to the `JobHandler` defaults here would
+    /// report every recoverable job as undescribed and read-only —
+    /// including the imports, which delete files under repair.
+    #[tokio::test]
+    async fn adapter_forwards_job_metadata_from_inner_handler() {
+        struct Annotated;
+        #[async_trait]
+        impl RecoverableJobHandler for Annotated {
+            fn name(&self) -> &str {
+                "annotated"
+            }
+            async fn run_resumable(
+                &self,
+                _store: &dyn JobStore,
+                _args: &JobRunArgs,
+                _resume_cursor: Option<Vec<u8>>,
+            ) -> RunOutcome {
+                RunOutcome::completed()
+            }
+            fn description(&self) -> &'static str {
+                "walks a thing"
+            }
+            fn mutates(&self) -> Mutates {
+                Mutates::OnRepairOnly
+            }
+            fn repair_description(&self) -> Option<&'static str> {
+                Some("fixes the thing")
+            }
+        }
+
+        let provider: Arc<dyn JobStoreProvider> = Arc::new(MemProvider::new());
+        let adapter = RecoverableAdapter::new(Arc::new(Annotated), provider);
+        let as_handler: &dyn JobHandler = &adapter;
+
+        assert_eq!(as_handler.description(), "walks a thing");
+        assert_eq!(as_handler.mutates(), Mutates::OnRepairOnly);
+        assert_eq!(as_handler.repair_description(), Some("fixes the thing"));
+    }
 
     #[tokio::test]
     async fn fresh_run_completes_and_marks_status_completed() {

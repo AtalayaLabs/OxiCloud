@@ -26,16 +26,27 @@ const children = createRawSnippet(() => ({
 beforeEach(() => {
 	vi.clearAllMocks();
 	pageState.url = new URL('http://localhost/files');
-	session.user = {
-		id: '1',
-		username: 'admin',
-		email: 'a@x.test',
-		given_name: 'A',
-		family_name: 'B',
-		role: 'admin',
-		storage_used_bytes: 10,
-		storage_quota_bytes: 100,
-		is_external: false
+	// Post the three-layer UserDto refactor, `session.user` is a
+	// derived accessor over `session.me.full.user`; only `session.me`
+	// is settable. Fixture composes the nested shape — public identity
+	// (username/email/name) on `.full.user`, admin+self extras
+	// (storage_*, has_password) on `.full`, self-only bag (ui_prefs,
+	// dpop_bound, force_password_change, can_edit_image) at the top.
+	// See docs/plan/userdto-refactor.md.
+	session.me = {
+		full: {
+			user: {
+				id: '1',
+				username: 'admin',
+				email: 'a@x.test',
+				given_name: 'A',
+				family_name: 'B',
+				role: 'admin',
+				is_external: false
+			},
+			storage_used_bytes: 10,
+			storage_quota_bytes: 100
+		}
 	} as never;
 });
 

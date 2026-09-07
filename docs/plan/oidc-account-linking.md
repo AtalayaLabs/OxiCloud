@@ -330,7 +330,7 @@ authenticated session):
 
 **Deferred:**
 - Step-up auth before link start
-- Admin-mediated link/unlink via `oxicloud-cli federation` (proper for
+- Admin-mediated link/unlink via `oxicloud federation` (proper for
   "user changed IdP email" recovery scenario)
 - OCM link (same shape, different kind)
 - Multi-federation (multiple linked identities per user — see

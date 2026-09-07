@@ -6,7 +6,7 @@ use tracing::{debug, error, info, instrument};
 use crate::common::errors::Result;
 use crate::domain::repositories::trash_repository::TrashRepository;
 use crate::infrastructure::repositories::pg::trash_db_repository::TrashDbRepository;
-use crate::infrastructure::scheduler::{JobHandler, JobOutcome, JobRegistry, JobRunArgs};
+use crate::infrastructure::scheduler::{JobHandler, JobOutcome, JobRegistry, JobRunArgs, Mutates};
 use crate::infrastructure::services::dedup_service::DedupService;
 use async_trait::async_trait;
 
@@ -175,6 +175,17 @@ struct TrashCleanupStats {
 impl JobHandler for TrashCleanupService {
     fn name(&self) -> &str {
         Self::JOB_NAME
+    }
+
+    fn description(&self) -> &'static str {
+        "Permanently deletes trashed items past the retention window, then \
+         runs a dedup GC sweep as its tail step to reclaim blobs the \
+         deletions dropped to zero references. This is the periodic tick \
+         that keeps storage bounded."
+    }
+
+    fn mutates(&self) -> Mutates {
+        Mutates::Always
     }
 
     /// Runs one bulk-delete-expired + GC sweep. `count` on the returned

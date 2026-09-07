@@ -22,7 +22,7 @@ use crate::application::dtos::settings_dto::{
     TestOidcConnectionDto, TestStorageConnectionDto, UpdateUserActiveDto, UpdateUserQuotaDto,
     UpdateUserRoleDto,
 };
-use crate::application::dtos::user_dto::{AdminUserSummaryDto, UserDto};
+use crate::application::dtos::user_dto::{FullUserDto, PublicUserDto};
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::plugin_ports::{LogQuery, PluginManagementPort, PluginMgmtError};
 // JobStoreProvider is used only by the storage-migration shims below,
@@ -39,16 +39,14 @@ use crate::interfaces::middleware::auth::AuthUser;
 use std::sync::Arc;
 use uuid::Uuid;
 
-#[derive(serde::Serialize)]
-#[serde(untagged)]
-enum AdminUsersPayload {
-    Full(Vec<UserDto>),
-    Summary(Vec<AdminUserSummaryDto>),
-}
-
+/// Response envelope for `GET /api/admin/users`. `users` is always
+/// `Vec<FullUserDto>` — same shape one row of `/me`'s embedded
+/// `full` block carries; the FE seeds `resolveUser` cache from
+/// `row.user` (kills the per-row `/api/users/{id}` fetch). See
+/// `docs/plan/userdto-refactor.md`.
 #[derive(serde::Serialize)]
 struct AdminUsersPageResponse {
-    users: AdminUsersPayload,
+    users: Vec<FullUserDto>,
     total: i64,
     limit: i64,
     offset: i64,
@@ -161,6 +159,11 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         // `/blob/{hash}`) stay at `/api/dedup/*`.
         .route("/dedup/stats", get(get_stats))
         .route("/dedup/recalculate", post(recalculate_stats))
+        // Transcode effectiveness. Nothing exposed these before, so there
+        // was no way to tell a served-from-cache response from one that
+        // re-ran the decode + encode — not from the outside, and not from
+        // a test either.
+        .route("/transcode/stats", get(get_transcode_stats))
         // SMTP diagnostics
         .route("/smtp/info", get(get_smtp_info))
         .route("/smtp/test", post(send_smtp_test))
@@ -931,6 +934,51 @@ pub async fn get_dashboard_stats(
     .await
     .map_err(|e| AppError::internal_error(format!("Database query failed: {}", e)))?;
 
+    // External account count — distinct query (not FILTERed into
+    // `stats_row` above) because `stats_row` scopes to
+    // `is_external = false` for the operational-seat counts.
+    // Externals form their own population; the dashboard renders them
+    // as a separate stat card in the "User accounts" section.
+    let external_users: i64 =
+        sqlx::query_scalar(r#"SELECT COUNT(*)::INT8 FROM auth.users WHERE is_external = true"#)
+            .fetch_one(db_pool.as_ref())
+            .await
+            .map_err(|e| AppError::internal_error(format!("External user count failed: {}", e)))?;
+
+    // Live-activity counts — projection over auth.sessions, same
+    // `ONLINE_WINDOW` (5 min) the Prometheus gauges use so the
+    // dashboard number, admin-table green dot, and
+    // `oxicloud_sessions_online` scrape all agree by construction.
+    // Bound as `$1 = window_secs` via `make_interval(secs => $1)`
+    // to keep the single-source-of-truth pattern (no SQL literal
+    // for the window). Both queries hit the partial index
+    // `idx_sessions_last_seen_at WHERE revoked = FALSE` so per-run
+    // cost is ~μs even at tens of thousands of session rows.
+    let online_window_secs: f64 =
+        crate::application::dtos::session_dto::ONLINE_WINDOW.as_secs_f64();
+    let online_sessions: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)::INT8 FROM auth.sessions
+        WHERE revoked = FALSE
+          AND last_seen_at > NOW() - make_interval(secs => $1)
+        "#,
+    )
+    .bind(online_window_secs)
+    .fetch_one(db_pool.as_ref())
+    .await
+    .map_err(|e| AppError::internal_error(format!("Online session count failed: {}", e)))?;
+    let online_users: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(DISTINCT user_id)::INT8 FROM auth.sessions
+        WHERE revoked = FALSE
+          AND last_seen_at > NOW() - make_interval(secs => $1)
+        "#,
+    )
+    .bind(online_window_secs)
+    .fetch_one(db_pool.as_ref())
+    .await
+    .map_err(|e| AppError::internal_error(format!("Online user count failed: {}", e)))?;
+
     use sqlx::Row;
 
     // Per-drive-kind quota panel:
@@ -1015,6 +1063,9 @@ pub async fn get_dashboard_stats(
         total_users: stats_row.get("total_users"),
         active_users: stats_row.get("active_users"),
         admin_users: stats_row.get("admin_users"),
+        external_users,
+        online_users,
+        online_sessions,
         drive_usage,
         users_over_80_percent: stats_row.get("users_over_80"),
         users_over_quota: stats_row.get("users_over_quota"),
@@ -1037,13 +1088,20 @@ pub async fn get_dashboard_stats(
 // ============================================================================
 
 /// GET /api/admin/users?limit=50&offset=0 — list all users
+///
+/// Always returns `Vec<FullUserDto>` — the shape one row of the
+/// `/me` response's embedded `full` block carries. The former
+/// `?summary` toggle (flat `PublicUserDto` vs nested `FullUserDto`)
+/// has been retired: admin listing is low-volume and the FE always
+/// asked for the nested shape anyway, so the two-shape split served
+/// no caller and only invited jq-path bugs. See
+/// `docs/plan/userdto-refactor.md`.
 #[utoipa::path(
     get,
     path = "/api/admin/users",
     params(
         ("limit" = Option<i64>, Query, description = "Max users to return (default 100, max 500)"),
-        ("offset" = Option<i64>, Query, description = "Pagination offset"),
-        ("summary" = Option<bool>, Query, description = "Return the compact management-table projection")
+        ("offset" = Option<i64>, Query, description = "Pagination offset")
     ),
     responses(
         (status = 200, description = "List of users"),
@@ -1071,31 +1129,16 @@ pub async fn list_users(
     // internal-only variant is used by system address book / sharee
     // search, where surfacing externals would leak identities. See
     // `auth_application_service::list_users` doc for the split.
-    let users = if query.summary.unwrap_or(false) {
-        AdminUsersPayload::Summary(
-            auth.auth_application_service
-                .list_user_summaries_including_external_with_perms(
-                    state.authorization.as_ref(),
-                    auth_user.id,
-                    limit,
-                    offset,
-                )
-                .await
-                .map_err(AppError::from)?,
+    let users = auth
+        .auth_application_service
+        .list_user_summaries_including_external_with_perms(
+            state.authorization.as_ref(),
+            auth_user.id,
+            limit,
+            offset,
         )
-    } else {
-        AdminUsersPayload::Full(
-            auth.auth_application_service
-                .list_users_including_external_with_perms(
-                    state.authorization.as_ref(),
-                    auth_user.id,
-                    limit,
-                    offset,
-                )
-                .await
-                .map_err(AppError::from)?,
-        )
-    };
+        .await
+        .map_err(AppError::from)?;
 
     let total = auth
         .auth_application_service
@@ -1562,7 +1605,7 @@ pub async fn reset_user_password(
     path = "/api/admin/users/{id}/promote-to-internal",
     params(("id" = String, Path, description = "Target user id")),
     responses(
-        (status = 200, description = "User promoted", body = UserDto),
+        (status = 200, description = "User promoted", body = PublicUserDto),
         (status = 400, description = "Magic-link login is disabled on this deployment"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required (or target is OIDC-linked)"),
@@ -2464,6 +2507,51 @@ pub async fn delete_drive_admin(
 ///
 /// Production endpoint, always on. Read-only, so no audit line —
 /// the standard admin-middleware auth check is enough.
+/// `GET /api/admin/transcode/stats` — WebP transcode effectiveness.
+///
+/// The four counters distinguish where a response came from, which is
+/// otherwise invisible: `transcodes` is work actually done, while
+/// `cache_hits` (in-memory, keyed by file id) and `disk_hits` (the
+/// durable content-keyed tier, plus the legacy local cache) are work
+/// avoided. A rising `transcodes` against a flat `disk_hits` means the
+/// derived tier is not being consulted — which is exactly the
+/// regression a migration can introduce silently.
+///
+/// `bytes_saved` counts only successful transcodes; images the encoder
+/// could not shrink contribute nothing to it and are remembered as
+/// negative rows instead.
+///
+/// Read-only, so no audit line — the admin middleware gate is enough.
+#[utoipa::path(
+    get,
+    path = "/api/admin/transcode/stats",
+    responses(
+        (status = 200, description = "Transcode statistics"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn get_transcode_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let s = state.core.image_transcode_service.get_stats().await;
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "cache_hits":       s.cache_hits,
+            "disk_hits":        s.disk_hits,
+            "transcodes":       s.transcodes,
+            "bytes_saved":      s.bytes_saved,
+            "transcode_errors": s.transcode_errors,
+            // Decodes that produced something larger. Work done for no
+            // gain — the thing the stored negative verdict prevents
+            // repeating, and invisible before this counter existed.
+            "not_beneficial":   s.not_beneficial,
+        })),
+    )
+        .into_response()
+}
+
 #[utoipa::path(
     get,
     path = "/api/admin/jobs",
@@ -2524,6 +2612,28 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         }
     }
 
+    // Mark the jobs `OXICLOUD_STARTUP_JOBS` dispatches at boot. Without
+    // this the panel is silently wrong about the most consequential thing
+    // on the row: a job configured with `repair=true` deletes files on
+    // every restart, and the row would suggest that only ever happens
+    // when someone clicks Run.
+    for job in summary.iter_mut() {
+        if let Some(configured) = state
+            .core
+            .config
+            .startup_jobs
+            .iter()
+            .find(|s| s.name == job.name)
+        {
+            job.startup = Some(crate::infrastructure::scheduler::StartupTrigger {
+                force: configured.args.force,
+                deep: configured.args.deep,
+                repair: configured.args.repair,
+                storage: configured.args.storage.clone(),
+            });
+        }
+    }
+
     (StatusCode::OK, Json(summary)).into_response()
 }
 
@@ -2537,6 +2647,12 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
 /// `deep=true` opts into slow variants — `consistency_batch` fans it
 /// out to sub-jobs; `storage_consistency` (when implemented) will
 /// re-BLAKE3 each blob for bitrot detection. See `JobRunArgs.deep`.
+///
+/// `repair=true` opts into corrective action on the refcount
+/// consistency tenants (`blobs_consistency`, `manifests_consistency`,
+/// and `consistency_batch` which fans out to both). Default `false`
+/// preserves discovery-only. See `JobRunArgs.repair` for the
+/// content-safety and race-safety guarantees.
 #[derive(serde::Deserialize)]
 pub struct TriggerJobQuery {
     #[serde(default)]
@@ -2553,6 +2669,8 @@ pub struct TriggerJobQuery {
     /// `AppConfig.storage_entries`.
     #[serde(default)]
     pub storage: Option<String>,
+    #[serde(default)]
+    pub repair: bool,
 }
 
 /// `POST /api/admin/jobs/{name}/trigger` — dispatch one run off-schedule.
@@ -2591,15 +2709,18 @@ pub async fn trigger_job(
         job = %name,
         force = query.force,
         deep = query.deep,
-        "👮🏻‍♂️ Admin triggered job {} (force={}, deep={})",
+        repair = query.repair,
+        "👮🏻‍♂️ Admin triggered job {} (force={}, deep={}, repair={})",
         name,
         query.force,
         query.deep,
+        query.repair,
     );
     let args = JobRunArgs {
         force: query.force,
         deep: query.deep,
         storage: query.storage.clone(),
+        repair: query.repair,
     };
 
     // Jobs that can run for hours (backend_migration, future

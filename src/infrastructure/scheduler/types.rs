@@ -45,11 +45,25 @@ use serde::{Deserialize, Serialize};
 ///   of the entry to probe instead of the currently-active backend.
 ///   `None` falls through to the live backend (today's behaviour).
 /// - Others — ignored.
+///
+/// Semantics of `repair` (added 2026-10-17 for the refcount fix):
+/// - `blobs_consistency` / `manifests_consistency` — when `true`,
+///   after each `refcount_mismatch` / `manifest_refcount_mismatch`
+///   finding is recorded, apply the corrective UPDATE that sets the
+///   stored counter to the auditor's computed `actual_ref_count`.
+///   Content-safe: the row itself is fine, only the counter is
+///   wrong. Race-safe: each UPDATE recomputes the auditor formula
+///   in the same statement, so a concurrent write can't leave a
+///   stale value. Default `false` preserves discovery-only
+///   behaviour. Also propagates through `consistency_batch` to
+///   both tenants — one `?repair=true` call fixes both counters.
+/// - Others — ignored.
 #[derive(Debug, Clone, Default)]
 pub struct JobRunArgs {
     pub force: bool,
     pub deep: bool,
     pub storage: Option<String>,
+    pub repair: bool,
 }
 
 /// Uniform outcome the supervisor logs and stores for every job dispatch.
@@ -153,9 +167,51 @@ impl fmt::Display for ErrCause {
     }
 }
 
+/// When a job changes state.
+///
+/// Drives how the admin UI presents a trigger: `Never` earns a read-only
+/// badge, `OnRepairOnly` is safe to run and warns only when the toggle is on,
+/// `Always` warns regardless.
+///
+/// Three values rather than a boolean because there are three cases, and the
+/// interesting one is conditional. `false` on a job that can delete files
+/// under `?repair=true` is actively misleading; `true` on one that is
+/// read-only by default is equally wrong. `OnRepairOnly` names the case a
+/// boolean cannot, and it is where the recovery framework is heading —
+/// discovery-only by default, mutation behind an explicit opt-in — so a
+/// consistency tenant that later grows a repair arm changes this one value
+/// and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mutates {
+    /// Read-only under every flag. All consistency tenants.
+    Never,
+    /// Changes state on a plain run. GC, janitors, the import jobs.
+    Always,
+    /// Read-only by default; mutates only under `?repair=true`. Pairing this
+    /// with `repair_description() == None` is contradictory — a job claiming
+    /// it mutates only under a flag it does not support.
+    OnRepairOnly,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mutates_serialises_snake_case() {
+        // The admin UI switches on these strings — a rename is a breaking
+        // change to the panel, not just to Rust callers.
+        assert_eq!(serde_json::to_string(&Mutates::Never).unwrap(), "\"never\"");
+        assert_eq!(
+            serde_json::to_string(&Mutates::Always).unwrap(),
+            "\"always\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Mutates::OnRepairOnly).unwrap(),
+            "\"on_repair_only\""
+        );
+    }
 
     #[test]
     fn joboutcome_kind_label() {

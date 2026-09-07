@@ -756,6 +756,15 @@ impl DedupPort for StubDedupPort {
         false
     }
 
+    async fn find_derived_blob(
+        &self,
+        _source_hash: &str,
+        _kind: &str,
+        _variant: &str,
+    ) -> Option<crate::application::ports::dedup_ports::DerivedBlobRef> {
+        None
+    }
+
     async fn get_blob_metadata(&self, _hash: &str) -> Option<BlobMetadataDto> {
         None
     }

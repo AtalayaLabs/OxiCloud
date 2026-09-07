@@ -7,6 +7,13 @@ pub mod domain;
 pub mod infrastructure;
 pub mod interfaces;
 
+// Operator-tools subcommand tree, dispatched from `src/main.rs` when
+// the first positional arg matches a known domain (`opaque`, `migrate`).
+// Previously lived in a standalone `oxicloud-cli` binary; folded in so
+// the release tarball ships one executable — see
+// docs/plan/bundled-binary.md § Deliverable 1b.
+pub mod cli;
+
 // Test-only helpers for #[cfg(integration_tests)] modules across the
 // crate (shared pool URL guard + pre-suite cleanup OnceCell).
 #[cfg(integration_tests)]

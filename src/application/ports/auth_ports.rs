@@ -3,7 +3,6 @@ use crate::domain::entities::app_password::AppPassword;
 use crate::domain::entities::device_code::DeviceCode;
 use crate::domain::entities::session::Session;
 use crate::domain::entities::user::User;
-use crate::domain::repositories::user_repository::UserListEntry;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -63,6 +62,14 @@ pub struct TokenClaims {
     /// The DPoP middleware reads it from the already-validated token
     /// (no DB round trip) to enforce "bound session → proof required".
     pub dpop_jkt: Option<String>,
+    /// Session identifier — the `auth.sessions.id` this access token
+    /// was minted for. Read by the auth middleware to stamp
+    /// per-session liveness via [`LastSeenTracker`](crate::infrastructure::services::last_seen_tracker)
+    /// with no DB round trip. `None` for tokens minted by builds
+    /// that predate the `sid` claim (backward compat during rollout;
+    /// harmless — the missing sid just means no stamp fires, and
+    /// the token still authenticates normally).
+    pub sid: Option<Uuid>,
 }
 
 /// Port for JWT token operations.
@@ -81,6 +88,7 @@ pub trait TokenServicePort: Send + Sync + 'static {
     fn generate_access_token(
         &self,
         user: &User,
+        session_id: Option<Uuid>,
         dpop_jkt: Option<&str>,
     ) -> Result<String, DomainError>;
 
@@ -113,6 +121,36 @@ pub trait UserStoragePort: Send + Sync + 'static {
 
     /// Gets a user by ID
     async fn get_user_by_id(&self, id: Uuid) -> Result<User, DomainError>;
+
+    /// Fetch the full `User` + [`UserDerivedFlags`] in one query. See
+    /// [`UserRepository::get_user_with_derived_flags`](crate::domain::repositories::user_repository::UserRepository::get_user_with_derived_flags)
+    /// for the contract and the rationale for the single-query shape.
+    async fn get_user_with_derived_flags(
+        &self,
+        id: Uuid,
+    ) -> Result<
+        (
+            User,
+            crate::domain::repositories::user_repository::UserDerivedFlags,
+        ),
+        DomainError,
+    >;
+
+    /// Paginated admin user listing with derived flags. See
+    /// [`UserRepository::list_users_with_derived_flags`](crate::domain::repositories::user_repository::UserRepository::list_users_with_derived_flags)
+    /// for the contract and rationale.
+    async fn list_users_with_derived_flags(
+        &self,
+        limit: i64,
+        offset: i64,
+        include_external: bool,
+    ) -> Result<
+        Vec<(
+            User,
+            crate::domain::repositories::user_repository::UserDerivedFlags,
+        )>,
+        DomainError,
+    >;
 
     /// Batch-loads users by id. Order is unspecified; missing ids are
     /// silently dropped. Used by group-recipient expansion in
@@ -154,15 +192,6 @@ pub trait UserStoragePort: Send + Sync + 'static {
         offset: i64,
         include_external: bool,
     ) -> Result<Vec<User>, DomainError>;
-
-    /// Narrow user-list projection for management tables.  Keeps heavyweight
-    /// account-detail fields off the database and JSON hot path.
-    async fn list_user_summaries(
-        &self,
-        limit: i64,
-        offset: i64,
-        include_external: bool,
-    ) -> Result<Vec<UserListEntry>, DomainError>;
 
     /// Searches users by username or email (SQL ILIKE) with a limit.
     /// See [`list_users`] for the meaning of `include_external`.

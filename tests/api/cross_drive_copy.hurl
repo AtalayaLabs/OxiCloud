@@ -71,7 +71,7 @@ Content-Type: application/json
 HTTP 200
 [Captures]
 owner_token:   jsonpath "$.access_token"
-owner_user_id: jsonpath "$.user.id"
+owner_user_id: jsonpath "$.user.full.user.id"
 
 
 # ─────────────────────────────────────────────────────────────

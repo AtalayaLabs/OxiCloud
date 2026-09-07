@@ -142,10 +142,10 @@ Authorization: Bearer {{alice_magic_access_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.email" == "{{email}}"
-jsonpath "$.username" == "{{username}}"
+jsonpath "$.full.user.email" == "{{email}}"
+jsonpath "$.full.user.username" == "{{username}}"
 [Captures]
-admin_user_id: jsonpath "$.id"
+admin_user_id: jsonpath "$.full.user.id"
 
 
 # ─────────────────────────────────────────────────────────────

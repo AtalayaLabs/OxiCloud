@@ -158,6 +158,12 @@ it('keeps aggregate upload progress exact when one file restarts', async () => {
 	);
 	render(FilesPage);
 	const input = await screen.findByTestId('files-upload-file-input');
+	// The cold-navigation upload guard (`guardUploadFolderReady` in
+	// `+page.svelte`) refuses uploads while `currentId` is null — which is
+	// the initial state before `load()` runs. `load()` sets `currentId =
+	// folderId` BEFORE it calls `fetchFolderPage`, so waiting on the fetch
+	// mock is a stable "load() has progressed past the assignment" signal.
+	await waitFor(() => expect(fetchFolderPage).toHaveBeenCalled());
 	const uploads = [new File(['a'], 'a.txt'), new File(['b'], 'b.txt')];
 	Object.defineProperty(input, 'files', { configurable: true, value: uploads });
 

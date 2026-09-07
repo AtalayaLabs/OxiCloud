@@ -1,6 +1,7 @@
 pub mod auth_ports;
 pub mod authorization_ports;
 pub mod blob_lifecycle;
+pub mod blob_reference_ports;
 pub mod blob_storage_ports;
 pub mod cache_ports;
 pub mod calendar_ports;

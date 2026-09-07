@@ -93,18 +93,22 @@ Runs are recoverable — status, cursor, and per-blob failure findings all live 
 If an entry is renamed or removed from `.env` while the DB pointer still names the old one, boot aborts with a clear error pointing at:
 
 ```
-oxicloud --select-storage <name>
+oxicloud storage select <name>
 ```
 
 This one-shot repair command re-runs the same env-parse the server does at boot, verifies `<name>` is declared in `OXICLOUD_STORAGE_ENTRIES`, updates `admin_settings.storage.active_backend_name` in the DB, and exits. Operator then restarts normally. See [Environment Variables — Storage Entries](/config/env#storage-entries-multi-entry-recommended) for the model, and [`oxicloud --help`](https://github.com/oxicloud/oxicloud/blob/main/src/main.rs) for the full flag list.
 
 ### Auditing entries other than the active one
 
-`blobs_consistency` and `backend_consistency` (recoverable jobs on the Jobs tab) accept `?storage=<name>` to probe any declared entry — not just the live one. Use this to verify a migration target before cutover, or to audit an old backend after cutover but before decommissioning:
+`backend_consistency` (a recoverable job on the Jobs tab) accepts `?storage=<name>` to audit any declared entry — not just the live one. Use this to verify a migration target before cutover, or to audit an old backend after cutover but before decommissioning:
 
 ```
-POST /api/admin/jobs/blobs_consistency/trigger?storage=<name>
+POST /api/admin/jobs/backend_consistency/trigger?storage=<name>
 ```
+
+Add `?deep=true` to also read every blob back and re-hash it, which catches silent bit-rot. That is a full read of the entry and can take hours.
+
+`blobs_consistency` does *not* accept `?storage=<name>`: it only reads the database, so there is no entry for it to scope.
 
 Unknown names 400 at the HTTP layer.
 

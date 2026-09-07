@@ -55,6 +55,7 @@ use std::sync::Arc;
 use tokio_util::io::StreamReader;
 
 use crate::application::ports::blob_lifecycle::BlobLifecycleHook;
+use crate::application::ports::blob_reference_ports::{BlobReferenceRegistry, RefLevel};
 use crate::application::ports::blob_storage_ports::BlobStorageBackend;
 use crate::application::ports::dedup_ports::{
     BlobMetadataDto, DedupPort, DedupResultDto, DedupStatsDto,
@@ -424,6 +425,147 @@ async fn populate_integrity_blob_sizes<'a>(
     IntegrityBlobSizes { hashes, sizes }
 }
 
+/// Build the manifest reap statement from the registered reference sources.
+///
+/// **A manifest is collectible when, and only when, no registered source
+/// references it.** The reference registry is the sole authority; `ref_count`
+/// does not appear in this predicate at all.
+///
+/// # Why `ref_count` was removed from it
+///
+/// This used to read `ref_count <= 0 OR <unreferenced>`. Each arm had a
+/// purpose — the single-file delete path decrements the counter via
+/// `cleanup_if_orphaned`, while bulk paths (user cascade, `empty_trash`) only
+/// fire the `storage.blobs` trigger and leave the counter untouched — so the
+/// disjunction looked like belt and braces.
+///
+/// It was the opposite. With `OR`, **either signal alone deletes**, so a
+/// counter that under-reports does not merely report a wrong number: it makes
+/// live content collectible, and the registry that knows better is never
+/// consulted because the first arm already matched. That is not hypothetical.
+/// `storage.copy_folder_tree` used to take references with
+/// `UPDATE storage.blobs … WHERE hash = blob_hash`, which matches nothing for
+/// a CDC file — whose `blob_hash` names a manifest, not a chunk — so it took
+/// no reference at all. Copy a folder, delete the original, and the copy's
+/// bytes were reaped.
+///
+/// Dropping the counter arm loses no coverage, because the single-file path
+/// deletes the `storage.files` row too, which makes the row unreferenced
+/// anyway. And it costs no performance: under `OR`, Postgres had to evaluate
+/// the `EXISTS` union for every row whose `ref_count` was above zero — which
+/// on a healthy install is nearly all of them — so the expensive predicate was
+/// already running unconditionally.
+///
+/// What it does change: a counter stuck *high* with no referrers left is no
+/// longer reaped here. That is the bulk-delete residue, and it now belongs to
+/// the manifest-level refcount recompute (`docs/plan/derived-blobs.md`,
+/// coverage matrix row 7) — a counter being wrong is a job for the thing that
+/// reconciles counters, not for the thing that deletes data.
+///
+/// The predicate is registry-driven rather than naming `storage.files`
+/// directly, so a new referring table — thumbnails via
+/// `storage.content_derived_blobs`, previews via
+/// `storage.file_attached_blobs` — is covered by registering its source.
+/// Hardcoded, each new table would have had its manifests reaped on the next
+/// sweep despite a correct `ref_count`.
+///
+/// Pinned by `gc_reference_authority_integration_tests`.
+///
+/// # Panics
+///
+/// If no source contributes at [`RefLevel::Manifest`]. That is a wiring bug,
+/// and it must be loud: with no source, "nothing references it" is vacuously
+/// true for every row and this statement would delete every manifest in the
+/// database. `DedupService::new` always registers `FilesReferenceSource`, so
+/// the only way to reach this is to pass a deliberately empty registry.
+/// Build the chunk/blob reap statement (GC phase 2) from the registered
+/// reference sources.
+///
+/// Unlike [`manifest_reap_sql`], the registry predicate here is **added to**
+/// the hardcoded guards rather than replacing them. That asymmetry is
+/// deliberate and the reason this was not a mechanical swap.
+///
+/// `no_reference_predicate` is built from fragments designed for *counting*,
+/// and `FilesReferenceSource`'s chunk-level fragment deliberately excludes
+/// files whose `blob_hash` has a manifest — otherwise a single-chunk blob,
+/// where the file hash and its lone chunk hash are the same BLAKE3, would be
+/// counted at both levels. Correct for a recompute; too narrow for a reap
+/// guard. A `storage.blobs` row keyed by a MULTI-chunk file's hash — which
+/// exists transiently while `rechunk` migrates a legacy blob, and is not a
+/// member of its own manifest's `chunk_hashes` — would satisfy the registry's
+/// "unreferenced" test while a live `storage.files` row still points at it.
+/// Swapping the guards out would have reaped it mid-migration.
+///
+/// So the statement keeps `NOT EXISTS (manifest lists it as a chunk)` and
+/// `NOT EXISTS (any file points at it)`, and ANDs the registry predicate on
+/// top. Adding a conjunct can only ever spare more rows, never reap more, so
+/// this cannot regress; what it buys is that a future source contributing at
+/// [`RefLevel::Chunk`] is honoured automatically instead of being silently
+/// missed — the same failure that made Phase 1's hardcoded cross-check
+/// dangerous.
+///
+/// Today the registry adds nothing operationally:
+/// `content_derived_blobs` and `file_attached_blobs` both return `None` at
+/// `RefLevel::Chunk`, so its union is exactly manifests + legacy files. The
+/// point is what happens when that stops being true.
+///
+/// `$1` is the batch limit, `$2` the grace window in seconds.
+///
+/// # Panics
+///
+/// If no source contributes at [`RefLevel::Chunk`]. Same reasoning as
+/// [`manifest_reap_sql`]: a missing predicate must be loud rather than
+/// silently degrading to "nothing references anything".
+fn blob_reap_sql(registry: &BlobReferenceRegistry) -> String {
+    let unreferenced = registry
+        .no_reference_predicate(RefLevel::Chunk, "b.hash")
+        .expect(
+            "no chunk-level blob reference source registered: the reap \
+             predicate would lose its registry cross-check",
+        );
+
+    format!(
+        "DELETE FROM storage.blobs
+                  WHERE ctid = ANY(
+                      SELECT b.ctid FROM storage.blobs b
+                       WHERE b.ref_count <= 0
+                         AND (b.orphaned_at IS NULL
+                              OR b.orphaned_at < now() - ($2::int * interval '1 second'))
+                         AND NOT EXISTS (
+                             SELECT 1 FROM storage.chunk_manifests m
+                              WHERE m.chunk_hashes @> ARRAY[b.hash::text]
+                         )
+                         AND NOT EXISTS (
+                             SELECT 1 FROM storage.files f
+                              WHERE f.blob_hash = b.hash
+                         )
+                         AND {unreferenced}
+                       LIMIT $1
+                  )
+                  RETURNING hash, size"
+    )
+}
+
+fn manifest_reap_sql(registry: &BlobReferenceRegistry) -> String {
+    let orphaned = registry
+        .no_reference_predicate(RefLevel::Manifest, "m.file_hash")
+        .expect(
+            "no manifest-level blob reference source registered: the reap \
+             predicate would match every manifest",
+        );
+
+    format!(
+        "DELETE FROM storage.chunk_manifests
+ WHERE ctid = ANY(
+     SELECT ctid
+       FROM storage.chunk_manifests m
+      WHERE {orphaned}
+      LIMIT $1
+ )
+ RETURNING file_hash, chunk_hashes, total_size"
+    )
+}
+
 pub struct DedupService {
     /// Pluggable blob storage backend (local FS, S3, …).
     backend: Arc<dyn BlobStorageBackend>,
@@ -442,6 +584,20 @@ pub struct DedupService {
     /// seen immediately), weight-bounded (a manifest is ~72 B per chunk),
     /// short TTL so GC'd manifests age out fast (benches/MANIFEST-CACHE.md).
     manifest_cache: moka::future::Cache<String, Arc<ChunkManifest>>,
+    /// Every table that holds blob references, so GC agrees with the
+    /// consistency jobs on what "referenced" means. Defaults to the two
+    /// built-in sources; DI replaces it once more tables exist. Never
+    /// optional — an empty registry would make "nothing references it"
+    /// vacuously true and the manifest sweep would reap everything.
+    reference_registry: Arc<BlobReferenceRegistry>,
+    /// The manifest reap statement, built once from `reference_registry`.
+    /// Kept as a field so `garbage_collect` runs a fixed statement rather
+    /// than assembling SQL inside a delete loop — see `manifest_reap_sql`.
+    manifest_reap_sql: String,
+    /// The chunk/blob reap statement (GC phase 2), same treatment — see
+    /// [`blob_reap_sql`], including why its registry predicate is additive
+    /// rather than a replacement for the hardcoded guards.
+    blob_reap_sql: String,
 }
 
 impl DedupService {
@@ -455,13 +611,30 @@ impl DedupService {
         pool: Arc<PgPool>,
         maintenance_pool: Arc<PgPool>,
     ) -> Self {
+        let registry = Arc::new(Self::default_reference_registry(pool.clone()));
         Self {
             backend,
             pool,
             maintenance_pool,
             blob_lifecycle: None,
             manifest_cache: Self::build_manifest_cache(),
+            reference_registry: registry.clone(),
+            manifest_reap_sql: manifest_reap_sql(&registry),
+            blob_reap_sql: blob_reap_sql(&registry),
         }
+    }
+
+    /// Every built-in blob-reference source, in one place.
+    ///
+    /// This is THE definition of "what references a blob" — DI does not
+    /// assemble its own, it reads this one back via
+    /// [`Self::reference_registry`] and hands it to the consistency jobs, so
+    /// GC and the sweeps cannot disagree. Keeping it as the construction
+    /// default also means every path — including tests — has a
+    /// manifest-level source, so the reap predicate can never degenerate to
+    /// "nothing references anything".
+    fn default_reference_registry(pool: Arc<PgPool>) -> BlobReferenceRegistry {
+        crate::infrastructure::repositories::pg::blob_reference_sources::built_in_registry(pool)
     }
 
     /// See the `manifest_cache` field docs. Weight ≈ real heap bytes of one
@@ -476,6 +649,338 @@ impl DedupService {
             .build()
     }
 
+    /// Registers the blob-reference registry used by the manifest reap
+    /// predicate. Without it `garbage_collect` skips manifest collection
+    /// entirely — see `docs/plan/derived-blobs.md`.
+    pub fn with_reference_registry(mut self, registry: Arc<BlobReferenceRegistry>) -> Self {
+        self.manifest_reap_sql = manifest_reap_sql(&registry);
+        self.blob_reap_sql = blob_reap_sql(&registry);
+        self.reference_registry = registry;
+        self
+    }
+
+    /// Store a server-derived artifact and record the mapping from the
+    /// content it was derived from.
+    ///
+    /// One call does the whole contract, so no caller has to remember the
+    /// accounting:
+    ///
+    /// 1. writes the bytes through the normal CDC path — derived blobs get
+    ///    the same backend, encryption, migration and rotation as any other
+    ///    content, and `store_from_stream` takes exactly one reference;
+    /// 2. records `(source_hash, kind, variant) -> blob_hash`;
+    /// 3. **releases that reference if the mapping already existed**, because
+    ///    the row that would justify it is not ours — two instances racing
+    ///    to render the same thumbnail must leave `ref_count` at 1, not 2.
+    ///
+    /// `bytes` is expected to be small (a thumbnail is 3-90 KB, below
+    /// `CDC_MIN_CHUNK`, so this is a single chunk). See
+    /// `docs/plan/derived-blobs.md`.
+    ///
+    /// Returns the derived blob hash.
+    /// Attach user-supplied bytes to a FILE — the file-keyed twin of
+    /// [`Self::store_derived_blob`].
+    ///
+    /// Same storage path (the bytes are still content-addressed and still
+    /// deduplicated), different mapping: the row is keyed by `file_id`, so
+    /// two files holding identical attached bytes get two rows and two
+    /// references. Sharing the mapping is what must not happen — a
+    /// content-keyed client preview would let one user's upload be served
+    /// for another user's file.
+    ///
+    /// `ON CONFLICT … DO UPDATE`, unlike the derived twin: re-uploading a
+    /// preview for the same `(file_id, kind, variant)` is a deliberate
+    /// replacement, whereas a re-derived thumbnail is the same bytes again.
+    /// The reference held by the row being replaced is released.
+    pub async fn store_attached_blob(
+        &self,
+        file_id: &str,
+        kind: &str,
+        variant: &str,
+        content_type: &str,
+        bytes: Bytes,
+        uploaded_by: uuid::Uuid,
+    ) -> Result<String, DomainError> {
+        let stored = self
+            .store_from_stream(
+                stream::once(async move { Ok::<Bytes, std::io::Error>(bytes) }),
+                Some(content_type.to_string()),
+            )
+            .await?;
+        let attached_hash = stored.hash().to_string();
+
+        // Read the hash being superseded BEFORE upserting.
+        //
+        // It cannot come from `RETURNING`: PostgreSQL only permits `EXCLUDED`
+        // in the `SET` and `WHERE` of `DO UPDATE`, so a RETURNING clause
+        // comparing old against new is a syntax error — and one that surfaces
+        // only at runtime, where this method's best-effort caller swallows it
+        // into a warning while the sidecar keeps the feature looking healthy.
+        //
+        // The gap between this SELECT and the upsert is benign: losing the
+        // race leaves one stale reference, which the manifest recompute
+        // reports rather than anything being lost or served wrongly.
+        let previous: Option<(String,)> = sqlx::query_as(
+            "SELECT blob_hash FROM storage.file_attached_blobs
+              WHERE file_id = $1::uuid AND kind = $2 AND variant = $3",
+        )
+        .bind(file_id)
+        .bind(kind)
+        .bind(variant)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| DomainError::internal_error("Dedup", format!("read attached blob: {e}")))?;
+
+        sqlx::query(
+            "INSERT INTO storage.file_attached_blobs
+                 (file_id, kind, variant, blob_hash, content_type, uploaded_by)
+             VALUES ($1::uuid, $2, $3, $4, $5, $6)
+             ON CONFLICT (file_id, kind, variant) DO UPDATE
+                 SET blob_hash    = EXCLUDED.blob_hash,
+                     content_type = EXCLUDED.content_type,
+                     uploaded_by  = EXCLUDED.uploaded_by,
+                     created_at   = now()",
+        )
+        .bind(file_id)
+        .bind(kind)
+        .bind(variant)
+        .bind(&attached_hash)
+        .bind(content_type)
+        .bind(uploaded_by)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| DomainError::internal_error("Dedup", format!("record attached blob: {e}")))?;
+
+        // A replaced row's old blob loses its only reference from here. Not
+        // releasing it would pin those bytes forever — nothing else points at
+        // a superseded preview.
+        if let Some((old_hash,)) = previous
+            && old_hash != attached_hash
+            && let Err(e) = self.remove_reference(&old_hash).await
+        {
+            tracing::warn!(
+                target: "oxicloud::dedup",
+                error = %e,
+                "failed to release replaced attached-blob reference for {}",
+                &old_hash[..old_hash.len().min(12)],
+            );
+        }
+
+        Ok(attached_hash)
+    }
+
+    /// Look up bytes attached to a file. File-keyed counterpart of
+    /// [`Self::find_derived_blob`].
+    pub async fn find_attached_blob(
+        &self,
+        file_id: &str,
+        kind: &str,
+        variant: &str,
+    ) -> Option<crate::application::ports::dedup_ports::DerivedBlobRef> {
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT blob_hash, content_type FROM storage.file_attached_blobs
+              WHERE file_id = $1::uuid AND kind = $2 AND variant = $3",
+        )
+        .bind(file_id)
+        .bind(kind)
+        .bind(variant)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .ok()
+        .flatten()
+        .map(|(blob_hash, content_type)| {
+            crate::application::ports::dedup_ports::DerivedBlobRef {
+                blob_hash,
+                content_type,
+            }
+        })
+    }
+
+    pub async fn store_derived_blob(
+        &self,
+        source_hash: &str,
+        kind: &str,
+        variant: &str,
+        content_type: &str,
+        bytes: Bytes,
+    ) -> Result<String, DomainError> {
+        let stored = self
+            .store_from_stream(
+                stream::once(async move { Ok::<Bytes, std::io::Error>(bytes) }),
+                Some(content_type.to_string()),
+            )
+            .await?;
+        let derived_hash = stored.hash().to_string();
+
+        let inserted = sqlx::query(
+            // The source must still EXIST, or this row can never be cleaned
+            // up. `purge_derived_blobs` runs from the source's reap, so a
+            // mapping written after that reap is unreachable forever: nothing
+            // will reap that hash a second time, and the orphaned row holds
+            // its derived blob's ref_count at 1, which GC is then correct to
+            // refuse. Permanent leak, three rows per image.
+            //
+            // It is not hypothetical. Background thumbnail generation is
+            // spawned and unawaited, so an upload deleted promptly — which a
+            // test suite does constantly, and users do occasionally — has its
+            // render finish AFTER the blob was reaped and then record a
+            // mapping to a corpse.
+            //
+            // Checking both tables because `source_hash` names a Blob:
+            // a manifest for CDC content, a bare blob row for legacy
+            // whole-file content.
+            //
+            // Zero rows here is indistinguishable from the ON CONFLICT case,
+            // and both want the same handling — release the reference the
+            // blob write just took — which the caller already does.
+            "INSERT INTO storage.content_derived_blobs
+                 (source_hash, kind, variant, blob_hash, content_type)
+             SELECT $1, $2, $3, $4, $5
+              WHERE EXISTS (SELECT 1 FROM storage.chunk_manifests WHERE file_hash = $1)
+                 OR EXISTS (SELECT 1 FROM storage.blobs           WHERE hash      = $1)
+             ON CONFLICT (source_hash, kind, variant) DO NOTHING",
+        )
+        .bind(source_hash)
+        .bind(kind)
+        .bind(variant)
+        .bind(&derived_hash)
+        .bind(content_type)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| DomainError::internal_error("Dedup", format!("record derived blob: {e}")))?
+        .rows_affected();
+
+        if inserted == 0 {
+            // Two causes, one correct response.
+            //
+            // Either someone else already mapped this variant (ON CONFLICT),
+            // or the source Blob no longer exists so the WHERE EXISTS above
+            // refused the row. Both leave our blob write with no mapping
+            // behind it, and in both cases keeping the reference would pin
+            // the blob forever — inflating ref_count on every re-render in
+            // the first case, stranding an unreachable blob in the second.
+            if let Err(e) = self.remove_reference(&derived_hash).await {
+                tracing::warn!(
+                    target: "oxicloud::dedup",
+                    error = %e,
+                    "failed to release duplicate derived-blob reference for {}",
+                    &derived_hash[..derived_hash.len().min(12)],
+                );
+            }
+        }
+
+        Ok(derived_hash)
+    }
+
+    /// Look up a derived artifact by its source content. Read counterpart of
+    /// [`Self::store_derived_blob`].
+    pub async fn find_derived_blob(
+        &self,
+        source_hash: &str,
+        kind: &str,
+        variant: &str,
+    ) -> Option<crate::application::ports::dedup_ports::DerivedBlobRef> {
+        match self.lookup_derived(source_hash, kind, variant).await {
+            crate::application::ports::dedup_ports::DerivedLookup::Found(r) => Some(r),
+            _ => None,
+        }
+    }
+
+    /// Full three-way answer: no row, a negative verdict, or the blob.
+    ///
+    /// Callers deciding whether to spend a decode want the middle case,
+    /// which [`Self::find_derived_blob`] cannot express — it folds
+    /// "never attempted" and "attempted, not worth it" into the same
+    /// `None`, and a caller acting on that repeats the expensive work
+    /// forever. Use this wherever the derivation is costly; use
+    /// `find_derived_blob` when you only need the bytes.
+    ///
+    /// A query error reads as `Missing`, deliberately: a database blip
+    /// should cost a redundant render, never a wrong "not derivable"
+    /// that suppresses a derivation the content can support.
+    pub async fn lookup_derived(
+        &self,
+        source_hash: &str,
+        kind: &str,
+        variant: &str,
+    ) -> crate::application::ports::dedup_ports::DerivedLookup {
+        use crate::application::ports::dedup_ports::{DerivedBlobRef, DerivedLookup};
+
+        let row = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+            "SELECT blob_hash, content_type FROM storage.content_derived_blobs
+              WHERE source_hash = $1 AND kind = $2 AND variant = $3",
+        )
+        .bind(source_hash)
+        .bind(kind)
+        .bind(variant)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .ok()
+        .flatten();
+
+        match row {
+            None => DerivedLookup::Missing,
+            // The CHECK constraint keeps blob_hash and content_type NULL
+            // together, so one NULL is the whole negative row.
+            Some((None, _)) | Some((_, None)) => DerivedLookup::NotDerivable,
+            Some((Some(blob_hash), Some(content_type))) => DerivedLookup::Found(DerivedBlobRef {
+                blob_hash,
+                content_type,
+            }),
+        }
+    }
+
+    /// Record that this derivation is not worth attempting again.
+    ///
+    /// For outcomes that are deterministic in the source content — a
+    /// transcode that came out larger, a source that will not decode, a
+    /// source over the decode ceiling. **Never** for a timeout, a closed
+    /// semaphore, or an I/O error: those are properties of the moment,
+    /// and a row written for one marks good content underivable forever
+    /// with nothing to retry it.
+    ///
+    /// Takes no reference on any Blob — there is no derived Blob to hold
+    /// one. The row is dependent on its source and is reaped with it,
+    /// same as a positive row.
+    ///
+    /// Guarded by the same source-exists check as `store_derived_blob`:
+    /// a row whose source has already been reaped is a permanent leak of
+    /// a mapping nothing will ever clean up.
+    pub async fn store_derived_negative(
+        &self,
+        source_hash: &str,
+        kind: &str,
+        variant: &str,
+    ) -> Result<(), DomainError> {
+        sqlx::query(
+            "INSERT INTO storage.content_derived_blobs
+                 (source_hash, kind, variant, blob_hash, content_type)
+             SELECT $1, $2, $3, NULL, NULL
+              WHERE EXISTS (SELECT 1 FROM storage.chunk_manifests WHERE file_hash = $1)
+                 OR EXISTS (SELECT 1 FROM storage.blobs           WHERE hash      = $1)
+             ON CONFLICT (source_hash, kind, variant) DO NOTHING",
+        )
+        .bind(source_hash)
+        .bind(kind)
+        .bind(variant)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| {
+            DomainError::internal_error("Dedup", format!("store_derived_negative: {e}"))
+        })?;
+        Ok(())
+    }
+
+    /// The registry backing the reap predicate.
+    ///
+    /// Exposed so `blobs_consistency` recomputes refcounts from the *same*
+    /// source set GC reaps from. If the two ever diverged, the sweep would
+    /// bless counts the collector disagrees with — and the collector wins,
+    /// destructively.
+    pub fn reference_registry(&self) -> Arc<BlobReferenceRegistry> {
+        self.reference_registry.clone()
+    }
+
     /// Registers the blob lifecycle dispatcher (thumbnail cleanup, …).
     pub fn with_blob_lifecycle(mut self, lifecycle: Arc<BlobLifecycleService>) -> Self {
         self.blob_lifecycle = Some(lifecycle);
@@ -485,6 +990,89 @@ impl DedupService {
     fn fire_blob_creation_hooks(&self, hash: &str, content_type: Option<&str>) {
         if let Some(lc) = &self.blob_lifecycle {
             lc.on_blob_created(hash, content_type);
+        }
+    }
+
+    /// Everything that must happen when a blob is permanently reaped:
+    /// drop the artifacts derived FROM it, then notify the lifecycle hooks.
+    ///
+    /// Boxed because it is mutually recursive with `remove_reference`:
+    /// releasing a thumbnail's reference can reap the thumbnail's own blob,
+    /// which comes back through here. It terminates after one level —
+    /// nothing is derived from a thumbnail, so the inner purge finds no rows.
+    fn reap_blob<'a>(
+        &'a self,
+        hash: &'a str,
+    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            self.purge_derived_blobs(hash).await;
+            self.fire_blob_hooks(hash);
+        })
+    }
+
+    /// Delete every artifact derived from `source_hash` and release the
+    /// manifest references those rows held.
+    ///
+    /// The delete counterpart of [`Self::store_derived_blob`]. Without it a
+    /// thumbnail pins its own blob forever: the mapping row keeps
+    /// `chunk_manifests.ref_count` at 1 with no file behind it, so GC never
+    /// reclaims the bytes and a full delete leaves orphans on disk.
+    async fn purge_derived_blobs(&self, source_hash: &str) {
+        let derived: Vec<(String,)> = match sqlx::query_as(
+            "DELETE FROM storage.content_derived_blobs
+              WHERE source_hash = $1
+              RETURNING blob_hash",
+        )
+        .bind(source_hash)
+        .fetch_all(self.pool.as_ref())
+        .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!(
+                    target: "oxicloud::dedup",
+                    error = %e,
+                    "failed to purge derived blobs for {}",
+                    &source_hash[..source_hash.len().min(12)],
+                );
+                return;
+            }
+        };
+
+        // Silent on success until now, which made three distinct outcomes
+        // indistinguishable from the outside: never called, called and found
+        // nothing, or found rows whose release then failed. Chasing an
+        // orphaned-derived-row leak cost several full suite runs for exactly
+        // that reason, so the call announces itself.
+        //
+        // `info` when it actually deleted something — that is rare (only when
+        // a source Blob dies) and it is the line that proves the reap path
+        // reached here. `debug` for the common no-op.
+        if derived.is_empty() {
+            tracing::debug!(
+                target: "oxicloud::dedup",
+                "purge_derived_blobs: no rows for {}",
+                &source_hash[..source_hash.len().min(12)],
+            );
+        } else {
+            tracing::info!(
+                target: "oxicloud::dedup",
+                rows = derived.len(),
+                "purge_derived_blobs: releasing {} derived row(s) for {}",
+                derived.len(),
+                &source_hash[..source_hash.len().min(12)],
+            );
+        }
+
+        for (blob_hash,) in derived {
+            if let Err(e) = self.remove_reference(&blob_hash).await {
+                tracing::warn!(
+                    target: "oxicloud::dedup",
+                    error = %e,
+                    "failed to release derived blob {}",
+                    &blob_hash[..blob_hash.len().min(12)],
+                );
+            }
         }
     }
 
@@ -510,18 +1098,48 @@ impl DedupService {
                 .connect_lazy("postgres://invalid:5432/none")
                 .unwrap(),
         );
+        let stub_registry = Arc::new(Self::default_reference_registry(stub_pool.clone()));
         Self {
             backend: Arc::new(LocalBlobBackend::new(Path::new("/tmp/oxicloud_stub_blobs"))),
             pool: stub_pool.clone(),
-            maintenance_pool: stub_pool,
+            maintenance_pool: stub_pool.clone(),
             blob_lifecycle: None,
             manifest_cache: Self::build_manifest_cache(),
+            reference_registry: stub_registry.clone(),
+            manifest_reap_sql: manifest_reap_sql(&stub_registry),
+            blob_reap_sql: blob_reap_sql(&stub_registry),
         }
     }
 
     /// Initialize the service (delegate to backend + log stats from PG).
     pub async fn initialize(&self) -> Result<(), DomainError> {
         self.backend.initialize().await?;
+
+        // The reap statement is assembled from the registered reference
+        // sources, so it is not greppable in the source tree. It DELETES
+        // manifests, so log it unconditionally at info rather than hiding it
+        // behind a filter an operator has to know to enable — if what GC
+        // considers "referenced" ever changes, that must be visible on the
+        // next boot without anyone going looking.
+        //
+        // Whitespace-collapsed to a single field so a multi-line query does
+        // not sprawl across the boot log; expand it with
+        // `sed 's/ AND / AND\n  /g'` or just paste it into psql.
+        tracing::info!(
+            target: "oxicloud::dedup",
+            sources = ?self
+                .reference_registry
+                .sources()
+                .iter()
+                .map(|s| s.source_name())
+                .collect::<Vec<_>>(),
+            statement = %self
+                .manifest_reap_sql
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
+            "🧹 manifest reap predicate registered"
+        );
 
         let blob_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM storage.blobs")
             .fetch_one(self.pool.as_ref())
@@ -601,7 +1219,15 @@ impl DedupService {
     /// chunks at `ref_count = 0` and is about to commit their manifest — cannot
     /// race the sweep. Must comfortably exceed the longest plausible gap
     /// between registering a chunk and referencing it (any in-flight upload).
-    const GC_ORPHAN_GRACE_SECS: i64 = 60 * 60; // 1 hour
+    ///
+    /// `pub` because sibling consistency tenants derive their own grace
+    /// windows from this value — notably `blobs_consistency`'s
+    /// `blob_orphan_stalled` check, which flags rows that have been sitting
+    /// past `GC_ORPHAN_GRACE_SECS × 24` (a healthy sweep would never trip
+    /// that). Keeping the two grace values coupled at the constant, rather
+    /// than at two hand-tuned magic numbers, means tuning this one auto-
+    /// scales the stall threshold too.
+    pub const GC_ORPHAN_GRACE_SECS: i64 = 60 * 60; // 1 hour
 
     /// Store content with CDC deduplication, straight from a byte stream —
     /// the single write path for every upload surface (REST multipart,
@@ -1722,7 +2348,7 @@ impl DedupService {
             self.manifest_cache.invalidate(file_hash).await;
 
             // File content is gone — drop its blob-keyed thumbnails now.
-            self.fire_blob_hooks(file_hash);
+            self.reap_blob(file_hash).await;
 
             tracing::info!(
                 "MANIFEST DELETED: {} ({} chunks dereferenced; orphans reclaimed by GC)",
@@ -1801,7 +2427,7 @@ impl DedupService {
             }
 
             // Bug 3 fix: notify hooks — e.g. thumbnail cleanup keyed by hash
-            self.fire_blob_hooks(hash);
+            self.reap_blob(hash).await;
 
             tracing::info!("BLOB DELETED: {} (no more references)", &hash[..12]);
             Ok(true)
@@ -1838,66 +2464,48 @@ impl DedupService {
     pub async fn cleanup_if_orphaned(&self, hash: &str) {
         let short = &hash[..hash.len().min(12)];
 
-        // ── CDC manifest path (must run FIRST) ───────────────────
-        // For single-chunk CDC files file_hash == chunk_hash, so the PG
-        // trigger on storage.files already decremented storage.blobs.ref_count
-        // when this function is called.  try_dedup_hit increments
-        // chunk_manifests.ref_count but NOT storage.blobs.ref_count, so
-        // blobs.ref_count can reach 0 while the manifest still has ref_count > 1
-        // (other files sharing the same blob).  Checking the manifest first
-        // prevents premature blob + manifest deletion.
-        let manifest = sqlx::query_as::<_, (i32, Vec<String>)>(
-            "SELECT ref_count, chunk_hashes \
-               FROM storage.chunk_manifests WHERE file_hash = $1",
-        )
-        .bind(hash)
-        .fetch_optional(self.pool.as_ref())
-        .await
-        .unwrap_or(None);
-
-        if let Some((ref_count, chunk_hashes)) = manifest {
-            if ref_count <= 1 {
-                // Last reference — remove manifest and all its chunks.
-                if let Err(e) = self
-                    .remove_manifest_reference(hash, ref_count, &chunk_hashes)
-                    .await
-                {
-                    tracing::warn!("cleanup_if_orphaned: manifest cleanup failed for {short}: {e}");
-                }
-            } else {
-                // Other files still share this blob: just decrement the manifest
-                // counter and undo the PG trigger's premature chunk ref_count
-                // decrement (blobs.ref_count is chunk-level; the manifest is the
-                // authoritative file-level counter).
-                sqlx::query(
-                    "UPDATE storage.chunk_manifests \
-                        SET ref_count = ref_count - 1 WHERE file_hash = $1",
-                )
-                .bind(hash)
-                .execute(self.pool.as_ref())
-                .await
-                .ok();
-                // Undo the PG trigger's decrement of storage.blobs.ref_count.
-                // The trigger fired with blob_hash = file_hash, so only the row
-                // WHERE hash = file_hash is affected.  For single-chunk files
-                // file_hash == chunk_hash and that row exists; for multi-chunk
-                // files file_hash is not in storage.blobs, making this a no-op.
-                sqlx::query("UPDATE storage.blobs SET ref_count = ref_count + 1 WHERE hash = $1")
-                    .bind(hash)
-                    .execute(self.pool.as_ref())
-                    .await
-                    .ok();
-                tracing::debug!(
-                    "cleanup_if_orphaned: manifest {short} ref_count {ref_count}→{}",
-                    ref_count - 1
-                );
-            }
-            return;
-        }
-
-        // ── Legacy blob path (no manifest) ───────────────────────
+        // 2026-08-23 refactor: this function used to compensate for the
+        // OLD PG trigger `trg_files_decrement_blob_ref` unconditionally
+        // decrementing `storage.blobs.ref_count`, which was wrong for
+        // CDC files (their `blob_hash` names a `chunk_manifests.file_hash`,
+        // not a chunk-in-a-manifest). The compensation branches would:
+        //   * Decrement `chunk_manifests.ref_count` a SECOND time (the
+        //     trigger having wrongly touched blobs, not the manifest);
+        //   * Undo the trigger's blob decrement (rc > 1 branch);
+        //   * Call `remove_manifest_reference` (rc <= 1 branch), which
+        //     deletes manifest + dereferences chunks — again duplicating
+        //     work the trigger should own.
+        //
+        // Migration `20261017000000_file_delete_trigger_manifest_aware.sql`
+        // rewrote the trigger to be manifest-aware, so it now correctly
+        // decrements EITHER the manifest OR the blob depending on which
+        // one the hash names, walks chunks on last-ref manifest delete,
+        // and leaves the counters in a consistent state without any
+        // compensation call. Running the old compensation ON TOP of the
+        // new trigger causes double-decrement / double-delete and is
+        // exactly what broke `dedup_blob_cleanup.hurl` step 7
+        // (`ref_count == 1` observed 0 after purging one of two dedup
+        // uploads).
+        //
+        // What remains here: **physical cleanup only**. If the trigger
+        // brought a LEGACY whole-file blob to ref_count = 0 and no
+        // manifest still references it (either directly via file_hash or
+        // indirectly as a chunk in another manifest's chunk_hashes[]),
+        // reap the DB row and the backend file eagerly. For CDC chunks
+        // whose ref_count reached 0 via the trigger's last-ref manifest
+        // path, `dedup_gc` handles physical reap with a grace window
+        // against re-upload races.
+        //
+        // Callers can keep invoking `cleanup_if_orphaned` unconditionally
+        // — for CDC paths it's a cheap no-op (manifest still exists OR
+        // the hash never had a blob row), for legacy paths it reaps.
         let deleted_blob = sqlx::query_scalar::<_, String>(
-            "DELETE FROM storage.blobs WHERE hash = $1 AND ref_count <= 0 RETURNING hash",
+            "DELETE FROM storage.blobs \
+                WHERE hash = $1 \
+                  AND ref_count <= 0 \
+                  AND NOT EXISTS (SELECT 1 FROM storage.chunk_manifests \
+                                    WHERE $1 = ANY(chunk_hashes)) \
+              RETURNING hash",
         )
         .bind(hash)
         .fetch_optional(self.pool.as_ref())
@@ -1908,8 +2516,8 @@ impl DedupService {
             if let Err(e) = self.backend.delete_blob(hash).await {
                 tracing::warn!("cleanup_if_orphaned: disk delete failed for {short}: {e}");
             }
-            self.fire_blob_hooks(hash);
-            tracing::info!("cleanup_if_orphaned: removed orphaned blob {short}");
+            self.reap_blob(hash).await;
+            tracing::info!("cleanup_if_orphaned: removed orphaned legacy blob {short}");
         }
     }
 
@@ -2555,13 +3163,18 @@ impl DedupService {
         let mut total_bytes = 0u64;
 
         // ── Phase 1: GC orphaned manifests ───────────────────────
-        // A manifest is collectible when:
-        //   • ref_count has been decremented to 0 by cleanup_if_orphaned
-        //     on the single-file-delete service path, OR
-        //   • no `storage.files.blob_hash` references its file_hash
-        //     (covers bulk-delete paths: user cascade, empty_trash —
-        //     where the PG trigger only touches storage.blobs and the
-        //     per-file cleanup_if_orphaned call is skipped).
+        // A manifest is collectible when NO registered reference source
+        // references its file_hash. That single condition covers both
+        // delete paths: the single-file service path removes the
+        // storage.files row, and so do the bulk paths (user cascade,
+        // empty_trash) — whichever decrements ref_count along the way is
+        // irrelevant here.
+        //
+        // ref_count is deliberately NOT part of this. It used to be, as
+        // `ref_count <= 0 OR <unreferenced>`, which meant a counter that
+        // under-reported deleted live content without ever consulting the
+        // registry that knew better. See `manifest_reap_sql` for the full
+        // reasoning and for what moved to the refcount recompute instead.
         loop {
             // Keep the historically cheap DELETE-only shape for the dominant
             // no-work sweep. Embedding it in the delete/aggregate/update CTE
@@ -2570,23 +3183,14 @@ impl DedupService {
             // update. From two onward, aggregate in-process and issue one UPDATE:
             // the measured crossover is already positive at two, while 500 and
             // 1,000 manifests improve by 60.03x and 51.16x respectively.
-            let batch: Vec<(String, Vec<String>, i64)> = sqlx::query_as(
-                "DELETE FROM storage.chunk_manifests
-                  WHERE ctid = ANY(
-                      SELECT ctid FROM storage.chunk_manifests m
-                       WHERE m.ref_count <= 0
-                          OR NOT EXISTS (
-                              SELECT 1 FROM storage.files f
-                               WHERE f.blob_hash = m.file_hash
-                          )
-                       LIMIT $1
-                  )
-                  RETURNING file_hash, chunk_hashes, total_size",
-            )
-            .bind(BATCH_SIZE)
-            .fetch_all(self.maintenance_pool.as_ref())
-            .await
-            .map_err(|e| DomainError::internal_error("Dedup", format!("GC manifests: {e}")))?;
+            // Assembled once at construction (see `manifest_reap_sql`), not
+            // per sweep: no string work in the hot path, a stable statement for
+            // prepared-statement caching, and a byte-for-byte golden test.
+            let batch: Vec<(String, Vec<String>, i64)> = sqlx::query_as(&self.manifest_reap_sql)
+                .bind(BATCH_SIZE)
+                .fetch_all(self.maintenance_pool.as_ref())
+                .await
+                .map_err(|e| DomainError::internal_error("Dedup", format!("GC manifests: {e}")))?;
 
             if batch.is_empty() {
                 break;
@@ -2599,6 +3203,28 @@ impl DedupService {
             // and accounting remain below and run only after refcounts succeed.
             for (file_hash, _, _) in &batch {
                 self.manifest_cache.invalidate(file_hash).await;
+
+                // Drop everything derived FROM this Blob, exactly as
+                // `reap_blob` does for the single-blob path.
+                //
+                // Without this, bulk manifest reaping orphans the rows: the
+                // reap predicate protects a manifest that IS a derived
+                // artifact (`content_derived_blobs.blob_hash`), but
+                // deliberately not one that is the SOURCE of them — counting
+                // `source_hash` as a reference would pin every original for
+                // as long as a thumbnail existed. So the source is reaped
+                // correctly, and the purge has to follow it.
+                //
+                // It did not, and the leak is permanent rather than cosmetic:
+                // the orphaned row holds `chunk_manifests.ref_count` at 1 on
+                // the thumbnail's own blob, so GC is thereafter *correct* to
+                // refuse it and those bytes are never reclaimed. Every
+                // deleted image left three of them behind — one per size.
+                //
+                // Found by storage_cleanup_check.sh: three leftover blobs,
+                // all `derived=1`, all naming one `src` whose manifest, blob
+                // row and files were already gone.
+                self.purge_derived_blobs(file_hash).await;
             }
 
             if batch.len() == 1 {
@@ -2658,7 +3284,7 @@ impl DedupService {
                 // chunk-keyed hook never finds them. Symptom: orphan webp
                 // under `.thumbnails/{icon,preview,large}/<file_hash>.webp`
                 // after a user-cascade-delete of a video upload.
-                self.fire_blob_hooks(file_hash);
+                self.reap_blob(file_hash).await;
 
                 total_bytes += *size as u64;
                 tracing::debug!(
@@ -2679,41 +3305,29 @@ impl DedupService {
         //     NULL orphaned_at — a pre-migration row or a path that never
         //     stamped it; those are safe to take immediately), AND
         //   • no manifest still lists it as a chunk, AND
-        //   • no file still points at it directly (legacy whole-file blob).
+        //   • no file still points at it directly (legacy whole-file blob),
+        //     AND
+        //   • no registered reference source claims it at the chunk level.
         //
-        // The two NOT EXISTS guards mirror Phase 1's file cross-check: a stale
-        // ref_count = 0 on still-referenced content can then only delay
-        // collection, never delete live bytes. The grace window keeps a
+        // The NOT EXISTS guards mean a stale ref_count = 0 on still-referenced
+        // content can only delay collection, never delete live bytes — unlike
+        // Phase 1 before `manifest_reap_sql` dropped its ref_count arm, this
+        // phase always had that property. The registry conjunct is additive
+        // (see `blob_reap_sql`): it cannot reap anything the hardcoded guards
+        // would have spared, it just stops a future chunk-level source from
+        // being missed. The grace window keeps a
         // concurrent uploader that is about to pin a just-orphaned chunk from
         // racing the row-delete → file-unlink gap (see GC_ORPHAN_GRACE_SECS).
         // The ctid snapshot already protects against a pin that commits DURING
         // the DELETE (the pin rewrites the row's ctid, so it drops out of the
         // set); grace covers the remaining post-commit unlink window.
         loop {
-            let batch: Vec<(String, i64)> = sqlx::query_as(
-                "DELETE FROM storage.blobs
-                  WHERE ctid = ANY(
-                      SELECT b.ctid FROM storage.blobs b
-                       WHERE b.ref_count <= 0
-                         AND (b.orphaned_at IS NULL
-                              OR b.orphaned_at < now() - ($2::int * interval '1 second'))
-                         AND NOT EXISTS (
-                             SELECT 1 FROM storage.chunk_manifests m
-                              WHERE m.chunk_hashes @> ARRAY[b.hash::text]
-                         )
-                         AND NOT EXISTS (
-                             SELECT 1 FROM storage.files f
-                              WHERE f.blob_hash = b.hash
-                         )
-                       LIMIT $1
-                  )
-                  RETURNING hash, size",
-            )
-            .bind(BATCH_SIZE)
-            .bind(grace_secs as i32)
-            .fetch_all(self.maintenance_pool.as_ref())
-            .await
-            .map_err(|e| DomainError::internal_error("Dedup", format!("GC blobs: {e}")))?;
+            let batch: Vec<(String, i64)> = sqlx::query_as(&self.blob_reap_sql)
+                .bind(BATCH_SIZE)
+                .bind(grace_secs as i32)
+                .fetch_all(self.maintenance_pool.as_ref())
+                .await
+                .map_err(|e| DomainError::internal_error("Dedup", format!("GC blobs: {e}")))?;
 
             if batch.is_empty() {
                 break;
@@ -2741,7 +3355,7 @@ impl DedupService {
                 .await;
 
             for (hash, size) in &deleted {
-                self.fire_blob_hooks(hash);
+                self.reap_blob(hash).await;
                 total_bytes += *size as u64;
             }
             total_deleted += n as u64;
@@ -3126,6 +3740,15 @@ impl DedupPort for DedupService {
         self.blob_exists(hash).await
     }
 
+    async fn find_derived_blob(
+        &self,
+        source_hash: &str,
+        kind: &str,
+        variant: &str,
+    ) -> Option<crate::application::ports::dedup_ports::DerivedBlobRef> {
+        self.find_derived_blob(source_hash, kind, variant).await
+    }
+
     async fn get_blob_metadata(&self, hash: &str) -> Option<BlobMetadataDto> {
         self.get_blob_metadata(hash).await
     }
@@ -3220,6 +3843,20 @@ impl crate::infrastructure::scheduler::JobHandler for DedupService {
         DEDUP_GC_JOB_NAME
     }
 
+    fn description(&self) -> &'static str {
+        "Reclaims blobs and chunk manifests that no file, thumbnail or \
+         preview references any more, once they are past the orphan grace \
+         window. Trash cleanup already runs this as its tail step; \
+         triggering it here is for reclaiming immediately rather than at \
+         the next tick. Add ?force=true to skip the grace window."
+    }
+
+    /// Deletes bytes. `force` is its accelerator, not a repair flag —
+    /// there is nothing this job reports without also acting on it.
+    fn mutates(&self) -> crate::infrastructure::scheduler::Mutates {
+        crate::infrastructure::scheduler::Mutates::Always
+    }
+
     /// Runs one `garbage_collect` sweep — the same reclamation that
     /// `TrashCleanupService` invokes inline as its tail step, exposed
     /// through the scheduler so operators can trigger it uniformly via
@@ -3267,6 +3904,144 @@ impl crate::infrastructure::scheduler::JobHandler for DedupService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Golden test for the statement `garbage_collect` runs against production
+    /// data. It is assembled from the registered reference sources rather than
+    /// written as a literal, so this pins the whole thing byte-for-byte — the
+    /// point being that a reviewer reads the SQL *here* instead of mentally
+    /// evaluating the registry.
+    ///
+    /// If this fails after adding a source, read the diff carefully: the new
+    /// branch must appear inside the `NOT (...)` group, ORed with the others.
+    /// A branch landing outside that group inverts the predicate for every
+    /// other source and reaps live manifests.
+    ///
+    /// **`ref_count` must not reappear in this statement.** It used to be
+    /// there as `ref_count <= 0 OR NOT (…)`, which let a counter that
+    /// under-reported delete content the registry still knew was referenced.
+    /// If a future change reintroduces it, this test fails, and that failure
+    /// is the point — see `manifest_reap_sql` and
+    /// `gc_reference_authority_integration_tests`.
+    #[tokio::test]
+    async fn manifest_reap_statement_is_stable() {
+        let sql = DedupService::new_stub().manifest_reap_sql;
+        let expected = r#"DELETE FROM storage.chunk_manifests
+ WHERE ctid = ANY(
+     SELECT ctid
+       FROM storage.chunk_manifests m
+      WHERE NOT (EXISTS (SELECT 1 FROM storage.files cnt_f WHERE cnt_f.blob_hash = m.file_hash)
+        OR EXISTS (SELECT 1 FROM storage.content_derived_blobs cnt_d WHERE cnt_d.blob_hash = m.file_hash)
+        OR EXISTS (SELECT 1 FROM storage.file_attached_blobs cnt_a WHERE cnt_a.blob_hash = m.file_hash))
+      LIMIT $1
+ )
+ RETURNING file_hash, chunk_hashes, total_size"#;
+        assert_eq!(sql, expected, "reap statement changed:\n{sql}");
+        assert!(
+            !sql.contains("ref_count"),
+            "ref_count is back in the reap predicate — the counter must not be \
+             able to delete data on its own"
+        );
+    }
+
+    /// The reap predicate must never match a manifest that some source still
+    /// references. With an empty registry `NOT (...)` would have no operands,
+    /// so the builder refuses rather than emitting a statement that deletes
+    /// every manifest in the database.
+    #[test]
+    #[should_panic(expected = "no manifest-level blob reference source")]
+    fn empty_registry_refuses_to_build_reap_statement() {
+        let _ = manifest_reap_sql(&BlobReferenceRegistry::new());
+    }
+
+    #[test]
+    #[should_panic(expected = "no chunk-level blob reference source")]
+    fn empty_registry_refuses_to_build_blob_reap_statement() {
+        let _ = blob_reap_sql(&BlobReferenceRegistry::new());
+    }
+
+    /// Golden test for GC phase 2, same purpose as the manifest one.
+    ///
+    /// Note what this pins that the manifest statement does not: the two
+    /// hardcoded `NOT EXISTS` guards **and** the registry predicate, ANDed.
+    /// The registry fragment is not a replacement here — see `blob_reap_sql`
+    /// for why substituting it would reap a legacy blob row mid-rechunk.
+    #[tokio::test]
+    async fn blob_reap_statement_is_stable() {
+        let sql = DedupService::new_stub().blob_reap_sql;
+        let expected = r#"DELETE FROM storage.blobs
+                  WHERE ctid = ANY(
+                      SELECT b.ctid FROM storage.blobs b
+                       WHERE b.ref_count <= 0
+                         AND (b.orphaned_at IS NULL
+                              OR b.orphaned_at < now() - ($2::int * interval '1 second'))
+                         AND NOT EXISTS (
+                             SELECT 1 FROM storage.chunk_manifests m
+                              WHERE m.chunk_hashes @> ARRAY[b.hash::text]
+                         )
+                         AND NOT EXISTS (
+                             SELECT 1 FROM storage.files f
+                              WHERE f.blob_hash = b.hash
+                         )
+                         AND NOT (EXISTS (SELECT 1 FROM storage.files cnt_f WHERE cnt_f.blob_hash = b.hash AND NOT EXISTS (SELECT 1 FROM storage.chunk_manifests cnt_m WHERE cnt_m.file_hash = cnt_f.blob_hash))
+        OR EXISTS (SELECT 1 FROM storage.chunk_manifests cnt_m WHERE b.hash = ANY(cnt_m.chunk_hashes)))
+                       LIMIT $1
+                  )
+                  RETURNING hash, size"#;
+        assert_eq!(sql, expected, "blob reap statement changed:\n{sql}");
+    }
+
+    /// The reason phase 2 became registry-driven at all.
+    ///
+    /// Today no source contributes at [`RefLevel::Chunk`] beyond files and
+    /// manifests, so the registry conjunct is operationally redundant and a
+    /// golden test alone would not notice if it stopped being wired up. This
+    /// registers a synthetic chunk-level source and asserts its fragment
+    /// reaches the statement — which is what stops a future
+    /// `content_derived_blobs`-style table from being silently missed the way
+    /// Phase 1's hardcoded cross-check missed them.
+    #[tokio::test]
+    async fn a_new_chunk_level_source_reaches_the_blob_reap_statement() {
+        use crate::application::ports::blob_reference_ports::BlobReferenceSource;
+
+        struct FakeChunkSource;
+
+        #[async_trait::async_trait]
+        impl BlobReferenceSource for FakeChunkSource {
+            fn source_name(&self) -> &'static str {
+                "fake_chunk_source"
+            }
+            fn ref_count_sql(&self, level: RefLevel, outer: &str) -> Option<String> {
+                self.ref_exists_sql(level, outer)
+            }
+            fn ref_exists_sql(&self, level: RefLevel, outer: &str) -> Option<String> {
+                match level {
+                    RefLevel::Chunk => Some(format!(
+                        "EXISTS (SELECT 1 FROM storage.zzz_fake WHERE blob_hash = {outer})"
+                    )),
+                    RefLevel::Manifest => None,
+                }
+            }
+            async fn count_references(&self, _hash: &str) -> Result<u64, DomainError> {
+                Ok(0)
+            }
+            async fn list_referenced_blobs(
+                &self,
+                _cursor: Option<Vec<u8>>,
+                _limit: usize,
+            ) -> Result<(Vec<String>, Option<Vec<u8>>), DomainError> {
+                Ok((Vec::new(), None))
+            }
+        }
+
+        let mut registry = BlobReferenceRegistry::new();
+        registry.register(Arc::new(FakeChunkSource));
+        let sql = blob_reap_sql(&registry);
+
+        assert!(
+            sql.contains("storage.zzz_fake"),
+            "a chunk-level source must reach the phase-2 reap guard:\n{sql}"
+        );
+    }
     use std::collections::HashSet;
     use tempfile::NamedTempFile;
 
@@ -4100,6 +4875,30 @@ mod rechunk_integration_tests {
     }
 }
 
+/// Serializes every integration test that runs a **global** GC sweep.
+///
+/// GC sweeps the shared integration database, while each test intentionally
+/// owns a different `TempDir`-backed blob store. Two sweep tests running
+/// concurrently can therefore delete test A's row through test B's backend,
+/// leaving A's physical blob behind and failing an assertion that has nothing
+/// to do with the code under test. Production has one shared backend for the
+/// swept database; serializing only these tests models that invariant.
+///
+/// **Any new test that calls `garbage_collect*` must take this guard**,
+/// wherever it lives in this file. It sat inside
+/// `delta_upload_integration_tests` until `gc_reference_authority_integration_tests`
+/// was added without it and broke
+/// `garbage_collect_honours_grace_window_and_references` — a failure that
+/// appeared only in the full suite and pointed at the wrong test. Hoisted to
+/// module scope so the next suite finds it.
+///
+/// `allow(dead_code)`: gated on a cfg flag rather than on `test`, so a plain
+/// build with `--cfg integration_tests` compiles it while `#[tokio::test]`
+/// drops every caller.
+#[cfg(integration_tests)]
+#[allow(dead_code)]
+static GC_TEST_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Integration tests for the delta-upload primitives — the entitlement and
 // verification rules the chunk-negotiation protocol stands on. Same gating
@@ -4115,14 +4914,6 @@ mod delta_upload_integration_tests {
     use sqlx::postgres::PgPoolOptions;
     use tempfile::TempDir;
     use uuid::Uuid;
-
-    // GC sweeps the shared integration database globally, while every test
-    // intentionally owns a different TempDir-backed blob store. Running two
-    // sweep tests concurrently can therefore delete test A's row through test
-    // B's backend, leaving A's physical blob behind. Production has one shared
-    // backend for the swept database; serialize only these global-sweep tests
-    // so the integration topology models that invariant.
-    static GC_TEST_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     async fn test_pool() -> Arc<PgPool> {
         let pool = PgPoolOptions::new()
@@ -4738,5 +5529,328 @@ mod delta_upload_integration_tests {
         );
 
         cleanup(&pool, &file_hash, file_id, &[]).await;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Who decides a manifest is dead: the counter, or the reference registry?
+//
+// **The registry, and only the registry.** `manifest_reap_sql` asks
+// `WHERE <no registered source references it>` and does not mention
+// `ref_count` at all.
+//
+// It used to read `ref_count <= 0 OR <unreferenced>`. Each arm covered a
+// real deletion path — the single-file path decrements the counter via
+// `cleanup_if_orphaned`, bulk paths (user cascade, empty_trash) only fire the
+// `storage.blobs` trigger — so the disjunction looked like belt and braces.
+// It was the opposite: with OR, either signal alone deletes, so a counter
+// that under-reported made live content collectible and the registry that
+// knew better was never consulted.
+//
+// Not hypothetical. `storage.copy_folder_tree` used to take references with
+// `UPDATE storage.blobs … WHERE hash = blob_hash`, which matches nothing for
+// a CDC file — whose `blob_hash` names a manifest, not a chunk — so it took
+// no reference at all. Copy a folder, delete the original, and the copy's
+// bytes were reaped. Both copy paths now go through
+// `storage.add_blob_references`, but that fix relied on getting the counter
+// right, and there are two implementations of the reference contract
+// (`storage.add_blob_references` in SQL, `DedupService::add_reference` in
+// Rust) that must agree forever. Removing the counter's authority is what
+// makes a future disagreement a leak rather than data loss.
+//
+// The two tests pin both directions, and they are only meaningful together:
+//
+//   * `gc_spares_a_manifest_with_a_live_referrer` — a wrong-LOW counter must
+//     not delete. This is the fix.
+//   * `gc_reaps_an_unreferenced_manifest_despite_a_high_refcount` — a
+//     wrong-HIGH counter must not veto. This is the coverage the removed arm
+//     used to provide, and dropping it must not have traded one failure for
+//     the other.
+//
+// See `docs/plan/derived-blobs.md`. Gated on `--cfg integration_tests` like
+// the other PG suites.
+// ─────────────────────────────────────────────────────────────────────────────
+// `allow(dead_code)`: the module is gated on a cfg flag, not on `test`, so a
+// plain `cargo build --cfg integration_tests` compiles the helpers while
+// `#[tokio::test]` drops their only callers. Same reason the rechunk suite
+// above carries it.
+#[cfg(integration_tests)]
+#[allow(dead_code)]
+mod gc_reference_authority_integration_tests {
+    use super::*;
+    use crate::infrastructure::services::local_blob_backend::LocalBlobBackend;
+    use crate::integration_test_support::{ensure_clean_test_db, test_db_url};
+    use sqlx::Row;
+    use sqlx::postgres::PgPoolOptions;
+    use tempfile::TempDir;
+    use uuid::Uuid;
+
+    async fn test_pool() -> Arc<PgPool> {
+        let pool = PgPoolOptions::new()
+            .max_connections(4)
+            .connect(&test_db_url())
+            .await
+            .expect("connect to test DB — run tests/common/spawn-db.sh first");
+        ensure_clean_test_db(&pool).await;
+        Arc::new(pool)
+    }
+
+    async fn seed_user(pool: &PgPool) -> Uuid {
+        sqlx::query("SELECT d.id AS drive_id FROM storage.drives d WHERE d.default_for_user IS NOT NULL LIMIT 1")
+            .fetch_one(pool)
+            .await
+            .map(|r| r.get::<Uuid, _>("drive_id"))
+            .expect("storage.drives must be seeded (init-test-schema.sh)")
+    }
+
+    async fn local_svc(pool: &Arc<PgPool>, dir: &TempDir) -> DedupService {
+        let backend = Arc::new(LocalBlobBackend::new(&dir.path().join("blobs")));
+        backend.initialize().await.expect("init backend");
+        DedupService::new(backend, pool.clone(), pool.clone())
+    }
+
+    /// Unique, poorly-compressible content of `len` bytes. The random tail
+    /// keeps every invocation's hash distinct, so rows left behind by a
+    /// panicking run can never collide with the current one.
+    fn content(len: usize) -> Vec<u8> {
+        let mut data: Vec<u8> = (0..len)
+            .map(|i| ((i % 251) as u8).wrapping_add((i / 7919) as u8))
+            .collect();
+        data.extend_from_slice(Uuid::new_v4().as_bytes());
+        data
+    }
+
+    /// A stored CDC blob plus a live `storage.files` row referencing it.
+    ///
+    /// The file row is inserted BEFORE the store, deliberately: phase 1 of
+    /// `garbage_collect` reaps manifests no source references, so with the
+    /// opposite order a concurrent GC from another test could reap ours in
+    /// the window between the two statements. BLAKE3 is deterministic, so
+    /// the hash is known in advance and the order costs nothing.
+    ///
+    /// Returns `(file_hash, chunk_hashes, file_id)`.
+    async fn seed_referenced_cdc_blob(
+        svc: &DedupService,
+        pool: &PgPool,
+        drive_id: Uuid,
+        data: &[u8],
+        label: &str,
+    ) -> (String, Vec<String>, Uuid) {
+        let file_hash = blake3::hash(data).to_hex().to_string();
+
+        let file_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO storage.files (name, drive_id, blob_hash, size)
+             VALUES ($1, $2, $3, $4) RETURNING id",
+        )
+        .bind(format!(
+            "rust-test-gcauth-{label}-{}",
+            &Uuid::new_v4().to_string()[..8]
+        ))
+        .bind(drive_id)
+        .bind(&file_hash)
+        .bind(data.len() as i64)
+        .fetch_one(pool)
+        .await
+        .expect("file row");
+
+        let source = stream::iter(vec![Ok::<_, std::io::Error>(Bytes::copy_from_slice(data))]);
+        let stored = svc
+            .store_from_stream(source, Some("application/octet-stream".into()))
+            .await
+            .expect("store");
+        assert_eq!(
+            stored.hash(),
+            file_hash,
+            "pre-computed BLAKE3 must match CDC-store output"
+        );
+
+        let chunks: Vec<String> = sqlx::query_scalar(
+            "SELECT UNNEST(chunk_hashes) FROM storage.chunk_manifests WHERE file_hash = $1",
+        )
+        .bind(&file_hash)
+        .fetch_all(pool)
+        .await
+        .expect("chunks");
+
+        // Fixture premise. A single-chunk blob has `file_hash == chunk_hash`
+        // (both BLAKE3 over the same bytes), which is the aliasing case the
+        // reference contract carries a `NOT EXISTS` guard for. This suite is
+        // about the multi-chunk shape — the one the copy bug broke, where
+        // `blob_hash` names a manifest that `storage.blobs` has no row for —
+        // so assert we actually got it rather than silently testing the easy
+        // case if CDC parameters change.
+        assert!(
+            chunks.len() > 1,
+            "fixture must be multi-chunk to exercise the manifest level, got {} \
+             chunk(s) for {} bytes (CDC_AVG_CHUNK = {CDC_AVG_CHUNK})",
+            chunks.len(),
+            data.len()
+        );
+
+        (file_hash, chunks, file_id)
+    }
+
+    async fn manifest_exists(pool: &PgPool, file_hash: &str) -> bool {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM storage.chunk_manifests WHERE file_hash = $1",
+        )
+        .bind(file_hash)
+        .fetch_one(pool)
+        .await
+        .expect("count manifests")
+            > 0
+    }
+
+    /// Simulate a reference that was never taken: the file row is live, the
+    /// counter says nothing needs the content. Exactly the state the
+    /// `copy_folder_tree` bug produced, and the state any future divergence
+    /// between the SQL and Rust reference contracts would produce.
+    async fn force_zero_manifest_refcount(pool: &PgPool, file_hash: &str) {
+        let updated =
+            sqlx::query("UPDATE storage.chunk_manifests SET ref_count = 0 WHERE file_hash = $1")
+                .bind(file_hash)
+                .execute(pool)
+                .await
+                .expect("zero the manifest refcount")
+                .rows_affected();
+        assert_eq!(updated, 1, "expected exactly one manifest for {file_hash}");
+    }
+
+    async fn cleanup(pool: &PgPool, file_hash: &str, file_id: Uuid, chunks: &[String]) {
+        let _ = sqlx::query("DELETE FROM storage.files WHERE id = $1")
+            .bind(file_id)
+            .execute(pool)
+            .await;
+        let _ = sqlx::query(
+            "DELETE FROM storage.files
+              WHERE blob_hash = $1 AND name LIKE 'rust-test-gcauth-%'",
+        )
+        .bind(file_hash)
+        .execute(pool)
+        .await;
+        let _ = sqlx::query("DELETE FROM storage.chunk_manifests WHERE file_hash = $1")
+            .bind(file_hash)
+            .execute(pool)
+            .await;
+        let mut to_drop = chunks.to_vec();
+        to_drop.push(file_hash.to_string());
+        let _ = sqlx::query("DELETE FROM storage.blobs WHERE hash = ANY($1)")
+            .bind(&to_drop)
+            .execute(pool)
+            .await;
+    }
+
+    /// The coverage that dropping the `ref_count` arm had to preserve.
+    ///
+    /// Bulk-delete paths (user cascade, `empty_trash`) remove
+    /// `storage.files` rows via a trigger that only touches `storage.blobs`,
+    /// so the manifest's counter is left **stuck high** with no referrers.
+    /// Under the old `OR` predicate the registry arm collected those. Now
+    /// that the registry is the sole authority it still does — a high counter
+    /// no longer keeps dead content alive, just as a zero one no longer kills
+    /// live content.
+    ///
+    /// This is the direction the counter can still be wrong in, and it is the
+    /// benign one: a leak, detected by the refcount recompute, not data loss.
+    #[tokio::test]
+    async fn gc_reaps_an_unreferenced_manifest_despite_a_high_refcount() {
+        let _gc_test_guard = GC_TEST_SERIALIZER.lock().await;
+        let pool = test_pool().await;
+        let drive_id = seed_user(&pool).await;
+        let dir = TempDir::new().expect("tempdir");
+        let svc = local_svc(&pool, &dir).await;
+
+        let data = content(2 * 1024 * 1024);
+        let (file_hash, chunks, file_id) =
+            seed_referenced_cdc_blob(&svc, &pool, drive_id, &data, "stuckhigh").await;
+
+        // Simulate the bulk path: referrer gone, counter untouched.
+        sqlx::query("DELETE FROM storage.files WHERE id = $1")
+            .bind(file_id)
+            .execute(pool.as_ref())
+            .await
+            .expect("drop the referrer");
+        let bumped =
+            sqlx::query("UPDATE storage.chunk_manifests SET ref_count = 7 WHERE file_hash = $1")
+                .bind(&file_hash)
+                .execute(pool.as_ref())
+                .await
+                .expect("inflate the refcount")
+                .rows_affected();
+        assert_eq!(bumped, 1, "expected exactly one manifest for {file_hash}");
+
+        // Plain GC, NOT `garbage_collect_force`. Phase 1 has no time filter —
+        // the manifest predicate is purely "is it referenced" — so the grace
+        // window is irrelevant to what these tests assert. Forcing it would
+        // bypass the CHUNK-level grace for the whole shared test database and
+        // reap sibling tests' just-uploaded orphans; that is exactly how this
+        // suite first broke `claim_and_pin_respect_ownership_and_orphans`.
+        svc.garbage_collect().await.expect("gc");
+
+        let survived = manifest_exists(&pool, &file_hash).await;
+        cleanup(&pool, &file_hash, file_id, &chunks).await;
+
+        assert!(
+            !survived,
+            "GC left a manifest nothing references, because its ref_count was \
+             above zero. Removing the `ref_count <= 0` arm must not have made \
+             the counter able to VETO collection either — the registry is the \
+             authority in both directions."
+        );
+    }
+
+    /// **The contract.** A manifest with a live `storage.files` referrer
+    /// survives GC no matter what its counter says.
+    ///
+    /// This failed until `manifest_reap_sql` dropped its `ref_count <= 0`
+    /// arm. The counter was a second, independent licence to delete, so a
+    /// reference that was never taken — the `copy_folder_tree` bug — destroyed
+    /// the copy's content rather than merely mis-reporting a number.
+    #[tokio::test]
+    async fn gc_spares_a_manifest_with_a_live_referrer() {
+        let _gc_test_guard = GC_TEST_SERIALIZER.lock().await;
+        let pool = test_pool().await;
+        let drive_id = seed_user(&pool).await;
+        let dir = TempDir::new().expect("tempdir");
+        let svc = local_svc(&pool, &dir).await;
+
+        let data = content(2 * 1024 * 1024);
+        let (file_hash, chunks, file_id) =
+            seed_referenced_cdc_blob(&svc, &pool, drive_id, &data, "spare").await;
+
+        force_zero_manifest_refcount(&pool, &file_hash).await;
+
+        // The file row is still there — this is the whole premise, so assert
+        // it rather than trusting that nothing else reaped it concurrently.
+        let referrers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM storage.files WHERE id = $1")
+            .bind(file_id)
+            .fetch_one(pool.as_ref())
+            .await
+            .expect("count referrers");
+        assert_eq!(
+            referrers, 1,
+            "fixture file row must still reference the blob"
+        );
+
+        // Plain GC — see the sibling test for why `force` is wrong here.
+        svc.garbage_collect().await.expect("gc");
+
+        let survived = manifest_exists(&pool, &file_hash).await;
+        let readable = svc.read_blob_stream(&file_hash).await.is_ok();
+        cleanup(&pool, &file_hash, file_id, &chunks).await;
+
+        assert!(
+            survived,
+            "GC reaped a manifest that storage.files still references. \
+             ref_count was 0 and something let that alone decide — check \
+             whether `manifest_reap_sql` has regained a `ref_count` clause. \
+             FilesReferenceSource is registered and knows the row is live; it \
+             must be the only authority on collectibility."
+        );
+        assert!(
+            readable,
+            "manifest survived but its content is unreadable — chunk-level \
+             reclamation followed the same zero counter"
+        );
     }
 }

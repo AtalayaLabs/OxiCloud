@@ -13,7 +13,8 @@ use futures::{StreamExt, TryStreamExt};
 use tokio::fs;
 
 use crate::application::ports::blob_storage_ports::{
-    BlobStorageBackend, BlobStream, StorageHealthStatus,
+    BackendBlobEntry, BackendUnknownEntry, BlobListPage, BlobStorageBackend, BlobStream,
+    StorageHealthStatus,
 };
 use crate::common::config::AzureStorageConfig;
 use crate::domain::errors::{DomainError, ErrorKind};
@@ -53,6 +54,29 @@ impl AzureBlobBackend {
             container_client,
             container_name: config.container.clone(),
         }
+    }
+
+    /// Inverse of [`Self::blob_name`] — the hash a listing entry names,
+    /// or `None` when the entry is not one of ours.
+    ///
+    /// Mirrors `S3BlobBackend::hash_from_object_key`, including the check
+    /// that the shard equals the hash's own first two characters: without
+    /// it, `blob_name(hash)` would not reproduce the name we just parsed,
+    /// and a mis-sharded object would be reported as a live blob that no
+    /// read path can find.
+    fn hash_from_blob_name(name: &str) -> Option<String> {
+        let (prefix, rest) = name.split_once('/')?;
+        if prefix.len() != 2 || !prefix.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        let stem = rest.strip_suffix(".blob")?;
+        if stem.len() != 64 || !stem.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        if !stem.starts_with(prefix) {
+            return None;
+        }
+        Some(stem.to_string())
     }
 
     /// Compute the blob name for a given hash.
@@ -243,6 +267,37 @@ impl BlobStorageBackend for AzureBlobBackend {
         })
     }
 
+    /// # Known incompatibility: sub-4 MiB ranges break on Azurite
+    ///
+    /// `azure_core` 0.21's `Range::as_headers`
+    /// (`src/request_options/range.rs`) attaches
+    /// `x-ms-range-get-content-crc64: true` to **any range shorter than
+    /// 4 MiB**, unconditionally and with no opt-out. Real Azure honours
+    /// it; Azurite answers 500. `azure_core` then classifies 500 as
+    /// retryable and loops on a deterministic error, forever.
+    ///
+    /// The reachable path is `backend_migration` →
+    /// `EncryptedBlobBackend::head_check` →
+    /// `get_blob_range_stream(hash, 0, HEADER_SIZE)`. `HEADER_SIZE` is a
+    /// few dozen bytes, and it runs against the TARGET before each write,
+    /// so a local→Azurite migration hangs on its first blob while holding
+    /// `migration_readonly` — writes refused application-wide.
+    ///
+    /// **Deliberately not worked around here.** The available workaround
+    /// is to issue an unranged `get()` for small requests (its 16 MiB
+    /// `initial_range` clears the threshold, so the header is never sent)
+    /// and truncate client-side. That is correct against real Azure but
+    /// pays for an emulator with production cost: a ~40-byte format probe
+    /// becomes a whole-blob transfer, and it puts new offset arithmetic
+    /// on the read path, where a mistake serves wrong bytes silently
+    /// rather than failing.
+    ///
+    /// The real fix is the official `azure_storage_blob` 1.x, where
+    /// `range_get_content_crc64` is an explicit field on
+    /// `BlobClientDownloadOptions` — leave it unset and the request is
+    /// never made. Until then, the Azurite suite exercises enumeration
+    /// and round-trips but not migration; see
+    /// `tests/api/backend_consistency_azure.hurl`.
     fn get_blob_range_stream(
         &self,
         hash: &str,
@@ -394,6 +449,197 @@ impl BlobStorageBackend for AzureBlobBackend {
         })
     }
 
+    /// Enumerate blob hashes in lexicographic order, so
+    /// `backend_consistency` can merge-join against `storage.blobs`
+    /// instead of degrading to a per-row probe that structurally cannot
+    /// see orphans.
+    ///
+    /// ## Why this is a shard walk and not one flat listing
+    ///
+    /// **The cursor IS a blob hash**, not a provider token. The caller
+    /// forces that: it advances ONE cursor across both sides of the join,
+    /// feeding the same value here and to `WHERE hash > $1` in SQL. S3
+    /// satisfies it with `start_after(object_key(cursor))`.
+    ///
+    /// Azure has no `StartAfter`. REST API 2023-05-03 added `startFrom`,
+    /// which would be the direct equivalent — but this SDK
+    /// (`azure_storage_blobs` 0.21, archived) never sends it: `ListBlobs`
+    /// exposes only `prefix`, `delimiter`, `max_results` and `marker`,
+    /// and `marker` is an opaque continuation token that cannot be
+    /// derived from a hash.
+    ///
+    /// So resume rides on `prefix` instead. Names are
+    /// `{hash[0..2]}/{hash}.blob`, which partitions the container into
+    /// 256 shards that are themselves in hash order. Walking
+    /// `00/` … `ff/` therefore yields exactly the global hash order, and
+    /// a cursor names the shard to restart in. Re-listing on resume is
+    /// bounded by shard width — 1/256th of the container — rather than
+    /// by the whole container, which is what a client-side skip over a
+    /// flat listing would cost on every single page.
+    ///
+    /// `marker` is used only INSIDE one call, to page within a shard, and
+    /// never escapes as the cursor — the same treatment the S3 impl gives
+    /// its continuation token.
+    ///
+    /// ## What this does NOT see, unlike S3
+    ///
+    /// S3 lists the bucket with no prefix, so any foreign object lands in
+    /// `unknowns`. Constraining to `{2-hex}/` means foreign names outside
+    /// that shape are invisible here.
+    ///
+    /// That asymmetry is deliberate and safe in the direction that
+    /// matters: an orphan is a blob **we** wrote and later stopped
+    /// referencing, so it always has the canonical name and is always
+    /// enumerated. Only genuinely foreign files — another workload
+    /// sharing the container — can be missed, and they are informational
+    /// notices, never findings. Trading them for O(N) enumeration instead
+    /// of O(N²/limit) is worth it.
+    fn list_blob_hashes(
+        &self,
+        cursor: Option<String>,
+        limit: usize,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<BlobListPage, DomainError>> + Send + '_>>
+    {
+        Box::pin(async move {
+            // A run of foreign entries can't produce a resume cursor, and
+            // buffering the container to find one blob is worse than
+            // failing. Mirrors the S3 impl's bound, and like it is on
+            // entries accumulated rather than requests made: request
+            // count scales with the caller's `limit`, so a request cap
+            // would fire on a healthy container merely because the caller
+            // paged finely.
+            const MAX_UNKNOWNS: usize = 10_000;
+
+            // A shard is `{2-hex}/`, so the space is 0x00..=0xff.
+            const LAST_SHARD: u16 = 0xff;
+
+            let mut blobs: Vec<BackendBlobEntry> = Vec::new();
+            let mut unknowns: Vec<BackendUnknownEntry> = Vec::new();
+
+            // Resume in the cursor's own shard — its remaining entries
+            // still sort after it, and the client-side skip below drops
+            // the ones that don't. A malformed cursor is a bug in the
+            // caller's checkpoint, and silently restarting from `00`
+            // would re-report every blob as new, so refuse it.
+            let mut shard: u16 = match cursor.as_deref() {
+                Some(c) => u16::from(u8::from_str_radix(c.get(0..2).unwrap_or(""), 16).map_err(
+                    |_| {
+                        DomainError::internal_error(
+                            "Blob",
+                            format!(
+                                "Azure enumeration cursor '{c}' is not a blob hash — it must \
+                                 start with the two hex characters naming its shard"
+                            ),
+                        )
+                    },
+                )?),
+                None => 0,
+            };
+
+            // Azure caps a page at 5000; asking for the caller's `limit`
+            // keeps a small page cheap. `MaxResults` rejects zero, and a
+            // caller asking for nothing still needs a well-formed
+            // request — and, more importantly, must not be answered with
+            // an empty page and a `None` cursor, which would read as
+            // "container fully enumerated, nothing here".
+            let want = limit.max(1);
+            let page_size = want.min(5000) as u32;
+
+            'shards: while shard <= LAST_SHARD {
+                let prefix = format!("{shard:02x}/");
+                // `Pageable` follows `next_marker` itself, so one stream
+                // covers the whole shard however many round-trips it takes.
+                let mut pages = self
+                    .container_client
+                    .list_blobs()
+                    .prefix(prefix)
+                    .max_results(std::num::NonZeroU32::new(page_size).expect("clamped above 0"))
+                    .into_stream();
+
+                while let Some(page) = pages.next().await {
+                    let page = page.map_err(|e| {
+                        DomainError::internal_error(
+                            "Blob",
+                            format!(
+                                "Azure ListBlobs failed on shard {shard:02x} of container '{}': {e}",
+                                self.container_name
+                            ),
+                        )
+                    })?;
+
+                    for blob in page.blobs.blobs() {
+                        let name = blob.name.clone();
+                        // `OffsetDateTime` → chrono, for the caller's
+                        // grace window. A value outside chrono's range
+                        // degrades to `None`, which the port documents as
+                        // "treat as old enough" — the conservative side,
+                        // since it only ever suppresses a finding on a
+                        // freshly-written blob.
+                        let mtime = chrono::DateTime::<chrono::Utc>::from_timestamp(
+                            blob.properties.last_modified.unix_timestamp(),
+                            blob.properties.last_modified.nanosecond(),
+                        );
+
+                        match Self::hash_from_blob_name(&name) {
+                            Some(hash) => {
+                                // `prefix` is inclusive of the cursor's own
+                                // entry and of everything before it in the
+                                // shard. Without this skip the caller sees
+                                // a hash it already consumed and the
+                                // merge-join never advances past it.
+                                if cursor.as_deref().is_some_and(|c| hash.as_str() <= c) {
+                                    continue;
+                                }
+                                blobs.push(BackendBlobEntry { hash, mtime });
+                            }
+                            // Not ours — a foreign workload sharing the
+                            // container. Surfaced rather than dropped so
+                            // an operator can see it.
+                            None => unknowns.push(BackendUnknownEntry { path: name, mtime }),
+                        }
+                    }
+
+                    if blobs.len() >= want {
+                        break 'shards;
+                    }
+
+                    if unknowns.len() >= MAX_UNKNOWNS {
+                        return Err(DomainError::internal_error(
+                            "Blob",
+                            format!(
+                                "Azure enumeration accumulated {} non-blob entrie(s) without \
+                                 filling a page, so no resume cursor can be produced. Container \
+                                 '{}' likely holds a large foreign namespace — give OxiCloud a \
+                                 dedicated container.",
+                                unknowns.len(),
+                                self.container_name,
+                            ),
+                        ));
+                    }
+                }
+
+                shard += 1;
+            }
+
+            // Exhausting every shard is the ONLY end of enumeration.
+            // Stopping early because one shard was empty would truncate
+            // the sweep and report the rest of the container as absent,
+            // so `shard > LAST_SHARD` — not "this page was empty" — is
+            // what produces `None`.
+            let next_cursor = if shard > LAST_SHARD {
+                None
+            } else {
+                blobs.last().map(|entry| entry.hash.clone())
+            };
+
+            Ok(BlobListPage {
+                blobs,
+                unknowns,
+                next_cursor,
+            })
+        })
+    }
+
     fn backend_type(&self) -> &'static str {
         "azure"
     }
@@ -406,14 +652,75 @@ impl BlobStorageBackend for AzureBlobBackend {
     fn local_blob_path(&self, _hash: &str) -> Option<PathBuf> {
         None
     }
+}
 
-    // TODO: implement `list_blob_hashes` via
-    // `container_client.list_blobs()` (`azure_storage_blobs`
-    // paginator). Same filter as local + S3 impls:
-    // `<xx>/<64-hex>.blob` naming. Currently inherits the trait
-    // default which returns `operation_not_supported` — the
-    // `backend_consistency` tenant handles that by emitting a
-    // single run-level `backend_unenumerable` finding and
-    // completing without per-blob probes. Ship as a follow-up once
-    // there's an Azure test environment to validate against.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const H: &str = "0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9";
+
+    /// The enumeration cursor is fed straight back in as a shard prefix,
+    /// so a name that does not round-trip would resume in the wrong shard
+    /// and silently skip everything between.
+    #[test]
+    fn blob_name_round_trips_through_hash_from_blob_name() {
+        let name = AzureBlobBackend::blob_name(H);
+        assert_eq!(name, format!("0a/{H}.blob"));
+        assert_eq!(
+            AzureBlobBackend::hash_from_blob_name(&name).as_deref(),
+            Some(H)
+        );
+    }
+
+    /// Each of these would otherwise be treated as a hash — and the
+    /// resume path slices `[0..2]` off it to pick the next shard.
+    #[test]
+    fn non_canonical_names_are_rejected() {
+        let cases = [
+            "0a/junk.tmp".to_string(),        // spool file
+            "junk.tmp".to_string(),           // no shard
+            "0a/junk".to_string(),            // no suffix
+            "thumbnails/abc.jpg".to_string(), // foreign namespace
+            format!("0a/{H}.blob.corrupt"),   // sidecar
+            format!("0a/{H}"),                // suffix missing
+            format!("zz/{H}.blob"),           // non-hex shard
+            format!("ff/{H}.blob"),           // shard != hash prefix
+            format!("0a/{}.blob", &H[..63]),  // wrong length
+        ];
+        for name in &cases {
+            assert_eq!(
+                AzureBlobBackend::hash_from_blob_name(name),
+                None,
+                "must not be read as a blob: {name}"
+            );
+        }
+    }
+
+    /// The shard walk relies on `{hash[0..2]}/…` ordering lexicographic
+    /// names into exactly the order `ORDER BY hash` produces. If the
+    /// shard were not the hash's own prefix the two sequences would
+    /// interleave differently and the merge-join would emit phantom
+    /// findings in BOTH directions.
+    #[test]
+    fn shard_order_matches_hash_order() {
+        let hashes = ["00aa", "0a1b", "0aff", "b0cd", "ffff"]
+            .map(|p| format!("{p}{}", "0".repeat(60)))
+            .to_vec();
+
+        let mut names: Vec<String> = hashes
+            .iter()
+            .map(|h| AzureBlobBackend::blob_name(h))
+            .collect();
+        names.sort();
+
+        let recovered: Vec<String> = names
+            .iter()
+            .filter_map(|n| AzureBlobBackend::hash_from_blob_name(n))
+            .collect();
+
+        let mut sorted_hashes = hashes.clone();
+        sorted_hashes.sort();
+        assert_eq!(recovered, sorted_hashes);
+    }
 }

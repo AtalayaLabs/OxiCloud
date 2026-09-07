@@ -46,7 +46,7 @@ use crate::application::dtos::trash_dto::{
 };
 use crate::application::dtos::user_dto::{
     AuthResponseDto, ChangePasswordDto, LoginDto, OidcExchangeDto, OidcProviderInfoDto,
-    RefreshTokenDto, RegisterDto, SetupAdminDto, UserDto,
+    PublicUserDto, RefreshTokenDto, RegisterDto, SetupAdminDto,
 };
 use crate::application::ports::chunked_upload_ports::{
     ChunkUploadResponseDto, CreateUploadResponseDto, UploadStatusResponseDto,
@@ -367,7 +367,7 @@ use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
             PaginationDto,
             PaginationRequestDto,
             // User / Auth schemas
-            UserDto,
+            PublicUserDto,
             LoginDto,
             RegisterDto,
             SetupAdminDto,
@@ -583,7 +583,7 @@ mod tests {
             "FolderDto",
             "ShareDto",
             "TrashedItemDto",
-            "UserDto",
+            "PublicUserDto",
         ] {
             assert!(schemas.contains_key(name), "missing schema: {name}");
         }

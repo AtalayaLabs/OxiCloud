@@ -56,7 +56,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-charlie_id: jsonpath "$.id"
+charlie_id: jsonpath "$.user.id"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -89,7 +89,7 @@ Authorization: Bearer {{charlie_token_v1}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.storage_quota_bytes" == 209715200
+jsonpath "$.full.storage_quota_bytes" == 209715200
 
 
 # ─────────────────────────────────────────────────────────────
@@ -108,7 +108,7 @@ Authorization: Bearer {{charlie_token_v1}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.role" == "admin"
+jsonpath "$.full.user.role" == "admin"
 
 
 # ─────────────────────────────────────────────────────────────

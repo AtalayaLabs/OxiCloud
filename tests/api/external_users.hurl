@@ -23,7 +23,7 @@ Content-Type: application/json
 HTTP 200
 [Captures]
 alice_token: jsonpath "$.access_token"
-alice_user_id: jsonpath "$.user.id"
+alice_user_id: jsonpath "$.user.full.user.id"
 
 GET {{base_url}}/api/folders
 Authorization: Bearer {{alice_token}}
@@ -226,13 +226,16 @@ Authorization: Bearer {{bob_access_token}}
 
 HTTP 200
 [Asserts]
+# `/api/users/{id}` returns the slim `PublicUserDto` (9 fields) —
+# id / email / username / role / image / is_external / given_name /
+# family_name / is_online. Admin-visible fields like
+# `email_verified_at` moved to `FullUserDto` under the three-layer
+# refactor (docs/plan/userdto-refactor.md) and are checked below
+# via `/api/admin/users`.
 jsonpath "$.id" == "{{bob_user_id}}"
 jsonpath "$.is_external" == true
 jsonpath "$.email" == "bob@externalcompany.com"
 jsonpath "$.username" not exists
-# PR 23 — bob redeemed his invitation magic-link in Step 8, so his
-# email_verified_at was stamped at that time and stays set.
-jsonpath "$.email_verified_at" exists
 
 # 11d — bob CAN look up Alice (his granter) — shared-grant relationship
 #        lets the external recipient resolve the sharer's display name +
@@ -244,14 +247,37 @@ HTTP 200
 [Asserts]
 jsonpath "$.id" == "{{alice_user_id}}"
 jsonpath "$.is_external" == false
-# Setup admin is auto-verified at creation. `setup_create_admin` stamps
+
+# 11c/d/verify — admin (alice) observes email_verified_at on both
+# users via `GET /api/admin/users/{id}` — returns `FullUserDto`
+# (public identity in `.user` + admin-visible extras at top level).
+#
+# `email_verified_at` lives on `FullUserDto` (admin+self-visible),
+# not on `PublicUserDto` — peer views via `/api/users/{id}` never
+# expose it. The admin single-user endpoint is the correct
+# observation surface. See `docs/plan/userdto-refactor.md` for the
+# three-layer split.
+#
+# Setup admin auto-verified rationale: `setup_create_admin` stamps
 # `email_verified_at = NOW()` — admin fiat counts as verification,
-# matching the OIDC-JIT convention. Rationale: an operator running the
-# first-run wizard is authoritative by construction (they set the
-# password at the console on a fresh install). Without this, flipping
+# matching the OIDC-JIT convention. An operator running the first-run
+# wizard is authoritative by construction. Without this, flipping
 # `OXICLOUD_REQUIRE_VERIFIED_EMAIL=true` on an existing deployment
-# would lock the sole admin out of their own instance. The admin login
-# exemption is a second layer of defense; this stamp is the primary.
+# would lock the sole admin out of their own instance.
+GET {{base_url}}/api/admin/users/{{bob_user_id}}
+Authorization: Bearer {{alice_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.user.id" == "{{bob_user_id}}"
+jsonpath "$.email_verified_at" exists
+
+GET {{base_url}}/api/admin/users/{{alice_user_id}}
+Authorization: Bearer {{alice_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.user.id" == "{{alice_user_id}}"
 jsonpath "$.email_verified_at" exists
 
 # 11e — bob CANNOT enumerate unrelated users. A random UUID returns 404
