@@ -205,6 +205,31 @@ export async function apiLogin(page: Page, admin = TEST_ADMIN): Promise<void> {
  * lives on the non-HttpOnly `oxicloud_csrf` cookie). Body is passed
  * as an already-serialized string so this helper works uniformly
  * for JSON, form, and multipart-manually-encoded payloads.
+ *
+ * ## Waiting for the Service Worker is load-bearing, not defensive
+ *
+ * Because the proof comes from the SW rather than from this fetch,
+ * a request issued while the page is NOT YET CONTROLLED goes out
+ * unsigned. The server sees a bound session with no proof and
+ * answers `401 DPoP nonce required` — a nonce challenge, from
+ * `nonce_challenge_response` in `middleware/dpop.rs`. Nothing
+ * retries it: the SPA's retry lives in `client.ts`'s `dpopFetch`,
+ * which this helper deliberately bypasses, and the SW that would
+ * have signed it is exactly what is missing.
+ *
+ * That window is real on every fresh browser context. The worker
+ * does `skipWaiting()` + `clients.claim()` (`service-worker.ts`),
+ * which is correct, but claiming is asynchronous: the first
+ * navigation loads uncontrolled, then install → activate → claim.
+ * `waitForLoadState('networkidle')` says nothing about SW control,
+ * so a helper called soon after `apiLogin` — such as
+ * `apiAdminCreateUser` in `admin.spec.ts`'s pagination test — can
+ * land inside it. Intermittently, and more often on slower CI.
+ *
+ * **`ready` is not `controlling`.** `navigator.serviceWorker.ready`
+ * resolves once a registration is *active*; `controller` stays null
+ * until that worker has claimed THIS page. Awaiting only `ready`
+ * looks right and still flakes.
  */
 async function browserFetch(
   page: Page,
@@ -217,6 +242,29 @@ async function browserFetch(
 ): Promise<{ ok: boolean; status: number; body: string }> {
   return page.evaluate(
     async ({ url, method, contentType, body }) => {
+      // Bounded wait: if the SW never claims (not registered, disabled,
+      // or a page that never booted the SPA) fall through and let the
+      // request go out as before. The resulting 401 is then the same
+      // clear signal it is today, rather than a Playwright timeout with
+      // no explanation attached.
+      if ('serviceWorker' in navigator && !navigator.serviceWorker.controller) {
+        await Promise.race([
+          (async () => {
+            await navigator.serviceWorker.ready;
+            if (!navigator.serviceWorker.controller) {
+              await new Promise<void>((resolve) =>
+                navigator.serviceWorker.addEventListener(
+                  'controllerchange',
+                  () => resolve(),
+                  { once: true },
+                ),
+              );
+            }
+          })(),
+          new Promise<void>((resolve) => setTimeout(resolve, 10_000)),
+        ]);
+      }
+
       const csrf = document.cookie.match(/(?:^|; )oxicloud_csrf=([^;]+)/)?.[1] ?? '';
       const headers: Record<string, string> = {};
       if (csrf) headers['x-csrf-token'] = csrf;

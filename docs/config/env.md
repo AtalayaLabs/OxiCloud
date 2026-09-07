@@ -82,8 +82,27 @@ DPoP cryptographically binds a session cookie to a browser-held ECDSA keypair (P
 | `OXICLOUD_RATE_LIMIT_REGISTER_WINDOW_SECS` | `3600` | Registration rate-limit window (seconds) |
 | `OXICLOUD_RATE_LIMIT_REFRESH_MAX` | `20` | Max token refresh attempts per IP per window |
 | `OXICLOUD_RATE_LIMIT_REFRESH_WINDOW_SECS` | `60` | Refresh rate-limit window (seconds) |
+| `OXICLOUD_RATE_LIMIT_USER_PROFILE_MAX` | `60` | Max user-profile lookups per **caller** per window |
+| `OXICLOUD_RATE_LIMIT_USER_PROFILE_WINDOW_SECS` | `60` | User-profile lookup window (seconds) |
+| `OXICLOUD_RATE_LIMIT_DELTA_UPLOAD_MAX` | `240` | Max delta-upload requests per **caller** per window |
+| `OXICLOUD_RATE_LIMIT_DELTA_UPLOAD_WINDOW_SECS` | `60` | Delta-upload window (seconds) |
 | `OXICLOUD_LOCKOUT_MAX_FAILURES` | `5` | Consecutive failed logins before account lockout |
 | `OXICLOUD_LOCKOUT_DURATION_SECS` | `900` | Account lockout duration (15 minutes) |
+
+Login, register and refresh are keyed on the **client IP** and guard the
+unauthenticated front door. User-profile and delta-upload are keyed on
+the **caller id** and guard an authenticated user against exhausting a
+shared resource.
+
+That distinction decides which knob to reach for. When several actors
+share one identity — a CI suite, an integration bot, a kiosk account —
+they share one caller bucket, and a ceiling sized for a single human is
+easily exceeded while the IP-keyed limits sit untouched. Raising the
+login/register/refresh limits does nothing in that case.
+
+Exceeding the user-profile limit returns `429`, which in a browser
+usually shows up as owner names failing to resolve in file listings
+rather than as a visible error.
 
 ## Feature Flags
 

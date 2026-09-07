@@ -82,6 +82,23 @@ export function seedNonceFromCookie(): void {
 	document.cookie = 'oxicloud_dpop_nonce=; SameSite=Strict; Path=/; Max-Age=0';
 }
 
+/**
+ * Whether a nonce is cached, i.e. whether the next proof will carry one.
+ *
+ * Exists for the Service Worker's single-flight gate: `false` means the
+ * next request WILL be answered with a nonce challenge, so concurrent
+ * callers should let one request discover the nonce rather than each
+ * discovering it separately. See `signAndFetch` in `service-worker.ts`.
+ *
+ * Deliberately not "is the nonce still valid" — only the server knows
+ * that, and a stale nonce is handled by the challenge/retry path. This
+ * answers the cheaper question that avoids a stampede.
+ */
+export function hasNonce(): boolean {
+	loadNonceOnce();
+	return currentNonce !== null;
+}
+
 /** Wipe the current nonce — called on logout so a new session bootstraps fresh. */
 export function clearNonce(): void {
 	currentNonce = null;

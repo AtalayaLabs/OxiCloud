@@ -237,6 +237,34 @@ pub async fn require_dpop_layer(
                     // window at the verifier means this one still
                     // succeeded, but we still want the client onto
                     // the nonce path immediately.
+                    //
+                    // Logged because this returns a 401, and every
+                    // rejection owes the operator a line saying why —
+                    // otherwise the access log shows a bare
+                    // `client_error status=401` with nothing to
+                    // explain it, while the client's successful retry
+                    // stays invisible under the default `http=warn`
+                    // access-log filter. That combination reads like a
+                    // real auth failure and is not one.
+                    //
+                    // NOT `dpop.verify_failed`: the proof verified
+                    // cleanly, and counting a routine bootstrap as a
+                    // verification failure would put a per-session
+                    // event into the metric operators watch for
+                    // attacks. `nonce_stale` above keeps that event
+                    // name — it is long-standing and log aggregators
+                    // key off it — but this path is new, so it gets
+                    // the accurate one. The challenge itself is
+                    // already counted centrally by
+                    // `nonce_challenge_response`.
+                    tracing::info!(
+                        target: "audit",
+                        event = "dpop.nonce_challenged",
+                        reason = "nonce_missing",
+                        method = %method,
+                        htu = %htu,
+                        "👮🏻‍♂️ DPoP proof carried no nonce — issuing challenge (expected once per client scope; the client harvests the nonce and retries)",
+                    );
                     return nonce_challenge_response(&nonce_service);
                 }
                 Some(n) => n,

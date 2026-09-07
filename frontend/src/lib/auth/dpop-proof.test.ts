@@ -17,6 +17,7 @@ import {
 	buildDpopProof,
 	canonicalHtu,
 	clearNonce,
+	hasNonce,
 	isDpopNonceChallenge,
 	updateNonceFromResponse
 } from './dpop-proof';
@@ -151,5 +152,47 @@ describe('updateNonceFromResponse', () => {
 		updateNonceFromResponse(new Response(null, { status: 200, headers: { 'DPoP-Nonce': 'v2' } }));
 		const proof = await buildDpopProof('GET', '/api/x');
 		expect(b64uDecodeJson(proof!.split('.')[1]).nonce).toBe('v2');
+	});
+});
+
+describe('hasNonce', () => {
+	// The Service Worker's single-flight gate keys off this: `false`
+	// means the next proof carries no nonce and WILL be challenged, so
+	// concurrent requests should let one of them discover it rather than
+	// each taking its own 401. A wrong answer here either reinstates the
+	// stampede (false negative) or stalls every request behind a
+	// bootstrap that is not happening (false positive).
+	it('is false before any nonce has been seen', () => {
+		expect(hasNonce()).toBe(false);
+	});
+
+	it('is true once a nonce has been harvested', () => {
+		updateNonceFromResponse(
+			new Response(null, { status: 200, headers: { 'DPoP-Nonce': 'nonce-1' } })
+		);
+		expect(hasNonce()).toBe(true);
+	});
+
+	it('agrees with what the proof actually carries', async () => {
+		expect(hasNonce()).toBe(false);
+		const before = await buildDpopProof('GET', '/api/x');
+		expect(b64uDecodeJson(before!.split('.')[1]).nonce).toBeUndefined();
+
+		updateNonceFromResponse(
+			new Response(null, { status: 200, headers: { 'DPoP-Nonce': 'nonce-2' } })
+		);
+
+		expect(hasNonce()).toBe(true);
+		const after = await buildDpopProof('GET', '/api/x');
+		expect(b64uDecodeJson(after!.split('.')[1]).nonce).toBe('nonce-2');
+	});
+
+	it('is false again after logout clears the nonce', () => {
+		updateNonceFromResponse(
+			new Response(null, { status: 200, headers: { 'DPoP-Nonce': 'nonce-3' } })
+		);
+		expect(hasNonce()).toBe(true);
+		clearNonce();
+		expect(hasNonce()).toBe(false);
 	});
 });

@@ -1600,6 +1600,33 @@ pub struct RateLimitConfig {
     pub lockout_max_failures: u32,
     /// Account lockout duration in seconds (default: 900 = 15 min)
     pub lockout_duration_secs: u64,
+
+    // ── Per-caller limits ────────────────────────────────────────────
+    //
+    // Keyed on `caller_id`, not IP: these guard an authenticated user
+    // against exhausting a shared resource, whereas the three above
+    // guard the unauthenticated front door against an attacker.
+    //
+    // The distinction matters when several actors share one identity —
+    // an automated test suite, a CI job, an integration bot. They then
+    // share one bucket, and a ceiling that is generous for one human
+    // is easily exceeded. That is exactly what made the e2e suite emit
+    // 81 × 429 in a single run, all as the same `admin`.
+    /// Max user-profile lookups per caller per window (default: 60).
+    ///
+    /// Guards the visibility query behind `GET /api/users/{id}`, which
+    /// touches `access_grants` — the rate check runs BEFORE it so an
+    /// attacker cannot exhaust it by hammering random UUIDs.
+    pub user_profile_max_requests: u32,
+    /// User-profile lookup window in seconds (default: 60).
+    pub user_profile_window_secs: u64,
+    /// Max delta-upload requests per caller per window (default: 240).
+    ///
+    /// Generous for a real client — chunk PUTs carry up to 100 MB each
+    /// — while stopping pin/negotiate floods.
+    pub delta_upload_max_requests: u32,
+    /// Delta-upload window in seconds (default: 60).
+    pub delta_upload_window_secs: u64,
 }
 
 impl Default for RateLimitConfig {
@@ -1613,6 +1640,12 @@ impl Default for RateLimitConfig {
             refresh_window_secs: 60,
             lockout_max_failures: 5,
             lockout_duration_secs: 900,
+            // Unchanged from the literals these replaced in `di.rs`, so
+            // an operator who sets nothing sees no behaviour change.
+            user_profile_max_requests: 60,
+            user_profile_window_secs: 60,
+            delta_upload_max_requests: 240,
+            delta_upload_window_secs: 60,
         }
     }
 }
@@ -3093,6 +3126,28 @@ impl AppConfig {
         {
             config.auth.rate_limit.refresh_window_secs = val;
         }
+        if let Ok(v) = env::var("OXICLOUD_RATE_LIMIT_USER_PROFILE_MAX").map(|v| v.parse::<u32>())
+            && let Ok(val) = v
+        {
+            config.auth.rate_limit.user_profile_max_requests = val;
+        }
+        if let Ok(v) =
+            env::var("OXICLOUD_RATE_LIMIT_USER_PROFILE_WINDOW_SECS").map(|v| v.parse::<u64>())
+            && let Ok(val) = v
+        {
+            config.auth.rate_limit.user_profile_window_secs = val;
+        }
+        if let Ok(v) = env::var("OXICLOUD_RATE_LIMIT_DELTA_UPLOAD_MAX").map(|v| v.parse::<u32>())
+            && let Ok(val) = v
+        {
+            config.auth.rate_limit.delta_upload_max_requests = val;
+        }
+        if let Ok(v) =
+            env::var("OXICLOUD_RATE_LIMIT_DELTA_UPLOAD_WINDOW_SECS").map(|v| v.parse::<u64>())
+            && let Ok(val) = v
+        {
+            config.auth.rate_limit.delta_upload_window_secs = val;
+        }
         if let Ok(v) = env::var("OXICLOUD_LOCKOUT_MAX_FAILURES").map(|v| v.parse::<u32>())
             && let Ok(val) = v
         {
@@ -3958,6 +4013,24 @@ pub fn default_config() -> AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The per-caller limits moved from hardcoded literals in `di.rs` into
+    /// config. The whole point was to add a knob, NOT to change behaviour
+    /// for anyone who does not turn it — so the defaults must still be the
+    /// values that were compiled in before.
+    ///
+    /// Worth pinning because the failure is silent and asymmetric: too low
+    /// and real users get 429s on file listings, too high and the
+    /// `access_grants` visibility query loses the guard that stops an
+    /// attacker exhausting it with random UUIDs.
+    #[test]
+    fn per_caller_rate_limit_defaults_match_the_previous_literals() {
+        let rl = RateLimitConfig::default();
+        assert_eq!(rl.user_profile_max_requests, 60);
+        assert_eq!(rl.user_profile_window_secs, 60);
+        assert_eq!(rl.delta_upload_max_requests, 240);
+        assert_eq!(rl.delta_upload_window_secs, 60);
+    }
 
     #[test]
     fn startup_job_parses_name_and_flags() {
