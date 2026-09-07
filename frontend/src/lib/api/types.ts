@@ -718,6 +718,14 @@ export interface JobSummary {
 	 *  for this job. Distinct from `running` — a paused run is
 	 *  resumable via the same trigger endpoint. */
 	paused_run?: PausedRunBrief;
+	/** Status of this job's most recent run row (recoverable jobs only).
+	 *
+	 *  **Prefer this over `last_outcome` wherever they could disagree.**
+	 *  `last_outcome` is the backend's in-memory record of the last
+	 *  dispatch, so anything that changes a run row without running the
+	 *  handler leaves it stale — cancelling a Paused run is a direct SQL
+	 *  flip, and the panel went on rendering the pause it replaced. */
+	last_run_status?: RunStatus;
 	/** Present iff `OXICLOUD_STARTUP_JOBS` names this job — the flags it
 	 *  is dispatched with at every boot. Worth showing: a job configured
 	 *  with `repair: true` deletes on every restart, and the row would

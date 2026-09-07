@@ -524,8 +524,23 @@
 	// green "ok" hides the thing worth acting on. A paused
 	// `backend_migration` is still holding `migration_readonly` and
 	// refusing writes across the whole app; the row has to say so.
-	function stoppedOnBackendFailure(job: JobSummary): boolean {
-		return job.last_outcome?.outcome === 'ok' && job.last_outcome.extra?.retryable === true;
+	/// Lifecycle label for the State column. Lower-cased to match the
+	/// existing `running` pill rather than shouting the DB's PascalCase.
+	function runStatusLabel(status: RunStatus): string {
+		switch (status) {
+			case 'Running':
+				return t('admin.jobs.state_running', 'running');
+			case 'Paused':
+				return t('admin.jobs.state_paused', 'paused');
+			case 'CancelRequested':
+				return t('admin.jobs.state_cancelling', 'cancelling');
+			case 'Cancelled':
+				return t('admin.jobs.state_cancelled', 'cancelled');
+			case 'Completed':
+				return t('admin.jobs.state_completed', 'completed');
+			case 'Failed':
+				return t('admin.jobs.state_failed', 'failed');
+		}
 	}
 
 	function backendFailureReason(job: JobSummary): string | undefined {
@@ -534,13 +549,24 @@
 		return typeof reason === 'string' ? reason : undefined;
 	}
 
+	/// How the last dispatch turned out. NOT where the run is in its
+	/// lifecycle — that is the State column, driven by
+	/// `last_run_status`. A paused run legitimately has no outcome yet,
+	/// and saying so is the honest answer.
 	function outcomeLabel(job: JobSummary): string {
-		if (!job.last_outcome) return t('admin.jobs.never', 'never');
-		// Checked before the findings branches: a run that never finished
-		// has nothing meaningful to say about findings, and "0 issues" on
-		// an aborted scan is a worse answer than "blocked".
-		if (stoppedOnBackendFailure(job)) {
-			return t('admin.jobs.outcome_blocked', 'blocked');
+		if (!job.last_outcome) {
+			// "never" means never ran. A job with a run row DID run — the
+			// outcome simply is not in memory, because `last_outcome` is
+			// populated per dispatch and a restart empties it. Saying
+			// "never" there is a lie the run history immediately
+			// contradicts: Ed saw it on a job whose last run was 8h ago.
+			//
+			// "—" is the honest answer: no outcome recorded. The State
+			// column still shows what the run did, and the drawer has
+			// the history.
+			return job.last_run_status
+				? t('admin.jobs.outcome_unknown', '—')
+				: t('admin.jobs.never', 'never');
 		}
 		if (job.last_outcome.outcome === 'ok') {
 			// `ok` on the wire = dispatch completed. If any actionable
@@ -562,14 +588,6 @@
 		if (!job.last_outcome) return 'jobs-panel__pill jobs-panel__pill--neutral';
 		if (job.last_outcome.outcome !== 'ok') {
 			return 'jobs-panel__pill jobs-panel__pill--err';
-		}
-		// Amber, not red: nothing is broken and no data was lost — the
-		// run is waiting for the backend to come back and a Resume
-		// continues it. Red would read as "this job is failing" and
-		// invite a cancel, which for a migration also throws away the
-		// copy already done.
-		if (stoppedOnBackendFailure(job)) {
-			return 'jobs-panel__pill jobs-panel__pill--paused';
 		}
 		if (actionableFindingCount(job) > 0) {
 			return 'jobs-panel__pill jobs-panel__pill--paused';
@@ -944,14 +962,7 @@
 						<td class="jobs-panel__muted">{timeAgo(job.last_run_at)}</td>
 						<td>
 							<div class="jobs-panel__outcome-cell">
-								<!-- The reason is on the pill itself, not only in the
-								     expanded drawer: it is the whole content of a
-								     "blocked" row, and folding it away is what made a
-								     migration paused by an unreachable endpoint read as
-								     a plain green "ok". -->
-								<span class={outcomeClass(job)} title={backendFailureReason(job)}
-									>{outcomeLabel(job)}</span
-								>
+								<span class={outcomeClass(job)}>{outcomeLabel(job)}</span>
 								{#if actionableFindingCount(job) > 0}
 									{@const findings = actionableFindingCount(job)}
 									<span
@@ -978,10 +989,25 @@
 								{/if}
 							</div>
 						</td>
+						<!-- STATE = where the run is in its lifecycle. Distinct
+						     from Outcome, which is how the work turned out.
+						     They are orthogonal: a Paused run has no outcome
+						     yet, and a Completed run's outcome may still be
+						     "issues". Conflating them is what made a paused
+						     migration render as a green "ok". -->
 						<td>
 							{#if isRunning(job)}
 								<span class="jobs-panel__pill jobs-panel__pill--running">
 									{t('admin.jobs.state_running', 'running')}
+								</span>
+							{:else if job.last_run_status}
+								<!-- From the run ROW, not from memory: the
+								     in-memory outcome is empty after a restart and
+								     stale after a cancel, both of which the row
+								     gets right. Reason on hover when the run
+								     stopped on a backend failure. -->
+								<span class={statusClass(job.last_run_status)} title={backendFailureReason(job)}>
+									{runStatusLabel(job.last_run_status)}
 								</span>
 							{:else}
 								<span class="jobs-panel__muted">—</span>

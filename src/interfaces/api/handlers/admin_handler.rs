@@ -2570,41 +2570,94 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
     // failures fall back to the pre-enrichment shape so the endpoint
     // stays useful when the jobs DB is temporarily unreachable.
     if let Some(pool) = state.db_pool.as_ref() {
-        let paused_rows: Vec<(String, uuid::Uuid, Option<i64>, Option<i64>)> = sqlx::query_as(
+        // The LATEST run per job, whatever its status — not just the
+        // paused ones.
+        //
+        // `last_outcome` is in-memory, written when a dispatch finishes
+        // through the engine. Anything that changes a run row WITHOUT
+        // running the handler leaves it stale: cancelling a Paused run
+        // is a direct SQL flip to `Cancelled`, so the panel kept
+        // rendering the outcome of the run that pause belonged to — a
+        // cancelled job still showing "blocked".
+        //
+        // `DISTINCT ON` is safe as "the current run": the
+        // `one_active_run_per_job` partial unique index allows only one
+        // non-terminal row per job, and a resume reuses it rather than
+        // starting a new one, so a non-terminal row is always the newest.
+        /// `(job_name, status, run_id, started_at, scanned, total)` — the
+        /// enrichment row shape, named so the query's type stays legible.
+        type LatestRunRow = (
+            String,
+            String,
+            uuid::Uuid,
+            chrono::DateTime<chrono::Utc>,
+            Option<i64>,
+            Option<i64>,
+        );
+        let latest_rows: Vec<LatestRunRow> = sqlx::query_as(
             r#"
-            SELECT
+            SELECT DISTINCT ON (job_name)
                 job_name,
+                status::TEXT,
                 id,
+                started_at,
                 (stats  ->> 'scanned_count')::BIGINT AS scanned,
                 (params ->> 'total_rows')::BIGINT   AS total
             FROM jobs.recoverable_runs
-            WHERE status = 'Paused'
+            ORDER BY job_name, started_at DESC
             "#,
         )
         .fetch_all(pool.as_ref())
         .await
         .unwrap_or_default();
 
-        let by_name: std::collections::HashMap<String, PausedRunBrief> = paused_rows
+        type LatestRun = (String, chrono::DateTime<chrono::Utc>, PausedRunBrief);
+        let by_name: std::collections::HashMap<String, LatestRun> = latest_rows
             .into_iter()
-            .map(|(name, id, scanned, total)| {
+            .map(|(name, status, id, started_at, scanned, total)| {
                 (
                     name,
-                    PausedRunBrief {
-                        id,
-                        scanned: scanned.unwrap_or(0).max(0) as u64,
-                        total: total.filter(|t| *t > 0).map(|t| t as u64),
-                    },
+                    (
+                        status,
+                        started_at,
+                        PausedRunBrief {
+                            id,
+                            scanned: scanned.unwrap_or(0).max(0) as u64,
+                            total: total.filter(|t| *t > 0).map(|t| t as u64),
+                        },
+                    ),
                 )
             })
             .collect();
 
         for job in summary.iter_mut() {
-            if job.recoverable
-                && !job.running
-                && let Some(paused) = by_name.get(&job.name)
-            {
-                job.paused_run = Some(paused.clone());
+            if !job.recoverable {
+                continue;
+            }
+            let Some((status, started_at, brief)) = by_name.get(&job.name) else {
+                continue;
+            };
+            // Always reported, so the panel can prefer the row's truth
+            // over the in-memory outcome rather than guessing which is
+            // fresher.
+            job.last_run_status = Some(status.clone());
+            // Fill the timestamp too when memory has none.
+            //
+            // `last_outcome` and `last_run_at` are both in-memory, so a
+            // restart empties them and the row read "never" for a job
+            // with real runs in the DB — the opposite failure to the
+            // stale-outcome one, and just as misleading. The row is
+            // authoritative for "did this ever run"; memory only adds
+            // the richer outcome detail when it happens to be warm.
+            //
+            // Only when absent: a warm `last_run_at` describes the last
+            // DISPATCH, which for a non-recoverable tick is finer-grained
+            // than any run row.
+            if job.last_run_at.is_none() {
+                job.last_run_at = Some(*started_at);
+            }
+            if !job.running && status == "Paused" {
+                job.paused_run = Some(brief.clone());
             }
         }
     }
