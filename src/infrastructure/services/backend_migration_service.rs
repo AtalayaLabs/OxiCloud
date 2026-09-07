@@ -580,6 +580,23 @@ impl RecoverableJobHandler for BackendMigrationService {
                         source_missing = source_missing_count,
                         "backend_migration cancelled cooperatively, pausing"
                     );
+                    // A TERMINAL cancel must give writes back.
+                    //
+                    // Cancel ends the run with no swap, so the source
+                    // stays the active backend and there is nothing left
+                    // to protect. Leaving the gate set stranded the whole
+                    // application read-only with no way out: the flag is
+                    // persisted, so a restart reloaded it rather than
+                    // clearing it, and the only escape was editing
+                    // `admin_settings` by hand.
+                    //
+                    // A plain PAUSE deliberately keeps the gate. The
+                    // cursor stays valid only while nothing writes, so
+                    // resuming after allowing writes could miss a blob
+                    // written below the cursor — see the plan's
+                    // "Why NOT to release the gate on pause". Cancel is
+                    // the escape hatch, and it is the operator's call.
+                    self.release_readonly_on_terminal_cancel(store).await;
                     return RunOutcome::Paused {
                         cursor: cursor
                             .as_ref()
@@ -834,6 +851,66 @@ impl RecoverableJobHandler for BackendMigrationService {
 }
 
 impl BackendMigrationService {
+    /// Clear `migration_readonly` when the cancel was TERMINAL.
+    ///
+    /// Cancel ends the run with no swap: the source is still the active
+    /// backend, so there is nothing left for the write freeze to
+    /// protect, and leaving it set locks the whole application out of
+    /// writes. The flag is persisted, so that state survived restarts —
+    /// the only escape was hand-editing `admin_settings`.
+    ///
+    /// **Pause is deliberately not this.** The cursor is a position in a
+    /// hash-ordered walk, and it stays valid only while nothing writes.
+    /// Release the gate on pause and a blob written afterwards whose
+    /// hash sorts BELOW the cursor is never visited, so the run
+    /// completes, flips the pointer, and reads for that hash 404 against
+    /// a target that never received it. Cancel is safe precisely because
+    /// it ENDS the run: a later retry starts fresh and rescans
+    /// everything.
+    ///
+    /// Distinguished by the same `cancel_intent` param the engine reads
+    /// to decide `Cancelled` vs `Paused`, so the two cannot disagree
+    /// about which kind of stop this was.
+    ///
+    /// Best effort, and deliberately so: a run that has already been
+    /// cancelled should not be turned into a hard failure by a DB blip
+    /// while releasing a flag. The in-memory store still happens, so
+    /// writes resume in THIS process even if the persist fails; the loud
+    /// warning is what tells an operator the DB copy needs attention.
+    async fn release_readonly_on_terminal_cancel(&self, store: &dyn JobStore) {
+        let terminal = store
+            .get_string_param(crate::infrastructure::scheduler::CANCEL_INTENT_PARAM)
+            .await
+            .ok()
+            .flatten()
+            .as_deref()
+            == Some(crate::infrastructure::scheduler::CANCEL_INTENT_TERMINATE);
+        if !terminal {
+            return;
+        }
+
+        if let Err(e) = persist_migration_readonly(self.pool.as_ref(), false).await {
+            tracing::warn!(
+                target: "oxicloud::migration",
+                event = "storage.migration_readonly.release_persist_failed",
+                run_id = %store.run_id(),
+                error = %e,
+                "could not persist migration_readonly=false after a terminal cancel; writes \
+                 resume in this process but a restart will come up read-only until \
+                 admin_settings is corrected"
+            );
+        }
+        self.migration_readonly.store(false, Ordering::Relaxed);
+        tracing::info!(
+            target: "audit",
+            event = "storage.migration_readonly.released",
+            reason = "migration_cancelled",
+            run_id = %store.run_id(),
+            "🚧 migration_readonly released after terminal cancel — writes resume, active \
+             backend unchanged"
+        );
+    }
+
     /// Terminal successful path — reached from both Completed sites
     /// in the batch loop (empty-first-batch and short-batch).
     ///

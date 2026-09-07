@@ -2879,16 +2879,73 @@ pub async fn cancel_job(
         .request_terminal_cancel(&name)
         .await
     {
-        Ok(Some(run_id)) => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "cancelled": true,
-                "run_id": run_id.to_string(),
-                "note": "Running row → will land in Cancelled at next batch boundary; \
-                         Paused row → flipped to Cancelled immediately.",
-            })),
-        )
-            .into_response(),
+        Ok(Some(run_id)) => {
+            // Cancelling a PAUSED migration has to give writes back
+            // here, because nothing else will.
+            //
+            // A Running row re-enters the handler, which releases the
+            // gate itself at its next cancel poll. A Paused row does
+            // not: `request_terminal_cancel` flips it straight to
+            // Cancelled in SQL with no handler in the loop. That is the
+            // common case — a migration paused by an outage, holding
+            // `migration_readonly`, which an operator cancels precisely
+            // TO get writes back. Without this the app stayed read-only
+            // forever: the flag is persisted, so even a restart reloaded
+            // it, and the only escape was editing admin_settings by
+            // hand.
+            //
+            // Safe because cancel ends the run with no swap — the source
+            // is still the active backend, so there is nothing left for
+            // the freeze to protect. Releasing on PAUSE would not be
+            // safe; see `release_readonly_on_terminal_cancel`.
+            //
+            // Idempotent and harmless for every other job: the flag is
+            // only ever set by backend_migration, so clearing it when it
+            // is already false is a no-op.
+            if name == crate::infrastructure::services::backend_migration_service::BACKEND_MIGRATION_JOB_NAME
+                && state
+                    .migration_readonly
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                if let Some(pool) = state.db_pool.as_ref()
+                    && let Err(e) =
+                        crate::infrastructure::services::entry_backend::persist_migration_readonly(
+                            pool.as_ref(),
+                            false,
+                        )
+                        .await
+                {
+                    tracing::warn!(
+                        target: "oxicloud::migration",
+                        event = "storage.migration_readonly.release_persist_failed",
+                        run_id = %run_id,
+                        error = %e,
+                        "could not persist migration_readonly=false after cancelling a paused \
+                         migration; writes resume now but a restart will come up read-only"
+                    );
+                }
+                state
+                    .migration_readonly
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                tracing::info!(
+                    target: "audit",
+                    event = "storage.migration_readonly.released",
+                    reason = "paused_migration_cancelled",
+                    run_id = %run_id,
+                    "🚧 migration_readonly released — writes resume, active backend unchanged"
+                );
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "cancelled": true,
+                    "run_id": run_id.to_string(),
+                    "note": "Running row → will land in Cancelled at next batch boundary; \
+                             Paused row → flipped to Cancelled immediately.",
+                })),
+            )
+                .into_response()
+        }
         Ok(None) => (
             StatusCode::OK,
             Json(serde_json::json!({
