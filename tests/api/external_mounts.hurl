@@ -13,7 +13,8 @@
 #   * DELETE /api/admin/external-mounts/{id}   — delete
 #
 # This test pins:
-#   * Input validation: empty name → 400; non-existent host
+#   * Input validation: missing destination drive → 422;
+#     empty name → 400; non-existent host
 #     path (invalid provider config) → 400.
 #   * Create returns 201 with the full mount view; the mount is
 #     then visible in the list with the config echoed back.
@@ -40,6 +41,17 @@ HTTP 200
 admin_token: jsonpath "$.access_token"
 
 
+# Select the admin's default Personal drive as the destination.
+GET {{base_url}}/api/drives
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+[Captures]
+drive_id: jsonpath "$[0].id"
+[Asserts]
+jsonpath "$[0].kind" == "personal"
+
+
 # Anti-enum registration (200 whether or not it already exists).
 POST {{base_url}}/api/auth/register
 Content-Type: application/json
@@ -61,6 +73,15 @@ HTTP 200
 bob_token: jsonpath "$.access_token"
 
 
+# A destination drive is required; reject the old request shape.
+POST {{base_url}}/api/admin/external-mounts
+Authorization: Bearer {{admin_token}}
+Content-Type: application/json
+{ "name": "missing-drive", "host_path": "/tmp" }
+
+HTTP 422
+
+
 # ─────────────────────────────────────────────────────────────
 # Step 1 — Validation: empty name is rejected before any
 #          filesystem or DB work happens.
@@ -68,7 +89,7 @@ bob_token: jsonpath "$.access_token"
 POST {{base_url}}/api/admin/external-mounts
 Authorization: Bearer {{admin_token}}
 Content-Type: application/json
-{ "name": "", "host_path": "/tmp" }
+{ "name": "", "host_path": "/tmp", "drive_id": "{{drive_id}}" }
 
 HTTP 400
 
@@ -80,7 +101,7 @@ HTTP 400
 POST {{base_url}}/api/admin/external-mounts
 Authorization: Bearer {{admin_token}}
 Content-Type: application/json
-{ "name": "bad-mount", "host_path": "/no/such/path/oxicloud-does-not-exist" }
+{ "name": "bad-mount", "host_path": "/no/such/path/oxicloud-does-not-exist", "drive_id": "{{drive_id}}" }
 
 HTTP 400
 
@@ -92,7 +113,7 @@ HTTP 400
 POST {{base_url}}/api/admin/external-mounts
 Authorization: Bearer {{admin_token}}
 Content-Type: application/json
-{ "name": "hurl-mount-test", "host_path": "/tmp", "read_only": true }
+{ "name": "hurl-mount-test", "host_path": "/tmp", "read_only": true, "drive_id": "{{drive_id}}" }
 
 HTTP 201
 [Captures]
@@ -103,7 +124,7 @@ jsonpath "$.name"            == "hurl-mount-test"
 jsonpath "$.kind"            == "local_fs"
 jsonpath "$.read_only"       == true
 jsonpath "$.owner_id"        isString
-jsonpath "$.drive_id"        isString
+jsonpath "$.drive_id"        == "{{drive_id}}"
 jsonpath "$.mount_path"      isString
 jsonpath "$.config.path"     == "/tmp"
 
@@ -125,6 +146,7 @@ jsonpath "$[0].mount_folder_id" == "{{mount_id}}"
 jsonpath "$[0].name"            == "hurl-mount-test"
 jsonpath "$[0].read_only"       == true
 jsonpath "$[0].kind"            == "local_fs"
+jsonpath "$[0].drive_id"        == "{{drive_id}}"
 jsonpath "$[0].config.path"     == "/tmp"
 
 
@@ -142,7 +164,7 @@ HTTP 403
 POST {{base_url}}/api/admin/external-mounts
 Authorization: Bearer {{bob_token}}
 Content-Type: application/json
-{ "name": "bob-mount", "host_path": "/tmp" }
+{ "name": "bob-mount", "host_path": "/tmp", "drive_id": "{{drive_id}}" }
 
 HTTP 403
 
