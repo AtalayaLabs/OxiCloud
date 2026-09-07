@@ -1,7 +1,7 @@
 //! Admin CRUD for external file mounts (`/api/admin/external-mounts`).
 //!
 //! Creating a mount: validate the backend config, create a mount-root folder
-//! under the admin's drive, insert the `external_mounts` row, then hot-reload
+//! under the selected drive, insert the `external_mounts` row, then hot-reload
 //! the in-memory registry. Deleting: remove the row + the folder and reload.
 //! Every endpoint is admin-gated.
 
@@ -20,7 +20,7 @@ use crate::application::ports::external_mount_ports::{
     ExternalMountRecord, ExternalMountRepositoryPort, MountProviderFactory, NewExternalMount,
 };
 use crate::common::di::AppState;
-use crate::domain::repositories::drive_repository::DriveRepository;
+use crate::domain::repositories::drive_repository::{DriveRepository, DriveRepositoryError};
 use crate::domain::repositories::folder_repository::FolderRepository;
 use crate::infrastructure::repositories::pg::ExternalMountPgRepository;
 use crate::infrastructure::services::mount_provider_factory::DefaultMountProviderFactory;
@@ -60,6 +60,8 @@ impl From<ExternalMountRecord> for ExternalMountResponse {
 pub struct CreateExternalMountRequest {
     /// Display name (also the mount-root folder name).
     pub name: String,
+    /// Drive that owns the mount and controls access through its grants.
+    pub drive_id: Uuid,
     /// Absolute host path for the `local_fs` provider.
     pub host_path: String,
     /// Provider kind. Defaults to `local_fs`.
@@ -96,7 +98,7 @@ pub async fn list_external_mounts(
     Ok(Json(out))
 }
 
-/// `POST /api/admin/external-mounts` — create a mount in the admin's drive.
+/// `POST /api/admin/external-mounts` — create a mount in the selected drive.
 pub async fn create_external_mount(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -116,12 +118,19 @@ pub async fn create_external_mount(
         .await
         .map_err(|e| AppError::bad_request(format!("invalid mount configuration: {e}")))?;
 
-    // Create the mount-root folder under the admin's default drive root.
+    // The mount-root is a normal folder in the selected drive. All access to
+    // the external provider is authorized against this folder, so personal
+    // and shared drive membership automatically applies to the mount.
     let drive = state
         .drive_repo
-        .find_default_for_user(admin_id)
+        .get_by_id(req.drive_id)
         .await
-        .map_err(|e| AppError::internal_error(format!("find default drive: {e}")))?;
+        .map_err(|e| match e {
+            DriveRepositoryError::NotFound(_) => {
+                AppError::bad_request("Destination drive not found")
+            }
+            other => AppError::internal_error(format!("find destination drive: {other}")),
+        })?;
     let root_folder_id = drive.drive.root_folder_id.to_string();
 
     let folder = state
@@ -153,6 +162,7 @@ pub async fn create_external_mount(
         event = "external_mount.config",
         action = "create",
         mount_id = %mount_folder_id,
+        drive_id = %req.drive_id,
         caller_id = %admin_id,
         kind = %req.kind,
         reason = "external_mount_admin",
@@ -211,4 +221,35 @@ pub async fn delete_external_mount(
     );
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CreateExternalMountRequest;
+
+    #[test]
+    fn create_request_requires_destination_drive() {
+        let missing_drive =
+            serde_json::from_value::<CreateExternalMountRequest>(serde_json::json!({
+                "name": "Media",
+                "host_path": "/srv/media"
+            }));
+
+        assert!(missing_drive.is_err());
+    }
+
+    #[test]
+    fn create_request_accepts_destination_drive() {
+        let drive_id = uuid::Uuid::new_v4();
+        let request = serde_json::from_value::<CreateExternalMountRequest>(serde_json::json!({
+            "name": "Media",
+            "host_path": "/srv/media",
+            "drive_id": drive_id
+        }))
+        .expect("valid external mount request");
+
+        assert_eq!(request.drive_id, drive_id);
+        assert_eq!(request.kind, "local_fs");
+        assert!(!request.read_only);
+    }
 }

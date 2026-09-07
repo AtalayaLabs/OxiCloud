@@ -50,6 +50,7 @@ vi.mock('$lib/api/endpoints/admin', () => ({
 	deleteUser: vi.fn(),
 	getDashboard: vi.fn(),
 	listExternalMounts: vi.fn(),
+	listAllDrives: vi.fn(),
 	getMigration: vi.fn(),
 	getOidcSettings: vi.fn(),
 	getPluginLogs: vi.fn(),
@@ -129,6 +130,17 @@ const mount = {
 	config: { path: '/srv/media', read_only: true }
 };
 
+const mountDrive = {
+	id: 'd1',
+	name: 'Shared media',
+	kind: 'shared',
+	root_folder_id: 'root-d1',
+	used_bytes: 0,
+	policies: {},
+	created_at: '2026-09-01T00:00:00Z',
+	updated_at: '2026-09-01T00:00:00Z'
+};
+
 beforeEach(() => {
 	vi.clearAllMocks();
 	// Reset the tab mock so a test that sets `setTab('users')`
@@ -167,6 +179,7 @@ beforeEach(() => {
 		user_state: 'unset'
 	});
 	m(admin.listExternalMounts).mockResolvedValue([mount]);
+	m(admin.listAllDrives).mockResolvedValue([mountDrive]);
 });
 
 it('loads the dashboard on mount', async () => {
@@ -227,8 +240,10 @@ it('loads external mounts when the mounts tab is opened and lists them', async (
 	setTab('mounts');
 	render(AdminPage);
 	await waitFor(() => expect(admin.listExternalMounts).toHaveBeenCalled());
+	await waitFor(() => expect(admin.listAllDrives).toHaveBeenCalled());
 	// The configured mount is rendered in the table.
 	expect(await screen.findByText('Media')).toBeTruthy();
+	expect((await screen.findAllByText('Shared media')).length).toBeGreaterThan(0);
 });
 
 it('creates a mount from the mounts form', async () => {
@@ -250,10 +265,13 @@ it('creates a mount from the mounts form', async () => {
 	await fireEvent.input(screen.getByTestId('mount-path'), {
 		target: { value: '/srv/photos' }
 	});
+	await fireEvent.change(screen.getByTestId('mount-drive'), {
+		target: { value: 'd1' }
+	});
 	await fireEvent.click(screen.getByTestId('mount-create'));
 	await waitFor(() =>
 		expect(admin.createExternalMount).toHaveBeenCalledWith(
-			expect.objectContaining({ name: 'Photos', host_path: '/srv/photos' })
+			expect.objectContaining({ name: 'Photos', host_path: '/srv/photos', drive_id: 'd1' })
 		)
 	);
 });

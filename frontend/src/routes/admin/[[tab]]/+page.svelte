@@ -253,26 +253,41 @@
 
 	// External mounts
 	let mounts = $state<ExternalMount[] | null>(null);
+	let mountDrives = $state<Drive[]>([]);
 	let mountsError = $state<string | null>(null);
-	let newMount = $state<CreateExternalMountInput>({ name: '', host_path: '', read_only: false });
+	let newMount = $state<CreateExternalMountInput>({
+		name: '',
+		host_path: '',
+		drive_id: '',
+		read_only: false
+	});
 	let mountCreating = $state(false);
 
 	async function loadMounts() {
 		mountsError = null;
 		try {
-			mounts = await listExternalMounts();
+			[mounts, mountDrives] = await Promise.all([listExternalMounts(), listAllDrives()]);
 		} catch (e) {
 			mountsError = errorMessage(e);
 		}
 	}
 
+	function mountDriveName(driveId: string): string {
+		return mountDrives.find((drive) => drive.id === driveId)?.name ?? driveId;
+	}
+
 	async function createMount() {
-		if (!newMount.name.trim() || !newMount.host_path.trim()) return;
+		if (!newMount.name.trim() || !newMount.host_path.trim() || !newMount.drive_id) return;
 		mountCreating = true;
 		try {
 			const created = await createExternalMount(newMount);
 			mounts = [...(mounts ?? []), created];
-			newMount = { name: '', host_path: '', read_only: false };
+			newMount = {
+				name: '',
+				host_path: '',
+				drive_id: newMount.drive_id,
+				read_only: false
+			};
 		} catch (e) {
 			mountsError = errorMessage(e);
 		} finally {
@@ -3267,11 +3282,21 @@
 					bind:value={newMount.host_path}
 					data-testid="mount-path"
 				/>
+				<select bind:value={newMount.drive_id} required data-testid="mount-drive">
+					<option value="" disabled>{t('admin.mounts.drive_select', 'Select a drive')}</option>
+					{#each mountDrives as drive (drive.id)}
+						<option value={drive.id}>{drive.name}</option>
+					{/each}
+				</select>
 				<label>
 					<input type="checkbox" bind:checked={newMount.read_only} />
 					{t('admin.mounts.readonly', 'Read-only')}
 				</label>
-				<button type="submit" disabled={mountCreating} data-testid="mount-create">
+				<button
+					type="submit"
+					disabled={mountCreating || !newMount.drive_id}
+					data-testid="mount-create"
+				>
 					{t('admin.mounts.add', 'Add mount')}
 				</button>
 			</form>
@@ -3289,6 +3314,7 @@
 							<tr>
 								<th>{t('admin.mounts.name', 'Name')}</th>
 								<th>{t('admin.mounts.kind', 'Kind')}</th>
+								<th>{t('admin.mounts.drive', 'Drive')}</th>
 								<th>{t('admin.mounts.path', 'Path')}</th>
 								<th>{t('admin.mounts.readonly', 'Read-only')}</th>
 								<th></th>
@@ -3299,6 +3325,7 @@
 								<tr>
 									<td>{m.name}</td>
 									<td>{m.kind}</td>
+									<td>{mountDriveName(m.drive_id)}</td>
 									<td class="muted">{m.mount_path}</td>
 									<td>{m.read_only ? t('common.yes', 'Yes') : t('common.no', 'No')}</td>
 									<td>
