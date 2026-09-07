@@ -19,7 +19,25 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use subtle::ConstantTimeEq;
+
 use crate::application::adapters::webdav_adapter::{LockInfo, LockScope};
+
+/// Constant-time equality for lock tokens. Same rationale as
+/// `webdav_handler::ct_str_eq` — see that helper's doc-comment.
+///
+/// The two callsites in this file (`refresh` at :169, `release`
+/// at :191) are already gated by `self.by_token.get(token)?`, so
+/// the attacker CANNOT reach these checks without already having
+/// presented a valid token — the practical timing-attack surface is
+/// nil. Kept constant-time for defense-in-depth consistency across
+/// every token comparison in the WebDAV surface, so a future
+/// auditor doesn't have to re-derive "this one is safe because…"
+/// for each individual callsite.
+#[inline]
+fn ct_str_eq(a: &str, b: &str) -> bool {
+    a.len() == b.len() && a.as_bytes().ct_eq(b.as_bytes()).into()
+}
 
 /// Default lock timeout when the client does not specify one (RFC 4918 §10.7).
 const DEFAULT_LOCK_TIMEOUT_SECS: u64 = 1800; // 30 minutes
@@ -166,7 +184,7 @@ impl WebDavLockStore {
         let path = self.by_token.get(token)?;
         let mut entry = self.by_path.get(&path)?;
 
-        if entry.info.token != token {
+        if !ct_str_eq(&entry.info.token, token) {
             return None; // token mismatch — lock was replaced
         }
 
@@ -188,7 +206,7 @@ impl WebDavLockStore {
         if let Some(path) = self.by_token.get(token) {
             // Only remove from by_path if the token still matches
             if let Some(entry) = self.by_path.get(&path)
-                && entry.info.token == token
+                && ct_str_eq(&entry.info.token, token)
             {
                 self.by_path.invalidate(&path);
             }

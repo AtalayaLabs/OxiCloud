@@ -46,6 +46,7 @@ use crate::interfaces::upload_ingest::{IngestedBlob, RangeSegment, discard_inges
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use std::collections::HashMap;
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 
 /// Characters that MUST NOT be percent-encoded inside a URI path segment.
 /// RFC 3986 §3.3 pchar = unreserved / pct-encoded / sub-delims / ":" / "@"
@@ -1581,6 +1582,34 @@ fn parse_if_header(header: &str) -> IfLists {
     lists
 }
 
+/// Constant-time string equality for security-sensitive tokens
+/// (WebDAV lock State-tokens today; extend for future session /
+/// secret-adjacent comparisons if any).
+///
+/// Rust's built-in `str::eq` compares byte-wise with early exit on
+/// mismatch — the position of the differing byte is observable via
+/// timing. For WebDAV lock tokens the practical exploit is not
+/// realistic (ns-scale signal buried under ms-scale network jitter,
+/// plus ~5×10⁸ samples needed to average through the noise before
+/// the lock expires), but the fix is a 5-line change with zero
+/// measurable perf cost and matches the "constant-time compare on
+/// any token that gates access" hygiene rule the rest of the code
+/// follows on session tokens. Reported responsibly on 2026-09-05.
+///
+/// Length leaks are acceptable here — WebDAV lock tokens have a
+/// fixed public format (`opaquelocktoken:<UUID>`), so the length is
+/// not secret and any timing distinguishability from a length
+/// mismatch reveals nothing an attacker doesn't already know from
+/// the URI grammar.
+#[inline]
+fn ct_str_eq(a: &str, b: &str) -> bool {
+    // `ct_eq` returns 1 on match, 0 on mismatch — same length always,
+    // no early exit within the byte compare. Different-length inputs
+    // still short-circuit at the length check (see doc note above),
+    // and equal-length inputs run the full constant-time compare.
+    a.len() == b.len() && a.as_bytes().ct_eq(b.as_bytes()).into()
+}
+
 /// Evaluate a parsed `If:` header against the current resource state.
 ///
 /// Returns `(header_true, submitted_active_lock)`:
@@ -1614,7 +1643,7 @@ fn evaluate_if_header(
                     negated: false,
                     token,
                 } = cond
-                    && token == active
+                    && ct_str_eq(token, active)
                 {
                     submitted_active_lock = true;
                 }
@@ -1627,7 +1656,14 @@ fn evaluate_if_header(
         list.iter().all(|cond| {
             let (negated, natural) = match cond {
                 IfCondition::StateToken { negated, token } => {
-                    let is_active = active_lock_token == Some(token.as_str());
+                    // Constant-time compare (see `ct_str_eq` above).
+                    // `active_lock_token = None` short-circuits at the
+                    // outer `Some(_)` match — that branch is only
+                    // reachable when a lock actually exists, so the
+                    // "no lock present" fast path stays public info.
+                    let is_active = active_lock_token
+                        .map(|a| ct_str_eq(token, a))
+                        .unwrap_or(false);
                     (*negated, is_active)
                 }
                 IfCondition::EntityTag {

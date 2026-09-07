@@ -4705,6 +4705,7 @@ dependencies = [
  "smol_str",
  "socket2 0.6.4",
  "sqlx",
+ "subtle",
  "tantivy",
  "tempfile",
  "testcontainers-modules",
