@@ -275,6 +275,30 @@ fn log_outcome(name: &str, outcome: &JobOutcome, cause: Option<ErrCause>, elapse
     // structured log renderer to project the `elapsed_ms` field.
     let elapsed = format_elapsed(elapsed_ms);
     match outcome {
+        // A paused run is carried as `Ok` — the handler did its job and
+        // stopped cleanly at a checkpoint — but logging it as `ok` says
+        // the opposite of what an operator needs to know: the migration
+        // is blocked and will not progress until the backend returns.
+        // Same distinction the admin panel draws between a run's STATE
+        // and its OUTCOME; this line only ever showed the outcome.
+        JobOutcome::Ok { count, extra }
+            if extra.get("paused") == Some(&serde_json::Value::Bool(true)) =>
+        {
+            tracing::warn!(
+                target: "oxicloud::scheduler",
+                event = "job.run",
+                job = %name,
+                outcome = "paused",
+                retryable = extra.get("retryable") == Some(&serde_json::Value::Bool(true)),
+                count = *count,
+                elapsed_ms = elapsed_ms,
+                extra = %extra,
+                "job {} PAUSED after {} — count={} (resume when the cause clears)",
+                name,
+                elapsed,
+                count,
+            );
+        }
         JobOutcome::Ok { count, extra } => {
             tracing::info!(
                 target: "oxicloud::scheduler",
