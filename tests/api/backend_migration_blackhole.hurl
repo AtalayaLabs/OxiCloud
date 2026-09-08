@@ -67,68 +67,69 @@ admin_token: jsonpath "$.access_token"
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 2 — Trigger the migration at the black hole.
+# Step 2 — Dispatch the migration at the black hole.
 #
-# The trigger is synchronous, so the response IS the outcome.
+# `backend_migration` is a DETACHED job: the handler is spawned and the
+# call returns 202 immediately, so this response carries no outcome and
+# no run_id. Step 3 polls for both.
 #
-# `outcome.outcome == "ok"` is deliberate and not a contradiction: a
-# retryable pause is carried as `Ok` because the handler did its job and
-# stopped cleanly at a checkpoint. `extra.paused` / `extra.retryable`
-# are what distinguish it, which is exactly why the scheduler log line
-# had to stop projecting a paused run as a clean one.
-#
-# The `duration` assert is the heart of this file. Everything else here
-# would also pass against the old hanging behaviour — given fifteen
-# minutes. This is the only assertion that fails if the bound is ever
-# removed, so treat it as load-bearing rather than a performance nicety.
-#
-# 120s: comfortably above the observed ~31s (the SDK's own attempts
-# stacked on the 10s connect timeout) and far below the ~15min the
-# unbounded socket would take. Deliberately loose — a slow CI runner
-# must not make this flaky, and the failure it guards against is three
-# orders of magnitude away, not adjacent.
+# That is also why the bound is asserted as a polling budget rather
+# than with `duration` — the trigger returns in milliseconds no matter
+# how long the backend hangs, so timing THIS request would prove
+# nothing at all.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/admin/jobs/backend_migration/trigger?storage=s3_blackhole
 Authorization: Bearer {{admin_token}}
 
+HTTP 202
+[Asserts]
+jsonpath "$.ok" == true
+jsonpath "$.detached" == true
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 3 — Poll until the run reaches Paused.
+#
+# THE LOAD-BEARING STEP. Runs are newest-first, so `$[0]` is ours.
+#
+# The retry budget IS the bounded-time assertion: 60 attempts × 2s =
+# 120s, after which hurl fails with the last assert error. Against the
+# old hanging behaviour the row would sit in `Running` for ~15 minutes
+# and this step would exhaust its budget — which is the entire point of
+# the file. Every other assertion here would eventually pass even
+# unbounded; this one would not.
+#
+# 120s is deliberately loose: comfortably above the observed ~31s (the
+# SDK's own attempts stacked on the 10s connect timeout) and three
+# orders of magnitude below the unbounded socket. A slow CI runner must
+# not make this flaky, and the failure it guards is nowhere near the
+# threshold.
+#
+# `Paused`, not `Failed`: that distinction is the whole plan. Failed is
+# terminal and needs a human; Paused resumes and finishes the migration
+# once the backend returns.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/admin/jobs/backend_migration/runs?limit=1
+Authorization: Bearer {{admin_token}}
+[Options]
+retry: 60
+retry-interval: 2000
+
 HTTP 200
 [Captures]
-blackhole_run_id: jsonpath "$.outcome.extra.run_id"
+blackhole_run_id: jsonpath "$[0].id"
 [Asserts]
-duration < 120000
-jsonpath "$.ok" == true
-jsonpath "$.outcome.outcome" == "ok"
-jsonpath "$.outcome.extra.paused" == true
-jsonpath "$.outcome.extra.retryable" == true
-jsonpath "$.outcome.extra.run_id" exists
+jsonpath "$[0].status" == "Paused"
 # The reason must name what went wrong, not merely that something did.
 # An operator reading only this string has to be able to tell an
 # unreachable backend from a wrong bucket — the first is worth waiting
 # out, the second never resolves on its own.
-jsonpath "$.outcome.extra.reason" contains "Transient Backend"
-jsonpath "$.outcome.extra.reason" contains "target backend init"
-
-
-# ─────────────────────────────────────────────────────────────
-# Step 3 — The run row must agree with the outcome.
-#
-# `Paused`, not `Failed`: the distinction is the whole plan. Failed is
-# terminal and needs a human to decide what happened; Paused resumes
-# and finishes the migration once the backend returns.
-#
-# `completed_at` must be absent — the run is not over. A paused row
-# carrying a completion timestamp would make every "how long did this
-# take" query lie, and would read as finished in the admin panel.
-# ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/admin/jobs/backend_migration/runs/{{blackhole_run_id}}
-Authorization: Bearer {{admin_token}}
-
-HTTP 200
-[Asserts]
-jsonpath "$.status" == "Paused"
-jsonpath "$.error_message" exists
-jsonpath "$.error_message" contains "Transient Backend"
-jsonpath "$.completed_at" not exists
+jsonpath "$[0].error_message" contains "Transient Backend"
+jsonpath "$[0].error_message" contains "target backend init"
+# Absent, not null — the run is not over. A paused row carrying a
+# completion timestamp would make every "how long did this take" query
+# lie, and would read as finished in the admin panel.
+jsonpath "$[0].completed_at" not exists
 
 
 # ─────────────────────────────────────────────────────────────

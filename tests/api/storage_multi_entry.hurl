@@ -43,8 +43,21 @@ Authorization: Bearer {{admin_token}}
 
 HTTP 200
 [Asserts]
-# Two entries declared, in _ENTRIES order.
-jsonpath "$.entries" count == 3
+# Membership, asserted per entry rather than by counting them.
+#
+# A `count ==` here breaks every time anyone declares a new entry in
+# server.env, and the failure says "expected 3, got 4" — which names
+# neither the entry that appeared nor whether it was supposed to. This
+# is a registry; it grows. `s3_blackhole` was the fourth and broke it
+# exactly this way.
+jsonpath "$.entries[*].name" contains "local_main"
+jsonpath "$.entries[*].name" contains "s3_stub"
+jsonpath "$.entries[*].name" contains "azurite"
+jsonpath "$.entries[*].name" contains "s3_blackhole"
+
+# Position, which is a SEPARATE property from membership and is
+# deliberately still pinned: entries come back in _ENTRIES order, and
+# the boot fallback below depends on `[0]` being the first declared.
 jsonpath "$.entries[0].name" == "local_main"
 jsonpath "$.entries[1].name" == "s3_stub"
 jsonpath "$.entries[2].name" == "azurite"
