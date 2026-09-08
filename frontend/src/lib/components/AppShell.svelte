@@ -64,6 +64,12 @@
 			icon: 'star',
 			section: 'favorites'
 		},
+		{
+			href: '/calendar',
+			label: t('nav.calendar', 'Calendar'),
+			icon: 'calendar',
+			section: 'calendar'
+		},
 		{ href: '/photos', label: t('nav.photos', 'Photos'), icon: 'images', section: 'photos' },
 		{ href: '/music', label: t('nav.music', 'Music'), icon: 'music', section: 'music' },
 		{ href: '/trash', label: t('nav.trash', 'Trash'), icon: 'trash', section: 'trash' }
