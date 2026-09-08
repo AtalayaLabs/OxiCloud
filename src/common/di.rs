@@ -2922,35 +2922,54 @@ impl AppServiceFactory {
         if !self.config.startup_jobs.is_empty() {
             let mut planned = Vec::with_capacity(self.config.startup_jobs.len());
             for job in &self.config.startup_jobs {
-                if app_state.core.job_registry.get(&job.name).await.is_none() {
+                let Some(declared) = app_state.core.job_registry.parameters_of(&job.name).await
+                else {
                     panic!(
                         "OXICLOUD_STARTUP_JOBS names `{}`, which is not a registered job. \
                          Check the spelling against GET /api/admin/jobs.",
                         job.name
                     );
-                }
-                planned.push(job.clone());
+                };
+                // Same fail-fast rule as the unknown-name panic above, and
+                // for the same reason: a typo'd `?repare=true` would leave
+                // a migration importing forever in discovery mode while the
+                // operator believed the tier was draining. The declaration
+                // is only reachable here, after the registry is built —
+                // config parsing kept the pairs untyped.
+                let args = crate::infrastructure::scheduler::JobRunArgs::from_declared(
+                    declared,
+                    job.raw_params.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+                )
+                .unwrap_or_else(|e| {
+                    panic!("OXICLOUD_STARTUP_JOBS entry `{}`: {e}", job.name);
+                });
+                planned.push((job.name.clone(), args));
             }
 
             let registry = app_state.core.job_registry.clone();
             tokio::spawn(async move {
-                for job in planned {
+                for (job_name, args) in planned {
                     // Audited, not merely logged: a startup job may delete
                     // files, and "who asked for this" must be answerable
                     // afterwards. The answer is the configuration, which is
                     // exactly what this line records.
+                    //
+                    // Rendered from the parsed args rather than naming each
+                    // parameter, so a job growing one cannot end up
+                    // dispatched with something the audit trail omits.
+                    let params_desc = args
+                        .iter()
+                        .filter_map(|(k, v)| v.to_param_string().map(|s| format!("{k}={s}")))
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     tracing::info!(
                         target: "audit",
                         event = "job.startup_trigger",
-                        job = %job.name,
-                        force = job.args.force,
-                        deep = job.args.deep,
-                        repair = job.args.repair,
-                        storage = ?job.args.storage,
-                        "👮🏻‍♂️ dispatching `{}` from OXICLOUD_STARTUP_JOBS",
-                        job.name,
+                        job = %job_name,
+                        params = %params_desc,
+                        "👮🏻‍♂️ dispatching `{job_name}` from OXICLOUD_STARTUP_JOBS ({params_desc})",
                     );
-                    match registry.trigger(&job.name, &job.args).await {
+                    match registry.trigger(&job_name, &args).await {
                         // Debug, not info. The engine already logs every
                         // dispatch as `job.run` with the outcome and timing —
                         // that is the point of routing through `trigger`
@@ -2962,10 +2981,9 @@ impl AppServiceFactory {
                         Some(outcome) => tracing::debug!(
                             target: "oxicloud::scheduler",
                             event = "job.startup_completed",
-                            job = %job.name,
+                            job = %job_name,
                             outcome = outcome.kind(),
-                            "startup job `{}` finished ({})",
-                            job.name,
+                            "startup job `{job_name}` finished ({})",
                             outcome.kind(),
                         ),
                         // Unreachable — the name was resolved above, and
@@ -2974,10 +2992,9 @@ impl AppServiceFactory {
                         None => tracing::error!(
                             target: "oxicloud::scheduler",
                             event = "job.startup_vanished",
-                            job = %job.name,
-                            "startup job `{}` disappeared from the registry between \
+                            job = %job_name,
+                            "startup job `{job_name}` disappeared from the registry between \
                              validation and dispatch",
-                            job.name,
                         ),
                     }
                 }

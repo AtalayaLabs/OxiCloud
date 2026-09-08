@@ -48,7 +48,7 @@ use uuid::Uuid;
 use crate::common::errors::DomainError;
 
 use super::handler::JobHandler;
-use super::types::{JobOutcome, JobRunArgs, Mutates};
+use super::types::{JobOutcome, JobParam, JobRunArgs, Mutates};
 
 // ─── Run status ─────────────────────────────────────────────────────────────
 
@@ -207,53 +207,77 @@ impl RunOutcome {
 /// passed — see the call site in [`run_or_resume`] for why changing mode
 /// mid-run is refused.
 ///
-/// Every flag is stored as a string, matching the `params` convention the
+/// Every value is stored as a string, matching the `params` convention the
 /// progress fields already use, and each is read back independently: a run
-/// paused before this existed simply has no keys, and each missing one
-/// falls back to `false` / `None`. That is the safe direction — a resumed
+/// paused before its job declared a parameter simply has no key for it, and
+/// the declared default applies. That is the safe direction — a resumed
 /// legacy run under-acts rather than deleting under a flag nobody gave it.
+///
+/// **Driven by `declared`, not by a hardcoded list.** The previous version
+/// carried `const FLAGS = ["force", "deep", "repair"]` plus a special case
+/// for `storage`, so a job growing a parameter had to remember to edit this
+/// function — and forgetting meant the parameter was silently dropped on
+/// resume, turning a `?repair=true` migration back into a discovery run
+/// after a restart. Iterating the declaration makes that unrepresentable.
 async fn persist_or_restore_args(
     store: &dyn JobStore,
+    declared: &[JobParam],
     args: &JobRunArgs,
     is_fresh: bool,
 ) -> Result<JobRunArgs, String> {
-    const FLAGS: [&str; 3] = ["force", "deep", "repair"];
-
     if is_fresh {
-        for (key, value) in FLAGS.iter().zip([args.force, args.deep, args.repair]) {
-            let v = if value { "true" } else { "false" };
-            store
-                .set_string_param(key, v)
-                .await
-                .map_err(|e| format!("persist `{key}` to params: {e}"))?;
+        // Filter to what THIS job declares rather than persisting whatever
+        // the caller handed over. `consistency_batch` forwards its own args
+        // verbatim to each sub-job, so without this a tenant's `params`
+        // would grow the coordinator's keys — `deep` on a job that has no
+        // deep mode — and the run-detail view would claim a mode the job
+        // never had.
+        let mut effective = std::collections::BTreeMap::new();
+        for p in declared {
+            let value = args
+                .iter()
+                .find(|(k, _)| *k == p.name)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| p.default.to_value());
+            // A `None` string is absent rather than empty, so a run that
+            // did not scope itself does not grow a key claiming it did.
+            if let Some(v) = value.to_param_string() {
+                store
+                    .set_string_param(p.name, &v)
+                    .await
+                    .map_err(|e| format!("persist `{}` to params: {e}", p.name))?;
+            }
+            effective.insert(p.name.to_string(), value);
         }
-        // `storage` is absent rather than empty when unset, so a run that
-        // did not scope itself does not grow a key claiming it did.
-        if let Some(name) = &args.storage {
-            store
-                .set_string_param("storage", name)
-                .await
-                .map_err(|e| format!("persist `storage` to params: {e}"))?;
-        }
-        return Ok(args.clone());
+        return Ok(JobRunArgs::new(effective));
     }
 
-    let mut restored = JobRunArgs::default();
-    for (key, slot) in FLAGS.iter().zip([
-        &mut restored.force,
-        &mut restored.deep,
-        &mut restored.repair,
-    ]) {
-        *slot = match store.get_string_param(key).await {
-            Ok(v) => v.as_deref() == Some("true"),
-            Err(e) => return Err(format!("read `{key}` from params: {e}")),
+    let mut restored = std::collections::BTreeMap::new();
+    for p in declared {
+        let stored = store
+            .get_string_param(p.name)
+            .await
+            .map_err(|e| format!("read `{}` from params: {e}", p.name))?;
+        let value = match stored {
+            // A value this job wrote itself, so a parse failure means the
+            // row was hand-edited or the parameter changed type between
+            // releases. Fall back to the default rather than failing the
+            // resume — losing the flag is recoverable, refusing to resume a
+            // half-finished migration is not.
+            Some(raw) => p.parse_value(&raw).unwrap_or_else(|_| {
+                tracing::warn!(
+                    target: "oxicloud::scheduler",
+                    param = p.name,
+                    raw = %raw,
+                    "stored job parameter does not parse as its declared type; using the default"
+                );
+                p.default.to_value()
+            }),
+            None => p.default.to_value(),
         };
+        restored.insert(p.name.to_string(), value);
     }
-    restored.storage = store
-        .get_string_param("storage")
-        .await
-        .map_err(|e| format!("read `storage` from params: {e}"))?;
-    Ok(restored)
+    Ok(JobRunArgs::new(restored))
 }
 
 // ─── Traits — implementor + port ────────────────────────────────────────────
@@ -334,6 +358,19 @@ pub trait RecoverableJobHandler: Send + Sync {
     /// plain run and additionally unlinking files under repair.
     fn repair_description(&self) -> Option<&'static str> {
         None
+    }
+
+    /// The run parameters this job accepts. See
+    /// [`JobHandler::parameters`](super::handler::JobHandler::parameters).
+    ///
+    /// Matters more here than for a plain job: `run_or_resume` persists
+    /// these so a Paused run resumes with the same parameters it started
+    /// under. The engine iterates this declaration to do it, so an
+    /// undeclared parameter is not merely ignored — it is lost across a
+    /// resume, which is how a `?repair=true` migration could come back
+    /// as discovery-only after a restart.
+    fn parameters(&self) -> &'static [JobParam] {
+        &[]
     }
 
     /// Long-running scan. See trait-level doc for the contract.
@@ -877,7 +914,7 @@ pub async fn run_or_resume(
     // resume would apply it to the remaining entries only, producing a run
     // that half-deleted — the honest way to change your mind is to cancel
     // and start fresh.
-    let args = match persist_or_restore_args(&*store, args, is_fresh).await {
+    let args = match persist_or_restore_args(&*store, job.parameters(), args, is_fresh).await {
         Ok(effective) => effective,
         Err(e) => {
             // Fail the run rather than guess. Proceeding would mean acting
@@ -1139,6 +1176,15 @@ impl JobHandler for RecoverableAdapter {
     // to `GET /api/admin/jobs`. Silently returning the JobHandler defaults
     // here would leave every recoverable job undescribed and reported as
     // read-only — including ones that delete files.
+    //
+    // EVERY metadata method the tenant can declare belongs here. Adding
+    // one to `RecoverableJobHandler` without adding it below compiles
+    // cleanly — both traits have defaults — and the tenant's value is
+    // then simply lost. `parameters` shipped that way for exactly one
+    // boot: the default `&[]` made the trigger endpoint reject
+    // `?repair=true` on the very jobs that declare it, and
+    // `OXICLOUD_STARTUP_JOBS` panicked at startup with "this job accepts
+    // none". Pinned by `adapter_forwards_tenant_metadata`.
     fn description(&self) -> &'static str {
         self.inner.description()
     }
@@ -1147,6 +1193,9 @@ impl JobHandler for RecoverableAdapter {
     }
     fn repair_description(&self) -> Option<&'static str> {
         self.inner.repair_description()
+    }
+    fn parameters(&self) -> &'static [JobParam] {
+        self.inner.parameters()
     }
 }
 
@@ -1689,6 +1738,10 @@ mod tests {
             fn repair_description(&self) -> Option<&'static str> {
                 Some("fixes the thing")
             }
+            fn parameters(&self) -> &'static [JobParam] {
+                const PARAMS: &[JobParam] = &[JobParam::boolean("repair", false, "fix the thing")];
+                PARAMS
+            }
         }
 
         let provider: Arc<dyn JobStoreProvider> = Arc::new(MemProvider::new());
@@ -1698,6 +1751,19 @@ mod tests {
         assert_eq!(as_handler.description(), "walks a thing");
         assert_eq!(as_handler.mutates(), Mutates::OnRepairOnly);
         assert_eq!(as_handler.repair_description(), Some("fixes the thing"));
+
+        // Regression: this one was NOT forwarded when `parameters` was
+        // added, and both traits having defaults meant it compiled
+        // silently. The registry then saw `&[]`, so the trigger endpoint
+        // rejected `?repair=true` on the jobs that declare it and
+        // `OXICLOUD_STARTUP_JOBS=thumb_derived_import?repair=true`
+        // panicked at boot with "this job accepts none".
+        assert_eq!(
+            as_handler.parameters().len(),
+            1,
+            "tenant parameters must reach the registry through the adapter"
+        );
+        assert_eq!(as_handler.parameters()[0].name, "repair");
     }
 
     #[tokio::test]

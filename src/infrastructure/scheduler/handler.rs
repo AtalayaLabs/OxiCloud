@@ -9,7 +9,7 @@
 
 use async_trait::async_trait;
 
-use super::types::{JobOutcome, JobRunArgs, Mutates};
+use super::types::{JobOutcome, JobParam, JobRunArgs, Mutates};
 
 /// Implemented by every service that wants to run on a fixed interval
 /// through the periodic scheduler.
@@ -127,5 +127,20 @@ pub trait JobHandler: Send + Sync {
     /// rows on a plain run and additionally unlinking sidecars under repair.
     fn repair_description(&self) -> Option<&'static str> {
         None
+    }
+
+    /// The run parameters this job accepts.
+    ///
+    /// Defaults to none, which is correct for most jobs and is now
+    /// *enforced*: triggering a job with a parameter it does not declare
+    /// is a 400 naming what it does accept, rather than being silently
+    /// ignored. A job that reads `args.get_bool("repair")` without
+    /// declaring `repair` will therefore always see `false` — declare
+    /// and read together.
+    ///
+    /// See [`JobParam`] for why this replaced the fixed
+    /// force/deep/repair/storage struct.
+    fn parameters(&self) -> &'static [JobParam] {
+        &[]
     }
 }

@@ -424,6 +424,18 @@ impl RecoverableJobHandler for ThumbDerivedImport {
         )
     }
 
+    fn parameters(&self) -> &'static [crate::infrastructure::scheduler::JobParam] {
+        use crate::infrastructure::scheduler::JobParam;
+        const PARAMS: &[JobParam] = &[JobParam::boolean(
+            "repair",
+            false,
+            "Delete each sidecar after its replacement has been read back, \
+             and remove the directory once empty. Without this the job \
+             imports and leaves the originals in place.",
+        )];
+        PARAMS
+    }
+
     async fn count_total(&self) -> Option<u64> {
         let mut total = 0u64;
         for size in ThumbnailSize::all() {
@@ -449,7 +461,7 @@ impl RecoverableJobHandler for ThumbDerivedImport {
         // makes the migration self-draining: sidecars are LOCAL disk, so no
         // release can know whether every instance has finished, whereas each
         // instance draining itself needs no coordination at all.
-        let delete_imported = args.repair;
+        let delete_imported = args.get_bool("repair");
         // Cursor is `{size_dir}/{filename}` — the last file completed. Sizes
         // are walked in `ThumbnailSize::all()` order, and names are sorted
         // within each, so the pair totally orders the walk.

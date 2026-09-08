@@ -97,6 +97,32 @@ impl JobHandler for ConsistencyBatch {
          are forwarded to each sub-job."
     }
 
+    /// The union of what its sub-jobs accept, because it forwards
+    /// verbatim. A sub-job that does not declare one of these simply
+    /// never sees it — `run_or_resume` filters each dispatch down to that
+    /// job's own declaration, so forwarding `deep` to a tenant with no
+    /// deep mode is inert rather than misrecorded.
+    fn parameters(&self) -> &'static [crate::infrastructure::scheduler::JobParam] {
+        use crate::infrastructure::scheduler::JobParam;
+        const PARAMS: &[JobParam] = &[
+            JobParam::boolean(
+                "deep",
+                false,
+                "Forwarded to sub-jobs that have a deep mode — currently \
+                 backend_consistency, which re-reads and re-hashes every \
+                 blob. Can take hours.",
+            ),
+            JobParam::boolean("force", false, "Forwarded to sub-jobs that accept it."),
+            JobParam::boolean(
+                "repair",
+                false,
+                "Forwarded to every sub-job that can repair, so one call \
+                 fixes both refcount tenants.",
+            ),
+        ];
+        PARAMS
+    }
+
     /// Read-only on a plain run because every tenant it dispatches is, but
     /// `?repair=true` reaches whichever of them act on it — so the batch
     /// inherits the strongest mode any sub-job can be put into.
@@ -198,9 +224,9 @@ impl JobHandler for ConsistencyBatch {
             targets.len() as u64,
             json!({
                 "per_check": per_check,
-                "deep": args.deep,
-                "force": args.force,
-                "repair": args.repair,
+                "deep": args.get_bool("deep"),
+                "force": args.get_bool("force"),
+                "repair": args.get_bool("repair"),
                 "ok": ok_count,
                 "err": err_count,
             }),

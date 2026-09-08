@@ -143,6 +143,17 @@ impl RecoverableJobHandler for BackendRotateService {
          so re-running after a key change is cheap."
     }
 
+    fn parameters(&self) -> &'static [crate::infrastructure::scheduler::JobParam] {
+        use crate::infrastructure::scheduler::JobParam;
+        const PARAMS: &[JobParam] = &[JobParam::string(
+            "storage",
+            "Name of the storage entry whose blobs to rewrite. Required on \
+             a fresh run; ignored on a resume, which reuses the recorded \
+             target.",
+        )];
+        PARAMS
+    }
+
     /// Rewrites blobs **in place**. Unlike a migration this has no additive
     /// fallback — the previous ciphertext is gone once a blob is rewritten.
     fn mutates(&self) -> Mutates {
@@ -178,7 +189,7 @@ impl RecoverableJobHandler for BackendRotateService {
         // Resolve target entry name — same shape as `backend_migration`.
         let is_fresh = resume_cursor.is_none();
         let target_name = if is_fresh {
-            let Some(name) = args.storage.clone() else {
+            let Some(name) = args.get_str("storage").map(str::to_string) else {
                 return RunOutcome::Failed {
                     message: "backend_rotate requires `target_name` on a fresh run — trigger via \
                               POST /api/admin/storage/entries/{name}/rotate"

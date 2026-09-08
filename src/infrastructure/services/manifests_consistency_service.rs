@@ -202,6 +202,17 @@ impl RecoverableJobHandler for ManifestsConsistencyCheck {
         )
     }
 
+    fn parameters(&self) -> &'static [crate::infrastructure::scheduler::JobParam] {
+        use crate::infrastructure::scheduler::JobParam;
+        const PARAMS: &[JobParam] = &[JobParam::boolean(
+            "repair",
+            false,
+            "Rewrite drifted manifest ref_count values to the recomputed \
+             truth. Without this the run only reports them.",
+        )];
+        PARAMS
+    }
+
     async fn count_total(&self) -> Option<u64> {
         let row: Result<(i64,), sqlx::Error> =
             sqlx::query_as("SELECT COUNT(*) FROM storage.chunk_manifests")
@@ -227,8 +238,6 @@ impl RecoverableJobHandler for ManifestsConsistencyCheck {
         args: &JobRunArgs,
         resume_cursor: Option<Vec<u8>>,
     ) -> RunOutcome {
-        let is_fresh = resume_cursor.is_none();
-
         // Cursor: the last `file_hash` as UTF-8. Same convention as
         // `blobs_consistency`, which also pages a hash-keyed table.
         let mut cursor: Option<String> = match resume_cursor {
@@ -244,33 +253,14 @@ impl RecoverableJobHandler for ManifestsConsistencyCheck {
             },
         };
 
-        // Persist the repair flag into `params.repair` so the admin
-        // run-detail view can display whether the run was a discovery
-        // scan or an active repair. Fresh takes it from args; Resume
-        // reads back so a paused repair scan stays a repair scan (a
-        // mid-scan crash mustn't silently downgrade the remaining
-        // rows to discovery-only). Same shape as
-        // `blobs_consistency_service.rs`'s `deep` handling — see the
-        // reasoning documented there.
-        let repair = if is_fresh {
-            let v = if args.repair { "true" } else { "false" };
-            if let Err(e) = store.set_string_param("repair", v).await {
-                return RunOutcome::Failed {
-                    message: format!("failed to persist repair flag to params: {e}"),
-                };
-            }
-            args.repair
-        } else {
-            match store.get_string_param("repair").await {
-                Ok(Some(v)) => v == "true",
-                Ok(None) => false,
-                Err(e) => {
-                    return RunOutcome::Failed {
-                        message: format!("read `repair` from params: {e}"),
-                    };
-                }
-            }
-        };
+        // Persisted into `params.repair` so the admin run-detail view can
+        // show whether this was a discovery scan or an active repair, and
+        // restored on resume so a paused repair scan stays one — a
+        // mid-scan crash must not silently downgrade the remaining rows.
+        //
+        // `run_or_resume` does both, for every declared parameter, under
+        // this same key. This job used to hand-roll it.
+        let repair = args.get_bool("repair");
 
         if repair {
             tracing::info!(

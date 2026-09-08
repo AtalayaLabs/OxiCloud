@@ -8,7 +8,7 @@
  */
 import { apiFetch, apiJson } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
-import type { Finding, JobOutcome, JobSummary, RunSummary } from '$lib/api/types';
+import type { Finding, JobOutcome, JobParamValues, JobSummary, RunSummary } from '$lib/api/types';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -60,21 +60,22 @@ export function listJobs(): Promise<JobSummary[]> {
 }
 
 /**
- * `POST /api/admin/jobs/{name}/trigger?force=X&deep=X&repair=X` —
- * dispatch a job on-demand.
+ * `POST /api/admin/jobs/{name}/trigger` — dispatch a job on-demand with
+ * whichever parameters it declares.
  *
- * - `force` bypasses per-tenant idempotency checks (e.g. `trash_cleanup`
- *   skipping when nothing is due).
- * - `deep` opts into slow variants (currently only `storage_consistency`,
- *   propagated by `consistency_batch` to every child).
- * - `repair` opts into corrective action on the refcount consistency
- *   tenants (`blobs_consistency`, `manifests_consistency`, and
- *   `consistency_batch` which fans out to both). Content-safe: only the
- *   stored counter changes to match the auditor's computed value. Race-
- *   safe: the corrective UPDATE recomputes the auditor formula in the
- *   same statement, so a concurrent write can't leave a stale value.
- *   Default `false` preserves discovery-only behaviour — surface a
- *   confirm-first flow when calling with `repair: true`.
+ * **Which parameters are valid is the job's answer, not this
+ * function's.** Read them from `JobSummary.parameters` (each carries a
+ * `type`, a `default` and the handler's own description) and pass the
+ * ones the operator chose. Anything undeclared comes back as a 400
+ * naming what the job does accept.
+ *
+ * This used to take fixed `force` / `deep` / `storage` / `repair`
+ * options, which meant callers could pass a flag to a job that ignored
+ * it and get a silent no-op — the panel offered exactly that on several
+ * jobs.
+ *
+ * Omitted parameters take their declared defaults server-side, so `{}`
+ * is a plain run.
  *
  * Throws on 4xx / 5xx with the backend's error message when present.
  * A 404 means the job name isn't registered — surface that specifically
@@ -82,17 +83,23 @@ export function listJobs(): Promise<JobSummary[]> {
  */
 export async function triggerJob(
 	name: string,
-	opts: { force?: boolean; deep?: boolean; storage?: string; repair?: boolean } = {}
+	opts: JobParamValues = {}
 ): Promise<TriggerResponse> {
+	// Free-form, because the accepted set is the job's to declare
+	// (`JobSummary.parameters`) — not this function's to enumerate. The
+	// backend validates: an undeclared name is a 400 listing what the
+	// job does accept, rather than being silently ignored the way the
+	// old fixed `force/deep/storage/repair` options were on jobs that
+	// read none of them.
 	const params = new URLSearchParams();
-	if (opts.force) params.set('force', 'true');
-	if (opts.deep) params.set('deep', 'true');
-	if (opts.repair) params.set('repair', 'true');
-	// `storage` scopes tenants that respect JobRunArgs.storage —
-	// currently blobs_consistency / backend_consistency (probes the
-	// named entry instead of the live backend). See
-	// `docs/plan/storage-multi-entry.md` slice 7.
-	if (opts.storage) params.set('storage', opts.storage);
+	for (const [key, value] of Object.entries(opts)) {
+		// Skip `false` so a URL carries only what was asked for — the
+		// backend applies each parameter's declared default for the rest,
+		// and an explicit `force=false` would read identically while
+		// making the audit line noisier.
+		if (value === false || value === undefined || value === '') continue;
+		params.set(key, String(value));
+	}
 	const q = params.toString();
 	const url = `/api/admin/jobs/${encodeURIComponent(name)}/trigger${q ? `?${q}` : ''}`;
 	const res = await apiFetch(url, {

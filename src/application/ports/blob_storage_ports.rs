@@ -220,6 +220,34 @@ pub trait BlobStorageBackend: Send + Sync + 'static {
     /// return `None`; callers that need a local file must stream + spool.
     fn local_blob_path(&self, hash: &str) -> Option<PathBuf>;
 
+    /// The same storage with any read-through cache peeled off, or
+    /// `None` when this backend is not a cache.
+    ///
+    /// **For verification only** — normal reads must keep going through
+    /// the cache, which is the point of having one.
+    ///
+    /// A cache answers reads from its own copy, so re-hashing through
+    /// one checks the cache rather than storage: rot on the remote is
+    /// hidden by a good cached copy, and rot in the cache is blamed on a
+    /// healthy remote. The second is worse, because it sends an operator
+    /// to the wrong layer. `backend_consistency ?deep=true` is the only
+    /// caller.
+    ///
+    /// Peels **only** the cache. The cache sits outside the encryption
+    /// decorator and stores plaintext, while the content hash is over
+    /// plaintext, so unwrapping further would hand back ciphertext and
+    /// fail every blob it checked.
+    ///
+    /// Implement by returning the inner backend. Pass-through wrappers
+    /// (hot-swap, retry) forward to whatever they wrap, so the unwrap
+    /// still reaches the cache — and, for hot-swap, resolves through
+    /// `current()` so it survives a migration cutover rather than
+    /// pinning the pre-cutover storage. Everything else inherits the
+    /// `None` default and is used as-is.
+    fn uncached(&self) -> Option<std::sync::Arc<dyn BlobStorageBackend>> {
+        None
+    }
+
     /// How many chunk fetches the CDC reader may run concurrently when
     /// reassembling a file (`read_blob_stream`'s `buffered(N)` read-ahead).
     ///

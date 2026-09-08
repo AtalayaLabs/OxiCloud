@@ -165,7 +165,13 @@ pub(super) async fn dispatch(name: &str, entry: Arc<JobEntry>, args: &JobRunArgs
     // unwinding into the supervisor loop. Args cloned into the spawn
     // scope so the borrow doesn't outlive the caller.
     let handler = entry.handler.clone();
-    let args_owned = args.clone();
+    // Normalise HERE, the one funnel every dispatch passes through, so a
+    // handler always sees its declared parameters with their declared
+    // defaults — whatever the caller built. The periodic tick in
+    // particular passes an empty `JobRunArgs::default()`, which would
+    // otherwise read a `default: true` parameter as false on every
+    // scheduled run. See `JobRunArgs::normalized_for`.
+    let args_owned = args.normalized_for(handler.parameters());
     let join = tokio::spawn(async move { handler.run(&args_owned).await });
 
     let (outcome, cause) = match entry.timeout {

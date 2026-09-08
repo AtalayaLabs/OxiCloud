@@ -196,6 +196,21 @@ impl RecoverableJobHandler for BackendMigrationService {
          restarting."
     }
 
+    fn parameters(&self) -> &'static [crate::infrastructure::scheduler::JobParam] {
+        use crate::infrastructure::scheduler::JobParam;
+        // Required in practice, though the declaration cannot express
+        // that: a Fresh run without it fails with a message naming the
+        // proper entrypoint, while a Resume legitimately omits it and
+        // reads the target back from `params.target_name`.
+        const PARAMS: &[JobParam] = &[JobParam::string(
+            "storage",
+            "Name of the storage entry to copy blobs INTO. Required on a \
+             fresh run; ignored on a resume, which reuses the recorded \
+             target.",
+        )];
+        PARAMS
+    }
+
     /// Writes bytes to the target backend. Source bytes are left in place —
     /// the copy is additive, so an aborted migration loses nothing.
     fn mutates(&self) -> Mutates {
@@ -245,7 +260,7 @@ impl RecoverableJobHandler for BackendMigrationService {
         // into the wrong entry.
         let is_fresh = resume_cursor.is_none();
         let target_name = if is_fresh {
-            let Some(name) = args.storage.clone() else {
+            let Some(name) = args.get_str("storage").map(str::to_string) else {
                 return RunOutcome::Failed {
                     message:
                         "backend_migration requires `target_name` on a fresh run — trigger via \

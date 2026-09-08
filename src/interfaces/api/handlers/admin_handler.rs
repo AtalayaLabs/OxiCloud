@@ -621,9 +621,9 @@ async fn trigger_backend_migration(
     );
 
     let registry = state.core.job_registry.clone();
-    let args = JobRunArgs {
-        storage: target_name,
-        ..JobRunArgs::default()
+    let args = match target_name {
+        Some(n) => JobRunArgs::with_string("storage", n),
+        None => JobRunArgs::default(),
     };
     tokio::spawn(async move {
         registry.trigger(BACKEND_MIGRATION_JOB_NAME, &args).await;
@@ -754,10 +754,7 @@ pub async fn trigger_backend_rotate(
     );
 
     let registry = state.core.job_registry.clone();
-    let args = JobRunArgs {
-        storage: Some(name.clone()),
-        ..JobRunArgs::default()
-    };
+    let args = JobRunArgs::with_string("storage", name.clone());
     tokio::spawn(async move {
         registry.trigger(BACKEND_ROTATE_JOB_NAME, &args).await;
     });
@@ -2625,11 +2622,23 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
             .iter()
             .find(|s| s.name == job.name)
         {
+            // Config keeps these untyped; type them against the same
+            // declaration the job dispatches under. A parse failure is
+            // unreachable — `di.rs` panics at boot on exactly this input —
+            // so an empty map here means the config changed under a
+            // running server, and showing no parameters beats inventing
+            // them.
+            let declared = job.parameters;
             job.startup = Some(crate::infrastructure::scheduler::StartupTrigger {
-                force: configured.args.force,
-                deep: configured.args.deep,
-                repair: configured.args.repair,
-                storage: configured.args.storage.clone(),
+                params: crate::infrastructure::scheduler::JobRunArgs::from_declared(
+                    declared,
+                    configured
+                        .raw_params
+                        .iter()
+                        .map(|(k, v)| (k.as_str(), v.as_str())),
+                )
+                .map(|a| a.iter().map(|(k, v)| (k.to_string(), v.clone())).collect())
+                .unwrap_or_default(),
             });
         }
     }
@@ -2653,25 +2662,21 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
 /// and `consistency_batch` which fans out to both). Default `false`
 /// preserves discovery-only. See `JobRunArgs.repair` for the
 /// content-safety and race-safety guarantees.
-#[derive(serde::Deserialize)]
-pub struct TriggerJobQuery {
-    #[serde(default)]
-    pub force: bool,
-    #[serde(default)]
-    pub deep: bool,
-    /// Optional named storage entry to scope the run against — used by
-    /// tenants that respect `JobRunArgs.storage` (currently
-    /// `backend_migration` for its target; `blobs_consistency` /
-    /// `backend_consistency` will pick this up in slice 7 to probe a
-    /// non-active entry). Ignored by tenants that don't declare a
-    /// semantic for it. Unknown-name validation is per-tenant — the
-    /// generic trigger endpoint doesn't cross-check against
-    /// `AppConfig.storage_entries`.
-    #[serde(default)]
-    pub storage: Option<String>,
-    #[serde(default)]
-    pub repair: bool,
-}
+/// Free-form trigger parameters, validated against the target job's
+/// declaration rather than against a fixed field list.
+///
+/// A plain `HashMap`, not a newtype over one: `serde_urlencoded` cannot
+/// deserialize a newtype struct at the top level, so wrapping it made
+/// axum's `Query` extractor reject **every** trigger with a 400 — even
+/// one with no query string at all — before the handler ran.
+///
+/// This replaced a struct naming `force` / `deep` / `storage` /
+/// `repair`, which meant every job advertised the same four whether it
+/// read them or not, and a fifth could not be added without editing it.
+/// Now the job says what it accepts and
+/// [`JobRunArgs::from_declared`] does the parsing, so an undeclared
+/// parameter is a 400 naming the real ones instead of a silent no-op.
+pub type TriggerJobQuery = std::collections::HashMap<String, String>;
 
 /// `POST /api/admin/jobs/{name}/trigger` — dispatch one run off-schedule.
 ///
@@ -2701,27 +2706,69 @@ pub async fn trigger_job(
     axum::extract::Query(query): axum::extract::Query<TriggerJobQuery>,
 ) -> impl IntoResponse {
     use crate::infrastructure::scheduler::JobRunArgs;
+
+    // Parse against the job's own declaration. Unknown job → 404 here
+    // rather than after dispatch, and an undeclared parameter → 400
+    // naming what the job does accept.
+    // Same body as the dispatch-time 404 below — `error` + `name`.
+    // Clients switch on `error`, so an early return with different
+    // wording would make "unknown job" mean two things depending on how
+    // far the request happened to get. This path only exists because the
+    // declaration has to be read BEFORE the query can be parsed.
+    let Some(declared) = state.core.job_registry.parameters_of(&name).await else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "job not registered",
+                "name": name,
+            })),
+        )
+            .into_response();
+    };
+    let args = match JobRunArgs::from_declared(
+        declared,
+        query.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+    ) {
+        Ok(a) => a,
+        Err(reason) => {
+            // Audited: a rejected trigger is an operator action that did
+            // not happen, and the panel only shows the message.
+            tracing::info!(
+                target: "audit",
+                event = "job.trigger_rejected",
+                reason = "bad_parameters",
+                job = %name,
+                detail = %reason,
+                "👮🏻‍♂️ Admin trigger rejected for {name}: {reason}",
+            );
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": reason })),
+            )
+                .into_response();
+        }
+    };
+
     // Audit line BEFORE dispatch so an operator triggering something
-    // that then hangs still leaves a trail.
+    // that then hangs still leaves a trail. Parameters are rendered from
+    // the parsed args rather than named individually, so a job growing
+    // one does not need this line edited — and cannot end up triggered
+    // with something the audit trail never recorded.
+    let params_desc = if args.is_empty() {
+        "none".to_string()
+    } else {
+        args.iter()
+            .filter_map(|(k, v)| v.to_param_string().map(|s| format!("{k}={s}")))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     tracing::info!(
         target: "audit",
         event = "job.trigger",
         job = %name,
-        force = query.force,
-        deep = query.deep,
-        repair = query.repair,
-        "👮🏻‍♂️ Admin triggered job {} (force={}, deep={}, repair={})",
-        name,
-        query.force,
-        query.deep,
-        query.repair,
+        params = %params_desc,
+        "👮🏻‍♂️ Admin triggered job {name} ({params_desc})",
     );
-    let args = JobRunArgs {
-        force: query.force,
-        deep: query.deep,
-        storage: query.storage.clone(),
-        repair: query.repair,
-    };
 
     // Jobs that can run for hours (backend_migration, future
     // reextract_*) are detached: `tokio::spawn` the trigger so the
@@ -3139,5 +3186,46 @@ pub async fn purge_job_runs(
                 .into_response()
         }
         Err(e) => AppError::internal_error(format!("purge failed: {e}")).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The job-trigger query must extract from any URL shape, including
+    /// one with no query string at all.
+    ///
+    /// Regression: `TriggerJobQuery` was briefly a newtype over the map
+    /// (`struct TriggerJobQuery(HashMap<..>)`). `serde_urlencoded`
+    /// cannot deserialize a newtype struct at the top level, so axum's
+    /// `Query` extractor rejected EVERY trigger with a 400 before the
+    /// handler body ran — including bare `POST …/dedup_gc/trigger`. It
+    /// compiled, and it read as if the free-form parameters had been
+    /// rejected by validation, which sent the first diagnosis at the
+    /// wrong layer entirely.
+    #[test]
+    fn trigger_query_extracts_from_every_url_shape() {
+        fn parse(uri: &str) -> TriggerJobQuery {
+            axum::extract::Query::<TriggerJobQuery>::try_from_uri(&uri.parse().unwrap())
+                .unwrap_or_else(|e| panic!("extractor rejected `{uri}`: {e}"))
+                .0
+        }
+
+        assert!(parse("http://x/api/admin/jobs/dedup_gc/trigger").is_empty());
+        assert!(parse("http://x/api/admin/jobs/dedup_gc/trigger?").is_empty());
+
+        let one = parse("http://x/api/admin/jobs/dedup_gc/trigger?force=true");
+        assert_eq!(one.get("force").map(String::as_str), Some("true"));
+
+        let two = parse("http://x/t?deep=true&storage=s3_prod");
+        assert_eq!(two.get("deep").map(String::as_str), Some("true"));
+        assert_eq!(two.get("storage").map(String::as_str), Some("s3_prod"));
+
+        // Undeclared names must reach the handler rather than being
+        // dropped by the extractor — rejecting them, with a message
+        // naming the job's real parameters, is the handler's job.
+        let typo = parse("http://x/t?repare=true");
+        assert_eq!(typo.get("repare").map(String::as_str), Some("true"));
     }
 }

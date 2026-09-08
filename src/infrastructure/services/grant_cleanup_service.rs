@@ -139,19 +139,31 @@ impl JobHandler for GrantCleanupService {
     /// `extra.grace_days` records which grace was applied so admin
     /// listings can see it without a second lookup.
     ///
-    /// `args.force = true` collapses the grace window to zero for
-    /// this run only — same semantic as
+    /// `force = true` collapses the grace window to zero for this run
+    /// only — same semantic as
     /// `POST /api/admin/jobs/grant_cleanup/trigger?force=true`. The
     /// configured `self.grace_days` is not mutated.
+    fn parameters(&self) -> &'static [crate::infrastructure::scheduler::JobParam] {
+        use crate::infrastructure::scheduler::JobParam;
+        const PARAMS: &[JobParam] = &[JobParam::boolean(
+            "force",
+            false,
+            "Collapse the expiry grace window to zero for this run. \
+             The configured grace is not changed.",
+        )];
+        PARAMS
+    }
+
     async fn run(&self, args: &JobRunArgs) -> JobOutcome {
-        let grace_override = if args.force { Some(0) } else { None };
+        let force = args.get_bool("force");
+        let grace_override = if force { Some(0) } else { None };
         let effective_grace = grace_override.unwrap_or(self.grace_days);
         match self.purge(grace_override).await {
             Ok(count) => JobOutcome::ok_with(
                 count,
                 serde_json::json!({
                     "grace_days": effective_grace,
-                    "forced": args.force,
+                    "forced": force,
                 }),
             ),
             Err(e) => JobOutcome::err(format!("grant cleanup failed: {e}")),

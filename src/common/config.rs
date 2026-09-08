@@ -2,8 +2,6 @@ use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::infrastructure::scheduler::JobRunArgs;
-
 /// Cache configuration
 #[derive(Debug, Clone)]
 pub struct CacheConfig {
@@ -2337,8 +2335,10 @@ pub struct GrantCleanupConfig {
 pub struct StartupJob {
     /// Registered job name — must match `JobHandler::name`.
     pub name: String,
-    /// Forwarded verbatim to `JobRegistry::trigger`.
-    pub args: JobRunArgs,
+    /// Untyped `key=value` pairs, parsed against the job's declared
+    /// parameters at dispatch. See [`parse_startup_job`] for why the
+    /// typing cannot happen here.
+    pub raw_params: Vec<(String, String)>,
 }
 
 /// Parse one `OXICLOUD_STARTUP_JOBS` entry: `name`, or
@@ -2364,39 +2364,24 @@ fn parse_startup_job(raw: &str) -> Result<StartupJob, String> {
         return Err("empty job name".to_string());
     }
 
-    let mut job = StartupJob {
-        name: name.to_string(),
-        args: JobRunArgs::default(),
-    };
-
+    // Raw pairs only. Config is parsed long before the job registry
+    // exists, so the declaration is not reachable here — typing and
+    // validation happen at dispatch (`di.rs`), which is also where an
+    // unknown job NAME is already caught with a boot panic. Both
+    // failures therefore surface at the same moment and in the same
+    // shape, rather than one at parse and one at dispatch.
+    let mut raw_params = Vec::new();
     for pair in query.split('&').filter(|p| !p.is_empty()) {
         let (key, value) = pair
             .split_once('=')
             .ok_or_else(|| format!("`{pair}` is not key=value (job `{name}`)"))?;
-        // Booleans accept only `true`/`false` — the same rule the HTTP
-        // trigger enforces, so a value that works in one place works in
-        // the other. See memory `bug_axum_query_bool_only_accepts_true_false`.
-        let as_bool = || match value {
-            "true" => Ok(true),
-            "false" => Ok(false),
-            other => Err(format!(
-                "`{key}={other}` on job `{name}`: expected true or false"
-            )),
-        };
-        match key {
-            "force" => job.args.force = as_bool()?,
-            "deep" => job.args.deep = as_bool()?,
-            "repair" => job.args.repair = as_bool()?,
-            "storage" => job.args.storage = Some(value.to_string()),
-            other => {
-                return Err(format!(
-                    "unknown flag `{other}` on job `{name}`: expected force, deep, repair \
-                     or storage"
-                ));
-            }
-        }
+        raw_params.push((key.to_string(), value.to_string()));
     }
-    Ok(job)
+
+    Ok(StartupJob {
+        name: name.to_string(),
+        raw_params,
+    })
 }
 
 /// What runs at boot when `OXICLOUD_STARTUP_JOBS` is unset.
@@ -4032,31 +4017,39 @@ mod tests {
         assert_eq!(rl.delta_upload_window_secs, 60);
     }
 
+    /// Helper: the raw value for `key`, or `None`.
+    fn raw<'a>(job: &'a StartupJob, key: &str) -> Option<&'a str> {
+        job.raw_params
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    }
+
     #[test]
-    fn startup_job_parses_name_and_flags() {
+    fn startup_job_parses_name_and_params() {
         let jobs = parse_startup_jobs(
             "thumb_derived_import?repair=true, thumb_attached_import ,blobs_consistency?deep=true&force=false",
         );
         assert_eq!(jobs.len(), 3);
 
         assert_eq!(jobs[0].name, "thumb_derived_import");
-        assert!(jobs[0].args.repair);
-        assert!(!jobs[0].args.deep);
+        assert_eq!(raw(&jobs[0], "repair"), Some("true"));
 
-        // Bare name → all flags default off, which is the discovery-only
-        // run. Naming a migration job without `repair` imports and stops.
+        // Bare name → no params at all, so every declared default
+        // applies. Naming a migration job without `repair` imports and
+        // stops, which is the discovery-only run.
         assert_eq!(jobs[1].name, "thumb_attached_import");
-        assert!(!jobs[1].args.repair);
+        assert!(jobs[1].raw_params.is_empty());
 
-        assert!(jobs[2].args.deep);
-        assert!(!jobs[2].args.force);
+        assert_eq!(raw(&jobs[2], "deep"), Some("true"));
+        assert_eq!(raw(&jobs[2], "force"), Some("false"));
     }
 
     #[test]
     fn startup_job_accepts_storage_scope() {
         let jobs = parse_startup_jobs("backend_consistency?storage=s3_prod&deep=true");
-        assert_eq!(jobs[0].args.storage.as_deref(), Some("s3_prod"));
-        assert!(jobs[0].args.deep);
+        assert_eq!(raw(&jobs[0], "storage"), Some("s3_prod"));
+        assert_eq!(raw(&jobs[0], "deep"), Some("true"));
     }
 
     #[test]
@@ -4087,27 +4080,29 @@ mod tests {
                 "transcode_import"
             ]
         );
-        assert!(jobs.iter().all(|j| j.args.repair));
-        assert!(jobs.iter().all(|j| !j.args.deep && !j.args.force));
+        assert!(jobs.iter().all(|j| raw(j, "repair") == Some("true")));
+        assert!(
+            jobs.iter()
+                .all(|j| raw(j, "deep").is_none() && raw(j, "force").is_none())
+        );
     }
 
-    /// A misspelled flag must not parse. Silently ignoring `repare=true`
-    /// leaves the job in discovery-only mode while the operator believes
-    /// the tier is draining — a failure that surfaces months later as
-    /// "the migration never finished", with nothing pointing at the
-    /// config line.
+    /// A misspelled or non-boolean parameter must still be fatal at boot
+    /// — silently ignoring `repare=true` leaves the job in discovery-only
+    /// mode while the operator believes the tier is draining, a failure
+    /// that surfaces months later as "the migration never finished" with
+    /// nothing pointing at the config line.
+    ///
+    /// **That check moved rather than went away.** It now runs in
+    /// `di.rs`, against the job's declared parameters, because only there
+    /// is the registry built — which also means the error names the
+    /// job's REAL parameters instead of a hardcoded list. Parsing here
+    /// deliberately accepts any `key=value`; see
+    /// `JobRunArgs::from_declared` and its tests for the rejection.
     #[test]
-    #[should_panic(expected = "unknown flag `repare`")]
-    fn startup_job_rejects_a_misspelled_flag() {
-        parse_startup_jobs("thumb_derived_import?repare=true");
-    }
-
-    /// Booleans take only true/false — the same rule the HTTP trigger
-    /// enforces, so a value that works in one place works in the other.
-    #[test]
-    #[should_panic(expected = "expected true or false")]
-    fn startup_job_rejects_a_non_boolean_flag_value() {
-        parse_startup_jobs("thumb_derived_import?repair=yes");
+    fn startup_job_defers_parameter_validation_to_dispatch() {
+        let jobs = parse_startup_jobs("thumb_derived_import?repare=true");
+        assert_eq!(raw(&jobs[0], "repare"), Some("true"));
     }
 
     #[test]

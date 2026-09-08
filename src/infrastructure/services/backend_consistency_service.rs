@@ -124,13 +124,36 @@ pub const BACKEND_CONSISTENCY_JOB_NAME: &str = "backend_consistency";
 /// touches a backend and so has no entry to scope.
 pub const PROBED_STORAGE_PARAM: &str = "probed_storage";
 
-/// Batch size for backend enumeration + DB probe. 500 is enough to
-/// amortise the DB round-trip while keeping the cancel-poll cadence
-/// sub-second (each batch = one backend list + one DB probe + Rust
-/// set-difference). Larger batches on S3 hit ListObjectsV2's
-/// per-request limit (1000) with wasted rows filtered client-side;
-/// smaller batches over-poll the DB.
+/// Batch size for backend enumeration + DB probe. 500 amortises the DB
+/// round-trip; larger batches on S3 hit ListObjectsV2's per-request
+/// limit (1000) with wasted rows filtered client-side, and smaller ones
+/// over-poll the DB.
+///
+/// **This is not the cancel cadence.** It used to be: a shallow batch is
+/// one backend list + one DB probe + a Rust set-difference, so polling
+/// once per batch kept cancel sub-second. Deep mode then moved into this
+/// tenant and added 500 full blob reads per batch — measured at 155 ms
+/// each against remote S3, so ~63 s per batch — and a cancel poll that
+/// only ran between batches left Pause/Cancel unresponsive for a minute
+/// on exactly the run an operator most wants to stop.
+///
+/// [`DEEP_CANCEL_POLL_EVERY`] decouples the two: cancellation is now
+/// checked inside the verify loop, so this constant went back to being
+/// purely about I/O batching.
 const BATCH_SIZE: usize = 500;
+
+/// How many deep verifications to run between cancel polls.
+///
+/// A poll is one small indexed DB read (~0.1 ms) against a blob read
+/// measured at 155 ms on remote storage, so polling every blob would
+/// cost well under 1%. 16 keeps even a local-backend deep run — where a
+/// verify is ~0.8 ms and the ratio is far less favourable — under a
+/// couple of percent, while capping cancel latency at well under a
+/// second on any backend.
+///
+/// Shallow batches do not need this: they are already fast enough that
+/// the per-batch poll bounds latency on its own.
+const DEEP_CANCEL_POLL_EVERY: u64 = 16;
 
 /// Grace window — orphans younger than this are skipped, since the
 /// write path is durability-before-visibility: bytes hit disk before
@@ -199,6 +222,25 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
          deleted."
     }
 
+    fn parameters(&self) -> &'static [crate::infrastructure::scheduler::JobParam] {
+        use crate::infrastructure::scheduler::JobParam;
+        const PARAMS: &[JobParam] = &[
+            JobParam::boolean(
+                "deep",
+                false,
+                "Read every matched blob back and re-hash it, catching \
+                 silent bit-rot. A full read of storage — can take hours.",
+            ),
+            JobParam::string(
+                "storage",
+                "Name of the storage entry to audit. Absent audits the \
+                 active backend; naming an entry is how either side of a \
+                 migration gets audited directly.",
+            ),
+        ];
+        PARAMS
+    }
+
     /// Approximate total: on a healthy install every backend blob
     /// has a `storage.blobs` row, so the DB count is a proxy for
     /// the backend count. The fraction deviating from 1.0 at run
@@ -240,27 +282,75 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
         // `blobs_consistency` uses — Fresh + args.storage=Some stamps
         // probed_storage into params; Resumed reads it back so a
         // mid-audit restart re-uses the same target.
-        let is_fresh = resume_cursor.is_none();
-        let probed_storage: Option<String> = if is_fresh {
-            let name = args.storage.clone();
-            if let Some(n) = &name
-                && let Err(e) = store.set_string_param(PROBED_STORAGE_PARAM, n).await
-            {
-                return RunOutcome::Failed {
-                    message: format!("persist {PROBED_STORAGE_PARAM} to params: {e}"),
-                };
+        // `run_or_resume` persists and restores `storage` for us now, so
+        // the normal path is a plain read.
+        //
+        // The fallback is a MIGRATION concern, not defensiveness. This job
+        // used to persist the same value under its own
+        // `probed_storage` key; a run paused before this change has that
+        // key and no `storage` one. Without the fallback such a run would
+        // resume against the ACTIVE backend instead of the entry it was
+        // auditing — silently auditing the wrong thing, which is worse
+        // than failing. Removable once no pre-upgrade paused runs remain.
+        let probed_storage: Option<String> = match args.get_str("storage") {
+            Some(name) => Some(name.to_string()),
+            None if resume_cursor.is_some() => {
+                match store.get_string_param(PROBED_STORAGE_PARAM).await {
+                    Ok(legacy) => {
+                        if legacy.is_some() {
+                            tracing::info!(
+                                target: "oxicloud::consistency",
+                                event = "backend_consistency.legacy_storage_param",
+                                run_id = %store.run_id(),
+                                "resumed a run that recorded its target under the pre-declaration \
+                                 `probed_storage` key"
+                            );
+                        }
+                        legacy
+                    }
+                    Err(e) => {
+                        return RunOutcome::Failed {
+                            message: format!("read {PROBED_STORAGE_PARAM} from params: {e}"),
+                        };
+                    }
+                }
             }
-            name
-        } else {
-            match store.get_string_param(PROBED_STORAGE_PARAM).await {
-                Ok(v) => v,
-                Err(e) => {
-                    return RunOutcome::Failed {
-                        message: format!("read {PROBED_STORAGE_PARAM} from params: {e}"),
-                    };
+            None => None,
+        };
+        // The entry name this run audits, recorded in the outcome so a
+        // finished run says WHAT it checked.
+        //
+        // Without it a completed run is silent about its target: findings
+        // carry `backend`, but a clean run has none, so after switching
+        // the active backend there is no way to tell which storage a
+        // previous green run actually verified. Ed hit exactly that —
+        // a 1.5s local sweep read as an S3 audit.
+        //
+        // Read from `admin_settings` rather than a boot-time snapshot,
+        // because a migration cutover rewrites it while the process
+        // lives; a cached copy would name the pre-cutover entry. Best
+        // effort: this is a label, and failing an audit over it would be
+        // the wrong trade.
+        let audited_entry: Option<String> = match &probed_storage {
+            Some(name) => Some(name.clone()),
+            None => {
+                match crate::infrastructure::services::entry_backend::resolve_active_entry(
+                    self.pool.as_ref(),
+                    &self.storage_entries,
+                )
+                .await
+                {
+                    Ok(crate::infrastructure::services::entry_backend::ActiveEntry::Explicit(
+                        e,
+                    )) => Some(e.name.clone()),
+                    // Unset means the boot fallback picked the first
+                    // entry; naming it would be a guess, and a wrong
+                    // label is worse than an absent one.
+                    _ => None,
                 }
             }
         };
+
         let backend: Arc<dyn BlobStorageBackend> = match &probed_storage {
             None => self.backend.clone(),
             Some(name) => match self.storage_entries.iter().find(|e| &e.name == name) {
@@ -313,35 +403,39 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
         // that tenant to carry a backend for one flag, which is the
         // overlap this split removes.
         //
-        // Persisted to `params.deep` on a Fresh run so a Resume picks up
-        // the same mode (a Paused deep scan must not silently continue
-        // shallow) and the admin run-detail view can show what the scan
-        // actually verified. Written BEFORE the walk so a crash mid-batch
-        // still leaves the marker.
-        let deep = if is_fresh {
-            let v = if args.deep { "true" } else { "false" };
-            if let Err(e) = store.set_string_param("deep", v).await {
-                return RunOutcome::Failed {
-                    message: format!("failed to persist deep flag to params: {e}"),
-                };
-            }
-            args.deep
-        } else {
-            match store.get_string_param("deep").await {
-                Ok(Some(v)) => v == "true",
-                Ok(None) => false,
-                Err(e) => {
-                    return RunOutcome::Failed {
-                        message: format!("read `deep` from params: {e}"),
-                    };
-                }
-            }
-        };
+        // Persisted to `params.deep` and restored on resume by
+        // `run_or_resume`, so a Paused deep scan does not silently
+        // continue shallow and the run-detail view can show what the scan
+        // actually verified.
+        let deep = args.get_bool("deep");
+
+        // Verify through storage, never through a read-through cache.
+        //
+        // A cache answers from its own copy, so re-hashing through one
+        // checks the CACHE: rot on the remote is masked by a good cached
+        // copy, and rot in the cache is recorded as `blob_corrupted`
+        // against a healthy remote — sending an operator to the wrong
+        // layer. The finding names `backend.backend_type()`, so that
+        // attribution has to be true.
+        //
+        // Only the cache is peeled; the decryptor stays, because the
+        // cache holds plaintext and the content hash is over plaintext.
+        // `?storage=<entry>` already builds an uncached stack, so this
+        // only changes the live-backend path — which is the one that was
+        // silently fast.
+        let verify_backend = backend.uncached().unwrap_or_else(|| backend.clone());
+        // Counter, not just a flag: a deep run that verified nothing and
+        // a deep run that verified everything are otherwise
+        // indistinguishable in the outcome, which is exactly the
+        // ambiguity that made a 1.5s "deep" sweep over 2022 chunks look
+        // plausible.
+        let mut verified_count = 0u64;
         if deep {
             tracing::info!(
                 target: "oxicloud::consistency",
                 event = "backend_consistency.deep_mode_active",
                 run_id = %store.run_id(),
+                cached_read_bypassed = backend.uncached().is_some(),
                 "deep mode: re-reading + re-hashing every matched blob (bit-rot detection)"
             );
         }
@@ -462,10 +556,17 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                     event = "backend_consistency.completed",
                     run_id = %store.run_id(),
                     finding_count = finding_count,
+                    verified = verified_count,
                     "backend_consistency completed with {} finding(s)",
                     finding_count
                 );
-                return RunOutcome::completed();
+                return RunOutcome::completed_with(serde_json::json!({
+                    "deep":          deep,
+                    "verified":      verified_count,
+                    "backend":       backend.backend_type(),
+                    "storage_entry": audited_entry,
+                    "scoped":        probed_storage.is_some(),
+                }));
             }
 
             // ── Merge-join, not a one-sided probe ────────────────
@@ -534,6 +635,11 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
 
             let mut bi = page.blobs.iter().peekable();
             let mut di = db_hashes.iter().peekable();
+            // Highest hash fully handled in THIS batch — findings
+            // recorded, bytes verified if deep. A mid-batch pause resumes
+            // here, so it must only advance once an arm is finished with
+            // its item, never on entry.
+            let mut settled: Option<String> = None;
             loop {
                 match (bi.peek(), di.peek()) {
                     // Present on both sides. Shallow: nothing to say — the
@@ -547,9 +653,62 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                     // verified then.
                     (Some(b), Some(d)) if b.hash == **d => {
                         if deep && in_range(&b.hash) {
-                            finding_count +=
-                                self.verify_bytes(store, backend.as_ref(), &b.hash).await;
+                            // Cancel poll INSIDE the verify loop, because
+                            // the per-batch poll bounds latency by one
+                            // batch — ~63 s of remote reads in deep mode,
+                            // a minute of an apparently ignored Cancel on
+                            // a run that may last hours.
+                            //
+                            // Pauses at `settled`, the last pair fully
+                            // handled, NOT at the batch's start cursor.
+                            // The merge-join walks both sides in
+                            // ascending hash order, so everything at or
+                            // below `settled` has had its findings
+                            // recorded and its bytes verified — resuming
+                            // there re-does one pair, not five hundred.
+                            //
+                            // The batch-start cursor would have been
+                            // correct but wasteful: in the FIRST batch it
+                            // is empty, so a pause 27 s into a 63 s batch
+                            // threw away the whole scan.
+                            if verified_count.is_multiple_of(DEEP_CANCEL_POLL_EVERY)
+                                && matches!(store.status().await, Ok(RunStatus::CancelRequested))
+                            {
+                                let resume_at = settled.clone().or_else(|| cursor.clone());
+                                tracing::info!(
+                                    target: "oxicloud::consistency",
+                                    event = "backend_consistency.cancelled_mid_verify",
+                                    run_id = %store.run_id(),
+                                    verified = verified_count,
+                                    resume_at = resume_at.as_deref().unwrap_or("<start>"),
+                                    "deep verify cancelled mid-batch, pausing at the last settled hash"
+                                );
+                                // Checkpoint so the cursor survives even
+                                // if the engine's Paused write races a
+                                // restart; `scanned_count` is already
+                                // counted per batch, so add nothing here.
+                                let bytes = resume_at
+                                    .as_ref()
+                                    .map(|s| s.as_bytes().to_vec())
+                                    .unwrap_or_default();
+                                if let Err(e) = store.checkpoint(bytes.clone(), 0).await {
+                                    tracing::warn!(
+                                        target: "oxicloud::consistency",
+                                        event = "backend_consistency.pause_checkpoint_failed",
+                                        run_id = %store.run_id(),
+                                        error = %e,
+                                        "could not persist the mid-batch cursor; resume will \
+                                         restart from the previous batch"
+                                    );
+                                }
+                                return RunOutcome::Paused { cursor: bytes };
+                            }
+                            verified_count += 1;
+                            finding_count += self
+                                .verify_bytes(store, verify_backend.as_ref(), &b.hash)
+                                .await;
                         }
+                        settled = Some(b.hash.clone());
                         bi.next();
                         di.next();
                     }
@@ -578,6 +737,7 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                             )
                             .await;
                         }
+                        settled = Some(b.hash.clone());
                         bi.next();
                     }
                     // DB-only: a row whose bytes are gone. Severity is
@@ -600,6 +760,7 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                             }),
                         )
                         .await;
+                        settled = Some((*d).clone());
                         di.next();
                     }
                     // Past the horizon on both sides, or both exhausted.
@@ -653,10 +814,21 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                     event = "backend_consistency.completed",
                     run_id = %store.run_id(),
                     finding_count = finding_count,
+                    verified = verified_count,
                     "backend_consistency completed with {} finding(s)",
                     finding_count
                 );
-                return RunOutcome::completed();
+                // `verified` is reported on EVERY run, zero included:
+                // absent-vs-zero is exactly the distinction an operator
+                // needs, and omitting it on a shallow run would make
+                // "deep verified nothing" look like "this was shallow".
+                return RunOutcome::completed_with(serde_json::json!({
+                    "deep":          deep,
+                    "verified":      verified_count,
+                    "backend":       backend.backend_type(),
+                    "storage_entry": audited_entry,
+                    "scoped":        probed_storage.is_some(),
+                }));
             }
         }
     }
