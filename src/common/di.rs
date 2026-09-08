@@ -329,7 +329,8 @@ impl AppServiceFactory {
         // just before the struct init.
         let active_backend_name = Arc::new(std::sync::RwLock::new(active_backend_name));
 
-        // Stack decorators: retry → encryption → cache (inner-to-outer).
+        // Stack decorators: timeout → retry → encryption → cache
+        // (inner-to-outer).
         //
         // Encryption is applied INSIDE build_entry_backend (per-entry
         // key), so it's already on the base returned above when the
@@ -342,6 +343,32 @@ impl AppServiceFactory {
         // per-entry, so they still apply here. `active_backend_kind`
         // gates the "remote-only" decorators the same as before.
         let mut blob_backend: Arc<dyn BlobStorageBackend> = base_backend;
+
+        // Timeout decorator — INNERMOST, and applied to every backend
+        // kind including Local.
+        //
+        // It has to sit below retry: a call that never returns produces
+        // no error, so retry has nothing to react to and the job never
+        // pauses. Converting the hang into a transient error first is
+        // what gives every layer above it something to act on.
+        //
+        // Unconditional by design. Retry is gated on "not Local" because
+        // the kernel already retries local I/O, but a bound that never
+        // fires is free, and keeping the chain uniform avoids a class of
+        // backend-specific surprise.
+        {
+            use crate::infrastructure::services::timeout_blob_backend::TimeoutBlobBackend;
+            let policy = self.config.storage.timeout.clone();
+            if policy.is_enabled() {
+                blob_backend = Arc::new(TimeoutBlobBackend::new(blob_backend, policy.clone()));
+                tracing::info!(
+                    metadata_ms = policy.metadata.map(|d| d.as_millis() as u64),
+                    open_ms = policy.open.map(|d| d.as_millis() as u64),
+                    write_ms = policy.write.map(|d| d.as_millis() as u64),
+                    "Blob storage timeout decorator enabled"
+                );
+            }
+        }
 
         // Retry decorator (for remote backends)
         if self.config.storage.retry.enabled && active_backend_kind != StorageBackendType::Local {

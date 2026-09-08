@@ -99,7 +99,28 @@ where
 }
 
 /// Determine if an error is likely transient (network timeout, 5xx, etc.).
+///
+/// Asks the error first. `DomainError::is_transient` is the single
+/// answer to that question, so this decorator and the job engine cannot
+/// classify the same failure differently.
+///
+/// **The substring arm is transitional.** It is what this function used
+/// to be, in full: a `to_lowercase()` scan of `Display` output for
+/// "timeout", "503", "reset by peer" and friends. That is fragile in a
+/// specific way — an SDK reformatting its error text silently turns
+/// retries off, with nothing failing to say so — and it cannot see a
+/// status code that never made it into the message.
+///
+/// It stays only until every backend classifies at the point of
+/// wrapping, where the status is still in hand. Deleting it before then
+/// would silently REDUCE retrying on the backends not yet converted,
+/// which is the worse direction to be wrong in. Delete it once
+/// `grep -rn "transient_backend" src/infrastructure/services/` covers
+/// every backend that wraps a remote SDK error.
 fn is_retryable(err: &DomainError) -> bool {
+    if err.is_transient() {
+        return true;
+    }
     let msg = err.to_string().to_lowercase();
     msg.contains("timeout")
         || msg.contains("connection")

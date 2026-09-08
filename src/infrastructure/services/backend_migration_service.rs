@@ -452,9 +452,11 @@ impl RecoverableJobHandler for BackendMigrationService {
         // for the swap-hot-swap call in `finish_completed`.
         let target = build_entry_backend_typed(target_entry, &self.storage_path_fallback);
         if let Err(e) = target.initialize().await {
-            return RunOutcome::Failed {
-                message: format!("target backend init: {e}"),
-            };
+            // Runs BEFORE `migration_readonly` is engaged, so pausing
+            // here holds no write freeze — an operator can leave it
+            // paused indefinitely and resume when the target comes back.
+            // A wrong bucket or bad credentials still fails terminally.
+            return RunOutcome::from_domain_error(None, "target backend init", &e);
         }
 
         // All guards passed. Engage server-wide read-only mode for
@@ -555,16 +557,33 @@ impl RecoverableJobHandler for BackendMigrationService {
             },
         };
 
-        let mut copied_count = 0u64;
+        // Restored on Resume, exactly like `already_scanned` above.
+        //
+        // These used to start at zero on every segment while
+        // `scanned_count` was restored, so one counter described the
+        // migration and the other four described the current segment.
+        // A run that paused and resumed then reported `copied: 0`
+        // beside a `scanned_count` in the thousands — the numbers were
+        // measuring different things and only one of them said so.
+        // `checkpoint_counters` below persists them per batch so a
+        // pause cannot discard them.
+        let restore = |key: &'static str| async move {
+            if is_fresh {
+                0
+            } else {
+                store.stat_u64(key).await.unwrap_or(0)
+            }
+        };
+        let mut copied_count = restore("copied").await;
         // Populated by the smart-skip probe below: target blob
         // already exists at the current head format+key, so a
         // rewrite would be identical bytes. Cheap (15-byte range
         // read via `is_at_head_format`), massive latency win on
         // resume + on backends where the source was rotated to the
         // same key as the target already had.
-        let mut skipped_count: u64 = 0;
-        let mut failed_count = 0u64;
-        let mut source_missing_count = 0u64;
+        let mut skipped_count: u64 = restore("skipped").await;
+        let mut failed_count = restore("failed").await;
+        let mut source_missing_count = restore("source_missing").await;
 
         loop {
             // Cooperative cancel poll between batches.
@@ -580,6 +599,23 @@ impl RecoverableJobHandler for BackendMigrationService {
                         source_missing = source_missing_count,
                         "backend_migration cancelled cooperatively, pausing"
                     );
+                    // A TERMINAL cancel must give writes back.
+                    //
+                    // Cancel ends the run with no swap, so the source
+                    // stays the active backend and there is nothing left
+                    // to protect. Leaving the gate set stranded the whole
+                    // application read-only with no way out: the flag is
+                    // persisted, so a restart reloaded it rather than
+                    // clearing it, and the only escape was editing
+                    // `admin_settings` by hand.
+                    //
+                    // A plain PAUSE deliberately keeps the gate. The
+                    // cursor stays valid only while nothing writes, so
+                    // resuming after allowing writes could miss a blob
+                    // written below the cursor — see the plan's
+                    // "Why NOT to release the gate on pause". Cancel is
+                    // the escape hatch, and it is the operator's call.
+                    self.release_readonly_on_terminal_cancel(store).await;
                     return RunOutcome::Paused {
                         cursor: cursor
                             .as_ref()
@@ -671,21 +707,72 @@ impl RecoverableJobHandler for BackendMigrationService {
                         .await;
                         continue;
                     }
+                    Err(e) if e.is_transient() => {
+                        // PAUSE. Skipping here was a data-loss path.
+                        //
+                        // The old comment called this "a network blip"
+                        // and `continue`d, reasoning that a re-run would
+                        // re-probe. It would not: the cursor advances to
+                        // the batch's last hash regardless, so a skipped
+                        // row is never revisited by THIS run — and unlike
+                        // a copy failure it recorded no finding, so
+                        // `failed` stayed 0, the run reached
+                        // `finish_completed`, and the pointer flipped to
+                        // a target missing every blob the outage
+                        // covered.
+                        //
+                        // That is the worst shape available: a migration
+                        // reporting success while having silently
+                        // dropped whatever was unreachable at the time.
+                        tracing::warn!(
+                            target: "oxicloud::migration",
+                            event = "backend_migration.source_unreachable",
+                            run_id = %store.run_id(),
+                            hash = %hash,
+                            copied = copied_count,
+                            error = %e,
+                            "source unreachable while probing; pausing at the last checkpoint"
+                        );
+                        return RunOutcome::from_domain_error(
+                            cursor.as_ref().map(|s| s.as_bytes()),
+                            &format!(
+                                "source unreachable while probing ({copied_count} blob(s) \
+                                 copied so far)"
+                            ),
+                            &e,
+                        );
+                    }
                     Err(e) => {
-                        // Transient probe failure on source is NOT a
-                        // finding — treat like a network blip.
-                        // Skipping this row on this run; a re-run
-                        // will re-probe. If the failure is
-                        // persistent, `blobs_consistency` catches
-                        // it.
+                        // Permanent probe failure. Still skipped rather
+                        // than fatal — one unprobeable blob must not
+                        // abort the migration — but it now records a
+                        // finding, so the run cannot report clean while
+                        // having skipped rows, and `blobs_consistency`
+                        // is not the only thing that would ever notice.
                         tracing::warn!(
                             target: "oxicloud::migration",
                             event = "backend_migration.source_probe_error",
                             run_id = %store.run_id(),
                             hash = %hash,
                             error = %e,
-                            "source blob_exists probe failed; skipping this row"
+                            "source blob_exists probe failed; recording finding, skipping row"
                         );
+                        failed_count += 1;
+                        record_or_log(
+                            store,
+                            BACKEND_MIGRATION_JOB_NAME,
+                            "migration_failed",
+                            "data_loss",
+                            None,
+                            serde_json::json!({
+                                "hash":   hash,
+                                "size":   size,
+                                "source": source_kind,
+                                "target": target_kind,
+                                "error":  format!("source probe failed: {e}"),
+                            }),
+                        )
+                        .await;
                         continue;
                     }
                 }
@@ -757,6 +844,58 @@ impl RecoverableJobHandler for BackendMigrationService {
                         }
                     }
                     Err(e) => {
+                        // A transient failure pauses IMMEDIATELY. Not
+                        // after a threshold — on the first one.
+                        //
+                        // The cursor advances to the batch's LAST hash,
+                        // after this loop. So continuing past a transient
+                        // failure lets the batch finish and the cursor
+                        // move BEYOND the blob that failed, and nothing
+                        // revisits it: the run would carry a `data_loss`
+                        // finding for a blob that was never damaged, only
+                        // briefly unreachable. Ed caught this in review of
+                        // a "tolerate N consecutive" version — that
+                        // version skipped up to N blobs per batch for
+                        // exactly this reason.
+                        //
+                        // Pausing here keeps the cursor at the PREVIOUS
+                        // batch's end, so a resume re-walks this batch
+                        // and retries the blob. Re-copying a few
+                        // already-present blobs is free — the walk
+                        // short-circuits on them.
+                        //
+                        // Tolerate-and-continue still applies to
+                        // PERMANENT failures, which is what it was built
+                        // for: one corrupt or unreadable blob must not
+                        // abort a migration of millions, and retrying it
+                        // would fail identically.
+                        //
+                        // The copy has already been retried beneath this
+                        // (RetryBlobBackend: 3 attempts with backoff), so
+                        // arriving here means 4 attempts failed.
+                        if e.is_transient() {
+                            tracing::warn!(
+                                target: "oxicloud::migration",
+                                event = "backend_migration.backend_unreachable",
+                                run_id = %store.run_id(),
+                                hash = %hash,
+                                copied = copied_count,
+                                error = %e,
+                                "backend unreachable; pausing at the last checkpoint so this \
+                                 blob is retried on resume"
+                            );
+                            // `migration_readonly` stays engaged — only
+                            // Cancel releases it. See
+                            // `release_readonly_on_terminal_cancel`.
+                            return RunOutcome::from_domain_error(
+                                cursor.as_ref().map(|s| s.as_bytes()),
+                                &format!(
+                                    "backend unreachable while copying ({copied_count} blob(s) \
+                                     copied so far)"
+                                ),
+                                &e,
+                            );
+                        }
                         failed_count += 1;
                         tracing::warn!(
                             target: "oxicloud::migration",
@@ -801,6 +940,29 @@ impl RecoverableJobHandler for BackendMigrationService {
                     message: format!("checkpoint: {e}"),
                 };
             }
+            // Persist the counters alongside the cursor. Absolute
+            // values, not deltas — the merge is last-write-wins, and
+            // the checkpoint above already made this batch's work part
+            // of the durable position. A failure here is logged but
+            // does NOT fail the run: the cursor is the correctness-
+            // critical write, these are reporting.
+            let counters: serde_json::Map<String, serde_json::Value> = serde_json::json!({
+                "copied":         copied_count,
+                "skipped":        skipped_count,
+                "failed":         failed_count,
+                "source_missing": source_missing_count,
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+            if let Err(e) = store.checkpoint_counters(&counters).await {
+                tracing::warn!(
+                    target: "oxicloud::migration",
+                    event = "backend_migration.counter_persist_failed",
+                    error = %e,
+                    "could not persist per-batch counters; totals may under-report after a resume"
+                );
+            }
             // Bump the shared progress snapshot so the server-status
             // header middleware surfaces fresh numbers on every
             // user's next API call. Guard is held only for a struct
@@ -834,6 +996,66 @@ impl RecoverableJobHandler for BackendMigrationService {
 }
 
 impl BackendMigrationService {
+    /// Clear `migration_readonly` when the cancel was TERMINAL.
+    ///
+    /// Cancel ends the run with no swap: the source is still the active
+    /// backend, so there is nothing left for the write freeze to
+    /// protect, and leaving it set locks the whole application out of
+    /// writes. The flag is persisted, so that state survived restarts —
+    /// the only escape was hand-editing `admin_settings`.
+    ///
+    /// **Pause is deliberately not this.** The cursor is a position in a
+    /// hash-ordered walk, and it stays valid only while nothing writes.
+    /// Release the gate on pause and a blob written afterwards whose
+    /// hash sorts BELOW the cursor is never visited, so the run
+    /// completes, flips the pointer, and reads for that hash 404 against
+    /// a target that never received it. Cancel is safe precisely because
+    /// it ENDS the run: a later retry starts fresh and rescans
+    /// everything.
+    ///
+    /// Distinguished by the same `cancel_intent` param the engine reads
+    /// to decide `Cancelled` vs `Paused`, so the two cannot disagree
+    /// about which kind of stop this was.
+    ///
+    /// Best effort, and deliberately so: a run that has already been
+    /// cancelled should not be turned into a hard failure by a DB blip
+    /// while releasing a flag. The in-memory store still happens, so
+    /// writes resume in THIS process even if the persist fails; the loud
+    /// warning is what tells an operator the DB copy needs attention.
+    async fn release_readonly_on_terminal_cancel(&self, store: &dyn JobStore) {
+        let terminal = store
+            .get_string_param(crate::infrastructure::scheduler::CANCEL_INTENT_PARAM)
+            .await
+            .ok()
+            .flatten()
+            .as_deref()
+            == Some(crate::infrastructure::scheduler::CANCEL_INTENT_TERMINATE);
+        if !terminal {
+            return;
+        }
+
+        if let Err(e) = persist_migration_readonly(self.pool.as_ref(), false).await {
+            tracing::warn!(
+                target: "oxicloud::migration",
+                event = "storage.migration_readonly.release_persist_failed",
+                run_id = %store.run_id(),
+                error = %e,
+                "could not persist migration_readonly=false after a terminal cancel; writes \
+                 resume in this process but a restart will come up read-only until \
+                 admin_settings is corrected"
+            );
+        }
+        self.migration_readonly.store(false, Ordering::Relaxed);
+        tracing::info!(
+            target: "audit",
+            event = "storage.migration_readonly.released",
+            reason = "migration_cancelled",
+            run_id = %store.run_id(),
+            "🚧 migration_readonly released after terminal cancel — writes resume, active \
+             backend unchanged"
+        );
+    }
+
     /// Terminal successful path — reached from both Completed sites
     /// in the batch loop (empty-first-batch and short-batch).
     ///

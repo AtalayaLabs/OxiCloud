@@ -1,7 +1,60 @@
 # Recoverable errors in jobs — retry, then pause
 
-**Status: not started.** Design settled 2026-08-31, from a live
-diagnosis (see [Motivating incident](#motivating-incident)).
+**Status: implemented 2026-09-08**, except the online-migration
+follow-up in [Where this should end up](#where-this-should-end-up),
+which remains deliberately out of scope. Design settled 2026-08-31,
+from a live diagnosis (see
+[Motivating incident](#motivating-incident)).
+
+Steps 1–4 are in, and §Testing is enforced by
+`tests/api/backend_migration_blackhole.hurl`. Validated by hand against
+a real S3 endpoint in both directions, with the network blackholed
+mid-run: source-probe failure, target-upload failure and target-init
+failure all reach `Paused` with the cause recorded and the cursor
+positioned so nothing is skipped.
+
+Two things the design did not anticipate, both found during
+implementation and worth reading before touching this area:
+
+* **Classification was not enough on its own.** A backend that *fails*
+  was the case this plan modelled. A backend that never *answers* has
+  no error to classify, so no amount of retry policy sees it. The S3
+  client was built from a bare `config::Builder::new()` and carried no
+  `TimeoutConfig` at all, which also meant `SdkError::TimeoutError` —
+  an arm the classifier already handled — was unreachable in
+  production. Fixed with `TimeoutBlobBackend` (innermost, below retry)
+  plus the SDK's own connect/read timeouts and stalled-stream
+  protection. See that module's docs for why the bound lives in the
+  chain rather than being configured per SDK.
+
+* **`NotFound` was returned for every read failure.** Nine sites across
+  S3, Azure and local. `blob_exists` was among them, and it is the
+  migration's FIRST probe of the source — so a transient outage read as
+  "blob absent", took the permanent branch, advanced the cursor past
+  the row and could reach `finish_completed` with the pointer flipped
+  to a target missing everything the outage covered. A migration
+  reporting success having silently dropped whatever was unreachable.
+  That path is why the retry-then-pause policy alone would not have
+  been sufficient.
+
+Reporting bugs surfaced by the same testing, all fixed: a paused run
+logged `outcome="ok"`, a resumed run inherited the previous attempt's
+`error_message` through to `Completed`, and four of five migration
+counters reset per segment while `scanned_count` alone was cumulative.
+
+Known remaining, none of them blocking:
+
+* The online-migration shape below (the gate is still held for the
+  whole copy, so a paused migration freezes writes until an operator
+  resumes or cancels).
+* Per-backend SDK retry tuning — see [Scope](#scope-azure-and-s3-both).
+  Two retry layers currently stack multiplicatively, so the configured
+  retry count is not the effective one and detection takes ~2min rather
+  than ~30s.
+* `scanned_count` over-reported once (2522 against 2022 rows) on a run
+  with several pause/resume cycles. Not reproduced in five runs since;
+  now observable rather than inferable, because counters are persisted
+  per batch.
 
 A job that hits a failing backend today has two possible endings, and
 neither is right for an outage: it fails the run (throwing away a
@@ -90,7 +143,7 @@ implementation possible, and it is step 1.
 
 ---
 
-## Step 1 — errors say whether they are retryable
+## Step 1 — errors say whether they are retryable — **DONE**
 
 Today both backends wrap SDK errors into
 `DomainError::internal_error("Azure", format!("…{e}"))`, so the status
@@ -120,7 +173,7 @@ own backoff, so a second layer above it multiplies. Check what the S3
 backend inherits before adding anything, and consider making the
 engine's cap the *outer* bound with SDK retries reduced or disabled.
 
-## Step 2 — an outcome the engine can act on
+## Step 2 — an outcome the engine can act on — **DONE**
 
 `RunOutcome` grows a variant meaning "the environment failed, this is
 worth trying again later":
@@ -143,7 +196,7 @@ differs is `error_message`, which must let the panel — and an operator —
 tell "I paused this" from "the provider went down". Without that
 distinction a paused run is an unexplained one.
 
-## Step 3 — the engine implements the policy
+## Step 3 — the engine implements the policy — **DONE**
 
 In `run_or_resume`:
 
@@ -159,7 +212,7 @@ Handlers then return the retryable outcome and get the policy for free.
 
 ---
 
-## Step 4 — `migration_readonly`, the sharp edge
+## Step 4 — `migration_readonly`, the sharp edge — **DONE** (conservative option; gate still held while paused, confirmed as intended)
 
 `backend_migration` holds a gate that refuses writes **application-wide**
 until cutover. What happens to it on pause is a correctness question,
@@ -238,7 +291,36 @@ SDK retry tuning stays a separate, optional refinement — and for Azure
 specifically it should wait for the official SDK, since `azure_core`
 0.21 is archived and queued for replacement.
 
-## Testing
+## Testing — **DONE**
+
+Implemented as `tests/api/backend_migration_blackhole.hurl`, though not
+the way this section anticipated. Two departures worth recording:
+
+**The fixture is an unreachable address, not Azurite.** Azurite's
+deterministic CRC64 500 is a *failure*, and failures were never the
+hard case — they surface, get classified and retry. The case that hung
+is a peer that never answers, so the entry points at `192.0.2.1`
+(TEST-NET-1, RFC 5737, guaranteed unrouted): a SYN goes unanswered,
+with no RST and no ICMP. Note the existing `s3_stub` entry
+(`127.0.0.1:9999`) is NOT usable for this — nothing listens, so the
+connection is refused instantly, and a test built on it would pass with
+no timeout configured anywhere.
+
+**The bound is a polling budget, not a request duration.**
+`backend_migration` is a detached job: the trigger returns 202 in
+milliseconds regardless of how long the backend hangs, so timing the
+trigger proves nothing. The file polls `/runs` with `retry: 60,
+retry-interval: 2000` — 120s, three orders of magnitude below the
+unbounded socket's ~15min. That budget is the assertion; every other
+assert in the file would eventually pass even unbounded.
+
+It targets the **target-init** failure deliberately, because that path
+pauses BEFORE `migration_readonly` is engaged and so cannot leave the
+shared suite's server read-only. It also cancels its own run: a Paused
+row left behind would be resumed by the next `backend_migration`
+trigger in the suite.
+
+The original notes follow.
 
 The `backend_consistency_azure.hurl` scenario and its Azurite service
 are already wired (`tests/common/docker-compose.test.yml`,

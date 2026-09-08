@@ -227,6 +227,13 @@ hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test 
   "$API_DIR/nfc_normalization.hurl" \
   "$API_DIR/wopi_authz.hurl" \
   "$API_DIR/wopi_shared_drive.hurl" \
+  `# Second-to-last. The slowest file in the suite BY DESIGN: it waits` \
+  `# out an unreachable endpoint (~31s) to prove the wait is bounded, so` \
+  `# that cost belongs at the end rather than in the middle. It leaves no` \
+  `# read-only freeze behind — the migration fails at target init, before` \
+  `# the gate is engaged — and cancels its own run, so the shared DB is` \
+  `# clean for whatever follows.` \
+  "$API_DIR/backend_migration_blackhole.hurl" \
   `# LAST, deliberately — and kept last even though it no longer cuts` \
   `# the storage pointer over. It is the only scenario that depends on a` \
   `# second service (Azurite on 10000), so if that container is missing` \

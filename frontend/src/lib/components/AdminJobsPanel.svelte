@@ -516,8 +516,58 @@
 		}
 	}
 
+	// A run that stopped because the backend was unreachable, rather than
+	// because an operator asked it to stop.
+	//
+	// It reports `outcome: 'ok'` on the wire — correctly, since it did
+	// not fail and a Resume continues it — but rendering that as a plain
+	// green "ok" hides the thing worth acting on. A paused
+	// `backend_migration` is still holding `migration_readonly` and
+	// refusing writes across the whole app; the row has to say so.
+	/// Lifecycle label for the State column. Lower-cased to match the
+	/// existing `running` pill rather than shouting the DB's PascalCase.
+	function runStatusLabel(status: RunStatus): string {
+		switch (status) {
+			case 'Running':
+				return t('admin.jobs.state_running', 'running');
+			case 'Paused':
+				return t('admin.jobs.state_paused', 'paused');
+			case 'CancelRequested':
+				return t('admin.jobs.state_cancelling', 'cancelling');
+			case 'Cancelled':
+				return t('admin.jobs.state_cancelled', 'cancelled');
+			case 'Completed':
+				return t('admin.jobs.state_completed', 'completed');
+			case 'Failed':
+				return t('admin.jobs.state_failed', 'failed');
+		}
+	}
+
+	function backendFailureReason(job: JobSummary): string | undefined {
+		if (job.last_outcome?.outcome !== 'ok') return undefined;
+		const reason = job.last_outcome.extra?.reason;
+		return typeof reason === 'string' ? reason : undefined;
+	}
+
+	/// How the last dispatch turned out. NOT where the run is in its
+	/// lifecycle — that is the State column, driven by
+	/// `last_run_status`. A paused run legitimately has no outcome yet,
+	/// and saying so is the honest answer.
 	function outcomeLabel(job: JobSummary): string {
-		if (!job.last_outcome) return t('admin.jobs.never', 'never');
+		if (!job.last_outcome) {
+			// "never" means never ran. A job with a run row DID run — the
+			// outcome simply is not in memory, because `last_outcome` is
+			// populated per dispatch and a restart empties it. Saying
+			// "never" there is a lie the run history immediately
+			// contradicts: Ed saw it on a job whose last run was 8h ago.
+			//
+			// "—" is the honest answer: no outcome recorded. The State
+			// column still shows what the run did, and the drawer has
+			// the history.
+			return job.last_run_status
+				? t('admin.jobs.outcome_unknown', '—')
+				: t('admin.jobs.never', 'never');
+		}
 		if (job.last_outcome.outcome === 'ok') {
 			// `ok` on the wire = dispatch completed. If any actionable
 			// findings surfaced, we flip to "issues" (amber). If only
@@ -939,10 +989,25 @@
 								{/if}
 							</div>
 						</td>
+						<!-- STATE = where the run is in its lifecycle. Distinct
+						     from Outcome, which is how the work turned out.
+						     They are orthogonal: a Paused run has no outcome
+						     yet, and a Completed run's outcome may still be
+						     "issues". Conflating them is what made a paused
+						     migration render as a green "ok". -->
 						<td>
 							{#if isRunning(job)}
 								<span class="jobs-panel__pill jobs-panel__pill--running">
 									{t('admin.jobs.state_running', 'running')}
+								</span>
+							{:else if job.last_run_status}
+								<!-- From the run ROW, not from memory: the
+								     in-memory outcome is empty after a restart and
+								     stale after a cancel, both of which the row
+								     gets right. Reason on hover when the run
+								     stopped on a backend failure. -->
+								<span class={statusClass(job.last_run_status)} title={backendFailureReason(job)}>
+									{runStatusLabel(job.last_run_status)}
 								</span>
 							{:else}
 								<span class="jobs-panel__muted">—</span>

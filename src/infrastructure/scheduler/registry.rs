@@ -249,11 +249,12 @@ impl JobRegistry {
                     last_outcome,
                     running: state.current_run_start.is_some(),
                     recoverable: entry.handler.is_recoverable(),
-                    // Both populated in the `list_jobs` handler — one
+                    // All populated in the `list_jobs` handler — two
                     // from a DB round-trip, one from AppConfig. Kept
                     // out of the registry snapshot so the in-memory
                     // scheduler state pulls in neither dependency.
                     paused_run: None,
+                    last_run_status: None,
                     startup: None,
                 }
             })
@@ -349,6 +350,18 @@ pub struct JobSummary {
     /// job, most of which the job ignored with no way to tell.
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
     pub parameters: &'static [JobParam],
+    /// Status of this job's most recent run row, for recoverable jobs.
+    ///
+    /// Populated by the `list_jobs` handler from the DB, and it exists
+    /// because [`Self::last_outcome`] cannot answer this: that field is
+    /// in-memory, written when a dispatch completes through the engine,
+    /// so anything changing a run row without running the handler leaves
+    /// it stale. Cancelling a Paused run is exactly that — a direct SQL
+    /// flip — and the panel went on showing the pause's outcome.
+    ///
+    /// Prefer this over `last_outcome` wherever the two could disagree.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_run_status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interval_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]

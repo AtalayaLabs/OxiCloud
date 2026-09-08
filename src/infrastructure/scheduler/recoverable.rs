@@ -157,6 +157,32 @@ pub enum RunOutcome {
     Paused {
         cursor: Vec<u8>,
     },
+    /// The ENVIRONMENT failed after a bounded number of attempts, and
+    /// this is worth trying again later.
+    ///
+    /// Lands as `Paused` in the row, so resume works unchanged. What
+    /// differs is `error_message`: an operator has to be able to tell "I
+    /// paused this" from "the provider went down", and a paused run with
+    /// no explanation is an unexplained one.
+    ///
+    /// Distinct from both neighbours, and the distinction is the point:
+    ///
+    /// | outcome | meaning | resumes? |
+    /// |---|---|---|
+    /// | `Failed` | the data or the request is wrong | no — terminal |
+    /// | `Paused` | an operator asked it to stop | yes |
+    /// | `PausedRetryable` | the environment failed | yes, and says why |
+    ///
+    /// Reached only after the handler has already retried — see
+    /// `retry_transient` — because a single transient error is not news.
+    /// The cap exists because no status-based taxonomy can tell a
+    /// deterministic 5xx from a passing one (Azurite answers 500 to a
+    /// CRC64 ranged GET, every time), so the policy is deliberately
+    /// "retry as if transient, then hand the decision to a human".
+    PausedRetryable {
+        cursor: Vec<u8>,
+        reason: String,
+    },
     Failed {
         message: String,
     },
@@ -195,6 +221,56 @@ impl RunOutcome {
                 "RunOutcome::completed_with expected a JSON object, got {}",
                 other
             ),
+        }
+    }
+
+    /// Turn a failed operation into the right outcome:
+    /// [`RunOutcome::PausedRetryable`] when the error is transient,
+    /// [`RunOutcome::Failed`] otherwise.
+    ///
+    /// **This is where step 1's classification pays off.** Handlers
+    /// should route every backend error through here rather than
+    /// reaching for `Failed` directly, so "the provider is down" stops a
+    /// long scan at its cursor instead of discarding it.
+    ///
+    /// `cursor` is the resume position — normally the same value the
+    /// handler last checkpointed. Pass `None` only when nothing has been
+    /// settled yet; the run then resumes from the beginning.
+    ///
+    /// # Why the engine does not add its own retry loop
+    ///
+    /// The plan sketched bounded backoff *here*. Measuring first showed
+    /// two layers already exist below: the AWS SDK retries internally,
+    /// and `RetryBlobBackend` wraps every remote backend with its own
+    /// exponential backoff (defaults: 3 retries, 100 ms, ×2, 10 s cap —
+    /// all env-tunable). A third layer would multiply, not add: one
+    /// logical operation could span SDK × decorator × engine attempts,
+    /// turning a brief outage into minutes of held `migration_readonly`.
+    ///
+    /// The plan anticipated exactly this — "do not double-retry … the
+    /// AWS SDK already retries internally, so a second layer above it
+    /// multiplies" — so the retrying stays where it already is, at the
+    /// operation, and the engine supplies the part that was genuinely
+    /// missing: converting an exhausted-retry failure into a resumable
+    /// pause with a reason instead of a terminal `Failed`.
+    ///
+    /// Retrying at this level would also mean re-running a scan, not an
+    /// operation. Tuning attempts belongs in
+    /// `OXICLOUD_STORAGE_RETRY_*`, where it applies per request.
+    pub fn from_domain_error(
+        cursor: Option<&[u8]>,
+        context: &str,
+        err: &crate::domain::errors::DomainError,
+    ) -> Self {
+        if err.is_transient() {
+            RunOutcome::PausedRetryable {
+                cursor: cursor.map(<[u8]>::to_vec).unwrap_or_default(),
+                reason: format!("{context}: {err}"),
+            }
+        } else {
+            RunOutcome::Failed {
+                message: format!("{context}: {err}"),
+            }
         }
     }
 }
@@ -484,7 +560,44 @@ pub trait JobStore: Send + Sync {
     /// Returns `0` if the key is absent (fresh row) or not a
     /// number. Callers on a Fresh run can safely skip this — the
     /// answer is trivially 0 and the write path starts fresh.
-    async fn scanned_count(&self) -> Result<u64, DomainError>;
+    async fn scanned_count(&self) -> Result<u64, DomainError> {
+        self.stat_u64("scanned_count").await
+    }
+
+    /// Read any numeric key out of the run's `stats` JSONB.
+    ///
+    /// The generalisation of [`Self::scanned_count`], which is now
+    /// one caller of it. Handlers use this on a Resume path to
+    /// restore their own cumulative counters — see
+    /// [`Self::checkpoint_counters`].
+    ///
+    /// Returns `0` when the key is absent or not a number, so a
+    /// fresh run and a run that never wrote the key are the same
+    /// answer.
+    async fn stat_u64(&self, key: &str) -> Result<u64, DomainError>;
+
+    /// Handler-callable. Merge the handler's OWN cumulative counters
+    /// into `stats` mid-run.
+    ///
+    /// Distinct from [`Self::merge_stats`], which stays engine-only and
+    /// runs once at `Completed`. That timing is the problem this
+    /// solves: counters written only at the end are lost by a pause,
+    /// so every resumed segment restarts them at zero and the final
+    /// row reports the LAST segment rather than the run. `backend_
+    /// migration` showed this as `copied: 0` on a migration that had
+    /// copied plenty, next to a `scanned_count` that was cumulative
+    /// because `checkpoint` had been persisting it all along.
+    ///
+    /// Pass ABSOLUTE values, not deltas — the merge is
+    /// `stats = stats || $1`, so each write displaces the last. Keys
+    /// are the handler's own; do not write engine-owned
+    /// `scanned_count` / `finding_count` through here.
+    async fn checkpoint_counters(
+        &self,
+        counters: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), DomainError> {
+        self.merge_stats(counters).await
+    }
 
     /// Persist one finding to `jobs.run_findings` and bump
     /// `stats.finding_count` on the parent run. Consistency handlers
@@ -553,6 +666,27 @@ pub trait JobStore: Send + Sync {
     /// [`RunOutcome::Paused`]. `cursor` = the resume key the handler
     /// returned. Handler code MUST NOT call this.
     async fn mark_paused(&self, cursor: Option<Vec<u8>>) -> Result<(), DomainError>;
+
+    /// Engine-only. Called by [`run_or_resume`] on
+    /// [`RunOutcome::PausedRetryable`]. Handler code MUST NOT call this.
+    ///
+    /// Writes `status = Paused` — so resume is the same operation — plus
+    /// `error_message = reason`. The reason is the whole point: without
+    /// it the panel cannot distinguish an operator pause from a provider
+    /// outage, and a paused migration holding `migration_readonly` looks
+    /// like someone forgot about it.
+    ///
+    /// Separate method rather than an extra argument on
+    /// [`Self::mark_paused`] because the two carry different meaning and
+    /// only one of them writes `error_message`. A `reason: Option<&str>`
+    /// parameter would let a caller write a Paused row with an
+    /// error message and no error, which is the state this exists to
+    /// distinguish from.
+    async fn mark_paused_retryable(
+        &self,
+        cursor: Option<Vec<u8>>,
+        reason: &str,
+    ) -> Result<(), DomainError>;
 
     /// Engine-only. Called by [`run_or_resume`] on
     /// [`RunOutcome::Failed`]. Handler code MUST NOT call this.
@@ -1018,6 +1152,47 @@ pub async fn run_or_resume(
                 )
             }
         }
+        RunOutcome::PausedRetryable { cursor, reason } => {
+            let cursor_hex = hex::encode(&cursor);
+            log_terminal_write_err(
+                "mark_paused_retryable",
+                run_id,
+                store.mark_paused_retryable(Some(cursor), &reason).await,
+            );
+            // Audited, not merely logged. Writes are refused app-wide
+            // while `backend_migration` holds `migration_readonly`, so a
+            // run that stopped on a provider outage is an operational
+            // event someone has to act on — and "why is the app
+            // read-only" must be answerable afterwards.
+            tracing::info!(
+                target: "audit",
+                event = "job.paused_retryable",
+                reason = "backend_unavailable",
+                job = %job.name(),
+                run_id = %run_id,
+                cursor_hex = %cursor_hex,
+                detail = %reason,
+                "👮🏻‍♂️ `{}` paused after exhausting retries: {reason}",
+                job.name(),
+            );
+            // `ok`, not `err`: the run did not fail, it stopped and can
+            // be resumed. Reporting it as an error would put a red job
+            // in the panel that a Resume click fixes, which reads as a
+            // bug rather than as a decision waiting to be made.
+            JobOutcome::ok_with(
+                stats.finding_count,
+                serde_json::json!({
+                    "paused":            true,
+                    "retryable":         true,
+                    "reason":            reason,
+                    "run_id":            run_id.to_string(),
+                    "cursor_hex":        cursor_hex,
+                    "finding_count":     stats.finding_count,
+                    "scanned_count":     stats.scanned_count,
+                    "severity_counts":   stats.by_severity,
+                }),
+            )
+        }
         RunOutcome::Failed { message } => {
             log_terminal_write_err("mark_failed", run_id, store.mark_failed(&message).await);
             JobOutcome::err(format!("{message} (run_id={run_id})"))
@@ -1315,8 +1490,14 @@ mod tests {
         async fn get_string_param(&self, key: &str) -> Result<Option<String>, DomainError> {
             Ok(self.state.lock().unwrap().string_params.get(key).cloned())
         }
-        async fn scanned_count(&self) -> Result<u64, DomainError> {
-            Ok(self.state.lock().unwrap().scanned_count)
+        /// Mirrors the PG row: `scanned_count` is its own column-like
+        /// field, every other counter lives in the merged stats map.
+        async fn stat_u64(&self, key: &str) -> Result<u64, DomainError> {
+            let s = self.state.lock().unwrap();
+            if key == "scanned_count" {
+                return Ok(s.scanned_count);
+            }
+            Ok(s.extra_stats.get(key).and_then(|v| v.as_u64()).unwrap_or(0))
         }
         async fn merge_stats(
             &self,
@@ -1335,6 +1516,23 @@ mod tests {
         async fn mark_paused(&self, cursor: Option<Vec<u8>>) -> Result<(), DomainError> {
             let mut s = self.state.lock().unwrap();
             s.status = RunStatus::Paused;
+            if let Some(c) = cursor {
+                s.cursor = Some(c);
+            }
+            Ok(())
+        }
+        async fn mark_paused_retryable(
+            &self,
+            cursor: Option<Vec<u8>>,
+            reason: &str,
+        ) -> Result<(), DomainError> {
+            let mut s = self.state.lock().unwrap();
+            s.status = RunStatus::Paused;
+            // Both, deliberately: Paused so resume works, `error_message`
+            // so a test can assert the two pause shapes are
+            // distinguishable — which is the whole reason the variant
+            // exists.
+            s.error_message = Some(reason.to_string());
             if let Some(c) = cursor {
                 s.cursor = Some(c);
             }
@@ -1409,6 +1607,16 @@ mod tests {
             stores
                 .last()
                 .and_then(|s| s.state.lock().unwrap().cursor.clone())
+        }
+
+        /// Test-only read — last-created run's `error_message`. What
+        /// separates an operator pause from a provider outage: both are
+        /// `Paused`, only one carries a reason.
+        fn last_error_message(&self) -> Option<String> {
+            let stores = self.stores.lock().unwrap();
+            stores
+                .last()
+                .and_then(|s| s.state.lock().unwrap().error_message.clone())
         }
     }
 
@@ -1634,6 +1842,51 @@ mod tests {
 
     // ─── Handlers ──────────────────────────────────────────────────────────
 
+    /// Hits a transient backend error partway through, exactly as a
+    /// remote backend does once its own retry decorator has given up.
+    struct TransientlyFailingHandler;
+    #[async_trait]
+    impl RecoverableJobHandler for TransientlyFailingHandler {
+        fn name(&self) -> &str {
+            "transient_failer"
+        }
+        async fn run_resumable(
+            &self,
+            store: &dyn JobStore,
+            _args: &JobRunArgs,
+            _resume_cursor: Option<Vec<u8>>,
+        ) -> RunOutcome {
+            store.checkpoint(vec![9, 9], 3).await.unwrap();
+            RunOutcome::from_domain_error(
+                Some(&[9, 9]),
+                "backend enumeration failed on s3",
+                &crate::domain::errors::DomainError::transient_backend("S3", "503 SlowDown"),
+            )
+        }
+    }
+
+    /// Same shape, but a permanent fault — the control that proves the
+    /// classification is doing the work rather than everything pausing.
+    struct PermanentlyFailingHandler;
+    #[async_trait]
+    impl RecoverableJobHandler for PermanentlyFailingHandler {
+        fn name(&self) -> &str {
+            "permanent_failer"
+        }
+        async fn run_resumable(
+            &self,
+            _store: &dyn JobStore,
+            _args: &JobRunArgs,
+            _resume_cursor: Option<Vec<u8>>,
+        ) -> RunOutcome {
+            RunOutcome::from_domain_error(
+                Some(&[9, 9]),
+                "backend enumeration failed on s3",
+                &crate::domain::errors::DomainError::internal_error("S3", "403 AccessDenied"),
+            )
+        }
+    }
+
     struct CompletingHandler;
     #[async_trait]
     impl RecoverableJobHandler for CompletingHandler {
@@ -1786,6 +2039,69 @@ mod tests {
         assert_eq!(provider.last_status(), Some(RunStatus::Completed));
     }
 
+    /// A transient backend failure must PAUSE with a reason, not fail.
+    ///
+    /// This is the whole point of the plan: `Failed` is terminal, so an
+    /// outage used to discard a partially-complete migration. The run has
+    /// to keep its cursor and stay resumable, and it has to say why it
+    /// stopped — a paused `backend_migration` still holds
+    /// `migration_readonly`, refusing writes application-wide, so
+    /// "someone paused this" and "the provider went down" cannot look
+    /// alike.
+    #[tokio::test]
+    async fn transient_failure_pauses_with_a_reason_and_keeps_the_cursor() {
+        let provider = Arc::new(MemProvider::new());
+        let provider_trait: Arc<dyn JobStoreProvider> = provider.clone();
+
+        let outcome = run_or_resume(
+            Arc::new(TransientlyFailingHandler),
+            provider_trait,
+            &JobRunArgs::default(),
+        )
+        .await;
+
+        // Reported Ok, not Err: the run did not fail, it stopped and can
+        // be resumed. A red job that a Resume click fixes reads as a bug
+        // rather than a decision waiting to be made.
+        assert!(outcome.is_ok(), "expected Ok, got {outcome:?}");
+        if let JobOutcome::Ok { extra, .. } = outcome {
+            assert_eq!(extra["paused"], true);
+            assert_eq!(extra["retryable"], true);
+            assert!(
+                extra["reason"].as_str().unwrap().contains("503"),
+                "the reason must reach the panel: {extra:?}"
+            );
+        }
+
+        assert_eq!(provider.last_status(), Some(RunStatus::Paused));
+        assert_eq!(
+            provider.last_cursor(),
+            Some(vec![9, 9]),
+            "resume position must survive, or the outage costs the whole scan"
+        );
+        let msg = provider.last_error_message().expect("reason recorded");
+        assert!(msg.contains("503"), "error_message names the cause: {msg}");
+    }
+
+    /// The control: a permanent fault still fails terminally. Without
+    /// this the classification could be doing nothing and everything
+    /// would simply pause, which looks like success in the test above.
+    #[tokio::test]
+    async fn permanent_failure_still_fails_terminally() {
+        let provider = Arc::new(MemProvider::new());
+        let provider_trait: Arc<dyn JobStoreProvider> = provider.clone();
+
+        let outcome = run_or_resume(
+            Arc::new(PermanentlyFailingHandler),
+            provider_trait,
+            &JobRunArgs::default(),
+        )
+        .await;
+
+        assert!(!outcome.is_ok(), "a 403 must not be retried forever");
+        assert_eq!(provider.last_status(), Some(RunStatus::Failed));
+    }
+
     #[tokio::test]
     async fn paused_run_persists_cursor_and_marks_status_paused() {
         let provider = Arc::new(MemProvider::new());
@@ -1851,6 +2167,40 @@ mod tests {
         )
         .await;
         assert_eq!(*seen.lock().unwrap(), Some(b"halfway".to_vec()));
+    }
+
+    /// Counters written mid-run must survive to be read back, because
+    /// that round-trip is the whole mechanism by which a resumed
+    /// segment continues its totals instead of restarting them at zero.
+    /// `backend_migration` reported `copied: 0` on a migration that had
+    /// copied thousands precisely because nothing persisted them until
+    /// `Completed`, which a paused run never reaches.
+    #[tokio::test]
+    async fn checkpoint_counters_round_trip_through_stats() {
+        let provider = Arc::new(MemProvider::new());
+        let store = provider.open_or_start("counter_job").await.unwrap();
+        let store: Arc<dyn JobStore> = match store {
+            OpenedRun::Fresh { store: s } | OpenedRun::Resumed { store: s, .. } => s,
+            OpenedRun::AlreadyActive { .. } => panic!("fresh provider cannot be active"),
+        };
+
+        // Absent keys read as 0, so a fresh run needs no special case.
+        assert_eq!(store.stat_u64("copied").await.unwrap(), 0);
+
+        let mut counters = serde_json::Map::new();
+        counters.insert("copied".into(), serde_json::json!(120u64));
+        counters.insert("skipped".into(), serde_json::json!(7u64));
+        store.checkpoint_counters(&counters).await.unwrap();
+
+        assert_eq!(store.stat_u64("copied").await.unwrap(), 120);
+        assert_eq!(store.stat_u64("skipped").await.unwrap(), 7);
+
+        // Absolute, not additive: a later batch's write displaces the
+        // earlier one rather than summing with it. The handler owns the
+        // running total; the store only records it.
+        counters.insert("copied".into(), serde_json::json!(300u64));
+        store.checkpoint_counters(&counters).await.unwrap();
+        assert_eq!(store.stat_u64("copied").await.unwrap(), 300);
     }
 
     #[tokio::test]

@@ -229,19 +229,22 @@ impl JobStore for PgJobStore {
         Ok(row.and_then(|(v,)| v))
     }
 
-    async fn scanned_count(&self) -> Result<u64, DomainError> {
-        // `(stats->>'scanned_count')::BIGINT` — text cast rather than
-        // `->` numeric extraction because the stored value has been
-        // written via `((...)::text)::jsonb` in `checkpoint`, which
-        // may present as either a JSON number or a JSON string
-        // depending on prior versions. `::BIGINT` handles both.
+    // `(stats ->> $2)::BIGINT` — text extraction then cast, rather
+    // than `->` numeric extraction, because the stored value has been
+    // written via `((...)::text)::jsonb` in `checkpoint` and may
+    // present as either a JSON number or a JSON string depending on
+    // prior versions. `::BIGINT` handles both.
+    //
+    // `scanned_count()` is the trait's default wrapper around this.
+    async fn stat_u64(&self, key: &str) -> Result<u64, DomainError> {
         let row: Option<(Option<i64>,)> = sqlx::query_as(
-            "SELECT (stats ->> 'scanned_count')::BIGINT FROM jobs.recoverable_runs WHERE id = $1",
+            "SELECT (stats ->> $2)::BIGINT FROM jobs.recoverable_runs WHERE id = $1",
         )
         .bind(self.run_id)
+        .bind(key)
         .fetch_optional(self.pool.as_ref())
         .await
-        .map_err(|e| map_sqlx_err("scanned_count", e))?;
+        .map_err(|e| map_sqlx_err("stat_u64", e))?;
         Ok(row.and_then(|(v,)| v).unwrap_or(0).max(0) as u64)
     }
 
@@ -323,6 +326,56 @@ impl JobStore for PgJobStore {
             .execute(self.pool.as_ref())
             .await
             .map_err(|e| map_sqlx_err("mark_paused", e))?;
+        }
+        Ok(())
+    }
+
+    async fn mark_paused_retryable(
+        &self,
+        cursor: Option<Vec<u8>>,
+        reason: &str,
+    ) -> Result<(), DomainError> {
+        // `status = 'Paused'`, so resume is the same operation an
+        // operator pause produces — the only difference is that
+        // `error_message` is populated, which is what lets the panel say
+        // WHY it stopped. `completed_at` stays NULL: the run is not
+        // over.
+        //
+        // One statement per cursor shape, matching `mark_paused`: a
+        // COALESCE would overwrite a real cursor with NULL when the
+        // handler had not advanced since the last checkpoint.
+        if let Some(c) = cursor {
+            sqlx::query(
+                r#"
+                UPDATE jobs.recoverable_runs
+                   SET status           = 'Paused',
+                       cursor           = $2,
+                       error_message    = $3,
+                       last_progress_at = NOW()
+                 WHERE id = $1
+                "#,
+            )
+            .bind(self.run_id)
+            .bind(&c[..])
+            .bind(reason)
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| map_sqlx_err("mark_paused_retryable", e))?;
+        } else {
+            sqlx::query(
+                r#"
+                UPDATE jobs.recoverable_runs
+                   SET status           = 'Paused',
+                       error_message    = $2,
+                       last_progress_at = NOW()
+                 WHERE id = $1
+                "#,
+            )
+            .bind(self.run_id)
+            .bind(reason)
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| map_sqlx_err("mark_paused_retryable", e))?;
         }
         Ok(())
     }
@@ -824,10 +877,18 @@ impl PgJobStoreProvider {
                         // In practice this is a rare edge case that
                         // ONLY hits if two admin triggers land in
                         // the same microsecond.
+                        //
+                        // `error_message` is cleared here: it records why
+                        // the LAST attempt stopped, so carrying it past a
+                        // resume leaves a Completed run still displaying a
+                        // transient error it recovered from — a failure
+                        // that did not happen. Same stale-state shape as
+                        // the read-only banner outliving its migration.
                         let row: Option<(DateTime<Utc>, Option<Vec<u8>>)> = sqlx::query_as(
                             r#"
                             UPDATE jobs.recoverable_runs
                                SET status           = 'Running',
+                                   error_message    = NULL,
                                    last_progress_at = NOW()
                              WHERE id = $1
                             RETURNING started_at, cursor

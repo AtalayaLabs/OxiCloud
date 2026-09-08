@@ -2570,41 +2570,94 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
     // failures fall back to the pre-enrichment shape so the endpoint
     // stays useful when the jobs DB is temporarily unreachable.
     if let Some(pool) = state.db_pool.as_ref() {
-        let paused_rows: Vec<(String, uuid::Uuid, Option<i64>, Option<i64>)> = sqlx::query_as(
+        // The LATEST run per job, whatever its status — not just the
+        // paused ones.
+        //
+        // `last_outcome` is in-memory, written when a dispatch finishes
+        // through the engine. Anything that changes a run row WITHOUT
+        // running the handler leaves it stale: cancelling a Paused run
+        // is a direct SQL flip to `Cancelled`, so the panel kept
+        // rendering the outcome of the run that pause belonged to — a
+        // cancelled job still showing "blocked".
+        //
+        // `DISTINCT ON` is safe as "the current run": the
+        // `one_active_run_per_job` partial unique index allows only one
+        // non-terminal row per job, and a resume reuses it rather than
+        // starting a new one, so a non-terminal row is always the newest.
+        /// `(job_name, status, run_id, started_at, scanned, total)` — the
+        /// enrichment row shape, named so the query's type stays legible.
+        type LatestRunRow = (
+            String,
+            String,
+            uuid::Uuid,
+            chrono::DateTime<chrono::Utc>,
+            Option<i64>,
+            Option<i64>,
+        );
+        let latest_rows: Vec<LatestRunRow> = sqlx::query_as(
             r#"
-            SELECT
+            SELECT DISTINCT ON (job_name)
                 job_name,
+                status::TEXT,
                 id,
+                started_at,
                 (stats  ->> 'scanned_count')::BIGINT AS scanned,
                 (params ->> 'total_rows')::BIGINT   AS total
             FROM jobs.recoverable_runs
-            WHERE status = 'Paused'
+            ORDER BY job_name, started_at DESC
             "#,
         )
         .fetch_all(pool.as_ref())
         .await
         .unwrap_or_default();
 
-        let by_name: std::collections::HashMap<String, PausedRunBrief> = paused_rows
+        type LatestRun = (String, chrono::DateTime<chrono::Utc>, PausedRunBrief);
+        let by_name: std::collections::HashMap<String, LatestRun> = latest_rows
             .into_iter()
-            .map(|(name, id, scanned, total)| {
+            .map(|(name, status, id, started_at, scanned, total)| {
                 (
                     name,
-                    PausedRunBrief {
-                        id,
-                        scanned: scanned.unwrap_or(0).max(0) as u64,
-                        total: total.filter(|t| *t > 0).map(|t| t as u64),
-                    },
+                    (
+                        status,
+                        started_at,
+                        PausedRunBrief {
+                            id,
+                            scanned: scanned.unwrap_or(0).max(0) as u64,
+                            total: total.filter(|t| *t > 0).map(|t| t as u64),
+                        },
+                    ),
                 )
             })
             .collect();
 
         for job in summary.iter_mut() {
-            if job.recoverable
-                && !job.running
-                && let Some(paused) = by_name.get(&job.name)
-            {
-                job.paused_run = Some(paused.clone());
+            if !job.recoverable {
+                continue;
+            }
+            let Some((status, started_at, brief)) = by_name.get(&job.name) else {
+                continue;
+            };
+            // Always reported, so the panel can prefer the row's truth
+            // over the in-memory outcome rather than guessing which is
+            // fresher.
+            job.last_run_status = Some(status.clone());
+            // Fill the timestamp too when memory has none.
+            //
+            // `last_outcome` and `last_run_at` are both in-memory, so a
+            // restart empties them and the row read "never" for a job
+            // with real runs in the DB — the opposite failure to the
+            // stale-outcome one, and just as misleading. The row is
+            // authoritative for "did this ever run"; memory only adds
+            // the richer outcome detail when it happens to be warm.
+            //
+            // Only when absent: a warm `last_run_at` describes the last
+            // DISPATCH, which for a non-recoverable tick is finer-grained
+            // than any run row.
+            if job.last_run_at.is_none() {
+                job.last_run_at = Some(*started_at);
+            }
+            if !job.running && status == "Paused" {
+                job.paused_run = Some(brief.clone());
             }
         }
     }
@@ -2879,16 +2932,73 @@ pub async fn cancel_job(
         .request_terminal_cancel(&name)
         .await
     {
-        Ok(Some(run_id)) => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "cancelled": true,
-                "run_id": run_id.to_string(),
-                "note": "Running row → will land in Cancelled at next batch boundary; \
-                         Paused row → flipped to Cancelled immediately.",
-            })),
-        )
-            .into_response(),
+        Ok(Some(run_id)) => {
+            // Cancelling a PAUSED migration has to give writes back
+            // here, because nothing else will.
+            //
+            // A Running row re-enters the handler, which releases the
+            // gate itself at its next cancel poll. A Paused row does
+            // not: `request_terminal_cancel` flips it straight to
+            // Cancelled in SQL with no handler in the loop. That is the
+            // common case — a migration paused by an outage, holding
+            // `migration_readonly`, which an operator cancels precisely
+            // TO get writes back. Without this the app stayed read-only
+            // forever: the flag is persisted, so even a restart reloaded
+            // it, and the only escape was editing admin_settings by
+            // hand.
+            //
+            // Safe because cancel ends the run with no swap — the source
+            // is still the active backend, so there is nothing left for
+            // the freeze to protect. Releasing on PAUSE would not be
+            // safe; see `release_readonly_on_terminal_cancel`.
+            //
+            // Idempotent and harmless for every other job: the flag is
+            // only ever set by backend_migration, so clearing it when it
+            // is already false is a no-op.
+            if name == crate::infrastructure::services::backend_migration_service::BACKEND_MIGRATION_JOB_NAME
+                && state
+                    .migration_readonly
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                if let Some(pool) = state.db_pool.as_ref()
+                    && let Err(e) =
+                        crate::infrastructure::services::entry_backend::persist_migration_readonly(
+                            pool.as_ref(),
+                            false,
+                        )
+                        .await
+                {
+                    tracing::warn!(
+                        target: "oxicloud::migration",
+                        event = "storage.migration_readonly.release_persist_failed",
+                        run_id = %run_id,
+                        error = %e,
+                        "could not persist migration_readonly=false after cancelling a paused \
+                         migration; writes resume now but a restart will come up read-only"
+                    );
+                }
+                state
+                    .migration_readonly
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                tracing::info!(
+                    target: "audit",
+                    event = "storage.migration_readonly.released",
+                    reason = "paused_migration_cancelled",
+                    run_id = %run_id,
+                    "🚧 migration_readonly released — writes resume, active backend unchanged"
+                );
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "cancelled": true,
+                    "run_id": run_id.to_string(),
+                    "note": "Running row → will land in Cancelled at next batch boundary; \
+                             Paused row → flipped to Cancelled immediately.",
+                })),
+            )
+                .into_response()
+        }
         Ok(None) => (
             StatusCode::OK,
             Json(serde_json::json!({

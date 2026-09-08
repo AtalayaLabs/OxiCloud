@@ -132,6 +132,11 @@ impl From<DomainError> for AppError {
             ErrorKind::QuotaExceeded => StatusCode::INSUFFICIENT_STORAGE,
             ErrorKind::Conflict => StatusCode::CONFLICT,
             ErrorKind::PreconditionFailed => StatusCode::PRECONDITION_FAILED,
+            // 503, not 500: the request was fine and the same request
+            // may well succeed shortly. That is what a caller needs to
+            // decide whether to retry, and it is what a reverse proxy
+            // keys off to avoid caching the failure.
+            ErrorKind::TransientBackend => StatusCode::SERVICE_UNAVAILABLE,
         };
 
         Self {

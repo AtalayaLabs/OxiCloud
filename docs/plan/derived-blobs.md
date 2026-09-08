@@ -956,8 +956,8 @@ Findings each job reports today, and where the new tables land:
 | 6 | `storage.blobs.ref_count` | recompute | `refcount_mismatch` | ✓ chunk level only |
 | 7 | `chunk_manifests.ref_count` | recompute | `refcount_mismatch` (manifests_consistency) | ✓ manifest level |
 | 8 | manifest orphan reaping | GC predicate | registry `NOT EXISTS` union, no `ref_count` | ✓ |
-| 9 | derived/attached → Blob | dangling | — | ✗ new check needed |
-| 10 | `content_derived_blobs.source_hash` → Blob | orphan mapping | — | ✗ new check needed |
+| 9 | derived/attached → Blob | dangling | `derived_dangling_blob`, `attached_dangling_blob` (satellites_consistency) | ✓ |
+| 10 | `content_derived_blobs.source_hash` → Blob | orphan mapping | `derived_orphan_mapping` (satellites_consistency) | ✓ |
 | 11 | chunk at `ref_count = 0` past grace, still present | GC lag | — | ✗ a stalled GC is silent |
 | 12 | `blob_extracted_text`, `faces.faces` orphans | dependents | search worker self-janitors; `faces` unverified | ~ verify |
 | 13 | `file_attached_blobs.file_id` → `files` | dangling | FK `ON DELETE CASCADE` | ✓ DB-enforced |

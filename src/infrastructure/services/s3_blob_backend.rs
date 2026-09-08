@@ -7,6 +7,7 @@ use aws_sdk_s3::primitives::ByteStream;
 use bytes::Bytes;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::time::Duration;
 use tokio::fs;
 use tokio_util::io::ReaderStream;
 
@@ -39,9 +40,36 @@ impl S3BlobBackend {
             "oxicloud",
         );
 
+        // `Builder::new()` starts from nothing — in particular with no
+        // `TimeoutConfig` at all, which meant a lost network on an
+        // established connection produced no error until the OS gave up
+        // on TCP retransmission (~15 minutes). For that whole window a
+        // migration looked merely slow: no error, so no retry, no log
+        // and no pause. It also made the `SdkError::TimeoutError` arm of
+        // `s3_domain_error` unreachable.
+        //
+        // These bounds are deliberately not the ones in `TimeoutPolicy`:
+        // that decorator provides the configurable outer bound for every
+        // backend, while these are the SDK's finer, per-attempt
+        // instruments underneath it.
+        let timeouts = aws_sdk_s3::config::timeout::TimeoutConfig::builder()
+            .connect_timeout(Duration::from_secs(10))
+            // Time to first byte, not transfer duration — a large object
+            // is never punished for being large.
+            .read_timeout(Duration::from_secs(30))
+            .build();
+
         let mut builder = aws_sdk_s3::config::Builder::new()
             .region(aws_sdk_s3::config::Region::new(config.region.clone()))
             .credentials_provider(credentials)
+            .timeout_config(timeouts)
+            // The right tool for a network pulled mid-transfer: it
+            // measures throughput rather than elapsed time, so it can
+            // bound a streaming upload without capping how long a
+            // legitimately large one may take.
+            .stalled_stream_protection(
+                aws_sdk_s3::config::StalledStreamProtectionConfig::enabled().build(),
+            )
             .behavior_version_latest();
 
         if let Some(ref endpoint) = config.endpoint_url {
@@ -105,10 +133,14 @@ impl BlobStorageBackend for S3BlobBackend {
                 .send()
                 .await
                 .map_err(|e| {
-                    DomainError::internal_error(
-                        "S3",
-                        format!("Cannot access bucket '{}': {}", self.bucket, e),
-                    )
+                    // Classified like every other SDK call. A refused
+                    // connection or a 5xx here is the endpoint being
+                    // down, not the configuration being wrong, and the
+                    // jobs that call `initialize()` should pause rather
+                    // than fail on it. A genuine misconfiguration —
+                    // wrong bucket, bad credentials — still lands as 4xx
+                    // and stays terminal.
+                    s3_domain_error("S3", format!("Cannot access bucket '{}'", self.bucket), &e)
                 })?;
 
             tracing::info!("S3 blob backend initialized: bucket={}", self.bucket);
@@ -170,12 +202,7 @@ impl BlobStorageBackend for S3BlobBackend {
                 .body(body)
                 .send()
                 .await
-                .map_err(|e| {
-                    DomainError::internal_error(
-                        "S3",
-                        format!("Failed to upload blob {}: {}", hash, e),
-                    )
-                })?;
+                .map_err(|e| s3_domain_error("S3", format!("Failed to upload blob {hash}"), &e))?;
 
             // Clean up local source after successful upload
             let _ = fs::remove_file(&source_path).await;
@@ -215,12 +242,7 @@ impl BlobStorageBackend for S3BlobBackend {
                 .body(body)
                 .send()
                 .await
-                .map_err(|e| {
-                    DomainError::internal_error(
-                        "S3",
-                        format!("Failed to upload blob {}: {}", hash, e),
-                    )
-                })?;
+                .map_err(|e| s3_domain_error("S3", format!("Failed to upload blob {hash}"), &e))?;
 
             Ok(size)
         })
@@ -253,12 +275,7 @@ impl BlobStorageBackend for S3BlobBackend {
                 .body(ByteStream::from(data))
                 .send()
                 .await
-                .map_err(|e| {
-                    DomainError::internal_error(
-                        "S3",
-                        format!("Failed to upload blob {}: {}", hash, e),
-                    )
-                })?;
+                .map_err(|e| s3_domain_error("S3", format!("Failed to upload blob {hash}"), &e))?;
             Ok(size)
         })
     }
@@ -297,11 +314,30 @@ impl BlobStorageBackend for S3BlobBackend {
                 .send()
                 .await
                 .map_err(|e| {
-                    DomainError::new(
-                        ErrorKind::NotFound,
-                        "S3",
-                        format!("Failed to get blob {}: {}", hash, e),
-                    )
+                    // Only a real NoSuchKey is NotFound. This used to
+                    // label EVERY read failure that way — a refused
+                    // connection, a 503, an expired credential all
+                    // reported as "blob missing".
+                    //
+                    // That is the most dangerous wrong answer available
+                    // here, because callers ACT on NotFound by concluding
+                    // the bytes are gone. A migration reading its source
+                    // through this would treat an outage as "the source
+                    // does not have this blob" and move on.
+                    //
+                    // Everything else goes through the normal classifier,
+                    // so a 403 stays permanent rather than being retried
+                    // forever.
+                    if let aws_sdk_s3::error::SdkError::ServiceError(svc) = &e
+                        && svc.err().is_no_such_key()
+                    {
+                        return DomainError::new(
+                            ErrorKind::NotFound,
+                            "S3",
+                            format!("Failed to get blob {hash}: no such key"),
+                        );
+                    }
+                    s3_domain_error("S3", format!("Failed to get blob {hash}"), &e)
                 })?;
 
             // Convert S3 ByteStream into a Stream<Item = Result<Bytes, io::Error>>
@@ -336,11 +372,21 @@ impl BlobStorageBackend for S3BlobBackend {
                 .send()
                 .await
                 .map_err(|e| {
-                    DomainError::new(
-                        ErrorKind::NotFound,
-                        "S3",
-                        format!("Failed to get blob range {}: {}", hash, e),
-                    )
+                    // Same rule as the full read: only a real NoSuchKey
+                    // is NotFound. Ranged reads feed CDC reassembly and
+                    // deep verification, so mislabelling an outage here
+                    // reads as "this chunk is gone" — a data-loss
+                    // conclusion drawn from a network problem.
+                    if let aws_sdk_s3::error::SdkError::ServiceError(svc) = &e
+                        && svc.err().is_no_such_key()
+                    {
+                        return DomainError::new(
+                            ErrorKind::NotFound,
+                            "S3",
+                            format!("Failed to get blob range {hash}: no such key"),
+                        );
+                    }
+                    s3_domain_error("S3", format!("Failed to get blob range {hash}"), &e)
                 })?;
 
             let reader = output.body.into_async_read();
@@ -363,12 +409,7 @@ impl BlobStorageBackend for S3BlobBackend {
                 .key(&key)
                 .send()
                 .await
-                .map_err(|e| {
-                    DomainError::internal_error(
-                        "S3",
-                        format!("Failed to delete blob {}: {}", hash, e),
-                    )
-                })?;
+                .map_err(|e| s3_domain_error("S3", format!("Failed to delete blob {hash}"), &e))?;
 
             Ok(())
         })
@@ -392,15 +433,17 @@ impl BlobStorageBackend for S3BlobBackend {
             {
                 Ok(_) => Ok(true),
                 Err(e) => {
-                    // Check if it's a 404 (not found) vs an actual error
-                    let service_err = e.into_service_error();
-                    if service_err.is_not_found() {
+                    // A 404 is the only answer that means "absent". Classify
+                    // before consuming the SdkError so everything else keeps
+                    // its transient/permanent class: this is the migration's
+                    // source probe, and a refused connection reported as a
+                    // plain failure would be treated as permanent.
+                    let classified =
+                        s3_domain_error("S3", format!("Failed to check blob {hash}"), &e);
+                    if e.into_service_error().is_not_found() {
                         Ok(false)
                     } else {
-                        Err(DomainError::internal_error(
-                            "S3",
-                            format!("Failed to check blob {}: {}", hash, service_err),
-                        ))
+                        Err(classified)
                     }
                 }
             }
@@ -423,11 +466,19 @@ impl BlobStorageBackend for S3BlobBackend {
                 .send()
                 .await
                 .map_err(|e| {
-                    DomainError::new(
-                        ErrorKind::NotFound,
-                        "S3",
-                        format!("Failed to stat blob {}: {}", hash, e),
-                    )
+                    // `head_object` reports a missing key as NotFound
+                    // rather than NoSuchKey, so match on the typed
+                    // variant the SDK actually returns here.
+                    if let aws_sdk_s3::error::SdkError::ServiceError(svc) = &e
+                        && svc.err().is_not_found()
+                    {
+                        return DomainError::new(
+                            ErrorKind::NotFound,
+                            "S3",
+                            format!("Failed to stat blob {hash}: not found"),
+                        );
+                    }
+                    s3_domain_error("S3", format!("Failed to stat blob {hash}"), &e)
                 })?;
 
             Ok(output.content_length().unwrap_or(0) as u64)
@@ -565,11 +616,11 @@ impl BlobStorageBackend for S3BlobBackend {
                 }
 
                 let resp = req.send().await.map_err(|e| {
-                    DomainError::new(
-                        ErrorKind::InternalError,
-                        "Blob",
-                        format!("S3 ListObjectsV2 failed: {e}"),
-                    )
+                    // Classified, because `backend_consistency` fails the
+                    // whole run on an enumeration error — a throttle
+                    // midway through a million-object bucket should be
+                    // retryable rather than throwing the sweep away.
+                    s3_domain_error("Blob", "S3 ListObjectsV2 failed".to_string(), &e)
                 })?;
 
                 requests += 1;
@@ -638,6 +689,60 @@ impl BlobStorageBackend for S3BlobBackend {
     }
 }
 
+/// Wrap an SDK error as a `DomainError` that says whether retrying it
+/// could help.
+///
+/// The classification has to happen HERE. One layer up the status code
+/// survives only inside a formatted string, which is what forced
+/// `RetryBlobBackend` to grep its own error text for "503" — a check
+/// that silently stops working when an SDK reformats `Display`.
+///
+/// Transient: 5xx and 429 from the service, plus dispatch-level I/O and
+/// timeouts (DNS, TLS, connection refused, TCP reset). Permanent:
+/// everything 4xx except 429 — credentials, a missing bucket, a
+/// malformed request — and client-side construction failures, none of
+/// which a second attempt changes.
+///
+/// `ResponseError` (a reply the SDK could not parse) counts as
+/// transient: truncation on the wire is the usual cause, and the
+/// attempt cap bounds the cost of being wrong.
+pub(crate) fn s3_domain_error<E>(
+    entity: &'static str,
+    context: String,
+    err: &aws_sdk_s3::error::SdkError<E>,
+) -> DomainError
+where
+    E: aws_sdk_s3::error::ProvideErrorMetadata + std::fmt::Debug,
+{
+    use aws_sdk_s3::error::SdkError;
+
+    let transient = match err {
+        SdkError::ServiceError(svc) => {
+            let status = svc.raw().status().as_u16();
+            let code = svc.err().meta().code().unwrap_or_default();
+            status >= 500
+                || status == 429
+                // Throttling can arrive as 400 with a code rather than
+                // 429, so the status alone is not enough.
+                || code.eq_ignore_ascii_case("SlowDown")
+                || code.eq_ignore_ascii_case("RequestTimeout")
+                || code.eq_ignore_ascii_case("ThrottlingException")
+        }
+        SdkError::DispatchFailure(d) => d.is_io() || d.is_timeout(),
+        SdkError::TimeoutError(_) => true,
+        SdkError::ResponseError(_) => true,
+        SdkError::ConstructionFailure(_) => false,
+        _ => false,
+    };
+
+    let message = format!("{context}: {}", format_s3_error(err));
+    if transient {
+        DomainError::transient_backend(entity, message)
+    } else {
+        DomainError::internal_error(entity, message)
+    }
+}
+
 /// Extract an actionable error string from an aws-sdk-s3 error.
 ///
 /// `SdkError::Display` renders literally `"service error"` when the
@@ -656,6 +761,10 @@ impl BlobStorageBackend for S3BlobBackend {
 /// - `unknown SDK error: <debug>` — anything else, with the full
 ///   `Debug` output so the operator + audit stream see the real cause
 ///   instead of `"service error"`.
+///
+/// Formatting only. Whether the error is worth retrying is
+/// [`s3_domain_error`]'s job, from the structured variant rather than
+/// from this string.
 fn format_s3_error<E>(err: &aws_sdk_s3::error::SdkError<E>) -> String
 where
     E: aws_sdk_s3::error::ProvideErrorMetadata + std::fmt::Debug,
