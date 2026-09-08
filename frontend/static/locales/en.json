@@ -1268,6 +1268,20 @@
     "delete_user_warning": "You are about to permanently delete \"{{name}}\". This will remove the account, revoke every session, and reap the personal drive. This cannot be undone.",
     "delete_user_confirm_hint": "To confirm, type the account email below: {{email}}",
     "deleting": "Deleting…",
+    "mounts": {
+      "tab": "External Mounts",
+      "help": "Mount a host directory as a folder in your drive. Files stay on the host and are read live; deletes here are permanent.",
+      "name": "Name",
+      "host_path": "Host path (e.g. /srv/media)",
+      "path": "Path",
+      "drive": "Drive",
+      "drive_select": "Select a drive",
+      "kind": "Kind",
+      "readonly": "Read-only",
+      "add": "Add mount",
+      "empty": "No mounts configured.",
+      "delete_title": "Delete mount"
+    },
     "jobs": {
       "tab": "Background tasks",
       "title": "Background tasks",

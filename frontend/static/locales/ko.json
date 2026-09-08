@@ -1216,6 +1216,20 @@
     "delete_user_confirm_hint": "확인을 위해 아래에 계정 이메일을 입력하세요: {{email}}",
     "deleting": "삭제 중…",
     "storage_backend_audit": "백엔드 일관성",
+    "mounts": {
+      "tab": "외부 마운트",
+      "help": "호스트의 디렉터리를 드라이브 안의 폴더로 마운트합니다. 파일은 호스트에 그대로 남아 실시간으로 읽히며, 여기서의 삭제는 되돌릴 수 없습니다.",
+      "name": "이름",
+      "host_path": "호스트 경로 (예: /srv/media)",
+      "path": "경로",
+      "drive": "드라이브",
+      "drive_select": "드라이브 선택",
+      "kind": "종류",
+      "readonly": "읽기 전용",
+      "add": "마운트 추가",
+      "empty": "구성된 마운트가 없습니다.",
+      "delete_title": "마운트 삭제"
+    },
     "jobs": {
       "run_all_consistency": "모든 일관성 검사 실행",
       "run_deep": "심층 스캔",

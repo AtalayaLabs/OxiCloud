@@ -280,7 +280,7 @@ it('deletes a mount through the confirm modal', async () => {
 	m(admin.deleteExternalMount).mockResolvedValue(undefined);
 	setTab('mounts');
 	render(AdminPage);
-	await fireEvent.click(await screen.findByTestId('mount-delete'));
+	await fireEvent.click(await screen.findByTestId('mount-delete-mnt-1'));
 	// deleteMount() gates on the styled confirm modal.
 	await fireEvent.click(await screen.findByTestId('admin-confirm-ok-btn'));
 	await waitFor(() => expect(admin.deleteExternalMount).toHaveBeenCalledWith('mnt-1'));

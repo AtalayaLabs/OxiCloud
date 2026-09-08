@@ -1181,6 +1181,20 @@
     "encryption_hint": "Wygeneruj klucz AES-256 do szyfrowania obiektów blob w stanie spoczynku, a następnie ustaw go jako OXICLOUD_STORAGE_ENCRYPTION_KEY w środowisku serwera.",
     "gen_key": "Wygeneruj klucz",
     "gen_key_warning": "Przechowuj ten klucz w bezpiecznym miejscu. W przypadku jego utraty zaszyfrowane dane zostaną utracone bezpowrotnie.",
+    "mounts": {
+      "tab": "Punkty montowania",
+      "help": "Zamontuj katalog hosta jako folder w dysku. Pliki pozostają na hoście i są odczytywane na żywo; usunięcia tutaj są nieodwracalne.",
+      "name": "Nazwa",
+      "host_path": "Ścieżka hosta (np. /srv/media)",
+      "path": "Ścieżka",
+      "drive": "Dysk",
+      "drive_select": "Wybierz dysk",
+      "kind": "Typ",
+      "readonly": "Tylko do odczytu",
+      "add": "Dodaj montowanie",
+      "empty": "Brak skonfigurowanych montowań.",
+      "delete_title": "Usuń montowanie"
+    },
     "jobs": {
       "run_all_consistency": "Uruchom wszystkie kontrole spójności",
       "run_deep": "Głęboka analiza",
