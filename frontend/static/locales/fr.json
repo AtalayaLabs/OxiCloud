@@ -1201,6 +1201,20 @@
     "encryption_hint": "Générez une clé AES-256 pour le chiffrement des objets blob au repos, puis définissez-la sur OXICLOUD_STORAGE_ENCRYPTION_KEY dans votre environnement de serveur.",
     "gen_key": "Générer une clé",
     "gen_key_warning": "Conservez cette clé en toute sécurité. En cas de perte, les données cryptées sont irrémédiablement perdues.",
+    "mounts": {
+      "tab": "Montages externes",
+      "help": "Monter un dossier de l'hôte comme dossier dans votre disque. Les fichiers restent sur l'hôte et sont lus en direct ; les suppressions ici sont définitives.",
+      "name": "Nom",
+      "host_path": "Chemin sur l'hôte (ex. /srv/media)",
+      "path": "Chemin",
+      "drive": "Disque",
+      "drive_select": "Sélectionner un disque",
+      "kind": "Genre",
+      "readonly": "Lecture seule",
+      "add": "Ajouter un montage",
+      "empty": "Aucun montage configuré.",
+      "delete_title": "Supprimer le montage"
+    },
     "jobs": {
       "run_all_consistency": "Exécuter tous les contrôles de cohérence",
       "run_deep": "Analyse approfondie",

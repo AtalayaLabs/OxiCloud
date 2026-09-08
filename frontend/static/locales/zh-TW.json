@@ -1163,6 +1163,20 @@
     "encryption_hint": "產生靜態 blob 加密的 AES-256 金鑰，然後在伺服器環境中將其設定為 OXICLOUD_STORAGE_ENCRYPTION_KEY。",
     "gen_key": "產生金鑰",
     "gen_key_warning": "安全地保存此密鑰。如果遺失，加密資料將無法恢復。",
+    "mounts": {
+      "tab": "外部掛載",
+      "help": "將主機目錄掛載為雲端硬碟中的資料夾。檔案保留在主機上並即時讀取；此處的刪除操作無法復原。",
+      "name": "名稱",
+      "host_path": "主機路徑（例如 /srv/media）",
+      "path": "路徑",
+      "drive": "雲端硬碟",
+      "drive_select": "選擇雲端硬碟",
+      "kind": "類型",
+      "readonly": "唯讀",
+      "add": "新增掛載",
+      "empty": "尚未設定掛載。",
+      "delete_title": "刪除掛載"
+    },
     "jobs": {
       "run_all_consistency": "執行所有一致性檢查",
       "run_deep": "深度掃描",

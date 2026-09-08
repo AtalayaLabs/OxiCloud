@@ -1163,6 +1163,20 @@
     "encryption_hint": "生成静态 blob 加密的 AES-256 密钥，然后在服务器环境中将其设置为 OXICLOUD_STORAGE_ENCRYPTION_KEY。",
     "gen_key": "生成密钥",
     "gen_key_warning": "安全地保存此密钥。如果丢失，加密数据将无法恢复。",
+    "mounts": {
+      "tab": "外部挂载",
+      "help": "将主机目录挂载为云盘中的一个文件夹。文件保留在主机上并实时读取；此处的删除操作不可撤销。",
+      "name": "名称",
+      "host_path": "主机路径（例如 /srv/media）",
+      "path": "路径",
+      "drive": "云盘",
+      "drive_select": "选择云盘",
+      "kind": "类型",
+      "readonly": "只读",
+      "add": "添加挂载",
+      "empty": "未配置挂载。",
+      "delete_title": "删除挂载"
+    },
     "jobs": {
       "run_all_consistency": "运行所有一致性检查",
       "run_deep": "深度扫描",

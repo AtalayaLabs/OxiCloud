@@ -1181,6 +1181,20 @@
     "encryption_hint": "Genereer een AES-256-sleutel voor blob-versleuteling in rust en stel deze vervolgens in als OXICLOUD_STORAGE_ENCRYPTION_KEY in uw serveromgeving.",
     "gen_key": "Sleutel genereren",
     "gen_key_warning": "Bewaar deze sleutel veilig. Als het verloren gaat, zijn de gecodeerde gegevens onherstelbaar verloren.",
+    "mounts": {
+      "tab": "Externe koppelingen",
+      "help": "Koppel een host-directory als map in je schijf. Bestanden blijven op de host en worden live gelezen; verwijderingen hier zijn permanent.",
+      "name": "Naam",
+      "host_path": "Host-pad (bijv. /srv/media)",
+      "path": "Pad",
+      "drive": "Schijf",
+      "drive_select": "Kies een schijf",
+      "kind": "Type",
+      "readonly": "Alleen-lezen",
+      "add": "Koppeling toevoegen",
+      "empty": "Geen koppelingen ingesteld.",
+      "delete_title": "Koppeling verwijderen"
+    },
     "jobs": {
       "run_all_consistency": "Voer alle consistentiecontroles uit",
       "run_deep": "Diepe scan",

@@ -64,6 +64,8 @@
 	} from '$lib/api/endpoints/admin';
 	import { createDrive, updateDrivePolicies } from '$lib/api/endpoints/drives';
 	import { seedUser } from '$lib/api/endpoints/users';
+	import { resolveOwnerName } from '$lib/api/endpoints/favorites';
+	import { useOwnerCache } from '$lib/composables/useOwnerCache.svelte';
 	import {
 		ensureResolvers,
 		resolveRecipient,
@@ -133,7 +135,10 @@
 	] as const;
 
 	/* ── Styled confirm modal (replaces native confirm) ── */
-	let confirmState = $state<{ message: string; resolve: (ok: boolean) => void } | null>(null);
+	let confirmState = $state<{
+		message: string;
+		resolve: (ok: boolean) => void;
+	} | null>(null);
 	function showConfirm(message: string): Promise<boolean> {
 		return new Promise((resolve) => {
 			confirmState = { message, resolve };
@@ -150,7 +155,11 @@
 	   fat-finger deletion — a single accidental click on the wrong
 	   row won't wipe an account. The admin still bears final
 	   responsibility; this is UX friction, not authorization. */
-	let deleteUserModal = $state<{ userId: string; username: string; email: string } | null>(null);
+	let deleteUserModal = $state<{
+		userId: string;
+		username: string;
+		email: string;
+	} | null>(null);
 	let deleteUserEmailInput = $state('');
 	let deleteUserBusy = $state(false);
 	const deleteUserEmailMatches = $derived(
@@ -233,7 +242,7 @@
 			case 'drives':
 				return t('admin.drives', 'Drives');
 			case 'mounts':
-				return t('admin.mounts', 'External Mounts');
+				return t('admin.mounts.tab', 'External Mounts');
 			case 'plugins':
 				return t('admin.plugins', 'Plugins');
 			case 'oidc':
@@ -263,18 +272,76 @@
 	});
 	let mountCreating = $state(false);
 
+	// Owner display cache for personal-drive rows in the mount tab.
+	// Every user's personal drive is hard-coded to the display name
+	// "Personal" (see `drive_pg_repository::create_personal_drive_atomic`),
+	// so the admin's mount-target selector reads as "Personal / Personal /
+	// Personal / …" without disambiguation. Resolve `default_for_user`
+	// via the shared owner-name resolver + memoised cache so the selector
+	// shows "Personal (alice)" per row.
+	const mountOwners = useOwnerCache(resolveOwnerName);
+
 	async function loadMounts() {
 		mountsError = null;
 		try {
 			[mounts, mountDrives] = await Promise.all([listExternalMounts(), listAllDrives()]);
+			// Warm the owner cache for every personal drive in one parallel
+			// batch — the useOwnerCache resolver dedups and returns cached
+			// entries immediately, so a second loadMounts() call is free.
+			await mountOwners.resolve(
+				mountDrives
+					.filter((d) => d.kind === 'personal')
+					.map((d) => d.default_for_user)
+					.filter((id): id is string => !!id)
+			);
 		} catch (e) {
 			mountsError = errorMessage(e);
 		}
 	}
 
-	function mountDriveName(driveId: string): string {
-		return mountDrives.find((drive) => drive.id === driveId)?.name ?? driveId;
+	/**
+	 * Human-readable drive label for the mount selector + the mounts table.
+	 * Personal drives get their owner appended (`Personal (alice)`) since
+	 * the bare "Personal" is ambiguous across every user. Shared drives
+	 * already have unique display names, so no suffix is added.
+	 *
+	 * `mountOwners.name(id)` returns `null` while the owner lookup is in
+	 * flight — we fall back to the bare name in that window so the option
+	 * text never flashes an empty/pending state.
+	 */
+	function driveDisplayLabel(drive: Drive): string {
+		if (drive.kind === 'personal' && drive.default_for_user) {
+			const owner = mountOwners.name(drive.default_for_user);
+			return owner ? `${drive.name} (${owner})` : drive.name;
+		}
+		return drive.name;
 	}
+
+	function mountDriveName(driveId: string): string {
+		const drive = mountDrives.find((d) => d.id === driveId);
+		return drive ? driveDisplayLabel(drive) : driveId;
+	}
+
+	/**
+	 * Alphabetically sorted `mountDrives` — by display label so personal
+	 * drives group together correctly under "Personal (…)". `$derived`
+	 * so the order reactively re-computes when either the list changes
+	 * or a pending owner-name resolution lands (`mountOwners.name(id)`
+	 * starts `null` and settles to a string, which would otherwise
+	 * stall alice next to zoe until the tab refreshes).
+	 *
+	 * `localeCompare` with `sensitivity: 'base'` — case-insensitive,
+	 * accent-insensitive, locale-aware ordering (French `é` sorts with
+	 * `e`, German `ä` with `a`, …). Matches how users expect a
+	 * name-based list to be alphabetised.
+	 */
+	const sortedMountDrives = $derived(
+		[...mountDrives].sort((a, b) =>
+			driveDisplayLabel(a).localeCompare(driveDisplayLabel(b), undefined, {
+				sensitivity: 'base'
+			})
+		)
+	);
 
 	async function createMount() {
 		if (!newMount.name.trim() || !newMount.host_path.trim() || !newMount.drive_id) return;
@@ -388,7 +455,10 @@
 				disable_password_login: oidc.disable_password_login,
 				provider_name: oidc.provider_name || null
 			});
-			oidcMsg = { text: t('admin.settings_saved_ok', 'Settings saved.'), ok: true };
+			oidcMsg = {
+				text: t('admin.settings_saved_ok', 'Settings saved.'),
+				ok: true
+			};
 		} catch (e) {
 			oidcMsg = { text: errorMessage(e), ok: false };
 		} finally {
@@ -430,7 +500,10 @@
 			const r: StorageTestResult = await testStorage({ entry_name: name });
 			entryTest = { ...entryTest, [name]: { busy: false, result: r } };
 		} catch (e) {
-			entryTest = { ...entryTest, [name]: { busy: false, error: errorMessage(e) } };
+			entryTest = {
+				...entryTest,
+				[name]: { busy: false, error: errorMessage(e) }
+			};
 		}
 	}
 
@@ -1285,7 +1358,13 @@
 	}
 
 	function openDriveCreate() {
-		driveForm = { name: '', ownerQuery: '', ownerPick: null, quotaValue: 0, quotaUnit: 1024 ** 3 };
+		driveForm = {
+			name: '',
+			ownerQuery: '',
+			ownerPick: null,
+			quotaValue: 0,
+			quotaUnit: 1024 ** 3
+		};
 		ownerSuggestions = [];
 		driveCreateError = null;
 		driveCreateOpen = true;
@@ -3254,98 +3333,104 @@
 			</table>
 		{/if}
 	{:else if tab === 'mounts'}
-		<section class="admin-section" data-testid="admin-mounts-section">
-			<h2>{t('admin.mounts.title', 'External File Mounts')}</h2>
-			<p class="muted">
-				{t(
-					'admin.mounts.help',
-					'Mount a host directory as a folder in your drive. Files stay on the host and are read live; deletes here are permanent.'
-				)}
-			</p>
-
-			<form
-				class="mount-form"
-				onsubmit={(e) => {
-					e.preventDefault();
-					void createMount();
-				}}
+		<!-- External mounts tab — layout aligned with the sibling admin
+		     tabs (users, drives, sessions): inline creation surface on top,
+		     table below, `status status--error` / `status` / icon-btn
+		     vocabulary throughout. Previously used a bespoke
+		     `<section class="admin-section">` + `<h2>` wrapper that no
+		     other admin tab uses; dropped for consistency (the tab title
+		     is rendered by the shared page header via the `tabTitle`
+		     helper). -->
+		<form
+			class="mount-form bar"
+			data-testid="admin-mounts-section"
+			onsubmit={(e) => {
+				e.preventDefault();
+				void createMount();
+			}}
+		>
+			<input
+				type="text"
+				placeholder={t('admin.mounts.name', 'Name')}
+				bind:value={newMount.name}
+				data-testid="mount-name"
+			/>
+			<input
+				type="text"
+				placeholder={t('admin.mounts.host_path', 'Host path (e.g. /srv/media)')}
+				bind:value={newMount.host_path}
+				data-testid="mount-path"
+			/>
+			<select bind:value={newMount.drive_id} required data-testid="mount-drive">
+				<option value="" disabled>{t('admin.mounts.drive_select', 'Select a drive')}</option>
+				{#each sortedMountDrives as drive (drive.id)}
+					<option value={drive.id}>{driveDisplayLabel(drive)}</option>
+				{/each}
+			</select>
+			<label class="bar__toggle">
+				<input type="checkbox" bind:checked={newMount.read_only} />
+				{t('admin.mounts.readonly', 'Read-only')}
+			</label>
+			<button
+				class="btn btn--primary"
+				type="submit"
+				disabled={mountCreating || !newMount.drive_id}
+				data-testid="mount-create"
 			>
-				<input
-					type="text"
-					placeholder={t('admin.mounts.name', 'Name')}
-					bind:value={newMount.name}
-					data-testid="mount-name"
-				/>
-				<input
-					type="text"
-					placeholder={t('admin.mounts.path', 'Host path (e.g. /srv/media)')}
-					bind:value={newMount.host_path}
-					data-testid="mount-path"
-				/>
-				<select bind:value={newMount.drive_id} required data-testid="mount-drive">
-					<option value="" disabled>{t('admin.mounts.drive_select', 'Select a drive')}</option>
-					{#each mountDrives as drive (drive.id)}
-						<option value={drive.id}>{drive.name}</option>
+				<Icon name="plus" />
+				{t('admin.mounts.add', 'Add mount')}
+			</button>
+		</form>
+
+		<p class="status status--info" role="note">
+			{t(
+				'admin.mounts.help',
+				'Mount a host directory as a folder in your drive. Files stay on the host and are read live; deletes here are permanent.'
+			)}
+		</p>
+
+		{#if mountsError}
+			<p class="status status--error" data-testid="mount-error">{mountsError}</p>
+		{:else if !mounts}
+			<p class="status">{t('common.loading', 'Loading…')}</p>
+		{:else if mounts.length === 0}
+			<p class="status">{t('admin.mounts.empty', 'No mounts configured.')}</p>
+		{:else}
+			<table class="table">
+				<thead>
+					<tr>
+						<th>{t('admin.mounts.name', 'Name')}</th>
+						<th>{t('admin.mounts.kind', 'Kind')}</th>
+						<th>{t('admin.mounts.drive', 'Drive')}</th>
+						<th>{t('admin.mounts.path', 'Path')}</th>
+						<th>{t('admin.mounts.readonly', 'Read-only')}</th>
+						<th></th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each mounts as m (m.mount_folder_id)}
+						<tr>
+							<td>{m.name}</td>
+							<td>{m.kind}</td>
+							<td>{mountDriveName(m.drive_id)}</td>
+							<td class="muted">{m.mount_path}</td>
+							<td>{m.read_only ? t('common.yes', 'Yes') : t('common.no', 'No')}</td>
+							<td>
+								<button
+									class="icon-btn icon-btn--danger"
+									data-testid={`mount-delete-${m.mount_folder_id}`}
+									title={t('admin.mounts.delete_title', 'Delete mount')}
+									aria-label={t('admin.mounts.delete_title', 'Delete mount')}
+									onclick={() => void deleteMount(m.mount_folder_id)}
+								>
+									<Icon name="trash-alt" />
+								</button>
+							</td>
+						</tr>
 					{/each}
-				</select>
-				<label>
-					<input type="checkbox" bind:checked={newMount.read_only} />
-					{t('admin.mounts.readonly', 'Read-only')}
-				</label>
-				<button
-					type="submit"
-					disabled={mountCreating || !newMount.drive_id}
-					data-testid="mount-create"
-				>
-					{t('admin.mounts.add', 'Add mount')}
-				</button>
-			</form>
-
-			{#if mountsError}
-				<p class="error" data-testid="mount-error">{mountsError}</p>
-			{/if}
-
-			{#if mounts}
-				{#if mounts.length === 0}
-					<p class="muted">{t('admin.mounts.empty', 'No mounts configured.')}</p>
-				{:else}
-					<table class="table">
-						<thead>
-							<tr>
-								<th>{t('admin.mounts.name', 'Name')}</th>
-								<th>{t('admin.mounts.kind', 'Kind')}</th>
-								<th>{t('admin.mounts.drive', 'Drive')}</th>
-								<th>{t('admin.mounts.path', 'Path')}</th>
-								<th>{t('admin.mounts.readonly', 'Read-only')}</th>
-								<th></th>
-							</tr>
-						</thead>
-						<tbody>
-							{#each mounts as m (m.mount_folder_id)}
-								<tr>
-									<td>{m.name}</td>
-									<td>{m.kind}</td>
-									<td>{mountDriveName(m.drive_id)}</td>
-									<td class="muted">{m.mount_path}</td>
-									<td>{m.read_only ? t('common.yes', 'Yes') : t('common.no', 'No')}</td>
-									<td>
-										<button
-											class="danger"
-											onclick={() => void deleteMount(m.mount_folder_id)}
-											data-testid="mount-delete"
-										>
-											{t('common.delete', 'Delete')}
-										</button>
-									</td>
-								</tr>
-							{/each}
-						</tbody>
-					</table>
-				{/if}
-			{:else}
-				<p class="muted">{t('common.loading', 'Loading…')}</p>
-			{/if}
-		</section>
+				</tbody>
+			</table>
+		{/if}
 	{:else if tab === 'drives'}
 		<div class="bar">
 			<button
@@ -5380,6 +5465,22 @@
 	}
 
 	.smtp-test input {
+		flex: 1;
+		padding: var(--space-2) var(--space-3);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		background: var(--color-bg-input);
+		color: var(--color-text);
+	}
+
+	/* Mount-tab inline creation form — same input treatment as
+	   `.smtp-test input` above so the two admin inline-creation
+	   surfaces render with identical field chrome (border, radius,
+	   padding, background, color). `flex: 1` lets the three text
+	   fields share whatever horizontal room the toolbar has after
+	   the checkbox + submit button have laid out. */
+	.mount-form input[type='text'],
+	.mount-form select {
 		flex: 1;
 		padding: var(--space-2) var(--space-3);
 		border: 1px solid var(--color-border);

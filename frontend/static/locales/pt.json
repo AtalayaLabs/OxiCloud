@@ -1181,6 +1181,20 @@
     "encryption_hint": "Gere uma chave AES-256 para criptografia de blob em repouso e defina-a como OXICLOUD_STORAGE_ENCRYPTION_KEY em seu ambiente de servidor.",
     "gen_key": "Gerar chave",
     "gen_key_warning": "Armazene esta chave com segurança. Se for perdido, os dados criptografados serão perdidos irrecuperavelmente.",
+    "mounts": {
+      "tab": "Montagens externas",
+      "help": "Monta um diretório do anfitrião como pasta na sua unidade. Os ficheiros permanecem no anfitrião e são lidos em direto; as eliminações aqui são permanentes.",
+      "name": "Nome",
+      "host_path": "Caminho no anfitrião (p. ex. /srv/media)",
+      "path": "Caminho",
+      "drive": "Unidade",
+      "drive_select": "Selecionar uma unidade",
+      "kind": "Tipo",
+      "readonly": "Só leitura",
+      "add": "Adicionar montagem",
+      "empty": "Sem montagens configuradas.",
+      "delete_title": "Eliminar montagem"
+    },
     "jobs": {
       "run_all_consistency": "Executar todas as verificações de consistência",
       "run_deep": "Análise profunda",

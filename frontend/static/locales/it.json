@@ -1181,6 +1181,20 @@
     "encryption_hint": "Genera una chiave AES-256 per la crittografia dei BLOB inattivi, quindi impostala come OXICLOUD_STORAGE_ENCRYPTION_KEY nell'ambiente server.",
     "gen_key": "Genera chiave",
     "gen_key_warning": "Conserva questa chiave in modo sicuro. In caso di smarrimento, i dati crittografati andranno persi irrimediabilmente.",
+    "mounts": {
+      "tab": "Montaggi esterni",
+      "help": "Monta una directory dell'host come cartella nella tua unità. I file restano sull'host e vengono letti dal vivo; le eliminazioni qui sono definitive.",
+      "name": "Nome",
+      "host_path": "Percorso host (es. /srv/media)",
+      "path": "Percorso",
+      "drive": "Unità",
+      "drive_select": "Seleziona un'unità",
+      "kind": "Tipo",
+      "readonly": "Sola lettura",
+      "add": "Aggiungi montaggio",
+      "empty": "Nessun montaggio configurato.",
+      "delete_title": "Elimina montaggio"
+    },
     "jobs": {
       "run_all_consistency": "Esegui tutti i controlli di coerenza",
       "run_deep": "Analisi approfondita",

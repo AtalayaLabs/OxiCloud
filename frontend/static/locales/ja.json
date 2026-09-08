@@ -1181,6 +1181,20 @@
     "encryption_hint": "保存時の BLOB 暗号化用の AES-256 キーを生成し、サーバー環境でそれを OXICLOUD_STORAGE_ENCRYPTION_KEY として設定します。",
     "gen_key": "キーの生成",
     "gen_key_warning": "このキーは安全に保管してください。紛失すると、暗号化されたデータは回復不能に失われます。",
+    "mounts": {
+      "tab": "外部マウント",
+      "help": "ホスト上のディレクトリをドライブ内のフォルダとしてマウントします。ファイルはホストに残り、直接読み取られます。ここでの削除は元に戻せません。",
+      "name": "名前",
+      "host_path": "ホストパス (例: /srv/media)",
+      "path": "パス",
+      "drive": "ドライブ",
+      "drive_select": "ドライブを選択",
+      "kind": "種類",
+      "readonly": "読み取り専用",
+      "add": "マウントを追加",
+      "empty": "マウントは設定されていません。",
+      "delete_title": "マウントを削除"
+    },
     "jobs": {
       "run_all_consistency": "すべての整合性チェックを実行する",
       "run_deep": "詳細スキャン",

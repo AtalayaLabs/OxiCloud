@@ -1182,6 +1182,20 @@
     "time_hour_ago": "Hace {{n}} h",
     "time_just_now": "En este momento",
     "unchanged": "Déjelo en blanco para mantenerse actualizado",
+    "mounts": {
+      "tab": "Montajes externos",
+      "help": "Monta un directorio del host como carpeta en tu unidad. Los archivos permanecen en el host y se leen en vivo; las eliminaciones aquí son permanentes.",
+      "name": "Nombre",
+      "host_path": "Ruta del host (p. ej. /srv/media)",
+      "path": "Ruta",
+      "drive": "Unidad",
+      "drive_select": "Seleccionar una unidad",
+      "kind": "Tipo",
+      "readonly": "Solo lectura",
+      "add": "Añadir montaje",
+      "empty": "No hay montajes configurados.",
+      "delete_title": "Eliminar montaje"
+    },
     "jobs": {
       "run_all_consistency": "Ejecutar todas las comprobaciones de coherencia",
       "run_deep": "Análisis en profundidad",
