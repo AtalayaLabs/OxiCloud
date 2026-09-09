@@ -49,6 +49,13 @@ pub struct FolderService {
     /// on cross-drive MOVE. Silently skipped when unwired (stubs).
     storage_usage:
         Option<Arc<crate::application::services::storage_usage_service::StorageUsageService>>,
+    /// Realtime message bus. When wired, `create_folder_with_perms`
+    /// publishes a `FolderCreated` event on `Topic::Folder(parent_id)`
+    /// after the DB commit — subscribers see the new folder appear in
+    /// their live folder view. Optional so stub / test factories can
+    /// build the service without a bus; a `None` bus is a silent no-op
+    /// on the publish path (no fan-out, no audit).
+    bus: Option<Arc<dyn crate::application::ports::realtime_ports::RealtimeBus>>,
 }
 
 impl FolderService {
@@ -66,7 +73,19 @@ impl FolderService {
             file_lifecycle,
             drive_repo: None,
             storage_usage: None,
+            bus: None,
         }
+    }
+
+    /// Wire the realtime message bus. Enables live folder-view updates:
+    /// after `create_folder_with_perms` commits, a `FolderCreated` event
+    /// fires on `Topic::Folder(parent_id)`. Off in stubs / tests.
+    pub fn with_realtime_bus(
+        mut self,
+        bus: Arc<dyn crate::application::ports::realtime_ports::RealtimeBus>,
+    ) -> Self {
+        self.bus = Some(bus);
+        self
     }
 
     /// Borrow the external-mount classifier (handlers branch on this before
@@ -366,10 +385,39 @@ impl FolderUseCase for FolderService {
             )
             .await?;
 
+        // Snapshot the parent UUID before the move so the post-commit
+        // publish can address `Topic::Folder(parent_uuid)` without
+        // re-borrowing `dto.parent_id` (which is moved into
+        // `create_folder`).
+        let parent_uuid_for_publish = Uuid::parse_str(parent_id).ok();
+
         let folder = self
             .folder_storage
             .create_folder(dto.name, dto.parent_id, caller_id)
             .await?;
+
+        // Publish AFTER commit — never before, never inside the write.
+        // Silent no-op if the bus isn't wired (stubs/tests) or the
+        // parent uuid didn't parse (won't happen — AuthZ above already
+        // parsed it — but the None-fallthrough keeps the publish path
+        // infallible).
+        if let (Some(bus), Some(parent_uuid), Ok(folder_uuid)) = (
+            &self.bus,
+            parent_uuid_for_publish,
+            Uuid::parse_str(folder.id()),
+        ) {
+            use crate::application::ports::realtime_ports::{RealtimeEvent, Topic};
+            bus.publish(
+                &Topic::Folder(parent_uuid),
+                RealtimeEvent::FolderCreated {
+                    folder_id: folder_uuid,
+                    name: folder.name().to_owned(),
+                    parent_id: parent_uuid,
+                    actor: caller_id,
+                },
+            );
+        }
+
         Ok(FolderDto::from(folder))
     }
 

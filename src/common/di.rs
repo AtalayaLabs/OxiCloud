@@ -703,7 +703,14 @@ impl AppServiceFactory {
         resource_access_hook: Option<
             Arc<dyn crate::application::ports::resource_access_hook::ResourceAccessHook>,
         >,
+        bus: &Arc<crate::infrastructure::services::in_process_realtime_bus::InProcessRealtimeBus>,
     ) -> ApplicationServices {
+        // Upcast the concrete bus once — service builders take the
+        // trait object so the wire remains stable across future bus
+        // impls.
+        let bus_trait: Arc<dyn crate::application::ports::realtime_ports::RealtimeBus> =
+            bus.clone();
+
         // Main services
         let folder_service = Arc::new(
             FolderService::new(
@@ -724,7 +731,10 @@ impl AppServiceFactory {
             // MOVE. Reuses the `check_drive_quota` the upload path
             // already runs. Without this, a Move that would push the
             // destination past its cap succeeds silently.
-            .with_storage_usage(storage_usage.clone()),
+            .with_storage_usage(storage_usage.clone())
+            // Realtime fan-out on `create_folder_with_perms` — the
+            // parent-folder subscribers see new sub-folders live.
+            .with_realtime_bus(bus_trait.clone()),
         );
 
         // Built before the upload/management services so the plugin lifecycle
@@ -771,7 +781,11 @@ impl AppServiceFactory {
                 authz.clone(),
                 core.dedup_service.clone(),
                 storage_usage.clone(),
-            );
+            )
+            // Realtime fan-out — every successful `upload_file_streaming`
+            // publishes a `FileCreated` event on the parent folder's
+            // topic so open folder views refresh live.
+            .with_realtime_bus(bus_trait.clone());
             if let Some(hook) = resource_access_hook.clone() {
                 svc = svc.with_resource_access_hook(hook);
             }
@@ -1775,6 +1789,17 @@ impl AppServiceFactory {
             crate::application::services::external_mount_router::MountRouter::new(mount_registry),
         );
 
+        // Realtime bus: single instance for the app lifetime, wired
+        // with a no-op replicator (multi-instance broker is a follow-up
+        // per `docs/plan/message-bus.md § Roadmap`). Constructed here
+        // so `create_application_services` can hand it to services that
+        // publish after their DB commits (`FolderService`,
+        // `FileUploadService`, …). Spawns its own GC task in
+        // `with_replicator` — no supervisor setup required.
+        let bus = crate::infrastructure::services::in_process_realtime_bus::InProcessRealtimeBus::with_replicator(
+            Arc::new(crate::application::ports::realtime_ports::NoopReplicator),
+        );
+
         let mut apps = self.create_application_services(
             &core,
             &repos,
@@ -1786,6 +1811,7 @@ impl AppServiceFactory {
             plugin_dispatch.clone(),
             mount_router.clone(),
             Some(resource_access_hook.clone()),
+            &bus,
         );
 
         // 5. Share service
@@ -2284,6 +2310,7 @@ impl AppServiceFactory {
             db_pool: Some(pool.clone()),
             maintenance_pool: Some(maintenance_pool),
             mount_router,
+            bus,
             auth_service: auth_services,
             opaque_service,
             opaque_repo,
@@ -3177,6 +3204,20 @@ pub struct AppState {
     /// method (which still owns the authorization check).
     pub mount_router:
         Arc<crate::application::services::external_mount_router::MountRouter>,
+    /// Realtime message bus. Always present — an empty bus (no
+    /// subscribers, no publishes) costs a single `DashMap` allocation.
+    /// The WS handler reads `subscribe`; service publish hooks
+    /// (`FolderService::create_folder_with_perms`,
+    /// `FileManagementService`'s file-create commit) call `publish`
+    /// AFTER their DB transaction commits.
+    ///
+    /// Stored as the concrete type (not `Arc<dyn RealtimeBus>`) so the
+    /// GC task's `Weak<Self>` lifecycle is legible from di.rs. Consumers
+    /// that only need the trait obtain it via
+    /// `Arc::clone(&state.bus) as Arc<dyn RealtimeBus>`.
+    pub bus: Arc<
+        crate::infrastructure::services::in_process_realtime_bus::InProcessRealtimeBus,
+    >,
     pub auth_service: Option<AuthServices>,
     /// OPAQUE aPAKE substrate (RFC 9807). Populated only when
     /// [`OpaqueConfig::effective_mode`] is not `Off` — that method

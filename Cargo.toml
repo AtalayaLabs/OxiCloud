@@ -25,7 +25,7 @@ bin-dir = "oxicloud-{ version }-{ target }/{ bin }{ binary-ext }"
 
 [dependencies]
 mimalloc = { version = "0.1.52", default-features = false }
-axum = { version = "0.8.9", features = ["multipart", "http1", "http2", "tokio", "macros"] }
+axum = { version = "0.8.8", features = ["multipart", "http1", "http2", "tokio", "macros", "ws"] }
 # "process" was previously enabled implicitly through aws-config's feature
 # unification; ffmpeg_video_frame_service needs it, so declare it ourselves.
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "io-util", "net", "time", "sync", "fs", "process", "signal"] }

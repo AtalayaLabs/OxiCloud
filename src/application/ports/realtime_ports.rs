@@ -1,0 +1,493 @@
+//! Realtime message-bus port — the seam every service publishes through and
+//! every WS session subscribes on.
+//!
+//! # Design (see `docs/plan/message-bus.md`)
+//!
+//! - [`RealtimeBus`] is the **local-facing** trait: services publish, the WS
+//!   handler subscribes. It never involves the network.
+//! - [`BusReplicator`] is the OPTIONAL seam that mirrors local publishes to
+//!   and from a broker (pg `LISTEN/NOTIFY`, RabbitMQ, NATS). Callers see only
+//!   [`RealtimeBus`]; a real replicator plugs into the in-process impl without
+//!   touching consumers. Day-1 impl is [`NoopReplicator`].
+//!
+//! # MVP scope
+//!
+//! Ships the smallest slice that lets the smoke test verify a folder
+//! subscription receives file/folder-created events and rejects subscribes
+//! to folders the caller can't `Read`:
+//!
+//! - Topics: [`Topic::Folder`] and [`Topic::UserAuthz`]
+//! - Events: [`RealtimeEvent::FileCreated`], [`RealtimeEvent::FolderCreated`]
+//!
+//! Adding a variant is a one-line change plus a match arm in `to_wire_key` /
+//! `parse` / `required_perm`. Other topics (`file:{id}`, `job:{id}`,
+//! `collab:{id}`, `user:{u}:notifications`, …) land with their producers in
+//! Phase-A follow-ups.
+//!
+//! # Wire protocol
+//!
+//! JSON-RPC 2.0 for control + events (text frames), Yjs sync protocol for
+//! CRDT (binary frames). This module owns the JSON-RPC error-code
+//! vocabulary; see [`error_code`].
+
+use std::pin::Pin;
+use std::sync::Arc;
+
+use futures::Stream;
+use serde::{Deserialize, Serialize};
+use tokio::sync::Notify;
+use uuid::Uuid;
+
+use crate::common::errors::DomainError;
+
+// ════════════════════════════════════════════════════════════════════════════
+// Topic — a typed key on the bus
+// ════════════════════════════════════════════════════════════════════════════
+
+/// A topic on the realtime bus. Typed enum, not a string — prevents typos
+/// and gives exhaustive matching in the AuthZ dispatch and the wire encoder.
+///
+/// Encodes to a stable dotted wire key that maps naturally onto RabbitMQ
+/// topic-exchange routing keys or NATS subjects when the [`BusReplicator`]
+/// seam is filled in later.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Topic {
+    /// A folder's mutation stream — file/subfolder created/deleted/renamed/
+    /// moved in or out. Consumed by the folder view for live refresh.
+    Folder(Uuid),
+
+    /// A user's private authz-change channel. The WS handler will auto-
+    /// subscribe the caller and evict stale subs when its events fire once
+    /// the eviction wiring lands (Phase-A follow-up).
+    UserAuthz(Uuid),
+}
+
+impl Topic {
+    /// Stable dotted wire form used by the JSON-RPC control frames and any
+    /// future broker routing keys. Reverse of [`Topic::parse`].
+    pub fn to_wire_key(&self) -> String {
+        match self {
+            Topic::Folder(id) => format!("folder:{id}"),
+            Topic::UserAuthz(id) => format!("user:{id}:authz"),
+        }
+    }
+
+    /// Parse a wire-form topic string. Rejects unknown shapes with a stable
+    /// error kind so the WS handler can respond with a JSON-RPC error object
+    /// (`topic_forbidden` for unknown topic shapes, `no_read` for known
+    /// shapes the caller can't reach — the latter after the AuthZ check).
+    pub fn parse(s: &str) -> Result<Self, ParseTopicErr> {
+        if let Some(rest) = s.strip_prefix("folder:") {
+            let id = Uuid::parse_str(rest).map_err(|_| ParseTopicErr::BadUuid)?;
+            return Ok(Topic::Folder(id));
+        }
+        if let Some(rest) = s.strip_prefix("user:")
+            && let Some((id_str, "authz")) = rest.rsplit_once(':')
+        {
+            let id = Uuid::parse_str(id_str).map_err(|_| ParseTopicErr::BadUuid)?;
+            return Ok(Topic::UserAuthz(id));
+        }
+        Err(ParseTopicErr::Unknown)
+    }
+
+    /// Which permission check the WS handler must run before allowing a
+    /// subscribe. Three classes per plan (see
+    /// `docs/plan/message-bus.md § AuthZ model`):
+    ///
+    /// - Resource-scoped: default `Read` on the resource (Phase-B adds
+    ///   `Share`/`Comment` for the stricter topics).
+    /// - Identity-scoped: `caller_id == subject_uuid`. No admin bypass.
+    /// - Role-scoped / bespoke: not represented in this MVP.
+    pub fn required_perm(&self) -> AuthzCheck {
+        match self {
+            Topic::Folder(id) => AuthzCheck::ResourceRead {
+                resource: BusResource::Folder(*id),
+            },
+            Topic::UserAuthz(id) => AuthzCheck::IdentityMatch { user_id: *id },
+        }
+    }
+}
+
+/// Parse failure for a wire-form topic string. Kept small — the WS handler
+/// maps every variant to `topic_forbidden` on the wire (both a bad UUID and
+/// an unknown shape are indistinguishable from the caller's perspective).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParseTopicErr {
+    /// The prefix was recognized but the UUID inside didn't parse.
+    BadUuid,
+    /// The topic string didn't match any known shape (typo, or a topic
+    /// that isn't in this MVP).
+    Unknown,
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// AuthzCheck — the gate class the WS handler dispatches on
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Resource kinds the bus knows how to gate on. Deliberately a small closed
+/// enum, not the full `domain::authorization::Resource` — the bus does not
+/// need every resource type in the domain, and keeping this separate avoids
+/// dragging domain-shaped churn into the port.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BusResource {
+    Folder(Uuid),
+    // File(Uuid), Drive(Uuid), Calendar(Uuid), AddressBook(Uuid) land with
+    // their topic variants.
+}
+
+/// The check the WS handler must run at subscribe time. Split into the three
+/// classes described in `docs/plan/message-bus.md § AuthZ model`, so a new
+/// topic variant with a new gate shape is a compile error at the dispatch
+/// site rather than a runtime "unhandled" bug.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthzCheck {
+    /// Class 1 — Resource-scoped, default gate is Read on the resource.
+    /// Extend to `ResourceShare`/`ResourceComment` when the Phase-B topics
+    /// (`file:{id}:shares`, `file:{id}:comments`) land.
+    ResourceRead { resource: BusResource },
+
+    /// Class 2 — Identity-scoped. `caller_id` must equal `user_id`.
+    /// No admin bypass — privacy is a hard rule.
+    IdentityMatch { user_id: Uuid },
+    // Class 3 (role-scoped `admin:*`) and the bespoke `job:{id}` check
+    // land with their topic variants.
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// RealtimeEvent — the payload
+// ════════════════════════════════════════════════════════════════════════════
+
+/// A fact that has just become true. Emitted by services AFTER commit,
+/// never inside a DB transaction — a rollback would otherwise fan out a
+/// lie.
+///
+/// Payloads are **thin facts** (ids + actor + verb): the client refetches
+/// details via REST when it needs them. This keeps the AuthZ surface small
+/// (thin payloads can't leak fields the caller couldn't already read via
+/// REST) and keeps events well under the ~8 KB pg NOTIFY cap when the
+/// `PgListenReplicator` seam is filled in later.
+///
+/// Wire form uses `#[serde(tag = "event", rename_all = "snake_case")]`;
+/// discriminator strings are the JSON-RPC notification `event` field. New
+/// denial cause / new event = new variant, never repurpose an existing one,
+/// per project convention.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum RealtimeEvent {
+    /// A file was created inside `parent_id`.
+    FileCreated {
+        file_id: Uuid,
+        name: String,
+        parent_id: Uuid,
+        actor: Uuid,
+    },
+    /// A sub-folder was created inside `parent_id`.
+    FolderCreated {
+        folder_id: Uuid,
+        name: String,
+        parent_id: Uuid,
+        actor: Uuid,
+    },
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// JSON-RPC 2.0 error codes — stable, never repurpose
+// ════════════════════════════════════════════════════════════════════════════
+
+/// JSON-RPC 2.0 `error.code` values used on the WS wire. Follows the spec's
+/// "server-defined" range `-32000` to `-32099` for our application-defined
+/// codes; the standard `-326xx` envelope codes are re-exported here too so
+/// the WS handler has one place to reach for.
+///
+/// See `docs/plan/message-bus.md § JSON-RPC error codes` for the
+/// wire-`message`/audit-`reason` mapping.
+pub mod error_code {
+    /// Resource-scoped topic, caller lacks Read (or resource doesn't exist —
+    /// indistinguishable to caller by design). Anti-enum invariant.
+    pub const NO_READ: i32 = -32001;
+
+    /// Resource-scoped topic requiring `Share`, caller has Read but not
+    /// Share. Applies to `file:{id}:shares` (Phase B).
+    pub const NO_SHARE: i32 = -32002;
+
+    /// Resource-scoped topic requiring `Comment` (`file:{id}:comments`
+    /// Phase B).
+    pub const NO_COMMENT: i32 = -32003;
+
+    /// Identity-scoped mismatch OR unknown/malformed topic. Same wire code
+    /// regardless of whether the target user exists — anti-enum.
+    pub const TOPIC_FORBIDDEN: i32 = -32004;
+
+    /// Per-connection sub cap hit.
+    pub const SUB_LIMIT: i32 = -32005;
+
+    /// Subscribe-frame token bucket exhausted.
+    pub const RATE_LIMITED: i32 = -32006;
+
+    /// CRDT edit frame from a caller without `Edit`. Emitted as an
+    /// `rt.write_denied` notification (not tied to a request `id`).
+    pub const NO_EDIT: i32 = -32007;
+
+    // ────────────────────── JSON-RPC 2.0 standard codes ─────────────────────
+    // Re-exported so the WS handler doesn't reach for two constant lists.
+
+    /// Server-side failure the client should retry.
+    pub const INTERNAL_ERROR: i32 = -32603;
+
+    /// Malformed JSON-RPC envelope (missing `method`, wrong `jsonrpc`
+    /// version).
+    pub const INVALID_REQUEST: i32 = -32600;
+
+    /// Method outside the `rt.*` allowlist.
+    pub const METHOD_NOT_FOUND: i32 = -32601;
+
+    /// Method known but `params` shape wrong (missing `topic`, unparseable).
+    pub const INVALID_PARAMS: i32 = -32602;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// RealtimeBus — the port
+// ════════════════════════════════════════════════════════════════════════════
+
+/// The local-facing message bus. Fire-and-forget publish, stream subscribe.
+///
+/// `publish` is intentionally synchronous — services must not `await` under
+/// a DB transaction (a slow subscriber could hold the tx open) and services
+/// should not care whether fan-out is happening in a background task or not.
+///
+/// `subscribe` returns a `Stream` so the impl can change (broadcast, mpsc,
+/// pg listener) without churn at the consumer.
+pub trait RealtimeBus: Send + Sync + 'static {
+    /// Fan an event out to every current subscriber of `topic`. Never
+    /// blocks; slow subscribers are dropped by the impl (they'll reconnect
+    /// and refetch).
+    fn publish(&self, topic: &Topic, event: RealtimeEvent);
+
+    /// Subscribe to `topic`. The returned stream yields events until the
+    /// subscriber is dropped or the impl kicks it out (e.g. for lagging
+    /// too far behind).
+    fn subscribe(&self, topic: &Topic) -> BusStream;
+}
+
+/// Boxed stream returned by [`RealtimeBus::subscribe`]. Aliased so
+/// consumers don't need to spell out the `Pin<Box<...>>` shape.
+pub type BusStream = Pin<Box<dyn Stream<Item = RealtimeEvent> + Send>>;
+
+// ════════════════════════════════════════════════════════════════════════════
+// BusReplicator — the multi-instance seam (day-1 noop)
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Cross-instance replicator. Sits BESIDE [`RealtimeBus`], not in front of
+/// it — the bus does the local fan-out; the replicator forwards outbound
+/// publishes to the broker (pg NOTIFY, RabbitMQ, NATS) and injects inbound
+/// broker messages back into the local bus.
+///
+/// V1 ships [`NoopReplicator`]. The trait is declared today so wiring the
+/// day the second impl arrives is drop-in.
+#[async_trait::async_trait]
+pub trait BusReplicator: Send + Sync + 'static {
+    /// Called by the local bus for every publish. Fire-and-forget — must not
+    /// block or await; forwarding to the broker happens on a background task
+    /// owned by the impl.
+    fn on_local_publish(&self, topic: &Topic, event: &RealtimeEvent);
+
+    /// Long-running consumer task: reads remote messages and re-publishes
+    /// locally. Returns when `shutdown` is notified — DI calls
+    /// `shutdown.notify_one()` on graceful shutdown.
+    ///
+    /// **Shutdown semantics:** use `Notify::notify_one` (not
+    /// `notify_waiters`) at the signalling site: `notify_one` stores a
+    /// permit if no waiter is currently parked, so signal-before-park is
+    /// safe. `notify_waiters` silently drops signals sent before parking
+    /// and creates a race. This constrains the impl to a single-waiter
+    /// shutdown handle; multi-task replicators must spin their own
+    /// `CancellationToken`-style fan-out internally.
+    async fn run(self: Arc<Self>, shutdown: Arc<Notify>) -> Result<(), DomainError>;
+}
+
+/// Day-1 replicator: does nothing. Wired unconditionally so callers hold
+/// `Arc<dyn BusReplicator>` uniformly. Swapped for a real impl when
+/// multi-instance deployment matters.
+#[derive(Default)]
+pub struct NoopReplicator;
+
+#[async_trait::async_trait]
+impl BusReplicator for NoopReplicator {
+    fn on_local_publish(&self, _topic: &Topic, _event: &RealtimeEvent) {
+        // Intentionally empty. Local fan-out already happened in the bus.
+    }
+
+    async fn run(self: Arc<Self>, shutdown: Arc<Notify>) -> Result<(), DomainError> {
+        // Park until shutdown so the DI-managed handle stays alive with the
+        // same lifecycle as a future real replicator.
+        shutdown.notified().await;
+        Ok(())
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Tests
+// ════════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folder_topic_roundtrip() {
+        let id = Uuid::new_v4();
+        let t = Topic::Folder(id);
+        let wire = t.to_wire_key();
+        assert_eq!(wire, format!("folder:{id}"));
+        assert_eq!(Topic::parse(&wire).unwrap(), t);
+    }
+
+    #[test]
+    fn user_authz_topic_roundtrip() {
+        let id = Uuid::new_v4();
+        let t = Topic::UserAuthz(id);
+        let wire = t.to_wire_key();
+        assert_eq!(wire, format!("user:{id}:authz"));
+        assert_eq!(Topic::parse(&wire).unwrap(), t);
+    }
+
+    #[test]
+    fn parse_rejects_bad_uuid() {
+        assert_eq!(
+            Topic::parse("folder:not-a-uuid"),
+            Err(ParseTopicErr::BadUuid)
+        );
+    }
+
+    #[test]
+    fn parse_rejects_unknown_shape() {
+        assert_eq!(Topic::parse(""), Err(ParseTopicErr::Unknown));
+        assert_eq!(Topic::parse("unknown:x"), Err(ParseTopicErr::Unknown));
+        assert_eq!(
+            Topic::parse(&format!("user:{}", Uuid::new_v4())),
+            Err(ParseTopicErr::Unknown),
+            "user:<uuid> without :authz suffix is not a known topic in MVP"
+        );
+    }
+
+    #[test]
+    fn required_perm_folder_is_resource_read() {
+        let id = Uuid::new_v4();
+        assert_eq!(
+            Topic::Folder(id).required_perm(),
+            AuthzCheck::ResourceRead {
+                resource: BusResource::Folder(id)
+            }
+        );
+    }
+
+    #[test]
+    fn required_perm_user_authz_is_identity_match() {
+        let id = Uuid::new_v4();
+        assert_eq!(
+            Topic::UserAuthz(id).required_perm(),
+            AuthzCheck::IdentityMatch { user_id: id }
+        );
+    }
+
+    #[test]
+    fn event_serializes_with_snake_case_discriminator() {
+        // The `#[serde(tag = "event")]` shape is the WS wire contract for
+        // the `rt.event` JSON-RPC notification's `params.event` field. Pin
+        // it with a snapshot so accidental rename of the enum variant
+        // fails the test instead of silently breaking clients.
+        let ev = RealtimeEvent::FileCreated {
+            file_id: Uuid::nil(),
+            name: "notes.md".into(),
+            parent_id: Uuid::nil(),
+            actor: Uuid::nil(),
+        };
+        let json = serde_json::to_value(&ev).unwrap();
+        assert_eq!(json["event"], "file_created");
+        assert_eq!(json["name"], "notes.md");
+
+        let ev = RealtimeEvent::FolderCreated {
+            folder_id: Uuid::nil(),
+            name: "docs".into(),
+            parent_id: Uuid::nil(),
+            actor: Uuid::nil(),
+        };
+        let json = serde_json::to_value(&ev).unwrap();
+        assert_eq!(json["event"], "folder_created");
+    }
+
+    #[test]
+    fn event_roundtrip() {
+        let file_id = Uuid::new_v4();
+        let parent_id = Uuid::new_v4();
+        let actor = Uuid::new_v4();
+        let original = RealtimeEvent::FileCreated {
+            file_id,
+            name: "a.txt".into(),
+            parent_id,
+            actor,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: RealtimeEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn error_codes_stay_in_the_defined_ranges() {
+        // Application-defined codes live in the JSON-RPC "server-defined"
+        // range -32000..=-32099. Standard envelope codes live in
+        // -32700..=-32600. A refactor that moves a value out of its range
+        // is a wire-break — pin it here.
+        for code in [
+            error_code::NO_READ,
+            error_code::NO_SHARE,
+            error_code::NO_COMMENT,
+            error_code::TOPIC_FORBIDDEN,
+            error_code::SUB_LIMIT,
+            error_code::RATE_LIMITED,
+            error_code::NO_EDIT,
+        ] {
+            assert!(
+                (-32099..=-32000).contains(&code),
+                "app-defined code {code} outside -32099..=-32000"
+            );
+        }
+        for code in [
+            error_code::INTERNAL_ERROR,
+            error_code::INVALID_REQUEST,
+            error_code::METHOD_NOT_FOUND,
+            error_code::INVALID_PARAMS,
+        ] {
+            assert!(
+                (-32700..=-32600).contains(&code),
+                "standard code {code} outside -32700..=-32600"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn noop_replicator_parks_until_notified() {
+        let repl = Arc::new(NoopReplicator);
+        let shutdown = Arc::new(Notify::new());
+        let handle = tokio::spawn({
+            let repl = Arc::clone(&repl);
+            let shutdown = Arc::clone(&shutdown);
+            async move { BusReplicator::run(repl, shutdown).await }
+        });
+        // on_local_publish is a no-op that should not panic or spawn work.
+        repl.on_local_publish(
+            &Topic::Folder(Uuid::nil()),
+            &RealtimeEvent::FileCreated {
+                file_id: Uuid::nil(),
+                name: "x".into(),
+                parent_id: Uuid::nil(),
+                actor: Uuid::nil(),
+            },
+        );
+        // `notify_one` (not `notify_waiters`) so the signal survives if the
+        // spawned task hasn't yet reached `.notified().await` — permit
+        // queues instead of being dropped. See BusReplicator docs.
+        shutdown.notify_one();
+        handle.await.unwrap().unwrap();
+    }
+}
