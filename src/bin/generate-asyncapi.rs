@@ -59,12 +59,16 @@ Phase C (sync-client push, album live) extend the same channels — see
 "#.trim(),
             "license": { "name": "AGPL-3.0-or-later" },
         },
+        // Applied to every message that doesn't set its own — the JSON-RPC
+        // control frames are all `application/json`. Binary Yjs frames
+        // stay out of AsyncAPI (see the Server description for pointers).
+        "defaultContentType": "application/json",
         "servers": {
             "default": {
                 "host": "{host}",
                 "pathname": "/api/rt/ws",
                 "protocol": "wss",
-                "description": "OxiCloud realtime bus WebSocket endpoint",
+                "description": "OxiCloud realtime bus WebSocket endpoint. Text frames are JSON-RPC 2.0. Binary frames (out of AsyncAPI scope) are Yjs sync protocol for the collab editor — see `docs/plan/markdown-collab.md`.",
                 "variables": {
                     "host": {
                         "description": "Server host — replace with the deployment domain",
@@ -78,6 +82,16 @@ Phase C (sync-client push, album live) extend the same channels — see
                 "bindings": {
                     "ws": { "subProtocol": "oxi.rt.v1" }
                 },
+                // Every request MUST be authenticated. Programmatic
+                // clients set `Authorization: Bearer <jwt>` on the WS
+                // upgrade (same header the REST API uses); browser
+                // clients — which can't set headers on `new WebSocket()`
+                // — will use the deferred ticket flow (a plain HTTP
+                // POST issues a short-lived one-shot ticket bound to
+                // the WS URL, see the plan's DPoP-gap section).
+                "security": [
+                    { "$ref": "#/components/securitySchemes/bearerAuth" }
+                ],
             }
         },
         "channels": channels(),
@@ -98,6 +112,7 @@ fn channels() -> Value {
                 "SubscribeRequest":   { "$ref": "#/components/messages/RtSubscribeRequest" },
                 "UnsubscribeRequest": { "$ref": "#/components/messages/RtUnsubscribeRequest" },
                 "PingRequest":        { "$ref": "#/components/messages/RtPingRequest" },
+                "PongResponse":       { "$ref": "#/components/messages/RtPongResponse" },
                 "SubscribedResponse": { "$ref": "#/components/messages/RtSubscribedResponse" },
                 "ErrorResponse":      { "$ref": "#/components/messages/RtErrorResponse" },
                 "FolderEvent":        { "$ref": "#/components/messages/RtFolderEventNotification" },
@@ -149,6 +164,26 @@ fn operations() -> Value {
             "messages": [
                 { "$ref": "#/channels/Folder/messages/FolderEvent" }
             ]
+        },
+        // Application-layer keepalive. Separate from the RFC 6455 Ping
+        // control frame the server sends on `OXICLOUD_RT_WS_KEEPALIVE_SECONDS`
+        // (which is transport-level and not modelled in AsyncAPI). This
+        // operation lets a client actively confirm the socket is
+        // end-to-end alive when transport-level Pings alone can't rule
+        // out a proxy black-hole.
+        "ping": {
+            "action": "send",
+            "channel": { "$ref": "#/channels/Folder" },
+            "summary": "Application-level keepalive; `rt.pong` reply confirms end-to-end liveness",
+            "messages": [
+                { "$ref": "#/channels/Folder/messages/PingRequest" }
+            ],
+            "reply": {
+                "channel": { "$ref": "#/channels/Folder" },
+                "messages": [
+                    { "$ref": "#/channels/Folder/messages/PongResponse" }
+                ]
+            }
         }
     })
 }
@@ -188,6 +223,12 @@ fn components() -> Value {
                 "contentType": "application/json",
                 "payload": { "$ref": "#/components/schemas/RtErrorResponseBody" },
             },
+            "RtPongResponse": {
+                "name": "rt.pong",
+                "title": "Reply to rt.ping — `result.pong == true`",
+                "contentType": "application/json",
+                "payload": { "$ref": "#/components/schemas/RtPongResponseBody" },
+            },
             // ── Notifications (server → client) ─────────────────────
             "RtFolderEventNotification": {
                 "name": "rt.event",
@@ -201,10 +242,22 @@ fn components() -> Value {
             "RtUnsubscribeRequestBody": rpc_request_schema("rt.unsubscribe", topic_params_schema()),
             "RtPingRequestBody": rpc_request_schema("rt.ping", json!({ "type": "null" })),
             "RtSuccessResponseBody": rpc_success_response_schema(),
+            "RtPongResponseBody": rpc_pong_response_schema(),
             "RtErrorResponseBody": rpc_error_response_schema(),
             "RtFolderEventBody": folder_event_notification_schema(),
             "FileCreatedData": file_created_schema(),
             "FolderCreatedData": folder_created_schema(),
+        },
+        // How the client authenticates. Handler side is `auth_middleware`
+        // — the same middleware every `/api/*` request goes through, so
+        // any JWT valid for REST is valid for WS.
+        "securitySchemes": {
+            "bearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT",
+                "description": "OxiCloud JWT — same access_token minted by `POST /api/auth/login` (or the OPAQUE handshake). Programmatic clients set `Authorization: Bearer <jwt>` on the WS upgrade request. Browsers, which cannot set headers on `new WebSocket()`, will use the deferred ticket flow (`POST /api/rt/ticket` → short-lived one-shot ticket in the WS URL); see the plan's DPoP-gap section.",
+            }
         }
     })
 }
@@ -246,6 +299,26 @@ fn rpc_success_response_schema() -> Value {
             "jsonrpc": { "type": "string", "const": "2.0" },
             "id":      { "type": ["integer", "string", "null"] },
             "result":  { "type": "object" },
+        }
+    })
+}
+
+/// Reply to `rt.ping` — the shape pins `result.pong == true` so
+/// contract tests can assert on it directly.
+fn rpc_pong_response_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["jsonrpc", "id", "result"],
+        "properties": {
+            "jsonrpc": { "type": "string", "const": "2.0" },
+            "id":      { "type": ["integer", "string", "null"] },
+            "result": {
+                "type": "object",
+                "required": ["pong"],
+                "properties": {
+                    "pong": { "type": "boolean", "const": true }
+                }
+            },
         }
     })
 }

@@ -35,7 +35,9 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
+use axum::body::Bytes;
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
@@ -44,6 +46,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
 use crate::application::ports::authorization_ports::AuthorizationEngine;
@@ -63,6 +66,31 @@ const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 128;
 /// (client reconnects, refetches). Sized so a subscriber blocked on the
 /// socket layer doesn't back-pressure into the bus's broadcast ring.
 const OUTBOUND_CHANNEL_CAPACITY: usize = 512;
+
+/// Default server-initiated protocol Ping interval. Keeps intermediate
+/// proxies (Traefik, nginx, Cloudflare) and NAT boxes from reaping the
+/// TCP session as idle. 30 s sits comfortably under nginx's 60 s
+/// default and Cloudflare's 100 s hard limit; behind Traefik we
+/// document a much longer `idleTimeout` anyway.
+///
+/// Overridable at server start via `OXICLOUD_RT_WS_KEEPALIVE_SECONDS`
+/// — test suites drop it to a low value to exercise the keepalive path
+/// within a bounded wall-clock.
+const DEFAULT_KEEPALIVE_SECONDS: u64 = 30;
+
+/// Read the keepalive interval from env at connection time. Kept as a
+/// function rather than a `LazyLock` so a running server with the env
+/// var flipped picks it up on the NEXT connection without a restart —
+/// useful for smoke tests that toggle the value on the fly.
+fn keepalive_interval() -> Duration {
+    Duration::from_secs(
+        std::env::var("OXICLOUD_RT_WS_KEEPALIVE_SECONDS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|&n: &u64| n > 0)
+            .unwrap_or(DEFAULT_KEEPALIVE_SECONDS),
+    )
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // JSON-RPC 2.0 envelope types
@@ -166,6 +194,42 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
     // recognised without re-parsing.
     let mut subs: HashMap<String, Sub> = HashMap::new();
 
+    // Server-initiated protocol Ping ticker — prevents intermediate
+    // proxies (Traefik, nginx, Cloudflare) and NAT boxes from reaping
+    // the TCP session as idle. Browsers can't send Ping control frames
+    // (the JS `WebSocket` API doesn't expose them), so the server owns
+    // this responsibility; the client's WS layer auto-Pongs. A truly
+    // dead peer surfaces on the next `socket.send` and breaks out of
+    // the loop the same way any WS error does — no pong-timeout
+    // tracking needed for MVP.
+    //
+    // ─────────────────────── Scaling note ────────────────────────────
+    // This is a `tokio::time::interval` PER connection — not a thread.
+    // The tokio timer wheel handles arbitrary N intervals in O(1) and
+    // each Sleep future is ~150 bytes of state. Per-session task
+    // memory dominates at any interesting N (~1 KB stack), which is
+    // still trivial: 10 000 clients ≈ 12 MB total + ~333 Pings/sec
+    // spread across the worker pool.
+    //
+    // If a deployment ever hits 100 000+ concurrent WS AND the
+    // per-connection interval becomes a measurable cost, the swap is:
+    //   1. one global `tokio::spawn(async { interval.tick().await; ... })`
+    //      task that scans a `DashMap<SessionId, mpsc::Sender<()>>`
+    //      registry and pings each session's mailbox on tick,
+    //   2. session tasks receive the mailbox signal in their `select!`
+    //      and send `Message::Ping` from there (still per-session, so
+    //      one slow socket doesn't block the whole fleet).
+    // Neither pattern change would touch the wire; both are same-file
+    // refactors. Don't do this until N genuinely warrants it — until
+    // then, per-connection is the standard tokio idiom for a reason.
+    let mut keepalive = tokio::time::interval(keepalive_interval());
+    // Coalesce backlog if the runtime pauses (e.g. under heavy load)
+    // rather than firing a burst of Pings when it recovers.
+    keepalive.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    // Discard the immediate first tick — the socket just opened; a
+    // client sending its opening `rt.subscribe` shouldn't race a Ping.
+    keepalive.tick().await;
+
     loop {
         tokio::select! {
             // biased: process outbound before inbound so an event burst
@@ -180,6 +244,15 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
                         }
                     }
                     None => break, // out_tx dropped — unreachable but safe
+                }
+            }
+
+            _ = keepalive.tick() => {
+                // RFC 6455 Ping control frame. 0-byte payload is
+                // spec-legal and the smallest wire footprint. Client
+                // auto-Pongs; nothing to observe here on that.
+                if socket.send(Message::Ping(Bytes::new())).await.is_err() {
+                    break;
                 }
             }
 
@@ -199,7 +272,10 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
                         // frames on the same connection isn't rejected.
                     }
                     Some(Ok(Message::Ping(_) | Message::Pong(_))) => {
-                        // Handled by axum's WebSocket state machine.
+                        // Client Ping → axum auto-Pongs. Client Pong is
+                        // the response to OUR keepalive Ping — nothing
+                        // to do at the app layer; TCP + WS keep the
+                        // pipe warm regardless.
                     }
                     Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
                 }

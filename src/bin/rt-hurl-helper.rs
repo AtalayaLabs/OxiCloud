@@ -261,6 +261,11 @@ async fn subscribe_and_collect(args: Args) -> Result<(), HelperError> {
     }
 
     let mut events: Vec<Value> = Vec::new();
+    // Count server-initiated protocol Pings so scenarios can assert the
+    // keepalive fires. tokio-tungstenite queues an auto-Pong on the next
+    // write path, so we don't need to send one ourselves; we just observe
+    // the frame.
+    let mut pings_received: usize = 0;
     let mut timed_out = false;
 
     let deadline = tokio::time::Instant::now() + args.timeout;
@@ -290,9 +295,16 @@ async fn subscribe_and_collect(args: Args) -> Result<(), HelperError> {
             }
         };
 
-        let Message::Text(text) = msg else {
-            // Ignore ping/pong/binary; server may send close later.
-            continue;
+        let text = match msg {
+            Message::Text(t) => t,
+            Message::Ping(_) => {
+                // Server-initiated keepalive — observable proof that the
+                // interval is firing. tokio-tungstenite queues an
+                // auto-Pong on the next flush; nothing to do here.
+                pings_received += 1;
+                continue;
+            }
+            _ => continue, // pong/binary/close — not asserted on
         };
         let value: Value = serde_json::from_str(&text)
             .map_err(|e| HelperError::Protocol(format!("bad frame: {e}: {text}")))?;
@@ -333,6 +345,7 @@ async fn subscribe_and_collect(args: Args) -> Result<(), HelperError> {
         let summary = json!({
             "subscribed": subscribed,
             "events": events,
+            "pings_received": pings_received,
             "timed_out": timed_out,
         });
         std::fs::write(path, serde_json::to_vec_pretty(&summary).unwrap())

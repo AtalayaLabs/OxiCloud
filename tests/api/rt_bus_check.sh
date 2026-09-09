@@ -7,7 +7,7 @@
 # This script orchestrates it against a live oxicloud server: bootstraps
 # state with curl, exercises the bus, asserts on the helper's JSON output.
 #
-# Four scenarios:
+# Five scenarios:
 #   S1  Positive delivery       — subscribe to folder A, upload into A, see event.
 #   S2  Topic isolation         — subscribe to folder A only, upload into B and
 #                                 then A; must see A's event only.
@@ -16,6 +16,10 @@
 #   S4  Anti-enumeration        — subscribe to a folder that does not exist;
 #                                 must return the SAME wire reason (`no_read`)
 #                                 as S3, per the plan's anti-enum invariant.
+#   S5  Server keepalive        — 3 s of idle surfaces multiple RFC 6455 Ping
+#                                 frames from the server (proves the interval
+#                                 fires), and the session still delivers an
+#                                 event on the same subscription afterwards.
 #
 # Exit non-zero on any failure — run.sh treats that as a suite failure.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -216,4 +220,47 @@ if ! "$HELPER_BIN" expect-denied \
 fi
 log "S4 OK"
 
-log "All four realtime-bus scenarios passed."
+# ── Scenario 5 — Server-initiated keepalive ─────────────────────────────────
+# Verifies the WS handler sends RFC 6455 Ping control frames on the
+# `OXICLOUD_RT_WS_KEEPALIVE_SECONDS` cadence (1 s in tests/common/server.env).
+# Two invariants:
+#   (a) idling on a live subscription surfaces multiple Ping frames — the
+#       keepalive interval genuinely fires, not just at connect and never again.
+#   (b) after 3 s of app-layer idle + keepalive traffic, the session is
+#       still healthy: an upload's event still delivers cleanly.
+# If the keepalive impl were broken (missed-tick burst, dead select! arm,
+# stalled write on the socket), either (a) trips (0-1 pings observed) or
+# (b) trips (event never arrives after idle).
+log "S5: server-initiated keepalive fires on idle; session still delivers."
+out_s5="$(mktemp -t rtbus_s5.XXXXXX)"
+"$HELPER_BIN" subscribe-and-collect \
+  --url "$ws_url" \
+  --token "$user1_token" \
+  --subscribe "folder:$folder_a" \
+  --expect-events 1 \
+  --timeout 6s \
+  --output "$out_s5" &
+helper_pid=$!
+# 3 s of pure idle — with 1 s keepalive on the server, that's ~3 Pings.
+sleep 3
+mkfile_in "$folder_a" "s5.txt" "$user1_token"
+if ! wait "$helper_pid"; then
+  cat "$out_s5" >&2 || true
+  die "S5: helper did not observe the expected event after idle"
+fi
+# (a) At least 2 Pings during the 3 s idle. Tolerant floor: with 1 s
+# interval and a first-tick discard, 2 is the minimum credible observation
+# before flakiness (missed tick, timer coalesce) becomes a concern.
+pings=$(jq -r '.pings_received' "$out_s5")
+if [[ "$pings" -lt 2 ]]; then
+  cat "$out_s5" >&2 || true
+  die "S5: expected >=2 keepalive pings during 3 s idle, got $pings"
+fi
+# (b) Exactly one event on the folder A subscription, from the post-idle upload.
+[[ "$(jq -r '.events | length' "$out_s5")" == "1" ]] \
+  || { cat "$out_s5"; die "S5: expected 1 event after idle, got $(jq -r '.events | length' "$out_s5")"; }
+[[ "$(jq -r '.events[0].data.parent_id' "$out_s5")" == "$folder_a" ]] \
+  || die "S5: parent_id mismatch after idle"
+log "S5 OK ($pings pings observed)"
+
+log "All five realtime-bus scenarios passed."

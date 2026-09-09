@@ -355,6 +355,14 @@ Today's shipped locales: `ar, de, en, es, fa, fr, hi, it, ja, ko, nl, pl, pt, ru
 
 Example: `OXICLOUD_TRUST_PROXY_CIDR=127.0.0.1/32,10.0.0.0/8,172.16.0.0/12`
 
+## Realtime WebSocket
+
+| Variable | Default | Description |
+|---|---|---|
+| `OXICLOUD_RT_WS_KEEPALIVE_SECONDS` | `30` | Server-initiated protocol Ping interval on `/api/rt/ws`. Prevents intermediate proxies (Traefik, nginx, Cloudflare) and NAT boxes from reaping the TCP session as idle. Read at each WS connect — a change takes effect on new connections, no restart needed. Set `0` or any non-positive value to fall back to the default. |
+
+Tuning: 30 s is comfortably under nginx's 60 s `proxy_read_timeout` default and Cloudflare's 100 s hard limit. Behind Traefik with `respondingTimeouts.idleTimeout` bumped to `3600s` (as documented in the reverse-proxy setup), you can leave this at 30 s or raise it — the interval should sit at most half the smallest hop's idle timeout so a single missed Ping doesn't reap the connection.
+
 ## Allocator Tuning
 
 These variables are read directly by **mimalloc**, not by OxiCloud's config parser.

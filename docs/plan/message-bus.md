@@ -559,11 +559,49 @@ Follows the same shape as `generate-openapi`:
 
 - Generator produces spec covering the Phase-A-MVP surface only
   (`rt.subscribe` / `rt.unsubscribe` / `rt.ping` methods,
-  `rt.event` / `rt.revoked` notifications, `Folder(id)` and
-  `UserAuthz(u)` topics, `FileCreated` / `FolderCreated` events,
-  the error-code table).
+  `rt.event` notification, `Folder(id)` and `UserAuthz(u)` topics,
+  `FileCreated` / `FolderCreated` events, the error-code table,
+  `defaultContentType`, `securitySchemes.bearerAuth`, and a `ping`
+  operation with the `rt.pong` reply shape).
 - Adding a new topic/event/method later is an enum variant + serde
   derive → regenerate → commit. Same discipline as OpenAPI.
+
+### AsyncAPI follow-ups (deferred)
+
+Land with their producer PRs; each is a small addition to
+`generate-asyncapi.rs` alongside the code that emits it.
+
+- **`rt.revoked` notification** on the Folder + File channels — the
+  server-initiated eviction frame fired when a grant is revoked
+  mid-session ([[project-message-bus]] AuthZ eviction section). Ships
+  with the `AuthzChanged` publish hook in `ShareService::revoke`.
+  Wire shape is already fixed by the plan; the AsyncAPI additions are
+  a `RtRevokedNotification` message + a `receive`-action operation on
+  every resource-scoped channel that supports eviction.
+- **Yjs binary frames — prose section** at the doc level: AsyncAPI
+  schemas can't fully describe the `[kind][doc_id][payload]` framing
+  (it's out-of-band from the JSON envelope), so a plain-English
+  section on the `Collab` channel description referring to
+  `docs/plan/markdown-collab.md § Wire protocol` is the pragmatic
+  documentation. Ships with the Collab channel definition when the
+  editor PR lands.
+- **Server variable expansion** — add a `port` variable so local dev
+  URLs (`ws://localhost:8086/api/rt/ws`) can be expressed in tooling
+  that reads the AsyncAPI URL template. Trivial addition; not
+  blocking.
+- **`defaultMessages` per channel** — AsyncAPI convention for
+  reducing per-operation `$ref` boilerplate as the message count
+  grows. Worth introducing once we hit ~10 messages per channel; MVP
+  has 6 on Folder, still legible.
+- **Bindings on messages** — declare `bindings.ws.headers` on the
+  subscribe messages so tools can render the auth header shape (the
+  spec knows about it via `securitySchemes`, but per-message bindings
+  make it explicit at the point of use).
+- **Reply message discrimination** — the `receiveFolderEvent`
+  operation could split into per-event-kind messages
+  (`RtFileCreatedEvent`, `RtFolderCreatedEvent`) instead of one
+  polymorphic `RtFolderEventNotification` with `oneOf`. Better
+  codegen for typed clients. Refactor when we generate an FE SDK.
 
 ## AuthZ model (audit rules per AGENTS.md)
 
