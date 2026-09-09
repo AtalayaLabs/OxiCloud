@@ -267,7 +267,19 @@ bash "$API_DIR/thumb_import_check.sh"
 
 bash "$API_DIR/storage_cleanup_check.sh"
 
-# ── 5. OPAQUE crypto handshake — the parts Hurl can't drive ─────────────
+# ── 5. Realtime message bus — WebSocket smoke test ──────────────────────
+# Runs BEFORE the OPAQUE helper so its user registration + login uses
+# the legacy password path (opaque_substrate.hurl migrates the admin
+# account, but by running first this check is unaffected by whatever
+# order later scenarios touch the auth substrate). Four scenarios:
+# positive delivery, topic isolation, AuthZ denial on subscribe,
+# anti-enumeration parity. See `tests/api/rt_bus_check.sh` and
+# `docs/plan/message-bus.md`.
+log "Running realtime-bus smoke test..."
+BUILD_TARGET="$BUILD_TARGET" bash "$REPO_ROOT/tests/api/rt_bus_check.sh" \
+  || die "realtime-bus smoke test failed"
+
+# ── 6. OPAQUE crypto handshake — the parts Hurl can't drive ─────────────
 # Full OPAQUE register + login handshake against the running server,
 # using the real ciphersuite client-side. Closes the gap left by
 # `opaque_substrate.hurl` (which covers only wire shape, not OPRF-
@@ -289,7 +301,7 @@ OPAQUE_HELPER_USERNAME="$username" \
 OPAQUE_HELPER_PASSWORD="$password" \
   "$OPAQUE_HELPER_BIN" || die "OPAQUE crypto handshake failed"
 
-# ── 6. DPoP wire protocol — the parts Hurl can't drive ──────────────────
+# ── 7. DPoP wire protocol — the parts Hurl can't drive ──────────────────
 # Each proof carries a fresh jti, current iat, htm/htu matching the
 # exact request, an ES256 signature, and a threaded nonce — none of
 # which a declarative .hurl template can compute. See

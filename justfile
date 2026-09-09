@@ -194,6 +194,13 @@ audit:
 openapi:
     cargo run --features dev_tools --bin generate-openapi
 
+# Regenerate `resources/gen/asyncapi.json` — the WS surface's spec,
+# analogue of openapi.json. Built from the `Topic`, `RealtimeEvent`,
+# and `error_code` constants in `application/ports/realtime_ports.rs`
+# so the spec stays in sync with the wire by construction.
+asyncapi:
+    cargo run --features dev_tools --bin generate-asyncapi
+
 db:
     docker compose up -d postgres
 
