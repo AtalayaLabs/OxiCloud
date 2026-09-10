@@ -245,6 +245,18 @@ pub enum RealtimeEvent {
         parent_id: Uuid,
         actor: Uuid,
     },
+    /// A user's authorization changed — publishes on
+    /// [`Topic::UserAuthz`]. The WS handler auto-subscribes each
+    /// session to its own `user:{caller}:authz` topic; on receipt it
+    /// walks the session's active subscriptions and evicts any whose
+    /// resource is in `affected_folders`, emitting a `rt.revoked`
+    /// notification per evicted topic.
+    ///
+    /// MVP carries folder UUIDs only (the only resource-scoped topic
+    /// that ships in Phase A). When file/drive/calendar topics land,
+    /// the payload extends with additional resource classes — see the
+    /// plan's Phase-B roadmap.
+    AuthzChanged { affected_folders: Vec<Uuid> },
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -528,6 +540,12 @@ mod tests {
                     actor: Uuid::nil(),
                 },
                 "folder_deleted",
+            ),
+            (
+                RealtimeEvent::AuthzChanged {
+                    affected_folders: vec![Uuid::nil()],
+                },
+                "authz_changed",
             ),
         ];
         for (ev, expected) in cases {

@@ -116,6 +116,7 @@ fn channels() -> Value {
                 "SubscribedResponse": { "$ref": "#/components/messages/RtSubscribedResponse" },
                 "ErrorResponse":      { "$ref": "#/components/messages/RtErrorResponse" },
                 "FolderEvent":        { "$ref": "#/components/messages/RtFolderEventNotification" },
+                "RevokedNotification": { "$ref": "#/components/messages/RtRevokedNotification" },
             }
         },
         "UserAuthz": {
@@ -163,6 +164,14 @@ fn operations() -> Value {
             "summary": "Server-pushed `rt.event` notification for a folder mutation",
             "messages": [
                 { "$ref": "#/channels/Folder/messages/FolderEvent" }
+            ]
+        },
+        "receiveRevoked": {
+            "action": "receive",
+            "channel": { "$ref": "#/channels/Folder" },
+            "summary": "Server-initiated eviction of a subscription (grant revoked, resource deleted, etc.). Client stops rendering the topic.",
+            "messages": [
+                { "$ref": "#/channels/Folder/messages/RevokedNotification" }
             ]
         },
         // Application-layer keepalive. Separate from the RFC 6455 Ping
@@ -235,6 +244,12 @@ fn components() -> Value {
                 "title": "Folder mutation event",
                 "contentType": "application/json",
                 "payload": { "$ref": "#/components/schemas/RtFolderEventBody" },
+            },
+            "RtRevokedNotification": {
+                "name": "rt.revoked",
+                "title": "Subscription evicted",
+                "contentType": "application/json",
+                "payload": { "$ref": "#/components/schemas/RtRevokedBody" },
             }
         },
         "schemas": {
@@ -245,6 +260,7 @@ fn components() -> Value {
             "RtPongResponseBody": rpc_pong_response_schema(),
             "RtErrorResponseBody": rpc_error_response_schema(),
             "RtFolderEventBody": folder_event_notification_schema(),
+            "RtRevokedBody": revoked_notification_schema(),
             "FileCreatedData": file_created_schema(),
             "FileRenamedData": file_renamed_schema(),
             "FileMovedData": file_moved_schema(),
@@ -523,6 +539,39 @@ fn folder_deleted_schema() -> Value {
             "folder_id": { "type": "string", "format": "uuid" },
             "parent_id": { "type": "string", "format": "uuid" },
             "actor":     { "type": "string", "format": "uuid" },
+        }
+    })
+}
+
+/// `rt.revoked` notification body — server tells the client that a
+/// specific subscription has been evicted. `topic` is the wire-form
+/// string the client originally subscribed to. `reason` is the stable
+/// eviction vocabulary — never repurpose an existing value (matches
+/// the AuthZ audit-line convention).
+fn revoked_notification_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "JSON-RPC notification (no `id`). `method = \"rt.revoked\"`.",
+        "required": ["jsonrpc", "method", "params"],
+        "properties": {
+            "jsonrpc": { "type": "string", "const": "2.0" },
+            "method":  { "type": "string", "const": "rt.revoked" },
+            "params": {
+                "type": "object",
+                "required": ["topic", "reason"],
+                "properties": {
+                    "topic":  { "type": "string" },
+                    "reason": {
+                        "type": "string",
+                        "enum": [
+                            "grant_revoked",
+                            "resource_deleted",
+                            "group_membership_lost",
+                            "admin_kick",
+                        ]
+                    }
+                }
+            }
         }
     })
 }

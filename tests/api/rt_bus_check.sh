@@ -28,6 +28,13 @@
 #                                 one session → observe TWO `file_moved`
 #                                 events (one via the A topic, one via B).
 #                                 Same file_id/from/to on both.
+#   S8  Grant-revoke eviction   — user2 subscribes to A + B (both granted),
+#                                 user1 revokes only A → user2 sees
+#                                 `rt.revoked` for folder:A AND an event
+#                                 on folder:B (upload after revoke).
+#                                 Locks in three invariants: eviction
+#                                 fires, scoping is per-topic, session
+#                                 survives.
 #
 # Exit non-zero on any failure — run.sh treats that as a suite failure.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -123,26 +130,42 @@ user2_login=$(c_post "$base_url/api/auth/login" "" \
   "$(printf '{"username":"%s","password":"%s"}' "$user2_name" "$user2_pass")")
 user2_token=$(printf '%s' "$user2_login" | jq -r '.access_token')
 [[ -n "$user2_token" && "$user2_token" != "null" ]] || die "no user2 token: $user2_login"
+# S8 needs user2's UUID to target them as the grant subject.
+user2_id=$(printf '%s' "$user2_login" | jq -r '.user.full.user.id')
+[[ -n "$user2_id" && "$user2_id" != "null" ]] || die "no user2 id: $user2_login"
 
 # ── Helper: create a small file inside a folder via the byte-upload path.
 # Not delta / instant-upload; keeps the wire simple and hits the same
 # `upload_file_streaming` publish hook.
 mkfile_in() {
   local folder_id="$1" name="$2" token="$3"
-  local tmpfile
+  local tmpfile respfile status
   tmpfile="$(mktemp -t rtbus_body.XXXXXX)"
+  respfile="$(mktemp -t rtbus_resp.XXXXXX)"
   printf 'rt-bus-test-payload' > "$tmpfile"
   # Multipart-upload path used by the frontend for byte uploads.
   # NOTE: `folder_id` MUST come BEFORE the `file` part — file_handler.rs
   # streams the parts in order and the fail-fast folder-required check
   # fires the moment it sees the file bytes; a folder_id sent after the
   # file arrives too late (returns 400 "folder_id is required").
-  curl -sS -X POST \
+  #
+  # Capture body + status so a silent 4xx doesn't look like a timing
+  # bug in the bus. A stale server binary that lost the publish hook,
+  # or a schema change that broke the endpoint, would otherwise
+  # present as "subscribe works, no event, timeout" — exactly the
+  # shape of a real regression but a completely different root cause.
+  status=$(curl -sS -o "$respfile" -w "%{http_code}" -X POST \
     -H "Authorization: Bearer $token" \
     -F "folder_id=$folder_id" \
     -F "file=@$tmpfile;filename=$name" \
-    "$base_url/api/files/upload" > /dev/null
+    "$base_url/api/files/upload")
   rm -f "$tmpfile"
+  if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
+    printf 'mkfile_in FAIL: HTTP %s\nbody: %s\n' "$status" "$(cat "$respfile")" >&2
+    rm -f "$respfile"
+    return 1
+  fi
+  rm -f "$respfile"
 }
 
 # ── Scenario 1 — Positive delivery ──────────────────────────────────────────
@@ -371,4 +394,106 @@ if ! jq -e --arg fid "$s7_file_id" --arg from "$folder_a" --arg to "$folder_b" \
 fi
 log "S7 OK"
 
-log "All seven realtime-bus scenarios passed."
+# ── Scenario 8 — Grant-revocation eviction (scoped, session survives) ───────
+# The strong version of "eviction fires": prove that revoking one grant
+# affects ONLY the corresponding subscription — the session stays alive,
+# unrelated subs keep delivering events, and only the revoked topic
+# gets `rt.revoked`.
+#
+# Setup:
+#   - user1 grants user2 `viewer` on folders A AND B (two independent
+#     grants; user2 has no prior access).
+#   - user2 subscribes to BOTH folders on one WS session.
+# Action:
+#   - user1 revokes the grant on folder A only.
+#   - user1 uploads a file to folder B (the surviving sub).
+# Invariants:
+#   (a) helper output records exactly ONE `rt.revoked` for `folder:A`
+#       with reason `grant_revoked` — the eviction fired.
+#   (b) helper output records exactly ONE `file_created` event for
+#       `folder:B` — the unrelated sub is still delivering. Regression
+#       that mass-drops subs on any AuthzChanged would surface as 0
+#       events.
+#   (c) `subscribed` contains BOTH folder:A and folder:B — both
+#       original subs were installed (regression that failed the initial
+#       subscribe under AuthZ would fail here).
+#   (d) `timed_out == false` — session actor kept running through the
+#       revoke + subsequent event. Regression that killed the whole
+#       session on AuthzChanged would surface as a timeout or the
+#       helper's `wait` failing.
+log "S8: revoke user2's grant on folder A; unrelated sub on B still delivers."
+# 8.1 Grant user2 viewer role on folder A + folder B.
+grant_a=$(c_post "$base_url/api/grants" "$user1_token" \
+  "$(printf '{"subject":{"type":"user","id":"%s"},"resource":{"type":"folder","id":"%s"},"role":"viewer"}' \
+       "$user2_id" "$folder_a")")
+grant_a_id=$(printf '%s' "$grant_a" | jq -r '.grants[0].id')
+[[ -n "$grant_a_id" && "$grant_a_id" != "null" ]] \
+  || die "S8: grant on folder A failed: $grant_a"
+
+grant_b=$(c_post "$base_url/api/grants" "$user1_token" \
+  "$(printf '{"subject":{"type":"user","id":"%s"},"resource":{"type":"folder","id":"%s"},"role":"viewer"}' \
+       "$user2_id" "$folder_b")")
+grant_b_id=$(printf '%s' "$grant_b" | jq -r '.grants[0].id')
+[[ -n "$grant_b_id" && "$grant_b_id" != "null" ]] \
+  || die "S8: grant on folder B failed: $grant_b"
+
+# 8.2 user2 subscribes to BOTH folder topics; --expect-events 1 exits
+# when the post-revoke upload lands on the SURVIVING sub.
+out_s8="$(mktemp -t rtbus_s8.XXXXXX)"
+"$HELPER_BIN" subscribe-and-collect \
+  --url "$ws_url" \
+  --token "$user2_token" \
+  --subscribe "folder:$folder_a" \
+  --subscribe "folder:$folder_b" \
+  --expect-events 1 \
+  --timeout 6s \
+  --output "$out_s8" &
+helper_pid=$!
+sleep 0.4  # let both subscribes install
+
+# 8.3 user1 revokes only the folder-A grant.
+curl -sS -X DELETE \
+  -H "Authorization: Bearer $user1_token" \
+  "$base_url/api/grants/$grant_a_id" > /dev/null
+sleep 0.3  # let AuthzChanged propagate
+
+# 8.4 user1 uploads to folder B → triggers file_created on the
+# surviving sub.
+mkfile_in "$folder_b" "s8.txt" "$user1_token"
+
+if ! wait "$helper_pid"; then
+  cat "$out_s8" >&2 || true
+  die "S8: helper did not observe the post-revoke event on folder B"
+fi
+
+# 8.5 Assert on the four invariants.
+# (a) One rt.revoked for folder:A with reason grant_revoked.
+revoked_count=$(jq -r '.revoked | length' "$out_s8")
+[[ "$revoked_count" == "1" ]] \
+  || { cat "$out_s8"; die "S8: expected 1 rt.revoked, got $revoked_count"; }
+[[ "$(jq -r '.revoked[0].topic' "$out_s8")" == "folder:$folder_a" ]] \
+  || die "S8: revoked wrong topic: $(jq -r '.revoked[0].topic' "$out_s8")"
+[[ "$(jq -r '.revoked[0].reason' "$out_s8")" == "grant_revoked" ]] \
+  || die "S8: revoked wrong reason: $(jq -r '.revoked[0].reason' "$out_s8")"
+
+# (b) One file_created for folder:B — surviving sub delivered.
+event_count=$(jq -r '.events | length' "$out_s8")
+[[ "$event_count" == "1" ]] \
+  || { cat "$out_s8"; die "S8: expected 1 event on surviving sub, got $event_count (regression: mass eviction?)"; }
+[[ "$(jq -r '.events[0].event' "$out_s8")" == "file_created" ]] \
+  || die "S8: wrong event kind on surviving sub"
+[[ "$(jq -r '.events[0].data.parent_id' "$out_s8")" == "$folder_b" ]] \
+  || die "S8: wrong parent_id on surviving-sub event"
+
+# (c) Both original subs were installed.
+sub_count=$(jq -r '.subscribed | length' "$out_s8")
+[[ "$sub_count" == "2" ]] \
+  || { cat "$out_s8"; die "S8: expected both subs installed, got $sub_count"; }
+
+# (d) Session did not time out — main loop kept running.
+[[ "$(jq -r '.timed_out' "$out_s8")" == "false" ]] \
+  || die "S8: session timed out (regression: session died on AuthzChanged?)"
+
+log "S8 OK"
+
+log "All eight realtime-bus scenarios passed."

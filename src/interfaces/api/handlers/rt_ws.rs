@@ -184,15 +184,44 @@ impl Drop for Sub {
     }
 }
 
+/// Messages the per-topic reader tasks send to the session's main
+/// loop. Two shapes:
+///
+/// - `Frame` — a client-bound text frame (`rt.event` notification,
+///   `rt.revoked` notification, whatever). Main loop writes it to
+///   the socket.
+/// - `EvictFolders` — internal control signal. The reader for the
+///   session's auto-subscribed `user:{caller}:authz` topic translates
+///   inbound [`RealtimeEvent::AuthzChanged`] events into this rather
+///   than a client-visible frame. Main loop walks its subs, drops any
+///   whose resource is in the list, and emits one `rt.revoked` frame
+///   per evicted topic.
+enum SessionOut {
+    Frame(String),
+    EvictFolders(Vec<Uuid>),
+}
+
 async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppState>) {
-    // Outbound queue — every path that produces a text frame for the
-    // client enqueues here; the writer half of the select drains.
-    let (out_tx, mut out_rx) = mpsc::channel::<String>(OUTBOUND_CHANNEL_CAPACITY);
+    // Outbound queue — every path that produces a client-bound frame
+    // enqueues here; the writer half of the select drains. Also
+    // carries internal `EvictFolders` control signals from the
+    // authz reader — the main loop reacts to those without them
+    // hitting the socket.
+    let (out_tx, mut out_rx) = mpsc::channel::<SessionOut>(OUTBOUND_CHANNEL_CAPACITY);
 
     // Active subscriptions on this session. Keyed by the wire-form topic
     // string so an incoming `rt.unsubscribe` with the same string is
     // recognised without re-parsing.
     let mut subs: HashMap<String, Sub> = HashMap::new();
+
+    // Auto-subscribe to the caller's private authz-change topic.
+    // No AuthZ check (identity-scoped: caller_id == user_id by
+    // construction), no client `rt.subscribe` frame. The reader for
+    // this topic translates `AuthzChanged` events into
+    // `SessionOut::EvictFolders` signals instead of pushing an
+    // `rt.event` notification the client can see — client-visible
+    // effect is the `rt.revoked` per evicted sub.
+    install_subscription(Topic::UserAuthz(caller_id), &mut subs, &out_tx, &state);
 
     // Server-initiated protocol Ping ticker — prevents intermediate
     // proxies (Traefik, nginx, Cloudflare) and NAT boxes from reaping
@@ -238,9 +267,34 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
 
             outbound = out_rx.recv() => {
                 match outbound {
-                    Some(text) => {
+                    Some(SessionOut::Frame(text)) => {
                         if socket.send(Message::Text(text.into())).await.is_err() {
                             break;
+                        }
+                    }
+                    Some(SessionOut::EvictFolders(folders)) => {
+                        // Grant-revocation cascade. Walk the sub set;
+                        // drop any Folder(id) whose id is in the list;
+                        // emit one `rt.revoked` frame per eviction so
+                        // the client knows to stop rendering that
+                        // resource. Idempotent: re-evicting an
+                        // already-gone topic is a no-op.
+                        for folder_uuid in folders {
+                            let wire = Topic::Folder(folder_uuid).to_wire_key();
+                            if subs.remove(&wire).is_some() {
+                                let frame = revoked_notification(
+                                    &wire,
+                                    "grant_revoked",
+                                );
+                                if socket
+                                    .send(Message::Text(frame.into()))
+                                    .await
+                                    .is_err()
+                                {
+                                    return; // session dead
+                                }
+                                audit_evicted(caller_id, &wire, "grant_revoked");
+                            }
                         }
                     }
                     None => break, // out_tx dropped — unreachable but safe
@@ -299,7 +353,7 @@ async fn handle_text_frame(
     caller_id: Uuid,
     state: &Arc<AppState>,
     subs: &mut HashMap<String, Sub>,
-    out_tx: &mpsc::Sender<String>,
+    out_tx: &mpsc::Sender<SessionOut>,
 ) -> Option<String> {
     // Parse envelope. On malformed JSON: reply with an id-less error per
     // JSON-RPC 2.0 (id = null when the request couldn't be parsed).
@@ -346,7 +400,7 @@ async fn handle_subscribe(
     caller_id: Uuid,
     state: &Arc<AppState>,
     subs: &mut HashMap<String, Sub>,
-    out_tx: &mpsc::Sender<String>,
+    out_tx: &mpsc::Sender<SessionOut>,
 ) -> String {
     // Extract topic.
     let topic_str = match params.get("topic").and_then(Value::as_str) {
@@ -437,20 +491,7 @@ async fn handle_subscribe(
     // AuthZ passed — install the subscription and spawn a reader task
     // that forwards bus events to the outbound channel as `rt.event`
     // notifications.
-    let stream = RealtimeBus::subscribe(state.bus.as_ref(), &topic);
-    let topic_wire = topic_str.clone();
-    let out_tx_task = out_tx.clone();
-    let reader = tokio::spawn(async move {
-        let mut stream = stream;
-        while let Some(event) = stream.next().await {
-            let notification = event_notification(&topic_wire, &event);
-            if out_tx_task.send(notification).await.is_err() {
-                // Session's outbound channel closed — receiver dropped.
-                break;
-            }
-        }
-    });
-    subs.insert(topic_str.clone(), Sub { reader });
+    install_subscription(topic, subs, out_tx, state);
 
     success_response(id, serde_json::json!({ "subscribed": topic_str }))
 }
@@ -468,6 +509,62 @@ fn handle_unsubscribe(id: Value, params: Value, subs: &mut HashMap<String, Sub>)
     // still a success ack, per plan.
     subs.remove(topic_str);
     success_response(id, serde_json::json!({ "unsubscribed": topic_str }))
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Subscription installer
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Spawn a reader task for `topic` and insert it into `subs`. No AuthZ
+/// check — the caller is responsible for gating (either via
+/// `handle_subscribe`'s explicit dispatch, or via identity-by-
+/// construction for the auto-subscribed `Topic::UserAuthz(caller)`).
+///
+/// The reader interprets bus events differently by topic class:
+///
+/// - For `Topic::UserAuthz(_)`: an incoming `RealtimeEvent::AuthzChanged`
+///   is translated to `SessionOut::EvictFolders(affected)` — the main
+///   loop then walks the sub set and drops matching topics. Any other
+///   event kind on this topic is ignored (defensive; shouldn't happen
+///   in MVP).
+/// - For every other topic: bus events are wrapped into a client-
+///   visible `rt.event` notification and pushed as `SessionOut::Frame`.
+fn install_subscription(
+    topic: Topic,
+    subs: &mut HashMap<String, Sub>,
+    out_tx: &mpsc::Sender<SessionOut>,
+    state: &Arc<AppState>,
+) {
+    let topic_wire = topic.to_wire_key();
+    let mut stream = RealtimeBus::subscribe(state.bus.as_ref(), &topic);
+    let out_tx_task = out_tx.clone();
+    let translate_authz = matches!(topic, Topic::UserAuthz(_));
+    // Clone for the reader closure; keep the original to key `subs`.
+    let topic_wire_reader = topic_wire.clone();
+
+    let reader = tokio::spawn(async move {
+        while let Some(event) = stream.next().await {
+            let message = if translate_authz {
+                match event {
+                    RealtimeEvent::AuthzChanged { affected_folders } => {
+                        SessionOut::EvictFolders(affected_folders)
+                    }
+                    // The authz topic only carries AuthzChanged in
+                    // MVP; other variants would be a producer bug —
+                    // drop them silently so a mis-wired publish
+                    // doesn't spam the client.
+                    _ => continue,
+                }
+            } else {
+                SessionOut::Frame(event_notification(&topic_wire_reader, &event))
+            };
+            if out_tx_task.send(message).await.is_err() {
+                // Session's outbound channel closed — receiver dropped.
+                break;
+            }
+        }
+    });
+    subs.insert(topic_wire, Sub { reader });
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -538,6 +635,22 @@ fn split_event_discriminator(mut event_json: Value) -> (String, Value) {
     ("unknown".to_owned(), event_json)
 }
 
+/// Build the server-initiated `rt.revoked` JSON-RPC notification.
+/// Emitted when a subscription is evicted mid-session (grant revoked,
+/// resource deleted, etc.). Not tied to a request id — client sees
+/// this as a signal to stop rendering the topic.
+fn revoked_notification(topic_wire: &str, reason: &'static str) -> String {
+    serde_json::to_string(&RpcNotification {
+        jsonrpc: JSONRPC_V2,
+        method: "rt.revoked",
+        params: serde_json::json!({
+            "topic": topic_wire,
+            "reason": reason,
+        }),
+    })
+    .expect("RpcNotification always serializes")
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Audit
 // ════════════════════════════════════════════════════════════════════════════
@@ -550,6 +663,20 @@ fn audit_denied(caller_id: Uuid, topic: &str, reason: &'static str) {
         caller_id = %caller_id,
         topic = %topic,
         "👮🏻‍♂️ realtime subscribe rejected",
+    );
+}
+
+/// Audit line for server-initiated eviction — every `rt.revoked`
+/// frame we send should also have a durable trail. Stable `reason`
+/// vocabulary matches the WS wire's `reason` field.
+fn audit_evicted(caller_id: Uuid, topic: &str, reason: &'static str) {
+    tracing::info!(
+        target: "audit",
+        event = "realtime.subscription_evicted",
+        reason = reason,
+        caller_id = %caller_id,
+        topic = %topic,
+        "🚫 realtime subscription evicted",
     );
 }
 

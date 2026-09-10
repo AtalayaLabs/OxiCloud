@@ -603,6 +603,46 @@ Land with their producer PRs; each is a small addition to
   polymorphic `RtFolderEventNotification` with `oneOf`. Better
   codegen for typed clients. Refactor when we generate an FE SDK.
 
+### TypeScript client codegen via `@asyncapi/modelina` (Phase-A polish)
+
+AsyncAPI has the same "spec → typed FE SDK" story OpenAPI has. Wire
+it once, avoid hand-maintaining a growing catalog of message types.
+
+- **Tool:** `@asyncapi/modelina` — the AsyncAPI-native model
+  generator. Reads `resources/gen/asyncapi.json`, emits TypeScript
+  interfaces + tagged unions for every message and schema. Actively
+  maintained, produces idiomatic TS.
+- **Not** `@asyncapi/generator`'s WebSocket TEMPLATE — that generates
+  a full client SDK on assumptions (fetch shape, subscription model)
+  that don't match our `useTopic` singleton store. Custom composable
+  stays; only the message DTOs come from codegen.
+- **Wiring:**
+  - `frontend/package.json` dev-dep: `@asyncapi/modelina`.
+  - Script `frontend/scripts/gen-realtime-types.mjs` invokes Modelina,
+    writes to `frontend/src/lib/generated/realtime/`.
+  - `just asyncapi-ts` recipe alongside `just asyncapi`.
+  - CI dirty-tree check — regenerate on every build, fail if `git
+    diff` on the generated folder is non-empty. Same discipline as
+    OpenAPI's check.
+  - Generated files carry a `// AUTO-GENERATED — do not edit; run
+    `just asyncapi-ts` to regenerate` header.
+- **What the FE gets:**
+  - `type RtEvent = FileCreatedData | FileRenamedData | ...` — a
+    tagged union keyed on the `event` discriminator, so the folder
+    view's `switch (evt.event)` is exhaustive at compile time.
+  - `RtSubscribeRequestBody`, `RtErrorResponseBody`, error-code enum,
+    `RtPongResponseBody.result.pong === true` narrowed by type.
+  - No divergence between wire spec and FE types — the CI check
+    catches drift.
+- **Also worth:** if we ever want a typed WS client for other
+  languages (Rust sync client, Python integration), the AsyncAPI
+  spec is the source; Modelina supports 8+ target languages.
+- **Timing:** the current spec covers 8 event variants + 6 message
+  envelopes. Marginal savings today; substantial as Phase B adds
+  ~15 more event variants (comments, mentions, presence, share
+  events). Set up now so the discipline is in place BEFORE the
+  surface grows.
+
 ## AuthZ model (audit rules per AGENTS.md)
 
 ### The subscribe gate

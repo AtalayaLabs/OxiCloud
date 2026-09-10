@@ -261,6 +261,11 @@ async fn subscribe_and_collect(args: Args) -> Result<(), HelperError> {
     }
 
     let mut events: Vec<Value> = Vec::new();
+    // Server-initiated eviction notifications (`rt.revoked`) — captured
+    // separately from `rt.event` so scenarios can assert on eviction
+    // scoping (evicted topic vs. surviving topic) without conflating
+    // them with real content events.
+    let mut revoked: Vec<Value> = Vec::new();
     // Count server-initiated protocol Pings so scenarios can assert the
     // keepalive fires. tokio-tungstenite queues an auto-Pong on the next
     // write path, so we don't need to send one ourselves; we just observe
@@ -327,14 +332,25 @@ async fn subscribe_and_collect(args: Args) -> Result<(), HelperError> {
 
         // Notification (id-less)?
         let method = value.get("method").and_then(|v| v.as_str()).unwrap_or("");
-        if method == "rt.event"
-            && let Some(params) = value.get("params")
-        {
-            events.push(params.clone());
+        match method {
+            "rt.event" => {
+                if let Some(params) = value.get("params") {
+                    events.push(params.clone());
+                }
+            }
+            "rt.revoked" => {
+                // Server evicted one of our subscriptions. Record for
+                // the shell to assert on; do NOT increment `events` —
+                // eviction is orthogonal to content delivery.
+                if let Some(params) = value.get("params") {
+                    revoked.push(params.clone());
+                }
+            }
+            _ => {
+                // Unknown notification method — ignored. `rt.pong` and
+                // future server-pushed methods land here silently.
+            }
         }
-        // Other notifications (`rt.revoked`, `rt.pong`) — ignored for
-        // subscribe-and-collect. They can be added to the output
-        // schema when scenarios need them.
     }
 
     // Assertion: at least `expect_events` collected before timeout.
@@ -345,6 +361,7 @@ async fn subscribe_and_collect(args: Args) -> Result<(), HelperError> {
         let summary = json!({
             "subscribed": subscribed,
             "events": events,
+            "revoked": revoked,
             "pings_received": pings_received,
             "timed_out": timed_out,
         });
