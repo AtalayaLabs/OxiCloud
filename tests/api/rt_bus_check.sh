@@ -7,7 +7,7 @@
 # This script orchestrates it against a live oxicloud server: bootstraps
 # state with curl, exercises the bus, asserts on the helper's JSON output.
 #
-# Seven scenarios:
+# Nine scenarios:
 #   S1  Positive delivery       — subscribe to folder A, upload into A, see event.
 #   S2  Topic isolation         — subscribe to folder A only, upload into B and
 #                                 then A; must see A's event only.
@@ -35,6 +35,13 @@
 #                                 Locks in three invariants: eviction
 #                                 fires, scoping is per-topic, session
 #                                 survives.
+#   S9  Cross-user identity     — user1 tries to subscribe to
+#                                 `user:{user2_id}:authz` (an identity-scoped
+#                                 topic that resolves to somebody else). Server
+#                                 must reject with `topic_forbidden` (same wire
+#                                 shape as an unknown topic — anti-enumeration).
+#                                 Guards the strict-privacy Class-2 AuthZ gate:
+#                                 no admin bypass, direct UUID equality only.
 #
 # Exit non-zero on any failure — run.sh treats that as a suite failure.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -496,4 +503,32 @@ sub_count=$(jq -r '.subscribed | length' "$out_s8")
 
 log "S8 OK"
 
-log "All eight message-bus scenarios passed."
+# ── Scenario 9 — Cross-user identity topic denial ───────────────────────────
+# Identity-scoped topics (`user:{u}:authz`, later `user:{u}:notifications`,
+# `user:{u}:sessions`) use a Class-2 AuthZ gate: `caller_id == user_id` by
+# direct UUID equality. No admin bypass, no group expansion — privacy is
+# absolute. Regression guard: user1 asks for user2's authz stream; server
+# MUST reject.
+#
+# The wire response uses `topic_forbidden` — the SAME error string the
+# server returns for a malformed/unknown topic — so an attacker cannot
+# distinguish "no such user" from "user exists but not you". `expect-denied
+# --reason topic_forbidden` matches on the wire `error.message` string
+# emitted by `application/ports/message_bus_ports.rs::error_message`.
+#
+# If this ever regresses to `no_read` or delivers events, someone changed
+# the identity gate (removed the equality check, wired the AuthorizationEngine
+# on the identity path, or reused the folder AuthZ dispatch). All three
+# would leak user metadata across accounts.
+log "S9: user1 subscribes to user:{user2_id}:authz; expect topic_forbidden."
+if ! "$HELPER_BIN" expect-denied \
+     --url "$ws_url" \
+     --token "$user1_token" \
+     --subscribe "user:${user2_id}:authz" \
+     --reason topic_forbidden \
+     --timeout 3s; then
+  die "S9: user1 was NOT denied on user2's authz topic (identity gate broken?)"
+fi
+log "S9 OK"
+
+log "All nine message-bus scenarios passed."
