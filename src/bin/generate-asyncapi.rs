@@ -198,7 +198,7 @@ fn operations() -> Value {
 }
 
 fn components() -> Value {
-    json!({
+    let mut components = json!({
         "messages": {
             // ── Requests ────────────────────────────────────────────
             "RtSubscribeRequest": {
@@ -253,14 +253,35 @@ fn components() -> Value {
             }
         },
         "schemas": {
-            "RtSubscribeRequestBody": rpc_request_schema("rt.subscribe", topic_params_schema()),
-            "RtUnsubscribeRequestBody": rpc_request_schema("rt.unsubscribe", topic_params_schema()),
-            "RtPingRequestBody": rpc_request_schema("rt.ping", json!({ "type": "null" })),
+            // Top-level JSON-RPC frame bodies.
+            "RtSubscribeRequestBody": rpc_request_schema("rt.subscribe", Some(ref_schema("RtSubscribeParams"))),
+            "RtUnsubscribeRequestBody": rpc_request_schema("rt.unsubscribe", Some(ref_schema("RtUnsubscribeParams"))),
+            "RtPingRequestBody": rpc_request_schema("rt.ping", None),
             "RtSuccessResponseBody": rpc_success_response_schema(),
             "RtPongResponseBody": rpc_pong_response_schema(),
             "RtErrorResponseBody": rpc_error_response_schema(),
             "RtFolderEventBody": folder_event_notification_schema(),
             "RtRevokedBody": revoked_notification_schema(),
+
+            // Hoisted nested schemas — pulled out from inline `params`,
+            // inner `error`, `result`, and enum arrays so Modelina (and
+            // any other spec-driven codegen) gets real names instead of
+            // `AnonymousSchema_N`. Keep names in sync with the shape:
+            // renaming here silently breaks the generated FE types, so
+            // the CI dirty-tree check catches drift.
+            "RtSubscribeParams":   topic_params_schema(),
+            "RtUnsubscribeParams": topic_params_schema(),
+            "RtEventParams":       event_params_schema(),
+            "RtEventDataUnion":    event_data_union_schema(),
+            "RtEventKind":         event_kind_schema(),
+            "RtRevokedParams":     revoked_params_schema(),
+            "RtRevokedReason":     revoked_reason_schema(),
+            "RtErrorObject":       rpc_error_object_schema(),
+            "RtErrorCode":         rpc_error_code_schema(),
+            "RtErrorMessage":      rpc_error_message_schema(),
+            "RtPongResult":        rpc_pong_result_schema(),
+
+            // Per-event data payloads (one per `event` discriminator).
             "FileCreatedData": file_created_schema(),
             "FileRenamedData": file_renamed_schema(),
             "FileMovedData": file_moved_schema(),
@@ -281,21 +302,74 @@ fn components() -> Value {
                 "description": "OxiCloud JWT — same access_token minted by `POST /api/auth/login` (or the OPAQUE handshake). Programmatic clients set `Authorization: Bearer <jwt>` on the WS upgrade request. Browsers, which cannot set headers on `new WebSocket()`, will use the deferred ticket flow (`POST /api/rt/ticket` → short-lived one-shot ticket in the WS URL); see the plan's DPoP-gap section.",
             }
         }
-    })
+    });
+
+    // Close every top-level object schema in components.schemas —
+    // the Rust wire (`serde` on named struct fields) never emits
+    // extras, so `additionalProperties: false` is honest, and it
+    // removes the `additionalProperties?: Record<string, unknown>`
+    // escape-hatch field Modelina would otherwise generate on every
+    // TS interface. One-shot post-process instead of 19 individual
+    // `"additionalProperties": false` lines sprinkled through the
+    // schema builders.
+    //
+    // Deliberately NOT recursive: we only close the named top-level
+    // schemas. Recursing into `properties` closes anonymous inline
+    // sub-objects, which then triggers Modelina to name them (and
+    // fail our AnonymousSchema guard). If a nested object needs a
+    // real name AND `additionalProperties: false`, hoist it explicitly
+    // to `components.schemas` and reference via `$ref`.
+    if let Some(schemas) = components.get_mut("schemas").and_then(Value::as_object_mut) {
+        for schema in schemas.values_mut() {
+            close_object_schema_shallow(schema);
+        }
+    }
+
+    components
+}
+
+/// Add `additionalProperties: false` to a top-level object schema if
+/// it declares `type: "object"` and doesn't already set the field.
+/// Non-object schemas (`enum`, `oneOf`, `type: "integer"`, string
+/// types, etc.) are untouched. Never descends — see `components()`.
+fn close_object_schema_shallow(schema: &mut Value) {
+    let Value::Object(map) = schema else { return };
+    let is_object = matches!(map.get("type"), Some(Value::String(s)) if s == "object");
+    if is_object && !map.contains_key("additionalProperties") {
+        map.insert("additionalProperties".to_string(), Value::Bool(false));
+    }
 }
 
 // ─── Schema builders ────────────────────────────────────────────────────────
 
-fn rpc_request_schema(method: &str, params_schema: Value) -> Value {
+/// `$ref` shorthand — every hoisted inline schema below is referenced
+/// through this so consumers of the spec (Modelina, AsyncAPI Studio, any
+/// SDK generator) see named types instead of `AnonymousSchema_N`.
+fn ref_schema(name: &str) -> Value {
+    json!({ "$ref": format!("#/components/schemas/{name}") })
+}
+
+/// JSON-RPC 2.0 request envelope. `params_schema` is `Some(...)` for
+/// methods that take arguments (`rt.subscribe`, `rt.unsubscribe`) and
+/// `None` for methods that don't (`rt.ping`). Omitting `params` from
+/// the properties entirely — rather than declaring it as
+/// `{"type": "null"}` — keeps Modelina from emitting `params?: any`
+/// on the generated TS: no property in the schema → no property in
+/// the interface, which is what JSON-RPC 2.0 allows anyway (`params`
+/// is optional per spec).
+fn rpc_request_schema(method: &str, params_schema: Option<Value>) -> Value {
+    let mut properties = json!({
+        "jsonrpc": { "type": "string", "const": "2.0" },
+        "id":      { "type": ["integer", "string", "null"] },
+        "method":  { "type": "string", "const": method },
+    });
+    if let Some(params) = params_schema {
+        properties["params"] = params;
+    }
     json!({
         "type": "object",
         "required": ["jsonrpc", "id", "method"],
-        "properties": {
-            "jsonrpc": { "type": "string", "const": "2.0" },
-            "id":      { "type": ["integer", "string", "null"] },
-            "method":  { "type": "string", "const": method },
-            "params":  params_schema,
-        }
+        "properties": properties,
     })
 }
 
@@ -320,13 +394,24 @@ fn rpc_success_response_schema() -> Value {
         "properties": {
             "jsonrpc": { "type": "string", "const": "2.0" },
             "id":      { "type": ["integer", "string", "null"] },
-            "result":  { "type": "object" },
+            // Generic base shape — every specific method has its own
+            // typed result schema (RtPongResult, subscribed ack, etc.).
+            // Declaring every JSON type explicitly nudges Modelina
+            // toward a real union rather than the bare `any` it emits
+            // for a purely descriptive schema — matches the JSON-RPC
+            // spec's "any JSON value" phrasing while giving downstream
+            // codegens something to project.
+            "result": {
+                "description": "Method-specific result payload. See the concrete response schema for each `method`.",
+                "type": ["object", "array", "string", "number", "integer", "boolean", "null"],
+            },
         }
     })
 }
 
 /// Reply to `rt.ping` — the shape pins `result.pong == true` so
-/// contract tests can assert on it directly.
+/// contract tests can assert on it directly. `result` is hoisted to
+/// [`RtPongResult`] so Modelina gets a named type.
 fn rpc_pong_response_schema() -> Value {
     json!({
         "type": "object",
@@ -334,13 +419,17 @@ fn rpc_pong_response_schema() -> Value {
         "properties": {
             "jsonrpc": { "type": "string", "const": "2.0" },
             "id":      { "type": ["integer", "string", "null"] },
-            "result": {
-                "type": "object",
-                "required": ["pong"],
-                "properties": {
-                    "pong": { "type": "boolean", "const": true }
-                }
-            },
+            "result":  ref_schema("RtPongResult"),
+        }
+    })
+}
+
+fn rpc_pong_result_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["pong"],
+        "properties": {
+            "pong": { "type": "boolean", "const": true }
         }
     })
 }
@@ -348,88 +437,123 @@ fn rpc_pong_response_schema() -> Value {
 fn rpc_error_response_schema() -> Value {
     // The `code`/`message` catalog is the stable public vocabulary —
     // any change here IS a wire break. Every entry mirrors
-    // `application/ports/realtime_ports.rs::error_code`.
+    // `application/ports/realtime_ports.rs::error_code`. The inner
+    // error object is hoisted to `RtErrorObject` so Modelina emits a
+    // named type instead of `AnonymousSchema_N`.
     json!({
         "type": "object",
         "required": ["jsonrpc", "id", "error"],
         "properties": {
             "jsonrpc": { "type": "string", "const": "2.0" },
             "id":      { "type": ["integer", "string", "null"] },
-            "error": {
-                "type": "object",
-                "required": ["code", "message"],
-                "properties": {
-                    "code": {
-                        "type": "integer",
-                        "enum": [
-                            error_code::NO_READ,
-                            error_code::NO_SHARE,
-                            error_code::NO_COMMENT,
-                            error_code::TOPIC_FORBIDDEN,
-                            error_code::SUB_LIMIT,
-                            error_code::RATE_LIMITED,
-                            error_code::NO_EDIT,
-                            error_code::INTERNAL_ERROR,
-                            error_code::INVALID_REQUEST,
-                            error_code::METHOD_NOT_FOUND,
-                            error_code::INVALID_PARAMS,
-                        ],
-                    },
-                    "message": {
-                        "type": "string",
-                        "description": "Stable wire vocabulary; matches the `code`.",
-                        "enum": [
-                            "no_read", "no_share", "no_comment", "topic_forbidden",
-                            "sub_limit", "rate_limited", "no_edit",
-                            "internal_error", "invalid_request",
-                            "method_not_found", "invalid_params",
-                        ],
-                    },
-                    "data": {
-                        "type": "object",
-                        "description": "Optional caller-facing context (e.g. offending topic).",
-                    }
-                }
+            "error":   ref_schema("RtErrorObject"),
+        }
+    })
+}
+
+fn rpc_error_object_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "JSON-RPC 2.0 error object. `code` + `message` form a stable pair; `data` optionally carries caller-visible context (e.g. offending topic).",
+        "required": ["code", "message"],
+        "properties": {
+            "code":    ref_schema("RtErrorCode"),
+            "message": ref_schema("RtErrorMessage"),
+            // Per JSON-RPC 2.0: "A Primitive or Structured value that
+            // contains additional information about the error." The
+            // union covers every JSON type so Modelina emits a real
+            // TS union rather than a bare `any`. Client MUST check
+            // `code` before assuming `data`'s shape.
+            "data": {
+                "description": "Optional caller-facing context; shape depends on the specific `code`.",
+                "type": ["object", "array", "string", "number", "integer", "boolean", "null"],
             }
         }
+    })
+}
+
+fn rpc_error_code_schema() -> Value {
+    json!({
+        "type": "integer",
+        "description": "Stable integer error code. Values are frozen across releases — a new denial cause gets a new value, never repurposes an existing one.",
+        "enum": [
+            error_code::NO_READ,
+            error_code::NO_SHARE,
+            error_code::NO_COMMENT,
+            error_code::TOPIC_FORBIDDEN,
+            error_code::SUB_LIMIT,
+            error_code::RATE_LIMITED,
+            error_code::NO_EDIT,
+            error_code::INTERNAL_ERROR,
+            error_code::INVALID_REQUEST,
+            error_code::METHOD_NOT_FOUND,
+            error_code::INVALID_PARAMS,
+        ],
+    })
+}
+
+fn rpc_error_message_schema() -> Value {
+    json!({
+        "type": "string",
+        "description": "Stable wire vocabulary; matches the corresponding `code`.",
+        "enum": [
+            "no_read", "no_share", "no_comment", "topic_forbidden",
+            "sub_limit", "rate_limited", "no_edit",
+            "internal_error", "invalid_request",
+            "method_not_found", "invalid_params",
+        ],
     })
 }
 
 fn folder_event_notification_schema() -> Value {
     json!({
         "type": "object",
-        "description": "JSON-RPC notification (no `id`). `method = \"rt.event\"`.",
+        "description": "JSON-RPC notification (no `id`). `method = \"rt.event\"`. `params` is hoisted to `RtEventParams`.",
         "required": ["jsonrpc", "method", "params"],
         "properties": {
             "jsonrpc": { "type": "string", "const": "2.0" },
             "method":  { "type": "string", "const": "rt.event" },
-            "params": {
-                "type": "object",
-                "required": ["topic", "event", "data"],
-                "properties": {
-                    "topic": { "type": "string" },
-                    "event": {
-                        "type": "string",
-                        "enum": [
-                            "file_created", "file_renamed", "file_moved", "file_deleted",
-                            "folder_created", "folder_renamed", "folder_moved", "folder_deleted",
-                        ],
-                    },
-                    "data": {
-                        "oneOf": [
-                            { "$ref": "#/components/schemas/FileCreatedData" },
-                            { "$ref": "#/components/schemas/FileRenamedData" },
-                            { "$ref": "#/components/schemas/FileMovedData" },
-                            { "$ref": "#/components/schemas/FileDeletedData" },
-                            { "$ref": "#/components/schemas/FolderCreatedData" },
-                            { "$ref": "#/components/schemas/FolderRenamedData" },
-                            { "$ref": "#/components/schemas/FolderMovedData" },
-                            { "$ref": "#/components/schemas/FolderDeletedData" },
-                        ]
-                    }
-                }
-            }
+            "params":  ref_schema("RtEventParams"),
         }
+    })
+}
+
+fn event_params_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["topic", "event", "data"],
+        "properties": {
+            "topic": { "type": "string" },
+            "event": ref_schema("RtEventKind"),
+            "data":  ref_schema("RtEventDataUnion"),
+        }
+    })
+}
+
+fn event_kind_schema() -> Value {
+    json!({
+        "type": "string",
+        "description": "Discriminator for the `data` payload. Mirrors the `#[serde(tag = \"event\", rename_all = \"snake_case\")]` variants of the Rust `RealtimeEvent` enum — a new event kind is a new enum variant on both sides.",
+        "enum": [
+            "file_created", "file_renamed", "file_moved", "file_deleted",
+            "folder_created", "folder_renamed", "folder_moved", "folder_deleted",
+        ],
+    })
+}
+
+fn event_data_union_schema() -> Value {
+    json!({
+        "description": "Tagged union of every possible `rt.event` payload. Discriminated by the sibling `event` field (see `RtEventKind`).",
+        "oneOf": [
+            ref_schema("FileCreatedData"),
+            ref_schema("FileRenamedData"),
+            ref_schema("FileMovedData"),
+            ref_schema("FileDeletedData"),
+            ref_schema("FolderCreatedData"),
+            ref_schema("FolderRenamedData"),
+            ref_schema("FolderMovedData"),
+            ref_schema("FolderDeletedData"),
+        ]
     })
 }
 
@@ -551,27 +675,36 @@ fn folder_deleted_schema() -> Value {
 fn revoked_notification_schema() -> Value {
     json!({
         "type": "object",
-        "description": "JSON-RPC notification (no `id`). `method = \"rt.revoked\"`.",
+        "description": "JSON-RPC notification (no `id`). `method = \"rt.revoked\"`. `params` hoisted to `RtRevokedParams`.",
         "required": ["jsonrpc", "method", "params"],
         "properties": {
             "jsonrpc": { "type": "string", "const": "2.0" },
             "method":  { "type": "string", "const": "rt.revoked" },
-            "params": {
-                "type": "object",
-                "required": ["topic", "reason"],
-                "properties": {
-                    "topic":  { "type": "string" },
-                    "reason": {
-                        "type": "string",
-                        "enum": [
-                            "grant_revoked",
-                            "resource_deleted",
-                            "group_membership_lost",
-                            "admin_kick",
-                        ]
-                    }
-                }
-            }
+            "params":  ref_schema("RtRevokedParams"),
         }
+    })
+}
+
+fn revoked_params_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["topic", "reason"],
+        "properties": {
+            "topic":  { "type": "string" },
+            "reason": ref_schema("RtRevokedReason"),
+        }
+    })
+}
+
+fn revoked_reason_schema() -> Value {
+    json!({
+        "type": "string",
+        "description": "Server-side eviction cause. Stable vocabulary; a new eviction reason is a new enum value.",
+        "enum": [
+            "grant_revoked",
+            "resource_deleted",
+            "group_membership_lost",
+            "admin_kick",
+        ]
     })
 }

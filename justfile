@@ -201,6 +201,44 @@ openapi:
 asyncapi:
     cargo run --features dev_tools --bin generate-asyncapi
 
+# Regenerate frontend TypeScript DTOs from `resources/gen/asyncapi.json`
+# via `@asyncapi/modelina`. Chained to `asyncapi` so the JSON spec is
+# always fresh before Modelina consumes it — running one entry point
+# with two dependent steps is cheaper cognitively than remembering to
+# regenerate the spec first. Cargo incremental keeps the Rust side
+# near-instant when nothing changed; Modelina then rewrites the FE
+# .ts files (idempotent — same input → same output, CI dirty-tree
+# check catches genuine drift).
+#
+# Output lands in `frontend/src/lib/generated/realtime/`; consumers
+# import from there but never edit those files.
+asyncapi-ts: asyncapi
+    cd frontend && npm run gen:realtime
+
+# Local mirror of the `realtime-spec-drift` CI job. Regenerates both
+# artefacts and fails if the committed files differ from the fresh
+# generator output. Included in `pre-pull-request` so developers
+# catch drift BEFORE pushing — the CI job is belt-and-braces, not the
+# only defence.
+#
+# Depends on `asyncapi-ts` which itself depends on `asyncapi`, so the
+# whole chain runs; then we assert on `git diff --exit-code` over
+# the two paths we care about.
+check-realtime-spec: asyncapi-ts
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! git diff --exit-code \
+             resources/gen/asyncapi.json \
+             frontend/src/lib/generated/realtime/; then
+        echo ""
+        echo "❌ realtime spec drift: committed files differ from the fresh"
+        echo "   generator output. Fix:"
+        echo "     git add resources/gen/asyncapi.json frontend/src/lib/generated/realtime/"
+        echo "     git commit -m 'chore(rt): regenerate spec + DTOs'"
+        exit 1
+    fi
+    echo "✅ realtime spec: committed files match generator output"
+
 db:
     docker compose up -d postgres
 
@@ -328,16 +366,25 @@ test-caldav:
 fe-install:
     cd frontend && npm ci
 
-# Vite dev server only (HMR) — backend must already be running on :8086
-fe-dev:
+# Vite dev server only (HMR) — backend must already be running on :8086.
+# `asyncapi-ts` prereq runs once at start; Vite's watcher picks up
+# any subsequent regenerations for HMR.
+fe-dev: asyncapi-ts
     cd frontend && npm run dev
 
-# build the SPA (Phase 0: -> frontend/build; Phase 5: -> static-dist)
-fe-build:
+# build the SPA (Phase 0: -> frontend/build; Phase 5: -> static-dist).
+# `asyncapi-ts` prerequisite (which itself depends on `asyncapi`)
+# guarantees `frontend/src/lib/generated/realtime/*.ts` is in sync
+# with the Rust-side wire spec before Vite compiles — no stale-DTO
+# window in local dev. CI still runs a dirty-tree check on the
+# generated files as belt-and-braces.
+fe-build: asyncapi-ts
     cd frontend && npm run build
 
 # Build the SPA with e2e instrumentation for the Playwright coverage
-# suite. Both env vars are load-bearing:
+# suite. Same asyncapi-ts prereq as `fe-build` — the E2E build must
+# see the same generated DTOs the release build sees. Both env vars
+# are load-bearing:
 #   * VITE_E2E=1  — keeps the `data-testid` tile hooks the release
 #                   build strips, so `page.getByTestId(filename)` and
 #                   the drop-zone / preferences selectors work.
@@ -348,15 +395,19 @@ fe-build:
 #                   report empty.
 # Called automatically by `front-test`; run manually if you're
 # invoking Playwright directly.
-fe-build-e2e:
+fe-build-e2e: asyncapi-ts
     cd frontend && COVERAGE=1 VITE_E2E=1 npm run build
 
-# svelte-check + eslint + stylelint + prettier
-fe-check:
+# svelte-check + eslint + stylelint + prettier. Depends on
+# `asyncapi-ts` so svelte-check sees current generated types (a stale
+# import would surface as a TS error at check time — better to
+# regenerate first than chase phantom errors).
+fe-check: asyncapi-ts
     cd frontend && npm run check
 
-# Vitest unit/component tests
-fe-test:
+# Vitest unit/component tests. Same asyncapi-ts prereq — tests that
+# import from `lib/generated/realtime` need it fresh.
+fe-test: asyncapi-ts
     cd frontend && npm run test:unit
 
 # Run backend (API) and the Vite dev server together; one Ctrl-C stops both.
@@ -396,4 +447,4 @@ test-docker-tags:
 
 # Check and test everything
 # recommanded before pull request
-pre-pull-request: test-docker-tags check fe-check audit check-migrations test test-integration fe-test build test-bundle test-api fe-build-e2e  front-test
+pre-pull-request: test-docker-tags check fe-check audit check-migrations check-realtime-spec test test-integration fe-test build test-bundle test-api fe-build-e2e  front-test

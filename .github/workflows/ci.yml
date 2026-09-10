@@ -26,6 +26,7 @@ jobs:
       wasm: ${{ steps.filter.outputs.wasm }}
       plugins: ${{ steps.filter.outputs.plugins }}
       migrations: ${{ steps.filter.outputs.migrations }}
+      realtime_spec: ${{ steps.filter.outputs.realtime_spec }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -52,6 +53,13 @@ jobs:
               - 'src/application/adapters/plugin_user_lifecycle_hook.rs'
             migrations:
               - 'migrations/**'
+            realtime_spec:
+              - 'src/application/ports/realtime_ports.rs'
+              - 'src/bin/generate-asyncapi.rs'
+              - 'resources/gen/asyncapi.json'
+              - 'frontend/scripts/gen-realtime-types.mjs'
+              - 'frontend/src/lib/generated/realtime/**'
+              - 'frontend/package.json'
 
   frontend-check:
     name: Frontend — svelte-check, ESLint, Stylelint, Prettier
@@ -79,6 +87,62 @@ jobs:
 
       - name: Unit tests
         run: npm run test:unit
+
+  # Regenerates the AsyncAPI spec and its TypeScript projection from
+  # scratch, then fails the PR if either output drifts from what was
+  # committed. Same discipline as the OpenAPI + wasm-fixture approach
+  # elsewhere in this file — the wire spec is a compile-time artefact
+  # of the Rust source (`realtime_ports.rs`), and the TS DTOs are a
+  # compile-time artefact of the spec, so both must be reproducible.
+  #
+  # Scoped by the `realtime_spec` path filter so a PR that doesn't
+  # touch the wire (or its generator scripts, or the Modelina version)
+  # skips this job entirely. Needs BOTH Rust and Node toolchains, so
+  # it's slightly heavier than a single-toolchain job — the filter
+  # keeps it off the hot path.
+  realtime-spec-drift:
+    name: Realtime spec — AsyncAPI + TypeScript DTO drift
+    needs: changes
+    if: needs.changes.outputs.realtime_spec == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Rust for `just asyncapi` — the JSON spec is built by
+      # `cargo run --features dev_tools --bin generate-asyncapi`.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Node for `just asyncapi-ts` — Modelina projects the spec into
+      # the FE `src/lib/generated/realtime/` folder.
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 26.3.0
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+      - name: Regenerate AsyncAPI spec
+        # `just asyncapi` = `cargo run --features dev_tools --bin generate-asyncapi`
+        run: cargo run --features dev_tools --bin generate-asyncapi
+      - name: Regenerate TS DTOs (Modelina)
+        working-directory: frontend
+        run: npm run gen:realtime
+      - name: Fail if committed files drifted
+        # A non-empty diff means a contributor edited the Rust wire
+        # source (or Modelina config) without regenerating, or hand-
+        # edited the generated files. Either is a bug; the message
+        # below points at the fix.
+        run: |
+          if ! git diff --exit-code \
+                 resources/gen/asyncapi.json \
+                 frontend/src/lib/generated/realtime/; then
+            echo ""
+            echo "::error::Realtime spec drift: the committed files differ from what the"
+            echo "::error::generator produces from source. Run \`just asyncapi-ts\` locally"
+            echo "::error::and commit the result — that recipe re-runs both stages."
+            exit 1
+          fi
 
   # Fails the PR if a new sqlx migration file has a timestamp NOT strictly
   # greater than every migration already on the target branch. Guards
