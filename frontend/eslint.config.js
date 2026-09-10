@@ -48,6 +48,15 @@ export default ts.config(
 	{
 		// `static/` holds vendored, verbatim assets (the delta-upload worker and
 		// the wasm-bindgen hash glue) — lint them as the upstream ships them.
-		ignores: ['build/', '.svelte-kit/', 'package/', 'static/', 'bench/']
+		ignores: [
+			'build/',
+			'.svelte-kit/',
+			'package/',
+			'static/',
+			'bench/',
+			// Replaced wholesale by `npm run api:generate`; lint the source
+			// OpenAPI and our runtime adapter, not Hey API's bundled internals.
+			'src/lib/api/generated/'
+		]
 	}
 );
