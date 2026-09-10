@@ -71,8 +71,16 @@ protocol reasons:
 When adding FE code around the bus, use `message-bus` in file names,
 store names, and logger namespaces:
 
-- Store: `$lib/stores/message-bus.svelte.ts`
+- Subsystem dir: `$lib/message-bus/` — reactive client (`client.svelte.ts`,
+  a `MessageBusClient` singleton owning the WebSocket, refcounted topic
+  subs, and reconnect), frame builders (`frames.ts`), error-code
+  constants (`error-codes.ts`). Mirrors the `$lib/auth/` and
+  `$lib/upload/` subsystem-dir pattern rather than living in
+  `$lib/stores/` — the client is subsystem-scoped plumbing that only
+  the message-bus composables reach for, not a global reactive store
+  read from route decisions like `session`.
 - Composables: `$lib/composables/useTopic.svelte.ts` (topic-generic — no
-  bus name in the file)
-- Logger namespace: `oxi:message-bus`
-- localStorage keys (if any): `oxi-message-bus-*`
+  bus name in the file), `$lib/composables/useFolderTopic.svelte.ts`
+  (folder-view sugar with per-verb handlers).
+- Logger namespace: `oxi:message-bus`.
+- localStorage keys (if any): `oxi-message-bus-*`.

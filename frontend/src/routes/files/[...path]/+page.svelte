@@ -52,6 +52,8 @@
 		type GroupByDef as RLGroupByDef
 	} from '$lib/components/ResourceList.svelte';
 	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
+	import { useFolderTopic } from '$lib/composables/useFolderTopic.svelte';
+	import log from 'loglevel';
 	import { t } from '$lib/i18n/index.svelte';
 	import { confirmDialog, promptDialog } from '$lib/stores/dialogs.svelte';
 	import { drives as drivesStore } from '$lib/stores/drives.svelte';
@@ -60,6 +62,11 @@
 	import { ui } from '$lib/stores/ui.svelte';
 	import { dateBucket, sizeBucket, typeLabel } from '$lib/stores/files.svelte';
 	import { replaceSet } from '$lib/utils/sets';
+
+	// Message-bus logger. Users can tune with
+	//   oxi.setLogLevel('oxi:message-bus', 'debug')
+	// See `frontend/AGENTS.md § Logging`.
+	const busLog = log.getLogger('oxi:message-bus');
 
 	// File preview and the WOPI editor are heavy and only appear on demand, so
 	// their modules load the first time the user opens one (see the effects that
@@ -429,6 +436,56 @@
 			window.scrollTo({ top: 0, behavior: 'smooth' });
 		}
 	}
+
+	// ── Live folder updates (message bus) ────────────────────────────
+	// Subscribe to `folder:{currentId}` and refresh when another tab —
+	// or another user with a share — mutates something in this folder.
+	// The refresh call is coalesced through `#reloadScheduled` so a
+	// burst of events (e.g. a multi-file upload) collapses to a single
+	// fetch. Local mutations trigger `reload()` themselves, so events
+	// authored by this same user are dropped as echo (the `actor` on
+	// the event is the caller UUID from the server).
+	//
+	// See `docs/plan/message-bus.md § D` and the `useFolderTopic`
+	// composable for the wiring.
+	let reloadScheduled = false;
+	function scheduleLiveReload(actor: string): void {
+		// Actor echo: this same session's mutations already updated the
+		// listing through their own success path, so a re-fetch would
+		// only cost a round-trip. Other tabs of the same user still see
+		// the change (they render from their own state, not this one).
+		if (session.user?.id && actor === session.user.id) return;
+		if (reloadScheduled) return;
+		reloadScheduled = true;
+		// Coalesce a burst; 100 ms is enough for the tail of a multi-
+		// event upload without feeling laggy.
+		setTimeout(() => {
+			reloadScheduled = false;
+			void reload();
+		}, 100);
+	}
+	useFolderTopic(() => currentId, {
+		onFileCreated: (d) => scheduleLiveReload(d.actor),
+		onFileRenamed: (d) => scheduleLiveReload(d.actor),
+		onFileMoved: (d) => scheduleLiveReload(d.actor),
+		onFileDeleted: (d) => scheduleLiveReload(d.actor),
+		onFolderCreated: (d) => scheduleLiveReload(d.actor),
+		onFolderRenamed: (d) => scheduleLiveReload(d.actor),
+		onFolderMoved: (d) => scheduleLiveReload(d.actor),
+		onFolderDeleted: (d) => scheduleLiveReload(d.actor),
+		onRevoked: (params) => {
+			// The subscription is already gone server-side. Notify the
+			// user and send them back to their home so they don't sit
+			// on a stale folder view with no way to know why updates
+			// stopped.
+			ui.notify(
+				t('files.folder_access_revoked', 'Your access to this folder was revoked.'),
+				'warning'
+			);
+			busLog.warn('folder access revoked', { topic: params.topic, reason: params.reason });
+			void goto(resolve('/files'));
+		}
+	});
 
 	function openFolder(folder: FolderItem) {
 		// Canonical single-id URL. Legacy `/files/A/B/C` still resolves
