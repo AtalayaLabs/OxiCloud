@@ -1,9 +1,8 @@
-import type RtErrorCode from './RtErrorCode';
 import type RtErrorMessage from './RtErrorMessage';
 // AUTO-GENERATED — do not edit by hand.
 // Regenerate with `just asyncapi-ts`.
 interface RtErrorObject {
-	code: RtErrorCode;
+	code: number;
 	data?: unknown;
 	message: RtErrorMessage;
 }

@@ -473,22 +473,45 @@ fn rpc_error_object_schema() -> Value {
 }
 
 fn rpc_error_code_schema() -> Value {
+    // Kept as plain `integer` — Modelina projects a JSON-Schema `enum` of
+    // numeric values into a TS enum with mangled member names
+    // (`MINUS_32001 = -32001`), which is worse than no enum at all. The
+    // Rust `error_code` module is the source of truth for named
+    // constants; the FE mirrors it in `frontend/src/lib/message-bus/
+    // error-codes.ts` (hand-written, 11 lines, sits alongside the
+    // generated DTOs). Description enumerates the full set inline so the
+    // AsyncAPI spec is still self-documenting.
+    let full_description = format!(
+        "Stable integer error code. Values are frozen across releases — a \
+         new denial cause gets a new value, never repurposes an existing \
+         one. Application-defined codes ({}..={}):\n\
+         · {} NO_READ — resource-scoped topic, caller lacks Read (or \
+         resource doesn't exist — indistinguishable by design)\n\
+         · {} NO_SHARE — resource requires Share, caller has Read but not Share\n\
+         · {} NO_COMMENT — resource requires Comment\n\
+         · {} TOPIC_FORBIDDEN — identity-scoped mismatch or unknown/malformed topic\n\
+         · {} SUB_LIMIT — per-connection subscription cap hit\n\
+         · {} RATE_LIMITED — subscribe-frame token bucket exhausted\n\
+         · {} NO_EDIT — CRDT edit frame from a caller without Edit\n\
+         Standard JSON-RPC 2.0 codes:\n\
+         · {} INTERNAL_ERROR · {} INVALID_REQUEST · {} METHOD_NOT_FOUND · {} INVALID_PARAMS",
+        -32099,
+        -32000,
+        error_code::NO_READ,
+        error_code::NO_SHARE,
+        error_code::NO_COMMENT,
+        error_code::TOPIC_FORBIDDEN,
+        error_code::SUB_LIMIT,
+        error_code::RATE_LIMITED,
+        error_code::NO_EDIT,
+        error_code::INTERNAL_ERROR,
+        error_code::INVALID_REQUEST,
+        error_code::METHOD_NOT_FOUND,
+        error_code::INVALID_PARAMS,
+    );
     json!({
         "type": "integer",
-        "description": "Stable integer error code. Values are frozen across releases — a new denial cause gets a new value, never repurposes an existing one.",
-        "enum": [
-            error_code::NO_READ,
-            error_code::NO_SHARE,
-            error_code::NO_COMMENT,
-            error_code::TOPIC_FORBIDDEN,
-            error_code::SUB_LIMIT,
-            error_code::RATE_LIMITED,
-            error_code::NO_EDIT,
-            error_code::INTERNAL_ERROR,
-            error_code::INVALID_REQUEST,
-            error_code::METHOD_NOT_FOUND,
-            error_code::INVALID_PARAMS,
-        ],
+        "description": full_description,
     })
 }
 
