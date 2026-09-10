@@ -26,7 +26,7 @@ jobs:
       wasm: ${{ steps.filter.outputs.wasm }}
       plugins: ${{ steps.filter.outputs.plugins }}
       migrations: ${{ steps.filter.outputs.migrations }}
-      realtime_spec: ${{ steps.filter.outputs.realtime_spec }}
+      message_bus_spec: ${{ steps.filter.outputs.message_bus_spec }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -53,12 +53,12 @@ jobs:
               - 'src/application/adapters/plugin_user_lifecycle_hook.rs'
             migrations:
               - 'migrations/**'
-            realtime_spec:
-              - 'src/application/ports/realtime_ports.rs'
+            message_bus_spec:
+              - 'src/application/ports/message_bus_ports.rs'
               - 'src/bin/generate-asyncapi.rs'
               - 'resources/gen/asyncapi.json'
-              - 'frontend/scripts/gen-realtime-types.mjs'
-              - 'frontend/src/lib/generated/realtime/**'
+              - 'frontend/scripts/gen-message-bus-types.mjs'
+              - 'frontend/src/lib/generated/message-bus/**'
               - 'frontend/package.json'
 
   frontend-check:
@@ -92,18 +92,18 @@ jobs:
   # scratch, then fails the PR if either output drifts from what was
   # committed. Same discipline as the OpenAPI + wasm-fixture approach
   # elsewhere in this file — the wire spec is a compile-time artefact
-  # of the Rust source (`realtime_ports.rs`), and the TS DTOs are a
-  # compile-time artefact of the spec, so both must be reproducible.
+  # of the Rust source (`message_bus_ports.rs`), and the TS DTOs are
+  # a compile-time artefact of the spec, so both must be reproducible.
   #
-  # Scoped by the `realtime_spec` path filter so a PR that doesn't
+  # Scoped by the `message_bus_spec` path filter so a PR that doesn't
   # touch the wire (or its generator scripts, or the Modelina version)
   # skips this job entirely. Needs BOTH Rust and Node toolchains, so
   # it's slightly heavier than a single-toolchain job — the filter
   # keeps it off the hot path.
-  realtime-spec-drift:
-    name: Realtime spec — AsyncAPI + TypeScript DTO drift
+  message-bus-spec-drift:
+    name: Message-bus spec — AsyncAPI + TypeScript DTO drift
     needs: changes
-    if: needs.changes.outputs.realtime_spec == 'true'
+    if: needs.changes.outputs.message_bus_spec == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -112,7 +112,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Node for `just asyncapi-ts` — Modelina projects the spec into
-      # the FE `src/lib/generated/realtime/` folder.
+      # the FE `src/lib/generated/message-bus/` folder.
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -127,7 +127,7 @@ jobs:
         run: cargo run --features dev_tools --bin generate-asyncapi
       - name: Regenerate TS DTOs (Modelina)
         working-directory: frontend
-        run: npm run gen:realtime
+        run: npm run gen:message-bus
       - name: Fail if committed files drifted
         # A non-empty diff means a contributor edited the Rust wire
         # source (or Modelina config) without regenerating, or hand-
@@ -136,9 +136,9 @@ jobs:
         run: |
           if ! git diff --exit-code \
                  resources/gen/asyncapi.json \
-                 frontend/src/lib/generated/realtime/; then
+                 frontend/src/lib/generated/message-bus/; then
             echo ""
-            echo "::error::Realtime spec drift: the committed files differ from what the"
+            echo "::error::Message-bus spec drift: the committed files differ from what the"
             echo "::error::generator produces from source. Run \`just asyncapi-ts\` locally"
             echo "::error::and commit the result — that recipe re-runs both stages."
             exit 1

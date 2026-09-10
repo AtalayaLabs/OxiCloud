@@ -402,7 +402,7 @@ async fn main() -> ExitCode {
         Err(e) => return fail(format!("/api/admin/sessions network: {e}")),
     }
 
-    // ── OPAQUE-minted JWT works against the realtime WS ─────────────
+    // ── OPAQUE-minted JWT works against the WebSocket ─────────────
     //
     // Regression guard: `auth_middleware` doesn't inspect how a JWT
     // was minted, so an OPAQUE-issued access_token must Just Work on

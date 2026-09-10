@@ -1,4 +1,4 @@
-//! WebSocket-side smoke-test helper for the realtime message bus.
+//! WebSocket-side smoke-test helper for the message bus.
 //!
 //! Hurl is HTTP-only — it can't do a WS upgrade, let alone read frames
 //! for later assertion. This binary is the WS half of the smoke test:

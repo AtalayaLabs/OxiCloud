@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# Realtime bus smoke test — the parts Hurl can't drive.
+# Message bus smoke test — the parts Hurl can't drive.
 #
 # Hurl is HTTP-only and cannot open a WebSocket, so the WS half of the test
 # runs through `rt-hurl-helper` (a small Rust bin gated on `test_utils`).
@@ -496,4 +496,4 @@ sub_count=$(jq -r '.subscribed | length' "$out_s8")
 
 log "S8 OK"
 
-log "All eight realtime-bus scenarios passed."
+log "All eight message-bus scenarios passed."

@@ -1,4 +1,4 @@
-# Plan — Realtime message bus over WebSocket
+# Plan — Message bus over WebSocket
 
 ## Context
 
@@ -10,7 +10,7 @@ notifications, sync-client push invalidation — and it makes existing
 surfaces feel dated compared to Google Drive, Notion, Nextcloud, and
 M365.
 
-This plan introduces a single realtime bus over WebSocket that any
+This plan introduces a single message bus over WebSocket that any
 service can publish facts to and any client can subscribe to. Collab
 editing is one consumer on top; folder-live updates, notifications,
 job progress, presence, and sync-client push invalidation follow with
@@ -41,13 +41,13 @@ almost no extra scaffolding.
 │  CollabSessionService.apply()  ─────────────────▶ bus.publish(...)   │
 │                                                                      │
 └───────────────────────────────┬──────────────────────────────────────┘
-                                │  publish(&Topic, RealtimeEvent)
+                                │  publish(&Topic, MessageBusEvent)
                                 ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│ REALTIME BUS   (RealtimeBus trait — application/ports)               │
+│ MESSAGE BUS   (MessageBus trait — application/ports)               │
 │                                                                      │
-│   InProcessRealtimeBus (v1)                                          │
-│     DashMap<Topic, broadcast::Sender<RealtimeEvent>>                 │
+│   InProcessMessageBus (v1)                                          │
+│     DashMap<Topic, broadcast::Sender<MessageBusEvent>>                 │
 │                                                                      │
 └──────┬───────────────────────────────────────────────────────────────┘
        │
@@ -59,7 +59,7 @@ almost no extra scaffolding.
        │       │    - v2: PgListenReplicator (pg_notify)              │
        │       │    - v3: BrokerReplicator (RabbitMQ / NATS)          │
        │       │                                                      │
-       │       │  Sits BESIDE InProcessRealtimeBus, forwards          │
+       │       │  Sits BESIDE InProcessMessageBus, forwards          │
        │       │  local publishes outbound + inbound events           │
        │       │  from the broker back into local publish.            │
        │       └──────────────────────────────────────────────────────┘
@@ -67,7 +67,7 @@ almost no extra scaffolding.
 ┌──────────────────────────────────────────────────────────────────────┐
 │ WS HANDLER   (interfaces/api/handlers/rt_ws.rs)                      │
 │                                                                      │
-│   One RealtimeSession per WS: HashSet<Topic> + outbound mpsc         │
+│   One BusSession per WS: HashSet<Topic> + outbound mpsc         │
 │   - subscribe/unsubscribe frames → bus.subscribe(topic)              │
 │   - each subscribed stream drains into the outbound mpsc             │
 │   - AuthZ at subscribe (once), evict on grant-revoked                │
@@ -77,12 +77,12 @@ almost no extra scaffolding.
 
 **The seam that keeps RabbitMQ/NATS doors open is the replicator, not
 the bus.** Services and the WS handler only ever see the local
-`RealtimeBus`. A future `BrokerReplicator` publishes outbound + injects
+`MessageBus`. A future `BrokerReplicator` publishes outbound + injects
 inbound. Zero touch to callers.
 
 ## Backend components
 
-### 1. Port + event types (`application/ports/realtime_ports.rs`)
+### 1. Port + event types (`application/ports/message_bus_ports.rs`)
 
 ```rust
 // Topic is a typed enum, not a string. Prevents typos, gives
@@ -127,7 +127,7 @@ pub enum PrincipalRef {
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
-pub enum RealtimeEvent {
+pub enum MessageBusEvent {
     // Folder / File verbs — thin facts only, client refetches details.
     FileCreated  { file_id: FileId, name: String, parent_id: FolderId, actor: UserId },
     FileDeleted  { file_id: FileId, parent_id: FolderId, actor: UserId },
@@ -168,21 +168,21 @@ pub enum RealtimeEvent {
 }
 
 #[async_trait]
-pub trait RealtimeBus: Send + Sync {
+pub trait MessageBus: Send + Sync {
     /// Fire-and-forget. SYNC (not async) — services must not await
     /// under a DB transaction.
-    fn publish(&self, topic: &Topic, event: RealtimeEvent);
+    fn publish(&self, topic: &Topic, event: MessageBusEvent);
 
     /// Returns a Stream so the impl can change (broadcast, mpsc,
     /// pg listener) without churn.
-    fn subscribe(&self, topic: &Topic) -> Pin<Box<dyn Stream<Item = RealtimeEvent> + Send>>;
+    fn subscribe(&self, topic: &Topic) -> Pin<Box<dyn Stream<Item = MessageBusEvent> + Send>>;
 }
 
-/// Kept SEPARATE from RealtimeBus so v2/v3 wiring is drop-in.
+/// Kept SEPARATE from MessageBus so v2/v3 wiring is drop-in.
 #[async_trait]
 pub trait BusReplicator: Send + Sync {
     /// Called whenever the local bus publishes; may forward to broker.
-    fn on_local_publish(&self, topic: &Topic, event: &RealtimeEvent);
+    fn on_local_publish(&self, topic: &Topic, event: &MessageBusEvent);
 
     /// Long-running consumer task: reads remote messages and
     /// re-publishes locally. Started by DI, returns on shutdown.
@@ -203,7 +203,7 @@ paths**:
 | Each affected user (persistent "shared with you") | `user:{member}:notifications` (one publish per member) | Becomes a `notif.notifications` row via `NotificationService::create` |
 
 The bus **never expands groups**. `NotificationService` is the
-group-expansion boundary. `RealtimeBus` only fans out topics that
+group-expansion boundary. `MessageBus` only fans out topics that
 already exist as concrete `user:*` streams.
 
 Post-commit sequence for `ShareService::grant(file=F, principal=Group(G), role=R)`:
@@ -262,9 +262,9 @@ Coalescing: `NotificationService::create` de-dupes on
 window. Alice in both `G1` and `G2`, both granted `F`, gets one
 notification, not two.
 
-### 2. In-process impl (`infrastructure/services/in_process_realtime_bus.rs`)
+### 2. In-process impl (`infrastructure/services/in_process_message_bus.rs`)
 
-- `DashMap<Topic, broadcast::Sender<RealtimeEvent>>`, capacity 256 per topic.
+- `DashMap<Topic, broadcast::Sender<MessageBusEvent>>`, capacity 256 per topic.
 - `subscribe` creates the entry lazily; wraps `Receiver` in
   `BroadcastStream` (converts `Lagged` into a stream-level marker; WS
   handler kills that session with a `revoked` frame, reason
@@ -275,7 +275,7 @@ notification, not two.
 ### 3. Replicator scaffolding (day-1)
 
 - `NoopReplicator` in v1. Wired in DI as `Arc<dyn BusReplicator>`.
-- `InProcessRealtimeBus::publish` calls
+- `InProcessMessageBus::publish` calls
   `replicator.on_local_publish(...)` **after** local fan-out.
 
 Futures:
@@ -313,7 +313,7 @@ Futures:
   - Extract `caller_id` from the auth mechanism above.
   - Auto-subscribe to `user:{caller}:notifications`,
     `user:{caller}:authz`, `user:{caller}:sessions`.
-  - Spawn `RealtimeSession` actor: owns `HashSet<Topic>`, outbound
+  - Spawn `BusSession` actor: owns `HashSet<Topic>`, outbound
     `mpsc::Sender<WsMessage>` (bounded 512), one reader task per
     subscribed topic.
 - Per-frame:
@@ -324,7 +324,7 @@ Futures:
     admin bypass), role-scoped (`caller.role == Admin`); plus the
     bespoke job-originator-or-admin check for `job:{id}`. Full
     matrix in **§ AuthZ model**. Deny → `denied` frame + audit
-    `event = "realtime.subscribe_denied"`. Allow → subscribe on bus,
+    `event = "message_bus.subscribe_denied"`. Allow → subscribe on bus,
     ack.
   - `unsubscribe`: drop the reader task for that topic.
   - `ping/pong` for keepalive.
@@ -345,14 +345,14 @@ never before, never inside**. If publish were inside the tx, a
 rollback would still fan out to clients. If publish were async and
 awaited, a slow subscriber could hold the tx open.
 
-Pattern: services return `(result, Vec<RealtimeEvent>)` from the tx
+Pattern: services return `(result, Vec<MessageBusEvent>)` from the tx
 boundary; the calling layer publishes after commit. Or a
 `TxCommitHook` queues events and flushes on commit. Pick one, apply
 everywhere.
 
 ## Frontend components
 
-### 1. Singleton client (`lib/stores/realtime.svelte.ts`)
+### 1. Singleton client (`lib/stores/message-bus.svelte.ts`)
 
 - Fetches a ticket via `POST /api/rt/ticket` (through `apiFetch`, so
   DPoP is applied).
@@ -390,9 +390,10 @@ Two wire formats share the same WS connection:
 - **CRDT binary frames: Yjs sync protocol** — de-facto standard in the
   Yjs ecosystem, kept as-is because it's the reason we picked Yjs.
 
-Method namespace for our JSON-RPC methods: `rt.*` (short for
-realtime). Prevents collisions if we ever expose additional RPCs on
-the same WS (not planned, but the namespace costs nothing).
+Method namespace for our JSON-RPC methods: `rt.*` — a short opaque
+prefix reserved for message-bus methods. Prevents collisions if we
+ever expose additional RPCs on the same WS (not planned, but the
+namespace costs nothing).
 
 ### JSON-RPC frames (control + events)
 
@@ -511,7 +512,7 @@ implementation by construction — no hand-written spec that drifts.
 - **Message schemas** — the JSON-RPC envelope and one schema per
   `event` variant (`file_created`, `folder_created`,
   `share_granted`, `notification`, …). Generated via `schemars` from
-  the same Rust `RealtimeEvent` enum the server publishes, so the
+  the same Rust `MessageBusEvent` enum the server publishes, so the
   schema is authoritative, not aspirational.
 - **Error object shape + `code`/`message` catalog** — the JSON-RPC
   error table above becomes an AsyncAPI-declared `errors` block on
@@ -529,8 +530,8 @@ implementation by construction — no hand-written spec that drifts.
 Follows the same shape as `generate-openapi`:
 
 - New binary `src/bin/generate_asyncapi.rs` that constructs the
-  spec from `Topic`, `RealtimeEvent`, `AuthzCheck`, and the JSON-RPC
-  method/error tables — all live in `application/ports/realtime_ports.rs`
+  spec from `Topic`, `MessageBusEvent`, `AuthzCheck`, and the JSON-RPC
+  method/error tables — all live in `application/ports/message_bus_ports.rs`
   as the single source of truth.
 - Uses `schemars` for JSON Schema of each event variant (already
   compatible with `serde` derives; no re-annotation needed).
@@ -618,8 +619,8 @@ it once, avoid hand-maintaining a growing catalog of message types.
   stays; only the message DTOs come from codegen.
 - **Wiring:**
   - `frontend/package.json` dev-dep: `@asyncapi/modelina`.
-  - Script `frontend/scripts/gen-realtime-types.mjs` invokes Modelina,
-    writes to `frontend/src/lib/generated/realtime/`.
+  - Script `frontend/scripts/gen-message-bus-types.mjs` invokes Modelina,
+    writes to `frontend/src/lib/generated/message-bus/`.
   - `just asyncapi-ts` recipe alongside `just asyncapi`.
   - CI dirty-tree check — regenerate on every build, fail if `git
     diff` on the generated folder is non-empty. Same discipline as
@@ -747,10 +748,10 @@ confirms the anti-enumeration collapse rules the wire honours.
 
 - **Connect reject** — `event = "auth.rt_ticket_rejected"`,
   `reason ∈ {expired, unknown, ip_mismatch, replay}`.
-- **Subscribe deny** — `event = "realtime.subscribe_denied"`, `reason`
+- **Subscribe deny** — `event = "message_bus.subscribe_denied"`, `reason`
   from the audit column above, plus `caller_id`, `topic`. Emitted
   BEFORE the wire `denied` frame.
-- **Evict** — `event = "realtime.subscription_evicted"`,
+- **Evict** — `event = "message_bus.subscription_evicted"`,
   `reason ∈ {grant_revoked, resource_deleted, admin_kick, group_membership_lost}`,
   plus `caller_id`, `topic`.
 - **Collab edit rejected** — `event = "collab.write_denied"`,
@@ -796,7 +797,7 @@ larger (notifications table, presence, collab) rides on top later.
 
 ### Scope in
 
-- `RealtimeBus` port + `InProcessRealtimeBus`.
+- `MessageBus` port + `InProcessMessageBus`.
 - WS handler at `GET /api/rt/ws` with `subscribe` / `unsubscribe` /
   `ping` frames only (no CRDT binary frames yet).
 - Auth: reuse existing `auth_middleware` — session cookie for
@@ -954,7 +955,7 @@ subscribe to but didn't.
 
 Verifies: a user without `Read` on a folder cannot subscribe to
 its topic. Denial wire reason is `no_read`; audit line records
-`realtime.subscribe_denied` with `reason ∈ {no_read,
+`message_bus.subscribe_denied` with `reason ∈ {no_read,
 no_such_resource}`.
 
 ```
@@ -1046,7 +1047,7 @@ this baseline once the baseline is green.
 
 Ships the infrastructure and the two most visible consumers together.
 
-- Bus port + `InProcessRealtimeBus` + `NoopReplicator` + WS handler
+- Bus port + `InProcessMessageBus` + `NoopReplicator` + WS handler
   + ticket endpoint.
 - Frontend singleton + `useTopic` composable.
 - Topics live: `folder:{id}`, `user:{u}:notifications`, `job:{id}`,

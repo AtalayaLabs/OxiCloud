@@ -1,4 +1,4 @@
-//! Realtime bus WebSocket handler — the endpoint every WS session
+//! Message bus WebSocket handler — the endpoint every WS session
 //! multiplexes over. See `docs/plan/message-bus.md § Wire protocol`.
 //!
 //! # Wire
@@ -50,8 +50,8 @@ use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
 use crate::application::ports::authorization_ports::AuthorizationEngine;
-use crate::application::ports::realtime_ports::{
-    AuthzCheck, BusResource, ParseTopicErr, RealtimeBus, RealtimeEvent, Topic, error_code,
+use crate::application::ports::message_bus_ports::{
+    AuthzCheck, BusResource, MessageBus, MessageBusEvent, ParseTopicErr, Topic, error_code,
 };
 use crate::common::di::AppState;
 use crate::domain::services::authorization::{Permission, Resource, Subject};
@@ -192,7 +192,7 @@ impl Drop for Sub {
 ///   the socket.
 /// - `EvictFolders` — internal control signal. The reader for the
 ///   session's auto-subscribed `user:{caller}:authz` topic translates
-///   inbound [`RealtimeEvent::AuthzChanged`] events into this rather
+///   inbound [`MessageBusEvent::AuthzChanged`] events into this rather
 ///   than a client-visible frame. Main loop walks its subs, drops any
 ///   whose resource is in the list, and emits one `rt.revoked` frame
 ///   per evicted topic.
@@ -522,7 +522,7 @@ fn handle_unsubscribe(id: Value, params: Value, subs: &mut HashMap<String, Sub>)
 ///
 /// The reader interprets bus events differently by topic class:
 ///
-/// - For `Topic::UserAuthz(_)`: an incoming `RealtimeEvent::AuthzChanged`
+/// - For `Topic::UserAuthz(_)`: an incoming `MessageBusEvent::AuthzChanged`
 ///   is translated to `SessionOut::EvictFolders(affected)` — the main
 ///   loop then walks the sub set and drops matching topics. Any other
 ///   event kind on this topic is ignored (defensive; shouldn't happen
@@ -536,7 +536,7 @@ fn install_subscription(
     state: &Arc<AppState>,
 ) {
     let topic_wire = topic.to_wire_key();
-    let mut stream = RealtimeBus::subscribe(state.bus.as_ref(), &topic);
+    let mut stream = MessageBus::subscribe(state.bus.as_ref(), &topic);
     let out_tx_task = out_tx.clone();
     let translate_authz = matches!(topic, Topic::UserAuthz(_));
     // Clone for the reader closure; keep the original to key `subs`.
@@ -546,7 +546,7 @@ fn install_subscription(
         while let Some(event) = stream.next().await {
             let message = if translate_authz {
                 match event {
-                    RealtimeEvent::AuthzChanged { affected_folders } => {
+                    MessageBusEvent::AuthzChanged { affected_folders } => {
                         SessionOut::EvictFolders(affected_folders)
                     }
                     // The authz topic only carries AuthzChanged in
@@ -597,15 +597,15 @@ fn error_response(id: Value, code: i32, message: &str, data: Option<Value>) -> S
 
 /// Build an `rt.event` JSON-RPC notification for a bus event.
 ///
-/// Payload discipline (see plan): thin facts only. The `RealtimeEvent`'s
+/// Payload discipline (see plan): thin facts only. The `MessageBusEvent`'s
 /// own `#[serde(tag = "event")]` shape provides `event` + variant fields
 /// under one flat object; we lift them into `params.data` alongside a
 /// `topic` selector for the client.
-fn event_notification(topic_wire: &str, event: &RealtimeEvent) -> String {
+fn event_notification(topic_wire: &str, event: &MessageBusEvent) -> String {
     // Serialize the event to extract `event` (discriminator) and the
     // remaining fields as `data`. Two-step to avoid re-inventing the
     // enum's discriminator string here.
-    let event_json = serde_json::to_value(event).expect("RealtimeEvent always serializes");
+    let event_json = serde_json::to_value(event).expect("MessageBusEvent always serializes");
     let (event_name, data) = split_event_discriminator(event_json);
 
     let params = serde_json::json!({
@@ -622,7 +622,7 @@ fn event_notification(topic_wire: &str, event: &RealtimeEvent) -> String {
     .expect("RpcNotification always serializes")
 }
 
-/// Given a `RealtimeEvent` serialised as `{ "event": "file_created", ...rest }`,
+/// Given a `MessageBusEvent` serialised as `{ "event": "file_created", ...rest }`,
 /// split into `(event_name, rest)`. Falls back to `("unknown", full)` if
 /// the shape doesn't match (defensive — shouldn't happen given the enum
 /// derive, but a future untagged variant would land here).
@@ -658,11 +658,11 @@ fn revoked_notification(topic_wire: &str, reason: &'static str) -> String {
 fn audit_denied(caller_id: Uuid, topic: &str, reason: &'static str) {
     tracing::info!(
         target: "audit",
-        event = "realtime.subscribe_denied",
+        event = "message_bus.subscribe_denied",
         reason = reason,
         caller_id = %caller_id,
         topic = %topic,
-        "👮🏻‍♂️ realtime subscribe rejected",
+        "👮🏻‍♂️ message-bus subscribe rejected",
     );
 }
 
@@ -672,11 +672,11 @@ fn audit_denied(caller_id: Uuid, topic: &str, reason: &'static str) {
 fn audit_evicted(caller_id: Uuid, topic: &str, reason: &'static str) {
     tracing::info!(
         target: "audit",
-        event = "realtime.subscription_evicted",
+        event = "message_bus.subscription_evicted",
         reason = reason,
         caller_id = %caller_id,
         topic = %topic,
-        "🚫 realtime subscription evicted",
+        "🚫 message-bus subscription evicted",
     );
 }
 
@@ -720,7 +720,7 @@ mod tests {
 
     #[test]
     fn event_notification_shape() {
-        let event = RealtimeEvent::FileCreated {
+        let event = MessageBusEvent::FileCreated {
             file_id: Uuid::nil(),
             name: "notes.md".into(),
             parent_id: Uuid::nil(),

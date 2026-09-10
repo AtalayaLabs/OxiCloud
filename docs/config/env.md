@@ -355,7 +355,7 @@ Today's shipped locales: `ar, de, en, es, fa, fr, hi, it, ja, ko, nl, pl, pt, ru
 
 Example: `OXICLOUD_TRUST_PROXY_CIDR=127.0.0.1/32,10.0.0.0/8,172.16.0.0/12`
 
-## Realtime WebSocket
+## Message bus WebSocket
 
 | Variable | Default | Description |
 |---|---|---|

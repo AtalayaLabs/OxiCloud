@@ -56,13 +56,13 @@ pub struct FileUploadService {
     /// (`create_file_from_owned_blob_with_perms`); `None` in minimal test
     /// wiring.
     instant_upload: Option<InstantUploadDeps>,
-    /// Realtime message bus. When wired, `upload_file_streaming`
+    /// Message bus. When wired, `upload_file_streaming`
     /// publishes a `FileCreated` event on `Topic::Folder(parent_id)`
     /// after the DB commit — subscribers see the new file appear in
     /// their live folder view. Optional so stub / test factories can
     /// build the service without a bus; a `None` bus is a silent no-op
     /// on the publish path.
-    bus: Option<Arc<dyn crate::application::ports::realtime_ports::RealtimeBus>>,
+    bus: Option<Arc<dyn crate::application::ports::message_bus_ports::MessageBus>>,
 }
 
 /// Everything the instant-upload path needs beyond the upload service's own
@@ -117,13 +117,13 @@ impl FileUploadService {
         self
     }
 
-    /// Wire the realtime message bus. Enables live folder-view updates:
+    /// Wire the message bus. Enables live folder-view updates:
     /// after `upload_file_streaming` commits, a `FileCreated` event
     /// fires on `Topic::Folder(parent_id)` — subscribers see the new
     /// file appear without polling.
-    pub fn with_realtime_bus(
+    pub fn with_message_bus(
         mut self,
-        bus: Arc<dyn crate::application::ports::realtime_ports::RealtimeBus>,
+        bus: Arc<dyn crate::application::ports::message_bus_ports::MessageBus>,
     ) -> Self {
         self.bus = Some(bus);
         self
@@ -476,7 +476,7 @@ impl FileUploadUseCase for FileUploadService {
         // "I just uploaded X" UX matches the pre-SvelteKit behaviour.
         self.notify_file_accessed(caller_id, &dto.id);
 
-        // Realtime fan-out AFTER commit — subscribers to the parent
+        // Bus fan-out AFTER commit — subscribers to the parent
         // folder's topic see the new file appear live. Silent no-op if
         // the bus isn't wired (stubs / tests) or the file landed at
         // drive-root (no folder id → nothing to publish on).
@@ -484,10 +484,10 @@ impl FileUploadUseCase for FileUploadService {
             && let (Ok(parent_uuid), Ok(file_uuid)) =
                 (Uuid::parse_str(parent_folder_id), Uuid::parse_str(&dto.id))
         {
-            use crate::application::ports::realtime_ports::{RealtimeEvent, Topic};
+            use crate::application::ports::message_bus_ports::{MessageBusEvent, Topic};
             bus.publish(
                 &Topic::Folder(parent_uuid),
-                RealtimeEvent::FileCreated {
+                MessageBusEvent::FileCreated {
                     file_id: file_uuid,
                     name: dto.name.clone(),
                     parent_id: parent_uuid,

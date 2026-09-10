@@ -18,7 +18,7 @@
     "test:unit": "LANG=C vitest run",
     "test:unit:watch": "LANG=C vitest",
     "test:unit:coverage": "rm -rf ../tests/e2e/.nyc_output_unit && LANG=C COVERAGE=1 vitest run",
-    "gen:realtime": "node scripts/gen-realtime-types.mjs"
+    "gen:message-bus": "node scripts/gen-message-bus-types.mjs"
   },
   "devDependencies": {
     "@asyncapi/modelina": "^5.5.0",

@@ -271,7 +271,7 @@ name = "generate-asyncapi"
 path = "src/bin/generate-asyncapi.rs"
 # Dev-only: regenerates `resources/gen/asyncapi.json` — the WS surface's
 # analogue of openapi.json. Constructed from the same `error_code`
-# constants + `Topic`/`RealtimeEvent` shapes the server uses, so the
+# constants + `Topic`/`MessageBusEvent` shapes the server uses, so the
 # spec stays in sync with the implementation by construction. Same
 # gating as `generate-openapi`. Invoked by `just asyncapi`.
 required-features = ["dev_tools"]
@@ -309,7 +309,7 @@ required-features = ["load_seed_bin"]
 [[bin]]
 name = "rt-hurl-helper"
 path = "src/bin/rt-hurl-helper.rs"
-# Test-suite WebSocket client for the realtime message bus. Hurl is
+# Test-suite WebSocket client for the message bus. Hurl is
 # HTTP-only and cannot drive a WS handshake or read frames; this bin
 # supplies the two modes the smoke test needs — `subscribe-and-collect`
 # (background subscriber that captures events to JSON) and

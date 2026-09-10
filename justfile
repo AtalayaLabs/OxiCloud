@@ -195,8 +195,8 @@ openapi:
     cargo run --features dev_tools --bin generate-openapi
 
 # Regenerate `resources/gen/asyncapi.json` — the WS surface's spec,
-# analogue of openapi.json. Built from the `Topic`, `RealtimeEvent`,
-# and `error_code` constants in `application/ports/realtime_ports.rs`
+# analogue of openapi.json. Built from the `Topic`, `MessageBusEvent`,
+# and `error_code` constants in `application/ports/message_bus_ports.rs`
 # so the spec stays in sync with the wire by construction.
 asyncapi:
     cargo run --features dev_tools --bin generate-asyncapi
@@ -210,34 +210,34 @@ asyncapi:
 # .ts files (idempotent — same input → same output, CI dirty-tree
 # check catches genuine drift).
 #
-# Output lands in `frontend/src/lib/generated/realtime/`; consumers
+# Output lands in `frontend/src/lib/generated/message-bus/`; consumers
 # import from there but never edit those files.
 asyncapi-ts: asyncapi
-    cd frontend && npm run gen:realtime
+    cd frontend && npm run gen:message-bus
 
-# Local mirror of the `realtime-spec-drift` CI job. Regenerates both
-# artefacts and fails if the committed files differ from the fresh
-# generator output. Included in `pre-pull-request` so developers
-# catch drift BEFORE pushing — the CI job is belt-and-braces, not the
-# only defence.
+# Local mirror of the `message-bus-spec-drift` CI job. Regenerates
+# both artefacts and fails if the committed files differ from the
+# fresh generator output. Included in `pre-pull-request` so
+# developers catch drift BEFORE pushing — the CI job is
+# belt-and-braces, not the only defence.
 #
 # Depends on `asyncapi-ts` which itself depends on `asyncapi`, so the
 # whole chain runs; then we assert on `git diff --exit-code` over
 # the two paths we care about.
-check-realtime-spec: asyncapi-ts
+check-message-bus-spec: asyncapi-ts
     #!/usr/bin/env bash
     set -euo pipefail
     if ! git diff --exit-code \
              resources/gen/asyncapi.json \
-             frontend/src/lib/generated/realtime/; then
+             frontend/src/lib/generated/message-bus/; then
         echo ""
-        echo "❌ realtime spec drift: committed files differ from the fresh"
+        echo "❌ message-bus spec drift: committed files differ from the fresh"
         echo "   generator output. Fix:"
-        echo "     git add resources/gen/asyncapi.json frontend/src/lib/generated/realtime/"
-        echo "     git commit -m 'chore(rt): regenerate spec + DTOs'"
+        echo "     git add resources/gen/asyncapi.json frontend/src/lib/generated/message-bus/"
+        echo "     git commit -m 'chore(bus): regenerate spec + DTOs'"
         exit 1
     fi
-    echo "✅ realtime spec: committed files match generator output"
+    echo "✅ message-bus spec: committed files match generator output"
 
 db:
     docker compose up -d postgres
@@ -374,7 +374,7 @@ fe-dev: asyncapi-ts
 
 # build the SPA (Phase 0: -> frontend/build; Phase 5: -> static-dist).
 # `asyncapi-ts` prerequisite (which itself depends on `asyncapi`)
-# guarantees `frontend/src/lib/generated/realtime/*.ts` is in sync
+# guarantees `frontend/src/lib/generated/message-bus/*.ts` is in sync
 # with the Rust-side wire spec before Vite compiles — no stale-DTO
 # window in local dev. CI still runs a dirty-tree check on the
 # generated files as belt-and-braces.
@@ -406,7 +406,7 @@ fe-check: asyncapi-ts
     cd frontend && npm run check
 
 # Vitest unit/component tests. Same asyncapi-ts prereq — tests that
-# import from `lib/generated/realtime` need it fresh.
+# import from `lib/generated/message-bus` need it fresh.
 fe-test: asyncapi-ts
     cd frontend && npm run test:unit
 
@@ -447,4 +447,4 @@ test-docker-tags:
 
 # Check and test everything
 # recommanded before pull request
-pre-pull-request: test-docker-tags check fe-check audit check-migrations check-realtime-spec test test-integration fe-test build test-bundle test-api fe-build-e2e  front-test
+pre-pull-request: test-docker-tags check fe-check audit check-migrations check-message-bus-spec test test-integration fe-test build test-bundle test-api fe-build-e2e  front-test

@@ -57,12 +57,12 @@ pub struct FileManagementService {
     /// (stub/test builders); production DI wires it in.
     storage_usage:
         Option<Arc<crate::application::services::storage_usage_service::StorageUsageService>>,
-    /// Realtime message bus. When wired, delete / rename / move
-    /// mutations publish their corresponding `RealtimeEvent` on
+    /// Message bus. When wired, delete / rename / move
+    /// mutations publish their corresponding `MessageBusEvent` on
     /// `Topic::Folder(parent_id)` (both source AND destination for
     /// move) after the DB commit. `None` silently no-ops the publish
     /// path — same pattern as `bus` on FileUploadService.
-    bus: Option<Arc<dyn crate::application::ports::realtime_ports::RealtimeBus>>,
+    bus: Option<Arc<dyn crate::application::ports::message_bus_ports::MessageBus>>,
     /// Read repository — needed by the mutation publish path
     /// (delete / rename / move) to snapshot the file's pre-mutation
     /// parent folder BEFORE the write commits: delete removes the row,
@@ -102,11 +102,11 @@ impl FileManagementService {
         }
     }
 
-    /// Wire the realtime message bus. When set, delete / rename / move
+    /// Wire the message bus. When set, delete / rename / move
     /// mutations publish on the affected folder topics after commit.
-    pub fn with_realtime_bus(
+    pub fn with_message_bus(
         mut self,
-        bus: Arc<dyn crate::application::ports::realtime_ports::RealtimeBus>,
+        bus: Arc<dyn crate::application::ports::message_bus_ports::MessageBus>,
     ) -> Self {
         self.bus = Some(bus);
         self
@@ -208,7 +208,7 @@ impl FileManagementService {
     }
 
     /// Snapshot the (uuid, name, parent-folder-uuid) of a file BEFORE
-    /// a mutation, so the realtime publish path has a stable
+    /// a mutation, so the message-bus publish path has a stable
     /// `Topic::Folder(parent)` to address even after the write commits
     /// (delete removes the row; move rewrites `folder_id`).
     ///
@@ -239,10 +239,10 @@ impl FileManagementService {
     /// file, mount, unwired `file_read`).
     fn publish_file_deleted(&self, caller_id: Uuid, snapshot: Option<(Uuid, String, Uuid)>) {
         if let (Some(bus), Some((file_uuid, _name, parent_uuid))) = (&self.bus, snapshot) {
-            use crate::application::ports::realtime_ports::{RealtimeEvent, Topic};
+            use crate::application::ports::message_bus_ports::{MessageBusEvent, Topic};
             bus.publish(
                 &Topic::Folder(parent_uuid),
-                RealtimeEvent::FileDeleted {
+                MessageBusEvent::FileDeleted {
                     file_id: file_uuid,
                     parent_id: parent_uuid,
                     actor: caller_id,
@@ -539,7 +539,7 @@ impl FileManagementUseCase for FileManagementService {
 
         let dto = self.move_file(file_id, folder_id, caller_id).await?;
 
-        // Realtime fan-out on BOTH source and destination folder
+        // Bus fan-out on BOTH source and destination folder
         // topics. Subscribers to the source see the file "gone" from
         // their view; subscribers to the destination see it "appear".
         // Silent no-op when the bus isn't wired, the source snapshot
@@ -552,8 +552,8 @@ impl FileManagementUseCase for FileManagementService {
             && let Ok(dest_uuid) = Uuid::parse_str(dest_str)
             && source_uuid != dest_uuid
         {
-            use crate::application::ports::realtime_ports::{RealtimeEvent, Topic};
-            let event = RealtimeEvent::FileMoved {
+            use crate::application::ports::message_bus_ports::{MessageBusEvent, Topic};
+            let event = MessageBusEvent::FileMoved {
                 file_id: file_uuid,
                 name,
                 from: source_uuid,
@@ -674,7 +674,7 @@ impl FileManagementUseCase for FileManagementService {
 
         let dto = self.rename_file(file_id, new_name, caller_id).await?;
 
-        // Realtime publish AFTER commit. Silent no-op when the bus
+        // Bus publish AFTER commit. Silent no-op when the bus
         // isn't wired, the pre-fetch failed (old_name = None), or the
         // file has no folder (`dto.folder_id = None` — drive-root).
         if let (Some(bus), Some(old_name), Some(parent_str)) =
@@ -682,10 +682,10 @@ impl FileManagementUseCase for FileManagementService {
             && let (Ok(file_uuid), Ok(parent_uuid)) =
                 (Uuid::parse_str(&dto.id), Uuid::parse_str(parent_str))
         {
-            use crate::application::ports::realtime_ports::{RealtimeEvent, Topic};
+            use crate::application::ports::message_bus_ports::{MessageBusEvent, Topic};
             bus.publish(
                 &Topic::Folder(parent_uuid),
-                RealtimeEvent::FileRenamed {
+                MessageBusEvent::FileRenamed {
                     file_id: file_uuid,
                     old_name,
                     new_name: dto.name.clone(),

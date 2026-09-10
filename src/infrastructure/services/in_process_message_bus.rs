@@ -1,4 +1,4 @@
-//! In-process `RealtimeBus` — one `broadcast::Sender` per active topic,
+//! In-process `MessageBus` — one `broadcast::Sender` per active topic,
 //! held in a [`DashMap`] keyed by [`Topic`]. Publish is fire-and-forget,
 //! subscribe returns a `Stream` backed by [`BroadcastStream`].
 //!
@@ -28,8 +28,8 @@ use futures::StreamExt;
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 
-use crate::application::ports::realtime_ports::{
-    BusReplicator, BusStream, RealtimeBus, RealtimeEvent, Topic,
+use crate::application::ports::message_bus_ports::{
+    BusReplicator, BusStream, MessageBus, MessageBusEvent, Topic,
 };
 
 /// Per-topic ring-buffer size for slow subscribers. When a subscriber lags
@@ -44,20 +44,20 @@ pub const BROADCAST_RING_CAPACITY: usize = 256;
 /// long enough that GC overhead stays trivial.
 pub const GC_INTERVAL: Duration = Duration::from_secs(60);
 
-/// The in-process implementation of [`RealtimeBus`].
+/// The in-process implementation of [`MessageBus`].
 ///
-/// Callers hold `Arc<InProcessRealtimeBus>` (or `Arc<dyn RealtimeBus>`).
+/// Callers hold `Arc<InProcessMessageBus>` (or `Arc<dyn MessageBus>`).
 /// The struct owns its topic map and — when constructed via
-/// [`InProcessRealtimeBus::with_replicator`] — an [`Arc<dyn BusReplicator>`]
+/// [`InProcessMessageBus::with_replicator`] — an [`Arc<dyn BusReplicator>`]
 /// that gets fed every local publish for outbound broker forwarding.
-pub struct InProcessRealtimeBus {
-    topics: DashMap<Topic, broadcast::Sender<RealtimeEvent>>,
+pub struct InProcessMessageBus {
+    topics: DashMap<Topic, broadcast::Sender<MessageBusEvent>>,
     replicator: Arc<dyn BusReplicator>,
 }
 
-impl InProcessRealtimeBus {
+impl InProcessMessageBus {
     /// Construct with a replicator. In v1 that's a
-    /// [`crate::application::ports::realtime_ports::NoopReplicator`]; when
+    /// [`crate::application::ports::message_bus_ports::NoopReplicator`]; when
     /// multi-instance ships, it becomes the pg-NOTIFY or broker impl.
     ///
     /// The GC task holds a [`Weak`] handle so it exits naturally when the
@@ -111,7 +111,7 @@ impl InProcessRealtimeBus {
     /// receiver. Used by both `publish` (for the sender) and `subscribe`
     /// (for the receiver) — one code path for the map insert avoids a race
     /// where publish creates a sender concurrent subscribers miss.
-    fn sender_for(&self, topic: &Topic) -> broadcast::Sender<RealtimeEvent> {
+    fn sender_for(&self, topic: &Topic) -> broadcast::Sender<MessageBusEvent> {
         self.topics
             .entry(*topic)
             .or_insert_with(|| broadcast::channel(BROADCAST_RING_CAPACITY).0)
@@ -119,8 +119,8 @@ impl InProcessRealtimeBus {
     }
 }
 
-impl RealtimeBus for InProcessRealtimeBus {
-    fn publish(&self, topic: &Topic, event: RealtimeEvent) {
+impl MessageBus for InProcessMessageBus {
+    fn publish(&self, topic: &Topic, event: MessageBusEvent) {
         // Feed the replicator FIRST — if it were called after local fan-out,
         // an unwind on a broken subscriber could skip broker forwarding.
         // `on_local_publish` is a sync fire-and-forget contract; slow
@@ -162,23 +162,23 @@ impl RealtimeBus for InProcessRealtimeBus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::ports::realtime_ports::NoopReplicator;
+    use crate::application::ports::message_bus_ports::NoopReplicator;
     use futures::StreamExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
     use tokio::sync::Notify;
     use uuid::Uuid;
 
-    fn make_bus() -> Arc<InProcessRealtimeBus> {
-        InProcessRealtimeBus::with_replicator(Arc::new(NoopReplicator))
+    fn make_bus() -> Arc<InProcessMessageBus> {
+        InProcessMessageBus::with_replicator(Arc::new(NoopReplicator))
     }
 
     fn folder_topic() -> Topic {
         Topic::Folder(Uuid::new_v4())
     }
 
-    fn file_created(parent_id: Uuid) -> RealtimeEvent {
-        RealtimeEvent::FileCreated {
+    fn file_created(parent_id: Uuid) -> MessageBusEvent {
+        MessageBusEvent::FileCreated {
             file_id: Uuid::new_v4(),
             name: "a.txt".into(),
             parent_id,
@@ -299,7 +299,7 @@ mod tests {
         }
         #[async_trait::async_trait]
         impl BusReplicator for CountingReplicator {
-            fn on_local_publish(&self, _topic: &Topic, _event: &RealtimeEvent) {
+            fn on_local_publish(&self, _topic: &Topic, _event: &MessageBusEvent) {
                 self.count.fetch_add(1, Ordering::SeqCst);
             }
             async fn run(
@@ -314,7 +314,7 @@ mod tests {
         let counter = Arc::new(CountingReplicator {
             count: AtomicUsize::new(0),
         });
-        let bus = InProcessRealtimeBus::with_replicator(Arc::clone(&counter) as Arc<_>);
+        let bus = InProcessMessageBus::with_replicator(Arc::clone(&counter) as Arc<_>);
         let topic = folder_topic();
         let _sub = bus.subscribe(&topic);
         let parent = match topic {

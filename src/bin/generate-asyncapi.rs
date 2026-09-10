@@ -1,7 +1,7 @@
-//! AsyncAPI 3.0 spec generator for the realtime message bus.
+//! AsyncAPI 3.0 spec generator for the message bus.
 //!
 //! Mirrors `generate-openapi.rs`: constructs the spec from the same
-//! Rust enums the server uses (`Topic`, `RealtimeEvent`, JSON-RPC
+//! Rust enums the server uses (`Topic`, `MessageBusEvent`, JSON-RPC
 //! error codes) and writes `resources/gen/asyncapi.json`.
 //!
 //! This is the first-PR MVP surface — the two topics and two events
@@ -24,7 +24,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use oxicloud::application::ports::realtime_ports::error_code;
+use oxicloud::application::ports::message_bus_ports::error_code;
 use serde_json::{Value, json};
 
 fn main() {
@@ -48,7 +48,7 @@ fn build_asyncapi() -> Value {
     json!({
         "asyncapi": "3.0.0",
         "info": {
-            "title":   "OxiCloud realtime message bus",
+            "title":   "OxiCloud message bus",
             "version": env!("CARGO_PKG_VERSION"),
             "description": r#"
 JSON-RPC 2.0 over WebSocket for control + events, Yjs sync protocol for
@@ -68,7 +68,7 @@ Phase C (sync-client push, album live) extend the same channels — see
                 "host": "{host}",
                 "pathname": "/api/rt/ws",
                 "protocol": "wss",
-                "description": "OxiCloud realtime bus WebSocket endpoint. Text frames are JSON-RPC 2.0. Binary frames (out of AsyncAPI scope) are Yjs sync protocol for the collab editor — see `docs/plan/markdown-collab.md`.",
+                "description": "OxiCloud message bus WebSocket endpoint. Text frames are JSON-RPC 2.0. Binary frames (out of AsyncAPI scope) are Yjs sync protocol for the collab editor — see `docs/plan/markdown-collab.md`.",
                 "variables": {
                     "host": {
                         "description": "Server host — replace with the deployment domain",
@@ -437,7 +437,7 @@ fn rpc_pong_result_schema() -> Value {
 fn rpc_error_response_schema() -> Value {
     // The `code`/`message` catalog is the stable public vocabulary —
     // any change here IS a wire break. Every entry mirrors
-    // `application/ports/realtime_ports.rs::error_code`. The inner
+    // `application/ports/message_bus_ports.rs::error_code`. The inner
     // error object is hoisted to `RtErrorObject` so Modelina emits a
     // named type instead of `AnonymousSchema_N`.
     json!({
@@ -533,7 +533,7 @@ fn event_params_schema() -> Value {
 fn event_kind_schema() -> Value {
     json!({
         "type": "string",
-        "description": "Discriminator for the `data` payload. Mirrors the `#[serde(tag = \"event\", rename_all = \"snake_case\")]` variants of the Rust `RealtimeEvent` enum — a new event kind is a new enum variant on both sides.",
+        "description": "Discriminator for the `data` payload. Mirrors the `#[serde(tag = \"event\", rename_all = \"snake_case\")]` variants of the Rust `MessageBusEvent` enum — a new event kind is a new enum variant on both sides.",
         "enum": [
             "file_created", "file_renamed", "file_moved", "file_deleted",
             "folder_created", "folder_renamed", "folder_moved", "folder_deleted",

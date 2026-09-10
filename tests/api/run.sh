@@ -267,7 +267,7 @@ bash "$API_DIR/thumb_import_check.sh"
 
 bash "$API_DIR/storage_cleanup_check.sh"
 
-# ── 5. Realtime message bus — WebSocket smoke test ──────────────────────
+# ── 5. Message bus — WebSocket smoke test ───────────────────────────────
 # Runs BEFORE the OPAQUE helper so its user registration + login uses
 # the legacy password path (opaque_substrate.hurl migrates the admin
 # account, but by running first this check is unaffected by whatever
@@ -275,9 +275,9 @@ bash "$API_DIR/storage_cleanup_check.sh"
 # positive delivery, topic isolation, AuthZ denial on subscribe,
 # anti-enumeration parity. See `tests/api/rt_bus_check.sh` and
 # `docs/plan/message-bus.md`.
-log "Running realtime-bus smoke test..."
+log "Running message-bus smoke test..."
 BUILD_TARGET="$BUILD_TARGET" bash "$REPO_ROOT/tests/api/rt_bus_check.sh" \
-  || die "realtime-bus smoke test failed"
+  || die "message-bus smoke test failed"
 
 # ── 6. OPAQUE crypto handshake — the parts Hurl can't drive ─────────────
 # Full OPAQUE register + login handshake against the running server,

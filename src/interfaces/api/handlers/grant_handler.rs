@@ -505,7 +505,7 @@ pub async fn revoke_grant(
         "🗑️ grant revoked",
     );
 
-    // Realtime eviction cascade — the revoke committed, so any WS
+    // Message-bus eviction cascade — the revoke committed, so any WS
     // session that had the affected user auto-subscribed to
     // `user:{u}:authz` gets an AuthzChanged event and drops any live
     // subscriptions to the affected resource. Silent no-op when the
@@ -514,11 +514,11 @@ pub async fn revoke_grant(
     // membership expansion ships). Folder resources only for MVP;
     // File/Drive topics don't exist yet.
     if let (Subject::User(target_user), Resource::Folder(folder_id)) = (subject, resource) {
-        use crate::application::ports::realtime_ports::{RealtimeBus, RealtimeEvent, Topic};
-        RealtimeBus::publish(
+        use crate::application::ports::message_bus_ports::{MessageBus, MessageBusEvent, Topic};
+        MessageBus::publish(
             state.bus.as_ref(),
             &Topic::UserAuthz(target_user),
-            RealtimeEvent::AuthzChanged {
+            MessageBusEvent::AuthzChanged {
                 affected_folders: vec![folder_id],
             },
         );

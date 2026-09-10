@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Realtime bus — TypeScript DTOs generated from `resources/gen/asyncapi.json`.
+// Message bus — TypeScript DTOs generated from `resources/gen/asyncapi.json`.
 //
 // Sits on the same axis as `resources/gen/openapi.json`: the wire spec
 // (authored by `cargo run --features dev_tools --bin generate-asyncapi`)
@@ -7,14 +7,14 @@
 // interfaces so `lib/composables/useTopic.ts` and every folder-view
 // switch statement is compile-time exhaustive over the `rt.event` variants.
 //
-// Regenerate: `just asyncapi-ts` (or `npm run gen:realtime`).
+// Regenerate: `just asyncapi-ts` (or `npm run gen:message-bus`).
 // CI is expected to run the same command and fail if the working tree is
 // dirty afterwards — same discipline `just openapi` follows.
 //
 // Design notes:
 //   * `modelType: 'interface'` — plain records, not classes-with-getters.
 //     Matches the FE codebase style (see `lib/api/types.ts`).
-//   * Output goes to `src/lib/generated/realtime/` — a directory reserved
+//   * Output goes to `src/lib/generated/message-bus/` — a directory reserved
 //     for auto-generated files. Never hand-edit anything inside.
 //   * Every file gets a `AUTO-GENERATED` banner via a preset so a stray
 //     edit is obvious at review time.
@@ -32,13 +32,13 @@ import { TypeScriptFileGenerator } from '@asyncapi/modelina';
 const execFile = promisify(execFileCb);
 
 // Anchor everything on this script's location so `just asyncapi-ts` from
-// the repo root and `npm run gen:realtime` from the frontend both work.
+// the repo root and `npm run gen:message-bus` from the frontend both work.
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const frontendRoot = resolve(__dirname, '..');
 const repoRoot = resolve(frontendRoot, '..');
 
 const specPath = resolve(repoRoot, 'resources/gen/asyncapi.json');
-const outputDir = resolve(frontendRoot, 'src/lib/generated/realtime');
+const outputDir = resolve(frontendRoot, 'src/lib/generated/message-bus');
 
 // Load the spec. Failing here means the wire spec hasn't been generated
 // yet — hint the operator at the right command.
@@ -47,7 +47,7 @@ try {
 	spec = JSON.parse(await readFile(specPath, 'utf8'));
 } catch (err) {
 	console.error(
-		`gen-realtime-types: cannot read ${specPath}: ${err.message}\n` +
+		`gen-message-bus-types: cannot read ${specPath}: ${err.message}\n` +
 			`\nDid you run \`just asyncapi\` first? The Rust generator writes\n` +
 			`resources/gen/asyncapi.json; this script consumes it.`
 	);
@@ -77,7 +77,7 @@ const generator = new TypeScriptFileGenerator({
 					const banner =
 						'// AUTO-GENERATED — do not edit by hand.\n' +
 						'// Regenerate with `just asyncapi-ts` (which runs\n' +
-						'// `node frontend/scripts/gen-realtime-types.mjs`).\n' +
+						'// `node frontend/scripts/gen-message-bus-types.mjs`).\n' +
 						'// Source of truth: resources/gen/asyncapi.json,\n' +
 						'// authored by the Rust `generate-asyncapi` binary.\n';
 					return `${banner}${content}`;
@@ -171,7 +171,7 @@ for (const f of files) {
 const anonymous = files.filter((f) => f.endsWith('.ts') && /^AnonymousSchema_/i.test(f));
 if (anonymous.length > 0) {
 	console.error(
-		`gen-realtime-types: FAIL — Modelina produced ${anonymous.length} ` +
+		`gen-message-bus-types: FAIL — Modelina produced ${anonymous.length} ` +
 			`AnonymousSchema_N file(s):`
 	);
 	for (const f of anonymous) console.error(`  - ${f}`);
@@ -198,7 +198,7 @@ try {
 	});
 } catch (err) {
 	console.error(
-		`gen-realtime-types: prettier --write failed: ${err.message}\n` +
+		`gen-message-bus-types: prettier --write failed: ${err.message}\n` +
 			`The generated files may still be usable but will fail\n` +
 			`\`npm run check\` on the prettier step. Fix prettier setup\n` +
 			`(is @prettier installed in frontend/node_modules?) then\n` +
@@ -208,7 +208,7 @@ try {
 }
 
 console.log(
-	`gen-realtime-types: wrote ${models.length} model(s) to ${outputDir}` +
+	`gen-message-bus-types: wrote ${models.length} model(s) to ${outputDir}` +
 		` (rewrote ${rewritten} for verbatimModuleSyntax, 0 AnonymousSchema,` +
 		` prettier-formatted)`
 );

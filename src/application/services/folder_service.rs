@@ -49,13 +49,13 @@ pub struct FolderService {
     /// on cross-drive MOVE. Silently skipped when unwired (stubs).
     storage_usage:
         Option<Arc<crate::application::services::storage_usage_service::StorageUsageService>>,
-    /// Realtime message bus. When wired, `create_folder_with_perms`
+    /// Message bus. When wired, `create_folder_with_perms`
     /// publishes a `FolderCreated` event on `Topic::Folder(parent_id)`
     /// after the DB commit — subscribers see the new folder appear in
     /// their live folder view. Optional so stub / test factories can
     /// build the service without a bus; a `None` bus is a silent no-op
     /// on the publish path (no fan-out, no audit).
-    bus: Option<Arc<dyn crate::application::ports::realtime_ports::RealtimeBus>>,
+    bus: Option<Arc<dyn crate::application::ports::message_bus_ports::MessageBus>>,
 }
 
 impl FolderService {
@@ -77,12 +77,12 @@ impl FolderService {
         }
     }
 
-    /// Wire the realtime message bus. Enables live folder-view updates:
+    /// Wire the message bus. Enables live folder-view updates:
     /// after `create_folder_with_perms` commits, a `FolderCreated` event
     /// fires on `Topic::Folder(parent_id)`. Off in stubs / tests.
-    pub fn with_realtime_bus(
+    pub fn with_message_bus(
         mut self,
-        bus: Arc<dyn crate::application::ports::realtime_ports::RealtimeBus>,
+        bus: Arc<dyn crate::application::ports::message_bus_ports::MessageBus>,
     ) -> Self {
         self.bus = Some(bus);
         self
@@ -406,10 +406,10 @@ impl FolderUseCase for FolderService {
             parent_uuid_for_publish,
             Uuid::parse_str(folder.id()),
         ) {
-            use crate::application::ports::realtime_ports::{RealtimeEvent, Topic};
+            use crate::application::ports::message_bus_ports::{MessageBusEvent, Topic};
             bus.publish(
                 &Topic::Folder(parent_uuid),
-                RealtimeEvent::FolderCreated {
+                MessageBusEvent::FolderCreated {
                     folder_id: folder_uuid,
                     name: folder.name().to_owned(),
                     parent_id: parent_uuid,
@@ -813,7 +813,7 @@ impl FolderUseCase for FolderService {
             drive_repo.invalidate_default_drive_all();
         }
 
-        // Realtime publish AFTER commit. Root folders (`parent_id() = None`)
+        // Bus publish AFTER commit. Root folders (`parent_id() = None`)
         // have no parent folder topic to publish on — the drive's
         // display-name change is handled by the readable/default-drive
         // cache invalidations above, not the bus. Silent no-op if the
@@ -822,10 +822,10 @@ impl FolderUseCase for FolderService {
             && let (Ok(folder_uuid), Ok(parent_uuid)) =
                 (Uuid::parse_str(renamed.id()), Uuid::parse_str(parent_str))
         {
-            use crate::application::ports::realtime_ports::{RealtimeEvent, Topic};
+            use crate::application::ports::message_bus_ports::{MessageBusEvent, Topic};
             bus.publish(
                 &Topic::Folder(parent_uuid),
-                RealtimeEvent::FolderRenamed {
+                MessageBusEvent::FolderRenamed {
                     folder_id: folder_uuid,
                     old_name: folder.name().to_owned(),
                     new_name: renamed.name().to_owned(),
@@ -984,7 +984,7 @@ impl FolderUseCase for FolderService {
                 )
             })?;
 
-        // Realtime fan-out on BOTH source and destination folder
+        // Bus fan-out on BOTH source and destination folder
         // topics. Same shape as `FileMoved` — subscribers to either
         // see the event exactly once. Silent no-op when the bus isn't
         // wired, the source snapshot failed, or the destination is
@@ -995,8 +995,8 @@ impl FolderUseCase for FolderService {
                 (Uuid::parse_str(folder.id()), Uuid::parse_str(dest_str))
             && source_uuid != dest_uuid
         {
-            use crate::application::ports::realtime_ports::{RealtimeEvent, Topic};
-            let event = RealtimeEvent::FolderMoved {
+            use crate::application::ports::message_bus_ports::{MessageBusEvent, Topic};
+            let event = MessageBusEvent::FolderMoved {
                 folder_id: folder_uuid,
                 name: folder.name().to_owned(),
                 from: source_uuid,
@@ -1106,15 +1106,15 @@ impl FolderUseCase for FolderService {
             self.file_lifecycle.on_file_deleted(file_id);
         }
 
-        // Realtime publish AFTER the DELETE commits. Root folders
+        // Bus publish AFTER the DELETE commits. Root folders
         // (no parent) can't be deleted through this endpoint per the
         // mount / drive-root guards above, so `publish_snapshot` is
         // effectively always Some for regular deletes.
         if let (Some(bus), Some((folder_uuid, parent_uuid))) = (&self.bus, publish_snapshot) {
-            use crate::application::ports::realtime_ports::{RealtimeEvent, Topic};
+            use crate::application::ports::message_bus_ports::{MessageBusEvent, Topic};
             bus.publish(
                 &Topic::Folder(parent_uuid),
-                RealtimeEvent::FolderDeleted {
+                MessageBusEvent::FolderDeleted {
                     folder_id: folder_uuid,
                     parent_id: parent_uuid,
                     actor: caller_id,

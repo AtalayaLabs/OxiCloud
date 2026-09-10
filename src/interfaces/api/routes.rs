@@ -674,7 +674,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         .with_state(app_state.clone());
     router = router.nest("/users", users_router);
 
-    // Realtime bus WebSocket. Auth (session cookie or bearer JWT) via
+    // Message bus WebSocket. Auth (session cookie or bearer JWT) via
     // the same `auth_middleware` the rest of `/api/*` gets; the handler
     // extracts `CurrentUserId` from the extension the middleware
     // installs. See `docs/plan/message-bus.md` and the module doc on

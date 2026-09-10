@@ -1,13 +1,13 @@
-//! Realtime message-bus port — the seam every service publishes through and
-//! every WS session subscribes on.
+//! Message-bus port — the seam every service publishes through and every WS
+//! session subscribes on.
 //!
 //! # Design (see `docs/plan/message-bus.md`)
 //!
-//! - [`RealtimeBus`] is the **local-facing** trait: services publish, the WS
+//! - [`MessageBus`] is the **local-facing** trait: services publish, the WS
 //!   handler subscribes. It never involves the network.
 //! - [`BusReplicator`] is the OPTIONAL seam that mirrors local publishes to
 //!   and from a broker (pg `LISTEN/NOTIFY`, RabbitMQ, NATS). Callers see only
-//!   [`RealtimeBus`]; a real replicator plugs into the in-process impl without
+//!   [`MessageBus`]; a real replicator plugs into the in-process impl without
 //!   touching consumers. Day-1 impl is [`NoopReplicator`].
 //!
 //! # MVP scope
@@ -17,10 +17,10 @@
 //! to folders the caller can't `Read`:
 //!
 //! - Topics: [`Topic::Folder`] and [`Topic::UserAuthz`]
-//! - Events: [`RealtimeEvent::FileCreated`], [`RealtimeEvent::FileRenamed`],
-//!   [`RealtimeEvent::FileMoved`], [`RealtimeEvent::FileDeleted`],
-//!   [`RealtimeEvent::FolderCreated`], [`RealtimeEvent::FolderRenamed`],
-//!   [`RealtimeEvent::FolderMoved`], [`RealtimeEvent::FolderDeleted`]
+//! - Events: [`MessageBusEvent::FileCreated`], [`MessageBusEvent::FileRenamed`],
+//!   [`MessageBusEvent::FileMoved`], [`MessageBusEvent::FileDeleted`],
+//!   [`MessageBusEvent::FolderCreated`], [`MessageBusEvent::FolderRenamed`],
+//!   [`MessageBusEvent::FolderMoved`], [`MessageBusEvent::FolderDeleted`]
 //!
 //! Adding a variant is a one-line change plus a match arm in `to_wire_key` /
 //! `parse` / `required_perm`. Other topics (`file:{id}`, `job:{id}`,
@@ -47,7 +47,7 @@ use crate::common::errors::DomainError;
 // Topic — a typed key on the bus
 // ════════════════════════════════════════════════════════════════════════════
 
-/// A topic on the realtime bus. Typed enum, not a string — prevents typos
+/// A topic on the message bus. Typed enum, not a string — prevents typos
 /// and gives exhaustive matching in the AuthZ dispatch and the wire encoder.
 ///
 /// Encodes to a stable dotted wire key that maps naturally onto RabbitMQ
@@ -157,7 +157,7 @@ pub enum AuthzCheck {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// RealtimeEvent — the payload
+// MessageBusEvent — the payload
 // ════════════════════════════════════════════════════════════════════════════
 
 /// A fact that has just become true. Emitted by services AFTER commit,
@@ -176,7 +176,7 @@ pub enum AuthzCheck {
 /// per project convention.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "event", rename_all = "snake_case")]
-pub enum RealtimeEvent {
+pub enum MessageBusEvent {
     /// A file was created inside `parent_id`.
     FileCreated {
         file_id: Uuid,
@@ -315,7 +315,7 @@ pub mod error_code {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// RealtimeBus — the port
+// MessageBus — the port
 // ════════════════════════════════════════════════════════════════════════════
 
 /// The local-facing message bus. Fire-and-forget publish, stream subscribe.
@@ -326,11 +326,11 @@ pub mod error_code {
 ///
 /// `subscribe` returns a `Stream` so the impl can change (broadcast, mpsc,
 /// pg listener) without churn at the consumer.
-pub trait RealtimeBus: Send + Sync + 'static {
+pub trait MessageBus: Send + Sync + 'static {
     /// Fan an event out to every current subscriber of `topic`. Never
     /// blocks; slow subscribers are dropped by the impl (they'll reconnect
     /// and refetch).
-    fn publish(&self, topic: &Topic, event: RealtimeEvent);
+    fn publish(&self, topic: &Topic, event: MessageBusEvent);
 
     /// Subscribe to `topic`. The returned stream yields events until the
     /// subscriber is dropped or the impl kicks it out (e.g. for lagging
@@ -338,15 +338,15 @@ pub trait RealtimeBus: Send + Sync + 'static {
     fn subscribe(&self, topic: &Topic) -> BusStream;
 }
 
-/// Boxed stream returned by [`RealtimeBus::subscribe`]. Aliased so
+/// Boxed stream returned by [`MessageBus::subscribe`]. Aliased so
 /// consumers don't need to spell out the `Pin<Box<...>>` shape.
-pub type BusStream = Pin<Box<dyn Stream<Item = RealtimeEvent> + Send>>;
+pub type BusStream = Pin<Box<dyn Stream<Item = MessageBusEvent> + Send>>;
 
 // ════════════════════════════════════════════════════════════════════════════
 // BusReplicator — the multi-instance seam (day-1 noop)
 // ════════════════════════════════════════════════════════════════════════════
 
-/// Cross-instance replicator. Sits BESIDE [`RealtimeBus`], not in front of
+/// Cross-instance replicator. Sits BESIDE [`MessageBus`], not in front of
 /// it — the bus does the local fan-out; the replicator forwards outbound
 /// publishes to the broker (pg NOTIFY, RabbitMQ, NATS) and injects inbound
 /// broker messages back into the local bus.
@@ -358,7 +358,7 @@ pub trait BusReplicator: Send + Sync + 'static {
     /// Called by the local bus for every publish. Fire-and-forget — must not
     /// block or await; forwarding to the broker happens on a background task
     /// owned by the impl.
-    fn on_local_publish(&self, topic: &Topic, event: &RealtimeEvent);
+    fn on_local_publish(&self, topic: &Topic, event: &MessageBusEvent);
 
     /// Long-running consumer task: reads remote messages and re-publishes
     /// locally. Returns when `shutdown` is notified — DI calls
@@ -382,7 +382,7 @@ pub struct NoopReplicator;
 
 #[async_trait::async_trait]
 impl BusReplicator for NoopReplicator {
-    fn on_local_publish(&self, _topic: &Topic, _event: &RealtimeEvent) {
+    fn on_local_publish(&self, _topic: &Topic, _event: &MessageBusEvent) {
         // Intentionally empty. Local fan-out already happened in the bus.
     }
 
@@ -466,9 +466,9 @@ mod tests {
         // every variant's discriminator with a snapshot so an accidental
         // rename fails the test instead of silently breaking clients —
         // the AsyncAPI spec's `event` enum mirrors these exact strings.
-        let cases: &[(RealtimeEvent, &str)] = &[
+        let cases: &[(MessageBusEvent, &str)] = &[
             (
-                RealtimeEvent::FileCreated {
+                MessageBusEvent::FileCreated {
                     file_id: Uuid::nil(),
                     name: "notes.md".into(),
                     parent_id: Uuid::nil(),
@@ -477,7 +477,7 @@ mod tests {
                 "file_created",
             ),
             (
-                RealtimeEvent::FileRenamed {
+                MessageBusEvent::FileRenamed {
                     file_id: Uuid::nil(),
                     old_name: "a.md".into(),
                     new_name: "b.md".into(),
@@ -487,7 +487,7 @@ mod tests {
                 "file_renamed",
             ),
             (
-                RealtimeEvent::FileMoved {
+                MessageBusEvent::FileMoved {
                     file_id: Uuid::nil(),
                     name: "a.md".into(),
                     from: Uuid::nil(),
@@ -497,7 +497,7 @@ mod tests {
                 "file_moved",
             ),
             (
-                RealtimeEvent::FileDeleted {
+                MessageBusEvent::FileDeleted {
                     file_id: Uuid::nil(),
                     parent_id: Uuid::nil(),
                     actor: Uuid::nil(),
@@ -505,7 +505,7 @@ mod tests {
                 "file_deleted",
             ),
             (
-                RealtimeEvent::FolderCreated {
+                MessageBusEvent::FolderCreated {
                     folder_id: Uuid::nil(),
                     name: "docs".into(),
                     parent_id: Uuid::nil(),
@@ -514,7 +514,7 @@ mod tests {
                 "folder_created",
             ),
             (
-                RealtimeEvent::FolderRenamed {
+                MessageBusEvent::FolderRenamed {
                     folder_id: Uuid::nil(),
                     old_name: "old".into(),
                     new_name: "new".into(),
@@ -524,7 +524,7 @@ mod tests {
                 "folder_renamed",
             ),
             (
-                RealtimeEvent::FolderMoved {
+                MessageBusEvent::FolderMoved {
                     folder_id: Uuid::nil(),
                     name: "docs".into(),
                     from: Uuid::nil(),
@@ -534,7 +534,7 @@ mod tests {
                 "folder_moved",
             ),
             (
-                RealtimeEvent::FolderDeleted {
+                MessageBusEvent::FolderDeleted {
                     folder_id: Uuid::nil(),
                     parent_id: Uuid::nil(),
                     actor: Uuid::nil(),
@@ -542,7 +542,7 @@ mod tests {
                 "folder_deleted",
             ),
             (
-                RealtimeEvent::AuthzChanged {
+                MessageBusEvent::AuthzChanged {
                     affected_folders: vec![Uuid::nil()],
                 },
                 "authz_changed",
@@ -562,14 +562,14 @@ mod tests {
         let file_id = Uuid::new_v4();
         let parent_id = Uuid::new_v4();
         let actor = Uuid::new_v4();
-        let original = RealtimeEvent::FileCreated {
+        let original = MessageBusEvent::FileCreated {
             file_id,
             name: "a.txt".into(),
             parent_id,
             actor,
         };
         let json = serde_json::to_string(&original).unwrap();
-        let decoded: RealtimeEvent = serde_json::from_str(&json).unwrap();
+        let decoded: MessageBusEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, original);
     }
 
@@ -618,7 +618,7 @@ mod tests {
         // on_local_publish is a no-op that should not panic or spawn work.
         repl.on_local_publish(
             &Topic::Folder(Uuid::nil()),
-            &RealtimeEvent::FileCreated {
+            &MessageBusEvent::FileCreated {
                 file_id: Uuid::nil(),
                 name: "x".into(),
                 parent_id: Uuid::nil(),
