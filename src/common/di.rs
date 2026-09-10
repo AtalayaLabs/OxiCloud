@@ -825,7 +825,12 @@ impl AppServiceFactory {
             .with_drive_repo(drive_repo.clone())
             // Destination-drive quota pre-check on cross-drive file
             // MOVE. Same rationale as the folder side above.
-            .with_storage_usage(storage_usage.clone());
+            .with_storage_usage(storage_usage.clone())
+            // Realtime fan-out on delete / rename / move — each hook
+            // publishes on the affected folder topic (move fans out on
+            // BOTH source and destination) so folder-view subscribers
+            // see the mutation live.
+            .with_realtime_bus(bus_trait.clone());
             if let Some(hook) = resource_access_hook.clone() {
                 svc = svc.with_resource_access_hook(hook);
             }

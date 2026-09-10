@@ -246,7 +246,13 @@ fn components() -> Value {
             "RtErrorResponseBody": rpc_error_response_schema(),
             "RtFolderEventBody": folder_event_notification_schema(),
             "FileCreatedData": file_created_schema(),
+            "FileRenamedData": file_renamed_schema(),
+            "FileMovedData": file_moved_schema(),
+            "FileDeletedData": file_deleted_schema(),
             "FolderCreatedData": folder_created_schema(),
+            "FolderRenamedData": folder_renamed_schema(),
+            "FolderMovedData": folder_moved_schema(),
+            "FolderDeletedData": folder_deleted_schema(),
         },
         // How the client authenticates. Handler side is `auth_middleware`
         // — the same middleware every `/api/*` request goes through, so
@@ -388,12 +394,21 @@ fn folder_event_notification_schema() -> Value {
                     "topic": { "type": "string" },
                     "event": {
                         "type": "string",
-                        "enum": ["file_created", "folder_created"],
+                        "enum": [
+                            "file_created", "file_renamed", "file_moved", "file_deleted",
+                            "folder_created", "folder_renamed", "folder_moved", "folder_deleted",
+                        ],
                     },
                     "data": {
                         "oneOf": [
                             { "$ref": "#/components/schemas/FileCreatedData" },
+                            { "$ref": "#/components/schemas/FileRenamedData" },
+                            { "$ref": "#/components/schemas/FileMovedData" },
+                            { "$ref": "#/components/schemas/FileDeletedData" },
                             { "$ref": "#/components/schemas/FolderCreatedData" },
+                            { "$ref": "#/components/schemas/FolderRenamedData" },
+                            { "$ref": "#/components/schemas/FolderMovedData" },
+                            { "$ref": "#/components/schemas/FolderDeletedData" },
                         ]
                     }
                 }
@@ -415,6 +430,48 @@ fn file_created_schema() -> Value {
     })
 }
 
+fn file_renamed_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["file_id", "old_name", "new_name", "parent_id", "actor"],
+        "properties": {
+            "file_id":   { "type": "string", "format": "uuid" },
+            "old_name":  { "type": "string" },
+            "new_name":  { "type": "string" },
+            "parent_id": { "type": "string", "format": "uuid" },
+            "actor":     { "type": "string", "format": "uuid" },
+        }
+    })
+}
+
+fn file_moved_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "Emitted on BOTH the source (`from`) and destination (`to`) folder topics. Subscribers to either see the event exactly once because they're subscribed to only one of the two.",
+        "required": ["file_id", "name", "from", "to", "actor"],
+        "properties": {
+            "file_id": { "type": "string", "format": "uuid" },
+            "name":    { "type": "string" },
+            "from":    { "type": "string", "format": "uuid" },
+            "to":      { "type": "string", "format": "uuid" },
+            "actor":   { "type": "string", "format": "uuid" },
+        }
+    })
+}
+
+fn file_deleted_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "The wire doesn't distinguish soft (trash) vs. permanent delete — clients treat both as \"disappears from the folder view\". `parent_id` is the folder the file used to live in.",
+        "required": ["file_id", "parent_id", "actor"],
+        "properties": {
+            "file_id":   { "type": "string", "format": "uuid" },
+            "parent_id": { "type": "string", "format": "uuid" },
+            "actor":     { "type": "string", "format": "uuid" },
+        }
+    })
+}
+
 fn folder_created_schema() -> Value {
     json!({
         "type": "object",
@@ -422,6 +479,48 @@ fn folder_created_schema() -> Value {
         "properties": {
             "folder_id": { "type": "string", "format": "uuid" },
             "name":      { "type": "string" },
+            "parent_id": { "type": "string", "format": "uuid" },
+            "actor":     { "type": "string", "format": "uuid" },
+        }
+    })
+}
+
+fn folder_renamed_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["folder_id", "old_name", "new_name", "parent_id", "actor"],
+        "properties": {
+            "folder_id": { "type": "string", "format": "uuid" },
+            "old_name":  { "type": "string" },
+            "new_name":  { "type": "string" },
+            "parent_id": { "type": "string", "format": "uuid" },
+            "actor":     { "type": "string", "format": "uuid" },
+        }
+    })
+}
+
+fn folder_moved_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "Emitted on BOTH the source (`from`) and destination (`to`) folder topics — same shape as `FileMoved`.",
+        "required": ["folder_id", "name", "from", "to", "actor"],
+        "properties": {
+            "folder_id": { "type": "string", "format": "uuid" },
+            "name":      { "type": "string" },
+            "from":      { "type": "string", "format": "uuid" },
+            "to":        { "type": "string", "format": "uuid" },
+            "actor":     { "type": "string", "format": "uuid" },
+        }
+    })
+}
+
+fn folder_deleted_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "Soft vs. permanent delete are indistinguishable on the wire.",
+        "required": ["folder_id", "parent_id", "actor"],
+        "properties": {
+            "folder_id": { "type": "string", "format": "uuid" },
             "parent_id": { "type": "string", "format": "uuid" },
             "actor":     { "type": "string", "format": "uuid" },
         }

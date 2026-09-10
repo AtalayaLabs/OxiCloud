@@ -7,7 +7,7 @@
 # This script orchestrates it against a live oxicloud server: bootstraps
 # state with curl, exercises the bus, asserts on the helper's JSON output.
 #
-# Five scenarios:
+# Seven scenarios:
 #   S1  Positive delivery       — subscribe to folder A, upload into A, see event.
 #   S2  Topic isolation         — subscribe to folder A only, upload into B and
 #                                 then A; must see A's event only.
@@ -20,6 +20,14 @@
 #                                 frames from the server (proves the interval
 #                                 fires), and the session still delivers an
 #                                 event on the same subscription afterwards.
+#   S6  Delete emits            — DELETE a pre-uploaded file → subscriber sees
+#                                 one `file_deleted` event with correct
+#                                 `file_id` + `parent_id` (snapshotted
+#                                 pre-delete since the row is gone by then).
+#   S7  Move fan-out            — MOVE A→B while subscribed to BOTH topics on
+#                                 one session → observe TWO `file_moved`
+#                                 events (one via the A topic, one via B).
+#                                 Same file_id/from/to on both.
 #
 # Exit non-zero on any failure — run.sh treats that as a suite failure.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -263,4 +271,104 @@ fi
   || die "S5: parent_id mismatch after idle"
 log "S5 OK ($pings pings observed)"
 
-log "All five realtime-bus scenarios passed."
+# ── Scenario 6 — File delete emits `file_deleted` ───────────────────────────
+# Pre-create a file in folder A, then subscribe to `folder:$folder_a`, then
+# DELETE the file. The subscription must observe exactly one
+# `file_deleted` event — proves the delete publish hook fires and carries
+# the correct `parent_id` (snapshotted pre-delete, since the row is gone
+# by publish time).
+log "S6: DELETE a file → subscriber observes file_deleted."
+# Pre-create the file BEFORE the subscriber goes up, so S6 asserts on the
+# delete event alone (S1 already covered the create-side).
+s6_upload=$(curl -sS -X POST \
+  -H "Authorization: Bearer $user1_token" \
+  -F "folder_id=$folder_a" \
+  -F "file=@$(mktemp -t rtbus_s6_body.XXXXXX);filename=s6.txt" \
+  "$base_url/api/files/upload")
+s6_file_id=$(printf '%s' "$s6_upload" | jq -r '.id')
+[[ -n "$s6_file_id" && "$s6_file_id" != "null" ]] \
+  || die "S6: pre-upload failed: $s6_upload"
+
+out_s6="$(mktemp -t rtbus_s6.XXXXXX)"
+"$HELPER_BIN" subscribe-and-collect \
+  --url "$ws_url" \
+  --token "$user1_token" \
+  --subscribe "folder:$folder_a" \
+  --expect-events 1 \
+  --timeout 5s \
+  --output "$out_s6" &
+helper_pid=$!
+sleep 0.4
+# `DELETE /api/files/{id}` routes to `delete_and_cleanup_with_perms` —
+# the trash-first path. Publish fires on BOTH the trash and the
+# permanent-delete branch, so this covers whichever the test hits.
+curl -sS -X DELETE \
+  -H "Authorization: Bearer $user1_token" \
+  "$base_url/api/files/$s6_file_id" > /dev/null
+if ! wait "$helper_pid"; then
+  cat "$out_s6" >&2 || true
+  die "S6: helper did not observe the expected file_deleted event"
+fi
+[[ "$(jq -r '.events | length' "$out_s6")" == "1" ]] \
+  || { cat "$out_s6"; die "S6: expected 1 event, got $(jq -r '.events | length' "$out_s6")"; }
+[[ "$(jq -r '.events[0].event' "$out_s6")" == "file_deleted" ]] \
+  || die "S6: wrong event: $(jq -r '.events[0].event' "$out_s6")"
+[[ "$(jq -r '.events[0].data.file_id' "$out_s6")" == "$s6_file_id" ]] \
+  || die "S6: file_id mismatch"
+[[ "$(jq -r '.events[0].data.parent_id' "$out_s6")" == "$folder_a" ]] \
+  || die "S6: parent_id mismatch"
+log "S6 OK"
+
+# ── Scenario 7 — Move fans out on BOTH source and destination ───────────────
+# Pre-create a file in folder A, subscribe to BOTH `folder:$folder_a` and
+# `folder:$folder_b` on ONE session, then MOVE the file A → B. The single
+# session must observe TWO `file_moved` events — one delivered on the A
+# topic, one on the B topic. Same file_id in both. Same event contents
+# (from=A, to=B). Proves the plan's "fan out on both source AND
+# destination" invariant.
+# Broken publish (source-only or dest-only) would surface as 1 event.
+# Broken publish-after-commit would surface as 0 events.
+log "S7: MOVE fans out on both source AND destination folder topics."
+s7_upload=$(curl -sS -X POST \
+  -H "Authorization: Bearer $user1_token" \
+  -F "folder_id=$folder_a" \
+  -F "file=@$(mktemp -t rtbus_s7_body.XXXXXX);filename=s7.txt" \
+  "$base_url/api/files/upload")
+s7_file_id=$(printf '%s' "$s7_upload" | jq -r '.id')
+[[ -n "$s7_file_id" && "$s7_file_id" != "null" ]] \
+  || die "S7: pre-upload failed: $s7_upload"
+
+out_s7="$(mktemp -t rtbus_s7.XXXXXX)"
+"$HELPER_BIN" subscribe-and-collect \
+  --url "$ws_url" \
+  --token "$user1_token" \
+  --subscribe "folder:$folder_a" \
+  --subscribe "folder:$folder_b" \
+  --expect-events 2 \
+  --timeout 5s \
+  --output "$out_s7" &
+helper_pid=$!
+sleep 0.4
+# `PUT /api/files/{id}/move` — MoveFilePayload = { folder_id: <dest> }.
+curl -sS -X PUT \
+  -H "Authorization: Bearer $user1_token" \
+  -H "Content-Type: application/json" \
+  -d "$(printf '{"folder_id":"%s"}' "$folder_b")" \
+  "$base_url/api/files/$s7_file_id/move" > /dev/null
+if ! wait "$helper_pid"; then
+  cat "$out_s7" >&2 || true
+  die "S7: helper did not observe 2 file_moved events"
+fi
+# Both events same shape, same file_id, from = A, to = B.
+[[ "$(jq -r '.events | length' "$out_s7")" == "2" ]] \
+  || { cat "$out_s7"; die "S7: expected 2 events (fan-out on A + B), got $(jq -r '.events | length' "$out_s7")"; }
+# Every event has event=file_moved, correct file_id/from/to.
+if ! jq -e --arg fid "$s7_file_id" --arg from "$folder_a" --arg to "$folder_b" \
+     '.events | all(.event == "file_moved" and .data.file_id == $fid and .data.from == $from and .data.to == $to)' \
+     "$out_s7" > /dev/null; then
+  cat "$out_s7"
+  die "S7: event contents mismatch (expected file_moved, from=$folder_a, to=$folder_b)"
+fi
+log "S7 OK"
+
+log "All seven realtime-bus scenarios passed."

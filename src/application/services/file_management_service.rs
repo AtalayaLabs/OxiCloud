@@ -5,7 +5,7 @@ use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::file_lifecycle::FileLifecycleHook;
 use crate::application::ports::file_ports::FileManagementUseCase;
 use crate::application::ports::resource_access_hook::ResourceAccessHook;
-use crate::application::ports::storage_ports::{CopyFolderTreeResult, FileWritePort};
+use crate::application::ports::storage_ports::{CopyFolderTreeResult, FileReadPort, FileWritePort};
 use crate::application::ports::trash_ports::TrashUseCase;
 use crate::application::services::external_mount_router::{MountRouter, ResolvedId};
 use crate::application::services::mount_dto::{audit_mount_write, mount_file_dto, mount_parent_id};
@@ -57,6 +57,20 @@ pub struct FileManagementService {
     /// (stub/test builders); production DI wires it in.
     storage_usage:
         Option<Arc<crate::application::services::storage_usage_service::StorageUsageService>>,
+    /// Realtime message bus. When wired, delete / rename / move
+    /// mutations publish their corresponding `RealtimeEvent` on
+    /// `Topic::Folder(parent_id)` (both source AND destination for
+    /// move) after the DB commit. `None` silently no-ops the publish
+    /// path — same pattern as `bus` on FileUploadService.
+    bus: Option<Arc<dyn crate::application::ports::realtime_ports::RealtimeBus>>,
+    /// Read repository — needed by the mutation publish path
+    /// (delete / rename / move) to snapshot the file's pre-mutation
+    /// parent folder BEFORE the write commits: delete removes the row,
+    /// move rewrites `folder_id`. Without it we couldn't publish on
+    /// the correct `Topic::Folder(parent)` (delete) or fan out on the
+    /// source-side folder (move). Optional so stubs stay minimal; when
+    /// unwired, the affected publishes silently no-op.
+    file_read: Option<Arc<FileBlobReadRepository>>,
 }
 
 impl FileManagementService {
@@ -68,7 +82,7 @@ impl FileManagementService {
     pub fn with_trash(
         file_repository: Arc<FileBlobWriteRepository>,
         trash_service: Option<Arc<TrashService>>,
-        _file_read: Option<Arc<FileBlobReadRepository>>,
+        file_read: Option<Arc<FileBlobReadRepository>>,
         _folder_repo: Option<Arc<FolderDbRepository>>,
         content_cache: Option<Arc<FileContentCache>>,
         authz: Arc<PgAclEngine>,
@@ -83,7 +97,19 @@ impl FileManagementService {
             resource_access_hook: None,
             drive_repo: None,
             storage_usage: None,
+            bus: None,
+            file_read,
         }
+    }
+
+    /// Wire the realtime message bus. When set, delete / rename / move
+    /// mutations publish on the affected folder topics after commit.
+    pub fn with_realtime_bus(
+        mut self,
+        bus: Arc<dyn crate::application::ports::realtime_ports::RealtimeBus>,
+    ) -> Self {
+        self.bus = Some(bus);
+        self
     }
 
     /// Sets the lifecycle hook dispatcher (thumbnails, audio metadata, …).
@@ -179,6 +205,50 @@ impl FileManagementService {
     ) -> Self {
         self.storage_usage = Some(storage_usage);
         self
+    }
+
+    /// Snapshot the (uuid, name, parent-folder-uuid) of a file BEFORE
+    /// a mutation, so the realtime publish path has a stable
+    /// `Topic::Folder(parent)` to address even after the write commits
+    /// (delete removes the row; move rewrites `folder_id`).
+    ///
+    /// Returns `None` when:
+    /// - `file_read` is unwired (stub / test builder),
+    /// - the file can't be read (already gone, permission failure —
+    ///   the caller is responsible for AuthZ, this is only a
+    ///   best-effort snapshot),
+    /// - the file is at drive-root (no parent folder, nothing to
+    ///   publish on),
+    /// - the id can't be parsed as a `Uuid` (mount id or malformed).
+    ///
+    /// All `None` paths silently skip the publish — never fail the
+    /// mutation. The bus is best-effort.
+    async fn snapshot_for_publish(&self, file_id: &str) -> Option<(Uuid, String, Uuid)> {
+        let file_read = self.file_read.as_ref()?;
+        let file = file_read.get_file(file_id).await.ok()?;
+        let parts = file.into_parts();
+        let file_uuid = Uuid::parse_str(&parts.id).ok()?;
+        let parent_uuid = Uuid::parse_str(parts.folder_id.as_deref()?).ok()?;
+        Some((file_uuid, parts.name, parent_uuid))
+    }
+
+    /// Publish `FileDeleted` on the file's parent folder topic. Called
+    /// by both the trash and permanent-delete paths so subscribers see
+    /// one event regardless of which happened. Silent no-op when the
+    /// bus isn't wired or the pre-mutation snapshot failed (drive-root
+    /// file, mount, unwired `file_read`).
+    fn publish_file_deleted(&self, caller_id: Uuid, snapshot: Option<(Uuid, String, Uuid)>) {
+        if let (Some(bus), Some((file_uuid, _name, parent_uuid))) = (&self.bus, snapshot) {
+            use crate::application::ports::realtime_ports::{RealtimeEvent, Topic};
+            bus.publish(
+                &Topic::Folder(parent_uuid),
+                RealtimeEvent::FileDeleted {
+                    file_id: file_uuid,
+                    parent_id: parent_uuid,
+                    actor: caller_id,
+                },
+            );
+        }
     }
 
     /// Engine check for a file resource. Parses the id into a `Uuid` and
@@ -462,7 +532,40 @@ impl FileManagementUseCase for FileManagementService {
             }
         }
 
+        // Snapshot source parent BEFORE the write — after `move_file`
+        // the row's `folder_id` reflects the destination, so we'd lose
+        // the from-side for the fan-out.
+        let source_snapshot = self.snapshot_for_publish(file_id).await;
+
         let dto = self.move_file(file_id, folder_id, caller_id).await?;
+
+        // Realtime fan-out on BOTH source and destination folder
+        // topics. Subscribers to the source see the file "gone" from
+        // their view; subscribers to the destination see it "appear".
+        // Silent no-op when the bus isn't wired, the source snapshot
+        // failed (drive-root file, mount), or the destination is
+        // drive-root (`dto.folder_id = None`). Any of those cases
+        // matches the "no interested subscribers" invariant so
+        // silently skipping is honest.
+        if let (Some(bus), Some((file_uuid, name, source_uuid)), Some(dest_str)) =
+            (&self.bus, source_snapshot, dto.folder_id.as_deref())
+            && let Ok(dest_uuid) = Uuid::parse_str(dest_str)
+            && source_uuid != dest_uuid
+        {
+            use crate::application::ports::realtime_ports::{RealtimeEvent, Topic};
+            let event = RealtimeEvent::FileMoved {
+                file_id: file_uuid,
+                name,
+                from: source_uuid,
+                to: dest_uuid,
+                actor: caller_id,
+            };
+            // Publish twice — subscribers to either folder see the
+            // event exactly once because they're only subscribed to
+            // one of the two topics.
+            bus.publish(&Topic::Folder(source_uuid), event.clone());
+            bus.publish(&Topic::Folder(dest_uuid), event);
+        }
 
         // Cross-drive move invalidates the file's `owner_cache` entry
         // in the authz engine — the cache assumed drive_id stability
@@ -559,7 +662,39 @@ impl FileManagementUseCase for FileManagementService {
         }
         self.require_file_perm(file_id, Permission::Update, caller_id)
             .await?;
-        self.rename_file(file_id, new_name, caller_id).await
+
+        // Snapshot old_name pre-rename so the publish carries both
+        // sides of the transition. `parent_id` is the same before and
+        // after (rename doesn't move) so we can safely reuse it from
+        // the post-mutation DTO.
+        let old_name = self
+            .snapshot_for_publish(file_id)
+            .await
+            .map(|(_, name, _)| name);
+
+        let dto = self.rename_file(file_id, new_name, caller_id).await?;
+
+        // Realtime publish AFTER commit. Silent no-op when the bus
+        // isn't wired, the pre-fetch failed (old_name = None), or the
+        // file has no folder (`dto.folder_id = None` — drive-root).
+        if let (Some(bus), Some(old_name), Some(parent_str)) =
+            (&self.bus, old_name, dto.folder_id.as_deref())
+            && let (Ok(file_uuid), Ok(parent_uuid)) =
+                (Uuid::parse_str(&dto.id), Uuid::parse_str(parent_str))
+        {
+            use crate::application::ports::realtime_ports::{RealtimeEvent, Topic};
+            bus.publish(
+                &Topic::Folder(parent_uuid),
+                RealtimeEvent::FileRenamed {
+                    file_id: file_uuid,
+                    old_name,
+                    new_name: dto.name.clone(),
+                    parent_id: parent_uuid,
+                    actor: caller_id,
+                },
+            );
+        }
+        Ok(dto)
     }
 
     async fn delete_file_with_perms(&self, id: &str, caller_id: Uuid) -> Result<(), DomainError> {
@@ -572,7 +707,15 @@ impl FileManagementUseCase for FileManagementService {
         }
         self.require_file_perm(id, Permission::Delete, caller_id)
             .await?;
-        self.delete_file(id).await
+
+        // Snapshot the pre-delete parent so the publish path has a
+        // `Topic::Folder(parent)` to address — the row is gone by the
+        // time `delete_file` returns.
+        let snapshot = self.snapshot_for_publish(id).await;
+
+        self.delete_file(id).await?;
+        self.publish_file_deleted(caller_id, snapshot);
+        Ok(())
     }
 
     /// Smart delete: trash-first with dedup reference cleanup.
@@ -597,6 +740,15 @@ impl FileManagementUseCase for FileManagementService {
 
         self.require_file_perm(id, Permission::Delete, caller_id)
             .await?;
+
+        // Snapshot the pre-mutation parent so both the trash and the
+        // fallback permanent-delete path can publish `FileDeleted` on
+        // the right folder topic. Trash leaves the row in place but
+        // `is_trashed=TRUE` makes it disappear from folder listings —
+        // subscribers should see the same "gone from this folder"
+        // event either way.
+        let snapshot = self.snapshot_for_publish(id).await;
+
         // Step 1: Try trash (soft delete — file row stays, blob stays referenced)
         if let Some(trash) = &self.trash_service {
             info!("Moving file to trash: {}", id);
@@ -610,6 +762,7 @@ impl FileManagementUseCase for FileManagementService {
                     // Do NOT decrement blob ref here — the file row still exists
                     // (is_trashed = TRUE). The trigger will decrement when the
                     // row is actually DELETEd during trash emptying.
+                    self.publish_file_deleted(caller_id, snapshot);
                     return Ok(true); // trashed
                 }
                 Err(err) => {
@@ -625,7 +778,7 @@ impl FileManagementUseCase for FileManagementService {
         // Step 2: Permanent delete — trigger handles blob ref_count
 
         self.delete_file(id).await?;
-
+        self.publish_file_deleted(caller_id, snapshot);
         Ok(false) // permanently deleted
     }
 

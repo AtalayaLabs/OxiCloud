@@ -1049,6 +1049,31 @@ workspace.
 - **Reactions**: 👍❤️🎉 on comments and on files themselves; live
   fan-out on the same `file:{id}:comments` topic.
 - **Comment resolutions**: Google-Docs-style thread markers.
+- **NotificationService consumes bus events** — up to Phase A the
+  bus's publish calls sit inline in each mutation site
+  (`FolderService::create_folder_with_perms`,
+  `FileUploadService::upload_file_streaming`, and — once folder-live
+  rounds out — the delete / rename / move sites for both files and
+  folders). That is the right shape and stays: the bus is
+  location-keyed (`Topic::Folder(id)`, subscriber-scoped) and
+  belongs at the mutation site.
+  When Phase B ships, notifications sit on the **same axis** (also
+  location + actor + subscriber-driven) — not the FileLifecycleHook
+  axis (which is server-internal, content-keyed, fan-out-to-all).
+  So `NotificationService` becomes an in-process subscriber to the
+  bus itself: it registers a `bus.subscribe(...)` on the topics it
+  cares about (`folder:{id}`, `file:{id}`, share-grant events),
+  translates relevant events into `notif.notifications` rows, and
+  re-publishes on `user:{u}:notifications`. No new dispatcher, no
+  new hook trait, no changes to existing mutation sites — the bus IS
+  the mutation-event pipeline for anything subscriber-driven.
+  Contrast with `FileLifecycleHook` (`src/application/ports/file_lifecycle.rs`):
+  that stays focused on content transitions (blob_hash, content_type)
+  and fires unconditionally to server-side workers (thumbnails,
+  audio metadata, plugins). Bus and lifecycle-hook are complementary
+  — same triggering moment, orthogonal fan-out shape and payload
+  discipline. Do NOT try to unify them; the two axes are genuinely
+  different (all-vs-subscribed × content-vs-location).
 
 Deliverables sized ~3 weeks after Phase A.
 

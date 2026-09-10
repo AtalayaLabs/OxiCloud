@@ -17,7 +17,10 @@
 //! to folders the caller can't `Read`:
 //!
 //! - Topics: [`Topic::Folder`] and [`Topic::UserAuthz`]
-//! - Events: [`RealtimeEvent::FileCreated`], [`RealtimeEvent::FolderCreated`]
+//! - Events: [`RealtimeEvent::FileCreated`], [`RealtimeEvent::FileRenamed`],
+//!   [`RealtimeEvent::FileMoved`], [`RealtimeEvent::FileDeleted`],
+//!   [`RealtimeEvent::FolderCreated`], [`RealtimeEvent::FolderRenamed`],
+//!   [`RealtimeEvent::FolderMoved`], [`RealtimeEvent::FolderDeleted`]
 //!
 //! Adding a variant is a one-line change plus a match arm in `to_wire_key` /
 //! `parse` / `required_perm`. Other topics (`file:{id}`, `job:{id}`,
@@ -181,10 +184,64 @@ pub enum RealtimeEvent {
         parent_id: Uuid,
         actor: Uuid,
     },
+    /// A file was renamed. `parent_id` unchanged — same folder.
+    FileRenamed {
+        file_id: Uuid,
+        old_name: String,
+        new_name: String,
+        parent_id: Uuid,
+        actor: Uuid,
+    },
+    /// A file was moved between folders. Fanned out on BOTH the source
+    /// and destination folder topics — subscribers to either see the
+    /// event once. `from` / `to` are the folder UUIDs; a move
+    /// involving a drive root would be `Option<Uuid>` in a future
+    /// variant, but MVP mutations all address a real folder.
+    FileMoved {
+        file_id: Uuid,
+        name: String,
+        from: Uuid,
+        to: Uuid,
+        actor: Uuid,
+    },
+    /// A file was deleted (trashed OR permanently removed — the wire
+    /// doesn't distinguish, and clients treat both as "disappears from
+    /// the folder view"). `parent_id` is the folder the file used to
+    /// live in — snapshotted before the delete since the row may be
+    /// gone by publish time.
+    FileDeleted {
+        file_id: Uuid,
+        parent_id: Uuid,
+        actor: Uuid,
+    },
     /// A sub-folder was created inside `parent_id`.
     FolderCreated {
         folder_id: Uuid,
         name: String,
+        parent_id: Uuid,
+        actor: Uuid,
+    },
+    /// A folder was renamed. `parent_id` unchanged.
+    FolderRenamed {
+        folder_id: Uuid,
+        old_name: String,
+        new_name: String,
+        parent_id: Uuid,
+        actor: Uuid,
+    },
+    /// A folder was moved between parents. Fanned out on BOTH source
+    /// and destination folder topics.
+    FolderMoved {
+        folder_id: Uuid,
+        name: String,
+        from: Uuid,
+        to: Uuid,
+        actor: Uuid,
+    },
+    /// A folder was deleted (trashed or permanent — see `FileDeleted`
+    /// for the same wire-collapse rationale).
+    FolderDeleted {
+        folder_id: Uuid,
         parent_id: Uuid,
         actor: Uuid,
     },
@@ -394,26 +451,92 @@ mod tests {
     fn event_serializes_with_snake_case_discriminator() {
         // The `#[serde(tag = "event")]` shape is the WS wire contract for
         // the `rt.event` JSON-RPC notification's `params.event` field. Pin
-        // it with a snapshot so accidental rename of the enum variant
-        // fails the test instead of silently breaking clients.
-        let ev = RealtimeEvent::FileCreated {
-            file_id: Uuid::nil(),
-            name: "notes.md".into(),
-            parent_id: Uuid::nil(),
-            actor: Uuid::nil(),
-        };
-        let json = serde_json::to_value(&ev).unwrap();
-        assert_eq!(json["event"], "file_created");
-        assert_eq!(json["name"], "notes.md");
-
-        let ev = RealtimeEvent::FolderCreated {
-            folder_id: Uuid::nil(),
-            name: "docs".into(),
-            parent_id: Uuid::nil(),
-            actor: Uuid::nil(),
-        };
-        let json = serde_json::to_value(&ev).unwrap();
-        assert_eq!(json["event"], "folder_created");
+        // every variant's discriminator with a snapshot so an accidental
+        // rename fails the test instead of silently breaking clients —
+        // the AsyncAPI spec's `event` enum mirrors these exact strings.
+        let cases: &[(RealtimeEvent, &str)] = &[
+            (
+                RealtimeEvent::FileCreated {
+                    file_id: Uuid::nil(),
+                    name: "notes.md".into(),
+                    parent_id: Uuid::nil(),
+                    actor: Uuid::nil(),
+                },
+                "file_created",
+            ),
+            (
+                RealtimeEvent::FileRenamed {
+                    file_id: Uuid::nil(),
+                    old_name: "a.md".into(),
+                    new_name: "b.md".into(),
+                    parent_id: Uuid::nil(),
+                    actor: Uuid::nil(),
+                },
+                "file_renamed",
+            ),
+            (
+                RealtimeEvent::FileMoved {
+                    file_id: Uuid::nil(),
+                    name: "a.md".into(),
+                    from: Uuid::nil(),
+                    to: Uuid::nil(),
+                    actor: Uuid::nil(),
+                },
+                "file_moved",
+            ),
+            (
+                RealtimeEvent::FileDeleted {
+                    file_id: Uuid::nil(),
+                    parent_id: Uuid::nil(),
+                    actor: Uuid::nil(),
+                },
+                "file_deleted",
+            ),
+            (
+                RealtimeEvent::FolderCreated {
+                    folder_id: Uuid::nil(),
+                    name: "docs".into(),
+                    parent_id: Uuid::nil(),
+                    actor: Uuid::nil(),
+                },
+                "folder_created",
+            ),
+            (
+                RealtimeEvent::FolderRenamed {
+                    folder_id: Uuid::nil(),
+                    old_name: "old".into(),
+                    new_name: "new".into(),
+                    parent_id: Uuid::nil(),
+                    actor: Uuid::nil(),
+                },
+                "folder_renamed",
+            ),
+            (
+                RealtimeEvent::FolderMoved {
+                    folder_id: Uuid::nil(),
+                    name: "docs".into(),
+                    from: Uuid::nil(),
+                    to: Uuid::nil(),
+                    actor: Uuid::nil(),
+                },
+                "folder_moved",
+            ),
+            (
+                RealtimeEvent::FolderDeleted {
+                    folder_id: Uuid::nil(),
+                    parent_id: Uuid::nil(),
+                    actor: Uuid::nil(),
+                },
+                "folder_deleted",
+            ),
+        ];
+        for (ev, expected) in cases {
+            let json = serde_json::to_value(ev).unwrap();
+            assert_eq!(
+                json["event"], *expected,
+                "wire discriminator mismatch for {ev:?}"
+            );
+        }
     }
 
     #[test]
