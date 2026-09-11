@@ -6,6 +6,7 @@
 // `RtEventKind` — the switch below fails to type-check until every
 // arm is handled, keeping the FE exhaustive.
 
+import { useReconnect } from './useReconnect.svelte';
 import { useTopic } from './useTopic.svelte';
 import type RtEventParams from '$lib/generated/message-bus/RtEventParams';
 import type RtRevokedParams from '$lib/generated/message-bus/RtRevokedParams';
@@ -41,6 +42,13 @@ export interface FolderTopicHandlers {
 	/** Grant revoked or folder deleted — the subscription is gone
 	 *  server-side. Reasonable UX: toast + navigate away. */
 	onRevoked?: (params: RtRevokedParams) => void;
+	/** WS reconnected after a prior disconnect. Bus events published
+	 *  during the outage window are lost (in-memory bus, no replay),
+	 *  so the folder view has to refetch to catch up with the server.
+	 *  Typical wiring: `onReconnect: () => reload()`. Not called on
+	 *  the initial connect — the caller's own load path handles that.
+	 *  See `project_message_bus_reconnect_gap` memory. */
+	onReconnect?: () => void;
 }
 
 /**
@@ -61,6 +69,7 @@ export function useFolderTopic(
 		return id ? `folder:${id}` : null;
 	};
 	useTopic(topic, (params) => dispatch(params, handlers), handlers.onRevoked);
+	useReconnect(handlers.onReconnect);
 }
 
 function dispatch(params: RtEventParams, handlers: FolderTopicHandlers): void {

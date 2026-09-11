@@ -66,6 +66,15 @@ export type EventHandler = (params: RtEventParams) => void;
  *  fires this so the consumer can toast / redirect / whatever. */
 export type RevokedHandler = (params: RtRevokedParams) => void;
 
+/** Callback invoked when the WS reconnects AFTER a prior disconnect —
+ *  never on the first connect. Fires after client-side sub replay has
+ *  been kicked off (`#sendSubscribe` for every known topic), so the
+ *  handler can safely call `reload()`-style refetches knowing the
+ *  post-reconnect event stream is armed. Bridges the "events published
+ *  during the disconnect window are lost" gap — see
+ *  `project_message_bus_reconnect_gap` memory. */
+export type ReconnectHandler = () => void;
+
 /** Handle returned by `subscribe`. Call to release one refcount on the
  *  topic; the client unsubscribes over the wire only when the last
  *  refcount drops. Idempotent — calling twice from the same subscriber
@@ -134,6 +143,17 @@ export class MessageBusClient {
 	 *  `MAX_CONSECUTIVE_FAILURES` the client stops reconnecting and
 	 *  requires an explicit `reconnect()` from the caller. */
 	#consecutiveFailures = 0;
+	/** True once we've observed at least one successful `#onOpen`.
+	 *  Used to distinguish "initial connect" (don't fire onReconnect
+	 *  handlers — the initial load path is doing the fetch already)
+	 *  from "reconnect" (do fire — events during the outage window
+	 *  were lost, consumers must refetch). */
+	#hasConnectedBefore = false;
+	/** Reconnect handlers, invoked from `#onOpen` on the SECOND-onwards
+	 *  successful connect. Plain Set — internal registry, not
+	 *  reactive. Same rationale as `#subs` / `#pending`. */
+	// eslint-disable-next-line svelte/prefer-svelte-reactivity
+	#reconnectHandlers = new Set<ReconnectHandler>();
 
 	/** `topic` → `{count, handlers, revokedHandlers, acked}`. Refcount
 	 *  drives the wire: first refcount ⇒ send `rt.subscribe`; last drop
@@ -221,6 +241,35 @@ export class MessageBusClient {
 				// anyway, but stay defensive: untrack around the
 				// internal state reads inside #releaseOne.
 				untrack(() => this.#releaseOne(topic, onEvent, onRevoked));
+			};
+		});
+	}
+
+	/**
+	 * Register a handler that fires when the WS reconnects AFTER a
+	 * prior disconnect (server restart, network blip, sleep/wake).
+	 * NOT called on the initial connect — that path is already
+	 * handled by the consumer's own load logic. Returns an
+	 * unsubscribe fn.
+	 *
+	 * Wrapped in `untrack` for the same reason `subscribe` is —
+	 * reading `#hasConnectedBefore` etc. inside a caller's `$effect`
+	 * would leak a reactive dep. Callers reach for this via the
+	 * `useReconnect` composable, which manages the lifecycle.
+	 *
+	 * Bridges the "events lost during outage window" gap: consumers
+	 * refetch on reconnect to bring their view back in line with the
+	 * server, since bus publishes during the disconnect never reached
+	 * this session. See `project_message_bus_reconnect_gap` memory.
+	 */
+	onReconnect(cb: ReconnectHandler): () => void {
+		return untrack(() => {
+			this.#reconnectHandlers.add(cb);
+			let released = false;
+			return () => {
+				if (released) return;
+				released = true;
+				this.#reconnectHandlers.delete(cb);
 			};
 		});
 	}
@@ -320,6 +369,10 @@ export class MessageBusClient {
 		this.state = 'connected';
 		this.#backoffMs = RECONNECT_MIN_MS;
 		this.#consecutiveFailures = 0;
+		// Snapshot whether this is a reconnect BEFORE we flip the
+		// `hasConnectedBefore` bit, so handlers only fire on 2nd+ open.
+		const isReconnect = this.#hasConnectedBefore;
+		this.#hasConnectedBefore = true;
 		// Replay every already-known topic. `entry.acked` is reset here
 		// because the fresh connection has no server-side memory of
 		// prior subscriptions.
@@ -328,6 +381,24 @@ export class MessageBusClient {
 			this.#sendSubscribe(topic).catch((err) =>
 				busLog.warn('resubscribe failed', { topic, error: err })
 			);
+		}
+		// Fire reconnect handlers AFTER sub replay is kicked (the
+		// `rt.subscribe` frames are on the socket; ack may be
+		// in-flight). Handlers refetching state via REST will see a
+		// consistent post-reconnect view; any events published between
+		// resubscribe and the handler's refetch race safely — a stale
+		// event just means one extra `reload()` on the next tick.
+		if (isReconnect && this.#reconnectHandlers.size > 0) {
+			busLog.debug('firing reconnect handlers', {
+				count: this.#reconnectHandlers.size
+			});
+			for (const cb of this.#reconnectHandlers) {
+				try {
+					cb();
+				} catch (err) {
+					busLog.warn('reconnect handler threw', { error: err });
+				}
+			}
 		}
 	}
 

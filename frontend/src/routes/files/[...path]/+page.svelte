@@ -484,6 +484,21 @@
 			);
 			busLog.warn('folder access revoked', { topic: params.topic, reason: params.reason });
 			void goto(resolve('/files'));
+		},
+		onReconnect: () => {
+			// WS reconnected after a prior disconnect — any bus events
+			// published during the outage window were dropped by the
+			// in-memory bus (no replay). Force a refetch so the listing
+			// catches up with the server-authoritative state. Goes
+			// through the same `scheduleLiveReload` coalescer as event-
+			// driven refreshes so a burst of reconnects (rare, but the
+			// circuit breaker can produce one) collapses to a single
+			// fetch. Passing an actor of `null`-equivalent — use an
+			// empty string so the echo-skip's `actor === user.id`
+			// check never matches. See
+			// `project_message_bus_reconnect_gap` memory.
+			busLog.warn('reconnected — refetching folder');
+			scheduleLiveReload('');
 		}
 	});
 
