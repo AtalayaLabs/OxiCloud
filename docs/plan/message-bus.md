@@ -16,6 +16,78 @@ editing is one consumer on top; folder-live updates, notifications,
 job progress, presence, and sync-client push invalidation follow with
 almost no extra scaffolding.
 
+## Status — 2026-09-11
+
+The `feat/message-bus` branch delivers **D + F + follow-ups shipped
+end-to-end** on the FE and BE, verified by S1–S11 in the api-test
+smoke suite plus manual multi-user E2E. Live today:
+
+- **Bus core** — `MessageBus` port + `InProcessMessageBus` +
+  `NoopReplicator`. `📤 bus publish` trace under
+  `RUST_LOG=oxicloud::message_bus=debug`.
+- **WS handler** (`/api/rt/ws`) — JSON-RPC 2.0, `rt.subscribe /
+  unsubscribe / event / revoked / ping / pong`, server-initiated RFC
+  6455 keepalive Ping.
+- **Auth for the WS upgrade** — **F ticket flow shipped**.
+  `POST /api/rt/ticket` mints a one-shot 30 s ticket under the full
+  auth+DPoP+CSRF chain; the browser passes it via
+  `Sec-WebSocket-Protocol: oxi.ticket.<uuid>`. Also accepts
+  `Authorization: Bearer <jwt>` for programmatic clients
+  (`rt-hurl-helper`). Route mounted OUTSIDE `protected_api` so the
+  standard DPoP-required middleware doesn't 401 browsers that can't
+  attach a `DPoP:` header to `new WebSocket()`. See
+  `handlers/rt_ws.rs` module doc.
+- **Events firing end-to-end** — every `MessageBusEvent` variant
+  except CRDT-flavoured ones:
+  - `FileCreated / Renamed / Moved / Deleted` (via
+    `FileUploadService` + `FileManagementService`)
+  - `FolderCreated / Renamed / Moved / Deleted` (via `FolderService`
+    for direct paths; `TrashService` publishes `FolderDeleted` on the
+    trash-first path — the FE hits that path via
+    `DELETE /api/folders/{id}`)
+  - `AuthzChanged` (via `ShareService::revoke_grant`) drives the
+    grant-revocation eviction cascade.
+- **Grant-revocation eviction (Slice C)** — WS handler
+  auto-subscribes each session to `user:{caller}:authz`; on
+  `AuthzChanged` the reader translates to `SessionOut::EvictFolders`
+  and emits `rt.revoked` per evicted topic. Scope is per-topic; the
+  session itself and unrelated subscriptions survive.
+- **FE composables** — `useTopic` (generic), `useFolderTopic`
+  (folder-view sugar with per-verb + `onRevoked` + `onReconnect`
+  handlers), `useReconnect` (session-level, fires after 2nd+ open).
+  Types generated from AsyncAPI via `@asyncapi/modelina` in
+  `frontend/src/lib/generated/message-bus/`; `check-message-bus-spec`
+  CI + `pre-pull-request` block on drift.
+- **Folder-view live refresh** — `+page.svelte` wires every
+  `onFile*`/`onFolder*` handler to `scheduleLiveReload`, 100 ms
+  coalesce. Revocation → toast + `goto('/files')`. Reconnect →
+  refetch via `onReconnect` (bridges the "events lost during outage
+  window" gap; see `project_message_bus_reconnect_gap` memory).
+  Actor-echo skip was REMOVED for multi-tab correctness — refetch is
+  idempotent, ~30 ms per self-mutation.
+- **Client-side resilience** — jittered exponential backoff
+  (250 ms → 30 s cap), circuit breaker at 20 consecutive failures
+  (~5 minutes of retry — covers a cargo-release restart), `untrack`
+  in every mutation entry point so `$state` reads don't leak into
+  caller `$effect` deps.
+- **AuthZ tested** — S3 (folder no_read), S4 (nonexistent folder =
+  anti-enum parity), S9 (cross-user identity topic → `topic_forbidden`).
+- **Ticket tested** — S10 (happy path), S11 (single-use replay
+  rejected).
+
+Deferred and still open — see the Roadmap section and the
+`project_message_bus_reconnect_gap` memory:
+
+- **Notifications table + bell** (E) — topic + producer + auto-sub
+  land here. Same pattern as `:authz`.
+- **Presence** (Phase B) — `folder:{id}:presence` topic + awareness
+  frames.
+- **Yjs collab** — `docs/plan/markdown-collab.md`, depends on the
+  binary-frame routing this plan sketches but doesn't ship.
+- **Broker replicator** (Postgres LISTEN/NOTIFY or Redis) — for
+  multi-instance and durable event log. `BusReplicator` port
+  declared, `NoopReplicator` wired today.
+
 ## Non-goals
 
 - Persistent event log with "you missed these" replay. Durable state
@@ -352,25 +424,61 @@ everywhere.
 
 ## Frontend components
 
-### 1. Singleton client (`lib/stores/message-bus.svelte.ts`)
+### 1. Singleton client (`lib/message-bus/client.svelte.ts`)
 
-- Fetches a ticket via `POST /api/rt/ticket` (through `apiFetch`, so
-  DPoP is applied).
-- Opens `wss:///api/rt/ws?ticket=…`.
+Location is `lib/message-bus/` (subsystem dir, mirrors `lib/auth/` and
+`lib/upload/` — see `frontend/AGENTS.md`), NOT `lib/stores/` — the
+client is subsystem-scoped plumbing, not global reactive state that
+routes read from.
+
+- **Fetches a ticket** via `POST /api/rt/ticket` (through `apiFetch`,
+  so DPoP is applied; `getCsrfHeaders()` merged in for the state-
+  changing POST). Ticket then passes on the WS upgrade via
+  `Sec-WebSocket-Protocol: oxi.ticket.<uuid>` (NOT a query param —
+  keeps the token off access logs and out of Referer / URL bar).
+- Opens `wss://<same-origin>/api/rt/ws` with the subprotocol.
 - **Refcounted subscriptions**:
-  `subs: Map<TopicKey, { count, listeners: Set<Handler> }>`.
-- On subscribe by first component: send frame; on last unsubscribe:
-  send frame.
-- On reconnect: reissue ticket, re-establish WS, re-send `subscribe`
-  for every live topic — components don't care.
-- Backoff: exponential (250 ms → 30 s), full-jitter.
-- Health: `$state({ connected, latencyMs, subscribedTopics })`
-  exposed for a debug indicator.
+  `#subs: Map<TopicKey, { count, handlers, revokedHandlers, acked }>`.
+- On first refcount of a topic: send `rt.subscribe`; on last drop:
+  send `rt.unsubscribe`.
+- **On reconnect**: replay every already-known topic (client-side
+  state survives the disconnect); fire `onReconnect` handlers so
+  consumers refetch and catch up on events dropped during the
+  outage window.
+- **Backoff**: exponential (250 ms → 30 s), full-jitter. Circuit
+  breaker at 20 consecutive failures (~5 minutes of retry —
+  comfortably covers a cargo-release restart); trip logs one `error`
+  line and stops until `messageBus.reconnect()` is called or the
+  page reloads.
+- **Reactive-safety rule**: every mutation entry point
+  (`subscribe`, `onReconnect`, `reconnect`, `close`, `#call`) wraps
+  its `$state` reads in `untrack(() => …)`. Without this a caller's
+  `$effect` inherits a hidden dep on `state`, and each transition
+  (idle → connecting → connected → disconnected → …) re-fires the
+  effect — an observed 1000+/s loop on server-down. See the
+  `feedback-svelte5-untrack-mutation-methods` memory for the
+  general rule and the docstring on `subscribe` for the concrete
+  case.
+- **Health**: `state = $state<ConnectionState>` +
+  `latencyMs = $state<number | null>` exposed for a future debug
+  indicator (no UI consumes them yet — silent MVP).
 
-### 2. Composable (`lib/composables/useTopic.ts`)
+### 2. Composables
 
 ```ts
-useTopic(`folder:${folderId}`, (evt) => { /* mutate local $state */ });
+// Generic — subscribe to any topic.
+useTopic(topic, onEvent, onRevoked?)
+
+// Folder-view sugar — per-verb handlers + reconnect hook.
+useFolderTopic(() => folderId, {
+    onFileCreated, onFileRenamed, onFileMoved, onFileDeleted,
+    onFolderCreated, onFolderRenamed, onFolderMoved, onFolderDeleted,
+    onRevoked,      // grant revoked, subscription evicted server-side
+    onReconnect,    // WS came back; consumers refetch to catch up
+})
+
+// Session-level reconnect (fires on 2nd+ open, never initial).
+useReconnect(cb)
 ```
 
 Handles `$effect` lifecycle (subscribe on mount, unsubscribe on
@@ -1047,28 +1155,44 @@ this baseline once the baseline is green.
 
 Ships the infrastructure and the two most visible consumers together.
 
-- Bus port + `InProcessMessageBus` + `NoopReplicator` + WS handler
-  + ticket endpoint.
-- Frontend singleton + `useTopic` composable.
-- Topics live: `folder:{id}`, `user:{u}:notifications`, `job:{id}`,
-  `collab:{file_id}`, `collab:{file_id}:awareness`.
-- **Folder-live updates**: `FolderService` / `FileManagementService`
-  publish `file.created` / `file.deleted` / `file.renamed` /
-  `file.moved` after commit; FE folder view subscribes and mutates
-  local state — no manual refresh.
-- **Job dashboard live**: `JobRegistry` publishes step progress and
-  terminal state; FE job dashboard subscribes and replaces the
-  current polling.
-- **Notifications table + bell**: new `notifications` table +
-  `NotificationService` port; initial ingesters for `share-granted`,
-  `new-login-from-new-device`, `job-completed-for-you`,
-  `storage-quota-threshold`. FE bell with unread count, slide-out
-  panel, toast pop on receive.
-- **MD collab editor**: see companion plan
-  `docs/plan/markdown-collab.md` — depends on this phase's WS
-  handler + binary frame routing.
+- **✅ Bus port** + `InProcessMessageBus` + `NoopReplicator` + WS
+  handler + **ticket endpoint (F)**.
+- **✅ Frontend singleton** + `useTopic` + `useFolderTopic` +
+  `useReconnect` composables. `oxi:message-bus` logger namespace.
+- **Topics live today**: `folder:{id}`, `user:{u}:authz`.
+- **Topics reserved but not producing**: `user:{u}:notifications`,
+  `job:{id}`, `collab:{file_id}`, `collab:{file_id}:awareness` —
+  land with their consumers below.
+- **✅ Folder-live updates**: `FolderService` / `FileUploadService` /
+  `FileManagementService` / `TrashService` publish `file_created /
+  renamed / moved / deleted` and `folder_created / renamed / moved /
+  deleted` after commit; FE folder view refetches on receipt (100 ms
+  coalesce, idempotent). Multi-user + multi-tab verified.
+- **✅ Grant-revocation eviction** (Slice C): `AuthzChanged` →
+  per-topic `rt.revoked`; folder view toasts + navigates to
+  `/files`. Session survives; unrelated subs unaffected.
+- **✅ Refetch-on-reconnect**: `messageBus.onReconnect(cb)` →
+  `useReconnect` composable → folder view refetches after WS comes
+  back. Bridges the in-memory-bus "events lost during outage" gap
+  (see `project_message_bus_reconnect_gap` memory).
+- **Job dashboard live** — TODO. `JobRegistry` publishes step
+  progress and terminal state; FE job dashboard subscribes and
+  replaces polling.
+- **Notifications table + bell** — TODO (Slice E). New
+  `notifications` table + `NotificationService` port; initial
+  ingesters for `share-granted`, `new-login-from-new-device`,
+  `job-completed-for-you`, `storage-quota-threshold`. FE bell with
+  unread count, slide-out panel, toast pop on receive. Auto-subscribe
+  to `user:{u}:notifications` server-side, same pattern as
+  `user:{u}:authz` today.
+- **MD collab editor** — TODO. See companion plan
+  `docs/plan/markdown-collab.md`. Depends on binary-frame routing
+  which this plan sketches but doesn't ship (`rt_ws.rs` today drops
+  binary frames with a debug log).
 
-Deliverables sized ~4 weeks end-to-end.
+Deliverables sized ~4 weeks end-to-end. Slice D (folder-live) and
+Slice F (ticket flow) landed 2026-09-11. Slices E + collab are the
+open work in Phase A.
 
 ### Phase B — Presence + comments
 

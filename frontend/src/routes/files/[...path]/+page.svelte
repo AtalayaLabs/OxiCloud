@@ -438,23 +438,27 @@
 	}
 
 	// ── Live folder updates (message bus) ────────────────────────────
-	// Subscribe to `folder:{currentId}` and refresh when another tab —
-	// or another user with a share — mutates something in this folder.
-	// The refresh call is coalesced through `#reloadScheduled` so a
-	// burst of events (e.g. a multi-file upload) collapses to a single
-	// fetch. Local mutations trigger `reload()` themselves, so events
-	// authored by this same user are dropped as echo (the `actor` on
-	// the event is the caller UUID from the server).
+	// Subscribe to `folder:{currentId}` and refresh when THIS session's
+	// tabs, another tab of the same user, or another user with a share
+	// mutates something in this folder. Refetch is coalesced through
+	// `reloadScheduled` so a burst of events (multi-file upload) collapses
+	// to a single fetch.
+	//
+	// Actor-echo skip was REMOVED: previously we skipped events whose
+	// `actor` equalled `session.user.id`, on the assumption "this tab
+	// already updated its state via the local mutation path". That is
+	// true for the ACTIVE tab, but it also silenced updates from OTHER
+	// TABS of the same user. Since `reload()` is idempotent (replaces
+	// `listing.files` with the same server state) the extra fetch on
+	// self-authored events costs one round-trip (~30 ms locally, never
+	// visible) and gains multi-tab correctness. The `reloadScheduled`
+	// coalescer already prevents redundant work when the local mutation
+	// path and the bus event race.
 	//
 	// See `docs/plan/message-bus.md § D` and the `useFolderTopic`
 	// composable for the wiring.
 	let reloadScheduled = false;
-	function scheduleLiveReload(actor: string): void {
-		// Actor echo: this same session's mutations already updated the
-		// listing through their own success path, so a re-fetch would
-		// only cost a round-trip. Other tabs of the same user still see
-		// the change (they render from their own state, not this one).
-		if (session.user?.id && actor === session.user.id) return;
+	function scheduleLiveReload(_actor: string): void {
 		if (reloadScheduled) return;
 		reloadScheduled = true;
 		// Coalesce a burst; 100 ms is enough for the tail of a multi-
@@ -493,12 +497,9 @@
 			// through the same `scheduleLiveReload` coalescer as event-
 			// driven refreshes so a burst of reconnects (rare, but the
 			// circuit breaker can produce one) collapses to a single
-			// fetch. Passing an actor of `null`-equivalent — use an
-			// empty string so the echo-skip's `actor === user.id`
-			// check never matches. See
-			// `project_message_bus_reconnect_gap` memory.
+			// fetch. See `project_message_bus_reconnect_gap` memory.
 			busLog.warn('reconnected — refetching folder');
-			scheduleLiveReload('');
+			scheduleLiveReload('reconnect');
 		}
 	});
 

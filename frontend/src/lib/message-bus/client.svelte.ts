@@ -104,10 +104,11 @@ const RECONNECT_MAX_MS = 30_000;
  *  give up and stay `disconnected` until the caller explicitly asks
  *  to `reconnect()`. Prevents an unrecoverable auth state (revoked
  *  session, wrong CSRF cookie, missing DPoP nonce) from flooding
- *  logs. Ten attempts × exponential-backoff-with-jitter is roughly a
- *  minute of trying — long enough for a transient blip, short enough
- *  to stop before it's noise. */
-const MAX_CONSECUTIVE_FAILURES = 10;
+ *  logs. Twenty attempts × exponential-backoff-with-jitter caps
+ *  around 5 minutes of retrying — comfortably covers a cargo-release
+ *  server restart on a hot machine while still short-circuiting a
+ *  genuine permanent failure before it becomes noise. */
+const MAX_CONSECUTIVE_FAILURES = 20;
 
 interface SubEntry {
 	count: number;
