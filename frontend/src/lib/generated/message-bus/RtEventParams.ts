@@ -6,6 +6,9 @@ import type FolderCreatedData from './FolderCreatedData';
 import type FolderRenamedData from './FolderRenamedData';
 import type FolderMovedData from './FolderMovedData';
 import type FolderDeletedData from './FolderDeletedData';
+import type JobRunStartedData from './JobRunStartedData';
+import type JobRunProgressData from './JobRunProgressData';
+import type JobRunEndedData from './JobRunEndedData';
 import type RtEventKind from './RtEventKind';
 // AUTO-GENERATED — do not edit by hand.
 // Regenerate with `just asyncapi-ts`.
@@ -18,7 +21,10 @@ interface RtEventParams {
 		| FolderCreatedData
 		| FolderRenamedData
 		| FolderMovedData
-		| FolderDeletedData;
+		| FolderDeletedData
+		| JobRunStartedData
+		| JobRunProgressData
+		| JobRunEndedData;
 	event: RtEventKind;
 	topic: string;
 }

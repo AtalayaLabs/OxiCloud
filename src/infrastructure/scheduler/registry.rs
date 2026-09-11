@@ -60,12 +60,24 @@ pub(super) struct JobState {
 /// native services `register()` during DI wiring.
 pub struct JobRegistry {
     entries: RwLock<HashMap<String, Arc<JobEntry>>>,
+    /// Message bus — used by `dispatch` (via `trigger`) to publish
+    /// `JobRunStarted` / `JobRunProgress` / `JobRunEnded` on
+    /// `Topic::Job(name)` so the admin dashboard can render live
+    /// progress without polling. `OnceLock` because it's set exactly
+    /// once at DI time (after both the registry and the bus are
+    /// constructed) and read from many concurrent triggers; `Arc`
+    /// keeps consumers cheap. `None` before wiring (unit tests
+    /// exercise the registry without a bus).
+    message_bus: std::sync::OnceLock<
+        std::sync::Arc<dyn crate::application::ports::message_bus_ports::MessageBus>,
+    >,
 }
 
 impl JobRegistry {
     pub fn new() -> Self {
         Self {
             entries: RwLock::new(HashMap::new()),
+            message_bus: std::sync::OnceLock::new(),
         }
     }
 
@@ -294,7 +306,33 @@ impl JobRegistry {
     /// that just want a plain run pass `JobRunArgs::default()`.
     pub async fn trigger(self: &Arc<Self>, name: &str, args: &JobRunArgs) -> Option<JobOutcome> {
         let entry = self.get(name).await?;
-        Some(super::engine::dispatch(name, entry, args).await)
+        // Pass the bus reference through to `dispatch` so start / end
+        // events publish on `Topic::Job(name)`. `Option::cloned()`
+        // returns a fresh `Arc` clone (or None) — negligible.
+        let bus = self.message_bus.get().cloned();
+        Some(super::engine::dispatch(name, entry, args, bus).await)
+    }
+
+    /// Wire the message bus. Called once from DI after both the
+    /// registry and the bus are constructed. Idempotent: a second
+    /// call is a silent no-op (`OnceLock::set` returns `Err`), so
+    /// test setups that call this more than once don't panic.
+    pub fn set_message_bus(
+        &self,
+        bus: std::sync::Arc<dyn crate::application::ports::message_bus_ports::MessageBus>,
+    ) {
+        let _ = self.message_bus.set(bus);
+    }
+
+    /// Snapshot the currently-wired bus (if any). `None` when
+    /// `set_message_bus` hasn't been called yet — every test setup
+    /// that skips DI wiring, and the very early boot before the
+    /// bus is constructed. Called by the periodic supervisor and
+    /// by `trigger` so both paths publish job events identically.
+    pub(super) fn message_bus_snapshot(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::application::ports::message_bus_ports::MessageBus>> {
+        self.message_bus.get().cloned()
     }
 }
 

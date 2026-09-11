@@ -52,6 +52,18 @@
 #                                 again. Guards replay: a captured token
 #                                 outside its 30 s TTL, or one already
 #                                 consumed, MUST fail the upgrade with 401.
+#   S12 Job topic admin-only    — user1 (non-admin) subscribes to
+#                                 `job:<any-name>`; server must reject
+#                                 with `topic_forbidden` (audit reason
+#                                 `role_denied`). Guards the Class-3
+#                                 role-scoped AuthZ gate on
+#                                 `Topic::Job` — admin-only, no bypass,
+#                                 anti-enumeration parity with unknown
+#                                 topics. The allow side is covered by
+#                                 the Rust `required_perm` + dispatch
+#                                 unit tests; the seeded suite has no
+#                                 admin token, and minting one here
+#                                 would pollute state for other files.
 #
 # Exit non-zero on any failure — run.sh treats that as a suite failure.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -641,4 +653,30 @@ set -e
   || die "S11: expected exit 2 (connect refused), got $reuse_exit"
 log "S11 OK"
 
-log "All eleven message-bus scenarios passed."
+# ── Scenario 12 — Job topic is admin-only ───────────────────────────────────
+# `Topic::Job("<name>")` maps to `AuthzCheck::RoleAdmin` in
+# `application/ports/message_bus_ports.rs::required_perm`, and
+# `handle_subscribe` denies any caller whose snapshotted role at
+# session open is not "admin". user1 is a plain account, so this
+# subscribe MUST land on the deny arm.
+#
+# The wire response uses `topic_forbidden` (same shape as an unknown
+# topic — anti-enumeration: a non-admin cannot probe which job names
+# are registered). The audit reason `role_denied` is asserted at the
+# Rust unit-test layer.
+#
+# If this ever accepts and delivers events, someone weakened the
+# Class-3 gate (dropped the role-snapshot check in the Job arm,
+# widened `required_perm`, or reused a permissive dispatch branch).
+log "S12: user1 subscribes to job:whatever; expect topic_forbidden."
+if ! "$HELPER_BIN" expect-denied \
+     --url "$ws_url" \
+     --token "$user1_token" \
+     --subscribe "job:whatever" \
+     --reason topic_forbidden \
+     --timeout 3s; then
+  die "S12: user1 was NOT denied on job topic (admin gate broken?)"
+fi
+log "S12 OK"
+
+log "All twelve message-bus scenarios passed."

@@ -53,7 +53,7 @@ use crate::common::errors::DomainError;
 /// Encodes to a stable dotted wire key that maps naturally onto RabbitMQ
 /// topic-exchange routing keys or NATS subjects when the [`BusReplicator`]
 /// seam is filled in later.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Topic {
     /// A folder's mutation stream — file/subfolder created/deleted/renamed/
     /// moved in or out. Consumed by the folder view for live refresh.
@@ -63,6 +63,17 @@ pub enum Topic {
     /// subscribe the caller and evict stale subs when its events fire once
     /// the eviction wiring lands (Phase-A follow-up).
     UserAuthz(Uuid),
+
+    /// A named background job's run lifecycle — start / progress /
+    /// end. Consumed by the admin job dashboard so operators who
+    /// trigger a long-running job (backend migration, thumb import…)
+    /// can navigate to other admin pages without losing progress
+    /// visibility. AuthZ: **admin-only** (Class 3 role-scoped).
+    /// Non-admins get `topic_forbidden` — indistinguishable on the
+    /// wire from an unknown topic. Job names are stable
+    /// scheduler-registered strings (e.g. `backend_migration`,
+    /// `thumb_derived_import`); the topic string is `job:<name>`.
+    Job(String),
 }
 
 impl Topic {
@@ -72,6 +83,7 @@ impl Topic {
         match self {
             Topic::Folder(id) => format!("folder:{id}"),
             Topic::UserAuthz(id) => format!("user:{id}:authz"),
+            Topic::Job(name) => format!("job:{name}"),
         }
     }
 
@@ -90,6 +102,22 @@ impl Topic {
             let id = Uuid::parse_str(id_str).map_err(|_| ParseTopicErr::BadUuid)?;
             return Ok(Topic::UserAuthz(id));
         }
+        if let Some(name) = s.strip_prefix("job:") {
+            // Job names are scheduler-registered short slugs — see
+            // `infrastructure/scheduler/registry.rs`. Validate here
+            // only that the name is non-empty and consists of
+            // `[a-z0-9_-]` chars — reject anything else as
+            // `Unknown` (indistinguishable to the caller from a
+            // topic shape we've never heard of).
+            if !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+            {
+                return Ok(Topic::Job(name.to_string()));
+            }
+            return Err(ParseTopicErr::Unknown);
+        }
         Err(ParseTopicErr::Unknown)
     }
 
@@ -107,6 +135,7 @@ impl Topic {
                 resource: BusResource::Folder(*id),
             },
             Topic::UserAuthz(id) => AuthzCheck::IdentityMatch { user_id: *id },
+            Topic::Job(_) => AuthzCheck::RoleAdmin,
         }
     }
 }
@@ -152,8 +181,12 @@ pub enum AuthzCheck {
     /// Class 2 — Identity-scoped. `caller_id` must equal `user_id`.
     /// No admin bypass — privacy is a hard rule.
     IdentityMatch { user_id: Uuid },
-    // Class 3 (role-scoped `admin:*`) and the bespoke `job:{id}` check
-    // land with their topic variants.
+
+    /// Class 3 — Role-scoped. Caller must hold the admin role. Used
+    /// by `Topic::Job(_)` today; future `admin:*` topics land here.
+    /// Non-admin subscriber gets `topic_forbidden` on the wire —
+    /// same anti-enum shape as unknown-topic denial.
+    RoleAdmin,
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -257,6 +290,50 @@ pub enum MessageBusEvent {
     /// the payload extends with additional resource classes — see the
     /// plan's Phase-B roadmap.
     AuthzChanged { affected_folders: Vec<Uuid> },
+
+    /// A background job's run started. Published on
+    /// [`Topic::Job`]. `started_at` is server wall-clock (RFC 3339
+    /// serialised by serde). Admin dashboard's job-list view uses
+    /// this to flip a row from "idle" to "running" without a
+    /// polling round-trip.
+    JobRunStarted {
+        name: String,
+        started_at: chrono::DateTime<chrono::Utc>,
+        actor: Uuid,
+    },
+
+    /// A background job made progress. Published at most every
+    /// 3 seconds per job (throttled at the publish site — see
+    /// scheduler engine). `step` / `total` populate an operator-
+    /// facing progress bar; `message` is a one-line free-form
+    /// status. All three are optional because different jobs have
+    /// different progress semantics (some know the total up front,
+    /// some don't; some can render a step count, some just have a
+    /// running status message).
+    JobRunProgress {
+        name: String,
+        step: Option<u64>,
+        total: Option<u64>,
+        message: Option<String>,
+    },
+
+    /// A background job's run ended. `success = true` for a normal
+    /// completion; `false` for failure / cancelled / paused with
+    /// unhandled outcome. `reason` populates the "click for
+    /// details" flow on the admin dashboard: the notification (Slice
+    /// E) will link to `/admin/jobs/<name>` on the `false` branch,
+    /// where the full outcome and paused-run state live.
+    ///
+    /// Deliberately NOT a rich outcome enum — the admin panel is one
+    /// click away and holds the full detail; the bus event just
+    /// needs to say "done, ok or not". Adding a new outcome nuance
+    /// server-side does NOT churn the wire.
+    JobRunEnded {
+        name: String,
+        success: bool,
+        reason: Option<String>,
+        ended_at: chrono::DateTime<chrono::Utc>,
+    },
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -421,6 +498,33 @@ mod tests {
     }
 
     #[test]
+    fn job_topic_roundtrip() {
+        let t = Topic::Job("backend_migration".to_string());
+        let wire = t.to_wire_key();
+        assert_eq!(wire, "job:backend_migration");
+        assert_eq!(Topic::parse(&wire).unwrap(), t);
+    }
+
+    #[test]
+    fn job_topic_rejects_bad_name_chars() {
+        // Job names come from the scheduler registry — a stable
+        // `[a-z0-9_-]` alphabet. Anything else is `Unknown` (same
+        // wire response as an unrecognised topic shape).
+        assert_eq!(Topic::parse("job:"), Err(ParseTopicErr::Unknown));
+        assert_eq!(Topic::parse("job:UPPER"), Err(ParseTopicErr::Unknown));
+        assert_eq!(Topic::parse("job:with.dot"), Err(ParseTopicErr::Unknown));
+        assert_eq!(Topic::parse("job:with space"), Err(ParseTopicErr::Unknown));
+    }
+
+    #[test]
+    fn required_perm_job_is_role_admin() {
+        assert_eq!(
+            Topic::Job("thumb_derived_import".to_string()).required_perm(),
+            AuthzCheck::RoleAdmin
+        );
+    }
+
+    #[test]
     fn parse_rejects_bad_uuid() {
         assert_eq!(
             Topic::parse("folder:not-a-uuid"),
@@ -546,6 +650,32 @@ mod tests {
                     affected_folders: vec![Uuid::nil()],
                 },
                 "authz_changed",
+            ),
+            (
+                MessageBusEvent::JobRunStarted {
+                    name: "backend_migration".into(),
+                    started_at: chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap(),
+                    actor: Uuid::nil(),
+                },
+                "job_run_started",
+            ),
+            (
+                MessageBusEvent::JobRunProgress {
+                    name: "backend_migration".into(),
+                    step: Some(10),
+                    total: Some(100),
+                    message: Some("phase 2".into()),
+                },
+                "job_run_progress",
+            ),
+            (
+                MessageBusEvent::JobRunEnded {
+                    name: "backend_migration".into(),
+                    success: true,
+                    reason: None,
+                    ended_at: chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap(),
+                },
+                "job_run_ended",
             ),
         ];
         for (ev, expected) in cases {

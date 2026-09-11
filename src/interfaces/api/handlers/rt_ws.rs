@@ -338,6 +338,48 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let _session_count_guard = SessionCountGuard(Arc::clone(&state.active_ws_sessions));
 
+    // Snapshot the caller's role ONCE per session, so the Class-3
+    // (`RoleAdmin`) AuthZ dispatch inside `handle_subscribe` doesn't
+    // pay a DB hop on every subscribe frame. `resolve_live_role`
+    // honours the short-TTL flags cache, and a demotion mid-session
+    // takes effect on the NEXT reconnect (bounded by
+    // USER_FLAGS_CACHE_TTL for the flags read at that point). If
+    // the auth service isn't wired (unusual test config) or the
+    // account is revoked, treat as non-admin — fail-closed for
+    // admin gates. Passing "user" as the claim role is fail-open
+    // for `resolve_live_role`'s non-admin fallback path.
+    let caller_role: String = match state.auth_service.as_ref() {
+        Some(auth) => {
+            match crate::interfaces::middleware::user::resolve_live_role(
+                auth.auth_application_service.as_ref(),
+                caller_id,
+                "user",
+            )
+            .await
+            {
+                crate::interfaces::middleware::user::LiveRole::Active(role) => role.to_string(),
+                crate::interfaces::middleware::user::LiveRole::Revoked => {
+                    // Account revoked between ticket-issue and now.
+                    // Terminate the session immediately — dropping
+                    // `socket` at end of scope closes the WS cleanly
+                    // (no explicit `.close()` needed; that would
+                    // require pulling `SinkExt` into scope for one
+                    // line).
+                    tracing::info!(
+                        target: "audit",
+                        event = "message_bus.session_rejected",
+                        reason = "account_revoked",
+                        caller_id = %caller_id,
+                        "👮🏻‍♂️ WS session rejected — account revoked",
+                    );
+                    drop(socket);
+                    return;
+                }
+            }
+        }
+        None => "user".to_string(),
+    };
+
     // Outbound queue — every path that produces a client-bound frame
     // enqueues here; the writer half of the select drains. Also
     // carries internal `EvictFolders` control signals from the
@@ -450,7 +492,7 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
                 match incoming {
                     Some(Ok(Message::Text(txt))) => {
                         if let Some(reply) =
-                            handle_text_frame(&txt, caller_id, &state, &mut subs, &out_tx).await
+                            handle_text_frame(&txt, caller_id, &caller_role, &state, &mut subs, &out_tx).await
                             && socket.send(Message::Text(reply.into())).await.is_err() {
                                 break;
                             }
@@ -487,6 +529,7 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
 async fn handle_text_frame(
     text: &str,
     caller_id: Uuid,
+    caller_role: &str,
     state: &Arc<AppState>,
     subs: &mut HashMap<String, Sub>,
     out_tx: &mpsc::Sender<SessionOut>,
@@ -516,9 +559,9 @@ async fn handle_text_frame(
     };
 
     match method.as_str() {
-        "rt.subscribe" => {
-            Some(handle_subscribe(id, req.params, caller_id, state, subs, out_tx).await)
-        }
+        "rt.subscribe" => Some(
+            handle_subscribe(id, req.params, caller_id, caller_role, state, subs, out_tx).await,
+        ),
         "rt.unsubscribe" => Some(handle_unsubscribe(id, req.params, subs)),
         "rt.ping" => Some(success_response(id, serde_json::json!({ "pong": true }))),
         _ => Some(error_response(
@@ -534,6 +577,7 @@ async fn handle_subscribe(
     id: Value,
     params: Value,
     caller_id: Uuid,
+    caller_role: &str,
     state: &Arc<AppState>,
     subs: &mut HashMap<String, Sub>,
     out_tx: &mpsc::Sender<SessionOut>,
@@ -614,6 +658,21 @@ async fn handle_subscribe(
         AuthzCheck::IdentityMatch { user_id } => {
             if user_id != caller_id {
                 audit_denied(caller_id, &topic_str, "identity_mismatch");
+                return error_response(
+                    id,
+                    error_code::TOPIC_FORBIDDEN,
+                    "topic_forbidden",
+                    Some(serde_json::json!({ "topic": topic_str })),
+                );
+            }
+        }
+        AuthzCheck::RoleAdmin => {
+            // Class 3 — role-scoped. Caller must be admin. `caller_role`
+            // was snapshotted at session start (see `handle_session`),
+            // so no per-subscribe DB hit. A demotion mid-session
+            // takes effect on the caller's next reconnect.
+            if caller_role != "admin" {
+                audit_denied(caller_id, &topic_str, "role_denied");
                 return error_response(
                     id,
                     error_code::TOPIC_FORBIDDEN,

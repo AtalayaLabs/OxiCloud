@@ -75,18 +75,41 @@ smoke suite plus manual multi-user E2E. Live today:
 - **Ticket tested** — S10 (happy path), S11 (single-use replay
   rejected).
 
-Deferred and still open — see the Roadmap section and the
+Active — still under Phase A, ordered by priority:
+
+- **Job dashboard live** (next) — `JobRegistry` publishes step
+  progress + terminal state on `job:{id}`; the admin jobs view
+  subscribes and drops its polling. Small; same shape as folder-live.
+  Value: an operator who triggers a long-running job (backend
+  migration, thumbnail import, etc.) can navigate to another admin
+  page and come back without losing progress visibility.
+- **Notifications table + bell** (E) — topic + producer + auto-sub
+  land here. Same pattern as `:authz`. Larger; unblocks Phase-B
+  `@mentions`.
+
+Deferred — see the Roadmap section's `## Deferred` block and the
 `project_message_bus_reconnect_gap` memory:
 
-- **Notifications table + bell** (E) — topic + producer + auto-sub
-  land here. Same pattern as `:authz`.
-- **Presence** (Phase B) — `folder:{id}:presence` topic + awareness
-  frames.
+- **Workspace UX** (was Phase B) — presence, comments, reactions,
+  `@mentions`, `NotificationService` as bus subscriber.
+- **Infrastructure payoff** (was Phase C) — sync-client push
+  invalidation, album live, slideshow sync.
 - **Yjs collab** — `docs/plan/markdown-collab.md`, depends on the
   binary-frame routing this plan sketches but doesn't ship.
 - **Broker replicator** (Postgres LISTEN/NOTIFY or Redis) — for
   multi-instance and durable event log. `BusReplicator` port
   declared, `NoopReplicator` wired today.
+- **Session-resume tokens** — `rt.subscribe { since: N }` + a
+  server-side per-topic ring buffer with sequence numbers.
+  Replaces "full refetch on reconnect" with delta replay. Pairs
+  with the collab editor slice (Yjs) where refetch cost is high.
+- **SharedWorker for multi-tab dedup** — one WS per user per
+  browser profile, shared across every same-origin tab. Turns "5
+  tabs open" into 1 WS instead of 5. Ship when the "Live WS
+  sessions" admin card sits persistently at N × user count.
+- **Web Push for offline delivery** — pairs with Slice E
+  (notifications bell). Delivers to closed browsers via FCM /
+  Mozilla autopush / Apple Push through a service worker.
 
 ## Non-goals
 
@@ -1219,9 +1242,13 @@ Ships the infrastructure and the two most visible consumers together.
   `useReconnect` composable → folder view refetches after WS comes
   back. Bridges the in-memory-bus "events lost during outage" gap
   (see `project_message_bus_reconnect_gap` memory).
-- **Job dashboard live** — TODO. `JobRegistry` publishes step
-  progress and terminal state; FE job dashboard subscribes and
-  replaces polling.
+- **Job dashboard live** — TODO (next slice). `JobRegistry`
+  publishes step progress and terminal state on `job:{id}`; FE
+  job dashboard subscribes and replaces polling. Operator value:
+  once a long-running job is triggered (backend migration, thumb
+  import, blobs consistency…), the admin can navigate to another
+  page and come back without losing progress visibility — the WS
+  push keeps whatever component is subscribed up-to-date.
 - **Notifications table + bell** — TODO (Slice E). New
   `notifications` table + `NotificationService` port; initial
   ingesters for `share-granted`, `new-login-from-new-device`,
@@ -1238,82 +1265,158 @@ Deliverables sized ~4 weeks end-to-end. Slice D (folder-live) and
 Slice F (ticket flow) landed 2026-09-11. Slices E + collab are the
 open work in Phase A.
 
-### Phase B — Presence + comments
+### Deferred — everything below is on the shelf
 
-Everything that turns OxiCloud from a file store into a shared
-workspace.
+None of these ship on a fixed date; each is triggered by a concrete
+consumer need. Grouped by theme (workspace UX, infrastructure
+payoff, replicator) so the reader still sees the connective tissue,
+but there is no commitment to sequencing.
+
+#### Workspace UX (formerly "Phase B")
+
+Turns OxiCloud from a file store into a shared workspace. Ship when
+a specific feature here graduates from "would be nice" to "the
+product needs it".
 
 - **Presence topics** — `folder:{id}:presence`, `file:{id}:presence`.
   Awareness-style: joined/left/cursor. Ephemeral, not persisted.
-- **FE presence UI**: "N people viewing" badge in folder header;
+- **FE presence UI** — "N people viewing" badge in folder header;
   avatar rail; hover to highlight; "someone is previewing this photo
   right now" in the lightbox.
 - **Comments on any file** — new `comments` table (threaded, per
   file, supports reactions), `CommentService` port,
   `file:{id}:comments` topic for live delivery.
-- **@mentions**: mention autocomplete in the comment editor;
+- **@mentions** — mention autocomplete in the comment editor;
   mention → notification into the mentioned user's
   `user:{u}:notifications` topic + `notifications` row + optional
   email (reuses existing `MagicLinkMailer`-style templating).
-- **Reactions**: 👍❤️🎉 on comments and on files themselves; live
-  fan-out on the same `file:{id}:comments` topic.
-- **Comment resolutions**: Google-Docs-style thread markers.
-- **NotificationService consumes bus events** — up to Phase A the
-  bus's publish calls sit inline in each mutation site
-  (`FolderService::create_folder_with_perms`,
-  `FileUploadService::upload_file_streaming`, and — once folder-live
-  rounds out — the delete / rename / move sites for both files and
-  folders). That is the right shape and stays: the bus is
-  location-keyed (`Topic::Folder(id)`, subscriber-scoped) and
-  belongs at the mutation site.
-  When Phase B ships, notifications sit on the **same axis** (also
-  location + actor + subscriber-driven) — not the FileLifecycleHook
-  axis (which is server-internal, content-keyed, fan-out-to-all).
-  So `NotificationService` becomes an in-process subscriber to the
-  bus itself: it registers a `bus.subscribe(...)` on the topics it
-  cares about (`folder:{id}`, `file:{id}`, share-grant events),
-  translates relevant events into `notif.notifications` rows, and
-  re-publishes on `user:{u}:notifications`. No new dispatcher, no
-  new hook trait, no changes to existing mutation sites — the bus IS
-  the mutation-event pipeline for anything subscriber-driven.
-  Contrast with `FileLifecycleHook` (`src/application/ports/file_lifecycle.rs`):
-  that stays focused on content transitions (blob_hash, content_type)
-  and fires unconditionally to server-side workers (thumbnails,
-  audio metadata, plugins). Bus and lifecycle-hook are complementary
-  — same triggering moment, orthogonal fan-out shape and payload
-  discipline. Do NOT try to unify them; the two axes are genuinely
-  different (all-vs-subscribed × content-vs-location).
+- **Reactions** — 👍❤️🎉 on comments and files. Live fan-out on the
+  same `file:{id}:comments` topic.
+- **Comment resolutions** — Google-Docs-style thread markers.
+- **`NotificationService` as a bus subscriber** (architectural
+  pivot). Up to Phase A the bus's publish calls sit inline in each
+  mutation site (`FolderService::create_folder_with_perms`,
+  `FileUploadService::upload_file_streaming`, and the delete /
+  rename / move sites for both files and folders). That is the
+  right shape and stays: the bus is location-keyed
+  (`Topic::Folder(id)`, subscriber-scoped) and belongs at the
+  mutation site. When notifications ship, they sit on the **same
+  axis** (also location + actor + subscriber-driven) — not the
+  `FileLifecycleHook` axis (which is server-internal, content-keyed,
+  fan-out-to-all). So `NotificationService` becomes an in-process
+  subscriber to the bus itself: it registers a `bus.subscribe(...)`
+  on the topics it cares about (`folder:{id}`, `file:{id}`,
+  share-grant events), translates relevant events into
+  `notif.notifications` rows, and re-publishes on
+  `user:{u}:notifications`. No new dispatcher, no new hook trait,
+  no changes to existing mutation sites — the bus IS the
+  mutation-event pipeline for anything subscriber-driven. Contrast
+  with `FileLifecycleHook` (`src/application/ports/file_lifecycle.rs`):
+  that stays focused on content transitions (blob_hash,
+  content_type) and fires unconditionally to server-side workers
+  (thumbnails, audio metadata, plugins). Bus and lifecycle-hook are
+  complementary — same triggering moment, orthogonal fan-out shape
+  and payload discipline. Do NOT try to unify them; the two axes
+  are genuinely different (all-vs-subscribed × content-vs-location).
 
-Deliverables sized ~3 weeks after Phase A.
+#### Infrastructure payoff (formerly "Phase C")
 
-### Phase C — Sync client push + album live
+Where the bus starts paying for itself on operator cost. Ship when
+sync-client PROPFIND traffic or the album-viewing experience
+becomes a real bottleneck.
 
-Where the bus starts paying for itself on infrastructure cost too.
-
-- **Sync-client push invalidation**: WebDAV / NextCloud DAV handlers
-  publish `file:{id}` and `folder:{id}` deltas after commit. Sync
-  clients get a lightweight `Sync-Invalidate` mechanism (or a
-  dedicated WS endpoint for headless clients) so they refetch only
-  changed paths instead of polling PROPFIND. Cuts a large chunk of
-  Nextcloud-style client chatter.
-- **Album live updates**: `folder:{album_id}` reused — as photos are
-  added to an album, everyone viewing sees them appear.
-- **Slideshow sync**: one presenter picks "Present"; other viewers of
-  the album can opt-in to follow the presenter's current frame.
+- **Sync-client push invalidation** — WebDAV / NextCloud DAV
+  handlers publish `file:{id}` and `folder:{id}` deltas after
+  commit. Sync clients get a lightweight `Sync-Invalidate`
+  mechanism (or a dedicated WS endpoint for headless clients) so
+  they refetch only changed paths instead of polling PROPFIND.
+  Cuts a large chunk of Nextcloud-style client chatter.
+- **Album live updates** — `folder:{album_id}` reused; as photos
+  are added to an album, everyone viewing sees them appear.
+- **Slideshow sync** — one presenter picks "Present"; other viewers
+  of the album can opt-in to follow the presenter's current frame.
   Uses `folder:{album_id}` with a `presenter_frame` event kind.
 
-Deliverables sized ~2–3 weeks after Phase B.
+#### Multi-instance & broker
 
-### Later — multi-instance & broker
-
-Only invoked when the deployment actually needs it. Nothing above
-depends on these landing on any fixed date.
+Only invoked when the deployment actually needs it. Also the
+mitigation for the "events lost during outage window" gap (see
+`project_message_bus_reconnect_gap` memory) if durable replay
+becomes important for collab or sync-push.
 
 - **`PgListenReplicator`** — ship when we run more than one server
-  instance. Same port, no consumer changes.
+  instance. Same `BusReplicator` port, no consumer changes.
 - **`BrokerReplicator`** for RabbitMQ or NATS — ship when either
   cross-datacenter fan-out or a shared broker with other services
   matters. Same port, no consumer changes.
+
+#### Session-resume tokens (wire-protocol extension)
+
+Replaces today's "full refetch on reconnect" workaround with a
+delta-replay protocol: the client remembers the sequence number of
+the last event it processed per topic; on reconnect, it says
+"resume from N" and the server replays every event since N. The
+canonical shape across the industry — Discord's `OP 6 Resume`,
+Slack's sync API, Firestore's `resume_token`, Notion's sync-token
+pattern. Cheaper than a REST refetch for high-fan-out topics (Yjs
+CRDT deltas, notification streams) where the "catch-up" would
+otherwise pull megabytes of state the client mostly already has.
+
+Requires:
+
+- **Server-side**: per-topic bounded ring buffer with monotonic
+  sequence numbers. Bounded because we're not building a durable
+  log — a hold-back of the last N events per topic is enough for
+  the common "closed laptop for 10 min" case. A resume request
+  older than the retention window falls through to a client-side
+  full refetch (same code path today's `onReconnect` uses), so
+  the client never fails hard — just degrades.
+- **Wire**: `rt.subscribe` gains an optional `since: number` param
+  and the ack carries the current sequence number. `rt.event`
+  gains a `seq` field the client stores as `last_seq[topic]`.
+- **Client**: `MessageBusClient` persists `last_seq[topic]` and
+  replays it on `#onOpen`'s subscribe-replay. `onReconnect`
+  handlers keep their fallback-to-refetch role for the
+  older-than-retention case.
+
+Meaningful for the collab editor slice (Yjs) and for future
+sync-client push. Not worth doing before either of those lands —
+folder-view refetch is a folder-page fetch (small); Yjs
+"refetch" would be the whole doc snapshot (potentially large).
+See `project_message_bus_reconnect_gap` memory (option 2).
+
+#### Client-side connection efficiency
+
+Optimizations to how the SPA holds its WebSocket. Independent of
+server changes; ship when the per-user connection count actually
+becomes a load concern. Today's grace-period tab-hidden close
+(closes the WS after 60 s hidden, reconnects on visibility return)
+covers the low-hanging fruit; both items below layer on top.
+
+- **SharedWorker for multi-tab dedup** — one WebSocket per user per
+  browser profile, shared across every same-origin tab via a
+  `SharedWorker`. All tabs `postMessage` through the worker
+  instead of holding independent `WebSocket` instances. Slack /
+  Gmail / Google Docs all do this. Turns "user has 5 folder tabs
+  open" from 5 WS into 1. Refactor cost: `MessageBusClient` moves
+  behind the worker boundary; every `useTopic` call becomes an
+  RPC to the worker instead of a direct method call. Payoff
+  scales with per-user tab count — worth doing if operators see
+  the "Live WS sessions" admin card sitting persistently at 5×
+  the user count. Not worth it otherwise; grace-close already
+  handles the common "background tab" case at ~30% of this
+  refactor's complexity.
+- **Web Push for truly-offline delivery** — service-worker-backed
+  push notifications delivered by the browser vendor (FCM for
+  Chrome, Mozilla autopush for Firefox, Apple Push for Safari)
+  even when the user has no OxiCloud tab open. Complements the
+  WS-based notification stream: WS delivers to foreground tabs;
+  Web Push delivers to closed browsers. Requires server-side
+  push-subscription store, per-vendor endpoint delivery (usually
+  `web-push` crate), and a service worker in the FE. Meaningful
+  UX win alongside Slice E (notifications bell) — a share
+  arriving while the user is away actually reaches them.
+  Deferred until Slice E ships; the two form a natural pair.
 
 ## What this bus does NOT replace
 

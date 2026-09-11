@@ -140,6 +140,21 @@ fn channels() -> Value {
                 "SubscribeRequest":   { "$ref": "#/components/messages/RtSubscribeRequest" },
                 "UnsubscribeRequest": { "$ref": "#/components/messages/RtUnsubscribeRequest" },
             }
+        },
+        "Job": {
+            "address": "job:{jobName}",
+            "description": "A named background job's run lifecycle — Started / Progress / Ended. Consumed by the admin dashboard so operators who trigger a long-running job (backend migration, thumb import…) can navigate off the admin page and come back without losing progress. AuthZ: admin-only (Class 3 role-scoped) — non-admin gets `topic_forbidden`, indistinguishable on the wire from an unknown topic.",
+            "parameters": {
+                "jobName": { "description": "Scheduler-registered short slug (e.g. `backend_migration`); `[a-z0-9_-]` chars only" }
+            },
+            "messages": {
+                "SubscribeRequest":   { "$ref": "#/components/messages/RtSubscribeRequest" },
+                "UnsubscribeRequest": { "$ref": "#/components/messages/RtUnsubscribeRequest" },
+                "SubscribedResponse": { "$ref": "#/components/messages/RtSubscribedResponse" },
+                "ErrorResponse":      { "$ref": "#/components/messages/RtErrorResponse" },
+                "JobEvent":           { "$ref": "#/components/messages/RtFolderEventNotification" },
+                "RevokedNotification": { "$ref": "#/components/messages/RtRevokedNotification" },
+            }
         }
     })
 }
@@ -301,6 +316,9 @@ fn components() -> Value {
             "FolderRenamedData": folder_renamed_schema(),
             "FolderMovedData": folder_moved_schema(),
             "FolderDeletedData": folder_deleted_schema(),
+            "JobRunStartedData": job_run_started_schema(),
+            "JobRunProgressData": job_run_progress_schema(),
+            "JobRunEndedData": job_run_ended_schema(),
         },
         // How the client authenticates. Handler side is `auth_middleware`
         // — the same middleware every `/api/*` request goes through, so
@@ -580,6 +598,7 @@ fn event_kind_schema() -> Value {
         "enum": [
             "file_created", "file_renamed", "file_moved", "file_deleted",
             "folder_created", "folder_renamed", "folder_moved", "folder_deleted",
+            "job_run_started", "job_run_progress", "job_run_ended",
         ],
     })
 }
@@ -596,6 +615,9 @@ fn event_data_union_schema() -> Value {
             ref_schema("FolderRenamedData"),
             ref_schema("FolderMovedData"),
             ref_schema("FolderDeletedData"),
+            ref_schema("JobRunStartedData"),
+            ref_schema("JobRunProgressData"),
+            ref_schema("JobRunEndedData"),
         ]
     })
 }
@@ -706,6 +728,52 @@ fn folder_deleted_schema() -> Value {
             "folder_id": { "type": "string", "format": "uuid" },
             "parent_id": { "type": "string", "format": "uuid" },
             "actor":     { "type": "string", "format": "uuid" },
+        }
+    })
+}
+
+// ─────────────────── Job event data payloads ─────────────────────
+// Published on `Topic::Job(name)`. AuthZ is Class-3 (admin-only) —
+// non-admins get `topic_forbidden` on subscribe, so these payloads
+// only ever reach admin subscribers. See `handlers/rt_ws.rs`.
+
+fn job_run_started_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "A background job's run started. `name` matches the scheduler-registered job name (e.g. `backend_migration`). `actor` is `00000000-0000-0000-0000-000000000000` today — the scheduler doesn't yet thread the trigger caller through.",
+        "required": ["name", "started_at", "actor"],
+        "properties": {
+            "name":       { "type": "string" },
+            "started_at": { "type": "string", "format": "date-time" },
+            "actor":      { "type": "string", "format": "uuid" },
+        }
+    })
+}
+
+fn job_run_progress_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "A background job made progress. Throttled at the publish site to at most one per 3 s per job (see scheduler engine). `step` / `total` populate a progress bar; all three fields are optional because different jobs report different granularities.",
+        "required": ["name"],
+        "properties": {
+            "name":    { "type": "string" },
+            "step":    { "type": ["integer", "null"], "minimum": 0 },
+            "total":   { "type": ["integer", "null"], "minimum": 0 },
+            "message": { "type": ["string", "null"] },
+        }
+    })
+}
+
+fn job_run_ended_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "A background job's run ended. `success = true` for a normal completion; `false` for failure / timeout / cancelled / paused-with-unhandled-outcome. `reason` populates the toast text on the `false` branch and links to `/admin/jobs/<name>` for the full outcome. Consumer typically drops its subscription on receipt (job is done).",
+        "required": ["name", "success", "ended_at"],
+        "properties": {
+            "name":     { "type": "string" },
+            "success":  { "type": "boolean" },
+            "reason":   { "type": ["string", "null"] },
+            "ended_at": { "type": "string", "format": "date-time" },
         }
     })
 }

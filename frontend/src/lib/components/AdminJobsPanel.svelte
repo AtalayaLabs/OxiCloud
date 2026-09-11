@@ -35,6 +35,8 @@
 		purgeJobRuns
 	} from '$lib/api/endpoints/adminJobs';
 	import type { Finding, JobParam, JobSummary, RunSummary, RunStatus } from '$lib/api/types';
+	import { messageBus } from '$lib/message-bus/client.svelte';
+	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 
 	// ─── State ────────────────────────────────────────────────────────
 
@@ -220,6 +222,68 @@
 		void loadJobs();
 		startPolling();
 		return () => stopPolling();
+	});
+
+	// ─── Live updates via the message bus ─────────────────────────────
+	//
+	// Subscribes to `job:{name}` for every registered job so a run's
+	// start/end flips this panel's state within a network hop instead
+	// of waiting up to POLL_MS for the next poll tick. The 5s polling
+	// stays as fallback — messages that arrive while the tab was hidden
+	// (Page Visibility grace-close in `messageBus`) are lost, and
+	// polling reconciles.
+	//
+	// Progress publishes aren't wired yet (deferred — see
+	// `docs/plan/message-bus.md`), so the handler treats
+	// `job_run_progress` as a benign no-op and simply refetches the
+	// row's runs when a run ends. When per-handler progress emits
+	// land, this composable is where `onProgress` will map into the
+	// runs table without a poll round-trip.
+	//
+	// Keyed on the SORTED name set — the polling refresh reassigns
+	// `jobs` on every tick with a fresh array, which would tear down
+	// and rebuild every sub if the effect keyed on `jobs` identity.
+	// The registered set is fixed at server boot, so this stable key
+	// stops the effect churning.
+	const jobNameKey = $derived(
+		jobs
+			?.map((j) => j.name)
+			.sort()
+			.join('|') ?? ''
+	);
+
+	$effect(() => {
+		// Don't attempt to open a socket if the server has the bus
+		// disabled — the WS route is unmounted (404) and the circuit
+		// breaker would just count failures.
+		if (!serverConfig.features.message_bus) return;
+		if (!jobNameKey) return;
+		const names = jobNameKey.split('|').filter(Boolean);
+		const releases = names.map((name) =>
+			messageBus.subscribe(
+				`job:${name}`,
+				(params) => {
+					// `job_run_progress` currently has no publisher —
+					// treat any incoming variant defensively.
+					if (params.event === 'job_run_started') {
+						void loadJobs();
+						if (expandedJob === name) void loadRuns(name);
+					} else if (params.event === 'job_run_ended') {
+						void loadJobs();
+						if (expandedJob === name) void loadRuns(name);
+					}
+				},
+				() => {
+					// Server-side eviction — admin role revoked or bus
+					// disabled mid-session. Nothing surgical to do; the
+					// next poll will reflect whatever changed and the
+					// operator's UI will render normally.
+				}
+			)
+		);
+		return () => {
+			for (const release of releases) release();
+		};
 	});
 
 	async function loadRuns(name: string) {

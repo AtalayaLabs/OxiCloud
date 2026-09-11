@@ -112,8 +112,13 @@ impl InProcessMessageBus {
     /// (for the receiver) — one code path for the map insert avoids a race
     /// where publish creates a sender concurrent subscribers miss.
     fn sender_for(&self, topic: &Topic) -> broadcast::Sender<MessageBusEvent> {
+        // `topic.clone()` because `Topic::Job(String)` isn't `Copy`.
+        // The clone is a String alloc on the cold path (first ever
+        // subscriber for a topic) and free on the hot path (existing
+        // entry — `entry` doesn't need to move the key when the
+        // entry is already present).
         self.topics
-            .entry(*topic)
+            .entry(topic.clone())
             .or_insert_with(|| broadcast::channel(BROADCAST_RING_CAPACITY).0)
             .clone()
     }
@@ -194,6 +199,9 @@ fn event_kind(event: &MessageBusEvent) -> &'static str {
         MessageBusEvent::FolderMoved { .. } => "folder_moved",
         MessageBusEvent::FolderDeleted { .. } => "folder_deleted",
         MessageBusEvent::AuthzChanged { .. } => "authz_changed",
+        MessageBusEvent::JobRunStarted { .. } => "job_run_started",
+        MessageBusEvent::JobRunProgress { .. } => "job_run_progress",
+        MessageBusEvent::JobRunEnded { .. } => "job_run_ended",
     }
 }
 

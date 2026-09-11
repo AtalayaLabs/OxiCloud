@@ -94,8 +94,11 @@ async fn run(registry: Arc<JobRegistry>) {
         // Fire and forget from the supervisor's perspective — we
         // don't care about the outcome, `dispatch` records it on the
         // entry and emits the log line itself. Periodic ticks never
-        // force — that's an admin-trigger-only affordance.
-        let _ = dispatch(&name, entry, &JobRunArgs::default()).await;
+        // force — that's an admin-trigger-only affordance. Pass the
+        // bus reference so periodic runs also publish job events
+        // (same reasoning as the manual-trigger path).
+        let bus = registry.message_bus_snapshot();
+        let _ = dispatch(&name, entry, &JobRunArgs::default(), bus).await;
     }
 }
 
@@ -117,7 +120,12 @@ async fn run(registry: Arc<JobRegistry>) {
 /// `args` is passed through to `JobHandler::run`. The supervisor's
 /// periodic ticks pass `JobRunArgs::default()`; the admin trigger
 /// endpoint forwards parsed query params such as `?force=true`.
-pub(super) async fn dispatch(name: &str, entry: Arc<JobEntry>, args: &JobRunArgs) -> JobOutcome {
+pub(super) async fn dispatch(
+    name: &str,
+    entry: Arc<JobEntry>,
+    args: &JobRunArgs,
+    bus: Option<std::sync::Arc<dyn crate::application::ports::message_bus_ports::MessageBus>>,
+) -> JobOutcome {
     // Try to acquire the single-permit gate. `try_acquire` is
     // non-blocking — if held, we know the previous run is still
     // executing and skip this tick.
@@ -160,6 +168,26 @@ pub(super) async fn dispatch(name: &str, entry: Arc<JobEntry>, args: &JobRunArgs
     }
     let started_wall = Utc::now();
     let start_instant = Instant::now();
+
+    // Publish `JobRunStarted` on `Topic::Job(name)` so the admin
+    // job dashboard's live tab receives a "started" tick without
+    // polling. Silent no-op when the bus isn't wired (test setup)
+    // or when nobody is subscribed. `actor` is `Uuid::nil()` today
+    // because the scheduler doesn't carry the trigger caller
+    // through — the periodic supervisor has no caller, and the
+    // admin trigger endpoints don't thread it in. When they do,
+    // swap to the real UUID.
+    if let Some(bus) = bus.as_ref() {
+        use crate::application::ports::message_bus_ports::{MessageBusEvent, Topic};
+        bus.publish(
+            &Topic::Job(name.to_string()),
+            MessageBusEvent::JobRunStarted {
+                name: name.to_string(),
+                started_at: started_wall,
+                actor: uuid::Uuid::nil(),
+            },
+        );
+    }
 
     // Spawn so panics land as `JoinError::is_panic()` instead of
     // unwinding into the supervisor loop. Args cloned into the spawn
@@ -213,6 +241,33 @@ pub(super) async fn dispatch(name: &str, entry: Arc<JobEntry>, args: &JobRunArgs
     // Log line. `outcome=ok` runs are informational; `outcome=err` include
     // the diagnostic `cause` field.
     log_outcome(name, &outcome, cause, elapsed_ms);
+
+    // Publish `JobRunEnded` on `Topic::Job(name)`. This is the
+    // signal the FE watches for to terminate its subscription
+    // (`useJobTopic` unsubscribes on `onEnded`). `success = false`
+    // covers timeout, panic, handler error — the admin dashboard
+    // renders the row as failed and the "click for details"
+    // notification (Slice E) will link to `/admin/jobs/<name>`.
+    // Silent no-op when the bus isn't wired.
+    if let Some(bus) = bus.as_ref() {
+        use crate::application::ports::message_bus_ports::{MessageBusEvent, Topic};
+        let success = outcome.is_ok();
+        let reason = match &outcome {
+            crate::infrastructure::scheduler::types::JobOutcome::Err { message } => {
+                Some(message.clone())
+            }
+            _ => None,
+        };
+        bus.publish(
+            &Topic::Job(name.to_string()),
+            MessageBusEvent::JobRunEnded {
+                name: name.to_string(),
+                success,
+                reason,
+                ended_at: Utc::now(),
+            },
+        );
+    }
 
     drop(permit);
     outcome
@@ -421,16 +476,15 @@ mod tests {
         // Kick off dispatch 1 in the background — it holds the permit
         // for ~200 ms.
         let entry_bg = entry.clone();
-        let bg =
-            tokio::spawn(
-                async move { dispatch("overrun", entry_bg, &JobRunArgs::default()).await },
-            );
+        let bg = tokio::spawn(async move {
+            dispatch("overrun", entry_bg, &JobRunArgs::default(), None).await
+        });
 
         // Give dispatch 1 time to grab the permit.
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Dispatch 2 should observe the permit taken and skip.
-        dispatch("overrun", entry.clone(), &JobRunArgs::default()).await;
+        dispatch("overrun", entry.clone(), &JobRunArgs::default(), None).await;
 
         // Only dispatch 1's handler should have actually run so far.
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -458,7 +512,7 @@ mod tests {
             .await;
         let entry = registry.get("slow").await.unwrap();
 
-        dispatch("slow", entry.clone(), &JobRunArgs::default()).await;
+        dispatch("slow", entry.clone(), &JobRunArgs::default(), None).await;
 
         // The timeout fired; last_outcome must be Err.
         let state = entry.state.lock().unwrap();

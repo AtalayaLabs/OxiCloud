@@ -1759,6 +1759,17 @@ impl AppServiceFactory {
             Arc::new(crate::application::ports::message_bus_ports::NoopReplicator),
         );
 
+        // Wire the bus into the JobRegistry so `dispatch` (both the
+        // periodic supervisor and the manual `trigger` paths) can
+        // publish `JobRunStarted` / `JobRunEnded` on `Topic::Job(name)`.
+        // Set here — after both the bus and the registry are
+        // constructed — via `OnceLock`. Silent no-op on subsequent
+        // calls; unit tests that build a registry without a bus just
+        // skip this.
+        let bus_for_jobs: Arc<dyn crate::application::ports::message_bus_ports::MessageBus> =
+            bus.clone();
+        core.job_registry.set_message_bus(bus_for_jobs);
+
         // WebSocket ticket store — see `rt_ticket_store` module doc for
         // why this exists (DPoP-bound sessions can't be re-proofed on
         // a browser-issued WS upgrade). Reaper task runs for the app
