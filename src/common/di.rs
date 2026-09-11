@@ -1041,6 +1041,7 @@ impl AppServiceFactory {
         core: &CoreServices,
         authz: &Arc<PgAclEngine>,
         drive_repo: &Arc<crate::infrastructure::repositories::pg::DrivePgRepository>,
+        bus: &Arc<crate::infrastructure::services::in_process_message_bus::InProcessMessageBus>,
     ) -> Option<Arc<TrashService>> {
         if !self.config.features.enable_trash {
             tracing::info!("Trash service is disabled in configuration");
@@ -1049,7 +1050,12 @@ impl AppServiceFactory {
 
         let trash_repo = repos.trash_repository.as_ref()?;
 
-        // Wire ports directly to TrashService — no adapter layer needed
+        // Wire ports directly to TrashService — no adapter layer needed.
+        // Bus upcast to the trait object so the service takes the port,
+        // not the concrete impl — mirrors the pattern in
+        // `create_application_services`.
+        let bus_trait: Arc<dyn crate::application::ports::message_bus_ports::MessageBus> =
+            bus.clone();
         let service = Arc::new(
             TrashService::new(
                 trash_repo.clone(),
@@ -1060,7 +1066,8 @@ impl AppServiceFactory {
                 authz.clone(),
                 drive_repo.clone(),
             )
-            .with_file_deleted_hook(core.file_lifecycle.clone()),
+            .with_file_deleted_hook(core.file_lifecycle.clone())
+            .with_message_bus(bus_trait),
         );
 
         // Initialize cleanup service (bulk-deletes expired items in 2 SQL
@@ -1742,9 +1749,29 @@ impl AppServiceFactory {
         let drive_repo =
             Arc::new(crate::infrastructure::repositories::pg::DrivePgRepository::new(pool.clone()));
 
+        // Message bus: constructed BEFORE the trash service so trash-first
+        // deletes can publish `FolderDeleted` on the parent folder's
+        // topic (folder-view live refresh). Wired with a no-op replicator
+        // — multi-instance broker is a follow-up per
+        // `docs/plan/message-bus.md § Roadmap`. Spawns its own GC task in
+        // `with_replicator`; no supervisor setup required.
+        let bus = crate::infrastructure::services::in_process_message_bus::InProcessMessageBus::with_replicator(
+            Arc::new(crate::application::ports::message_bus_ports::NoopReplicator),
+        );
+
+        // WebSocket ticket store — see `rt_ticket_store` module doc for
+        // why this exists (DPoP-bound sessions can't be re-proofed on
+        // a browser-issued WS upgrade). Reaper task runs for the app
+        // lifetime; its handle is dropped intentionally — the task
+        // survives on the runtime, and cancellation is handled by
+        // graceful shutdown killing the runtime.
+        let rt_ticket_store =
+            crate::infrastructure::services::rt_ticket_store::RtTicketStore::new();
+        let _reaper = Arc::clone(&rt_ticket_store).spawn_reaper();
+
         // 3b. Trash service (needed before application services)
         let trash_service = self
-            .create_trash_service(&repos, &core, &authorization, &drive_repo)
+            .create_trash_service(&repos, &core, &authorization, &drive_repo, &bus)
             .await;
 
         // 3c. Storage usage / quota service (needed by the instant-upload
@@ -1792,17 +1819,6 @@ impl AppServiceFactory {
         }
         let mount_router = Arc::new(
             crate::application::services::external_mount_router::MountRouter::new(mount_registry),
-        );
-
-        // Message bus: single instance for the app lifetime, wired
-        // with a no-op replicator (multi-instance broker is a follow-up
-        // per `docs/plan/message-bus.md § Roadmap`). Constructed here
-        // so `create_application_services` can hand it to services that
-        // publish after their DB commits (`FolderService`,
-        // `FileUploadService`, …). Spawns its own GC task in
-        // `with_replicator` — no supervisor setup required.
-        let bus = crate::infrastructure::services::in_process_message_bus::InProcessMessageBus::with_replicator(
-            Arc::new(crate::application::ports::message_bus_ports::NoopReplicator),
         );
 
         let mut apps = self.create_application_services(
@@ -2316,6 +2332,7 @@ impl AppServiceFactory {
             maintenance_pool: Some(maintenance_pool),
             mount_router,
             bus,
+            rt_ticket_store,
             auth_service: auth_services,
             opaque_service,
             opaque_repo,
@@ -3222,6 +3239,16 @@ pub struct AppState {
     /// `Arc::clone(&state.bus) as Arc<dyn MessageBus>`.
     pub bus: Arc<
         crate::infrastructure::services::in_process_message_bus::InProcessMessageBus,
+    >,
+    /// Short-lived tickets that authenticate a WebSocket upgrade
+    /// without the browser needing to attach a DPoP proof (which
+    /// `new WebSocket()` cannot set — only `Sec-WebSocket-Protocol`
+    /// is settable). FE POSTs `/api/rt/ticket` with a normal
+    /// DPoP-signed request, receives an opaque one-shot token, and
+    /// hands it to the WS upgrade via subprotocol. Always populated;
+    /// see `rt_ticket_store` module doc.
+    pub rt_ticket_store: Arc<
+        crate::infrastructure::services::rt_ticket_store::RtTicketStore,
     >,
     pub auth_service: Option<AuthServices>,
     /// OPAQUE aPAKE substrate (RFC 9807). Populated only when

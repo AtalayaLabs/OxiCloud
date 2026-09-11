@@ -62,12 +62,29 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 struct Args {
     mode: Mode,
     url: String,
-    token: String,
+    /// Either `--token <jwt>` (Authorization: Bearer path — the original
+    /// helper flow) or `--ticket <uuid>` (Sec-WebSocket-Protocol path
+    /// — exercises F). Exactly one MUST be set; parse_args enforces.
+    auth: WsAuth,
     subscribe: Vec<String>,
     expect_events: Option<usize>,
     reason: Option<String>,
     timeout: Duration,
     output: Option<String>,
+    /// Optional path the helper `touch`es the instant EVERY requested
+    /// `--subscribe` topic has been ack'd by the server. Shell tests
+    /// wait on this file before firing the upload that publishes to
+    /// the topic, closing the "sleep 0.4 hoping the subscribe landed
+    /// in time" race that occasionally dropped events on slow /
+    /// cold-cache runs. Off by default; only used by the smoke test.
+    ready_file: Option<String>,
+}
+
+/// How the helper authenticates the WS upgrade. Mirrors the two paths
+/// `rt_ws_handler::authenticate_upgrade` accepts.
+enum WsAuth {
+    Bearer(String),
+    Ticket(String),
 }
 
 enum Mode {
@@ -105,11 +122,13 @@ fn parse_args() -> Result<Args, String> {
 
     let mut url = None;
     let mut token = None;
+    let mut ticket = None;
     let mut subscribe = Vec::new();
     let mut expect_events = None;
     let mut reason = None;
     let mut timeout = Duration::from_secs(3);
     let mut output = None;
+    let mut ready_file = None;
 
     while let Some(flag) = it.next() {
         let value = it
@@ -118,6 +137,7 @@ fn parse_args() -> Result<Args, String> {
         match flag.as_str() {
             "--url" => url = Some(value),
             "--token" => token = Some(value),
+            "--ticket" => ticket = Some(value),
             "--subscribe" => subscribe.push(value),
             "--expect-events" => {
                 expect_events = Some(
@@ -129,19 +149,31 @@ fn parse_args() -> Result<Args, String> {
             "--reason" => reason = Some(value),
             "--timeout" => timeout = parse_duration(&value)?,
             "--output" => output = Some(value),
+            "--ready-file" => ready_file = Some(value),
             other => return Err(format!("unknown flag: {other}")),
         }
     }
 
+    // Exactly one credential MUST be set. Emitting a specific error
+    // makes shell-script drift ("forgot to swap --token for --ticket")
+    // debuggable at a glance.
+    let auth = match (token, ticket) {
+        (Some(_), Some(_)) => return Err("pass exactly one of --token or --ticket".into()),
+        (Some(t), None) => WsAuth::Bearer(t),
+        (None, Some(t)) => WsAuth::Ticket(t),
+        (None, None) => return Err("--token or --ticket required".into()),
+    };
+
     Ok(Args {
         mode,
         url: url.ok_or("--url required")?,
-        token: token.ok_or("--token required")?,
+        auth,
         subscribe,
         expect_events,
         reason,
         timeout,
         output,
+        ready_file,
     })
 }
 
@@ -202,14 +234,20 @@ impl<E: std::fmt::Display> From<E> for HelperError {
 // WS connection
 // ════════════════════════════════════════════════════════════════════════════
 
-/// Open a WS connection to `url` with the given bearer token attached
-/// via `Authorization: Bearer <jwt>`. Programmatic client — this is the
-/// path native clients (this helper, future sync-client integrations)
-/// take. Browser clients that can't set the header will use the
-/// `Sec-WebSocket-Protocol` subprotocol fallback (Phase A follow-up).
+/// Open a WS connection to `url` with the given [`WsAuth`] applied.
+///
+/// - `Bearer(jwt)` sets `Authorization: Bearer <jwt>` on the upgrade
+///   — the programmatic-client path.
+/// - `Ticket(uuid)` sets `Sec-WebSocket-Protocol: oxi.ticket.<uuid>`
+///   — the browser-equivalent path used by F's smoke scenarios.
+///
+/// The subprotocol prefix matches
+/// `infrastructure::services::rt_ticket_store::SUBPROTOCOL_PREFIX`; kept
+/// as a literal here so the test binary has no dependency on the
+/// application crate.
 async fn connect_ws(
     url: &str,
-    token: &str,
+    auth: &WsAuth,
 ) -> Result<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     HelperError,
@@ -217,12 +255,24 @@ async fn connect_ws(
     let mut req = url
         .into_client_request()
         .map_err(|e| HelperError::Protocol(format!("bad url: {e}")))?;
-    let bearer = format!("Bearer {token}");
-    req.headers_mut().insert(
-        "Authorization",
-        HeaderValue::from_str(&bearer)
-            .map_err(|e| HelperError::Protocol(format!("bad token: {e}")))?,
-    );
+    match auth {
+        WsAuth::Bearer(token) => {
+            let bearer = format!("Bearer {token}");
+            req.headers_mut().insert(
+                "Authorization",
+                HeaderValue::from_str(&bearer)
+                    .map_err(|e| HelperError::Protocol(format!("bad token: {e}")))?,
+            );
+        }
+        WsAuth::Ticket(ticket) => {
+            let subprotocol = format!("oxi.ticket.{ticket}");
+            req.headers_mut().insert(
+                "Sec-WebSocket-Protocol",
+                HeaderValue::from_str(&subprotocol)
+                    .map_err(|e| HelperError::Protocol(format!("bad ticket: {e}")))?,
+            );
+        }
+    }
     let (ws, _resp) = tokio_tungstenite::connect_async(req)
         .await
         .map_err(|e| HelperError::Protocol(format!("connect failed: {e}")))?;
@@ -241,7 +291,7 @@ async fn subscribe_and_collect(args: Args) -> Result<(), HelperError> {
     }
     let expect_events = args.expect_events.unwrap_or(0);
 
-    let mut ws = connect_ws(&args.url, &args.token).await?;
+    let mut ws = connect_ws(&args.url, &args.auth).await?;
 
     // Subscribe to every requested topic; track pending request ids so
     // we know when all acks have arrived before we start counting
@@ -327,6 +377,20 @@ async fn subscribe_and_collect(args: Args) -> Result<(), HelperError> {
             if let Some(topic) = topic {
                 subscribed.push(topic);
             }
+            // Every requested subscribe is now ack'd — signal the
+            // orchestrator that publishes targeted at these topics
+            // will land on a live subscriber. See `Args::ready_file`
+            // for the race this closes. Empty content is fine; the
+            // shell only checks existence, not payload. Errors are
+            // logged to stderr but not fatal: the smoke test's
+            // `wait_ready` timeout will surface the failure with
+            // more context than a mid-run panic here.
+            if pending_subs.is_empty()
+                && let Some(path) = args.ready_file.as_deref()
+                && let Err(e) = std::fs::write(path, b"")
+            {
+                eprintln!("rt-hurl-helper: could not touch --ready-file {path}: {e}");
+            }
             continue;
         }
 
@@ -391,7 +455,7 @@ async fn expect_denied(args: Args) -> Result<(), HelperError> {
         .ok_or_else(|| HelperError::Protocol("--subscribe required for expect-denied".into()))?
         .clone();
 
-    let mut ws = connect_ws(&args.url, &args.token).await?;
+    let mut ws = connect_ws(&args.url, &args.auth).await?;
 
     let req_id: u64 = 1;
     let frame = json!({

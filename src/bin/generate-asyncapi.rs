@@ -76,21 +76,32 @@ Phase C (sync-client push, album live) extend the same channels — see
                     },
                 },
                 "protocolVersion": "13",
-                // Subprotocol advertised in the WS handshake. Handler
-                // accepts `oxi.rt.v1` and the optional bearer element
-                // `authorization.bearer.<jwt>` alongside it.
+                // Subprotocol advertised in the WS handshake. The handler
+                // accepts one of two shapes:
+                //   * `oxi.ticket.<uuid>` — the browser path. Redeems a
+                //     one-shot 30 s ticket minted by
+                //     `POST /api/rt/ticket` (that endpoint runs under the
+                //     full auth + DPoP stack, so the ticket effectively
+                //     inherits the proofed session).
+                //   * (no subprotocol) — falls back to
+                //     `Authorization: Bearer <jwt>`, used by programmatic
+                //     clients that can set headers (e.g. rt-hurl-helper).
                 "bindings": {
-                    "ws": { "subProtocol": "oxi.rt.v1" }
+                    "ws": { "subProtocol": "oxi.ticket.{ticket}" }
                 },
-                // Every request MUST be authenticated. Programmatic
-                // clients set `Authorization: Bearer <jwt>` on the WS
-                // upgrade (same header the REST API uses); browser
-                // clients — which can't set headers on `new WebSocket()`
-                // — will use the deferred ticket flow (a plain HTTP
-                // POST issues a short-lived one-shot ticket bound to
-                // the WS URL, see the plan's DPoP-gap section).
+                // Every request MUST be authenticated. Two paths:
+                //   * `bearerAuth` — programmatic clients set
+                //     `Authorization: Bearer <jwt>` on the WS upgrade
+                //     (same header the REST API uses).
+                //   * `ticketAuth` — browser clients POST
+                //     `/api/rt/ticket` with full auth + DPoP, receive
+                //     an opaque one-shot token, and pass it via
+                //     `Sec-WebSocket-Protocol: oxi.ticket.<uuid>`
+                //     (browsers cannot set arbitrary headers on
+                //     `new WebSocket()`). See `docs/plan/message-bus.md § F`.
                 "security": [
-                    { "$ref": "#/components/securitySchemes/bearerAuth" }
+                    { "$ref": "#/components/securitySchemes/bearerAuth" },
+                    { "$ref": "#/components/securitySchemes/ticketAuth" }
                 ],
             }
         },
@@ -299,7 +310,16 @@ fn components() -> Value {
                 "type": "http",
                 "scheme": "bearer",
                 "bearerFormat": "JWT",
-                "description": "OxiCloud JWT — same access_token minted by `POST /api/auth/login` (or the OPAQUE handshake). Programmatic clients set `Authorization: Bearer <jwt>` on the WS upgrade request. Browsers, which cannot set headers on `new WebSocket()`, will use the deferred ticket flow (`POST /api/rt/ticket` → short-lived one-shot ticket in the WS URL); see the plan's DPoP-gap section.",
+                "description": "OxiCloud JWT — same access_token minted by `POST /api/auth/login` (or the OPAQUE handshake). Programmatic clients set `Authorization: Bearer <jwt>` on the WS upgrade request. DPoP-bound tokens are refused on this path (the WS handshake cannot carry a DPoP proof); browsers use `ticketAuth` instead.",
+            },
+            // `httpApiKey` (not bare `apiKey`) — AsyncAPI 3.0 reserves
+            // `apiKey` for server-variable-based schemes; a header-
+            // scoped key is `httpApiKey` with `in: header`.
+            "ticketAuth": {
+                "type": "httpApiKey",
+                "in": "header",
+                "name": "Sec-WebSocket-Protocol",
+                "description": "Browser path — the FE first calls `POST /api/rt/ticket` under the full REST middleware stack (auth + DPoP-proofed request), receives an opaque one-shot UUID with a 30 s TTL, then sets `Sec-WebSocket-Protocol: oxi.ticket.<uuid>` on the WS upgrade. The server redeems the ticket (single-use — a second attempt fails) and treats the WS session as authenticated for the caller who issued it. See `docs/plan/message-bus.md § F` and `handlers/rt_ticket_handler.rs`.",
             }
         }
     });

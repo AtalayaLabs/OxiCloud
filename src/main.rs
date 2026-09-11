@@ -1042,6 +1042,22 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             )
             // Public API routes (share access, i18n) — no auth required
             .nest("/api", public_api_routes.layer(access_log!("http::api")))
+            // Message-bus WebSocket. Registered OUTSIDE `protected_api`
+            // because a browser cannot attach a `DPoP:` header to
+            // `new WebSocket()` (RFC 6455 only lets us set
+            // `Sec-WebSocket-Protocol`), so the standard auth + DPoP
+            // stack would 401 every DPoP-bound session. The handler
+            // self-authenticates from either a ticket subprotocol
+            // (minted by `POST /api/rt/ticket` under the full chain)
+            // or a bearer token (`rt-hurl-helper` test path).
+            // See `handlers/rt_ws.rs` module doc and
+            // `docs/plan/message-bus.md § F`.
+            .route(
+                "/api/rt/ws",
+                axum::routing::get(oxicloud::interfaces::api::handlers::rt_ws::rt_ws_handler)
+                    .with_state(app_state.clone())
+                    .layer(access_log!("http::api")),
+            )
             // All other API routes are protected by auth middleware
             .nest("/api", protected_api.layer(access_log!("http::api")))
             // RFC 6764 well-known discovery (public, no auth — just redirects)

@@ -674,15 +674,23 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         .with_state(app_state.clone());
     router = router.nest("/users", users_router);
 
-    // Message bus WebSocket. Auth (session cookie or bearer JWT) via
-    // the same `auth_middleware` the rest of `/api/*` gets; the handler
-    // extracts `CurrentUserId` from the extension the middleware
-    // installs. See `docs/plan/message-bus.md` and the module doc on
-    // `rt_ws` for the JSON-RPC 2.0 wire.
+    // Message bus — ticket issuance (`POST /api/rt/ticket`). Stays in
+    // the protected router (auth + DPoP), so the caller proves session
+    // + DPoP-key possession before a ticket is minted. See
+    // `handlers/rt_ticket_handler.rs` and `docs/plan/message-bus.md § F`.
     router = router.route(
-        "/rt/ws",
-        get(crate::interfaces::api::handlers::rt_ws::rt_ws_handler).with_state(app_state.clone()),
+        "/rt/ticket",
+        post(crate::interfaces::api::handlers::rt_ticket_handler::issue_rt_ticket)
+            .with_state(app_state.clone()),
     );
+
+    // The WS upgrade (`GET /api/rt/ws`) is registered OUTSIDE the
+    // protected-api middleware stack — a browser cannot attach a
+    // `DPoP:` header to `new WebSocket()`, so the standard stack
+    // 401s on every DPoP-bound session. See the `rt_ws` module doc
+    // for the self-auth logic (ticket subprotocol or bearer token).
+    // Registration happens in `main.rs` where the outer router owns
+    // the middleware layering.
 
     // Collector for any unknown `/api/*` path. Without this, an
     // unmatched API URL falls through Axum's matcher to the

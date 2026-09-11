@@ -18,13 +18,28 @@
 //!
 //! # Auth
 //!
-//! Route sits under `protected_api` (see `src/interfaces/api/routes.rs`)
-//! so `auth_middleware` runs first. Cookie AND `Authorization: Bearer`
-//! paths both produce a `CurrentUserId` extension the handler extracts.
-//! Browser-side subprotocol bearer (`Sec-WebSocket-Protocol:
-//! authorization.bearer.<jwt>`) is a Phase-A follow-up — the MVP relies
-//! on the Authorization header, which programmatic clients (the
-//! `rt-hurl-helper` smoke test) set directly.
+//! Route is mounted at `/api/rt/ws` OUTSIDE the standard
+//! `auth_middleware` + `require_dpop_layer` stack — a browser can't
+//! attach a `DPoP:` header to `new WebSocket()` (RFC 6455 gives us
+//! only `Sec-WebSocket-Protocol`), and the standard chain would 401
+//! on every DPoP-bound session. This handler self-authenticates
+//! from two accepted sources:
+//!
+//! 1. **Ticket subprotocol** (`Sec-WebSocket-Protocol:
+//!    oxi.ticket.<uuid>`) — the primary path for browser clients.
+//!    The FE first `POST /api/rt/ticket` under the full middleware
+//!    chain (auth + DPoP proofed), receives an opaque one-shot
+//!    token, and passes it here. Verified by redeeming through
+//!    [`AppState::rt_ticket_store`]. See
+//!    `docs/plan/message-bus.md § F`.
+//! 2. **Bearer token** (`Authorization: Bearer <jwt>`) — the
+//!    programmatic-client path used by `rt-hurl-helper` in api-test.
+//!    Verified against `AuthServices::token_service`. DPoP-bound
+//!    tokens are rejected on this path to preserve the substrate's
+//!    proof-of-possession invariant.
+//!
+//! Neither → 401. Order matters: ticket first (short-lived, tied to
+//! a proofed HTTP round-trip), bearer second.
 //!
 //! # Limits
 //!
@@ -40,7 +55,8 @@ use std::time::Duration;
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::response::Response;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -49,13 +65,14 @@ use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
+use crate::application::ports::auth_ports::TokenServicePort;
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::message_bus_ports::{
     AuthzCheck, BusResource, MessageBus, MessageBusEvent, ParseTopicErr, Topic, error_code,
 };
 use crate::common::di::AppState;
 use crate::domain::services::authorization::{Permission, Resource, Subject};
-use crate::interfaces::middleware::auth::CurrentUserId;
+use crate::infrastructure::services::rt_ticket_store::SUBPROTOCOL_PREFIX;
 
 /// Max simultaneous subscriptions on a single WS session. Beyond this the
 /// server responds `-32005 sub_limit` and the client is expected to
@@ -151,18 +168,110 @@ struct RpcNotification<'a> {
 // Handler entrypoint
 // ════════════════════════════════════════════════════════════════════════════
 
-/// `GET /api/rt/ws` — WS upgrade handler. Sits under `protected_api` so
-/// [`CurrentUserId`] resolves against a valid session before we reach
-/// `on_upgrade`.
+/// `GET /api/rt/ws` — WS upgrade handler. Mounted outside the standard
+/// `/api/*` middleware stack; self-authenticates via ticket
+/// subprotocol OR bearer token (see the module doc).
 ///
-/// Returns whatever `WebSocketUpgrade::on_upgrade` produces (an HTTP 101
-/// Switching Protocols with the WebSocket handshake headers).
+/// Returns 101 Switching Protocols on success; 401 with an audit
+/// entry on any auth failure. The response is deliberately terse —
+/// browsers surface the status code via the `close` event's code
+/// field (1006 on a rejected upgrade), so a longer body wouldn't
+/// reach the FE anyway.
 pub async fn rt_ws_handler(
     ws: WebSocketUpgrade,
-    CurrentUserId(caller_id): CurrentUserId,
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Response {
+    let auth = match authenticate_upgrade(&headers, &state).await {
+        Ok(auth) => auth,
+        Err(reason) => {
+            tracing::info!(
+                target: "audit",
+                event = "message_bus.upgrade_rejected",
+                reason = %reason,
+                "👮🏻‍♂️ WS upgrade rejected",
+            );
+            return (StatusCode::UNAUTHORIZED, "ws_auth_failed").into_response();
+        }
+    };
+    let caller_id = auth.caller_id;
+    // If the caller reached us via the ticket path, echo the exact
+    // subprotocol they sent back on the 101 response — RFC 6455 §4.2.2
+    // requires this or the client fails the connection.
+    let ws = match auth.accepted_subprotocol {
+        Some(sub) => ws.protocols([sub]),
+        None => ws,
+    };
     ws.on_upgrade(move |socket| handle_session(socket, caller_id, state))
+}
+
+/// Successful upgrade credentials — the resolved caller and (when the
+/// ticket path was used) the subprotocol to echo on the 101 response.
+struct UpgradeAuth {
+    caller_id: Uuid,
+    accepted_subprotocol: Option<String>,
+}
+
+/// Extract `Sec-WebSocket-Protocol` and match a ticket subprotocol
+/// first; fall back to `Authorization: Bearer`. Returns a stable
+/// `reason` key on failure so the audit log stays filterable.
+async fn authenticate_upgrade(
+    headers: &HeaderMap,
+    state: &Arc<AppState>,
+) -> Result<UpgradeAuth, &'static str> {
+    if let Some(ticket_sub) = extract_ticket_subprotocol(headers) {
+        // Redeem parses the UUID; a malformed subprotocol is a
+        // structural failure ("bad_ticket_format"), an unknown-or-
+        // expired UUID is a redemption failure ("ticket_invalid").
+        let Some(ticket_str) = ticket_sub.strip_prefix(SUBPROTOCOL_PREFIX) else {
+            return Err("bad_ticket_format");
+        };
+        let Ok(ticket_uuid) = Uuid::parse_str(ticket_str) else {
+            return Err("bad_ticket_uuid");
+        };
+        let Some(caller_id) = state.rt_ticket_store.redeem(ticket_uuid) else {
+            return Err("ticket_invalid");
+        };
+        return Ok(UpgradeAuth {
+            caller_id,
+            accepted_subprotocol: Some(ticket_sub),
+        });
+    }
+    if let Some(bearer) = extract_bearer(headers) {
+        let Some(auth_service) = state.auth_service.as_ref() else {
+            return Err("auth_service_unavailable");
+        };
+        let claims = auth_service
+            .token_service
+            .validate_token(bearer)
+            .map_err(|_| "bearer_invalid")?;
+        if claims.sub_id.is_nil() {
+            return Err("bearer_bad_subject");
+        }
+        return Ok(UpgradeAuth {
+            caller_id: claims.sub_id,
+            accepted_subprotocol: None,
+        });
+    }
+    Err("no_credentials")
+}
+
+/// Find the first subprotocol value that looks like a ticket. Browsers
+/// send `Sec-WebSocket-Protocol` as a comma-separated list per RFC 6455.
+fn extract_ticket_subprotocol(headers: &HeaderMap) -> Option<String> {
+    let raw = headers.get("sec-websocket-protocol")?.to_str().ok()?;
+    raw.split(',')
+        .map(str::trim)
+        .find(|s| s.starts_with(SUBPROTOCOL_PREFIX))
+        .map(|s| s.to_string())
+}
+
+/// Extract `Authorization: Bearer <token>` if present. Returns the raw
+/// token string (never empty).
+fn extract_bearer(headers: &HeaderMap) -> Option<&str> {
+    let value = headers.get("authorization")?.to_str().ok()?;
+    let token = value.strip_prefix("Bearer ")?.trim();
+    (!token.is_empty()).then_some(token)
 }
 
 // ════════════════════════════════════════════════════════════════════════════

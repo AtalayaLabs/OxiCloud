@@ -52,6 +52,7 @@ pub mod pg_acl_engine;
 pub mod plugins;
 pub mod recent_recording_hook;
 pub mod retry_blob_backend;
+pub mod rt_ticket_store;
 pub mod s3_blob_backend;
 pub mod satellites_consistency_service;
 pub mod search_index;

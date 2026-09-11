@@ -127,6 +127,27 @@ impl MessageBus for InProcessMessageBus {
         // replicators must background their I/O themselves.
         self.replicator.on_local_publish(topic, &event);
 
+        // Structured trace of every publish so operators can watch the
+        // bus with `RUST_LOG=oxicloud::message_bus=debug`. Cheap:
+        // shows the wire-form topic (uses the same Display we return
+        // to WS clients), the event's discriminator (via serde), and
+        // whether anyone was listening at publish time. Payload bodies
+        // are NOT emitted here to keep the log line short and stable
+        // across variant additions — `debug_span` or a per-service
+        // publish site can log the payload if needed.
+        let sub_count = self
+            .topics
+            .get(topic)
+            .map(|s| s.receiver_count())
+            .unwrap_or(0);
+        tracing::debug!(
+            target: "oxicloud::message_bus",
+            topic = %topic.to_wire_key(),
+            kind = event_kind(&event),
+            subscribers = sub_count,
+            "📤 bus publish",
+        );
+
         // If nobody is subscribed, don't allocate a sender just to drop
         // its message. `broadcast::Sender::send` returns Err when there
         // are no receivers — cheaper still to short-circuit here.
@@ -152,6 +173,27 @@ impl MessageBus for InProcessMessageBus {
             async move { keep }
         });
         Box::pin(stream.filter_map(|item| async move { item.ok() }))
+    }
+}
+
+/// Snake-case discriminator string for the event, matching the wire
+/// `event` field. Lifted out of the `publish` hot path so the debug
+/// log stays a one-liner. Kept in sync with the `#[serde(tag =
+/// "event", rename_all = "snake_case")]` shape in
+/// `MessageBusEvent` — new variants get a new arm here to render
+/// nicely in the trace log; adding one that lands in the default is
+/// harmless (still readable), just less specific.
+fn event_kind(event: &MessageBusEvent) -> &'static str {
+    match event {
+        MessageBusEvent::FileCreated { .. } => "file_created",
+        MessageBusEvent::FileRenamed { .. } => "file_renamed",
+        MessageBusEvent::FileMoved { .. } => "file_moved",
+        MessageBusEvent::FileDeleted { .. } => "file_deleted",
+        MessageBusEvent::FolderCreated { .. } => "folder_created",
+        MessageBusEvent::FolderRenamed { .. } => "folder_renamed",
+        MessageBusEvent::FolderMoved { .. } => "folder_moved",
+        MessageBusEvent::FolderDeleted { .. } => "folder_deleted",
+        MessageBusEvent::AuthzChanged { .. } => "authz_changed",
     }
 }
 

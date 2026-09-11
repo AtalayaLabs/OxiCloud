@@ -42,6 +42,16 @@
 #                                 shape as an unknown topic — anti-enumeration).
 #                                 Guards the strict-privacy Class-2 AuthZ gate:
 #                                 no admin bypass, direct UUID equality only.
+#   S10 Ticket happy path       — user1 POSTs `/api/rt/ticket`, receives a
+#                                 short-lived opaque token, opens the WS with
+#                                 `Sec-WebSocket-Protocol: oxi.ticket.<uuid>`
+#                                 and successfully subscribes + delivers an
+#                                 event. Exercises the ticket path — the only
+#                                 path a DPoP-required browser can take.
+#   S11 Ticket single-use       — a ticket redeemed once cannot be redeemed
+#                                 again. Guards replay: a captured token
+#                                 outside its 30 s TTL, or one already
+#                                 consumed, MUST fail the upgrade with 401.
 #
 # Exit non-zero on any failure — run.sh treats that as a suite failure.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -69,14 +79,19 @@ esac
 log()  { printf '\033[1;36m[rt_bus_check]\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[rt_bus_check FAIL]\033[0m %s\n' "$*" >&2; exit 1; }
 
-# ── Build the helper on demand (matches opaque/dpop helper convention) ──────
-if [[ ! -x "$HELPER_BIN" ]]; then
-  log "Building rt-hurl-helper ($BUILD_TARGET)..."
-  case "$BUILD_TARGET" in
-    debug)   (cd "$REPO_ROOT" && cargo build           --features test_utils --bin rt-hurl-helper 2>&1 | tail -n 20) || die "rt-hurl-helper build failed" ;;
-    release) (cd "$REPO_ROOT" && cargo build --release --features test_utils --bin rt-hurl-helper 2>&1 | tail -n 20) || die "rt-hurl-helper build failed" ;;
-  esac
-fi
+# ── Rebuild the helper every run ────────────────────────────────────────────
+# Deliberately unconditional — the previous `[[ ! -x $HELPER_BIN ]]` guard
+# silently reused a stale binary whenever the helper's source changed
+# without touching the caller shell script, producing "unknown flag"
+# exits that looked like test bugs (see the S10/S11 --ticket rollout).
+# Cargo incremental short-circuits in ~50 ms when nothing changed, so
+# the cost of the always-build is negligible; the cost of a stale binary
+# is a wild-goose chase.
+log "Building rt-hurl-helper ($BUILD_TARGET)..."
+case "$BUILD_TARGET" in
+  debug)   (cd "$REPO_ROOT" && cargo build           --features test_utils --bin rt-hurl-helper 2>&1 | tail -n 20) || die "rt-hurl-helper build failed" ;;
+  release) (cd "$REPO_ROOT" && cargo build --release --features test_utils --bin rt-hurl-helper 2>&1 | tail -n 20) || die "rt-hurl-helper build failed" ;;
+esac
 
 # ── curl wrappers ───────────────────────────────────────────────────────────
 c_post() {
@@ -91,6 +106,22 @@ c_get() {
   curl -sS -H "Accept: application/json" \
     ${auth:+-H "Authorization: Bearer $auth"} \
     "$url"
+}
+
+# Block until the helper writes `--ready-file <path>` (touched the
+# moment every requested subscribe is ack'd) or `$timeout` seconds
+# elapse. Replaces the older `sleep 0.4` heuristic that flaked on
+# cold-cache runs where the helper's fork/tokio-init/connect chain
+# crossed 400 ms and the shell's mkfile_in publish arrived at an
+# empty topic. See `Args::ready_file` in rt-hurl-helper.rs.
+wait_ready() {
+  local path="$1" timeout="${2:-5}"
+  local waited=0
+  while [[ ! -f "$path" && "$waited" -lt "$((timeout * 20))" ]]; do
+    sleep 0.05
+    waited=$((waited + 1))
+  done
+  [[ -f "$path" ]] || die "wait_ready: $path never appeared within ${timeout}s (subscribe likely never ack'd)"
 }
 
 # ── Setup: register fresh users; the test.env admin may be OPAQUE-
@@ -178,17 +209,21 @@ mkfile_in() {
 # ── Scenario 1 — Positive delivery ──────────────────────────────────────────
 log "S1: subscribe to folder A, upload into A, expect one file_created event."
 out_s1="$(mktemp -t rtbus_s1.XXXXXX)"
+ready_s1="$(mktemp -t rtbus_s1_ready.XXXXXX)"
+rm -f "$ready_s1"  # mktemp creates it; ready-file semantics need "appears when subscribed"
 "$HELPER_BIN" subscribe-and-collect \
   --url "$ws_url" \
   --token "$user1_token" \
   --subscribe "folder:$folder_a" \
   --expect-events 1 \
   --timeout 5s \
+  --ready-file "$ready_s1" \
   --output "$out_s1" &
 helper_pid=$!
-# Give the ack a moment to install so the upload's post-commit publish
-# lands on a live receiver, not an orphaned map entry.
-sleep 0.4
+# Block on the helper's ready-file signal, not a wall-clock sleep —
+# see wait_ready doc. Closes the "publish before subscribe installed"
+# race that flaked S1 on cold-cache runs.
+wait_ready "$ready_s1"
 mkfile_in "$folder_a" "s1.txt" "$user1_token"
 if ! wait "$helper_pid"; then
   cat "$out_s1" >&2 || true
@@ -206,15 +241,17 @@ log "S1 OK"
 # ── Scenario 2 — Topic isolation ────────────────────────────────────────────
 log "S2: subscribe to folder A, upload into B (must be silent) and A (triggers exit)."
 out_s2="$(mktemp -t rtbus_s2.XXXXXX)"
+ready_s2="$(mktemp -t rtbus_s2_ready.XXXXXX)"; rm -f "$ready_s2"
 "$HELPER_BIN" subscribe-and-collect \
   --url "$ws_url" \
   --token "$user1_token" \
   --subscribe "folder:$folder_a" \
   --expect-events 1 \
   --timeout 5s \
+  --ready-file "$ready_s2" \
   --output "$out_s2" &
 helper_pid=$!
-sleep 0.4
+wait_ready "$ready_s2"
 # B first — should be dropped for the A subscriber.
 mkfile_in "$folder_b" "s2_in_B.txt" "$user1_token"
 # Small settle so if isolation is BROKEN, the B event has time to arrive
@@ -271,14 +308,20 @@ log "S4 OK"
 # (b) trips (event never arrives after idle).
 log "S5: server-initiated keepalive fires on idle; session still delivers."
 out_s5="$(mktemp -t rtbus_s5.XXXXXX)"
+ready_s5="$(mktemp -t rtbus_s5_ready.XXXXXX)"; rm -f "$ready_s5"
 "$HELPER_BIN" subscribe-and-collect \
   --url "$ws_url" \
   --token "$user1_token" \
   --subscribe "folder:$folder_a" \
   --expect-events 1 \
   --timeout 6s \
+  --ready-file "$ready_s5" \
   --output "$out_s5" &
 helper_pid=$!
+# Wait for the subscribe to install BEFORE starting the idle window —
+# otherwise slow helper startup eats into the 3 s and we observe
+# fewer pings than the assertion below tolerates.
+wait_ready "$ready_s5"
 # 3 s of pure idle — with 1 s keepalive on the server, that's ~3 Pings.
 sleep 3
 mkfile_in "$folder_a" "s5.txt" "$user1_token"
@@ -320,15 +363,17 @@ s6_file_id=$(printf '%s' "$s6_upload" | jq -r '.id')
   || die "S6: pre-upload failed: $s6_upload"
 
 out_s6="$(mktemp -t rtbus_s6.XXXXXX)"
+ready_s6="$(mktemp -t rtbus_s6_ready.XXXXXX)"; rm -f "$ready_s6"
 "$HELPER_BIN" subscribe-and-collect \
   --url "$ws_url" \
   --token "$user1_token" \
   --subscribe "folder:$folder_a" \
   --expect-events 1 \
   --timeout 5s \
+  --ready-file "$ready_s6" \
   --output "$out_s6" &
 helper_pid=$!
-sleep 0.4
+wait_ready "$ready_s6"
 # `DELETE /api/files/{id}` routes to `delete_and_cleanup_with_perms` —
 # the trash-first path. Publish fires on BOTH the trash and the
 # permanent-delete branch, so this covers whichever the test hits.
@@ -369,6 +414,7 @@ s7_file_id=$(printf '%s' "$s7_upload" | jq -r '.id')
   || die "S7: pre-upload failed: $s7_upload"
 
 out_s7="$(mktemp -t rtbus_s7.XXXXXX)"
+ready_s7="$(mktemp -t rtbus_s7_ready.XXXXXX)"; rm -f "$ready_s7"
 "$HELPER_BIN" subscribe-and-collect \
   --url "$ws_url" \
   --token "$user1_token" \
@@ -376,9 +422,10 @@ out_s7="$(mktemp -t rtbus_s7.XXXXXX)"
   --subscribe "folder:$folder_b" \
   --expect-events 2 \
   --timeout 5s \
+  --ready-file "$ready_s7" \
   --output "$out_s7" &
 helper_pid=$!
-sleep 0.4
+wait_ready "$ready_s7"
 # `PUT /api/files/{id}/move` — MoveFilePayload = { folder_id: <dest> }.
 curl -sS -X PUT \
   -H "Authorization: Bearer $user1_token" \
@@ -447,6 +494,7 @@ grant_b_id=$(printf '%s' "$grant_b" | jq -r '.grants[0].id')
 # 8.2 user2 subscribes to BOTH folder topics; --expect-events 1 exits
 # when the post-revoke upload lands on the SURVIVING sub.
 out_s8="$(mktemp -t rtbus_s8.XXXXXX)"
+ready_s8="$(mktemp -t rtbus_s8_ready.XXXXXX)"; rm -f "$ready_s8"
 "$HELPER_BIN" subscribe-and-collect \
   --url "$ws_url" \
   --token "$user2_token" \
@@ -454,9 +502,10 @@ out_s8="$(mktemp -t rtbus_s8.XXXXXX)"
   --subscribe "folder:$folder_b" \
   --expect-events 1 \
   --timeout 6s \
+  --ready-file "$ready_s8" \
   --output "$out_s8" &
 helper_pid=$!
-sleep 0.4  # let both subscribes install
+wait_ready "$ready_s8"  # both subscribes installed before we revoke/upload
 
 # 8.3 user1 revokes only the folder-A grant.
 curl -sS -X DELETE \
@@ -531,4 +580,65 @@ if ! "$HELPER_BIN" expect-denied \
 fi
 log "S9 OK"
 
-log "All nine message-bus scenarios passed."
+# ── Scenario 10 — Ticket happy path ─────────────────────────────────────────
+# The browser flow: POST /api/rt/ticket under the full middleware stack
+# (auth + DPoP proofed), then open the WS with `oxi.ticket.<uuid>` in
+# Sec-WebSocket-Protocol. Same delivery guarantees as the bearer path.
+# `curl` mints the ticket; `rt-hurl-helper --ticket` redeems it on the
+# upgrade.
+log "S10: issue rt ticket, open WS with subprotocol, subscribe + deliver."
+# c_post takes the raw JWT as its second arg (not the full
+# `Authorization:` line); it assembles the header itself.
+tkt_resp=$(c_post "$base_url/api/rt/ticket" "$user1_token" "")
+ticket=$(printf '%s' "$tkt_resp" | jq -r '.ticket')
+[[ -n "$ticket" && "$ticket" != "null" ]] \
+  || die "S10: no ticket in POST /api/rt/ticket response: $tkt_resp"
+out_s10="$(mktemp -t rtbus_s10.XXXXXX)"
+ready_s10="$(mktemp -t rtbus_s10_ready.XXXXXX)"; rm -f "$ready_s10"
+"$HELPER_BIN" subscribe-and-collect \
+  --url "$ws_url" \
+  --ticket "$ticket" \
+  --subscribe "folder:$folder_a" \
+  --expect-events 1 \
+  --timeout 3s \
+  --ready-file "$ready_s10" \
+  --output "$out_s10" &
+helper_pid=$!
+wait_ready "$ready_s10"
+mkfile_in "$folder_a" "s10.txt" "$user1_token"
+if ! wait "$helper_pid"; then
+  cat "$out_s10" >&2 || true
+  die "S10: helper did not observe event on ticket-authenticated WS"
+fi
+[[ "$(jq -r '.events | length' "$out_s10")" == "1" ]] \
+  || { cat "$out_s10"; die "S10: expected 1 event, got $(jq -r '.events | length' "$out_s10")"; }
+log "S10 OK"
+
+# ── Scenario 11 — Ticket single-use ─────────────────────────────────────────
+# S10 already redeemed the ticket. A second connection with the SAME
+# token MUST be refused at the upgrade with 401 (`ticket_invalid`
+# audit reason). Proves replay protection — the store removes entries
+# on first successful redeem, even if the caller reconnects before
+# the 30 s TTL would have expired anyway.
+#
+# The helper distinguishes "expectation failure" (exit 1 — WS opened
+# and then something was off) from "protocol/connect failure" (exit 2
+# — connect_ws itself refused). Ticket rejection lands in the second
+# bucket, so we assert on exit code 2. Bash's `!` inverter treats any
+# non-zero as success, so we capture the exact code.
+log "S11: reuse the redeemed ticket, expect upgrade rejected."
+set +e
+"$HELPER_BIN" subscribe-and-collect \
+  --url "$ws_url" \
+  --ticket "$ticket" \
+  --subscribe "folder:$folder_a" \
+  --expect-events 1 \
+  --timeout 2s \
+  --output /dev/null
+reuse_exit=$?
+set -e
+[[ "$reuse_exit" -eq 2 ]] \
+  || die "S11: expected exit 2 (connect refused), got $reuse_exit"
+log "S11 OK"
+
+log "All eleven message-bus scenarios passed."

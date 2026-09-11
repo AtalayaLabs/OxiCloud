@@ -14,6 +14,7 @@ use crate::application::dtos::trash_dto::{
 };
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::file_lifecycle::FileLifecycleHook;
+use crate::application::ports::message_bus_ports::{MessageBus, MessageBusEvent, Topic};
 use crate::application::ports::storage_ports::FileWritePort;
 use crate::application::ports::trash_ports::TrashUseCase;
 use crate::common::errors::{DomainError, ErrorKind, Result};
@@ -71,6 +72,16 @@ pub struct TrashService {
     /// so trash listings filter by drive membership instead of the legacy
     /// per-user scope.
     drive_repo: Arc<crate::infrastructure::repositories::pg::DrivePgRepository>,
+
+    /// Message bus — publishes `FolderDeleted` on `Topic::Folder(parent)`
+    /// after a folder is trashed, so subscribers of the parent folder's
+    /// live-view refresh. `None` when the bus isn't wired (tests / stubs).
+    /// File trash is intentionally NOT published here: the FE hits
+    /// `DELETE /api/files/{id}` directly (bypasses the trash service)
+    /// and `FileManagementService::delete_and_cleanup_with_perms`
+    /// publishes on that path. If a future endpoint routes file delete
+    /// through this service, add the file-arm publish here too.
+    bus: Option<Arc<dyn MessageBus>>,
 }
 
 impl TrashService {
@@ -93,12 +104,22 @@ impl TrashService {
             content_cache,
             authz,
             drive_repo,
+            bus: None,
         }
     }
 
     /// Sets the lifecycle hook dispatcher (thumbnails, audio metadata, …).
     pub fn with_file_deleted_hook(mut self, hook: Arc<dyn FileLifecycleHook>) -> Self {
         self.file_deleted_hook = Some(hook);
+        self
+    }
+
+    /// Wire the message bus. Enables the `FolderDeleted` publish on
+    /// `Topic::Folder(parent)` after a folder is trashed — folder-live
+    /// views subscribe to the parent topic and refresh on receipt.
+    /// Silent no-op if never called (unit tests skip this).
+    pub fn with_message_bus(mut self, bus: Arc<dyn MessageBus>) -> Self {
+        self.bus = Some(bus);
         self
     }
 
@@ -236,6 +257,28 @@ impl TrashUseCase for TrashService {
                     )
                     .await?;
 
+                // Snapshot the parent BEFORE the trash UPDATE — the row
+                // still exists at this point (soft-delete flips
+                // `is_trashed`, keeps the parent_id). We need parent_id
+                // to publish `FolderDeleted` on `Topic::Folder(parent)`
+                // after commit, so subscribers of the folder view refresh.
+                // If the bus isn't wired, skip the read to save a query.
+                let parent_snapshot = if self.bus.is_some() {
+                    match self.folder_storage_port.get_folder(item_id).await {
+                        Ok(folder) => folder.parent_id().and_then(|s| Uuid::parse_str(s).ok()),
+                        Err(e) => {
+                            debug!("trash-folder parent lookup failed: {}", e);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+                debug!(
+                    "trash-folder parent snapshot for {}: {:?}",
+                    item_id, parent_snapshot
+                );
+
                 // Soft-delete model — same as the file branch above: the
                 // cascade UPDATE below is the whole operation; no folder
                 // fetch or trash-index write needed.
@@ -253,6 +296,32 @@ impl TrashUseCase for TrashService {
                     })?;
 
                 debug!("Folder moved to trash: {}", item_id);
+
+                // Bus publish AFTER the trash commits. Root folders
+                // have `parent_id = None`; the trash endpoint refuses
+                // those via the mount / drive-root guards, but keep
+                // the `Some` gate anyway so a future permissive path
+                // doesn't panic here.
+                if let (Some(bus), Some(parent_uuid)) = (&self.bus, parent_snapshot) {
+                    debug!(
+                        "publishing FolderDeleted folder={} parent={} actor={}",
+                        folder_id, parent_uuid, user_id
+                    );
+                    bus.publish(
+                        &Topic::Folder(parent_uuid),
+                        MessageBusEvent::FolderDeleted {
+                            folder_id,
+                            parent_id: parent_uuid,
+                            actor: user_id,
+                        },
+                    );
+                } else {
+                    debug!(
+                        "trash-folder publish skipped: bus={} parent={:?}",
+                        self.bus.is_some(),
+                        parent_snapshot
+                    );
+                }
                 Ok(())
             }
             _ => Err(DomainError::validation_error(format!(
