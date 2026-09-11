@@ -186,7 +186,7 @@ fn operations() -> Value {
             ]
         },
         // Application-layer keepalive. Separate from the RFC 6455 Ping
-        // control frame the server sends on `OXICLOUD_RT_WS_KEEPALIVE_SECONDS`
+        // control frame the server sends on `OXICLOUD_MESSAGEBUS_KEEPALIVE_SECONDS`
         // (which is transport-level and not modelled in AsyncAPI). This
         // operation lets a client actively confirm the socket is
         // end-to-end alive when transport-level Pings alone can't rule

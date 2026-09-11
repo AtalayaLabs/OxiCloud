@@ -2284,6 +2284,21 @@ pub struct FeaturesConfig {
     /// Env: `OXICLOUD_WEBDAV_DRIVE_LISTING_PREFIX`.
     pub webdav_drive_listing_prefix: String,
 
+    /// Message-bus master switch. When `false`, the WS route
+    /// `/api/rt/ws` and the ticket endpoint `POST /api/rt/ticket`
+    /// are **not registered** at boot — Axum returns 404 for both,
+    /// no 5xx alerts, no ambiguity. Publish sites in the services
+    /// stay unchanged (the in-process bus still runs, publishes to
+    /// nobody are cheap no-ops), so no service code paths branch on
+    /// this flag — the toggle is purely at the API surface.
+    ///
+    /// Clients discover this via `GET /api/config.features.message_bus`
+    /// and skip WS setup entirely when false — no reconnect flood,
+    /// no wasted round-trips.
+    ///
+    /// Env: `OXICLOUD_MESSAGEBUS_ENABLE` (default `true`).
+    pub enable_message_bus: bool,
+
     /// Background purge of expired `storage.role_grants` rows.
     ///
     /// The AuthZ engine already filters expired grants out of every
@@ -2483,6 +2498,7 @@ impl Default for FeaturesConfig {
             // maps to the caller's default drive; drive listing is
             // reachable at `/webdav/@drive/`.
             webdav_drive_listing_prefix: "@drive".to_string(),
+            enable_message_bus: true, // Message bus (WS + ticket) on by default
             grant_cleanup: GrantCleanupConfig::default(),
         }
     }
@@ -3355,6 +3371,19 @@ impl AppConfig {
             && let Ok(val) = enable_trash
         {
             config.features.enable_trash = val;
+        }
+
+        // Message bus (WS + ticket endpoints). Follows the
+        // `OXICLOUD_MESSAGEBUS_*` naming rather than
+        // `OXICLOUD_ENABLE_MESSAGEBUS` — the `MESSAGEBUS` prefix groups
+        // this with `OXICLOUD_MESSAGEBUS_KEEPALIVE_SECONDS` at the env
+        // level. Internal struct field keeps the codebase-wide
+        // `enable_*` convention.
+        if let Ok(enable_message_bus) =
+            env::var("OXICLOUD_MESSAGEBUS_ENABLE").map(|v| v.parse::<bool>())
+            && let Ok(val) = enable_message_bus
+        {
+            config.features.enable_message_bus = val;
         }
 
         if let Ok(enable_search) = env::var("OXICLOUD_ENABLE_SEARCH").map(|v| v.parse::<bool>())

@@ -11,16 +11,20 @@
 // `project_message_bus_reconnect_gap` memory for the gap it closes.
 
 import { messageBus } from '$lib/message-bus/client.svelte';
+import { serverConfig } from '$lib/stores/serverConfig.svelte';
 
 /**
  * Register `cb` as a reconnect handler for the lifetime of the
  * calling component. Auto-unregisters on destroy via `$effect`
  * cleanup. Passing `null`/`undefined` is a no-op — convenient for
  * conditional wiring (`useReconnect(handlers.onReconnect)`).
+ *
+ * Also a no-op when the server has the message bus disabled — the
+ * WS never opens, so a reconnect callback can never fire.
  */
 export function useReconnect(cb: (() => void) | null | undefined): void {
 	$effect(() => {
-		if (!cb) return;
+		if (!cb || !serverConfig.features.message_bus) return;
 		const release = messageBus.onReconnect(cb);
 		return () => release();
 	});

@@ -167,6 +167,16 @@ pub fn create_public_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppStat
     router = router.route("/version", get(get_version));
     router = router.route("/openapi.json", get(get_openapi_spec));
 
+    // Server-configuration discovery endpoint — public, unauthenticated.
+    // Returns feature flags, version, and a snapshot of the server-status
+    // header for one-shot boot hydration by the SPA. See
+    // `handlers/config_handler.rs` for the DTO shape and rationale.
+    router = router.route(
+        "/config",
+        get(crate::interfaces::api::handlers::config_handler::get_config)
+            .with_state(app_state.clone()),
+    );
+
     router
 }
 
@@ -678,11 +688,17 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     // the protected router (auth + DPoP), so the caller proves session
     // + DPoP-key possession before a ticket is minted. See
     // `handlers/rt_ticket_handler.rs` and `docs/plan/message-bus.md § F`.
-    router = router.route(
-        "/rt/ticket",
-        post(crate::interfaces::api::handlers::rt_ticket_handler::issue_rt_ticket)
-            .with_state(app_state.clone()),
-    );
+    //
+    // Gated by `enable_message_bus`: when disabled, the route is NOT
+    // registered — Axum returns 404 (no 5xx alerts, no ambiguous 403).
+    // The paired WS route in `main.rs` uses the same guard.
+    if app_state.core.config.features.enable_message_bus {
+        router = router.route(
+            "/rt/ticket",
+            post(crate::interfaces::api::handlers::rt_ticket_handler::issue_rt_ticket)
+                .with_state(app_state.clone()),
+        );
+    }
 
     // The WS upgrade (`GET /api/rt/ws`) is registered OUTSIDE the
     // protected-api middleware stack — a browser cannot attach a

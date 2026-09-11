@@ -355,13 +355,16 @@ Today's shipped locales: `ar, de, en, es, fa, fr, hi, it, ja, ko, nl, pl, pt, ru
 
 Example: `OXICLOUD_TRUST_PROXY_CIDR=127.0.0.1/32,10.0.0.0/8,172.16.0.0/12`
 
-## Message bus WebSocket
+## Message bus
 
 | Variable | Default | Description |
 |---|---|---|
-| `OXICLOUD_RT_WS_KEEPALIVE_SECONDS` | `30` | Server-initiated protocol Ping interval on `/api/rt/ws`. Prevents intermediate proxies (Traefik, nginx, Cloudflare) and NAT boxes from reaping the TCP session as idle. Read at each WS connect — a change takes effect on new connections, no restart needed. Set `0` or any non-positive value to fall back to the default. |
+| `OXICLOUD_MESSAGEBUS_ENABLE` | `true` | Master switch for the message bus. When `false`, the routes `/api/rt/ws` and `POST /api/rt/ticket` are **not registered** at boot — Axum returns `404 Not Found` for both, keeping monitoring dashboards free of 5xx noise. Publish sites in the services stay unchanged (the in-process bus still runs, publishes to nobody are cheap no-ops), so no service code path branches on this flag — the toggle is purely at the API surface. Clients discover this via `GET /api/config.features.message_bus` and skip WS setup entirely (no reconnect flood, no wasted round-trips). **Why an operator might turn it off**: each logged-in browser holds a persistent WebSocket connection while a folder view is open. `N` users × `M` tabs = `N × M` sustained TCP + TLS + WS sessions on the server, each consuming an fd, ~a few KB of tokio task state, and any tuple your L4/L7 load balancer keeps for the flow. On tightly-provisioned VPS deployments (low fd ulimit, tight memory), behind WebSocket-hostile reverse proxies that can't be reconfigured, or during an operational triage where you want to shed WS load, set this to `false` — the SPA transparently falls back to its pre-message-bus behavior (updates land on the next navigation / refresh instead of live). |
+| `OXICLOUD_MESSAGEBUS_KEEPALIVE_SECONDS` | `30` | Server-initiated protocol Ping interval on `/api/rt/ws`. Prevents intermediate proxies (Traefik, nginx, Cloudflare) and NAT boxes from reaping the TCP session as idle. Read at each WS connect — a change takes effect on new connections, no restart needed. Set `0` or any non-positive value to fall back to the default. |
 
-Tuning: 30 s is comfortably under nginx's 60 s `proxy_read_timeout` default and Cloudflare's 100 s hard limit. Behind Traefik with `respondingTimeouts.idleTimeout` bumped to `3600s` (as documented in the reverse-proxy setup), you can leave this at 30 s or raise it — the interval should sit at most half the smallest hop's idle timeout so a single missed Ping doesn't reap the connection.
+Tuning the keepalive interval: 30 s is comfortably under nginx's 60 s `proxy_read_timeout` default and Cloudflare's 100 s hard limit. Behind Traefik with `respondingTimeouts.idleTimeout` bumped to `3600s` (as documented in the reverse-proxy setup), you can leave this at 30 s or raise it — the interval should sit at most half the smallest hop's idle timeout so a single missed Ping doesn't reap the connection.
+
+**Rename note (feat/message-bus branch)**: `OXICLOUD_RT_WS_KEEPALIVE_SECONDS` was renamed to `OXICLOUD_MESSAGEBUS_KEEPALIVE_SECONDS` — hard cutover, no fallback. Update any `.env` file that set the old name.
 
 ## Allocator Tuning
 

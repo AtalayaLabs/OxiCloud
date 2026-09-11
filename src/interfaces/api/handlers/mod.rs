@@ -7,6 +7,7 @@ pub mod caldav_handler;
 pub mod caller_flags;
 pub mod carddav_handler;
 pub mod chunked_upload_handler;
+pub mod config_handler;
 pub mod contacts_handler;
 pub mod dedup_handler;
 pub mod delta_upload_handler;

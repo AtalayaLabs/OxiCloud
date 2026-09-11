@@ -6,6 +6,7 @@
 import log from 'loglevel';
 import { setSessionExpiredHandler } from '$lib/api/client';
 import { initI18n } from '$lib/i18n/index.svelte';
+import { serverConfig } from '$lib/stores/serverConfig.svelte';
 import { session } from '$lib/stores/session.svelte';
 import { seedNonceFromCookie } from '$lib/auth/dpop-proof';
 
@@ -14,7 +15,8 @@ import { seedNonceFromCookie } from '$lib/auth/dpop-proof';
 // needing to import anything.
 //
 // Log levels — namespaces used today: `oxi:upload` (delta + direct
-// upload pipeline), `oxi:message-bus` (WebSocket client + `useTopic`).
+// upload pipeline), `oxi:message-bus` (WebSocket client + `useTopic`),
+// `oxi:config` (server-config boot fetch).
 // Levels: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'silent'.
 // Choices persist to `localStorage['loglevel:<namespace>']` via loglevel.
 //
@@ -119,5 +121,12 @@ export async function init(): Promise<void> {
 	// bound request and eat a `use_dpop_nonce` 401 → retry cycle.
 	seedNonceFromCookie();
 
-	await initI18n();
+	// Boot in parallel: translations and server-config discovery are
+	// independent of each other, and both must resolve before any route
+	// mounts. `serverConfig.load()` primes the reactive feature-flag
+	// store; `useTopic` / `useFolderTopic` / `useReconnect` read from
+	// it to decide whether to open a WebSocket at all. See
+	// `stores/serverConfig.svelte.ts` for the failure semantics
+	// (defaults preserved on fetch error).
+	await Promise.all([initI18n(), serverConfig.load()]);
 }

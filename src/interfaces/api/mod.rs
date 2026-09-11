@@ -55,12 +55,14 @@ use crate::interfaces::api::handlers::auth_handler::SystemStatus;
 use crate::interfaces::api::handlers::chunked_upload_handler::{
     CompleteUploadResponse, CreateUploadRequest,
 };
+use crate::interfaces::api::handlers::config_handler::{FeaturesDto, ServerConfigDto};
 use crate::interfaces::api::handlers::contacts_handler::{
     AddMemberRequest, AddressBookResponse, CreateAddressBookRequest, CreateContactRequest,
     GroupNameRequest, UpdateAddressBookRequest, UpdateContactRequest,
 };
 use crate::interfaces::api::handlers::dedup_handler::{HashCheckResponse, StatsResponse};
 use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
+use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -332,6 +334,8 @@ use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
         handlers::subject_group_handler::remove_user_member,
         handlers::subject_group_handler::remove_group_member,
         handlers::subject_group_handler::list_effective_members,
+        // Public server-config discovery.
+        handlers::config_handler::get_config,
     ),
     components(
         schemas(
@@ -375,6 +379,11 @@ use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
             ChangePasswordDto,
             RefreshTokenDto,
             SystemStatus,
+            // Public server-config discovery — `GET /api/config`.
+            ServerConfigDto,
+            FeaturesDto,
+            HeaderPayload,
+            ProgressHeader,
             OidcProviderInfoDto,
             OidcExchangeDto,
             // Admin sessions panel — wire shape for `/api/admin/sessions`.

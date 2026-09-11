@@ -90,7 +90,7 @@ const OUTBOUND_CHANNEL_CAPACITY: usize = 512;
 /// default and Cloudflare's 100 s hard limit; behind Traefik we
 /// document a much longer `idleTimeout` anyway.
 ///
-/// Overridable at server start via `OXICLOUD_RT_WS_KEEPALIVE_SECONDS`
+/// Overridable at server start via `OXICLOUD_MESSAGEBUS_KEEPALIVE_SECONDS`
 /// — test suites drop it to a low value to exercise the keepalive path
 /// within a bounded wall-clock.
 const DEFAULT_KEEPALIVE_SECONDS: u64 = 30;
@@ -101,7 +101,7 @@ const DEFAULT_KEEPALIVE_SECONDS: u64 = 30;
 /// useful for smoke tests that toggle the value on the fly.
 fn keepalive_interval() -> Duration {
     Duration::from_secs(
-        std::env::var("OXICLOUD_RT_WS_KEEPALIVE_SECONDS")
+        std::env::var("OXICLOUD_MESSAGEBUS_KEEPALIVE_SECONDS")
             .ok()
             .and_then(|s| s.parse().ok())
             .filter(|&n: &u64| n > 0)

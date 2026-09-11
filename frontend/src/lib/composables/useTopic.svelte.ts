@@ -10,6 +10,7 @@
 // re-subscribes when it changes. Static `topic`: pass a plain string.
 
 import { messageBus } from '$lib/message-bus/client.svelte';
+import { serverConfig } from '$lib/stores/serverConfig.svelte';
 import type RtEventParams from '$lib/generated/message-bus/RtEventParams';
 import type RtRevokedParams from '$lib/generated/message-bus/RtRevokedParams';
 
@@ -32,6 +33,13 @@ export function useTopic(
 	onRevoked?: (params: RtRevokedParams) => void
 ): void {
 	$effect(() => {
+		// Server may have the message bus disabled (`/api/rt/ws` route
+		// unmounted → 404). Skip the subscribe entirely to avoid a
+		// pointless connect + circuit-breaker cycle. `serverConfig` is
+		// loaded before any route mounts (`hooks.client.ts` awaits it),
+		// so this read reflects the real server value, not the
+		// pre-load default.
+		if (!serverConfig.features.message_bus) return;
 		const resolved = typeof topic === 'function' ? topic() : topic;
 		if (!resolved) return;
 		const release = messageBus.subscribe(resolved, onEvent, onRevoked);

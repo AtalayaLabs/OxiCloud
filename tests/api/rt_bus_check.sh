@@ -297,7 +297,7 @@ log "S4 OK"
 
 # ── Scenario 5 — Server-initiated keepalive ─────────────────────────────────
 # Verifies the WS handler sends RFC 6455 Ping control frames on the
-# `OXICLOUD_RT_WS_KEEPALIVE_SECONDS` cadence (1 s in tests/common/server.env).
+# `OXICLOUD_MESSAGEBUS_KEEPALIVE_SECONDS` cadence (1 s in tests/common/server.env).
 # Two invariants:
 #   (a) idling on a live subscription surfaces multiple Ping frames — the
 #       keepalive interval genuinely fires, not just at connect and never again.

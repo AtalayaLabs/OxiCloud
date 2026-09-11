@@ -878,3 +878,56 @@ export interface AdminSessionsPage {
 	 *  but any in-flight JWT stays valid until its `exp`. */
 	access_token_expiry_secs: number;
 }
+
+// ── /api/config — public server-configuration discovery ────────────────────
+
+/** Boolean matrix of enabled optional subsystems. Mirrors the server's
+ *  `FeaturesConfig`; adding a field is additive (clients ignore unknown
+ *  fields, no field is ever repurposed — same discipline as JSON-RPC
+ *  error codes on the message bus). */
+export interface ServerFeatures {
+	/** Message bus over WebSocket. When `false`, `/api/rt/ws` and
+	 *  `/api/rt/ticket` are unmounted server-side — clients skip WS setup
+	 *  entirely (see `$lib/message-bus/client.svelte.ts`). */
+	message_bus: boolean;
+	trash: boolean;
+	search: boolean;
+	sharing: boolean;
+	quotas: boolean;
+	music: boolean;
+	places: boolean;
+	faces: boolean;
+	video_thumbnails: boolean;
+	external_mounts: boolean;
+}
+
+/** One row in `ServerStatus.migration` / `ServerStatus.rotation` — a
+ *  server-side long-running operation surfacing its progress to the SPA
+ *  banner. Same JSON shape both fields share. */
+export interface ServerStatusProgress {
+	/** Short target name (e.g. `"backend_migration"`, `"rotation_v2"`). */
+	target: string;
+	migrated: number;
+	total: number;
+	/** Integer 0-100. */
+	percent: number;
+}
+
+/** Live server-status snapshot. Same shape and field names as the
+ *  `X-Server-Status` header stamped on every response — the boot fetch
+ *  from `/api/config` and the per-request header both share this wire
+ *  vocabulary. Field-level absence means "nothing running"; the client
+ *  can safely assume `readonly === false && !migration && !rotation` is
+ *  the normal case. */
+export interface ServerStatus {
+	readonly: boolean;
+	migration?: ServerStatusProgress;
+	rotation?: ServerStatusProgress;
+}
+
+/** Response of `GET /api/config`. Public, unauthenticated. */
+export interface ServerConfig {
+	version: string;
+	features: ServerFeatures;
+	server_status: ServerStatus;
+}
