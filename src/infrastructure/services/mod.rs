@@ -39,6 +39,7 @@ pub mod mock_email_sender;
 pub mod mount_provider_factory;
 pub mod nextcloud_chunked_upload_service;
 pub mod noop_face_analyzer;
+pub mod notifications_cleanup_service;
 pub mod oidc_service;
 #[cfg(feature = "faces-onnx")]
 pub mod onnx_face_analyzer;

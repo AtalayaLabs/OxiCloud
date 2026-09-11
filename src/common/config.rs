@@ -2311,6 +2311,17 @@ pub struct FeaturesConfig {
     /// Enabled by default: expired-auth-row cleanup is a
     /// security-hygiene default, not opt-in.
     pub grant_cleanup: GrantCleanupConfig,
+
+    /// Retention window (in days) for read notification rows —
+    /// `notif.notifications` with `read_at IS NOT NULL`. Unread rows
+    /// are preserved unconditionally; the `notifications_cleanup`
+    /// scheduled job deletes read rows older than this on a daily
+    /// cadence.
+    ///
+    /// Env: `OXICLOUD_NOTIFICATIONS_RETENTION_DAYS` (default `30`).
+    /// Minimum 1 (0 would delete every read row on every tick — the
+    /// service clamps defensively).
+    pub notifications_retention_days: u32,
 }
 
 /// Config for the daily expired-grant purge (see
@@ -2498,6 +2509,7 @@ impl Default for FeaturesConfig {
             webdav_drive_listing_prefix: "@drive".to_string(),
             enable_message_bus: true, // Message bus (WS + ticket) on by default
             grant_cleanup: GrantCleanupConfig::default(),
+            notifications_retention_days: 30, // 30 days is the plan's default
         }
     }
 }
@@ -3375,6 +3387,15 @@ impl AppConfig {
             && let Ok(val) = enable_message_bus
         {
             config.features.enable_message_bus = val;
+        }
+
+        // Slice E — notification retention. Read as u32 so a
+        // non-numeric or negative value falls back to the declared
+        // default (30 days) rather than crashing at boot.
+        if let Ok(raw) = env::var("OXICLOUD_NOTIFICATIONS_RETENTION_DAYS")
+            && let Ok(val) = raw.parse::<u32>()
+        {
+            config.features.notifications_retention_days = val.max(1);
         }
 
         if let Ok(enable_search) = env::var("OXICLOUD_ENABLE_SEARCH").map(|v| v.parse::<bool>())

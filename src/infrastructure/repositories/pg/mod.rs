@@ -14,6 +14,7 @@ mod favorites_pg_repository;
 pub mod file_metadata_repository;
 mod magic_link_token_pg_repository;
 mod nextcloud_object_id_repository;
+mod notification_pg_repository;
 mod opaque_pg_repository;
 pub mod playlist_pg_repository;
 mod recent_items_pg_repository;
@@ -48,6 +49,7 @@ pub use file_metadata_repository::FileMetadataRepository;
 pub use folder_db_repository::FolderDbRepository;
 pub use magic_link_token_pg_repository::MagicLinkTokenPgRepository;
 pub use nextcloud_object_id_repository::NextcloudObjectIdRepository;
+pub use notification_pg_repository::NotificationPgRepository;
 pub use opaque_pg_repository::OpaquePgRepository;
 pub use playlist_pg_repository::{
     AudioMetadataPgRepository, PlaylistItemPgRepository, PlaylistPgRepository,

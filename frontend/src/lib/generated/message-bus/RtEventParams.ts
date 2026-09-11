@@ -6,6 +6,7 @@ import type FolderCreatedData from './FolderCreatedData';
 import type FolderRenamedData from './FolderRenamedData';
 import type FolderMovedData from './FolderMovedData';
 import type FolderDeletedData from './FolderDeletedData';
+import type NotificationReceivedData from './NotificationReceivedData';
 import type JobRunStartedData from './JobRunStartedData';
 import type JobRunProgressData from './JobRunProgressData';
 import type JobRunEndedData from './JobRunEndedData';
@@ -22,6 +23,7 @@ interface RtEventParams {
 		| FolderRenamedData
 		| FolderMovedData
 		| FolderDeletedData
+		| NotificationReceivedData
 		| JobRunStartedData
 		| JobRunProgressData
 		| JobRunEndedData;

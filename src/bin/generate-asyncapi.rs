@@ -141,6 +141,17 @@ fn channels() -> Value {
                 "UnsubscribeRequest": { "$ref": "#/components/messages/RtUnsubscribeRequest" },
             }
         },
+        "UserNotifications": {
+            "address": "user:{userId}:notifications",
+            "description": "A user's private notifications channel. Identity-scoped: caller_id must equal userId (no admin bypass). Auto-subscribed at session open; the FE bell refetches `GET /api/notifications` when a `notification_received` event fires. The DB row is authoritative — a missed push recovers on the next mount.",
+            "parameters": {
+                "userId": { "description": "User UUID — must match the authenticated caller" }
+            },
+            "messages": {
+                "SubscribeRequest":   { "$ref": "#/components/messages/RtSubscribeRequest" },
+                "UnsubscribeRequest": { "$ref": "#/components/messages/RtUnsubscribeRequest" },
+            }
+        },
         "Job": {
             "address": "job:{jobName}",
             "description": "A named background job's run lifecycle — Started / Progress / Ended. Consumed by the admin dashboard so operators who trigger a long-running job (backend migration, thumb import…) can navigate off the admin page and come back without losing progress. AuthZ: admin-only (Class 3 role-scoped) — non-admin gets `topic_forbidden`, indistinguishable on the wire from an unknown topic.",
@@ -316,6 +327,7 @@ fn components() -> Value {
             "FolderRenamedData": folder_renamed_schema(),
             "FolderMovedData": folder_moved_schema(),
             "FolderDeletedData": folder_deleted_schema(),
+            "NotificationReceivedData": notification_received_schema(),
             "JobRunStartedData": job_run_started_schema(),
             "JobRunProgressData": job_run_progress_schema(),
             "JobRunEndedData": job_run_ended_schema(),
@@ -598,6 +610,7 @@ fn event_kind_schema() -> Value {
         "enum": [
             "file_created", "file_renamed", "file_moved", "file_deleted",
             "folder_created", "folder_renamed", "folder_moved", "folder_deleted",
+            "notification_received",
             "job_run_started", "job_run_progress", "job_run_ended",
         ],
     })
@@ -615,6 +628,7 @@ fn event_data_union_schema() -> Value {
             ref_schema("FolderRenamedData"),
             ref_schema("FolderMovedData"),
             ref_schema("FolderDeletedData"),
+            ref_schema("NotificationReceivedData"),
             ref_schema("JobRunStartedData"),
             ref_schema("JobRunProgressData"),
             ref_schema("JobRunEndedData"),
@@ -728,6 +742,27 @@ fn folder_deleted_schema() -> Value {
             "folder_id": { "type": "string", "format": "uuid" },
             "parent_id": { "type": "string", "format": "uuid" },
             "actor":     { "type": "string", "format": "uuid" },
+        }
+    })
+}
+
+// ─────────────────── Notification event payload ──────────────────
+// Published on `Topic::UserNotifications(user_id)`. Identity-scoped
+// (Class 2) — caller must equal the topic's user_id, no admin
+// bypass. Payload is a thin poke: `notification_id` + `kind` +
+// `created_at`. The FE bell refetches `GET /api/notifications` on
+// receipt for the row's full payload; the DB is the truth, the bus
+// event is just an invalidation.
+
+fn notification_received_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "A new notification was created for the caller. Payload is intentionally thin — the FE refetches `GET /api/notifications` for the row's full contents. `kind` is the notification's registered kind slug (`share_granted`, `job_completed_for_you`, `new_login_from_new_device`, `storage_quota_threshold`, …); the FE may use it to route a toast for high-priority kinds but never treats it as authoritative.",
+        "required": ["notification_id", "kind", "created_at"],
+        "properties": {
+            "notification_id": { "type": "string", "format": "uuid" },
+            "kind":            { "type": "string" },
+            "created_at":      { "type": "string", "format": "date-time" },
         }
     })
 }

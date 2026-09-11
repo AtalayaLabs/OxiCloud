@@ -195,6 +195,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     let share_service = app_state.share_service.clone();
     let favorites_service = app_state.favorites_service.clone();
     let recent_service = app_state.recent_service.clone();
+    let notification_service = app_state.notification_service.clone();
     // authorization is no longer extracted separately — the grants router now
     // uses app_state directly so handlers can access all services.
 
@@ -409,6 +410,25 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         Router::new()
     };
 
+    // Notifications bell (Slice E). Mounted only when the service is
+    // wired (i.e. auth is enabled — bell requires a caller). Non-
+    // registration path: with the flag off, the routes 404 instead of
+    // 5xx-ing on a NULL service — matches the OXICLOUD_MESSAGEBUS_ENABLE
+    // approach for `/api/rt/*` and `OXICLOUD_ENABLE_EXTERNAL_MOUNTS`
+    // for admin mounts.
+    let notifications_router = if let Some(ref svc) = notification_service {
+        use crate::interfaces::api::handlers::notifications_handler;
+        Router::new()
+            .route("/", get(notifications_handler::list_notifications))
+            .route("/unread", get(notifications_handler::unread_count))
+            .route("/read-all", post(notifications_handler::mark_all_read))
+            .route("/{id}/read", post(notifications_handler::mark_read))
+            .route("/{id}", delete(notifications_handler::delete_notification))
+            .with_state(svc.clone())
+    } else {
+        Router::new()
+    };
+
     // Create routes for chunked uploads (large files >10MB).
     // All five handlers are free functions — see chunked_upload_handler.rs for why
     // #[utoipa::path] cannot be applied to ChunkedUploadHandler impl methods directly.
@@ -455,7 +475,8 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         .nest("/shares", share_router)
         .nest("/grants", grants_router)
         .nest("/favorites", favorites_router)
-        .nest("/recent", recent_router);
+        .nest("/recent", recent_router)
+        .nest("/notifications", notifications_router);
 
     // Photos timeline endpoint — lists all image/video files sorted by capture date
     {

@@ -18,9 +18,9 @@ almost no extra scaffolding.
 
 ## Status — 2026-09-11
 
-The `feat/message-bus` branch delivers **D + F + follow-ups shipped
-end-to-end** on the FE and BE, verified by S1–S11 in the api-test
-smoke suite plus manual multi-user E2E. Live today:
+The `feat/message-bus` branch delivers **D + F + Job dashboard live +
+follow-ups shipped end-to-end** on the FE and BE, verified by S1–S12
+in the api-test smoke suite plus manual multi-user E2E. Live today:
 
 - **Bus core** — `MessageBus` port + `InProcessMessageBus` +
   `NoopReplicator`. `📤 bus publish` trace under
@@ -71,21 +71,29 @@ smoke suite plus manual multi-user E2E. Live today:
   in every mutation entry point so `$state` reads don't leak into
   caller `$effect` deps.
 - **AuthZ tested** — S3 (folder no_read), S4 (nonexistent folder =
-  anti-enum parity), S9 (cross-user identity topic → `topic_forbidden`).
+  anti-enum parity), S9 (cross-user identity topic → `topic_forbidden`),
+  S12 (`job:*` non-admin denied — Class-3 role-scoped gate).
 - **Ticket tested** — S10 (happy path), S11 (single-use replay
   rejected).
+- **Job dashboard live** — scheduler engine publishes
+  `JobRunStarted` / `JobRunEnded` on `Topic::Job(name)` around every
+  dispatch; `useJobTopic` + `AdminJobsPanel` subscribes to every
+  registered job's topic (keyed on the sorted name set so the 5 s
+  poll doesn't churn subs). State flips within a network hop instead
+  of waiting up to POLL_MS. Progress publishes are deferred (see
+  below); the polling refresh stays as fallback.
 
 Active — still under Phase A, ordered by priority:
 
-- **Job dashboard live** (next) — `JobRegistry` publishes step
-  progress + terminal state on `job:{id}`; the admin jobs view
-  subscribes and drops its polling. Small; same shape as folder-live.
-  Value: an operator who triggers a long-running job (backend
-  migration, thumbnail import, etc.) can navigate to another admin
-  page and come back without losing progress visibility.
 - **Notifications table + bell** (E) — topic + producer + auto-sub
   land here. Same pattern as `:authz`. Larger; unblocks Phase-B
   `@mentions`.
+- **Job progress publishes** (small follow-up to Job dashboard) —
+  handler-side per-run publisher + 3 s throttle so long jobs
+  (backend_migration, thumb_derived_import…) push `JobRunProgress`
+  events. Wire is already in place (`useJobTopic.onProgress`,
+  `MessageBusEvent::JobRunProgress`); waits for a per-run
+  `ProgressReporter` handle threaded into `JobHandler::run`.
 
 Deferred — see the Roadmap section's `## Deferred` block and the
 `project_message_bus_reconnect_gap` memory:
@@ -1242,13 +1250,13 @@ Ships the infrastructure and the two most visible consumers together.
   `useReconnect` composable → folder view refetches after WS comes
   back. Bridges the in-memory-bus "events lost during outage" gap
   (see `project_message_bus_reconnect_gap` memory).
-- **Job dashboard live** — TODO (next slice). `JobRegistry`
-  publishes step progress and terminal state on `job:{id}`; FE
-  job dashboard subscribes and replaces polling. Operator value:
-  once a long-running job is triggered (backend migration, thumb
-  import, blobs consistency…), the admin can navigate to another
-  page and come back without losing progress visibility — the WS
-  push keeps whatever component is subscribed up-to-date.
+- **Job dashboard live** — SHIPPED 2026-09-11. Scheduler engine
+  publishes `JobRunStarted` + `JobRunEnded` on `Topic::Job(name)`
+  around every dispatch; `useJobTopic` + `AdminJobsPanel` subscribe
+  to every registered job's topic and flip state within a network
+  hop. Progress publishes deferred to a follow-up (needs a per-run
+  `ProgressReporter` threaded into `JobHandler::run`). The 5 s
+  poll stays as fallback.
 - **Notifications table + bell** — TODO (Slice E). New
   `notifications` table + `NotificationService` port; initial
   ingesters for `share-granted`, `new-login-from-new-device`,
@@ -1261,9 +1269,10 @@ Ships the infrastructure and the two most visible consumers together.
   which this plan sketches but doesn't ship (`rt_ws.rs` today drops
   binary frames with a debug log).
 
-Deliverables sized ~4 weeks end-to-end. Slice D (folder-live) and
-Slice F (ticket flow) landed 2026-09-11. Slices E + collab are the
-open work in Phase A.
+Deliverables sized ~4 weeks end-to-end. Slice D (folder-live),
+Slice F (ticket flow), and Job dashboard live all landed 2026-09-11.
+Slice E (notifications bell) + collab are the remaining open work
+in Phase A.
 
 ### Deferred — everything below is on the shelf
 

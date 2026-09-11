@@ -64,6 +64,39 @@
 #                                 unit tests; the seeded suite has no
 #                                 admin token, and minting one here
 #                                 would pollute state for other files.
+#   S13 Notification wire push  — user2 subscribes to
+#                                 `user:{user2_id}:notifications`; user1
+#                                 creates a grant that targets user2.
+#                                 Server must publish one `rt.event`
+#                                 with `event="notification_received"`,
+#                                 `data.kind="share_granted"`. Guards
+#                                 the Slice-E ingester + the auto-sub
+#                                 delivery path together — this is the
+#                                 only scenario that exercises the
+#                                 wire push from the `NotificationService`.
+#   S14 Notification DB row     — after S13's grant, GET
+#                                 `/api/notifications` as user2 lists
+#                                 at least one row with
+#                                 `kind="share_granted"` whose payload
+#                                 references the freshly-shared folder,
+#                                 and `unread_count >= 1`. Guards the
+#                                 authoritative side of the pattern —
+#                                 a subscriber offline at publish time
+#                                 recovers via this endpoint.
+#   S15 Cross-user notif deny   — user1 subscribes to
+#                                 `user:{user2_id}:notifications`
+#                                 (an identity-scoped topic that
+#                                 resolves to somebody else). Server
+#                                 must reject with `topic_forbidden`
+#                                 (same wire shape as unknown topic,
+#                                 same rule as S9 for `:authz`).
+#                                 Guards the strict-privacy Class-2
+#                                 AuthZ gate on Slice-E notifications
+#                                 — no admin bypass, direct UUID
+#                                 equality only. If this ever accepts
+#                                 and delivers events, an admin (or
+#                                 anyone else) could snoop on other
+#                                 users' notification streams.
 #
 # Exit non-zero on any failure — run.sh treats that as a suite failure.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -679,4 +712,111 @@ if ! "$HELPER_BIN" expect-denied \
 fi
 log "S12 OK"
 
-log "All twelve message-bus scenarios passed."
+# ── Scenario 13 — Notification wire push (Slice E) ──────────────────────────
+# The `share_granted` ingester runs in `grant_handler::create_grant`:
+# after `set_role` lands and before the email path, it calls
+# `NotificationService::create` for every resolved recipient user.
+# `create` writes the DB row AND publishes a thin
+# `MessageBusEvent::NotificationReceived` on
+# `user:{user_id}:notifications`. This scenario exercises the wire
+# path end-to-end: user2 opens a WS + explicitly subscribes to their
+# own notifications topic (idempotent with the server's auto-sub),
+# user1 fires a fresh grant, user2 sees the one event.
+#
+# A fresh folder C is used so this scenario is independent of the
+# S8 grant/revoke sequence — user2 already has DB rows from S8's
+# grants on A + B, but those events fired BEFORE user2's WS opened
+# so no wire delivery competes with S13's.
+log "S13: create folder C, subscribe user2 to their notifications, expect one share_granted event."
+folder_c=$(c_post "$base_url/api/folders" "$user1_token" \
+  "$(printf '{"name":"rt_bus_C_%s","parent_id":"%s"}' "$suffix" "$root_id")" | jq -r '.id')
+[[ -n "$folder_c" && "$folder_c" != "null" ]] || die "S13: folder C creation failed"
+
+out_s13="$(mktemp -t rtbus_s13.XXXXXX)"
+ready_s13="$(mktemp -t rtbus_s13_ready.XXXXXX)"; rm -f "$ready_s13"
+"$HELPER_BIN" subscribe-and-collect \
+  --url "$ws_url" \
+  --token "$user2_token" \
+  --subscribe "user:${user2_id}:notifications" \
+  --expect-events 1 \
+  --timeout 5s \
+  --ready-file "$ready_s13" \
+  --output "$out_s13" &
+helper_pid=$!
+wait_ready "$ready_s13"
+
+grant_c=$(c_post "$base_url/api/grants" "$user1_token" \
+  "$(printf '{"subject":{"type":"user","id":"%s"},"resource":{"type":"folder","id":"%s"},"role":"viewer"}' \
+       "$user2_id" "$folder_c")")
+grant_c_id=$(printf '%s' "$grant_c" | jq -r '.grants[0].id')
+[[ -n "$grant_c_id" && "$grant_c_id" != "null" ]] \
+  || die "S13: grant on folder C failed: $grant_c"
+
+if ! wait "$helper_pid"; then
+  cat "$out_s13" >&2 || true
+  die "S13: helper did not observe the notification_received event"
+fi
+[[ "$(jq -r '.events | length' "$out_s13")" == "1" ]] \
+  || { cat "$out_s13"; die "S13: expected 1 event, got $(jq -r '.events | length' "$out_s13")"; }
+[[ "$(jq -r '.events[0].event' "$out_s13")" == "notification_received" ]] \
+  || die "S13: wrong event discriminator: $(jq -r '.events[0].event' "$out_s13")"
+[[ "$(jq -r '.events[0].data.kind' "$out_s13")" == "share_granted" ]] \
+  || die "S13: wrong notification kind: $(jq -r '.events[0].data.kind' "$out_s13")"
+# `notification_id` is a fresh UUID stamped by the DB — check it's
+# non-empty and non-null. Value asserted by S14 via GET /api/notifications.
+[[ -n "$(jq -r '.events[0].data.notification_id' "$out_s13")" ]] \
+  && [[ "$(jq -r '.events[0].data.notification_id' "$out_s13")" != "null" ]] \
+  || die "S13: notification_id missing on wire payload"
+log "S13 OK"
+
+# ── Scenario 14 — Notification DB row (Slice E) ─────────────────────────────
+# The bus event is best-effort. The DB row is truth: a subscriber
+# offline at publish time recovers via `GET /api/notifications`.
+# S13 fired a grant on folder C; the ingester wrote a row for user2.
+# This scenario reads it back and asserts on shape.
+#
+# `unread_count` from the same response reflects ALL unread rows,
+# including the 2 from S8's grants (folders A + B) — the fresh grant
+# in S13 brings the total to >= 3. We assert >= 1 (loose enough to
+# not couple to S8's state, tight enough to prove the row landed).
+log "S14: GET /api/notifications as user2; expect a share_granted row for folder C."
+notifs=$(c_get "$base_url/api/notifications" "$user2_token")
+unread=$(printf '%s' "$notifs" | jq -r '.unread_count')
+[[ "$unread" -ge 1 ]] \
+  || { printf '%s\n' "$notifs" >&2; die "S14: unread_count expected >= 1, got $unread"; }
+# Filter for the S13 row: kind == share_granted AND payload.resource_id == folder_c.
+match_count=$(printf '%s' "$notifs" | jq --arg fc "$folder_c" \
+  '[.items[] | select(.kind == "share_granted" and .payload.resource_id == $fc)] | length')
+[[ "$match_count" -ge 1 ]] \
+  || { printf '%s\n' "$notifs" >&2; die "S14: no share_granted row for folder C (matches=$match_count)"; }
+# The matched row must be unread (read_at is null) — the caller
+# hasn't clicked it yet, so the bell would still badge it.
+first_read_at=$(printf '%s' "$notifs" | jq -r --arg fc "$folder_c" \
+  'first(.items[] | select(.kind == "share_granted" and .payload.resource_id == $fc)) | .read_at')
+[[ "$first_read_at" == "null" ]] \
+  || die "S14: matched row unexpectedly marked read: read_at=$first_read_at"
+log "S14 OK"
+
+# ── Scenario 15 — Cross-user notifications identity gate ────────────────────
+# `Topic::UserNotifications(u)` maps to `AuthzCheck::IdentityMatch{u}`
+# in `application/ports/message_bus_ports.rs::required_perm`. Direct
+# UUID equality only — no admin bypass. A caller subscribing to
+# another user's notifications channel MUST be denied with the same
+# wire shape (`topic_forbidden`) as an unknown topic — anti-enum.
+#
+# If this ever regresses (identity check dropped, engine wired on
+# this class, admin bypass added) it becomes a privacy leak on par
+# with an admin snooping on `:authz` streams. Same guard as S9,
+# different topic suffix.
+log "S15: user1 subscribes to user:{user2_id}:notifications; expect topic_forbidden."
+if ! "$HELPER_BIN" expect-denied \
+     --url "$ws_url" \
+     --token "$user1_token" \
+     --subscribe "user:${user2_id}:notifications" \
+     --reason topic_forbidden \
+     --timeout 3s; then
+  die "S15: user1 was NOT denied on user2's notifications topic (identity gate broken?)"
+fi
+log "S15 OK"
+
+log "All fifteen message-bus scenarios passed."

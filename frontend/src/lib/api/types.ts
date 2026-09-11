@@ -934,3 +934,40 @@ export interface ServerConfig {
 	features: ServerFeatures;
 	server_status: ServerStatus;
 }
+
+// ─── Notifications (Slice E) ─────────────────────────────────────
+// Row shape mirrors `application/dtos` output of the Rust backend.
+// `payload` stays a raw JSON object (`Record<string, unknown>`) —
+// per-kind decoding is a UI concern (kind-specific components read
+// what they need from the blob). Adding a new kind server-side does
+// NOT churn this file; the FE renders a generic bell row for any
+// unknown kind.
+export interface Notification {
+	id: string;
+	kind: string;
+	payload: Record<string, unknown>;
+	created_at: string;
+	/** `null` = unread. */
+	read_at: string | null;
+}
+
+export interface NotificationListResponse {
+	items: Notification[];
+	unread_count: number;
+}
+
+export interface UnreadCountResponse {
+	unread_count: number;
+}
+
+export interface MarkAllReadResponse {
+	marked: number;
+}
+
+/** Canonical kind slugs — mirror `domain::entities::notification::kind`. */
+export const NOTIFICATION_KIND = {
+	SHARE_GRANTED: 'share_granted',
+	NEW_LOGIN_FROM_NEW_DEVICE: 'new_login_from_new_device',
+	JOB_COMPLETED_FOR_YOU: 'job_completed_for_you',
+	STORAGE_QUOTA_THRESHOLD: 'storage_quota_threshold'
+} as const;

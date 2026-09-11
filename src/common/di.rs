@@ -2418,6 +2418,7 @@ impl AppServiceFactory {
             mock_email_sender: None,              // populated below
             magic_link_invite_service: None,      // populated below
             recipient_notification_service: None, // populated below alongside magic_link_invite_service
+            notification_service: None,           // populated below (Slice E)
             // Per-caller limits, configurable since the hardcoded ceilings
             // had no escape hatch for deployments where several actors share
             // one identity — a CI suite running as a single `admin` shares
@@ -2536,6 +2537,42 @@ impl AppServiceFactory {
                     ),
                 ));
             }
+
+            // Persistent in-app notifications (Slice E). Repo + bus
+            // are both always available when auth is on; the service
+            // wraps them into the ingester-facing `create()` +
+            // bell-facing reads. Always wired under `auth_service` —
+            // notifications are per-user and require an authenticated
+            // caller everywhere they surface.
+            let notif_repo: Arc<
+                dyn crate::domain::repositories::notification_repository::NotificationRepository,
+            > = Arc::new(
+                crate::infrastructure::repositories::pg::NotificationPgRepository::new(
+                    pool.clone(),
+                ),
+            );
+            let notif_bus: Arc<dyn crate::application::ports::message_bus_ports::MessageBus> =
+                app_state.bus.clone();
+            let notification_service = Arc::new(
+                crate::application::services::notification_application_service::NotificationApplicationService::new(
+                    notif_repo,
+                    notif_bus,
+                ),
+            );
+            app_state.notification_service = Some(notification_service.clone());
+
+            // Retention sweep — daily; deletes read notifications
+            // older than OXICLOUD_NOTIFICATIONS_RETENTION_DAYS. Same
+            // self-registering pattern as `trash_cleanup`.
+            let retention_days = app_state.core.config.features.notifications_retention_days;
+            let _ = Arc::new(
+                crate::infrastructure::services::notifications_cleanup_service::NotificationsCleanupService::new(
+                    notification_service,
+                    retention_days,
+                ),
+            )
+            .register(&app_state.core.job_registry)
+            .await;
         }
 
         // 9b. Wire admin settings service when auth is available
@@ -3440,6 +3477,16 @@ pub struct AppState {
     /// case (no mail sent, grant still created).
     pub recipient_notification_service: Option<
         Arc<crate::application::services::recipient_notification_service::RecipientNotificationService>,
+    >,
+    /// Persistent in-app notifications — bell UI, retention job, four
+    /// initial ingesters (share-granted, new-login-from-new-device,
+    /// job-completed-for-you, storage-quota-threshold). Always
+    /// populated when auth is enabled (bell requires an authenticated
+    /// caller). Wraps a PG repo + the message bus; `create()` writes
+    /// the row AND publishes on `user:{u}:notifications` in one call.
+    /// See `docs/plan/message-bus.md § Slice E`.
+    pub notification_service: Option<
+        Arc<crate::application::services::notification_application_service::NotificationApplicationService>,
     >,
     /// Per-caller sliding-window limiter for `GET /api/users/{id}`. The
     /// endpoint's primary defense is the visibility check, but a stale

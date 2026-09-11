@@ -330,6 +330,71 @@ pub async fn create_grant(
         "🤝 grant created with role '{}'", role.as_str(),
     );
 
+    // Slice E — persistent in-app notification (bell) for every
+    // recipient user. Separate channel from the email path below:
+    // the DB row is authoritative and survives SMTP being down /
+    // the recipient not having email, and it powers the FE bell +
+    // unread badge.
+    //
+    // Fan out to the resolved user ids:
+    // - Subject::User(id)  → one row for that user
+    // - Subject::Group(id) → one row per transitive member (uses
+    //                        subject_group_service if wired; groups
+    //                        without a service configured skip the
+    //                        bell but still get email via the
+    //                        recipient service below)
+    // - Subject::Token(_)  → no bell row (anonymous share link, no
+    //                        target user to route it to)
+    //
+    // Every failure here is best-effort — a row-write hiccup logs a
+    // warn and continues to the email path. The grant row is already
+    // durable in `role_grants`; the recipient can still discover the
+    // share via the resources-shared-with-me listing.
+    if let Some(notif_svc) = state.notification_service.as_ref() {
+        let recipient_ids: Vec<uuid::Uuid> = match subject {
+            Subject::User(id) => vec![id],
+            Subject::Group(group_id) => match state.subject_group_service.as_ref() {
+                Some(sgs) => sgs
+                    .list_transitive_users(group_id)
+                    .await
+                    .unwrap_or_else(|e| {
+                        warn!("group {group_id} member expansion failed; skipping bell: {e}");
+                        Vec::new()
+                    }),
+                None => Vec::new(),
+            },
+            Subject::Token(_) => Vec::new(),
+        };
+        for rid in recipient_ids {
+            // Self-shares (owner grants themselves via a group they
+            // are also in) would fire a bell on the owner — filter
+            // that out here. Every other filter (opt-out flag, etc.)
+            // is deferred; in-app notifications are less intrusive
+            // than SMTP so the ceremony is lighter.
+            if rid == caller_id {
+                continue;
+            }
+            let payload = serde_json::json!({
+                "granter_id":    caller_id,
+                "resource_type": resource.type_str(),
+                "resource_id":   resource.id(),
+                "role":          role.as_str(),
+                "expires_at":    expires_at,
+            });
+            let new_notif = crate::domain::entities::notification::NewNotification {
+                user_id: rid,
+                kind: crate::domain::entities::notification::kind::SHARE_GRANTED.to_string(),
+                payload,
+            };
+            if let Err(e) = notif_svc.create(new_notif).await {
+                warn!(
+                    "notification.create failed for share_granted (recipient={rid}, resource={:?}): {e}",
+                    resource
+                );
+            }
+        }
+    }
+
     // PR N1 — route the post-grant notification through the unified
     // RecipientNotificationService. Handles user/group/token subjects
     // uniformly (Token subjects return an empty outcome set); applies

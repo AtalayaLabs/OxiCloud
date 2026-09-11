@@ -199,6 +199,7 @@ fn event_kind(event: &MessageBusEvent) -> &'static str {
         MessageBusEvent::FolderMoved { .. } => "folder_moved",
         MessageBusEvent::FolderDeleted { .. } => "folder_deleted",
         MessageBusEvent::AuthzChanged { .. } => "authz_changed",
+        MessageBusEvent::NotificationReceived { .. } => "notification_received",
         MessageBusEvent::JobRunStarted { .. } => "job_run_started",
         MessageBusEvent::JobRunProgress { .. } => "job_run_progress",
         MessageBusEvent::JobRunEnded { .. } => "job_run_ended",

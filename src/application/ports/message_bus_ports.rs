@@ -64,6 +64,16 @@ pub enum Topic {
     /// the eviction wiring lands (Phase-A follow-up).
     UserAuthz(Uuid),
 
+    /// A user's private notifications channel — poked when a
+    /// [`MessageBusEvent::NotificationReceived`] event fires. The WS
+    /// handler auto-subscribes each session at session open (same
+    /// pattern as [`Topic::UserAuthz`]). Payload is a thin fact
+    /// (`notification_id` + `kind`); the client refetches the row from
+    /// `GET /api/notifications` for the details. AuthZ: **strict
+    /// identity match** — no admin bypass, direct UUID equality,
+    /// anti-enumeration parity with [`Topic::UserAuthz`].
+    UserNotifications(Uuid),
+
     /// A named background job's run lifecycle — start / progress /
     /// end. Consumed by the admin job dashboard so operators who
     /// trigger a long-running job (backend migration, thumb import…)
@@ -83,6 +93,7 @@ impl Topic {
         match self {
             Topic::Folder(id) => format!("folder:{id}"),
             Topic::UserAuthz(id) => format!("user:{id}:authz"),
+            Topic::UserNotifications(id) => format!("user:{id}:notifications"),
             Topic::Job(name) => format!("job:{name}"),
         }
     }
@@ -97,10 +108,14 @@ impl Topic {
             return Ok(Topic::Folder(id));
         }
         if let Some(rest) = s.strip_prefix("user:")
-            && let Some((id_str, "authz")) = rest.rsplit_once(':')
+            && let Some((id_str, suffix)) = rest.rsplit_once(':')
         {
             let id = Uuid::parse_str(id_str).map_err(|_| ParseTopicErr::BadUuid)?;
-            return Ok(Topic::UserAuthz(id));
+            return match suffix {
+                "authz" => Ok(Topic::UserAuthz(id)),
+                "notifications" => Ok(Topic::UserNotifications(id)),
+                _ => Err(ParseTopicErr::Unknown),
+            };
         }
         if let Some(name) = s.strip_prefix("job:") {
             // Job names are scheduler-registered short slugs — see
@@ -135,6 +150,7 @@ impl Topic {
                 resource: BusResource::Folder(*id),
             },
             Topic::UserAuthz(id) => AuthzCheck::IdentityMatch { user_id: *id },
+            Topic::UserNotifications(id) => AuthzCheck::IdentityMatch { user_id: *id },
             Topic::Job(_) => AuthzCheck::RoleAdmin,
         }
     }
@@ -290,6 +306,25 @@ pub enum MessageBusEvent {
     /// the payload extends with additional resource classes — see the
     /// plan's Phase-B roadmap.
     AuthzChanged { affected_folders: Vec<Uuid> },
+
+    /// A new notification was created for the caller — publishes on
+    /// [`Topic::UserNotifications`]. Payload is deliberately thin: the
+    /// FE learns "there's something new to look at" and calls
+    /// `GET /api/notifications` to load the row. Same recovery path a
+    /// missed push takes on next mount, so the wire event stays a
+    /// pure poke — no fields the bell needs to render on its own.
+    ///
+    /// `kind` is the notification's registered kind slug
+    /// (`share_granted`, `job_completed_for_you`,
+    /// `new_login_from_new_device`, `storage_quota_threshold`, …).
+    /// The FE may use it to route the toast (high-priority kinds pop
+    /// a toast; low-priority ones just bump the badge) but never
+    /// treats it as authoritative — the DB row is the truth.
+    NotificationReceived {
+        notification_id: Uuid,
+        kind: String,
+        created_at: chrono::DateTime<chrono::Utc>,
+    },
 
     /// A background job's run started. Published on
     /// [`Topic::Job`]. `started_at` is server wall-clock (RFC 3339
@@ -498,6 +533,15 @@ mod tests {
     }
 
     #[test]
+    fn user_notifications_topic_roundtrip() {
+        let id = Uuid::new_v4();
+        let t = Topic::UserNotifications(id);
+        let wire = t.to_wire_key();
+        assert_eq!(wire, format!("user:{id}:notifications"));
+        assert_eq!(Topic::parse(&wire).unwrap(), t);
+    }
+
+    #[test]
     fn job_topic_roundtrip() {
         let t = Topic::Job("backend_migration".to_string());
         let wire = t.to_wire_key();
@@ -539,7 +583,12 @@ mod tests {
         assert_eq!(
             Topic::parse(&format!("user:{}", Uuid::new_v4())),
             Err(ParseTopicErr::Unknown),
-            "user:<uuid> without :authz suffix is not a known topic in MVP"
+            "user:<uuid> without a known suffix (:authz, :notifications) is not a known topic"
+        );
+        assert_eq!(
+            Topic::parse(&format!("user:{}:whatever", Uuid::new_v4())),
+            Err(ParseTopicErr::Unknown),
+            "an unrecognised suffix rejects — no partial match on the prefix"
         );
     }
 
@@ -559,6 +608,18 @@ mod tests {
         let id = Uuid::new_v4();
         assert_eq!(
             Topic::UserAuthz(id).required_perm(),
+            AuthzCheck::IdentityMatch { user_id: id }
+        );
+    }
+
+    #[test]
+    fn required_perm_user_notifications_is_identity_match() {
+        // Same strict-privacy gate as :authz — no admin bypass, direct
+        // UUID equality, anti-enum parity. A regression here would
+        // let admins snoop on other users' notification streams.
+        let id = Uuid::new_v4();
+        assert_eq!(
+            Topic::UserNotifications(id).required_perm(),
             AuthzCheck::IdentityMatch { user_id: id }
         );
     }
@@ -650,6 +711,14 @@ mod tests {
                     affected_folders: vec![Uuid::nil()],
                 },
                 "authz_changed",
+            ),
+            (
+                MessageBusEvent::NotificationReceived {
+                    notification_id: Uuid::nil(),
+                    kind: "share_granted".into(),
+                    created_at: chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap(),
+                },
+                "notification_received",
             ),
             (
                 MessageBusEvent::JobRunStarted {

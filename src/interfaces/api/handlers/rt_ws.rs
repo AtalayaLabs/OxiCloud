@@ -401,6 +401,20 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
     // effect is the `rt.revoked` per evicted sub.
     install_subscription(Topic::UserAuthz(caller_id), &mut subs, &out_tx, &state);
 
+    // Auto-subscribe to the caller's private notifications topic —
+    // same identity-scoped invariant as `:authz`. Events on this
+    // stream (`MessageBusEvent::NotificationReceived`) forward
+    // through as an `rt.event` notification so the FE bell can flip
+    // its unread badge without a poll. The DB row is the truth (see
+    // `docs/plan/message-bus.md § Slice E`); a missed push recovers
+    // on the next `GET /api/notifications`.
+    install_subscription(
+        Topic::UserNotifications(caller_id),
+        &mut subs,
+        &out_tx,
+        &state,
+    );
+
     // Server-initiated protocol Ping ticker — prevents intermediate
     // proxies (Traefik, nginx, Cloudflare) and NAT boxes from reaping
     // the TCP session as idle. Browsers can't send Ping control frames
@@ -722,6 +736,12 @@ fn handle_unsubscribe(id: Value, params: Value, subs: &mut HashMap<String, Sub>)
 ///   loop then walks the sub set and drops matching topics. Any other
 ///   event kind on this topic is ignored (defensive; shouldn't happen
 ///   in MVP).
+/// - For `Topic::UserNotifications(_)`: an incoming
+///   `MessageBusEvent::NotificationReceived` is forwarded through the
+///   default path — the FE bell listens for `rt.event` on the
+///   auto-subscribed identity topic and refetches `GET
+///   /api/notifications` when it sees one. Same anti-enumeration
+///   invariant as `:authz` (identity-scoped, no admin bypass).
 /// - For every other topic: bus events are wrapped into a client-
 ///   visible `rt.event` notification and pushed as `SessionOut::Frame`.
 fn install_subscription(
