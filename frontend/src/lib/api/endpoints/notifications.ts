@@ -16,15 +16,26 @@ import type {
 	UnreadCountResponse
 } from '$lib/api/types';
 
-/** List newest-first. Optional `unread` filter, `before` cursor, `limit` cap. */
+/**
+ * List newest-first. All filters are optional and additive:
+ * - `unread` — only rows with `read_at IS NULL`
+ * - `before` — older-than cursor for "load older page" pagination
+ * - `after`  — newer-than cursor for delta catch-up on WS reconnect
+ *              or tab reactivation (dedup handled at the store layer
+ *              via `mergeById`, since the WS push and the delta fetch
+ *              can race on the same row)
+ * - `limit`  — server-side clamp at 500 rows
+ */
 export async function listNotifications(opts?: {
 	unread?: boolean;
 	before?: string;
+	after?: string;
 	limit?: number;
 }): Promise<NotificationListResponse> {
 	const q = new URLSearchParams();
 	if (opts?.unread) q.set('unread', 'true');
 	if (opts?.before) q.set('before', opts.before);
+	if (opts?.after) q.set('after', opts.after);
 	if (opts?.limit !== undefined) q.set('limit', String(opts.limit));
 	const suffix = q.toString();
 	return apiJson<NotificationListResponse>(`/api/notifications${suffix ? `?${suffix}` : ''}`);

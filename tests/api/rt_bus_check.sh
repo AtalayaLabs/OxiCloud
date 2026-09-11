@@ -97,6 +97,25 @@
 #                                 and delivers events, an admin (or
 #                                 anyone else) could snoop on other
 #                                 users' notification streams.
+#   S16 Notif ?after= cursor    — the delta catch-up cursor the FE
+#                                 bell hits on WS reconnect / tab
+#                                 reactivation. Snapshots the newest
+#                                 row's `created_at` as T0, fires a
+#                                 fresh share (folder D) that lands
+#                                 exactly one new row, and asserts:
+#                                   (a) GET ?after=T0 returns exactly
+#                                       one row — the folder-D row
+#                                       (guards: predicate applied at
+#                                       all; silently-dropped param
+#                                       would return everything).
+#                                   (b) GET ?after=<newRow.created_at>
+#                                       returns exactly zero rows
+#                                       (guards: bound is strict `>`,
+#                                       not `>=` — a `>=` regression
+#                                       would break FE `mergeById`
+#                                       dedup because rows would come
+#                                       in both via WS push and via
+#                                       the delta fetch).
 #
 # Exit non-zero on any failure — run.sh treats that as a suite failure.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -819,4 +838,74 @@ if ! "$HELPER_BIN" expect-denied \
 fi
 log "S15 OK"
 
-log "All fifteen message-bus scenarios passed."
+# ── Scenario 16 — Notifications `?after=` cursor ────────────────────────────
+# The FE bell fires `refreshDelta()` with `?after=<lastReceivedAt>`
+# on WS reconnect (grace-close return, network reconnect) and on
+# rt.event push. `mergeById` dedups client-side; the server-side
+# strict-`>` predicate is what keeps the boundary row from
+# double-arriving in the first place. This scenario locks both
+# invariants at the wire.
+#
+# Reuses S13's fresh row on folder C as T0. Creates a new folder D
+# and grants it → one row lands strictly after T0. Then two
+# assertions: `?after=T0` returns EXACTLY that one row (predicate
+# applied), and `?after=<newRow.created_at>` returns ZERO rows
+# (strict `>` boundary — the row equal to its own cursor is
+# excluded, so no duplicate delivery).
+log "S16: cursor delta — grant on folder D, expect ?after=T0 returns 1 row, ?after=T1 returns 0."
+# T0 = the S13 row's created_at. Pull it fresh via list so this
+# scenario stays self-contained; the S13 row is the newest row
+# for user2 at this point (S8 grants are older, S13/C is newest).
+notifs_pre=$(c_get "$base_url/api/notifications" "$user2_token")
+t0=$(printf '%s' "$notifs_pre" | jq -r --arg fc "$folder_c" \
+  'first(.items[] | select(.kind == "share_granted" and .payload.resource_id == $fc)) | .created_at')
+[[ -n "$t0" && "$t0" != "null" ]] \
+  || { printf '%s\n' "$notifs_pre" >&2; die "S16: could not resolve T0 from folder C row"; }
+
+# Fresh folder D, grant to user2 → one share_granted row lands.
+folder_d=$(c_post "$base_url/api/folders" "$user1_token" \
+  "$(printf '{"name":"rt_bus_D_%s","parent_id":"%s"}' "$suffix" "$root_id")" | jq -r '.id')
+[[ -n "$folder_d" && "$folder_d" != "null" ]] || die "S16: folder D creation failed"
+
+grant_d=$(c_post "$base_url/api/grants" "$user1_token" \
+  "$(printf '{"subject":{"type":"user","id":"%s"},"resource":{"type":"folder","id":"%s"},"role":"viewer"}' \
+       "$user2_id" "$folder_d")")
+grant_d_id=$(printf '%s' "$grant_d" | jq -r '.grants[0].id')
+[[ -n "$grant_d_id" && "$grant_d_id" != "null" ]] \
+  || die "S16: grant on folder D failed: $grant_d"
+
+# `after` must URL-encode the ISO timestamp — `:` and `+` are
+# reserved. curl's `--data-urlencode`/`-G` handles it cleanly.
+notifs_after_t0=$(curl -sS -G \
+  -H "Accept: application/json" \
+  -H "Authorization: Bearer $user2_token" \
+  --data-urlencode "after=$t0" \
+  "$base_url/api/notifications")
+count_after_t0=$(printf '%s' "$notifs_after_t0" | jq -r '.items | length')
+[[ "$count_after_t0" == "1" ]] \
+  || { printf '%s\n' "$notifs_after_t0" >&2; die "S16: expected 1 row after T0, got $count_after_t0"; }
+# The one row MUST be the folder-D row.
+d_kind=$(printf '%s' "$notifs_after_t0" | jq -r '.items[0].kind')
+d_resource=$(printf '%s' "$notifs_after_t0" | jq -r '.items[0].payload.resource_id')
+[[ "$d_kind" == "share_granted" && "$d_resource" == "$folder_d" ]] \
+  || { printf '%s\n' "$notifs_after_t0" >&2; die "S16: post-T0 row not folder D (kind=$d_kind resource=$d_resource)"; }
+
+# T1 = folder-D row's own created_at. Bound is strict `>`, so a
+# query at T1 must return zero rows (the boundary row is excluded).
+# This is what keeps the FE's mergeById honest — a `>=` regression
+# would return the boundary row here, then the WS push would
+# deliver it AGAIN, and only client-side dedup would save us.
+t1=$(printf '%s' "$notifs_after_t0" | jq -r '.items[0].created_at')
+[[ -n "$t1" && "$t1" != "null" ]] || die "S16: could not resolve T1"
+
+notifs_after_t1=$(curl -sS -G \
+  -H "Accept: application/json" \
+  -H "Authorization: Bearer $user2_token" \
+  --data-urlencode "after=$t1" \
+  "$base_url/api/notifications")
+count_after_t1=$(printf '%s' "$notifs_after_t1" | jq -r '.items | length')
+[[ "$count_after_t1" == "0" ]] \
+  || { printf '%s\n' "$notifs_after_t1" >&2; die "S16: expected 0 rows after T1 (strict '>' bound), got $count_after_t1"; }
+log "S16 OK"
+
+log "All sixteen message-bus scenarios passed."

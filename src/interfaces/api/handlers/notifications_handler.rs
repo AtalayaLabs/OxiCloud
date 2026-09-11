@@ -68,9 +68,15 @@ pub struct ListQuery {
     /// When `true`, return only unread rows. Default: `false` (both).
     #[serde(default)]
     pub unread: bool,
-    /// Cursor — return rows strictly before this `created_at`. Omit
-    /// for the newest page.
+    /// Older-than cursor — return rows strictly BEFORE this
+    /// `created_at`. Used by the "load older page" pagination flow.
+    /// Omit for the newest page.
     pub before: Option<DateTime<Utc>>,
+    /// Newer-than cursor — return rows strictly AFTER this
+    /// `created_at`. Used by the FE bell on WS reconnect / tab
+    /// reactivation to catch up on rows that arrived during a
+    /// disconnect window. Combines with `before` if both are set.
+    pub after: Option<DateTime<Utc>>,
     /// Max rows returned. Server-side clamp at 500.
     pub limit: Option<u32>,
 }
@@ -101,7 +107,8 @@ pub struct MarkAllReadResponseDto {
     path = "/api/notifications",
     params(
         ("unread" = Option<bool>, Query, description = "Only return unread rows"),
-        ("before" = Option<DateTime<Utc>>, Query, description = "Cursor — rows strictly before this created_at"),
+        ("before" = Option<DateTime<Utc>>, Query, description = "Cursor — rows strictly before this created_at (load-older pagination)"),
+        ("after" = Option<DateTime<Utc>>, Query, description = "Cursor — rows strictly after this created_at (delta catch-up on WS reconnect / tab reactivation)"),
         ("limit" = Option<u32>, Query, description = "Max rows (server-side clamp at 500)"),
     ),
     responses(
@@ -117,8 +124,9 @@ pub async fn list_notifications(
 ) -> Result<Json<ListResponseDto>, AppError> {
     let filter = NotificationListFilter {
         limit: query.limit,
-        unread_only: if query.unread { Some(true) } else { None },
+        unread_only: query.unread,
         before: query.before,
+        after: query.after,
     };
     let rows = service.list_for_user(auth_user.id, filter).await?;
     let unread_count = service.count_unread_for_user(auth_user.id).await?;

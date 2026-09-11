@@ -9,9 +9,33 @@
  *
  * Message-bus contract: the FE subscribes to `user:{me}:notifications`
  * (auto-subscribed server-side on WS session open — no `rt.subscribe`
- * frame needed from the client) and refetches the row list whenever
- * a `notification_received` event arrives. The DB is truth; the bus
- * event just says "there's new data, refresh".
+ * frame needed from the client) and refetches on every push. The DB
+ * is truth; the bus event is a cache-invalidation hint.
+ *
+ * # Delta catch-up + dedup
+ *
+ * Two paths can deliver the SAME row and must not double-count it:
+ *
+ * 1. **WS live push** — `notification_received` event → calls
+ *    `refreshDelta(#lastReceivedAt)` which fetches
+ *    `?after=<lastReceivedAt>&limit=100`, merges the result into the
+ *    reactive list.
+ * 2. **Reconnect catch-up** — after a grace-close (tab idle > 60 s)
+ *    or a network drop, the WS reopens and `onReconnect` fires the
+ *    same `refreshDelta(#lastReceivedAt)`. This backfills rows that
+ *    landed while the socket was closed.
+ *
+ * The race: a NEW notification created after the reconnect but
+ * before the delta fetch returns lands via BOTH paths — WS push
+ * (delta fetch A) and reconnect (delta fetch B). Dedup lives in
+ * `mergeById`: incoming rows keyed on `id` displace any existing
+ * entry with the same id, so the row appears exactly once. Server
+ * `read_at` always wins over local because incoming replaces.
+ *
+ * `#lastReceivedAt` is the newest `created_at` we've observed. It
+ * feeds every delta fetch. Initial `refresh()` seeds it from the
+ * newest returned row; subsequent merges update it to the newest of
+ * the incoming set.
  */
 import { messageBus } from '$lib/message-bus/client.svelte';
 import { session } from '$lib/stores/session.svelte';
@@ -28,11 +52,37 @@ import log from 'loglevel';
 
 const bellLog = log.getLogger('oxi:notifications');
 
+/**
+ * Merge `incoming` rows into `existing`, deduplicating on `id`.
+ * Where an id appears in both, the incoming (fresh-from-server)
+ * copy wins — so a `read_at` flip visible in `incoming` correctly
+ * overrides a stale local unread state. Result stays sorted
+ * newest-first by `created_at`.
+ *
+ * Exported for the unit tests to exercise the race semantics
+ * without spinning up a full store.
+ */
+export function mergeById(existing: Notification[], incoming: Notification[]): Notification[] {
+	if (incoming.length === 0) return existing;
+	// Local lookup set — pure function, no reactive state involved,
+	// so `SvelteSet` would add allocations without buying anything.
+	// eslint-disable-next-line svelte/prefer-svelte-reactivity
+	const incomingIds = new Set(incoming.map((n) => n.id));
+	const kept = existing.filter((n) => !incomingIds.has(n.id));
+	// String compare of ISO-8601 UTC timestamps sorts identically
+	// to Date compare — cheaper, no allocation per row.
+	return [...incoming, ...kept].sort((a, b) => b.created_at.localeCompare(a.created_at));
+}
+
 class NotificationsStore {
 	#items = $state<Notification[]>([]);
 	#unread = $state<number>(0);
 	#loading = $state<boolean>(false);
 	#error = $state<string | null>(null);
+	/** Newest `created_at` we've observed, ISO 8601. Feeds the
+	 *  `?after=…` cursor on delta fetches. `null` until the first
+	 *  successful `refresh()` seeds it. */
+	#lastReceivedAt: string | null = null;
 
 	get items(): Notification[] {
 		return this.#items;
@@ -48,8 +98,9 @@ class NotificationsStore {
 	}
 
 	/**
-	 * Fetch the newest page + refresh the badge count. Idempotent —
-	 * safe to call on every bus push, on mount, on visibility return.
+	 * Full refresh — replaces the local list with the newest page
+	 * from the server. Used on initial mount + as fallback when a
+	 * delta fetch fails or a mutation reconciliation runs.
 	 */
 	async refresh(): Promise<void> {
 		this.#loading = true;
@@ -57,12 +108,55 @@ class NotificationsStore {
 			const res = await listNotifications({ limit: 50 });
 			this.#items = res.items;
 			this.#unread = res.unread_count;
+			this.#lastReceivedAt = res.items[0]?.created_at ?? this.#lastReceivedAt;
 			this.#error = null;
 		} catch (e) {
 			this.#error = e instanceof Error ? e.message : String(e);
 			bellLog.warn('notifications refresh failed', e);
 		} finally {
 			this.#loading = false;
+		}
+	}
+
+	/**
+	 * Delta fetch — pulls only rows strictly newer than
+	 * `#lastReceivedAt` (or does nothing if we've never fetched yet;
+	 * the caller should fall back to `refresh()` in that case).
+	 * Merges via `mergeById` so a concurrent WS push and reconnect
+	 * catch-up can't double-count a row that landed twice.
+	 *
+	 * Silent no-op when the server returns 0 rows — we're already in
+	 * sync. Updates `#lastReceivedAt` to the newest of the merged set.
+	 */
+	async refreshDelta(): Promise<void> {
+		if (this.#lastReceivedAt === null) {
+			// Never fetched — fall back to a full refresh so the
+			// caller doesn't need to distinguish the two cases.
+			return this.refresh();
+		}
+		try {
+			// `limit: 100` sized to cover realistic bell traffic per
+			// hour without paginating; a rare heavy sender who blows
+			// past 100 in one gap still gets 100 newest and the DB
+			// row count (unread badge) stays authoritative.
+			const res = await listNotifications({
+				after: this.#lastReceivedAt,
+				limit: 100
+			});
+			if (res.items.length > 0) {
+				this.#items = mergeById(this.#items, res.items);
+				// Newest of merged set — take the first item's
+				// created_at since the result is sorted DESC.
+				this.#lastReceivedAt = res.items[0].created_at;
+			}
+			// unread_count is the authoritative live server count —
+			// always update it even when the delta was empty (a row
+			// could have been mark-read'd on another device).
+			this.#unread = res.unread_count;
+			this.#error = null;
+		} catch (e) {
+			this.#error = e instanceof Error ? e.message : String(e);
+			bellLog.warn('notifications delta failed', e);
 		}
 	}
 
@@ -127,6 +221,7 @@ class NotificationsStore {
 	reset(): void {
 		this.#items = [];
 		this.#unread = 0;
+		this.#lastReceivedAt = null;
 		this.#error = null;
 	}
 }
@@ -135,13 +230,14 @@ class NotificationsStore {
 export const notifications = new NotificationsStore();
 
 /**
- * Wire the bell into a component's lifecycle. Fires an initial fetch
- * on mount, subscribes to `user:{me}:notifications` for live pushes,
- * refetches on reconnect (bus events lost during outage window).
+ * Wire the bell into a component's lifecycle. Fires an initial full
+ * fetch on mount, subscribes to `user:{me}:notifications` for live
+ * pushes, delta-fetches on reconnect (backfills rows missed during
+ * grace-close / network gap).
  *
- * Call once from the app root (`+layout.svelte`) — this store is
- * global. Additional callers do NOT need to re-mount; they can just
- * read `notifications.items` / `notifications.unread`.
+ * Call once from the app root (`AppShell`) — this store is global.
+ * Additional callers do NOT need to re-mount; they can just read
+ * `notifications.items` / `notifications.unread`.
  */
 export function useNotifications(): void {
 	$effect(() => {
@@ -165,10 +261,13 @@ export function useNotifications(): void {
 			`user:${userId}:notifications`,
 			(params) => {
 				if (params.event === 'notification_received') {
-					// Bus event carries only the poke. Refetch the
-					// list — cheap, gives us the new row with its
-					// full payload from truth.
-					void notifications.refresh();
+					// Bus event carries only the poke. Delta-fetch
+					// from `#lastReceivedAt` — cheap when the store
+					// is caught up, brings the new row with its full
+					// payload from truth. Dedup via `mergeById`
+					// handles the race with an in-flight reconnect
+					// catch-up returning the same row.
+					void notifications.refreshDelta();
 				}
 			},
 			() => {
@@ -179,9 +278,17 @@ export function useNotifications(): void {
 		);
 
 		const releaseReconnect = messageBus.onReconnect(() => {
-			// A push we missed during the outage window is only
-			// recoverable by rereading the DB.
-			void notifications.refresh();
+			// Tab was hidden > 60 s, or network dropped. WS just
+			// reopened — any bus events published during the gap
+			// are lost. Backfill via the `?after=<lastReceivedAt>`
+			// cursor. Server's `unread_count` in the response is
+			// authoritative — a mark-read on another device while
+			// we were dark shows up here.
+			//
+			// Race with a live rt.event that lands milliseconds
+			// later: `mergeById` deduplicates on `id`, so the
+			// same row from both paths appears exactly once.
+			void notifications.refreshDelta();
 		});
 
 		return () => {

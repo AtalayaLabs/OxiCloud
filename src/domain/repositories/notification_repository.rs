@@ -18,21 +18,30 @@ use crate::common::errors::DomainError;
 use crate::domain::entities::notification::{NewNotification, Notification};
 
 /// Optional filter for [`NotificationRepository::list_for_user`]. All
-/// fields are additive — `None` means "no restriction on this axis".
+/// fields are additive — the default (Default::default) applies no
+/// restriction on any axis.
 #[derive(Debug, Clone, Default)]
 pub struct NotificationListFilter {
     /// Cap on rows returned. Default at the service layer is 50; the
-    /// repo does not impose one so a full-export use case remains
-    /// possible.
+    /// repo caps defensively at 500 so a runaway caller can't drag
+    /// the DB.
     pub limit: Option<u32>,
-    /// When `Some(true)`, return only rows with `read_at IS NULL`.
-    /// When `Some(false)`, return only rows with `read_at IS NOT NULL`.
-    /// `None` returns both.
-    pub unread_only: Option<bool>,
-    /// When `Some(t)`, return only rows created strictly before `t`.
-    /// Cursor-style pagination: caller passes the oldest `created_at`
-    /// from the previous page.
+    /// `true` → return only rows with `read_at IS NULL`. `false`
+    /// (default) returns both read and unread. There is no
+    /// "read-only" filter — no consumer needed it, and adding one
+    /// bloats the query surface.
+    pub unread_only: bool,
+    /// When `Some(t)`, return only rows created strictly BEFORE `t`.
+    /// Cursor-style pagination for the "load older page" flow: caller
+    /// passes the oldest `created_at` from the previous page.
     pub before: Option<DateTime<Utc>>,
+    /// When `Some(t)`, return only rows created strictly AFTER `t`.
+    /// Delta-catch-up cursor for the "since last seen" flow — used by
+    /// the FE bell on WS reconnect / tab reactivation to fetch rows
+    /// that arrived during a disconnect window. Combines with
+    /// `before` (both applied); combining them semantically bounds
+    /// the returned range on both sides.
+    pub after: Option<DateTime<Utc>>,
 }
 
 #[async_trait]

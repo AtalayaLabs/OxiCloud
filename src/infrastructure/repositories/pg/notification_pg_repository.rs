@@ -79,105 +79,36 @@ impl NotificationRepository for NotificationPgRepository {
         user_id: Uuid,
         filter: &NotificationListFilter,
     ) -> Result<Vec<Notification>, DomainError> {
-        // Dynamic-shape query built to still hit the
-        // notifications_user_created_read index — every branch keys
-        // on (user_id, created_at DESC).
+        // One dynamic query covers every combination of
+        // (unread_only, before, after). NULL sentinels short-circuit
+        // the corresponding predicate at planner time, so the
+        // notifications_user_created_read index still drives the
+        // scan — the extra `IS NULL` checks are constant-folded.
+        //
+        // `before` and `after` combine: passing both bounds the
+        // returned range on both sides — useful for future
+        // "paginate a specific window" flows, harmless today when
+        // callers use one at a time.
         let limit: i64 = filter.limit.unwrap_or(50).min(500) as i64;
-        let rows = match (filter.unread_only, filter.before) {
-            (None, None) => {
-                sqlx::query(
-                    r#"
-                    SELECT id, user_id, kind, payload, created_at, read_at
-                      FROM notif.notifications
-                     WHERE user_id = $1::uuid
-                     ORDER BY created_at DESC
-                     LIMIT $2
-                    "#,
-                )
-                .bind(user_id)
-                .bind(limit)
-                .fetch_all(self.pool.as_ref())
-                .await
-            }
-            (Some(true), None) => {
-                sqlx::query(
-                    r#"
-                    SELECT id, user_id, kind, payload, created_at, read_at
-                      FROM notif.notifications
-                     WHERE user_id = $1::uuid AND read_at IS NULL
-                     ORDER BY created_at DESC
-                     LIMIT $2
-                    "#,
-                )
-                .bind(user_id)
-                .bind(limit)
-                .fetch_all(self.pool.as_ref())
-                .await
-            }
-            (Some(false), None) => {
-                sqlx::query(
-                    r#"
-                    SELECT id, user_id, kind, payload, created_at, read_at
-                      FROM notif.notifications
-                     WHERE user_id = $1::uuid AND read_at IS NOT NULL
-                     ORDER BY created_at DESC
-                     LIMIT $2
-                    "#,
-                )
-                .bind(user_id)
-                .bind(limit)
-                .fetch_all(self.pool.as_ref())
-                .await
-            }
-            (None, Some(before)) => {
-                sqlx::query(
-                    r#"
-                    SELECT id, user_id, kind, payload, created_at, read_at
-                      FROM notif.notifications
-                     WHERE user_id = $1::uuid AND created_at < $2
-                     ORDER BY created_at DESC
-                     LIMIT $3
-                    "#,
-                )
-                .bind(user_id)
-                .bind(before)
-                .bind(limit)
-                .fetch_all(self.pool.as_ref())
-                .await
-            }
-            (Some(true), Some(before)) => {
-                sqlx::query(
-                    r#"
-                    SELECT id, user_id, kind, payload, created_at, read_at
-                      FROM notif.notifications
-                     WHERE user_id = $1::uuid AND read_at IS NULL AND created_at < $2
-                     ORDER BY created_at DESC
-                     LIMIT $3
-                    "#,
-                )
-                .bind(user_id)
-                .bind(before)
-                .bind(limit)
-                .fetch_all(self.pool.as_ref())
-                .await
-            }
-            (Some(false), Some(before)) => {
-                sqlx::query(
-                    r#"
-                    SELECT id, user_id, kind, payload, created_at, read_at
-                      FROM notif.notifications
-                     WHERE user_id = $1::uuid AND read_at IS NOT NULL AND created_at < $2
-                     ORDER BY created_at DESC
-                     LIMIT $3
-                    "#,
-                )
-                .bind(user_id)
-                .bind(before)
-                .bind(limit)
-                .fetch_all(self.pool.as_ref())
-                .await
-            }
-        }
+        let rows = sqlx::query(
+            r#"
+            SELECT id, user_id, kind, payload, created_at, read_at
+              FROM notif.notifications
+             WHERE user_id = $1::uuid
+               AND ($2::bool = FALSE OR read_at IS NULL)
+               AND ($3::timestamptz IS NULL OR created_at < $3)
+               AND ($4::timestamptz IS NULL OR created_at > $4)
+             ORDER BY created_at DESC
+             LIMIT $5
+            "#,
+        )
+        .bind(user_id)
+        .bind(filter.unread_only)
+        .bind(filter.before)
+        .bind(filter.after)
+        .bind(limit)
+        .fetch_all(self.pool.as_ref())
+        .await
         .map_err(|e| db_err("list_for_user", e))?;
 
         rows.iter().map(Self::map_row).collect()
