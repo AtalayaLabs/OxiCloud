@@ -17,6 +17,7 @@
 	import { dateTimeFormatFor, iconNameFromClass } from '$lib/utils/display';
 	import { userInitials, avatarColorIndex } from '$lib/utils/avatar';
 	import { i18n, LANGUAGES, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
+	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { serverStatus } from '$lib/stores/serverStatus.svelte';
 	import { apiFetch } from '$lib/api/client';
 	import { dialogs } from '$lib/stores/dialogs.svelte';
@@ -74,68 +75,81 @@
 	// strip; that was displaced here so the section navigation
 	// scales past ~7 items and matches deep-link URLs from the
 	// address bar.
-	const ADMIN_LINKS: NavLink[] = [
-		{
-			href: '/admin',
-			label: t('admin.dashboard', 'Dashboard'),
-			icon: 'chart-pie',
-			section: 'admin-dashboard'
-		},
-		{
-			href: '/admin/users',
-			label: t('admin.users', 'Users'),
-			icon: 'users',
-			section: 'admin-users'
-		},
-		{
-			href: '/admin/sessions',
-			label: t('admin.sessions', 'Sessions'),
-			icon: 'key',
-			section: 'admin-sessions'
-		},
-		{
-			href: '/admin/drives',
-			label: t('admin.drives', 'Drives'),
-			icon: 'hdd',
-			section: 'admin-drives'
-		},
-		{
-			href: '/admin/mounts',
-			label: t('admin.mounts', 'External Mounts'),
-			icon: 'folder',
-			section: 'admin-mounts'
-		},
-		{
-			href: '/admin/oidc',
-			label: t('admin.oidc', 'OIDC / SSO'),
-			icon: 'building-shield',
-			section: 'admin-oidc'
-		},
-		{
-			href: '/admin/storage',
-			label: t('admin.storage_tab', 'Storage'),
-			icon: 'database',
-			section: 'admin-storage'
-		},
-		{
-			href: '/admin/smtp',
-			label: t('admin.smtp', 'Email (SMTP)'),
-			icon: 'envelope',
-			section: 'admin-smtp'
-		},
-		{
-			href: '/admin/plugins',
-			label: t('admin.plugins', 'Plugins'),
-			icon: 'layer-group',
-			section: 'admin-plugins'
-		},
-		{
-			href: '/admin/jobs',
-			label: t('admin.jobs.tab', 'Background tasks'),
-			icon: 'cogs',
-			section: 'admin-jobs'
+	// `$derived` so feature-flag gating drops entries when a feature is
+	// disabled server-side. Server-side the admin CRUD routes are also
+	// gated (matching the message-bus pattern) — hiding the link here
+	// keeps the sidebar consistent with what the backend actually
+	// serves; a stale link would land on a 404. See
+	// `$lib/stores/serverConfig.svelte.ts`.
+	const ADMIN_LINKS = $derived.by<NavLink[]>(() => {
+		const links: NavLink[] = [
+			{
+				href: '/admin',
+				label: t('admin.dashboard', 'Dashboard'),
+				icon: 'chart-pie',
+				section: 'admin-dashboard'
+			},
+			{
+				href: '/admin/users',
+				label: t('admin.users', 'Users'),
+				icon: 'users',
+				section: 'admin-users'
+			},
+			{
+				href: '/admin/sessions',
+				label: t('admin.sessions', 'Sessions'),
+				icon: 'key',
+				section: 'admin-sessions'
+			},
+			{
+				href: '/admin/drives',
+				label: t('admin.drives', 'Drives'),
+				icon: 'hdd',
+				section: 'admin-drives'
+			}
+		];
+		if (serverConfig.features.external_mounts) {
+			links.push({
+				href: '/admin/mounts',
+				label: t('admin.mounts', 'External Mounts'),
+				icon: 'folder',
+				section: 'admin-mounts'
+			});
 		}
-	];
+		links.push(
+			{
+				href: '/admin/oidc',
+				label: t('admin.oidc', 'OIDC / SSO'),
+				icon: 'building-shield',
+				section: 'admin-oidc'
+			},
+			{
+				href: '/admin/storage',
+				label: t('admin.storage_tab', 'Storage'),
+				icon: 'database',
+				section: 'admin-storage'
+			},
+			{
+				href: '/admin/smtp',
+				label: t('admin.smtp', 'Email (SMTP)'),
+				icon: 'envelope',
+				section: 'admin-smtp'
+			},
+			{
+				href: '/admin/plugins',
+				label: t('admin.plugins', 'Plugins'),
+				icon: 'layer-group',
+				section: 'admin-plugins'
+			},
+			{
+				href: '/admin/jobs',
+				label: t('admin.jobs.tab', 'Background tasks'),
+				icon: 'cogs',
+				section: 'admin-jobs'
+			}
+		);
+		return links;
+	});
 
 	const isAdmin = $derived(session.user?.role === 'admin');
 

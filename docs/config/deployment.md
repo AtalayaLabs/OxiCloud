@@ -104,7 +104,7 @@ kubectl logs statefulset/oxicloud -n oxicloud | grep "WOPI discovery loaded"
 | Trash | Yes | No | `OXICLOUD_ENABLE_TRASH` |
 | Search | Yes | No | `OXICLOUD_ENABLE_SEARCH` |
 | Favorites | Yes | Yes | Always on |
-| Storage quotas | Yes | Yes | `OXICLOUD_ENABLE_USER_STORAGE_QUOTAS` |
+| Storage quotas | Yes | Yes | Per-user via admin panel (no master switch) |
 | WebDAV | Yes | Optional | Always on |
 | CalDAV / CardDAV | Yes | Yes | Always on |
 | Deduplication | No | No | Always on |

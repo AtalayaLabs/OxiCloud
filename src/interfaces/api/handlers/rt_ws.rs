@@ -310,7 +310,34 @@ enum SessionOut {
     EvictFolders(Vec<Uuid>),
 }
 
+/// RAII guard that decrements the live-session counter on ANY exit
+/// path from `handle_session` — clean close, protocol error, panic
+/// unwind, tokio task cancellation. Keeping the decrement in `Drop`
+/// (not scattered inline before every `break;` / `return;`) means we
+/// physically cannot leak a live count when a new exit branch is
+/// added. `Arc` so it stays valid even if the task is aborted from
+/// outside.
+struct SessionCountGuard(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for SessionCountGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppState>) {
+    // Live-session counter — incremented here, decremented on ANY
+    // exit path via the `Drop` guard below (clean close, error,
+    // panic unwind, task abort). Feeds the admin dashboard's
+    // "Live activity" section. `Relaxed` because the counter is
+    // approximate-by-design — a slightly stale read on the
+    // dashboard is fine, and the atomic hop stays sub-nanosecond
+    // on the hot path (session open / close).
+    state
+        .active_ws_sessions
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let _session_count_guard = SessionCountGuard(Arc::clone(&state.active_ws_sessions));
+
     // Outbound queue — every path that produces a client-bound frame
     // enqueues here; the writer half of the select drains. Also
     // carries internal `EvictFolders` control signals from the

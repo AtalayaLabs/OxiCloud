@@ -662,7 +662,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     // gate automatically — implementors no longer have to remember
     // to call `require_admin(&state, &headers).await?` inline, and a
     // forgotten call can't silently expose a non-admin surface.
-    let admin_router = admin_handler::admin_routes()
+    let admin_router = admin_handler::admin_routes(app_state)
         .layer(axum::middleware::from_fn(
             crate::interfaces::middleware::auth::require_admin,
         ))

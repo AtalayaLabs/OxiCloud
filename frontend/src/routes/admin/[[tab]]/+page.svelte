@@ -83,6 +83,7 @@
 	} from '$lib/api/types';
 	import { shortUserAgent } from '$lib/utils/userAgent';
 	import { triggerJob } from '$lib/api/endpoints/adminJobs';
+	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { serverStatus } from '$lib/stores/serverStatus.svelte';
 	import AdminJobsPanel from '$lib/components/AdminJobsPanel.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
@@ -223,6 +224,44 @@
 	// matching content block. Unidirectional URL→state means no
 	// `$effect` loop is even possible.
 	const tab = $derived<Tab>(parseTab(page.params.tab));
+
+	/**
+	 * Feature-flag matrix for the dashboard "System" section.
+	 * Data-driven from `serverConfig.features` (populated at boot from
+	 * `GET /api/config`). Each entry becomes one card; adding a
+	 * feature server-side flows through this list automatically —
+	 * label lookup falls back to the raw key so a missing translation
+	 * won't hide the card.
+	 *
+	 * Uses `unknown` bracket-key reads (rather than a rigid mapping
+	 * over hard-coded keys) so the FE doesn't need a code change when
+	 * the backend adds a new feature flag. The i18n key namespace
+	 * `admin.features.<key>` keeps translations discoverable.
+	 */
+	interface FeatureRow {
+		key: string;
+		label: string;
+		enabled: boolean;
+	}
+	const FEATURE_LABELS: Record<string, string> = {
+		message_bus: 'Message bus',
+		trash: 'Trash',
+		search: 'Search',
+		sharing: 'Sharing',
+		music: 'Music',
+		places: 'Places (photo map)',
+		faces: 'People (faces)',
+		video_thumbnails: 'Video thumbnails',
+		external_mounts: 'External mounts'
+	};
+	const featureRows = $derived.by<FeatureRow[]>(() => {
+		const raw = serverConfig.features as unknown as Record<string, boolean>;
+		return Object.entries(raw).map(([key, enabled]) => ({
+			key,
+			label: t(`admin.features.${key}`, FEATURE_LABELS[key] ?? key),
+			enabled
+		}));
+	});
 
 	/**
 	 * Human-readable label for the current section — feeds the
@@ -1905,33 +1944,56 @@
 					</span>
 					{t('admin.online_sessions', 'Online sessions')}
 				</div>
+				<!-- WS-sessions card only rendered when the message bus is
+				     enabled server-side. With `OXICLOUD_MESSAGEBUS_ENABLE=false`
+				     the count is unconditionally 0, and showing "0 Live
+				     WS sessions" reads like a bug when the feature simply
+				     isn't running. `serverConfig.features.message_bus`
+				     comes from `/api/config` at boot. -->
+				{#if serverConfig.features.message_bus}
+					<div
+						class="ds-card"
+						title={t(
+							'admin.active_ws_sessions_tooltip',
+							'Currently-connected message-bus WebSocket sessions — one per open browser tab reaching a folder view'
+						)}
+					>
+						<span class="ds-num ds-num--live">
+							<span class="presence-dot presence-dot--online" aria-hidden="true"></span>
+							{dashboard.active_ws_sessions}
+						</span>
+						{t('admin.active_ws_sessions', 'Live WS sessions')}
+					</div>
+				{/if}
 			</div>
 
-			<!-- Section 3: System — deployment flags + version. -->
+			<!-- Section 3: System — deployment flags + version.
+			     Feature cards are data-driven from `/api/config`
+			     (see `serverConfig.features` + `featureRows` derived).
+			     Auth / OIDC / version still come from the dashboard
+			     endpoint since those are per-deployment "system"
+			     concerns not exposed on the public config surface.
+			     Adding a new feature server-side flows into this grid
+			     automatically — no template change needed. -->
 			<h2 class="ds-section-title">{t('admin.section_system', 'System')}</h2>
 			<div class="ds-grid">
-				<div class="ds-card">
-					<span class="ds-flag" class:ds-flag--on={dashboard.auth_enabled}>
-						{dashboard.auth_enabled
-							? t('admin.enabled', 'Enabled')
-							: t('admin.disabled', 'Disabled')}
-					</span>
-					{t('admin.auth', 'Authentication')}
-				</div>
 				<div class="ds-card">
 					<span class="ds-flag" class:ds-flag--on={dashboard.oidc_configured}>
 						{dashboard.oidc_configured ? t('admin.active', 'Active') : t('admin.off', 'Off')}
 					</span>
 					{t('admin.oidc', 'OIDC / SSO')}
 				</div>
-				<div class="ds-card">
-					<span class="ds-flag" class:ds-flag--on={dashboard.quotas_enabled}>
-						{dashboard.quotas_enabled
-							? t('admin.enabled', 'Enabled')
-							: t('admin.disabled', 'Disabled')}
-					</span>
-					{t('admin.quotas', 'Quotas')}
-				</div>
+				{#each featureRows as row (row.key)}
+					<div class="ds-card" data-testid="admin-feature-card-{row.key}">
+						<span class="ds-flag" class:ds-flag--on={row.enabled}>
+							{row.enabled ? t('admin.enabled', 'Enabled') : t('admin.disabled', 'Disabled')}
+						</span>
+						{row.label}
+					</div>
+				{/each}
+				<!-- Version card intentionally last — tertiary build
+				     metadata (like a footer), least useful at a glance
+				     compared to the feature-toggle cards above. -->
 				<div class="ds-card">
 					<span class="ds-num">v{dashboard.server_version}</span>{t('admin.version', 'Version')}
 				</div>

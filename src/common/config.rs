@@ -2243,7 +2243,6 @@ impl MagicLinkConfig {
 #[derive(Debug, Clone)]
 pub struct FeaturesConfig {
     pub enable_auth: bool,
-    pub enable_user_storage_quotas: bool,
     pub enable_file_sharing: bool,
     pub enable_trash: bool,
     pub enable_search: bool,
@@ -2483,8 +2482,7 @@ impl Default for GrantCleanupConfig {
 impl Default for FeaturesConfig {
     fn default() -> Self {
         Self {
-            enable_auth: true, // Enable authentication by default
-            enable_user_storage_quotas: false,
+            enable_auth: true,             // Enable authentication by default
             enable_file_sharing: true,     // Enable file sharing by default
             enable_trash: true,            // Enable trash feature
             enable_search: true,           // Enable search feature
@@ -3351,13 +3349,6 @@ impl AppConfig {
             && let Ok(val) = enable_auth
         {
             config.features.enable_auth = val;
-        }
-
-        if let Ok(enable_user_storage_quotas) =
-            env::var("OXICLOUD_ENABLE_USER_STORAGE_QUOTAS").map(|v| v.parse::<bool>())
-            && let Ok(val) = enable_user_storage_quotas
-        {
-            config.features.enable_user_storage_quotas = val;
         }
 
         if let Ok(enable_file_sharing) =

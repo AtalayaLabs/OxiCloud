@@ -53,18 +53,38 @@ struct AdminUsersPageResponse {
 }
 
 /// Admin API routes — all require admin role.
-pub fn admin_routes() -> Router<Arc<AppState>> {
+///
+/// Takes an `AppState` reference so feature-flag gating at route-
+/// registration time is possible (external-mounts admin surface
+/// mirrors the `OXICLOUD_ENABLE_EXTERNAL_MOUNTS` flag; when the flag
+/// is off the runtime `MountRegistry` isn't loaded, so exposing the
+/// CRUD would let admins configure mounts that silently don't work).
+pub fn admin_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     use super::admin_external_mounts as ext_mounts;
-    Router::new()
-        // External file mounts
-        .route(
-            "/external-mounts",
-            get(ext_mounts::list_external_mounts).post(ext_mounts::create_external_mount),
-        )
-        .route(
-            "/external-mounts/{id}",
-            delete(ext_mounts::delete_external_mount),
-        )
+    let mut router = Router::new();
+
+    // External file mounts — CRUD registered only when the feature
+    // is enabled server-side. Matches the pattern used for the
+    // message bus (`/api/rt/ws` unmounted when
+    // `OXICLOUD_MESSAGEBUS_ENABLE=false`): a disabled feature stays
+    // fully hidden from the admin panel too. Without this guard the
+    // admin panel would load, editor would save DB rows, but the
+    // runtime `MountRegistry` (gated by the same flag in
+    // `common/di.rs`) wouldn't load them — a silently-broken UX.
+    // FE mirrors via `serverConfig.features.external_mounts`.
+    if app_state.core.config.features.enable_external_mounts {
+        router = router
+            .route(
+                "/external-mounts",
+                get(ext_mounts::list_external_mounts).post(ext_mounts::create_external_mount),
+            )
+            .route(
+                "/external-mounts/{id}",
+                delete(ext_mounts::delete_external_mount),
+            );
+    }
+
+    router = router
         // OIDC settings
         .route("/settings/oidc", get(get_oidc_settings))
         .route("/settings/oidc", put(save_oidc_settings))
@@ -207,7 +227,9 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         .route(
             "/drives/{id}/members/{kind}/{sid}",
             axum::routing::patch(update_drive_member_admin).delete(remove_drive_member_admin),
-        )
+        );
+
+    router
 }
 
 // Every route under `/api/admin/*` is gated by the
@@ -1054,9 +1076,13 @@ pub async fn get_dashboard_stats(
 
     let stats = DashboardStatsDto {
         server_version: env!("CARGO_PKG_VERSION").to_string(),
-        auth_enabled: true,
         oidc_configured: auth_app.oidc_enabled(),
-        quotas_enabled: true, // Feature flag could be checked here
+        // Snapshot the current live-WS-session count. `Relaxed` because
+        // the counter itself uses `Relaxed`; slight staleness on the
+        // dashboard is fine — it's a UI gauge, not a control input.
+        active_ws_sessions: state
+            .active_ws_sessions
+            .load(std::sync::atomic::Ordering::Relaxed) as u64,
         total_users: stats_row.get("total_users"),
         active_users: stats_row.get("active_users"),
         admin_users: stats_row.get("admin_users"),

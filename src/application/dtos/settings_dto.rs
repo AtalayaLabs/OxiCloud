@@ -161,9 +161,15 @@ pub struct DriveKindUsageDto {
 pub struct DashboardStatsDto {
     // System info
     pub server_version: String,
-    pub auth_enabled: bool,
     pub oidc_configured: bool,
-    pub quotas_enabled: bool,
+    /// Currently-connected message-bus WebSocket sessions. One per
+    /// browser tab that reached a folder view and hasn't closed the
+    /// tab yet. Zero when `OXICLOUD_MESSAGEBUS_ENABLE=false`.
+    /// Snapshot value — a subsequent request can see a different
+    /// number if a connection opened/closed in between. Renders on
+    /// the admin dashboard's "Live activity" section next to
+    /// `online_sessions` (HTTP-driven distinct-user count).
+    pub active_ws_sessions: u64,
     // ── User accounts (static breakdown of auth.users) ──
     // All four are counts of the SAME table under different
     // predicates. `active`, `admin`, `external` are all subsets of

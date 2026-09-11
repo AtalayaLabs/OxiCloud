@@ -36,7 +36,6 @@ const DEFAULT_FEATURES: ServerFeatures = {
 	trash: true,
 	search: true,
 	sharing: true,
-	quotas: false,
 	music: true,
 	places: true,
 	faces: false,

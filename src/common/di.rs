@@ -2333,6 +2333,7 @@ impl AppServiceFactory {
             mount_router,
             bus,
             rt_ticket_store,
+            active_ws_sessions: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             auth_service: auth_services,
             opaque_service,
             opaque_repo,
@@ -3250,6 +3251,15 @@ pub struct AppState {
     pub rt_ticket_store: Arc<
         crate::infrastructure::services::rt_ticket_store::RtTicketStore,
     >,
+    /// Live count of currently-connected message-bus WS sessions.
+    /// Incremented on entry to `rt_ws::handle_session`, decremented
+    /// via a `Drop` guard on ANY exit (normal close, error, panic
+    /// unwind). Surfaced on the admin dashboard's "Live activity"
+    /// section so operators can gauge WS pressure at a glance — one
+    /// connection per open browser tab that reaches a folder view.
+    /// Zero-cost when idle: `Relaxed` atomic load/store on the fd
+    /// path, no allocation.
+    pub active_ws_sessions: Arc<std::sync::atomic::AtomicUsize>,
     pub auth_service: Option<AuthServices>,
     /// OPAQUE aPAKE substrate (RFC 9807). Populated only when
     /// [`OpaqueConfig::effective_mode`] is not `Off` — that method

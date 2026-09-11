@@ -893,7 +893,10 @@ export interface ServerFeatures {
 	trash: boolean;
 	search: boolean;
 	sharing: boolean;
-	quotas: boolean;
+	// NOTE: `quotas` was intentionally NOT exposed — see the Rust
+	// `FeaturesDto` doc for why (dormant server flag with zero
+	// consumers). Add it back once it actually gates FE-visible
+	// behavior.
 	music: boolean;
 	places: boolean;
 	faces: boolean;

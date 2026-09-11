@@ -82,9 +82,10 @@ pub struct FeaturesDto {
     /// File sharing (public share links + user-to-user grants). See
     /// `FeaturesConfig::enable_file_sharing`.
     pub sharing: bool,
-    /// Per-user storage-quota enforcement on the upload path. See
-    /// `FeaturesConfig::enable_user_storage_quotas`.
-    pub quotas: bool,
+    // NOTE: no `quotas` field. The former `enable_user_storage_quotas`
+    // flag was removed (dead config with zero consumers). Actual
+    // per-user quotas are set via the admin panel and resolved by
+    // `StorageUsageService` unconditionally.
     /// Music player + playlists. See `FeaturesConfig::enable_music`.
     pub music: bool,
     /// Photo-map ("Places") tab. See `FeaturesConfig::enable_places`.
@@ -122,7 +123,6 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<ServerConfig
             trash: f.enable_trash,
             search: f.enable_search,
             sharing: f.enable_file_sharing,
-            quotas: f.enable_user_storage_quotas,
             music: f.enable_music,
             places: f.enable_places,
             faces: f.enable_faces,
