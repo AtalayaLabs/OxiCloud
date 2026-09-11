@@ -992,11 +992,55 @@ Output JSON schema (for post-mortem assertions in shell):
 }
 ```
 
-### Coverage — four scenarios, each in the same test file
+### Coverage — eleven scenarios, all green
 
-Orchestrated by a single `tests/api/rt_bus_check.sh` invoked from
-`tests/api/run.sh` after the main hurl block. Follows the
-`refcount_cascade` / `thumb_import_check` patterns already in place.
+The four MVP scenarios sketched below expanded to **S1–S11** as
+Slice C, D, and F shipped. All orchestrated by
+`tests/api/rt_bus_check.sh` invoked from `tests/api/run.sh` after the
+main hurl block. Follows the `refcount_cascade` /
+`thumb_import_check` patterns already in place.
+
+Scenarios live today:
+
+- **S1** — Positive delivery: subscribe A, upload into A, one
+  `file_created`.
+- **S2** — Topic isolation: subscribe A, upload into B then A;
+  observe A's event only.
+- **S3** — AuthZ denial: user2 subscribes to A without a grant →
+  `no_read`.
+- **S4** — Anti-enumeration parity: subscribe to a nonexistent
+  folder returns the SAME `no_read` as S3.
+- **S5** — Server keepalive: 3 s idle surfaces multiple RFC 6455
+  Pings; session still delivers afterwards.
+- **S6** — `file_deleted`: DELETE fires the publish hook.
+- **S7** — Move fan-out: subscribe A+B, MOVE A→B, observe two
+  `file_moved` (one per topic).
+- **S8** — Grant-revoke eviction (Slice C): user2 subscribes to
+  A+B (both granted); user1 revokes only A → `rt.revoked` for A,
+  upload to B still delivers. Session survives.
+- **S9** — Cross-user identity gate: user1 subscribes to
+  `user:{user2_id}:authz` → `topic_forbidden` (identity mismatch;
+  audit reason `identity_mismatch`; wire response indistinguishable
+  from unknown topic per anti-enum).
+- **S10** — Ticket happy path (Slice F): `POST /api/rt/ticket`,
+  open WS with `oxi.ticket.<uuid>` subprotocol, subscribe +
+  deliver.
+- **S11** — Ticket single-use (Slice F): reusing a redeemed
+  ticket fails the upgrade with 401 + audit
+  `message_bus.upgrade_rejected reason=ticket_invalid`.
+
+**Ready-file race fix**: the shell script uses a `wait_ready`
+function that blocks on the helper's `--ready-file` (touched the
+instant every requested subscribe is ack'd) instead of a
+`sleep 0.4` heuristic that flaked on cold-cache runs. See
+`rt-hurl-helper::Args::ready_file` and the wait_ready doc in the
+shell script.
+
+**Always rebuild the helper** — the guard `[[ ! -x $HELPER_BIN ]]`
+was removed 2026-09-11 because it silently reused stale binaries
+whenever the helper's source changed without touching the caller
+shell. Cargo incremental short-circuits in ~50 ms; the cost is
+negligible, the trap-free experience is worth it.
 
 **Scenario 1 — Positive delivery** (fan-out works)
 

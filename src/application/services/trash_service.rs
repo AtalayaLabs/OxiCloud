@@ -304,17 +304,33 @@ impl TrashUseCase for TrashService {
                 // doesn't panic here.
                 if let (Some(bus), Some(parent_uuid)) = (&self.bus, parent_snapshot) {
                     debug!(
-                        "publishing FolderDeleted folder={} parent={} actor={}",
+                        "publishing FolderDeleted folder={} parent={} actor={} (2 topics)",
                         folder_id, parent_uuid, user_id
                     );
-                    bus.publish(
-                        &Topic::Folder(parent_uuid),
-                        MessageBusEvent::FolderDeleted {
-                            folder_id,
-                            parent_id: parent_uuid,
-                            actor: user_id,
-                        },
-                    );
+                    let event = MessageBusEvent::FolderDeleted {
+                        folder_id,
+                        parent_id: parent_uuid,
+                        actor: user_id,
+                    };
+                    // Publish on BOTH the parent's topic AND the deleted
+                    // folder's own topic:
+                    //
+                    //   * Parent topic — viewers of the parent see the
+                    //     child disappear from their listing (existing
+                    //     behavior, verified by tests).
+                    //   * Deleted-folder topic — viewers INSIDE the
+                    //     folder that just got trashed are stranded on a
+                    //     folder that no longer exists. Delivering the
+                    //     same `folder_deleted` event on this topic lets
+                    //     the FE `onFolderDeleted` handler detect
+                    //     `data.folder_id === currentId` and navigate
+                    //     away with a toast (same UX as `onRevoked`
+                    //     surfaces for grant-revocation eviction).
+                    //     Otherwise the sub would silently stop
+                    //     receiving events and the tab would sit on a
+                    //     zombie view.
+                    bus.publish(&Topic::Folder(parent_uuid), event.clone());
+                    bus.publish(&Topic::Folder(folder_id), event);
                 } else {
                     debug!(
                         "trash-folder publish skipped: bus={} parent={:?}",

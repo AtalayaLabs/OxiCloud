@@ -476,7 +476,27 @@
 		onFolderCreated: (d) => scheduleLiveReload(d.actor),
 		onFolderRenamed: (d) => scheduleLiveReload(d.actor),
 		onFolderMoved: (d) => scheduleLiveReload(d.actor),
-		onFolderDeleted: (d) => scheduleLiveReload(d.actor),
+		onFolderDeleted: (d) => {
+			// Two cases fanned out from the server-side publish:
+			//   * `d.folder_id !== currentId` — a SUBFOLDER of the
+			//     current view was deleted. Refetch the listing so
+			//     the row disappears (existing behavior).
+			//   * `d.folder_id === currentId` — the VIEWED folder
+			//     itself just got trashed. The FolderService trashes
+			//     the subtree (soft-delete cascade); staying here
+			//     would show a zombie view. Toast + navigate to
+			//     `/files`, same UX as `onRevoked` for grant
+			//     eviction. See `TrashService::move_to_trash` and
+			//     `docs/plan/message-bus.md § Status` for the
+			//     dual-topic publish rationale.
+			if (d.folder_id === currentId) {
+				ui.notify(t('files.folder_was_deleted', 'This folder was moved to trash.'), 'warning');
+				busLog.warn('viewed folder was deleted', { folder_id: d.folder_id });
+				void goto(resolve('/files'));
+				return;
+			}
+			scheduleLiveReload(d.actor);
+		},
 		onRevoked: (params) => {
 			// The subscription is already gone server-side. Notify the
 			// user and send them back to their home so they don't sit
