@@ -110,6 +110,27 @@ const RECONNECT_MAX_MS = 30_000;
  *  genuine permanent failure before it becomes noise. */
 const MAX_CONSECUTIVE_FAILURES = 20;
 
+/** How long a tab must stay hidden before the client proactively
+ *  closes its WebSocket. Balances two costs:
+ *
+ *  - Aggressive close (0 grace) churns on every alt-tab: users
+ *    switch tabs dozens of times a day for quick lookups; a full
+ *    ticket exchange + reconnect on every switch is wasteful.
+ *  - No close leaves the WS holding an fd, a broadcast receiver
+ *    slot, and the session's outbound `mpsc::Sender` server-side
+ *    for as long as the tab is open — even if the user hasn't
+ *    looked at it in hours.
+ *
+ *  60 s comfortably absorbs "alt-tab, check something, come back"
+ *  and starts saving real state on tabs left in the background for
+ *  real work. On return we run the same `onReconnect` handlers the
+ *  server-restart path uses — no new code needed for state resync.
+ *
+ *  The Page Visibility API (`document.visibilityState`) fires the
+ *  same event whether the user switched tabs, minimised the window,
+ *  or the screen locked. All three want the same treatment. */
+const HIDDEN_GRACE_MS = 60_000;
+
 interface SubEntry {
 	count: number;
 	handlers: Set<EventHandler>;
@@ -155,6 +176,15 @@ export class MessageBusClient {
 	 *  reactive. Same rationale as `#subs` / `#pending`. */
 	// eslint-disable-next-line svelte/prefer-svelte-reactivity
 	#reconnectHandlers = new Set<ReconnectHandler>();
+	/** setTimeout handle for the "close on hidden after grace" timer.
+	 *  `null` when the tab is visible OR the timer already fired. See
+	 *  `HIDDEN_GRACE_MS` for the design tradeoff. */
+	#hiddenTimer: ReturnType<typeof setTimeout> | null = null;
+	/** Bound `visibilitychange` listener kept so `close()` can
+	 *  detach it. Not attached in SSR (`typeof document ===
+	 *  "undefined"`); the client is lazy so this is just belt-and-
+	 *  braces against a caller doing something unusual. */
+	#onVisibilityChange: (() => void) | null = null;
 
 	/** `topic` → `{count, handlers, revokedHandlers, acked}`. Refcount
 	 *  drives the wire: first refcount ⇒ send `rt.subscribe`; last drop
@@ -185,6 +215,16 @@ export class MessageBusClient {
 		};
 		this.#url = opts?.url ?? (typeof window !== 'undefined' ? defaultUrl() : '');
 		this.#WebSocketCtor = opts?.WebSocketCtor ?? WebSocket;
+
+		// Wire the Page Visibility hook — closes the WS after
+		// `HIDDEN_GRACE_MS` when the tab goes hidden, reconnects on
+		// return. See the constant's doc for the tradeoff. Guarded by
+		// `typeof document !== 'undefined'` so SSR / non-browser
+		// harnesses (Vitest with a stubbed WebSocket) don't crash.
+		if (typeof document !== 'undefined') {
+			this.#onVisibilityChange = () => this.#handleVisibilityChange();
+			document.addEventListener('visibilitychange', this.#onVisibilityChange);
+		}
 	}
 
 	/**
@@ -293,6 +333,14 @@ export class MessageBusClient {
 			clearTimeout(this.#reconnectTimer);
 			this.#reconnectTimer = null;
 		}
+		if (this.#hiddenTimer !== null) {
+			clearTimeout(this.#hiddenTimer);
+			this.#hiddenTimer = null;
+		}
+		if (this.#onVisibilityChange && typeof document !== 'undefined') {
+			document.removeEventListener('visibilitychange', this.#onVisibilityChange);
+			this.#onVisibilityChange = null;
+		}
 		if (this.#ws) {
 			this.#ws.close();
 			this.#ws = null;
@@ -300,6 +348,86 @@ export class MessageBusClient {
 		this.state = 'idle';
 		this.#subs.clear();
 		this.#pending.clear();
+	}
+
+	// ─────────────────────── page visibility ─────────────────────────
+
+	/** `visibilitychange` handler. Two transitions:
+	 *
+	 *  - visible → hidden: start the grace timer (or reset it, if
+	 *    the timer was already running from a previous hide → visible
+	 *    → hide flip that didn't fire yet — clearing first is safe).
+	 *  - hidden → visible: cancel the timer if it hasn't fired; if
+	 *    the WS was already closed AND we still hold subscriptions,
+	 *    trigger a reconnect so the `onReconnect` handlers refetch
+	 *    and the state catches up.
+	 *
+	 *  Wrapped in `untrack` because this method reads `this.state`
+	 *  (a `$state`); the caller is a DOM event listener, but
+	 *  defensively we don't want a future refactor that puts this
+	 *  behind an `$effect` to inherit a dep on `state`. Same
+	 *  pattern applied to every other class-method state read —
+	 *  see the `subscribe()` docstring for the general rule. */
+	#handleVisibilityChange(): void {
+		untrack(() => {
+			if (typeof document === 'undefined') return;
+			if (document.visibilityState === 'hidden') {
+				if (this.#hiddenTimer !== null) clearTimeout(this.#hiddenTimer);
+				this.#hiddenTimer = setTimeout(() => this.#closeForHidden(), HIDDEN_GRACE_MS);
+				busLog.debug('tab hidden — WS close scheduled', { graceMs: HIDDEN_GRACE_MS });
+			} else {
+				if (this.#hiddenTimer !== null) {
+					clearTimeout(this.#hiddenTimer);
+					this.#hiddenTimer = null;
+					busLog.debug('tab visible again — hidden-close cancelled (WS still open)');
+				}
+				// If the WS was closed by the previous grace-timer fire,
+				// pop back up. `reconnect()` zeroes the circuit breaker
+				// and schedules an immediate attempt; `#onOpen` will
+				// then fire every registered `onReconnect` handler and
+				// consumers refetch to catch up on missed events. Skip
+				// if there are no live subscribers — no point opening
+				// a connection nobody's listening on.
+				if (this.state === 'disconnected' && this.#subs.size > 0) {
+					busLog.debug('tab visible again — reconnecting after grace close');
+					this.reconnect();
+				}
+			}
+		});
+	}
+
+	/** Grace timer fired — the tab has been hidden for `HIDDEN_GRACE_MS`.
+	 *  Close the WS, preserving the local `#subs` map so a return to
+	 *  visible can re-subscribe every topic through the normal
+	 *  `#onOpen` replay path. Nothing to do if we're already
+	 *  disconnected (server-restart flow, etc.). */
+	#closeForHidden(): void {
+		untrack(() => {
+			this.#hiddenTimer = null;
+			if (this.state === 'idle' || this.state === 'disconnected') return;
+			busLog.warn('closing WS — tab hidden past grace window', {
+				subsPreserved: this.#subs.size
+			});
+			if (this.#ws) {
+				this.#ws.close();
+				this.#ws = null;
+			}
+			// Cancel any in-flight reconnect timer — the tab is asleep,
+			// no point scheduling more attempts until it's visible again.
+			if (this.#reconnectTimer !== null) {
+				clearTimeout(this.#reconnectTimer);
+				this.#reconnectTimer = null;
+			}
+			this.state = 'disconnected';
+			// Reject pending calls with a synthetic "hidden" error so
+			// callers don't hang. Matches the `#onClose` shape.
+			const closed: MessageBusError = {
+				code: RtErrorCode.INTERNAL_ERROR,
+				message: 'ws_closed_tab_hidden'
+			};
+			for (const pending of this.#pending.values()) pending.reject(closed);
+			this.#pending.clear();
+		});
 	}
 
 	// ─────────────────────── connection lifecycle ────────────────────
@@ -499,8 +627,22 @@ export class MessageBusClient {
 		const closed: MessageBusError = { code: RtErrorCode.INTERNAL_ERROR, message: 'ws_closed' };
 		for (const pending of this.#pending.values()) pending.reject(closed);
 		this.#pending.clear();
-		// Only reconnect if we still have subscribers waiting.
-		if (this.#subs.size > 0) this.#scheduleReconnect();
+		// Reconnect only when we still have subscribers AND the tab is
+		// currently visible. When hidden, `#closeForHidden` closes the
+		// WS on purpose to save resources — auto-reconnecting here
+		// would defeat the whole grace-close mechanism. The
+		// `visibilitychange` handler's hidden→visible transition takes
+		// care of the recovery via `this.reconnect()`.
+		if (this.#subs.size > 0 && !this.#tabIsHidden()) {
+			this.#scheduleReconnect();
+		}
+	}
+
+	/** Small helper — `true` if the Page Visibility API says the tab
+	 *  is hidden right now. Guards non-browser harnesses (SSR,
+	 *  Vitest without jsdom overrides) that lack `document`. */
+	#tabIsHidden(): boolean {
+		return typeof document !== 'undefined' && document.visibilityState === 'hidden';
 	}
 
 	#scheduleReconnect(overrideMs?: number): void {
