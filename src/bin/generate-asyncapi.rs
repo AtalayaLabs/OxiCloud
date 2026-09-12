@@ -755,15 +755,17 @@ fn folder_deleted_schema() -> Value {
 // event is just an invalidation.
 
 fn notification_received_schema() -> Value {
+    // Pure cache-invalidation event — no fields on the wire.
+    // The topic (`user:{u}:notifications`) signals the semantic;
+    // the FE responds by refetching `GET /api/notifications`
+    // (or a delta via `?after=<cursor>`). All payload data lives
+    // in the REST DTO (OpenAPI), not here. See
+    // `docs/plan/templated-messages.md § Schema ownership`.
     json!({
         "type": "object",
-        "description": "A new notification was created for the caller. Payload is intentionally thin — the FE refetches `GET /api/notifications` for the row's full contents. `kind` is the notification's registered kind slug (`share_granted`, `job_completed_for_you`, `new_login_from_new_device`, `storage_quota_threshold`, …); the FE may use it to route a toast for high-priority kinds but never treats it as authoritative.",
-        "required": ["notification_id", "kind", "created_at"],
-        "properties": {
-            "notification_id": { "type": "string", "format": "uuid" },
-            "kind":            { "type": "string" },
-            "created_at":      { "type": "string", "format": "date-time" },
-        }
+        "description": "A new notification was created for the caller. Pure cache-invalidation event — no fields on the wire. The FE refetches `GET /api/notifications` on receipt and reads the payload from the REST DTO (see `openapi.json`). Zero schema overlap between the bus wire (this file) and the REST wire — the strict form of the AsyncAPI-defines-envelope / OpenAPI-defines-payload split.",
+        "additionalProperties": false,
+        "properties": {}
     })
 }
 

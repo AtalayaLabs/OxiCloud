@@ -308,23 +308,20 @@ pub enum MessageBusEvent {
     AuthzChanged { affected_folders: Vec<Uuid> },
 
     /// A new notification was created for the caller — publishes on
-    /// [`Topic::UserNotifications`]. Payload is deliberately thin: the
-    /// FE learns "there's something new to look at" and calls
-    /// `GET /api/notifications` to load the row. Same recovery path a
-    /// missed push takes on next mount, so the wire event stays a
-    /// pure poke — no fields the bell needs to render on its own.
+    /// [`Topic::UserNotifications`]. **Pure cache-invalidation
+    /// event** — no fields on the wire. The topic itself signals
+    /// the semantic; the FE responds by refetching `GET
+    /// /api/notifications` (or a delta via `?after=<cursor>`), and
+    /// the REST DTO carries every payload field.
     ///
-    /// `kind` is the notification's registered kind slug
-    /// (`share_granted`, `job_completed_for_you`,
-    /// `new_login_from_new_device`, `storage_quota_threshold`, …).
-    /// The FE may use it to route the toast (high-priority kinds pop
-    /// a toast; low-priority ones just bump the badge) but never
-    /// treats it as authoritative — the DB row is the truth.
-    NotificationReceived {
-        notification_id: Uuid,
-        kind: String,
-        created_at: chrono::DateTime<chrono::Utc>,
-    },
+    /// Serde emits `{"event":"notification_received","data":{}}`.
+    ///
+    /// Design principle: AsyncAPI defines the envelope + transport;
+    /// OpenAPI defines the payload. Keeping this event fieldless
+    /// enforces the split at its strongest — zero schema overlap
+    /// between the two specs for this kind. See
+    /// `docs/plan/templated-messages.md § Bus event is a pure poke`.
+    NotificationReceived,
 
     /// A background job's run started. Published on
     /// [`Topic::Job`]. `started_at` is server wall-clock (RFC 3339
@@ -713,11 +710,7 @@ mod tests {
                 "authz_changed",
             ),
             (
-                MessageBusEvent::NotificationReceived {
-                    notification_id: Uuid::nil(),
-                    kind: "share_granted".into(),
-                    created_at: chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap(),
-                },
+                MessageBusEvent::NotificationReceived,
                 "notification_received",
             ),
             (

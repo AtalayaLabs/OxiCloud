@@ -46,6 +46,17 @@ export default ts.config(
 		}
 	},
 	{
+		// Auto-generated AsyncAPI DTOs (Modelina output). Empty
+		// interfaces are legitimate for wire messages whose `data`
+		// field is intentionally a no-fields object (pure-poke events
+		// like `notification_received`). See
+		// `docs/plan/templated-messages.md § Bus event is a pure poke`.
+		files: ['src/lib/generated/message-bus/**/*.ts'],
+		rules: {
+			'@typescript-eslint/no-empty-object-type': 'off'
+		}
+	},
+	{
 		// `static/` holds vendored, verbatim assets (the delta-upload worker and
 		// the wasm-bindgen hash glue) — lint them as the upstream ships them.
 		ignores: ['build/', '.svelte-kit/', 'package/', 'static/', 'bench/']

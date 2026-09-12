@@ -365,6 +365,18 @@ pub async fn create_grant(
             },
             Subject::Token(_) => Vec::new(),
         };
+
+        // Enrich the payload with the resource's display name and,
+        // for browsable kinds (folder / file), its storage path.
+        // Snapshotted at grant time — the FE bell renders "Alice
+        // shared 'Q4 Report'", and stays correct even if the folder
+        // is later renamed. Lookup failure logs a warn + falls back
+        // to a payload without name/path; the FE renders the generic
+        // fallback in that case. Only fetched once per grant, then
+        // reused for every recipient of the fan-out.
+        let (resource_name, resource_path, navigate_folder_id) =
+            resolve_resource_display(&state, resource).await;
+
         for rid in recipient_ids {
             // Self-shares (owner grants themselves via a group they
             // are also in) would fire a bell on the owner — filter
@@ -374,17 +386,27 @@ pub async fn create_grant(
             if rid == caller_id {
                 continue;
             }
-            let payload = serde_json::json!({
-                "granter_id":    caller_id,
-                "resource_type": resource.type_str(),
-                "resource_id":   resource.id(),
-                "role":          role.as_str(),
-                "expires_at":    expires_at,
-            });
+            let payload = crate::domain::entities::notification::SharegrantedPayload {
+                granter_id: caller_id,
+                resource_type: resource.type_str().to_string(),
+                resource_id: resource.id(),
+                resource_name: resource_name.clone(),
+                resource_path: resource_path.clone(),
+                navigate_folder_id,
+                role: role.as_str().to_string(),
+                expires_at,
+            };
+            let payload_value = match serde_json::to_value(&payload) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("share_granted payload serialize failed: {e}");
+                    continue;
+                }
+            };
             let new_notif = crate::domain::entities::notification::NewNotification {
                 user_id: rid,
                 kind: crate::domain::entities::notification::kind::SHARE_GRANTED.to_string(),
-                payload,
+                payload: payload_value,
             };
             if let Err(e) = notif_svc.create(new_notif).await {
                 warn!(
@@ -1377,3 +1399,101 @@ pub async fn list_my_shares(
 // touch it directly.
 #[allow(dead_code)]
 fn _ensure_subject_dto_compiles(_: SubjectDto) {}
+
+/// Look up a resource's display name (`name`) and, for kinds
+/// addressable via `/files/[...path]`, its storage path. Fed into
+/// [`SharegrantedPayload`] at grant time so the FE bell renders
+/// "Alice shared `Q4 Report`" with a clickable link.
+///
+/// Best-effort — a lookup failure returns `(None, None)` and the
+/// FE bell falls back to a generic template. Slice E's ingester
+/// treats bell enrichment as best-effort by design; the grant
+/// itself is already durable in `role_grants` when this runs.
+///
+/// Only `Resource::Folder` and `Resource::File` carry a
+/// `resource_path`. Drives, calendars, address books and playlists
+/// have a display name but no `/files/*` route — link renders as
+/// bold text via the FE's null-path fallback.
+/// Enrichment tuple: `(display_name, storage_path,
+/// navigate_folder_id)`. All three fields are optional; each is
+/// populated per resource kind (see match arms below). Fed into the
+/// `SharegrantedPayload` at grant time.
+type ResourceDisplay = (Option<String>, Option<String>, Option<Uuid>);
+
+async fn resolve_resource_display(state: &AppStateRef, resource: Resource) -> ResourceDisplay {
+    match resource {
+        Resource::Folder(id) => {
+            match state
+                .applications
+                .folder_service_concrete
+                .get_folders_by_ids(&[id.to_string()])
+                .await
+            {
+                Ok(mut dtos) => match dtos.pop() {
+                    // `navigate_folder_id` stays None for folders —
+                    // the FE uses `resource_id` directly to build
+                    // `/files/{id}`.
+                    Some(dto) => (Some(dto.name), Some(dto.path), None),
+                    None => (None, None, None),
+                },
+                Err(e) => {
+                    warn!("resolve_resource_display: folder {id} lookup failed: {e}");
+                    (None, None, None)
+                }
+            }
+        }
+        Resource::File(id) => {
+            match state
+                .applications
+                .file_retrieval_service
+                .get_files_by_ids(&[id.to_string()])
+                .await
+            {
+                Ok(mut dtos) => match dtos.pop() {
+                    // File's `path` is the file's own storage path
+                    // — the FE bell renders it in the tooltip but
+                    // the actual link routes to
+                    // `/shared-with-me?file=<id>` (path can't help
+                    // when the recipient has no parent-folder
+                    // access). `navigate_folder_id` stays None.
+                    Some(dto) => (Some(dto.name), Some(dto.path), None),
+                    None => (None, None, None),
+                },
+                Err(e) => {
+                    warn!("resolve_resource_display: file {id} lookup failed: {e}");
+                    (None, None, None)
+                }
+            }
+        }
+        Resource::Drive(id) => {
+            // A drive grant is really "here's the drive, land on
+            // its root folder." The FE follows `navigate_folder_id`
+            // into `/files/{root_folder_id}` — the drive itself has
+            // no browsable URL, but its root folder does.
+            //
+            // `resource_name` comes from the root folder's display
+            // name (drives don't have their own name column; the
+            // root folder's `storage.folders.name` is the drive's
+            // canonical label — see `DriveWithRootName`).
+            match state.drive_repo.get_by_id(id).await {
+                Ok(dwn) => (
+                    Some(dwn.root_folder_name),
+                    None,
+                    Some(dwn.drive.root_folder_id),
+                ),
+                Err(e) => {
+                    warn!("resolve_resource_display: drive {id} lookup failed: {e:?}");
+                    (None, None, None)
+                }
+            }
+        }
+        // Non-browsable resources — no `/files` link at all.
+        // Calendars / address books / playlists render as bold
+        // text in the bell via the null-fallback FE path. Fetching
+        // a name for these is deferred; today the bell shows
+        // "shared a <resource_type>" for them.
+        Resource::Calendar(_) | Resource::AddressBook(_) | Resource::Playlist(_) => {
+            (None, None, None)
+        }
+    }
+}

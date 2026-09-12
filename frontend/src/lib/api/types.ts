@@ -971,3 +971,33 @@ export const NOTIFICATION_KIND = {
 	JOB_COMPLETED_FOR_YOU: 'job_completed_for_you',
 	STORAGE_QUOTA_THRESHOLD: 'storage_quota_threshold'
 } as const;
+
+/**
+ * Payload shape for `share_granted` notifications — hand-mirror of
+ * `crate::domain::entities::notification::SharegrantedPayload`.
+ * `#[derive(ToSchema)]` on the Rust struct makes it authoritative;
+ * this interface is a projection for FE type-narrowing until the
+ * codebase adopts `openapi-typescript` for the REST surface.
+ *
+ * See `docs/plan/templated-messages.md § Making payloads a real
+ * Rust struct` for the rationale — OpenAPI owns the payload; the
+ * bus event is a pure poke.
+ */
+export interface SharegrantedPayload {
+	granter_id: string;
+	resource_type: string;
+	resource_id: string;
+	resource_name?: string;
+	/** Storage path for `folder` / `file` kinds only. `undefined`
+	 *  for drive / calendar / address_book / playlist. */
+	resource_path?: string;
+	/** FE-navigation hint for kinds whose `resource_id` isn't itself
+	 *  a folder id. Populated for `drive` (the drive's root folder
+	 *  id — the FE routes to `/files/{navigate_folder_id}` because
+	 *  drives don't have a browsable URL of their own). Absent for
+	 *  folder (uses `resource_id` directly), file (routes to
+	 *  `/shared-with-me?file=`), and non-browsable kinds. */
+	navigate_folder_id?: string;
+	role: string;
+	expires_at?: string;
+}

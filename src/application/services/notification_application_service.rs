@@ -51,18 +51,15 @@ impl NotificationApplicationService {
     pub async fn create(&self, new_notif: NewNotification) -> Result<Notification, DomainError> {
         let row = self.repo.create(&new_notif).await?;
 
-        // Publish AFTER the row is durable. Silent no-op if the bus
-        // is disabled at boot (`OXICLOUD_MESSAGEBUS_ENABLE=false`) —
-        // the WS route is unmounted so the publish just hits a dead
-        // sender. The FE bell still works: it reads from the DB on
-        // mount. See plan § "Slice E".
+        // Publish a pure poke AFTER the row is durable. No fields
+        // on the wire — the topic itself signals the semantic, the
+        // FE refetches via REST to render. Silent no-op if the bus
+        // is disabled at boot (`OXICLOUD_MESSAGEBUS_ENABLE=false`).
+        // See `docs/plan/templated-messages.md § Bus event is a
+        // pure poke`.
         self.bus.publish(
             &Topic::UserNotifications(row.user_id),
-            MessageBusEvent::NotificationReceived {
-                notification_id: row.id,
-                kind: row.kind.clone(),
-                created_at: row.created_at,
-            },
+            MessageBusEvent::NotificationReceived,
         );
 
         Ok(row)
