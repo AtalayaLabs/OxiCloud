@@ -72,6 +72,86 @@ pub const CDC_AVG_CHUNK: usize = 262_144;
 /// Maximum CDC chunk size (1 MB).
 pub const CDC_MAX_CHUNK: usize = 1_048_576;
 
+// ════════════════════════════════════════════════════════════════════════════
+// ref_count audit log — attribution trail for ref_count changes
+//
+// Emitted at every semantic ref-count mutation site so an unexplained drift
+// (`manifests_consistency` / `blobs_consistency` finding) can be traced back
+// to its calling function within one log query. See
+// `docs/plan/refcount-audit.md` for design rationale, retention model, and
+// upgrade path to a DB-backed table if log retention proves insufficient.
+//
+// Enable at runtime with `RUST_LOG=oxicloud::refcount=info`. Off by default;
+// info-level so a healthy prod deployment doesn't spam the log stream.
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Table names the audit stream uses. Constants (not free strings) so grep
+/// across a log stream matches a fixed vocabulary and a typo in a call site
+/// fails to compile instead of silently drifting.
+mod refcount_audit_table {
+    pub const CHUNK_MANIFESTS: &str = "chunk_manifests";
+    pub const BLOBS: &str = "blobs";
+}
+
+/// Source labels for the audit stream — one stable string per Rust function
+/// that mutates a ref_count. Kept as a module so `grep source=` on the log
+/// stream shows a fixed enumeration; a rename here is intentional, a rename
+/// at a call site alone doesn't compile.
+///
+/// See `docs/plan/refcount-audit.md § Callsites to instrument` for the full
+/// list. New callers add a new constant here; adding one string at the call
+/// site alone is discouraged (breaks the "closed vocabulary" property).
+mod refcount_audit_source {
+    pub const STORE_FROM_STREAM_NEW_MANIFEST: &str = "store_from_stream.new_manifest";
+    pub const BUMP_MANIFEST_IF_EXISTS: &str = "bump_manifest_if_exists";
+    pub const ADD_REFERENCE_MANIFEST: &str = "add_reference.manifest";
+    pub const ADD_REFERENCE_LEGACY: &str = "add_reference.legacy";
+    pub const REMOVE_MANIFEST_REFERENCE_DECREMENT: &str = "remove_manifest_reference.decrement";
+    pub const REMOVE_MANIFEST_REFERENCE_DELETE: &str = "remove_manifest_reference.delete";
+    pub const REMOVE_LEGACY_REFERENCE: &str = "remove_legacy_reference";
+    pub const STORE_ATTACHED_BLOB_SAME_CONTENT_BALANCE: &str =
+        "store_attached_blob.same_content_balance";
+    pub const STORE_ATTACHED_BLOB_REPLACE_RELEASE: &str = "store_attached_blob.replace_release";
+}
+
+/// Outcome of [`DedupService::store_attached_blob_if_absent`]. Split
+/// so the caller (`thumb_attached_import_service`) can bump its
+/// `imported` vs `already` counters without a second query.
+#[derive(Debug, Clone)]
+pub enum AttachedBlobInsertOutcome {
+    /// We won the atomic INSERT — the row now points at `hash`.
+    Inserted { hash: String },
+    /// A row already existed when the atomic INSERT ran (someone else
+    /// won, or the migration was re-triggered). `existing_hash` is
+    /// the row's current `blob_hash` as read moments after the DO
+    /// NOTHING resolved — useful for the import service's
+    /// verify-and-unlink readback.
+    AlreadyPresent { existing_hash: String },
+}
+
+/// Emit a single audit line for a ref_count change. Called AFTER the SQL
+/// UPDATE / INSERT / DELETE returns Ok, so a rolled-back transaction won't
+/// leave a phantom log line (the SQL error path returns before this call).
+///
+/// `delta` is the signed change (`+1` on increment, `-1` on decrement,
+/// `-old_count` when the row is deleted at its last reference — the
+/// convention is "resulting ref_count is 0 for reads afterward").
+///
+/// The tracing span inherits request-scope context (request_id, caller_id
+/// from auth middleware, job run id from scheduler) automatically, so
+/// no explicit correlation-id plumbing is needed here.
+#[inline]
+fn audit_ref_count(table: &'static str, hash: &str, delta: i32, source: &'static str) {
+    tracing::info!(
+        target: "oxicloud::refcount",
+        table,
+        hash = %hash,
+        delta,
+        source,
+        "ref_count {}", if delta >= 0 { "+" } else { "-" }
+    );
+}
+
 // ── CDC helper types ─────────────────────────────────────────────────────────
 
 /// Everything a streaming chunk ingest learned about its byte stream.
@@ -751,22 +831,144 @@ impl DedupService {
         .await
         .map_err(|e| DomainError::internal_error("Dedup", format!("record attached blob: {e}")))?;
 
-        // A replaced row's old blob loses its only reference from here. Not
-        // releasing it would pin those bytes forever — nothing else points at
-        // a superseded preview.
-        if let Some((old_hash,)) = previous
-            && old_hash != attached_hash
-            && let Err(e) = self.remove_reference(&old_hash).await
-        {
-            tracing::warn!(
-                target: "oxicloud::dedup",
-                error = %e,
-                "failed to release replaced attached-blob reference for {}",
-                &old_hash[..old_hash.len().min(12)],
-            );
+        // Two shapes to balance depending on whether the UPSERT was a
+        // real content replacement or a same-content re-store:
+        //
+        // - `previous == Some(old) && old != attached_hash` — different
+        //   content overwritten in the row. Release the old blob's ref
+        //   (its file_attached row is gone; would leak forever otherwise).
+        //
+        // - `previous == Some(old) && old == attached_hash` — SAME-content
+        //   re-store. `store_from_stream` above incremented the manifest
+        //   unconditionally, but the row's blob_hash didn't change so no
+        //   logical reference was added. Cancel the phantom increment
+        //   here, or it accumulates one +1 leak per same-content call.
+        //   Mirrors the pattern `store_derived_blob` uses on its
+        //   `ON CONFLICT DO NOTHING` `inserted == 0` branch.
+        //   See `docs/plan/refcount-audit.md` for how the audit stream
+        //   would surface this class of drift if it reappears.
+        //
+        // - `previous == None` — brand new (file_id, kind, variant) row.
+        //   `store_from_stream`'s +1 pairs with the new row's implicit
+        //   reference; nothing to release.
+        if let Some((old_hash,)) = previous {
+            let source = if old_hash == attached_hash {
+                refcount_audit_source::STORE_ATTACHED_BLOB_SAME_CONTENT_BALANCE
+            } else {
+                refcount_audit_source::STORE_ATTACHED_BLOB_REPLACE_RELEASE
+            };
+            if let Err(e) = self.remove_reference(&old_hash).await {
+                tracing::warn!(
+                    target: "oxicloud::dedup",
+                    error = %e,
+                    kind = source,
+                    "failed to balance attached-blob reference for {}",
+                    &old_hash[..old_hash.len().min(12)],
+                );
+            }
         }
 
         Ok(attached_hash)
+    }
+
+    /// Atomic never-overwrite variant of [`Self::store_attached_blob`],
+    /// for migration/import paths whose semantic is "write if absent,
+    /// leave alone if present" — mirrors the shape
+    /// [`Self::store_derived_blob`] already uses.
+    ///
+    /// The plain `store_attached_blob` reads `previous`, then upserts,
+    /// then decrements — non-transactional. That's correct for the
+    /// user-driven PUT thumbnail path (a real replacement should
+    /// release the superseded blob), but it opens a check-then-act
+    /// race with concurrent writers when the caller's intent is
+    /// "only import if this file hasn't already got a preview".
+    /// `thumb_attached_import_service` is exactly that caller.
+    ///
+    /// This variant uses a single-statement `INSERT ... ON CONFLICT
+    /// DO NOTHING` — race-free by construction. If the row already
+    /// exists (any content), the atomic INSERT is a no-op and we
+    /// release the reference `store_from_stream` just took. If we
+    /// won the insert, the reference is legitimately held by our
+    /// new row.
+    ///
+    /// Return value discriminates the two cases so the caller can
+    /// track its own `imported` vs `already` counters:
+    /// - [`AttachedBlobInsertOutcome::Inserted`] — we wrote the row.
+    /// - [`AttachedBlobInsertOutcome::AlreadyPresent`] — a row was
+    ///   there when we arrived; we made no change and released our
+    ///   ref. `existing_hash` is the concurrent winner's blob hash,
+    ///   returned via a follow-up SELECT (so it's not strictly
+    ///   atomic with the INSERT, but that's fine — the row's shape
+    ///   is stable now that a concurrent writer can no longer
+    ///   collide with us here; any later change goes through the
+    ///   full `store_attached_blob` UPSERT path, which is out of
+    ///   scope for this method's "if absent" contract).
+    pub async fn store_attached_blob_if_absent(
+        &self,
+        file_id: &str,
+        kind: &str,
+        variant: &str,
+        content_type: &str,
+        bytes: Bytes,
+        uploaded_by: uuid::Uuid,
+    ) -> Result<AttachedBlobInsertOutcome, DomainError> {
+        let stored = self
+            .store_from_stream(
+                stream::once(async move { Ok::<Bytes, std::io::Error>(bytes) }),
+                Some(content_type.to_string()),
+            )
+            .await?;
+        let attached_hash = stored.hash().to_string();
+
+        // Single-statement atomic INSERT. `ON CONFLICT DO NOTHING`
+        // means: if another writer got there first, we silently
+        // yield. Same primitive `store_derived_blob` uses.
+        let inserted = sqlx::query(
+            "INSERT INTO storage.file_attached_blobs
+                 (file_id, kind, variant, blob_hash, content_type, uploaded_by)
+             VALUES ($1::uuid, $2, $3, $4, $5, $6)
+             ON CONFLICT (file_id, kind, variant) DO NOTHING",
+        )
+        .bind(file_id)
+        .bind(kind)
+        .bind(variant)
+        .bind(&attached_hash)
+        .bind(content_type)
+        .bind(uploaded_by)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| DomainError::internal_error("Dedup", format!("record attached blob: {e}")))?
+        .rows_affected();
+
+        if inserted == 0 {
+            // Row already existed when we arrived. Release the ref
+            // `store_from_stream` above took — the row that would
+            // justify it is not ours. Best-effort: leaving a
+            // dangling ref is worse than a warn log line.
+            if let Err(e) = self.remove_reference(&attached_hash).await {
+                tracing::warn!(
+                    target: "oxicloud::dedup",
+                    error = %e,
+                    "failed to release duplicate attached-blob reference for {}",
+                    &attached_hash[..attached_hash.len().min(12)],
+                );
+            }
+
+            // Fetch the concurrent winner's hash so the import
+            // service can readback-verify against its sidecar. The
+            // window between DO NOTHING and this SELECT is narrow;
+            // if the row gets updated in it, the sidecar delete
+            // path fails its verify and keeps the sidecar — the
+            // conservative fallback.
+            let existing = self.find_attached_blob(file_id, kind, variant).await;
+            return Ok(AttachedBlobInsertOutcome::AlreadyPresent {
+                existing_hash: existing.map(|r| r.blob_hash).unwrap_or_default(),
+            });
+        }
+
+        Ok(AttachedBlobInsertOutcome::Inserted {
+            hash: attached_hash,
+        })
     }
 
     /// Look up bytes attached to a file. File-keyed counterpart of
@@ -1316,6 +1518,17 @@ impl DedupService {
                     total_size,
                     chunk_hashes.len(),
                 );
+                // The manifest INSERT above set `ref_count = 1` — that's
+                // the initial reference held by whatever callsite drove
+                // this ingest (a file's body, a preview attachment, a
+                // derivation). Audit-log the +1 so drift investigations
+                // can find where a manifest first came into existence.
+                audit_ref_count(
+                    refcount_audit_table::CHUNK_MANIFESTS,
+                    file_hash,
+                    1,
+                    refcount_audit_source::STORE_FROM_STREAM_NEW_MANIFEST,
+                );
                 self.fire_blob_creation_hooks(file_hash, content_type.as_deref());
                 return Ok(DedupResultDto::NewBlob {
                     hash: file_hash.to_string(),
@@ -1747,7 +1960,7 @@ impl DedupService {
     /// Bump a manifest's ref_count if it exists; returns its total_size.
     /// Single statement — no window between the existence check and the bump.
     async fn bump_manifest_if_exists(&self, file_hash: &str) -> Result<Option<i64>, DomainError> {
-        sqlx::query_scalar::<_, i64>(
+        let bumped = sqlx::query_scalar::<_, i64>(
             "UPDATE storage.chunk_manifests SET ref_count = ref_count + 1
               WHERE file_hash = $1
               RETURNING total_size",
@@ -1757,7 +1970,17 @@ impl DedupService {
         .await
         .map_err(|e| {
             DomainError::internal_error("Dedup", format!("Failed to bump manifest ref_count: {e}"))
-        })
+        })?;
+
+        if bumped.is_some() {
+            audit_ref_count(
+                refcount_audit_table::CHUNK_MANIFESTS,
+                file_hash,
+                1,
+                refcount_audit_source::BUMP_MANIFEST_IF_EXISTS,
+            );
+        }
+        Ok(bumped)
     }
 
     /// Stream → chunk store, WITHOUT creating a manifest.
@@ -2219,6 +2442,12 @@ impl DedupService {
         .rows_affected();
 
         if manifest_affected > 0 {
+            audit_ref_count(
+                refcount_audit_table::CHUNK_MANIFESTS,
+                hash,
+                1,
+                refcount_audit_source::ADD_REFERENCE_MANIFEST,
+            );
             return Ok(());
         }
 
@@ -2246,6 +2475,12 @@ impl DedupService {
             ));
         }
 
+        audit_ref_count(
+            refcount_audit_table::BLOBS,
+            hash,
+            1,
+            refcount_audit_source::ADD_REFERENCE_LEGACY,
+        );
         Ok(())
     }
 
@@ -2355,6 +2590,17 @@ impl DedupService {
                 &file_hash[..12],
                 chunk_hashes.len()
             );
+            // Emit AFTER the commit so a rolled-back TX doesn't leave a
+            // phantom audit line — the "delta = -current_rc" reflects
+            // "the manifest is gone, effective ref_count is 0". Convention
+            // for the audit stream: use the delta that would produce a
+            // read-back of 0.
+            audit_ref_count(
+                refcount_audit_table::CHUNK_MANIFESTS,
+                file_hash,
+                -current_rc,
+                refcount_audit_source::REMOVE_MANIFEST_REFERENCE_DELETE,
+            );
             Ok(true)
         } else {
             // Still has references — just decrement
@@ -2373,6 +2619,12 @@ impl DedupService {
                 .map_err(|e| DomainError::internal_error("Dedup", format!("Commit: {}", e)))?;
 
             tracing::debug!("Reference removed from manifest {}", &file_hash[..12]);
+            audit_ref_count(
+                refcount_audit_table::CHUNK_MANIFESTS,
+                file_hash,
+                -1,
+                refcount_audit_source::REMOVE_MANIFEST_REFERENCE_DECREMENT,
+            );
             Ok(false)
         }
     }
@@ -2430,6 +2682,12 @@ impl DedupService {
             self.reap_blob(hash).await;
 
             tracing::info!("BLOB DELETED: {} (no more references)", &hash[..12]);
+            audit_ref_count(
+                refcount_audit_table::BLOBS,
+                hash,
+                -ref_count,
+                refcount_audit_source::REMOVE_LEGACY_REFERENCE,
+            );
             Ok(true)
         } else {
             // Still has references — just decrement
@@ -2450,6 +2708,12 @@ impl DedupService {
             })?;
 
             tracing::debug!("Reference removed from blob {}", &hash[..12]);
+            audit_ref_count(
+                refcount_audit_table::BLOBS,
+                hash,
+                -1,
+                refcount_audit_source::REMOVE_LEGACY_REFERENCE,
+            );
             Ok(false)
         }
     }
