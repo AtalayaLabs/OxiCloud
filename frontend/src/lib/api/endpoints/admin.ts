@@ -416,11 +416,15 @@ export interface AdminDashboard {
 	 * `online_sessions / online_users` is the multi-device factor
 	 * (browser + desktop + phone). */
 	online_sessions: number;
+	/** Currently-connected message-bus WebSocket sessions — one per
+	 *  open browser tab that reached a folder view. Reported as `0`
+	 *  when `OXICLOUD_MESSAGEBUS_ENABLE=false` (no live sessions
+	 *  possible); the dashboard hides the card in that case since
+	 *  the value would be misleading. */
+	active_ws_sessions: number;
 	server_version: string;
 	drive_usage: DriveKindUsage[];
-	auth_enabled: boolean;
 	oidc_configured: boolean;
-	quotas_enabled: boolean;
 	registration_enabled?: boolean;
 	users_over_80_percent: number;
 	users_over_quota: number;

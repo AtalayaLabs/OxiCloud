@@ -9,6 +9,7 @@ pub mod face;
 pub mod file;
 pub mod folder;
 pub mod magic_link_token;
+pub mod notification;
 pub mod playlist;
 pub mod session;
 pub mod share;

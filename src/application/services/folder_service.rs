@@ -49,6 +49,13 @@ pub struct FolderService {
     /// on cross-drive MOVE. Silently skipped when unwired (stubs).
     storage_usage:
         Option<Arc<crate::application::services::storage_usage_service::StorageUsageService>>,
+    /// Message bus. When wired, `create_folder_with_perms`
+    /// publishes a `FolderCreated` event on `Topic::Folder(parent_id)`
+    /// after the DB commit — subscribers see the new folder appear in
+    /// their live folder view. Optional so stub / test factories can
+    /// build the service without a bus; a `None` bus is a silent no-op
+    /// on the publish path (no fan-out, no audit).
+    bus: Option<Arc<dyn crate::application::ports::message_bus_ports::MessageBus>>,
 }
 
 impl FolderService {
@@ -66,7 +73,19 @@ impl FolderService {
             file_lifecycle,
             drive_repo: None,
             storage_usage: None,
+            bus: None,
         }
+    }
+
+    /// Wire the message bus. Enables live folder-view updates:
+    /// after `create_folder_with_perms` commits, a `FolderCreated` event
+    /// fires on `Topic::Folder(parent_id)`. Off in stubs / tests.
+    pub fn with_message_bus(
+        mut self,
+        bus: Arc<dyn crate::application::ports::message_bus_ports::MessageBus>,
+    ) -> Self {
+        self.bus = Some(bus);
+        self
     }
 
     /// Borrow the external-mount classifier (handlers branch on this before
@@ -366,10 +385,39 @@ impl FolderUseCase for FolderService {
             )
             .await?;
 
+        // Snapshot the parent UUID before the move so the post-commit
+        // publish can address `Topic::Folder(parent_uuid)` without
+        // re-borrowing `dto.parent_id` (which is moved into
+        // `create_folder`).
+        let parent_uuid_for_publish = Uuid::parse_str(parent_id).ok();
+
         let folder = self
             .folder_storage
             .create_folder(dto.name, dto.parent_id, caller_id)
             .await?;
+
+        // Publish AFTER commit — never before, never inside the write.
+        // Silent no-op if the bus isn't wired (stubs/tests) or the
+        // parent uuid didn't parse (won't happen — AuthZ above already
+        // parsed it — but the None-fallthrough keeps the publish path
+        // infallible).
+        if let (Some(bus), Some(parent_uuid), Ok(folder_uuid)) = (
+            &self.bus,
+            parent_uuid_for_publish,
+            Uuid::parse_str(folder.id()),
+        ) {
+            use crate::application::ports::message_bus_ports::{MessageBusEvent, Topic};
+            bus.publish(
+                &Topic::Folder(parent_uuid),
+                MessageBusEvent::FolderCreated {
+                    folder_id: folder_uuid,
+                    name: folder.name().to_owned(),
+                    parent_id: parent_uuid,
+                    actor: caller_id,
+                },
+            );
+        }
+
         Ok(FolderDto::from(folder))
     }
 
@@ -765,6 +813,28 @@ impl FolderUseCase for FolderService {
             drive_repo.invalidate_default_drive_all();
         }
 
+        // Bus publish AFTER commit. Root folders (`parent_id() = None`)
+        // have no parent folder topic to publish on — the drive's
+        // display-name change is handled by the readable/default-drive
+        // cache invalidations above, not the bus. Silent no-op if the
+        // bus isn't wired.
+        if let (Some(bus), Some(parent_str)) = (&self.bus, folder.parent_id())
+            && let (Ok(folder_uuid), Ok(parent_uuid)) =
+                (Uuid::parse_str(renamed.id()), Uuid::parse_str(parent_str))
+        {
+            use crate::application::ports::message_bus_ports::{MessageBusEvent, Topic};
+            bus.publish(
+                &Topic::Folder(parent_uuid),
+                MessageBusEvent::FolderRenamed {
+                    folder_id: folder_uuid,
+                    old_name: folder.name().to_owned(),
+                    new_name: renamed.name().to_owned(),
+                    parent_id: parent_uuid,
+                    actor: caller_id,
+                },
+            );
+        }
+
         Ok(FolderDto::from(renamed))
     }
 
@@ -890,6 +960,18 @@ impl FolderUseCase for FolderService {
             }
         }
 
+        // Snapshot source parent BEFORE the move — the post-move
+        // `folder.parent_id()` is the destination. Best-effort: if the
+        // lookup fails or the folder has no parent (root — can't be
+        // moved anyway per drive_semantics), the publish path below
+        // silently skips.
+        let source_parent_uuid = self
+            .folder_storage
+            .get_folder(id)
+            .await
+            .ok()
+            .and_then(|f| f.parent_id().and_then(|p| Uuid::parse_str(p).ok()));
+
         let parent_ref = dto.parent_id.as_deref();
         let folder = self
             .folder_storage
@@ -901,6 +983,29 @@ impl FolderUseCase for FolderService {
                     format!("Failed to move folder with ID: {}: {}", id, e),
                 )
             })?;
+
+        // Bus fan-out on BOTH source and destination folder
+        // topics. Same shape as `FileMoved` — subscribers to either
+        // see the event exactly once. Silent no-op when the bus isn't
+        // wired, the source snapshot failed, or the destination is
+        // drive-root (`folder.parent_id() = None`).
+        if let (Some(bus), Some(source_uuid), Some(dest_str)) =
+            (&self.bus, source_parent_uuid, folder.parent_id())
+            && let (Ok(folder_uuid), Ok(dest_uuid)) =
+                (Uuid::parse_str(folder.id()), Uuid::parse_str(dest_str))
+            && source_uuid != dest_uuid
+        {
+            use crate::application::ports::message_bus_ports::{MessageBusEvent, Topic};
+            let event = MessageBusEvent::FolderMoved {
+                folder_id: folder_uuid,
+                name: folder.name().to_owned(),
+                from: source_uuid,
+                to: dest_uuid,
+                actor: caller_id,
+            };
+            bus.publish(&Topic::Folder(source_uuid), event.clone());
+            bus.publish(&Topic::Folder(dest_uuid), event);
+        }
 
         // Cross-drive move flushes the authz engine's `owner_cache`
         // — every descendant's cached `Resource → drive_id` mapping
@@ -980,6 +1085,16 @@ impl FolderUseCase for FolderService {
             .await
             .unwrap_or_default();
 
+        // Pre-delete snapshot for the bus publish — post-DELETE the
+        // row is gone and we can't recover `parent_id`. Best-effort;
+        // failures fall through to a silent skip below.
+        let publish_snapshot: Option<(Uuid, Uuid)> =
+            self.folder_storage.get_folder(id).await.ok().and_then(|f| {
+                let folder_uuid = Uuid::parse_str(f.id()).ok()?;
+                let parent_uuid = Uuid::parse_str(f.parent_id()?).ok()?;
+                Some((folder_uuid, parent_uuid))
+            });
+
         self.folder_storage.delete_folder(id).await.map_err(|e| {
             DomainError::internal_error(
                 "FolderStorage",
@@ -989,6 +1104,22 @@ impl FolderUseCase for FolderService {
 
         for file_id in &cascaded_file_ids {
             self.file_lifecycle.on_file_deleted(file_id);
+        }
+
+        // Bus publish AFTER the DELETE commits. Root folders
+        // (no parent) can't be deleted through this endpoint per the
+        // mount / drive-root guards above, so `publish_snapshot` is
+        // effectively always Some for regular deletes.
+        if let (Some(bus), Some((folder_uuid, parent_uuid))) = (&self.bus, publish_snapshot) {
+            use crate::application::ports::message_bus_ports::{MessageBusEvent, Topic};
+            bus.publish(
+                &Topic::Folder(parent_uuid),
+                MessageBusEvent::FolderDeleted {
+                    folder_id: folder_uuid,
+                    parent_id: parent_uuid,
+                    actor: caller_id,
+                },
+            );
         }
 
         Ok(())

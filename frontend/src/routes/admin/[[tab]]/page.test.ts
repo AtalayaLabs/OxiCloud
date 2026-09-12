@@ -89,9 +89,8 @@ const dashboard = {
 	total_used_bytes: 100,
 	total_quota_bytes: 1000,
 	storage_usage_percent: 10,
-	auth_enabled: true,
 	oidc_configured: false,
-	quotas_enabled: true,
+	active_ws_sessions: 0,
 	registration_enabled: true,
 	users_over_80_percent: 0,
 	users_over_quota: 0

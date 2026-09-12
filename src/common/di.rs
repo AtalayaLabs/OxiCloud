@@ -703,7 +703,14 @@ impl AppServiceFactory {
         resource_access_hook: Option<
             Arc<dyn crate::application::ports::resource_access_hook::ResourceAccessHook>,
         >,
+        bus: &Arc<crate::infrastructure::services::in_process_message_bus::InProcessMessageBus>,
     ) -> ApplicationServices {
+        // Upcast the concrete bus once — service builders take the
+        // trait object so the wire remains stable across future bus
+        // impls.
+        let bus_trait: Arc<dyn crate::application::ports::message_bus_ports::MessageBus> =
+            bus.clone();
+
         // Main services
         let folder_service = Arc::new(
             FolderService::new(
@@ -724,7 +731,10 @@ impl AppServiceFactory {
             // MOVE. Reuses the `check_drive_quota` the upload path
             // already runs. Without this, a Move that would push the
             // destination past its cap succeeds silently.
-            .with_storage_usage(storage_usage.clone()),
+            .with_storage_usage(storage_usage.clone())
+            // Bus fan-out on `create_folder_with_perms` — the
+            // parent-folder subscribers see new sub-folders live.
+            .with_message_bus(bus_trait.clone()),
         );
 
         // Built before the upload/management services so the plugin lifecycle
@@ -771,7 +781,11 @@ impl AppServiceFactory {
                 authz.clone(),
                 core.dedup_service.clone(),
                 storage_usage.clone(),
-            );
+            )
+            // Bus fan-out — every successful `upload_file_streaming`
+            // publishes a `FileCreated` event on the parent folder's
+            // topic so open folder views refresh live.
+            .with_message_bus(bus_trait.clone());
             if let Some(hook) = resource_access_hook.clone() {
                 svc = svc.with_resource_access_hook(hook);
             }
@@ -811,7 +825,12 @@ impl AppServiceFactory {
             .with_drive_repo(drive_repo.clone())
             // Destination-drive quota pre-check on cross-drive file
             // MOVE. Same rationale as the folder side above.
-            .with_storage_usage(storage_usage.clone());
+            .with_storage_usage(storage_usage.clone())
+            // Bus fan-out on delete / rename / move — each hook
+            // publishes on the affected folder topic (move fans out on
+            // BOTH source and destination) so folder-view subscribers
+            // see the mutation live.
+            .with_message_bus(bus_trait.clone());
             if let Some(hook) = resource_access_hook.clone() {
                 svc = svc.with_resource_access_hook(hook);
             }
@@ -1022,6 +1041,7 @@ impl AppServiceFactory {
         core: &CoreServices,
         authz: &Arc<PgAclEngine>,
         drive_repo: &Arc<crate::infrastructure::repositories::pg::DrivePgRepository>,
+        bus: &Arc<crate::infrastructure::services::in_process_message_bus::InProcessMessageBus>,
     ) -> Option<Arc<TrashService>> {
         if !self.config.features.enable_trash {
             tracing::info!("Trash service is disabled in configuration");
@@ -1030,7 +1050,12 @@ impl AppServiceFactory {
 
         let trash_repo = repos.trash_repository.as_ref()?;
 
-        // Wire ports directly to TrashService — no adapter layer needed
+        // Wire ports directly to TrashService — no adapter layer needed.
+        // Bus upcast to the trait object so the service takes the port,
+        // not the concrete impl — mirrors the pattern in
+        // `create_application_services`.
+        let bus_trait: Arc<dyn crate::application::ports::message_bus_ports::MessageBus> =
+            bus.clone();
         let service = Arc::new(
             TrashService::new(
                 trash_repo.clone(),
@@ -1041,7 +1066,8 @@ impl AppServiceFactory {
                 authz.clone(),
                 drive_repo.clone(),
             )
-            .with_file_deleted_hook(core.file_lifecycle.clone()),
+            .with_file_deleted_hook(core.file_lifecycle.clone())
+            .with_message_bus(bus_trait),
         );
 
         // Initialize cleanup service (bulk-deletes expired items in 2 SQL
@@ -1723,9 +1749,40 @@ impl AppServiceFactory {
         let drive_repo =
             Arc::new(crate::infrastructure::repositories::pg::DrivePgRepository::new(pool.clone()));
 
+        // Message bus: constructed BEFORE the trash service so trash-first
+        // deletes can publish `FolderDeleted` on the parent folder's
+        // topic (folder-view live refresh). Wired with a no-op replicator
+        // — multi-instance broker is a follow-up per
+        // `docs/plan/message-bus.md § Roadmap`. Spawns its own GC task in
+        // `with_replicator`; no supervisor setup required.
+        let bus = crate::infrastructure::services::in_process_message_bus::InProcessMessageBus::with_replicator(
+            Arc::new(crate::application::ports::message_bus_ports::NoopReplicator),
+        );
+
+        // Wire the bus into the JobRegistry so `dispatch` (both the
+        // periodic supervisor and the manual `trigger` paths) can
+        // publish `JobRunStarted` / `JobRunEnded` on `Topic::Job(name)`.
+        // Set here — after both the bus and the registry are
+        // constructed — via `OnceLock`. Silent no-op on subsequent
+        // calls; unit tests that build a registry without a bus just
+        // skip this.
+        let bus_for_jobs: Arc<dyn crate::application::ports::message_bus_ports::MessageBus> =
+            bus.clone();
+        core.job_registry.set_message_bus(bus_for_jobs);
+
+        // WebSocket ticket store — see `rt_ticket_store` module doc for
+        // why this exists (DPoP-bound sessions can't be re-proofed on
+        // a browser-issued WS upgrade). Reaper task runs for the app
+        // lifetime; its handle is dropped intentionally — the task
+        // survives on the runtime, and cancellation is handled by
+        // graceful shutdown killing the runtime.
+        let rt_ticket_store =
+            crate::infrastructure::services::rt_ticket_store::RtTicketStore::new();
+        let _reaper = Arc::clone(&rt_ticket_store).spawn_reaper();
+
         // 3b. Trash service (needed before application services)
         let trash_service = self
-            .create_trash_service(&repos, &core, &authorization, &drive_repo)
+            .create_trash_service(&repos, &core, &authorization, &drive_repo, &bus)
             .await;
 
         // 3c. Storage usage / quota service (needed by the instant-upload
@@ -1786,6 +1843,7 @@ impl AppServiceFactory {
             plugin_dispatch.clone(),
             mount_router.clone(),
             Some(resource_access_hook.clone()),
+            &bus,
         );
 
         // 5. Share service
@@ -2284,6 +2342,9 @@ impl AppServiceFactory {
             db_pool: Some(pool.clone()),
             maintenance_pool: Some(maintenance_pool),
             mount_router,
+            bus,
+            rt_ticket_store,
+            active_ws_sessions: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             auth_service: auth_services,
             opaque_service,
             opaque_repo,
@@ -2357,6 +2418,7 @@ impl AppServiceFactory {
             mock_email_sender: None,              // populated below
             magic_link_invite_service: None,      // populated below
             recipient_notification_service: None, // populated below alongside magic_link_invite_service
+            notification_service: None,           // populated below (Slice E)
             // Per-caller limits, configurable since the hardcoded ceilings
             // had no escape hatch for deployments where several actors share
             // one identity — a CI suite running as a single `admin` shares
@@ -2475,6 +2537,42 @@ impl AppServiceFactory {
                     ),
                 ));
             }
+
+            // Persistent in-app notifications (Slice E). Repo + bus
+            // are both always available when auth is on; the service
+            // wraps them into the ingester-facing `create()` +
+            // bell-facing reads. Always wired under `auth_service` —
+            // notifications are per-user and require an authenticated
+            // caller everywhere they surface.
+            let notif_repo: Arc<
+                dyn crate::domain::repositories::notification_repository::NotificationRepository,
+            > = Arc::new(
+                crate::infrastructure::repositories::pg::NotificationPgRepository::new(
+                    pool.clone(),
+                ),
+            );
+            let notif_bus: Arc<dyn crate::application::ports::message_bus_ports::MessageBus> =
+                app_state.bus.clone();
+            let notification_service = Arc::new(
+                crate::application::services::notification_application_service::NotificationApplicationService::new(
+                    notif_repo,
+                    notif_bus,
+                ),
+            );
+            app_state.notification_service = Some(notification_service.clone());
+
+            // Retention sweep — daily; deletes read notifications
+            // older than OXICLOUD_NOTIFICATIONS_RETENTION_DAYS. Same
+            // self-registering pattern as `trash_cleanup`.
+            let retention_days = app_state.core.config.features.notifications_retention_days;
+            let _ = Arc::new(
+                crate::infrastructure::services::notifications_cleanup_service::NotificationsCleanupService::new(
+                    notification_service,
+                    retention_days,
+                ),
+            )
+            .register(&app_state.core.job_registry)
+            .await;
         }
 
         // 9b. Wire admin settings service when auth is available
@@ -3177,6 +3275,39 @@ pub struct AppState {
     /// method (which still owns the authorization check).
     pub mount_router:
         Arc<crate::application::services::external_mount_router::MountRouter>,
+    /// Message bus. Always present — an empty bus (no
+    /// subscribers, no publishes) costs a single `DashMap` allocation.
+    /// The WS handler reads `subscribe`; service publish hooks
+    /// (`FolderService::create_folder_with_perms`,
+    /// `FileManagementService`'s file-create commit) call `publish`
+    /// AFTER their DB transaction commits.
+    ///
+    /// Stored as the concrete type (not `Arc<dyn MessageBus>`) so the
+    /// GC task's `Weak<Self>` lifecycle is legible from di.rs. Consumers
+    /// that only need the trait obtain it via
+    /// `Arc::clone(&state.bus) as Arc<dyn MessageBus>`.
+    pub bus: Arc<
+        crate::infrastructure::services::in_process_message_bus::InProcessMessageBus,
+    >,
+    /// Short-lived tickets that authenticate a WebSocket upgrade
+    /// without the browser needing to attach a DPoP proof (which
+    /// `new WebSocket()` cannot set — only `Sec-WebSocket-Protocol`
+    /// is settable). FE POSTs `/api/rt/ticket` with a normal
+    /// DPoP-signed request, receives an opaque one-shot token, and
+    /// hands it to the WS upgrade via subprotocol. Always populated;
+    /// see `rt_ticket_store` module doc.
+    pub rt_ticket_store: Arc<
+        crate::infrastructure::services::rt_ticket_store::RtTicketStore,
+    >,
+    /// Live count of currently-connected message-bus WS sessions.
+    /// Incremented on entry to `rt_ws::handle_session`, decremented
+    /// via a `Drop` guard on ANY exit (normal close, error, panic
+    /// unwind). Surfaced on the admin dashboard's "Live activity"
+    /// section so operators can gauge WS pressure at a glance — one
+    /// connection per open browser tab that reaches a folder view.
+    /// Zero-cost when idle: `Relaxed` atomic load/store on the fd
+    /// path, no allocation.
+    pub active_ws_sessions: Arc<std::sync::atomic::AtomicUsize>,
     pub auth_service: Option<AuthServices>,
     /// OPAQUE aPAKE substrate (RFC 9807). Populated only when
     /// [`OpaqueConfig::effective_mode`] is not `Off` — that method
@@ -3346,6 +3477,16 @@ pub struct AppState {
     /// case (no mail sent, grant still created).
     pub recipient_notification_service: Option<
         Arc<crate::application::services::recipient_notification_service::RecipientNotificationService>,
+    >,
+    /// Persistent in-app notifications — bell UI, retention job, four
+    /// initial ingesters (share-granted, new-login-from-new-device,
+    /// job-completed-for-you, storage-quota-threshold). Always
+    /// populated when auth is enabled (bell requires an authenticated
+    /// caller). Wraps a PG repo + the message bus; `create()` writes
+    /// the row AND publishes on `user:{u}:notifications` in one call.
+    /// See `docs/plan/message-bus.md § Slice E`.
+    pub notification_service: Option<
+        Arc<crate::application::services::notification_application_service::NotificationApplicationService>,
     >,
     /// Per-caller sliding-window limiter for `GET /api/users/{id}`. The
     /// endpoint's primary defense is the visibility check, but a stale

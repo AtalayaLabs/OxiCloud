@@ -25,12 +25,16 @@ bin-dir = "oxicloud-{ version }-{ target }/{ bin }{ binary-ext }"
 
 [dependencies]
 mimalloc = { version = "0.1.52", default-features = false }
-axum = { version = "0.8.9", features = ["multipart", "http1", "http2", "tokio", "macros"] }
+axum = { version = "0.8.8", features = ["multipart", "http1", "http2", "tokio", "macros", "ws"] }
 # "process" was previously enabled implicitly through aws-config's feature
 # unification; ffmpeg_video_frame_service needs it, so declare it ourselves.
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "io-util", "net", "time", "sync", "fs", "process", "signal"] }
 tokio-util = { version = "0.7.18", features = ["io", "codec", "compat"] }
 tokio-stream = { version = "0.1.18", features = ["fs", "sync"] }
+# Only pulled in by the `test_utils` feature (rt-hurl-helper bin). Not
+# shipped in release; pinned to the same 0.28 axum 0.8.8 already brings
+# transitively so we don't duplicate the crate graph.
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake"], optional = true }
 bytes = "1.11.1"
 tempfile = "3.27.0"
 tower = "0.5.3"
@@ -190,7 +194,7 @@ metrics-exporter-prometheus = { version = "0.18", default-features = false }
 
 [features]
 default = []
-test_utils = ["mockall"]
+test_utils = ["mockall", "dep:tokio-tungstenite"]
 integration_tests = []
 # WASM plugin runtime (Extism). Opt-in: bundles wasmtime, a large engine most
 # deployments won't use. Activation also requires OXICLOUD_ENABLE_PLUGINS=true.
@@ -263,6 +267,16 @@ path = "src/bin/generate-openapi.rs"
 required-features = ["dev_tools"]
 
 [[bin]]
+name = "generate-asyncapi"
+path = "src/bin/generate-asyncapi.rs"
+# Dev-only: regenerates `resources/gen/asyncapi.json` — the WS surface's
+# analogue of openapi.json. Constructed from the same `error_code`
+# constants + `Topic`/`MessageBusEvent` shapes the server uses, so the
+# spec stays in sync with the implementation by construction. Same
+# gating as `generate-openapi`. Invoked by `just asyncapi`.
+required-features = ["dev_tools"]
+
+[[bin]]
 name = "opaque-hurl-helper"
 path = "src/bin/opaque-hurl-helper.rs"
 # Test-suite crypto client — drives a full OPAQUE register + login
@@ -291,6 +305,21 @@ path = "src/bin/load-seed.rs"
 # `cargo build --release` (and the prod Dockerfile) skip it. tests/load/run.sh
 # and load-nightly.yml build it explicitly with --features load_seed_bin.
 required-features = ["load_seed_bin"]
+
+[[bin]]
+name = "rt-hurl-helper"
+path = "src/bin/rt-hurl-helper.rs"
+# Test-suite WebSocket client for the message bus. Hurl is
+# HTTP-only and cannot drive a WS handshake or read frames; this bin
+# supplies the two modes the smoke test needs — `subscribe-and-collect`
+# (background subscriber that captures events to JSON) and
+# `expect-denied` (synchronous check that a subscribe attempt is
+# rejected with a specific JSON-RPC error code). Invoked from
+# tests/api/rt_bus_check.sh after the main hurl block.
+#
+# Not shipped in release: gated behind `test_utils` alongside the
+# opaque/dpop helpers.
+required-features = ["test_utils"]
 
 # Phase 0 perf harness — Task 0.2 (criterion latency + output-size bench).
 [[bench]]

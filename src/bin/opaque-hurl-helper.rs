@@ -402,8 +402,79 @@ async fn main() -> ExitCode {
         Err(e) => return fail(format!("/api/admin/sessions network: {e}")),
     }
 
+    // ── OPAQUE-minted JWT works against the WebSocket ─────────────
+    //
+    // Regression guard: `auth_middleware` doesn't inspect how a JWT
+    // was minted, so an OPAQUE-issued access_token must Just Work on
+    // `/api/rt/ws` the same way a legacy-password one does. If a
+    // future refactor makes WS auth diverge from the general
+    // request-auth path, this smoke fails and the divergence gets
+    // caught here rather than only surfacing in the collab editor.
+    //
+    // The check itself is trivial: connect with the OPAQUE JWT, send
+    // one `rt.ping`, expect `result.pong == true`.
+    if let Err(msg) = opaque_jwt_ws_smoke(base, &auth.access_token).await {
+        return fail(format!("OPAQUE JWT + WS: {msg}"));
+    }
+
     eprintln!(
-        "opaque-hurl-helper: OK — register + login + /me + admin sessions origin=opaque for '{username}'"
+        "opaque-hurl-helper: OK — register + login + /me + admin sessions origin=opaque + rt.ping over WS for '{username}'"
     );
     ExitCode::from(EXIT_OK)
+}
+
+async fn opaque_jwt_ws_smoke(base: &str, access_token: &str) -> Result<(), String> {
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::http::HeaderValue;
+
+    let ws_url = match base.strip_prefix("http://") {
+        Some(rest) => format!("ws://{rest}/api/rt/ws"),
+        None => match base.strip_prefix("https://") {
+            Some(rest) => format!("wss://{rest}/api/rt/ws"),
+            None => return Err(format!("unexpected base scheme: {base}")),
+        },
+    };
+
+    let mut req = ws_url
+        .into_client_request()
+        .map_err(|e| format!("bad url: {e}"))?;
+    req.headers_mut().insert(
+        "Authorization",
+        HeaderValue::from_str(&format!("Bearer {access_token}"))
+            .map_err(|e| format!("bad bearer header: {e}"))?,
+    );
+    let (mut ws, _resp) = tokio_tungstenite::connect_async(req)
+        .await
+        .map_err(|e| format!("connect failed: {e}"))?;
+
+    let ping = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "rt.ping",
+    })
+    .to_string();
+    ws.send(Message::Text(ping.into()))
+        .await
+        .map_err(|e| format!("send: {e}"))?;
+
+    // Bounded wait — the server should reply immediately. A hung reply
+    // means the WS handler didn't recognise the JWT (misgated
+    // middleware) or panicked; we treat either as a hard failure.
+    let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+        .await
+        .map_err(|_| "rt.ping response timed out".to_string())?
+        .ok_or_else(|| "socket closed before response".to_string())?
+        .map_err(|e| format!("recv: {e}"))?;
+
+    let Message::Text(text) = msg else {
+        return Err(format!("expected text frame, got {msg:?}"));
+    };
+    let v: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("bad json: {e}: {text}"))?;
+    if v["result"]["pong"] != true {
+        return Err(format!("expected pong=true, got: {v}"));
+    }
+    Ok(())
 }

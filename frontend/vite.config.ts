@@ -34,8 +34,17 @@ const DEV_ORIGIN_HEADERS = {
 };
 const p = (target: string) => ({ target, changeOrigin: true, headers: DEV_ORIGIN_HEADERS });
 
+// Same as `p()` but with WebSocket upgrade forwarding enabled. Vite's
+// `http-proxy-middleware` treats HTTP and WS as two separate transports —
+// without `ws: true` the upgrade request is silently dropped and the
+// browser hangs in `readyState = CONNECTING` until Chrome's ~30 s
+// handshake timeout fires. Needed for `/api/rt/ws` (message bus). Kept
+// as a separate helper so paths that don't upgrade don't pay the extra
+// listener setup.
+const pWs = (target: string) => ({ ...p(target), ws: true });
+
 const proxy = {
-	'/api': p(BACKEND),
+	'/api': pWs(BACKEND),
 	'/locales': p(BACKEND),
 	'/.well-known': p(BACKEND),
 	'/remote.php': p(BACKEND),

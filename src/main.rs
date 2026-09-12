@@ -1056,6 +1056,37 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             // the static surface is split into its own router.
             .merge(web_routes.layer(access_log!("http::web")));
 
+        // Message-bus WebSocket. Registered OUTSIDE `protected_api`
+        // because a browser cannot attach a `DPoP:` header to
+        // `new WebSocket()` (RFC 6455 only lets us set
+        // `Sec-WebSocket-Protocol`), so the standard auth + DPoP
+        // stack would 401 every DPoP-bound session. The handler
+        // self-authenticates from either a ticket subprotocol
+        // (minted by `POST /api/rt/ticket` under the full chain)
+        // or a bearer token (`rt-hurl-helper` test path).
+        // See `handlers/rt_ws.rs` module doc and
+        // `docs/plan/message-bus.md § F`.
+        //
+        // Guarded by `enable_message_bus`: when false, the route is
+        // NOT registered → Axum returns 404 for `/api/rt/ws` and the
+        // ticket endpoint (already gated inside `create_api_routes`).
+        // Clients discover this via `/api/config` and skip WS setup.
+        if app_state.core.config.features.enable_message_bus {
+            app = app.route(
+                "/api/rt/ws",
+                axum::routing::get(oxicloud::interfaces::api::handlers::rt_ws::rt_ws_handler)
+                    .with_state(app_state.clone())
+                    .layer(access_log!("http::api")),
+            );
+        } else {
+            tracing::info!(
+                target: "audit",
+                event = "config.feature_disabled",
+                feature = "message_bus",
+                "message bus disabled — /api/rt/ws and /api/rt/ticket not registered (404)",
+            );
+        }
+
         // Mount Nextcloud routes (uses its own Basic Auth middleware).
         // **Merged BEFORE the trace + request-id layers** so NC requests
         // get the same `request_id` / `user_id` / `client_ip` span

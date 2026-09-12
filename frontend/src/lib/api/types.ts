@@ -878,3 +878,96 @@ export interface AdminSessionsPage {
 	 *  but any in-flight JWT stays valid until its `exp`. */
 	access_token_expiry_secs: number;
 }
+
+// ── /api/config — public server-configuration discovery ────────────────────
+
+/** Boolean matrix of enabled optional subsystems. Mirrors the server's
+ *  `FeaturesConfig`; adding a field is additive (clients ignore unknown
+ *  fields, no field is ever repurposed — same discipline as JSON-RPC
+ *  error codes on the message bus). */
+export interface ServerFeatures {
+	/** Message bus over WebSocket. When `false`, `/api/rt/ws` and
+	 *  `/api/rt/ticket` are unmounted server-side — clients skip WS setup
+	 *  entirely (see `$lib/message-bus/client.svelte.ts`). */
+	message_bus: boolean;
+	trash: boolean;
+	search: boolean;
+	sharing: boolean;
+	// NOTE: `quotas` was intentionally NOT exposed — see the Rust
+	// `FeaturesDto` doc for why (dormant server flag with zero
+	// consumers). Add it back once it actually gates FE-visible
+	// behavior.
+	music: boolean;
+	places: boolean;
+	faces: boolean;
+	video_thumbnails: boolean;
+	external_mounts: boolean;
+}
+
+/** One row in `ServerStatus.migration` / `ServerStatus.rotation` — a
+ *  server-side long-running operation surfacing its progress to the SPA
+ *  banner. Same JSON shape both fields share. */
+export interface ServerStatusProgress {
+	/** Short target name (e.g. `"backend_migration"`, `"rotation_v2"`). */
+	target: string;
+	migrated: number;
+	total: number;
+	/** Integer 0-100. */
+	percent: number;
+}
+
+/** Live server-status snapshot. Same shape and field names as the
+ *  `X-Server-Status` header stamped on every response — the boot fetch
+ *  from `/api/config` and the per-request header both share this wire
+ *  vocabulary. Field-level absence means "nothing running"; the client
+ *  can safely assume `readonly === false && !migration && !rotation` is
+ *  the normal case. */
+export interface ServerStatus {
+	readonly: boolean;
+	migration?: ServerStatusProgress;
+	rotation?: ServerStatusProgress;
+}
+
+/** Response of `GET /api/config`. Public, unauthenticated. */
+export interface ServerConfig {
+	version: string;
+	features: ServerFeatures;
+	server_status: ServerStatus;
+}
+
+// ─── Notifications (Slice E) ─────────────────────────────────────
+// Row shape mirrors `application/dtos` output of the Rust backend.
+// `payload` stays a raw JSON object (`Record<string, unknown>`) —
+// per-kind decoding is a UI concern (kind-specific components read
+// what they need from the blob). Adding a new kind server-side does
+// NOT churn this file; the FE renders a generic bell row for any
+// unknown kind.
+export interface Notification {
+	id: string;
+	kind: string;
+	payload: Record<string, unknown>;
+	created_at: string;
+	/** `null` = unread. */
+	read_at: string | null;
+}
+
+export interface NotificationListResponse {
+	items: Notification[];
+	unread_count: number;
+}
+
+export interface UnreadCountResponse {
+	unread_count: number;
+}
+
+export interface MarkAllReadResponse {
+	marked: number;
+}
+
+/** Canonical kind slugs — mirror `domain::entities::notification::kind`. */
+export const NOTIFICATION_KIND = {
+	SHARE_GRANTED: 'share_granted',
+	NEW_LOGIN_FROM_NEW_DEVICE: 'new_login_from_new_device',
+	JOB_COMPLETED_FOR_YOU: 'job_completed_for_you',
+	STORAGE_QUOTA_THRESHOLD: 'storage_quota_threshold'
+} as const;

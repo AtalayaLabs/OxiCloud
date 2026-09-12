@@ -2243,7 +2243,6 @@ impl MagicLinkConfig {
 #[derive(Debug, Clone)]
 pub struct FeaturesConfig {
     pub enable_auth: bool,
-    pub enable_user_storage_quotas: bool,
     pub enable_file_sharing: bool,
     pub enable_trash: bool,
     pub enable_search: bool,
@@ -2284,6 +2283,21 @@ pub struct FeaturesConfig {
     /// Env: `OXICLOUD_WEBDAV_DRIVE_LISTING_PREFIX`.
     pub webdav_drive_listing_prefix: String,
 
+    /// Message-bus master switch. When `false`, the WS route
+    /// `/api/rt/ws` and the ticket endpoint `POST /api/rt/ticket`
+    /// are **not registered** at boot — Axum returns 404 for both,
+    /// no 5xx alerts, no ambiguity. Publish sites in the services
+    /// stay unchanged (the in-process bus still runs, publishes to
+    /// nobody are cheap no-ops), so no service code paths branch on
+    /// this flag — the toggle is purely at the API surface.
+    ///
+    /// Clients discover this via `GET /api/config.features.message_bus`
+    /// and skip WS setup entirely when false — no reconnect flood,
+    /// no wasted round-trips.
+    ///
+    /// Env: `OXICLOUD_MESSAGEBUS_ENABLE` (default `true`).
+    pub enable_message_bus: bool,
+
     /// Background purge of expired `storage.role_grants` rows.
     ///
     /// The AuthZ engine already filters expired grants out of every
@@ -2297,6 +2311,17 @@ pub struct FeaturesConfig {
     /// Enabled by default: expired-auth-row cleanup is a
     /// security-hygiene default, not opt-in.
     pub grant_cleanup: GrantCleanupConfig,
+
+    /// Retention window (in days) for read notification rows —
+    /// `notif.notifications` with `read_at IS NOT NULL`. Unread rows
+    /// are preserved unconditionally; the `notifications_cleanup`
+    /// scheduled job deletes read rows older than this on a daily
+    /// cadence.
+    ///
+    /// Env: `OXICLOUD_NOTIFICATIONS_RETENTION_DAYS` (default `30`).
+    /// Minimum 1 (0 would delete every read row on every tick — the
+    /// service clamps defensively).
+    pub notifications_retention_days: u32,
 }
 
 /// Config for the daily expired-grant purge (see
@@ -2468,8 +2493,7 @@ impl Default for GrantCleanupConfig {
 impl Default for FeaturesConfig {
     fn default() -> Self {
         Self {
-            enable_auth: true, // Enable authentication by default
-            enable_user_storage_quotas: false,
+            enable_auth: true,             // Enable authentication by default
             enable_file_sharing: true,     // Enable file sharing by default
             enable_trash: true,            // Enable trash feature
             enable_search: true,           // Enable search feature
@@ -2483,7 +2507,9 @@ impl Default for FeaturesConfig {
             // maps to the caller's default drive; drive listing is
             // reachable at `/webdav/@drive/`.
             webdav_drive_listing_prefix: "@drive".to_string(),
+            enable_message_bus: true, // Message bus (WS + ticket) on by default
             grant_cleanup: GrantCleanupConfig::default(),
+            notifications_retention_days: 30, // 30 days is the plan's default
         }
     }
 }
@@ -3337,13 +3363,6 @@ impl AppConfig {
             config.features.enable_auth = val;
         }
 
-        if let Ok(enable_user_storage_quotas) =
-            env::var("OXICLOUD_ENABLE_USER_STORAGE_QUOTAS").map(|v| v.parse::<bool>())
-            && let Ok(val) = enable_user_storage_quotas
-        {
-            config.features.enable_user_storage_quotas = val;
-        }
-
         if let Ok(enable_file_sharing) =
             env::var("OXICLOUD_ENABLE_FILE_SHARING").map(|v| v.parse::<bool>())
             && let Ok(val) = enable_file_sharing
@@ -3355,6 +3374,28 @@ impl AppConfig {
             && let Ok(val) = enable_trash
         {
             config.features.enable_trash = val;
+        }
+
+        // Message bus (WS + ticket endpoints). Follows the
+        // `OXICLOUD_MESSAGEBUS_*` naming rather than
+        // `OXICLOUD_ENABLE_MESSAGEBUS` — the `MESSAGEBUS` prefix groups
+        // this with `OXICLOUD_MESSAGEBUS_KEEPALIVE_SECONDS` at the env
+        // level. Internal struct field keeps the codebase-wide
+        // `enable_*` convention.
+        if let Ok(enable_message_bus) =
+            env::var("OXICLOUD_MESSAGEBUS_ENABLE").map(|v| v.parse::<bool>())
+            && let Ok(val) = enable_message_bus
+        {
+            config.features.enable_message_bus = val;
+        }
+
+        // Slice E — notification retention. Read as u32 so a
+        // non-numeric or negative value falls back to the declared
+        // default (30 days) rather than crashing at boot.
+        if let Ok(raw) = env::var("OXICLOUD_NOTIFICATIONS_RETENTION_DAYS")
+            && let Ok(val) = raw.parse::<u32>()
+        {
+            config.features.notifications_retention_days = val.max(1);
         }
 
         if let Ok(enable_search) = env::var("OXICLOUD_ENABLE_SEARCH").map(|v| v.parse::<bool>())

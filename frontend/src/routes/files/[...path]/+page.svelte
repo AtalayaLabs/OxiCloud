@@ -52,6 +52,8 @@
 		type GroupByDef as RLGroupByDef
 	} from '$lib/components/ResourceList.svelte';
 	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
+	import { useFolderTopic } from '$lib/composables/useFolderTopic.svelte';
+	import log from 'loglevel';
 	import { t } from '$lib/i18n/index.svelte';
 	import { confirmDialog, promptDialog } from '$lib/stores/dialogs.svelte';
 	import { drives as drivesStore } from '$lib/stores/drives.svelte';
@@ -60,6 +62,11 @@
 	import { ui } from '$lib/stores/ui.svelte';
 	import { dateBucket, sizeBucket, typeLabel } from '$lib/stores/files.svelte';
 	import { replaceSet } from '$lib/utils/sets';
+
+	// Message-bus logger. Users can tune with
+	//   oxi.setLogLevel('oxi:message-bus', 'debug')
+	// See `frontend/AGENTS.md § Logging`.
+	const busLog = log.getLogger('oxi:message-bus');
 
 	// File preview and the WOPI editor are heavy and only appear on demand, so
 	// their modules load the first time the user opens one (see the effects that
@@ -429,6 +436,92 @@
 			window.scrollTo({ top: 0, behavior: 'smooth' });
 		}
 	}
+
+	// ── Live folder updates (message bus) ────────────────────────────
+	// Subscribe to `folder:{currentId}` and refresh when THIS session's
+	// tabs, another tab of the same user, or another user with a share
+	// mutates something in this folder. Refetch is coalesced through
+	// `reloadScheduled` so a burst of events (multi-file upload) collapses
+	// to a single fetch.
+	//
+	// Actor-echo skip was REMOVED: previously we skipped events whose
+	// `actor` equalled `session.user.id`, on the assumption "this tab
+	// already updated its state via the local mutation path". That is
+	// true for the ACTIVE tab, but it also silenced updates from OTHER
+	// TABS of the same user. Since `reload()` is idempotent (replaces
+	// `listing.files` with the same server state) the extra fetch on
+	// self-authored events costs one round-trip (~30 ms locally, never
+	// visible) and gains multi-tab correctness. The `reloadScheduled`
+	// coalescer already prevents redundant work when the local mutation
+	// path and the bus event race.
+	//
+	// See `docs/plan/message-bus.md § D` and the `useFolderTopic`
+	// composable for the wiring.
+	let reloadScheduled = false;
+	function scheduleLiveReload(_actor: string): void {
+		if (reloadScheduled) return;
+		reloadScheduled = true;
+		// Coalesce a burst; 100 ms is enough for the tail of a multi-
+		// event upload without feeling laggy.
+		setTimeout(() => {
+			reloadScheduled = false;
+			void reload();
+		}, 100);
+	}
+	useFolderTopic(() => currentId, {
+		onFileCreated: (d) => scheduleLiveReload(d.actor),
+		onFileRenamed: (d) => scheduleLiveReload(d.actor),
+		onFileMoved: (d) => scheduleLiveReload(d.actor),
+		onFileDeleted: (d) => scheduleLiveReload(d.actor),
+		onFolderCreated: (d) => scheduleLiveReload(d.actor),
+		onFolderRenamed: (d) => scheduleLiveReload(d.actor),
+		onFolderMoved: (d) => scheduleLiveReload(d.actor),
+		onFolderDeleted: (d) => {
+			// Two cases fanned out from the server-side publish:
+			//   * `d.folder_id !== currentId` — a SUBFOLDER of the
+			//     current view was deleted. Refetch the listing so
+			//     the row disappears (existing behavior).
+			//   * `d.folder_id === currentId` — the VIEWED folder
+			//     itself just got trashed. The FolderService trashes
+			//     the subtree (soft-delete cascade); staying here
+			//     would show a zombie view. Toast + navigate to
+			//     `/files`, same UX as `onRevoked` for grant
+			//     eviction. See `TrashService::move_to_trash` and
+			//     `docs/plan/message-bus.md § Status` for the
+			//     dual-topic publish rationale.
+			if (d.folder_id === currentId) {
+				ui.notify(t('files.folder_was_deleted', 'This folder was moved to trash.'), 'warning');
+				busLog.warn('viewed folder was deleted', { folder_id: d.folder_id });
+				void goto(resolve('/files'));
+				return;
+			}
+			scheduleLiveReload(d.actor);
+		},
+		onRevoked: (params) => {
+			// The subscription is already gone server-side. Notify the
+			// user and send them back to their home so they don't sit
+			// on a stale folder view with no way to know why updates
+			// stopped.
+			ui.notify(
+				t('files.folder_access_revoked', 'Your access to this folder was revoked.'),
+				'warning'
+			);
+			busLog.warn('folder access revoked', { topic: params.topic, reason: params.reason });
+			void goto(resolve('/files'));
+		},
+		onReconnect: () => {
+			// WS reconnected after a prior disconnect — any bus events
+			// published during the outage window were dropped by the
+			// in-memory bus (no replay). Force a refetch so the listing
+			// catches up with the server-authoritative state. Goes
+			// through the same `scheduleLiveReload` coalescer as event-
+			// driven refreshes so a burst of reconnects (rare, but the
+			// circuit breaker can produce one) collapses to a single
+			// fetch. See `project_message_bus_reconnect_gap` memory.
+			busLog.warn('reconnected — refetching folder');
+			scheduleLiveReload('reconnect');
+		}
+	});
 
 	function openFolder(folder: FolderItem) {
 		// Canonical single-id URL. Legacy `/files/A/B/C` still resolves

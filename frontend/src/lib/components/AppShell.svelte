@@ -17,6 +17,7 @@
 	import { dateTimeFormatFor, iconNameFromClass } from '$lib/utils/display';
 	import { userInitials, avatarColorIndex } from '$lib/utils/avatar';
 	import { i18n, LANGUAGES, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
+	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { serverStatus } from '$lib/stores/serverStatus.svelte';
 	import { apiFetch } from '$lib/api/client';
 	import { dialogs } from '$lib/stores/dialogs.svelte';
@@ -25,6 +26,10 @@
 	import { session } from '$lib/stores/session.svelte';
 	import { theme, type Theme } from '$lib/stores/theme.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
+	import {
+		notifications as persistentNotifications,
+		useNotifications
+	} from '$lib/composables/useNotifications.svelte';
 	import { errorToast } from '$lib/utils/errors';
 	import { formatBytes } from '$lib/utils/format';
 
@@ -74,68 +79,81 @@
 	// strip; that was displaced here so the section navigation
 	// scales past ~7 items and matches deep-link URLs from the
 	// address bar.
-	const ADMIN_LINKS: NavLink[] = [
-		{
-			href: '/admin',
-			label: t('admin.dashboard', 'Dashboard'),
-			icon: 'chart-pie',
-			section: 'admin-dashboard'
-		},
-		{
-			href: '/admin/users',
-			label: t('admin.users', 'Users'),
-			icon: 'users',
-			section: 'admin-users'
-		},
-		{
-			href: '/admin/sessions',
-			label: t('admin.sessions', 'Sessions'),
-			icon: 'key',
-			section: 'admin-sessions'
-		},
-		{
-			href: '/admin/drives',
-			label: t('admin.drives', 'Drives'),
-			icon: 'hdd',
-			section: 'admin-drives'
-		},
-		{
-			href: '/admin/mounts',
-			label: t('admin.mounts', 'External Mounts'),
-			icon: 'folder',
-			section: 'admin-mounts'
-		},
-		{
-			href: '/admin/oidc',
-			label: t('admin.oidc', 'OIDC / SSO'),
-			icon: 'building-shield',
-			section: 'admin-oidc'
-		},
-		{
-			href: '/admin/storage',
-			label: t('admin.storage_tab', 'Storage'),
-			icon: 'database',
-			section: 'admin-storage'
-		},
-		{
-			href: '/admin/smtp',
-			label: t('admin.smtp', 'Email (SMTP)'),
-			icon: 'envelope',
-			section: 'admin-smtp'
-		},
-		{
-			href: '/admin/plugins',
-			label: t('admin.plugins', 'Plugins'),
-			icon: 'layer-group',
-			section: 'admin-plugins'
-		},
-		{
-			href: '/admin/jobs',
-			label: t('admin.jobs.tab', 'Background tasks'),
-			icon: 'cogs',
-			section: 'admin-jobs'
+	// `$derived` so feature-flag gating drops entries when a feature is
+	// disabled server-side. Server-side the admin CRUD routes are also
+	// gated (matching the message-bus pattern) — hiding the link here
+	// keeps the sidebar consistent with what the backend actually
+	// serves; a stale link would land on a 404. See
+	// `$lib/stores/serverConfig.svelte.ts`.
+	const ADMIN_LINKS = $derived.by<NavLink[]>(() => {
+		const links: NavLink[] = [
+			{
+				href: '/admin',
+				label: t('admin.dashboard', 'Dashboard'),
+				icon: 'chart-pie',
+				section: 'admin-dashboard'
+			},
+			{
+				href: '/admin/users',
+				label: t('admin.users', 'Users'),
+				icon: 'users',
+				section: 'admin-users'
+			},
+			{
+				href: '/admin/sessions',
+				label: t('admin.sessions', 'Sessions'),
+				icon: 'key',
+				section: 'admin-sessions'
+			},
+			{
+				href: '/admin/drives',
+				label: t('admin.drives', 'Drives'),
+				icon: 'hdd',
+				section: 'admin-drives'
+			}
+		];
+		if (serverConfig.features.external_mounts) {
+			links.push({
+				href: '/admin/mounts',
+				label: t('admin.mounts', 'External Mounts'),
+				icon: 'folder',
+				section: 'admin-mounts'
+			});
 		}
-	];
+		links.push(
+			{
+				href: '/admin/oidc',
+				label: t('admin.oidc', 'OIDC / SSO'),
+				icon: 'building-shield',
+				section: 'admin-oidc'
+			},
+			{
+				href: '/admin/storage',
+				label: t('admin.storage_tab', 'Storage'),
+				icon: 'database',
+				section: 'admin-storage'
+			},
+			{
+				href: '/admin/smtp',
+				label: t('admin.smtp', 'Email (SMTP)'),
+				icon: 'envelope',
+				section: 'admin-smtp'
+			},
+			{
+				href: '/admin/plugins',
+				label: t('admin.plugins', 'Plugins'),
+				icon: 'layer-group',
+				section: 'admin-plugins'
+			},
+			{
+				href: '/admin/jobs',
+				label: t('admin.jobs.tab', 'Background tasks'),
+				icon: 'cogs',
+				section: 'admin-jobs'
+			}
+		);
+		return links;
+	});
 
 	const isAdmin = $derived(session.user?.role === 'admin');
 
@@ -312,6 +330,82 @@
 		requestAnimationFrame(() => (bellRinging = true));
 		setTimeout(() => (bellRinging = false), 900);
 	});
+
+	// Persistent notifications (Slice E) — server-backed rows,
+	// survive reload, delivered via `user:{me}:notifications` bus
+	// topic + refetched from `GET /api/notifications`. Fires the
+	// initial hydrate + subscribes to the topic. Independent of the
+	// transient toast bell above (`ui.notifications`) — that stays
+	// as-is for upload-progress / one-shot messages; this stream
+	// carries `share_granted` and friends.
+	useNotifications();
+
+	// Merged unread count for the bell badge — transient toasts plus
+	// persistent unread rows. Same wire and same UX affordance so a
+	// user sees one number and one bell for both classes.
+	const totalUnread = $derived(ui.unread + persistentNotifications.unread);
+	const totalUnreadBadge = $derived(totalUnread > 99 ? '99+' : String(totalUnread));
+
+	/** Format the server-side `created_at` for a persistent row. */
+	function formatPersistentTime(iso: string): string {
+		try {
+			return formatTime(new Date(iso).getTime());
+		} catch {
+			return '';
+		}
+	}
+
+	/** Human summary for a persistent notification. Kind-specific
+	 *  wording lives here so the DTO stays payload-agnostic. */
+	function persistentSummary(row: { kind: string; payload: Record<string, unknown> }): string {
+		switch (row.kind) {
+			case 'share_granted': {
+				const role = String(row.payload.role ?? 'a role');
+				const resType = String(row.payload.resource_type ?? 'resource');
+				return t(
+					'notifications.persistent.share_granted',
+					{ role, resType },
+					`You were granted ${role} on a ${resType}.`
+				);
+			}
+			case 'new_login_from_new_device':
+				return t(
+					'notifications.persistent.new_device_login',
+					'A new device signed into your account.'
+				);
+			case 'job_completed_for_you': {
+				const name = String(row.payload.name ?? row.payload.job_name ?? 'a job');
+				return t('notifications.persistent.job_completed', { name }, `Job "${name}" finished.`);
+			}
+			case 'storage_quota_threshold':
+				return t(
+					'notifications.persistent.quota_threshold',
+					'You are approaching your storage quota.'
+				);
+			default:
+				return t(
+					'notifications.persistent.generic',
+					{ kind: row.kind },
+					`Notification (${row.kind}).`
+				);
+		}
+	}
+
+	/** Icon for a persistent row's kind. Falls back to a generic bell. */
+	function persistentIcon(kind: string): string {
+		switch (kind) {
+			case 'share_granted':
+				return 'user-plus';
+			case 'new_login_from_new_device':
+				return 'shield-alt';
+			case 'job_completed_for_you':
+				return 'check-circle';
+			case 'storage_quota_threshold':
+				return 'database';
+			default:
+				return 'bell';
+		}
+	}
 
 	function openMobileSearch() {
 		searchActive = true;
@@ -788,11 +882,19 @@
 						e.stopPropagation();
 						notifOpen = !notifOpen;
 						menuOpen = false;
-						if (notifOpen) ui.markNotificationsRead();
+						if (notifOpen) {
+							ui.markNotificationsRead();
+							// Persistent rows stay unread until the user
+							// explicitly clicks one — opening the panel
+							// doesn't mark them read (unlike the transient
+							// toast bell, which resets on view). Keeps the
+							// bell's badge accurate to "still-relevant
+							// server-side rows" without a bulk mark-read.
+						}
 					}}
 				>
 					<Icon name="bell" />
-					{#if ui.unread > 0}<span class="notif-badge">{ui.unreadBadge}</span>{/if}
+					{#if totalUnread > 0}<span class="notif-badge">{totalUnreadBadge}</span>{/if}
 				</button>
 				<div class="notif-panel">
 					<div class="notif-panel-header">
@@ -813,7 +915,7 @@
 						{/if}
 					</div>
 					<div class="notif-panel-body">
-						{#if ui.notifications.length === 0}
+						{#if ui.notifications.length === 0 && persistentNotifications.items.length === 0}
 							<div class="notif-empty">
 								<Icon name="bell-slash" />
 								<span>{t('notifications.empty', 'No notifications')}</span>
@@ -855,6 +957,43 @@
 									</div>
 								</div>
 							{/each}
+							{#if persistentNotifications.items.length > 0}
+								{#if ui.notifications.length > 0}
+									<div
+										class="notif-section-divider"
+										role="separator"
+										aria-orientation="horizontal"
+									></div>
+								{/if}
+								{#each persistentNotifications.items as row (row.id)}
+									<div
+										class="notif-item notif-item--{row.kind}"
+										role="button"
+										tabindex="0"
+										data-testid="appshell-notif-persistent-item"
+										aria-label={persistentSummary(row)}
+										style:font-weight={row.read_at === null ? '500' : 'normal'}
+										style:cursor="pointer"
+										onclick={() => void persistentNotifications.markRead(row.id)}
+										onkeydown={(e) => {
+											if (e.key === 'Enter' || e.key === ' ') {
+												e.preventDefault();
+												void persistentNotifications.markRead(row.id);
+											}
+										}}
+									>
+										<span class="notif-item-icon">
+											<Icon name={persistentIcon(row.kind)} />
+										</span>
+										<div class="notif-item-body">
+											<div class="notif-item-text">{persistentSummary(row)}</div>
+											<div class="notif-item-time">
+												{formatPersistentTime(row.created_at)}
+											</div>
+										</div>
+									</div>
+								{/each}
+							{/if}
 						{/if}
 					</div>
 				</div>
@@ -1279,6 +1418,14 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	/* Divider between transient toasts and persistent (server-backed)
+	   rows. Slice E adds a section under the toast list; the divider
+	   is only rendered when both sections have content. */
+	.notif-section-divider {
+		border-top: 1px solid var(--color-border);
+		margin: 0.5rem 0;
 	}
 
 	/* Bell "ring" animation, replayed when bellRinging toggles on. */
