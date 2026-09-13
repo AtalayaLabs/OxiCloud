@@ -77,6 +77,22 @@ export default defineConfig({
     // Rewrite `../src/…`, `../build.rs`, etc. → GitHub blob URLs at
     // build time. See the `rewriteSourceTreeLinks` docstring above.
     config: (md) => rewriteSourceTreeLinks(md),
+    // Shiki doesn't ship a language grammar for `.env` files but the
+    // fences read that way naturally. Alias `env` → `bash` so
+    // dotenv-style content still gets shell-variable highlighting
+    // instead of falling back to plain text.
+    languageAlias: { env: "bash" },
+  },
+
+  // Suppress Vite's "chunk > 500 KB" warning. The two chunks that
+  // trip it — Scalar's API-reference bundle (~2.8 MB) and VitePress's
+  // built-in local search index (~615 KB) — are both dynamically
+  // imported, so they never enter the initial page load. Raising the
+  // limit just quiets the noise; the actual behaviour is fine.
+  vite: {
+    build: {
+      chunkSizeWarningLimit: 3000,
+    },
   },
 
   lastUpdated: true,
@@ -112,10 +128,21 @@ export default defineConfig({
       { text: "Home", link: "/" },
       { text: "Guide", link: "/guide/" },
       { text: "Configuration", link: "/config/" },
+      { text: "API Reference", link: "/api/" },
       { text: "FAQ", link: "/faq" },
     ],
 
     sidebar: {
+      "/api/": [
+        {
+          text: "API Reference",
+          items: [
+            { text: "Overview", link: "/api/" },
+            { text: "REST (OpenAPI)", link: "/api/rest" },
+            { text: "Message Bus (AsyncAPI)", link: "/api/bus" },
+          ],
+        },
+      ],
       "/": [
         {
           text: "Introduction",

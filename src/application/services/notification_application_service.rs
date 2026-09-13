@@ -7,7 +7,7 @@
 //!    `user:{user_id}:notifications` so subscribed sessions refetch
 //!    immediately.
 //!
-//! The DB row is the truth (see `docs/plan/message-bus.md § Slice E`).
+//! The DB row is the truth (see `docs/architecture/message-bus-and-notifications.md § Slice E`).
 //! The bus is best-effort — a subscriber offline at publish time
 //! recovers on next `GET /api/notifications`. Publish happens AFTER
 //! the DB write succeeds, never inside a transaction — the plan's

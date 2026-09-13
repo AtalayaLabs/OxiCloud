@@ -4,7 +4,7 @@
  * Backs `useNotifications` (composable) and `NotificationBell`
  * (component). The bell reads from these; the message bus is a
  * cache-invalidation hint that triggers a refetch, not a data path.
- * See `docs/plan/message-bus.md § Slice E` for the pattern.
+ * See `docs/architecture/message-bus-and-notifications.md § Slice E` for the pattern.
  */
 import { apiJson } from '$lib/api/client';
 import { apiFetch } from '$lib/api/client';

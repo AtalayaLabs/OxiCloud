@@ -1753,7 +1753,7 @@ impl AppServiceFactory {
         // deletes can publish `FolderDeleted` on the parent folder's
         // topic (folder-view live refresh). Wired with a no-op replicator
         // — multi-instance broker is a follow-up per
-        // `docs/plan/message-bus.md § Roadmap`. Spawns its own GC task in
+        // `docs/architecture/message-bus-and-notifications.md § Roadmap`. Spawns its own GC task in
         // `with_replicator`; no supervisor setup required.
         let bus = crate::infrastructure::services::in_process_message_bus::InProcessMessageBus::with_replicator(
             Arc::new(crate::application::ports::message_bus_ports::NoopReplicator),
@@ -3484,7 +3484,7 @@ pub struct AppState {
     /// populated when auth is enabled (bell requires an authenticated
     /// caller). Wraps a PG repo + the message bus; `create()` writes
     /// the row AND publishes on `user:{u}:notifications` in one call.
-    /// See `docs/plan/message-bus.md § Slice E`.
+    /// See `docs/architecture/message-bus-and-notifications.md § Slice E`.
     pub notification_service: Option<
         Arc<crate::application::services::notification_application_service::NotificationApplicationService>,
     >,

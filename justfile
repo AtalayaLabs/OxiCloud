@@ -410,6 +410,35 @@ fe-check: asyncapi-ts
 fe-test: asyncapi-ts
     cd frontend && npm run test:unit
 
+# ─────────────────────────── Docs (VitePress) ───────────────────────────
+#
+# The public-facing site at https://diocrafts.github.io/OxiCloud/,
+# built from `docs/`. Sibling to the frontend recipes above.
+#
+# The `docs-*` recipes depend on both `openapi` and `asyncapi` so the
+# JSON specs under `resources/gen/` are always fresh before VitePress
+# copies them into `docs/public/api/`. Committed specs act as the
+# source-of-truth in CI (deploy-docs workflow has no Rust toolchain).
+
+docs-install:
+    cd docs && npm install
+
+# Regenerate the two API-reference specs then start the VitePress dev
+# server. The npm `predocs:dev` hook (see docs/package.json) also
+# regenerates `docs/public/api/` from the JSON on `resources/gen/`.
+docs-dev: openapi asyncapi
+    cd docs && npm run docs:dev
+
+# Full static build. Emits to `docs/.vitepress/dist/`.
+docs-build: openapi asyncapi
+    cd docs && npm run docs:build
+
+# Just regenerate the JSON specs and the derived `docs/public/api/`
+# artifacts, without running VitePress. Handy when iterating on the
+# `#[utoipa::path]` annotations and wanting to re-check the diff.
+docs-specs: openapi asyncapi
+    cd docs && npm run docs:specs
+
 # Run backend (API) and the Vite dev server together; one Ctrl-C stops both.
 dev:
     #!/usr/bin/env bash

@@ -1,5 +1,5 @@
 //! Message bus WebSocket handler — the endpoint every WS session
-//! multiplexes over. See `docs/plan/message-bus.md § Wire protocol`.
+//! multiplexes over. See `docs/architecture/message-bus-and-notifications.md § Wire protocol`.
 //!
 //! # Wire
 //!
@@ -31,7 +31,7 @@
 //!    chain (auth + DPoP proofed), receives an opaque one-shot
 //!    token, and passes it here. Verified by redeeming through
 //!    [`AppState::rt_ticket_store`]. See
-//!    `docs/plan/message-bus.md § F`.
+//!    `docs/architecture/message-bus-and-notifications.md § F`.
 //! 2. **Bearer token** (`Authorization: Bearer <jwt>`) — the
 //!    programmatic-client path used by `rt-hurl-helper` in api-test.
 //!    Verified against `AuthServices::token_service`. DPoP-bound
@@ -406,7 +406,7 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
     // stream (`MessageBusEvent::NotificationReceived`) forward
     // through as an `rt.event` notification so the FE bell can flip
     // its unread badge without a poll. The DB row is the truth (see
-    // `docs/plan/message-bus.md § Slice E`); a missed push recovers
+    // `docs/architecture/message-bus-and-notifications.md § Slice E`); a missed push recovers
     // on the next `GET /api/notifications`.
     install_subscription(
         Topic::UserNotifications(caller_id),

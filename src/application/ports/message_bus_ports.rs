@@ -1,7 +1,7 @@
 //! Message-bus port — the seam every service publishes through and every WS
 //! session subscribes on.
 //!
-//! # Design (see `docs/plan/message-bus.md`)
+//! # Design (see `docs/architecture/message-bus-and-notifications.md`)
 //!
 //! - [`MessageBus`] is the **local-facing** trait: services publish, the WS
 //!   handler subscribes. It never involves the network.
@@ -138,7 +138,7 @@ impl Topic {
 
     /// Which permission check the WS handler must run before allowing a
     /// subscribe. Three classes per plan (see
-    /// `docs/plan/message-bus.md § AuthZ model`):
+    /// `docs/architecture/message-bus-and-notifications.md § AuthZ model`):
     ///
     /// - Resource-scoped: default `Read` on the resource (Phase-B adds
     ///   `Share`/`Comment` for the stricter topics).
@@ -184,7 +184,7 @@ pub enum BusResource {
 }
 
 /// The check the WS handler must run at subscribe time. Split into the three
-/// classes described in `docs/plan/message-bus.md § AuthZ model`, so a new
+/// classes described in `docs/architecture/message-bus-and-notifications.md § AuthZ model`, so a new
 /// topic variant with a new gate shape is a compile error at the dispatch
 /// site rather than a runtime "unhandled" bug.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -377,7 +377,7 @@ pub enum MessageBusEvent {
 /// codes; the standard `-326xx` envelope codes are re-exported here too so
 /// the WS handler has one place to reach for.
 ///
-/// See `docs/plan/message-bus.md § JSON-RPC error codes` for the
+/// See `docs/architecture/message-bus-and-notifications.md § JSON-RPC error codes` for the
 /// wire-`message`/audit-`reason` mapping.
 pub mod error_code {
     /// Resource-scoped topic, caller lacks Read (or resource doesn't exist —

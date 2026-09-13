@@ -5,7 +5,7 @@
 //! error codes) and writes `resources/gen/asyncapi.json`.
 //!
 //! This is the first-PR MVP surface — the two topics and two events
-//! that Phase A ships (see `docs/plan/message-bus.md § First PR`).
+//! that Phase A ships (see `docs/architecture/message-bus-and-notifications.md § First PR`).
 //! Adding a topic/event later is a match arm + a new schema block in
 //! this file; the CI dirty-tree check (same as OpenAPI's) prevents
 //! spec/code drift.
@@ -46,6 +46,20 @@ fn main() {
 
 fn build_asyncapi() -> Value {
     json!({
+        // AsyncAPI 3.0.0 — deliberately NOT 3.1.0.
+        //
+        // Under 3.1.0 `@asyncapi/modelina` interprets the schema tree
+        // as one collapsed root and emits a single `Root.ts` with
+        // everything nested inline. Under 3.0.0 it walks each named
+        // component and emits 30 separate model files. Both are
+        // "correct" outputs; the FE codebase is built on the split
+        // shape (per-schema imports let `useTopic<...>` unions stay
+        // compile-time exhaustive) so we pin to 3.0.0.
+        //
+        // Revisit if the FE ever moves to a single-blob type or if
+        // Modelina's 3.1.0 traversal changes. Validator will flag it
+        // as `information` severity ("The latest version is not used")
+        // — that's expected, not a bug.
         "asyncapi": "3.0.0",
         "info": {
             "title":   "OxiCloud message bus",
@@ -55,9 +69,13 @@ JSON-RPC 2.0 over WebSocket for control + events, Yjs sync protocol for
 CRDT binary frames. The wire is described here for the first-PR MVP
 surface (folder-live updates); Phase B (comments, presence) and
 Phase C (sync-client push, album live) extend the same channels — see
-`docs/plan/message-bus.md`.
+`docs/architecture/message-bus-and-notifications.md`.
 "#.trim(),
-            "license": { "name": "AGPL-3.0-or-later" },
+            // Must match the top-level LICENSE file (SPDX identifier).
+            "license": {
+                "name": "MIT",
+                "url": "https://opensource.org/licenses/MIT",
+            },
         },
         // Applied to every message that doesn't set its own — the JSON-RPC
         // control frames are all `application/json`. Binary Yjs frames
@@ -98,7 +116,7 @@ Phase C (sync-client push, album live) extend the same channels — see
                 //     an opaque one-shot token, and pass it via
                 //     `Sec-WebSocket-Protocol: oxi.ticket.<uuid>`
                 //     (browsers cannot set arbitrary headers on
-                //     `new WebSocket()`). See `docs/plan/message-bus.md § F`.
+                //     `new WebSocket()`). See `docs/architecture/message-bus-and-notifications.md § F`.
                 "security": [
                     { "$ref": "#/components/securitySchemes/bearerAuth" },
                     { "$ref": "#/components/securitySchemes/ticketAuth" }
@@ -175,7 +193,8 @@ fn operations() -> Value {
         "subscribeFolder": {
             "action": "send",
             "channel": { "$ref": "#/channels/Folder" },
-            "summary": "Subscribe to a folder's mutation stream",
+            "title": "rt.subscribe — join a folder's mutation stream",
+            "summary": "**`rt.subscribe`** → client joins a folder's mutation stream. Reply is `rt.subscribed` (ok) or `rt.error` (permission denied, unknown topic, etc.).",
             "messages": [
                 { "$ref": "#/channels/Folder/messages/SubscribeRequest" }
             ],
@@ -190,15 +209,30 @@ fn operations() -> Value {
         "unsubscribeFolder": {
             "action": "send",
             "channel": { "$ref": "#/channels/Folder" },
-            "summary": "Unsubscribe from a folder's mutation stream",
+            "title": "rt.unsubscribe — leave a folder's mutation stream",
+            "summary": "**`rt.unsubscribe`** → client leaves a previously-joined folder. Server acks with `rt.subscribed` (`result.ok = true`) — the ack message is shared with subscribe.",
             "messages": [
                 { "$ref": "#/channels/Folder/messages/UnsubscribeRequest" }
-            ]
+            ],
+            // The wire DOES send `rt.subscribed` back on unsubscribe too
+            // (the ack message is shared with subscribe — see
+            // `RtSubscribedResponse`'s title). Declaring the reply here
+            // makes the AsyncAPI-HTML template render this as REQUEST
+            // (matching `subscribeFolder`), not fire-and-forget SEND,
+            // and surfaces the ack payload in the operation panel.
+            "reply": {
+                "channel": { "$ref": "#/channels/Folder" },
+                "messages": [
+                    { "$ref": "#/channels/Folder/messages/SubscribedResponse" },
+                    { "$ref": "#/channels/Folder/messages/ErrorResponse" },
+                ]
+            }
         },
         "receiveFolderEvent": {
             "action": "receive",
             "channel": { "$ref": "#/channels/Folder" },
-            "summary": "Server-pushed `rt.event` notification for a folder mutation",
+            "title": "rt.event — folder mutation notification",
+            "summary": "**`rt.event`** → server pushes a mutation notice (file/subfolder created, renamed, deleted). Client updates its live view. Delivered only to subscribers holding `Read` on the folder.",
             "messages": [
                 { "$ref": "#/channels/Folder/messages/FolderEvent" }
             ]
@@ -206,7 +240,8 @@ fn operations() -> Value {
         "receiveRevoked": {
             "action": "receive",
             "channel": { "$ref": "#/channels/Folder" },
-            "summary": "Server-initiated eviction of a subscription (grant revoked, resource deleted, etc.). Client stops rendering the topic.",
+            "title": "rt.revoked — subscription evicted",
+            "summary": "**`rt.revoked`** → server evicts the client's subscription (grant revoked, resource deleted, session expired). Client stops rendering the topic and drops any local state.",
             "messages": [
                 { "$ref": "#/channels/Folder/messages/RevokedNotification" }
             ]
@@ -220,7 +255,8 @@ fn operations() -> Value {
         "ping": {
             "action": "send",
             "channel": { "$ref": "#/channels/Folder" },
-            "summary": "Application-level keepalive; `rt.pong` reply confirms end-to-end liveness",
+            "title": "rt.ping — application-level keepalive",
+            "summary": "**`rt.ping`** → application-level liveness probe. Reply is `rt.pong` with `result.pong = true`. Distinct from RFC 6455 transport-level Ping; useful when a proxy black-holes traffic without dropping the socket.",
             "messages": [
                 { "$ref": "#/channels/Folder/messages/PingRequest" }
             ],
@@ -235,6 +271,14 @@ fn operations() -> Value {
 }
 
 fn components() -> Value {
+    // Placeholder UUID used across every example — same shape as the
+    // topic-parameter examples further down. Keeping it in one const
+    // means all rendered examples refer to the same imaginary folder,
+    // so a reader can trace a subscribe → event → unsubscribe flow
+    // without having to reconcile changing IDs mid-page.
+    let example_folder_id = "00000000-0000-0000-0000-000000000000";
+    let example_folder_topic = format!("folder:{example_folder_id}");
+
     let mut components = json!({
         "messages": {
             // ── Requests ────────────────────────────────────────────
@@ -243,18 +287,47 @@ fn components() -> Value {
                 "title": "Subscribe to a topic",
                 "contentType": "application/json",
                 "payload": { "$ref": "#/components/schemas/RtSubscribeRequestBody" },
+                "examples": [{
+                    "name": "subscribe-folder",
+                    "summary": "Client → server: subscribe to a folder's mutation stream",
+                    "payload": {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "rt.subscribe",
+                        "params": { "topic": example_folder_topic },
+                    },
+                }],
             },
             "RtUnsubscribeRequest": {
                 "name": "rt.unsubscribe",
                 "title": "Unsubscribe from a topic",
                 "contentType": "application/json",
                 "payload": { "$ref": "#/components/schemas/RtUnsubscribeRequestBody" },
+                "examples": [{
+                    "name": "unsubscribe-folder",
+                    "summary": "Client → server: unsubscribe from a previously-joined folder",
+                    "payload": {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "rt.unsubscribe",
+                        "params": { "topic": example_folder_topic },
+                    },
+                }],
             },
             "RtPingRequest": {
                 "name": "rt.ping",
                 "title": "Keepalive ping",
                 "contentType": "application/json",
                 "payload": { "$ref": "#/components/schemas/RtPingRequestBody" },
+                "examples": [{
+                    "name": "ping",
+                    "summary": "Client → server: liveness probe (reply is rt.pong)",
+                    "payload": {
+                        "jsonrpc": "2.0",
+                        "id": 42,
+                        "method": "rt.ping",
+                    },
+                }],
             },
             // ── Responses ───────────────────────────────────────────
             "RtSubscribedResponse": {
@@ -262,18 +335,49 @@ fn components() -> Value {
                 "title": "Subscribe / unsubscribe ack",
                 "contentType": "application/json",
                 "payload": { "$ref": "#/components/schemas/RtSuccessResponseBody" },
+                "examples": [{
+                    "name": "subscribed-ok",
+                    "summary": "Server → client: successful rt.subscribe / rt.unsubscribe ack",
+                    "payload": {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": { "ok": true },
+                    },
+                }],
             },
             "RtErrorResponse": {
                 "name": "rt.error",
                 "title": "JSON-RPC error object",
                 "contentType": "application/json",
                 "payload": { "$ref": "#/components/schemas/RtErrorResponseBody" },
+                "examples": [{
+                    "name": "error-no-read",
+                    "summary": "Server → client: rt.subscribe refused because caller lacks Read on the folder",
+                    "payload": {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "error": {
+                            "code": error_code::NO_READ,
+                            "message": "no_read",
+                            "data": { "topic": example_folder_topic },
+                        },
+                    },
+                }],
             },
             "RtPongResponse": {
                 "name": "rt.pong",
                 "title": "Reply to rt.ping — `result.pong == true`",
                 "contentType": "application/json",
                 "payload": { "$ref": "#/components/schemas/RtPongResponseBody" },
+                "examples": [{
+                    "name": "pong",
+                    "summary": "Server → client: reply to a client rt.ping",
+                    "payload": {
+                        "jsonrpc": "2.0",
+                        "id": 42,
+                        "result": { "pong": true },
+                    },
+                }],
             },
             // ── Notifications (server → client) ─────────────────────
             "RtFolderEventNotification": {
@@ -281,12 +385,44 @@ fn components() -> Value {
                 "title": "Folder mutation event",
                 "contentType": "application/json",
                 "payload": { "$ref": "#/components/schemas/RtFolderEventBody" },
+                "examples": [{
+                    "name": "event-file-created",
+                    "summary": "Server → client: a file was created inside a subscribed folder",
+                    "payload": {
+                        "jsonrpc": "2.0",
+                        "method": "rt.event",
+                        "params": {
+                            "topic": example_folder_topic,
+                            "kind": "file.created",
+                            "seq": 17,
+                            "data": {
+                                "id": "11111111-1111-1111-1111-111111111111",
+                                "name": "report.pdf",
+                                "size": 12345,
+                                "content_hash": "b3-…",
+                                "created_at": "2026-09-13T18:04:00Z",
+                            },
+                        },
+                    },
+                }],
             },
             "RtRevokedNotification": {
                 "name": "rt.revoked",
                 "title": "Subscription evicted",
                 "contentType": "application/json",
                 "payload": { "$ref": "#/components/schemas/RtRevokedBody" },
+                "examples": [{
+                    "name": "revoked-permission-lost",
+                    "summary": "Server → client: subscription evicted because the caller lost Read on the folder",
+                    "payload": {
+                        "jsonrpc": "2.0",
+                        "method": "rt.revoked",
+                        "params": {
+                            "topic": example_folder_topic,
+                            "reason": "permission_lost",
+                        },
+                    },
+                }],
             }
         },
         "schemas": {
@@ -349,7 +485,7 @@ fn components() -> Value {
                 "type": "httpApiKey",
                 "in": "header",
                 "name": "Sec-WebSocket-Protocol",
-                "description": "Browser path — the FE first calls `POST /api/rt/ticket` under the full REST middleware stack (auth + DPoP-proofed request), receives an opaque one-shot UUID with a 30 s TTL, then sets `Sec-WebSocket-Protocol: oxi.ticket.<uuid>` on the WS upgrade. The server redeems the ticket (single-use — a second attempt fails) and treats the WS session as authenticated for the caller who issued it. See `docs/plan/message-bus.md § F` and `handlers/rt_ticket_handler.rs`.",
+                "description": "Browser path — the FE first calls `POST /api/rt/ticket` under the full REST middleware stack (auth + DPoP-proofed request), receives an opaque one-shot UUID with a 30 s TTL, then sets `Sec-WebSocket-Protocol: oxi.ticket.<uuid>` on the WS upgrade. The server redeems the ticket (single-use — a second attempt fails) and treats the WS session as authenticated for the caller who issued it. See `docs/architecture/message-bus-and-notifications.md § F` and `handlers/rt_ticket_handler.rs`.",
             }
         }
     });

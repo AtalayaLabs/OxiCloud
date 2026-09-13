@@ -5,6 +5,12 @@ on:
     branches: [main]
     paths:
       - 'docs/**'
+      # The two committed API specs the docs site embeds via
+      # Scalar (OpenAPI) and the AsyncAPI HTML template. When a
+      # backend PR regenerates them via `just openapi` / `just
+      # asyncapi`, the deployed reference should refresh too.
+      - 'resources/gen/openapi.json'
+      - 'resources/gen/asyncapi.json'
   workflow_dispatch:
 
 permissions:

@@ -1065,7 +1065,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         // (minted by `POST /api/rt/ticket` under the full chain)
         // or a bearer token (`rt-hurl-helper` test path).
         // See `handlers/rt_ws.rs` module doc and
-        // `docs/plan/message-bus.md § F`.
+        // `docs/architecture/message-bus-and-notifications.md § F`.
         //
         // Guarded by `enable_message_bus`: when false, the route is
         // NOT registered → Axum returns 404 for `/api/rt/ws` and the

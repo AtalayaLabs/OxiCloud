@@ -162,7 +162,7 @@ impl MessageBus for InProcessMessageBus {
             let _ = sender.send(event);
         }
         // Else: no active subs. Event is lost by design (see
-        // `docs/plan/message-bus.md § Failure modes`).
+        // `docs/architecture/message-bus-and-notifications.md § Failure modes`).
     }
 
     fn subscribe(&self, topic: &Topic) -> BusStream {
