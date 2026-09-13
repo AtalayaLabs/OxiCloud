@@ -40,7 +40,7 @@ use crate::domain::services::path_service::normalize_storage_name;
 use crate::infrastructure::services::path_resolver_service::ResolvedResource;
 use crate::infrastructure::services::webdav_dead_property_store::{DeadPropertyStore, ResourceRef};
 use crate::interfaces::errors::AppError;
-use crate::interfaces::middleware::auth::{AuthUser, CurrentUser};
+use crate::interfaces::middleware::auth::AuthUser;
 use crate::interfaces::range_requests::{not_modified_response, range_response};
 use crate::interfaces::upload_ingest::{IngestedBlob, RangeSegment, discard_ingested};
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
@@ -151,12 +151,12 @@ pub(crate) const PROPFIND_BATCH_SIZE: i64 = 500;
 /// Every mutating or data-returning WebDAV handler **must** call this so
 /// that the real `user.id` is available for ownership checks and for the
 /// user-scoped `PathResolverService` methods.
+/// Delegates to the shared helper — this surface receives a raw `Request`
+/// and so never passes through `AuthUser`'s `FromRequestParts` guard. Do
+/// not re-inline the extension lookup here; that is what let the DAV
+/// surfaces drift out of step with the extractor in the first place.
 fn extract_user(req: &Request<Body>) -> Result<AuthUser, AppError> {
-    req.extensions()
-        .get::<Arc<CurrentUser>>()
-        .cloned()
-        .map(AuthUser)
-        .ok_or_else(|| AppError::unauthorized("Authentication required"))
+    crate::interfaces::middleware::auth::auth_user_from_extensions(req.extensions())
 }
 
 /**

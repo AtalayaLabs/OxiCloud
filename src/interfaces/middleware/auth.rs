@@ -76,6 +76,26 @@ pub fn require_role(cu: &CurrentUser, min: UserRole) -> Result<(), AuthError> {
     )))
 }
 
+/// Build an [`AuthUser`] from request extensions, for handlers that receive a
+/// raw `Request` and therefore cannot use `FromRequestParts`.
+///
+/// The three DAV surfaces (`/webdav`, `/caldav`, `/carddav`) each hand-rolled
+/// this, which meant the entire DAV surface was invisible to any rule added to
+/// the `AuthUser` extractor — three copies, three chances to forget. One
+/// implementation instead, so the guard cannot drift between them.
+pub fn auth_user_from_extensions(
+    ext: &axum::http::Extensions,
+) -> Result<AuthUser, crate::interfaces::errors::AppError> {
+    use crate::interfaces::errors::AppError;
+    let cu = ext
+        .get::<Arc<CurrentUser>>()
+        .cloned()
+        .ok_or_else(|| AppError::unauthorized("Authentication required"))?;
+    require_role(&cu, UserRole::User)
+        .map_err(|_| AppError::forbidden("This surface requires a user account"))?;
+    Ok(AuthUser(cu))
+}
+
 // Implement FromRequestParts for AuthUser — allows using `auth_user: AuthUser` in handlers.
 // Cost: 1 atomic increment (~1 ns) instead of 3 String clones (~100 ns + 3 mallocs).
 //

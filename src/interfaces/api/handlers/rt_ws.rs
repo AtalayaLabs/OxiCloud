@@ -248,6 +248,19 @@ async fn authenticate_upgrade(
         if claims.sub_id.is_nil() {
             return Err("bearer_bad_subject");
         }
+        // This path validates the token itself and never reaches
+        // `CurrentUserId`, so closing `POST /api/rt/ticket` to anonymous
+        // sessions does NOT close this door. Without the check here, a
+        // scripted client could mint a share session, read its own JWT and
+        // hold a WebSocket per share visitor — the connection blast the
+        // ticket gate was meant to prevent. A browser cannot set
+        // `Authorization` on `new WebSocket()`, so only the adversarial case
+        // is affected, which is precisely the one that matters.
+        if crate::domain::entities::user::UserRole::from_session(&claims.role)
+            .is_none_or(|r| r.is_anonymous())
+        {
+            return Err("anonymous_forbidden");
+        }
         return Ok(UpgradeAuth {
             caller_id: claims.sub_id,
             accepted_subprotocol: None,

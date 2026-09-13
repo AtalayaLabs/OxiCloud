@@ -116,7 +116,28 @@ pub async fn require_authenticated(
     )
     .await
     {
-        LiveRole::Active(role) => Ok((user_id, role)),
+        LiveRole::Active(role) => {
+            // This function re-parses the token itself and never touches the
+            // `AuthUser` / `CurrentUserId` extractors, so any rule added there
+            // does not reach it. An anonymous public-share session must not
+            // satisfy "is authenticated" — its one consumer,
+            // `GET /api/groups/search`, is a group-directory enumeration.
+            // See `src/AGENTS.md` § AuthZ enforcement points.
+            if crate::domain::entities::user::UserRole::from_session(&role)
+                .is_none_or(|r| r.is_anonymous())
+            {
+                tracing::info!(
+                    target: "audit",
+                    event = "authz.denied",
+                    reason = "anonymous_not_authenticated",
+                    caller_id = %user_id,
+                    role = %role,
+                    "👮🏻‍♂️ anonymous session refused a user-scoped endpoint",
+                );
+                return Err(AppError::forbidden("This endpoint requires a user account"));
+            }
+            Ok((user_id, role))
+        }
         LiveRole::Revoked => Err(AppError::unauthorized("Account is no longer active")),
     }
 }
