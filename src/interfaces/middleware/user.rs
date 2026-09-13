@@ -61,13 +61,53 @@ pub async fn require_internal_user(
     auth: &AuthApplicationService,
     caller_id: Uuid,
 ) -> Result<(), AppError> {
-    match auth.get_user_flags(caller_id).await {
+    decide_internal_user(auth.get_user_flags(caller_id).await, caller_id)
+}
+
+/// Pure decision half of [`require_internal_user`].
+///
+/// Split out for the same reason as [`decide_live_role`] below: the policy
+/// is worth unit-testing without a live auth service, and this gate guards
+/// all three DAV surfaces.
+fn decide_internal_user(
+    flags: Result<UserFlags, DomainError>,
+    caller_id: Uuid,
+) -> Result<(), AppError> {
+    match flags {
         Ok(flags) if flags.is_external => Err(AppError::new(
             StatusCode::FORBIDDEN,
             "External users cannot access this endpoint",
             "Forbidden",
         )),
-        _ => Ok(()),
+        Ok(_) => Ok(()),
+        // A caller with NO user row lands here. The arm used to be a blanket
+        // `_ => Ok(())`, i.e. fail-OPEN: any lookup failure — including
+        // `NotFound` — admitted the caller. This is the only middleware
+        // guarding `/webdav`, `/caldav` and `/carddav`, so a principal
+        // without an `auth.users` row (an anonymous share session) walked
+        // straight through the "internal users only" gate.
+        //
+        // `NotFound` is now a denial. Other errors (a DB blip) stay open
+        // deliberately: this gate is a *restriction* on external users, not
+        // the authentication check, and failing every DAV request closed
+        // during a transient database hiccup trades one outage for a worse
+        // one. The authentication decision above it is what must fail
+        // closed, and does.
+        Err(e) if matches!(e.kind, ErrorKind::NotFound) => {
+            tracing::info!(
+                target: "audit",
+                event = "authz.denied",
+                reason = "no_user_row",
+                caller_id = %caller_id,
+                "👮🏻‍♂️ principal has no user record — refused an internal-user endpoint",
+            );
+            Err(AppError::new(
+                StatusCode::FORBIDDEN,
+                "This endpoint requires a user account",
+                "Forbidden",
+            ))
+        }
+        Err(_) => Ok(()),
     }
 }
 
@@ -409,5 +449,40 @@ mod tests {
         let err = DomainError::new(ErrorKind::InternalError, "User", "connection reset");
         let live = decide_live_role(Err(err), Uuid::nil(), "admin");
         assert_eq!(live, LiveRole::Active(SmolStr::new_static("admin")));
+    }
+
+    #[test]
+    fn internal_user_gate_admits_an_internal_account() {
+        assert!(decide_internal_user(Ok(flags(UserRole::User, true)), Uuid::nil()).is_ok());
+    }
+
+    #[test]
+    fn internal_user_gate_refuses_an_external_account() {
+        let mut f = flags(UserRole::User, true);
+        f.is_external = true;
+        assert!(decide_internal_user(Ok(f), Uuid::nil()).is_err());
+    }
+
+    /// The regression this gate existed to have. A caller with no
+    /// `auth.users` row used to fall into a blanket `_ => Ok(())` and be
+    /// ADMITTED — and this is the only middleware guarding `/webdav`,
+    /// `/caldav` and `/carddav`.
+    #[test]
+    fn internal_user_gate_refuses_a_principal_with_no_user_row() {
+        let err = DomainError::new(ErrorKind::NotFound, "User", "no such user");
+        assert!(
+            decide_internal_user(Err(err), Uuid::nil()).is_err(),
+            "a principal with no user record must not pass the internal-user gate",
+        );
+    }
+
+    /// Deliberately still open. This gate is a restriction on external
+    /// users, not the authentication decision — failing every DAV request
+    /// closed during a database hiccup trades one outage for a worse one.
+    /// The authentication check above it is what fails closed.
+    #[test]
+    fn internal_user_gate_stays_open_on_a_transient_error() {
+        let err = DomainError::new(ErrorKind::InternalError, "User", "connection reset");
+        assert!(decide_internal_user(Err(err), Uuid::nil()).is_ok());
     }
 }
