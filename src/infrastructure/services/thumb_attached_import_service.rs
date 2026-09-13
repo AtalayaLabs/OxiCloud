@@ -274,49 +274,31 @@ impl RecoverableJobHandler for ThumbAttachedImport {
                 };
                 let file_id_str = file_id.to_string();
 
-                // Already mapped. Checked BEFORE storing, because
-                // `store_attached_blob` is ON CONFLICT DO UPDATE and would
-                // release then retake the reference on every run.
-                if let Some(existing) = self
-                    .dedup
-                    .find_attached_blob(&file_id_str, "preview", &dir_name)
-                    .await
-                {
-                    already += 1;
-                    // Drains on a later run too: importing first and enabling
-                    // deletion afterwards is the expected operator sequence,
-                    // so reaching here is the common path rather than an edge
-                    // case.
-                    if delete_imported {
-                        let path = self.thumbnails_root.join(&dir_name).join(&name);
-                        if ThumbDerivedImport::verify_and_unlink(
-                            &self.dedup,
-                            THUMB_ATTACHED_IMPORT_JOB_NAME,
-                            &file_id_str,
-                            &existing.blob_hash,
-                            &path,
-                        )
-                        .await
-                        {
-                            deleted += 1;
-                        } else {
-                            unverified += 1;
-                            record_or_log(
-                                store,
-                                THUMB_ATTACHED_IMPORT_JOB_NAME,
-                                "sidecar_delete_unverified",
-                                "anomaly",
-                                None,
-                                serde_json::json!({
-                                    "path":    position,
-                                    "file_id": file_id_str,
-                                    "note":    "attached blob did not read back; sidecar kept",
-                                }),
-                            )
-                            .await;
-                        }
-                    }
-                } else if !self.file_exists(file_id).await {
+                // Orphan check first — no atomic-insert exists for a
+                // file_id whose FK would reject. Same rationale as before;
+                // the race window between this check and the INSERT is
+                // narrow AND covered by the FK constraint if the file is
+                // deleted after we look — the atomic INSERT would then
+                // fail loudly instead of silently drift.
+                //
+                // Everything else — "row present" and "row absent" —
+                // used to be split across two branches with a
+                // non-transactional `find_attached_blob` between the
+                // check and the write. That opened a check-then-act
+                // race window: a concurrent thumbnail writer could
+                // INSERT the row after the check returned None, and the
+                // subsequent `store_attached_blob` UPSERT-UPDATE would
+                // fire with same-or-different content. In the
+                // same-content case that leaked +1 on the manifest ref
+                // (pre-fix; guard branch now cancels).
+                //
+                // Merged into ONE atomic call
+                // `store_attached_blob_if_absent`: single-statement
+                // `INSERT ... ON CONFLICT DO NOTHING`, race-free by
+                // construction. The outcome enum distinguishes the two
+                // paths so `imported` and `already` counters stay
+                // accurate.
+                if !self.file_exists(file_id).await {
                     // The file is gone, so this sidecar is unimportable: the
                     // FK on `file_id` would reject the row. Mirrors the
                     // dead-source case in thumb_derived_import.
@@ -389,9 +371,10 @@ impl RecoverableJobHandler for ThumbAttachedImport {
                     let path = self.thumbnails_root.join(&dir_name).join(&name);
                     match fs::read(&path).await {
                         Ok(data) => {
+                            use crate::infrastructure::services::dedup_service::AttachedBlobInsertOutcome;
                             match self
                                 .dedup
-                                .store_attached_blob(
+                                .store_attached_blob_if_absent(
                                     &file_id_str,
                                     "preview",
                                     &dir_name,
@@ -404,14 +387,39 @@ impl RecoverableJobHandler for ThumbAttachedImport {
                                 )
                                 .await
                             {
-                                Ok(attached_hash) => {
-                                    imported += 1;
-                                    if delete_imported {
+                                Ok(outcome) => {
+                                    // Bump the right counter AND pick the
+                                    // hash we'll verify-and-unlink against:
+                                    //   Inserted        — our new blob
+                                    //   AlreadyPresent  — the concurrent
+                                    //                     winner's blob
+                                    // Both drain the sidecar identically
+                                    // (verify-then-unlink on repair mode).
+                                    let verify_hash = match outcome {
+                                        AttachedBlobInsertOutcome::Inserted { hash } => {
+                                            imported += 1;
+                                            hash
+                                        }
+                                        AttachedBlobInsertOutcome::AlreadyPresent {
+                                            existing_hash,
+                                        } => {
+                                            already += 1;
+                                            existing_hash
+                                        }
+                                    };
+                                    // Empty existing_hash only happens if
+                                    // the AlreadyPresent path's follow-up
+                                    // SELECT was overtaken by another
+                                    // writer. verify_and_unlink would
+                                    // refuse the sidecar delete in that
+                                    // case anyway, but skipping the call
+                                    // saves the pointless readback.
+                                    if delete_imported && !verify_hash.is_empty() {
                                         if ThumbDerivedImport::verify_and_unlink(
                                             &self.dedup,
                                             THUMB_ATTACHED_IMPORT_JOB_NAME,
                                             &file_id_str,
-                                            &attached_hash,
+                                            &verify_hash,
                                             &path,
                                         )
                                         .await

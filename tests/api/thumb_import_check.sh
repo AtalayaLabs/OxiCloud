@@ -254,6 +254,71 @@ ATTACHED_2=$(sql "SELECT count(*) FROM storage.file_attached_blobs WHERE file_id
 [[ "$ATTACHED_2" == "$ATTACHED_AFTER" ]] || fail "re-run duplicated attached rows"
 log "re-run is a no-op: rows and refcounts unchanged."
 
+# ── 5c. store_attached_blob same-content guard (regression test) ─────────────
+#
+# The PUT /api/files/{id}/thumbnail/{size} endpoint calls
+# `dedup_service::store_attached_blob` directly — no pre-check like
+# `thumb_attached_import_service` does. A same-content re-PUT is the
+# ONLY current public surface that exercises the ref-balance branch
+# added to `store_attached_blob` after the Sept-2026 manifest-drift
+# investigation:
+#
+#   if let Some((old_hash,)) = previous {
+#       // same-content:   cancel `store_from_stream`'s spurious +1
+#       // different-hash: release the superseded blob's ref
+#       remove_reference(&old_hash)
+#   }
+#
+# Before the fix, same-content re-PUT would leak +1 on the manifest's
+# ref_count every time (store_from_stream incremented, guard skipped
+# the decrement when old == new). This test PUTs the same thumbnail
+# bytes twice and asserts the manifest's ref_count is unchanged.
+#
+# Uses variant "icon" so we don't collide with the row the import
+# job populated above (variant "preview"), keeping the two flows
+# independent. Server re-encodes to JPEG deterministically, so both
+# PUTs produce byte-identical manifest content.
+
+log "5c. Same-content re-PUT via API does not churn refcount"
+
+# Round 1: first PUT populates the row (INSERT — previous=None, guard
+# doesn't fire). This is the fresh-ingest path; ref_count becomes 1.
+curl -sf -X PUT \
+     -H "$AUTH" \
+     -H "Content-Type: image/jpeg" \
+     --data-binary "@$UPLOADED_THUMB" \
+     "$base_url/api/files/$FILE_ID/thumbnail/icon" \
+  >/dev/null || fail "5c: first PUT of thumbnail (variant=icon) failed"
+
+GUARD_HASH=$(sql "SELECT blob_hash FROM storage.file_attached_blobs \
+                   WHERE file_id='$FILE_ID' AND kind='preview' AND variant='icon' \
+                   LIMIT 1;")
+[[ -n "$GUARD_HASH" ]] || fail "5c: first PUT did not land a file_attached_blobs row"
+
+GUARD_REFS_BEFORE=$(sql "SELECT ref_count FROM storage.chunk_manifests WHERE file_hash='$GUARD_HASH';")
+# Legacy blobs (pre-CDC) don't have a chunk_manifests row — skip
+# the test in that case rather than fail on an unrelated path.
+if [[ -z "$GUARD_REFS_BEFORE" ]]; then
+  log "5c: attached blob is on the legacy path (no manifest) — guard test skipped (targets CDC path)"
+else
+  # Round 2: second PUT with the SAME bytes. UPSERT-UPDATE fires,
+  # previous.blob_hash == new attached_hash, and the guard MUST
+  # cancel `store_from_stream`'s +1. Without the fix, refcount
+  # would go from 1 → 2 here.
+  curl -sf -X PUT \
+       -H "$AUTH" \
+       -H "Content-Type: image/jpeg" \
+       --data-binary "@$UPLOADED_THUMB" \
+       "$base_url/api/files/$FILE_ID/thumbnail/icon" \
+    >/dev/null || fail "5c: same-content re-PUT of thumbnail failed"
+
+  GUARD_REFS_AFTER=$(sql "SELECT ref_count FROM storage.chunk_manifests WHERE file_hash='$GUARD_HASH';")
+  [[ "$GUARD_REFS_AFTER" == "$GUARD_REFS_BEFORE" ]] \
+    || fail "5c: same-content re-PUT churned refcount: $GUARD_REFS_BEFORE → $GUARD_REFS_AFTER (guard regressed?)"
+
+  log "5c: same-content re-PUT stable, refcount=$GUARD_REFS_AFTER"
+fi
+
 # ── 5b. Deletion: the destructive half, and the only one that can lose data
 #
 # Everything above is additive and recoverable. This unlinks files after a
