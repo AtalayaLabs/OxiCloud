@@ -111,6 +111,16 @@ impl<B> MakeSpan<B> for ClientIpMakeSpan {
             uri        = %request.uri().path(),
             user_id    = tracing::field::Empty,
 
+            // Set INSTEAD of `user_id` for a public-share (anonymous)
+            // session — `storage.shares.id`, filled by `auth_middleware`.
+            //
+            // These two are mutually exclusive on purpose. An anonymous
+            // session's token subject is a fresh per-visit uuid that matches
+            // no `auth.users` row, so recording it as `user_id` would hand
+            // operators an id that looks lookupable and is not. A line
+            // carrying `share_id` says what the caller actually is.
+            share_id   = tracing::field::Empty,
+
             // The Nextcloud chroot folder id, set by `basic_auth_middleware` (will be the Drive Id in the future).
             chroot_id  = tracing::field::Empty,
         )

@@ -46,6 +46,55 @@ impl std::ops::Deref for AuthUser {
 #[derive(Clone, Debug)]
 pub struct CurrentUserId(pub Uuid);
 
+/// Record the principal on the request span — `share_id` for a public-share
+/// session, `user_id` otherwise. **Never both.**
+///
+/// An anonymous session's `sub` is a fresh per-visit uuid matching no
+/// `auth.users` row. Recording it as `user_id` would hand operators an id
+/// that looks lookupable and is not, and would make share traffic
+/// indistinguishable from user traffic in every log query. A line carrying
+/// `share_id` says what the caller actually is.
+fn record_principal_on_span(user_id: Uuid, share_id: Option<Uuid>) {
+    let span = tracing::Span::current();
+    match share_id {
+        Some(sid) => span.record("share_id", tracing::field::display(sid)),
+        None => span.record("user_id", tracing::field::display(user_id)),
+    };
+}
+
+/// Reject a token whose `role` and `share_id` claims disagree, before any
+/// `CurrentUser` is built from them.
+///
+/// `CallerSubject` refuses the same shapes at *use*; this refuses them at
+/// *construction*, so an incoherent principal never enters a request at all.
+/// That matters because `CurrentUser.id` is read at ~200 sites which are
+/// safe today only because `AuthUser` rejects anonymous first — a second
+/// control doing the work, rather than the invariant holding on its own.
+///
+/// The dangerous shape is `anonymous` with no `share_id`: anything falling
+/// back to `Subject::User(cu.id)` would match a *session* id against user
+/// grants — a valid UUID belonging to no user, so the query runs and
+/// silently returns nothing.
+fn validate_principal_shape(role: &str, share_id: Option<Uuid>) -> Result<(), AuthError> {
+    let anonymous = UserRole::from_session(role).is_some_and(|r| r.is_anonymous());
+    match (anonymous, share_id) {
+        (true, Some(_)) | (false, None) => Ok(()),
+        (true, None) | (false, Some(_)) => {
+            tracing::error!(
+                target: "audit",
+                event = "auth.rejected",
+                reason = "incoherent_principal",
+                role = %role,
+                has_share = share_id.is_some(),
+                "👮🏻‍♂️ token role and share_id disagree — refusing to build a principal",
+            );
+            Err(AuthError::InvalidToken(
+                "Malformed token principal".to_string(),
+            ))
+        }
+    }
+}
+
 /// Assert that `cu` meets a minimum role, or deny.
 ///
 /// The single place a role requirement is expressed. Returns a `Result`
@@ -328,6 +377,9 @@ pub async fn auth_middleware(
                                 LiveRole::Active(role) => role,
                                 LiveRole::Revoked => return Err(AuthError::AccountInactive),
                             };
+                            // Refuse an incoherent token before a principal
+                            // exists to be misread downstream.
+                            validate_principal_shape(&role, claims.share_id)?;
                             // `username`/`email` are `Arc<str>` refcount
                             // bumps out of the cached claims; `role` is an
                             // inline SmolStr — the whole build is 1 alloc
@@ -338,15 +390,10 @@ pub async fn auth_middleware(
                                 email: Arc::clone(&claims.email),
                                 role,
                                 dpop_jkt: claims.dpop_jkt.clone(),
-                                // Populated from the JWT once share sessions
-                                // are minted (Phase 1); no token can carry a
-                                // share id yet, so every principal built here
-                                // is a user.
-                                share_id: None,
+                                share_id: claims.share_id,
                             });
                             request.extensions_mut().insert(current_user);
-                            tracing::Span::current()
-                                .record("user_id", tracing::field::display(user_id));
+                            record_principal_on_span(user_id, claims.share_id);
                             // Bump per-session liveness for the
                             // Prometheus gauges. O(1) DashMap upsert
                             // — no I/O on this hot path. The `sid`
@@ -412,8 +459,8 @@ pub async fn auth_middleware(
                                 share_id: None,
                             });
                             request.extensions_mut().insert(current_user);
-                            tracing::Span::current()
-                                .record("user_id", tracing::field::display(user_id));
+                            // Basic auth is app-password only — never a share.
+                            record_principal_on_span(user_id, None);
                             return Ok(next.run(request).await);
                         }
                         Err(e) => {
@@ -480,16 +527,13 @@ pub async fn auth_middleware(
                                     email: Arc::clone(&claims.email),
                                     role,
                                     dpop_jkt: claims.dpop_jkt.clone(),
-                                    // Populated from the JWT once share
-                                    // sessions are minted (Phase 1). This is
-                                    // the cookie arm — the one a share
-                                    // visitor will actually arrive through.
-                                    share_id: None,
+                                    // The cookie arm — the one a share
+                                    // visitor actually arrives through.
+                                    share_id: claims.share_id,
                                 });
                                 request.extensions_mut().insert(current_user);
                                 request.extensions_mut().insert(CookieAuthenticated);
-                                tracing::Span::current()
-                                    .record("user_id", tracing::field::display(user_id));
+                                record_principal_on_span(user_id, claims.share_id);
                                 // Cookie-auth branch stamps the same
                                 // way as the Bearer branch above —
                                 // see that site for the O(1) /
@@ -612,6 +656,29 @@ mod tests {
             dpop_jkt: None,
             share_id: None,
         }
+    }
+
+    /// Construction-time refusal — the incoherent token never becomes a
+    /// principal at all, so nothing downstream can misread it.
+    #[test]
+    fn incoherent_token_shapes_are_refused_before_a_principal_exists() {
+        let share = Uuid::new_v4();
+
+        // The coherent pair.
+        assert!(validate_principal_shape("anonymous", Some(share)).is_ok());
+        assert!(validate_principal_shape("user", None).is_ok());
+        assert!(validate_principal_shape("admin", None).is_ok());
+
+        // The dangerous one: anything falling back to `Subject::User(cu.id)`
+        // here would match a SESSION id against user grants.
+        assert!(validate_principal_shape("anonymous", None).is_err());
+        // And its mirror — a real role has no business carrying a share.
+        assert!(validate_principal_shape("user", Some(share)).is_err());
+        assert!(validate_principal_shape("admin", Some(share)).is_err());
+
+        // An unparseable role is not anonymous, so it must not carry a share.
+        assert!(validate_principal_shape("bogus", None).is_ok());
+        assert!(validate_principal_shape("bogus", Some(share)).is_err());
     }
 
     /// `role` and `share_id` must agree. The pairing is what stops a
