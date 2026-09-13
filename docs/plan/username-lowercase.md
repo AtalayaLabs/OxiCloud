@@ -66,9 +66,26 @@ and get "invalid credentials" instead of a successful login.
    CLI calls. Both callers reach for a shared
    `find_free_username_suffix(pool, base) -> String` in
    `src/common/username_migration.rs` so migration + un-soft-delete
-   agree by construction. Without this, an un-soft-delete of the
-   only pre-migration mixed-case survivor would refuse-to-boot on
-   the next restart.
+   agree by construction. Without this, an un-soft-delete could
+   create a fresh collision that the next boot's auto-rename
+   couldn't resolve (auto-rename handles singletons only) — the
+   server would then refuse-to-boot until an admin resolves the
+   tiebreak.
+8. **Boot-time behaviour has three outcomes, not two.** The
+   verifier categorises the DB into: (a) clean — nothing to do;
+   (b) mixed-case rows with no `LOWER(username)` collision — the
+   server **auto-lowercases them in one atomic transaction and
+   continues**, emitting an audit line per rename; (c) at least
+   one `LOWER(username)` collision — the server **refuses to
+   boot** because tiebreak requires human judgement. Silent
+   action is bounded to (b), where there is exactly one correct
+   move. This is a narrower reading of
+   [[feedback_no_silent_auto_repair]] than "no silent action
+   ever": the rule targets consistency-check jobs where drift is
+   a bug signal; a schema-adjacent boot invariant with a
+   unique-correct-fix is a different situation. Making the
+   trivial-case common path a no-op massively lowers upgrade
+   friction for the 90% self-hosted deployment.
 
 ## Not in scope
 
@@ -162,9 +179,10 @@ change per method:
   dispatch on `@`; lowercase the username branch input.
 
 Post-migration, the DB is fully lowercase so `WHERE username = 'alice'`
-matches. Pre-migration users are blocked from booting by the boot-time
-check, so the mixed-case-DB-during-transition state cannot serve
-traffic.
+matches. The mixed-case-DB-during-transition state cannot serve
+traffic because the boot flow either (a) auto-renames the singleton
+rows before `AppState` assembles, or (b) refuses to boot on collision
+groups.
 
 ### 4. NextCloud DAV surface
 
@@ -230,12 +248,30 @@ cache key. Post-migration, `user.username` becomes lowercase; any
 in-flight upload for `Alice` at migration time strands the on-disk
 `base_dir/Alice/upload_xxx/` directory and orphans its cache entry.
 
-The migration command must ALSO walk `base_dir/*/` and rename any
+The migration command SHOULD walk `base_dir/*/` and rename any
 mixed-case subdirectory to its lowercase form. Collision handling
 (both `Alice/` and `alice/` present) → merge contents; else simple
-rename. In practice this is likely a no-op — chunked-upload state is
-ephemeral, and simultaneous mixed-case uploads by the same user are
-rare.
+rename. In practice this is likely a no-op — chunked-upload state
+is ephemeral, and simultaneous mixed-case uploads by the same user
+are rare.
+
+**Implementation status:** deferred. Chunked-upload state is
+ephemeral: any in-flight upload that gets stranded is retryable
+by the client (the upload session's timeout eventually purges the
+stale dir; the client retries with a fresh `upload_id`, this time
+under the lowercase username). Wiring the dir-walk into the CLI
+adds ~40 lines of async filesystem code (walk, collision merge,
+mtime-preserving move) and a new `--chunk-dir <path>` arg — the
+CLI otherwise doesn't need to know about the storage-path
+config layer. Not worth it for a rare no-op; add if user reports
+show a real problem.
+
+**Ops manual step** — if a migration is run WHILE an upload is
+in flight, ops can either restart the affected client (the
+upload session is stateful across a `create → chunks → complete`
+cycle, so the client will retry from scratch) or manually
+`mv base_dir/Alice base_dir/alice` after the DB migration
+completes.
 
 ### 6. Boot-time verification
 
@@ -318,8 +354,9 @@ Following the shape of `run_nfc_filenames`:
   collision-resolved / renamed-to-suffix
 - `--dry-run` guards all UPDATEs
 
-After the DB pass, run the chunked-upload directory rename step (see
-Deliverable 5).
+After the DB pass, the chunked-upload directory rename step (see
+Deliverable 5) is deferred; run manually only if in-flight uploads
+were live at migration time.
 
 Suffix search reuses the pattern from
 `find_free_folder_duplicate_name` in the existing NFC migration —
@@ -376,26 +413,37 @@ Files verified (all safe):
 
 ### 10. Documentation
 
-- `CHANGELOG.md` — user-visible note:
-  - Migration required; server refuses to boot until it's been run.
-  - Exact CLI command shown in the refusal message.
-  - Nextcloud desktop clients will prompt for a one-time re-sync
-    on first PROPFIND after upgrade. Files are ETag-verified, not
-    re-uploaded. DAVX5 and NC mobile handle the URL case change
-    silently. **No forced client upgrade or reconfiguration** —
-    server accepts uppercase URL segments indefinitely.
-  - Optional pre-emption for non-technical users: ops can manually
-    update the account URL to lowercase in each NC desktop client
-    before upgrading, avoiding the re-sync prompt entirely.
-  - Usernames become lowercase in ALL UI display surfaces (share
-    dialogs, activity feeds, admin panels, PROPFIND response
-    bodies, notification bell). Login identity unchanged from the
-    user's POV (they can still type any case at the login form).
-  - Avatar fallback color may change for users with previously-
-    uppercase usernames.
-  - Preamble noting `display_name` is a possible follow-up if
-    users miss capitalization for display — deferred pending
-    demand signal, no compat cost to adding later.
+Release notes / CHANGELOG entry is NOT part of this PR — the
+canonical repo's maintainer handles release notes at version-bump
+time. This PR just leaves the notes-worthy items enumerated here
+so the maintainer has the bullets to pick from when the next
+version ships:
+
+- Server auto-lowercases non-colliding mixed-case usernames at
+  first boot. No ops action needed for the common case.
+- On `LOWER(username)` collision (`Alice` + `alice` both active),
+  the server refuses to boot; ops runs `oxicloud migrate
+  lowercase-usernames`. Exact CLI command shown in the refusal.
+- Nextcloud desktop clients will prompt for a one-time re-sync on
+  first PROPFIND after upgrade. Files are ETag-verified, not
+  re-uploaded. DAVX5 and NC mobile handle the URL case change
+  silently. **No forced client upgrade or reconfiguration** —
+  server accepts uppercase URL segments indefinitely.
+- Optional pre-emption for non-technical users: ops can manually
+  update the account URL to lowercase in each NC desktop client
+  before upgrading, avoiding the re-sync prompt entirely.
+- Usernames become lowercase in ALL UI display surfaces (share
+  dialogs, activity feeds, admin panels, PROPFIND response
+  bodies, notification bell). Login identity unchanged from the
+  user's POV (they can still type any case at the login form).
+- Avatar fallback color may change for users with previously-
+  uppercase usernames.
+- Note: `display_name` is a possible follow-up if users miss
+  capitalisation for display — deferred pending demand signal, no
+  compat cost to adding later.
+
+The two docs that DO ship with this PR:
+
 - `docs/config/env.md` — note the boot-time check + migration command.
 - `docs/install/binary.md` — upgrade-from-case-sensitive section.
 
@@ -404,19 +452,26 @@ Files verified (all safe):
 - **Unit**: `validate_username("Alice")` returns `Ok("alice")`;
   `validate_username("alice-")` returns `Err(...)` unchanged;
   `validate_username("  Alice  ")` returns `Ok("alice")`.
-- **Unit**: `verify_all_usernames_lowercase` with mocked pool — empty
-  result → Ok; non-empty → Err with formatted message.
+- **Unit**: `format_refusal_message_collisions` — 1 group renders
+  canonical + members + CLI; > 10 groups renders overflow tail;
+  total-affected-count sums across groups.
 - **Hurl** (`tests/api/lowercase_usernames.hurl`, new): register a
   user with `MixedCase`, assert DB stores `mixedcase`; log in with
   `MIXEDCASE` and `mixedcase` — both succeed; rename to `NewName`,
   assert `newname` stored; NC Basic Auth accepts `MixedCase:pass`,
   `MIXEDCASE:pass`, `mixedcase:pass`.
 - **Manual** (against dev DB, not CI):
-  - Induce a collision via `INSERT INTO auth.users … 'Alice'` on top
-    of `alice`; boot server → verify refusal message + exact CLI shown
+  - Auto-rename path: `UPDATE auth.users SET username='Alice' WHERE
+    username='alice'` (no collision); boot server → verify audit log
+    line + WARN summary, row is `alice` after boot, service starts.
+  - Collision path: `INSERT INTO auth.users … 'Alice'` on top of
+    existing `alice`; boot server → verify refusal message names both
+    rows + exact CLI shown, server exits non-zero.
   - `oxicloud migrate lowercase-usernames --dry-run` → verify report
-  - `oxicloud migrate lowercase-usernames` → verify apply
-  - Boot again → succeeds
+    of collision + tiebreak decision
+  - `oxicloud migrate lowercase-usernames` → verify apply, one row
+    keeps `alice`, other gets `alice-2`
+  - Boot again → succeeds (Clean outcome)
   - `curl -u ALICE:pass https://oxicloud/remote.php/dav/files/ALICE/…`
     → succeeds (accepts uppercase input, resolves to lowercase user)
 
@@ -489,7 +544,9 @@ Full enumeration in the Deliverables sections above. Grouped summary:
    DB pass + chunked-upload directory rename.
 8. Test seed audit (grep pass).
 9. Add hurl coverage.
-10. CHANGELOG entry + admin docs update.
+10. Admin docs update (`docs/config/env.md` boot-check subsection +
+    `docs/install/binary.md` upgrade section). CHANGELOG is Dio's
+    job at version-bump time — not part of this PR.
 11. Manual smoke test against dev DB.
 12. PR to canonical.
 

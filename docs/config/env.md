@@ -123,6 +123,70 @@ rather than as a visible error.
 | `OXICLOUD_NOTIFICATIONS_RETENTION_DAYS` | `30` | Retention window for **read** notification rows (`notif.notifications`). The `notifications_cleanup` scheduled job runs daily and deletes rows where `read_at IS NOT NULL` and `read_at < now() - retention_days`. Unread rows are preserved unconditionally — the whole point of the durable table is that a user offline for a month still sees the share-granted notice on next login. Clamped to a minimum of 1 (0 would purge every read row on every tick). Adjust down for compliance-sensitive deployments where "cleared once seen" matters; adjust up when operators expect users to reference old notifications for support. |
 | `OXICLOUD_WEBDAV_DRIVE_LISTING_PREFIX` | `@drive` | Native WebDAV URL segment that renders the caller's drive list. Sanitized by trimming leading/trailing `/`. Three shapes: (1) default `@drive` — `/webdav/…` addresses the caller's default personal drive (back-compat), `/webdav/@drive/` returns the drive listing, `/webdav/@drive/<uuid\|name>/…` targets a specific drive. (2) empty string `""` — `/webdav/` IS the drive listing, `/webdav/<uuid\|name>/…` targets a specific drive, no default-drive shortcut. (3) any other string (e.g. `drives`) — same shape as `@drive` with that segment substituted. Only drives the caller has Read on via `role_grants` resolve. |
 
+## Boot-time refuse-to-boot checks
+
+Some upgrades add invariants the running database must satisfy
+BEFORE the new binary can serve traffic. These are enforced by
+read-only checks that run after `sqlx::migrate!()` and before the
+server binds a listen socket. If a check fails, the server exits
+with a FATAL message spelling out the exact CLI command to run.
+
+The server **never silently mutates data** at boot — every fix is
+an explicit `oxicloud migrate <name>` invocation. Follows the
+"discovery-only by default, mutation opt-in" rule that also
+governs the consistency-check jobs.
+
+### `lowercase-usernames`
+
+Three outcomes at boot, only one of which stops the server:
+
+- **All lowercase (or `NULL`)** — the check is a no-op, boot
+  proceeds unchanged.
+- **Mixed-case rows exist, no `LOWER(username)` collision** —
+  boot **auto-lowercases** them in one atomic transaction, emits
+  a structured audit line per rename
+  (`user.username_lowercased_on_boot`, INFO) plus an INFO summary
+  (`user.usernames_lowercased_on_boot_summary` with `renamed=N`),
+  and continues. Silent action is confined to the case with
+  exactly one correct move: `Alice` (with no `alice` row) becomes
+  `alice`.
+- **`LOWER(username)` collision** — two or more active rows share
+  the same lowercase form (e.g. `Alice` + `alice`). Boot
+  **refuses to start** with a FATAL message spelling out every
+  collision group and the exact CLI command to resolve it.
+  Tiebreak needs a human.
+
+Soft-deleted / disabled accounts (`active = false`) and `NULL`
+usernames (OPAQUE-migrated) are skipped in every case.
+
+**Refusal message pattern:** `FATAL: cannot start — N colliding
+username group(s) (M affected account(s) in total)`, followed by
+each group's canonical form and its members with `id` +
+`last_login`. Up to 10 groups shown; the `--dry-run` CLI reveals
+the full list.
+
+**Fix (only required when the server refused):**
+```
+oxicloud migrate lowercase-usernames --dry-run     # preview the tiebreak
+oxicloud migrate lowercase-usernames               # apply
+```
+
+**What the migration does:** lowercases every mixed-case
+username. On collision (`Alice` + `alice` both exist), the
+tiebreak `(last_login_at DESC NULLS LAST, created_at ASC)` picks
+a winner; losers get `alice-2`, `-3`, … as a suffix. Sessions
+and grants survive the rename — both key on the user's UUID.
+
+**Client compat:** NextCloud clients that cached URLs like
+`/remote.php/dav/files/Alice/…` continue to work indefinitely —
+the Basic Auth middleware and URL parser both lowercase on
+decode. NC desktop clients will prompt a one-time re-sync on
+first PROPFIND after upgrade; DAVX5 and NC mobile handle it
+silently. See `docs/install/binary.md § Upgrading from a
+case-sensitive-usernames release` for the full upgrade flow.
+
+**Design:** `docs/plan/username-lowercase.md`.
+
 ## Storage Entries (multi-entry, recommended)
 
 Declare one or more **named** storage backends. The one the app runs on is picked from the DB (`admin_settings.storage.active_backend_name`); the admin panel's storage tab flips the pointer, and cross-backend migration is a recoverable job that copies blobs between two entries with a read-only safety window. See [Admin Settings — Storage & Migration](/config/admin-settings) for the operator flow and the [multi-entry design doc](https://github.com/oxicloud/oxicloud/blob/main/docs/plan/storage-multi-entry.md) for the full model.

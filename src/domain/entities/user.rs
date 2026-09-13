@@ -322,9 +322,15 @@ impl User {
         is_external: bool,
     ) -> UserResult<Self> {
         Self::validate_email(&email)?;
-        if let Some(ref u) = username {
-            Self::validate_username(u)?;
-        }
+        // Shadow `username` with the canonical (trimmed, lowercased)
+        // form returned by `validate_username`. Every downstream write
+        // consumes the shadowed binding, so the row that lands in the
+        // DB is always the normalised value. See
+        // `docs/plan/username-lowercase.md`.
+        let username = match username {
+            Some(u) => Some(Self::validate_username(&u)?),
+            None => None,
+        };
         if let Some(ref h) = password_hash
             && h.is_empty()
         {
@@ -809,8 +815,10 @@ impl User {
     /// renamed: it was display text at creation; the folder is owned
     /// by `user_id`.
     pub fn set_username(&mut self, new_username: String) -> UserResult<()> {
-        Self::validate_username(&new_username)?;
-        self.username = Some(new_username);
+        // Canonical form (trim + lowercase) — see
+        // `validate_username`. Callers can pass any case; we store
+        // the normalised value.
+        self.username = Some(Self::validate_username(&new_username)?);
         self.updated_at = Utc::now();
         Ok(())
     }
@@ -881,20 +889,41 @@ impl User {
     /// a handle that shadows another user's email). No leading/trailing
     /// dot or hyphen. The character set also prevents XSS payloads from
     /// being stored as usernames.
-    fn validate_username(username: &str) -> UserResult<()> {
-        let len = username.chars().count();
+    /// Validate AND canonicalise a username.
+    ///
+    /// Two normalisations run first, before every check:
+    /// - `trim()` — strip whitespace clients may have added.
+    /// - `to_ascii_lowercase()` — usernames are case-insensitive
+    ///   identifiers. Users type `Alice`, `ALICE`, `alice` on
+    ///   different clients; all three refer to the same account.
+    ///   ASCII-only by construction (charset check below), so
+    ///   `to_ascii_lowercase` is deterministic and locale-safe —
+    ///   no Unicode case-folding surprises (Turkish dotted-I,
+    ///   German ß, Greek final sigma, NFC vs NFD).
+    ///
+    /// Returns the canonical form on success. Every entity write
+    /// site consumes the returned string — because the signature
+    /// changed from `Result<()>` to `Result<String>`, any caller
+    /// that ignored the result is now a compile error. That's
+    /// what forces every write path through the normaliser.
+    ///
+    /// See `docs/plan/username-lowercase.md` for the full design.
+    pub fn validate_username(username: &str) -> UserResult<String> {
+        let normalized = username.trim().to_ascii_lowercase();
+
+        let len = normalized.chars().count();
         if !(2..=64).contains(&len) {
             return Err(UserError::InvalidUsername(
                 "Username must be between 2 and 64 characters".to_string(),
             ));
         }
-        if username.contains('@') {
+        if normalized.contains('@') {
             return Err(UserError::InvalidUsername(
                 "Username must not contain '@' — use the email field for email addresses"
                     .to_string(),
             ));
         }
-        if !username
+        if !normalized
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
         {
@@ -903,16 +932,16 @@ impl User {
                     .to_string(),
             ));
         }
-        if username.starts_with('.')
-            || username.starts_with('-')
-            || username.ends_with('.')
-            || username.ends_with('-')
+        if normalized.starts_with('.')
+            || normalized.starts_with('-')
+            || normalized.ends_with('.')
+            || normalized.ends_with('-')
         {
             return Err(UserError::InvalidUsername(
                 "Username must not start or end with a dot or hyphen".to_string(),
             ));
         }
-        Ok(())
+        Ok(normalized)
     }
 
     /// Basic but meaningful email validation:
@@ -1045,5 +1074,55 @@ mod tests {
         let u = build_user(None, Some("Solo"), None, "solo@x.com");
         assert_eq!(u.display_full(true), "solo@x.com");
         assert_eq!(u.display_full(false), "solo@x.com");
+    }
+
+    // ── validate_username: normalization + rules ─────────────────────────────
+    //
+    // Post-lowercase-migration `validate_username` returns the canonical
+    // (trimmed, lowercased) form on success. Every write-site consumes
+    // that returned string via the shadow in `User::new` /
+    // `set_username`, so the invariant "usernames in `auth.users` are
+    // always canonical" is enforced at the domain boundary.
+    //
+    // The rules that DON'T change (charset, length, no leading/trailing
+    // dot or hyphen, no `@`) get their coverage here too so a future
+    // rewrite of `validate_username` can't regress them silently.
+
+    #[test]
+    fn validate_username_lowercases_and_trims() {
+        // Uppercase in the middle → canonical form is lowercase.
+        assert_eq!(User::validate_username("Alice").unwrap(), "alice");
+        // All-uppercase.
+        assert_eq!(User::validate_username("ALICE").unwrap(), "alice");
+        // Whitespace around a mixed-case name → both stripped.
+        assert_eq!(User::validate_username("  Alice  ").unwrap(), "alice");
+        // Already-canonical passes through unchanged.
+        assert_eq!(User::validate_username("alice").unwrap(), "alice");
+    }
+
+    #[test]
+    fn validate_username_charset_and_boundary_rules_survive_normalization() {
+        // Trailing hyphen — still rejected after the case-fold.
+        assert!(User::validate_username("alice-").is_err());
+        // Leading dot.
+        assert!(User::validate_username(".alice").is_err());
+        // Whitespace INSIDE the name (not just around it) — the
+        // charset check rejects space characters.
+        assert!(User::validate_username("Al ice").is_err());
+        // Non-ASCII letter — usernames are ASCII-only.
+        assert!(User::validate_username("Álice").is_err());
+        // `@` is forbidden (disjoint namespace with email lookup).
+        assert!(User::validate_username("alice@example").is_err());
+    }
+
+    #[test]
+    fn validate_username_length_bounds_apply_after_trim() {
+        // Two-char minimum satisfied AFTER trim.
+        assert_eq!(User::validate_username("  ab  ").unwrap(), "ab");
+        // Below the minimum after trim.
+        assert!(User::validate_username("  a  ").is_err());
+        // Above the maximum after trim.
+        let too_long = "a".repeat(65);
+        assert!(User::validate_username(&too_long).is_err());
     }
 }

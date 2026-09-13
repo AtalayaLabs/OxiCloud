@@ -8,3 +8,4 @@ pub mod mime_detect;
 pub mod runtime;
 pub mod stubs;
 pub mod text;
+pub mod username_migration;

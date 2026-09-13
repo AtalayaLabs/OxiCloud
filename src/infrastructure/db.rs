@@ -61,6 +61,46 @@ pub async fn create_database_pools(config: &AppConfig) -> Result<DbPools> {
     }
     tracing::info!("Database migrations complete");
 
+    // Username-lowercase verifier — three outcomes:
+    //   * Clean          → nothing to do.
+    //   * AutoRenamable  → non-colliding mixed-case rows exist; lowercase
+    //                      them in one transaction and continue. Silent
+    //                      action is bounded to the case where there is
+    //                      exactly one correct move ([[feedback_no_silent_auto_repair]]
+    //                      in spirit — ambiguity → refusal, unique fix → apply).
+    //                      Each rename emits an audit line.
+    //   * Collisions     → two or more active rows share a LOWER(username)
+    //                      form (e.g. `Alice` + `alice`); tiebreak needs a
+    //                      human, refuse to boot and print the CLI command.
+    // See `common::username_migration::verify_all_usernames_lowercase`.
+    use crate::common::username_migration::{
+        UsernameCaseCheck, apply_auto_renames, format_refusal_message_collisions,
+        verify_all_usernames_lowercase,
+    };
+    match verify_all_usernames_lowercase(&primary).await {
+        Ok(UsernameCaseCheck::Clean) => {}
+        Ok(UsernameCaseCheck::AutoRenamable(accounts)) => {
+            let count = accounts.len();
+            if let Err(e) = apply_auto_renames(&primary, &accounts).await {
+                return Err(DbError(format!(
+                    "username lowercase auto-rename failed at boot: {e}. \
+                     Run `oxicloud migrate lowercase-usernames --dry-run` to \
+                     inspect the current state, then apply manually."
+                )));
+            }
+            tracing::info!(
+                target: "audit",
+                event = "user.usernames_lowercased_on_boot_summary",
+                renamed = count,
+                "auto-lowercased {count} non-colliding mixed-case username(s) at boot",
+            );
+        }
+        Ok(UsernameCaseCheck::Collisions(groups)) => {
+            return Err(DbError(format_refusal_message_collisions(&groups)));
+        }
+        Err(msg) => return Err(DbError(msg)),
+    }
+
     // --- maintenance pool ---
     let maintenance = create_pool_with_retries(
         &config.database.connection_string,

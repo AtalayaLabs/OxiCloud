@@ -107,7 +107,21 @@ fn extract_url_user(path: &str) -> Option<std::borrow::Cow<'_, str>> {
     // common path allocates nothing; only a percent-encoded username owns. The
     // old `.into_owned()` forced a `String` on EVERY path-scoped NC DAV request
     // (benches/ROUND19.md §M7). The caller compares by slice.
-    urlencoding::decode(user_seg).ok()
+    //
+    // Lowercase before returning so cached client URLs like
+    // `/dav/files/Alice/...` compare equal to the canonical
+    // (lowercase) `session.raw_username`. See
+    // `docs/plan/username-lowercase.md § 4. NextCloud DAV surface`.
+    //
+    // The lowercase transform always allocates (`to_ascii_lowercase`
+    // on a `str` returns `String`). Trades the "Cow::Borrowed common
+    // path" of the ROUND19 optimisation for correctness of the case-
+    // insensitive comparison at line 157 — a `&str` compare with a
+    // borrowed segment against a lowercase `session.raw_username`
+    // would silently mismatch for `Alice`. The alloc is one small
+    // String per NC DAV request; the correctness win is worth it.
+    let decoded = urlencoding::decode(user_seg).ok()?;
+    Some(std::borrow::Cow::Owned(decoded.to_ascii_lowercase()))
 }
 
 /// Axum extractor: the shared handle to the request's [`NcSession`].

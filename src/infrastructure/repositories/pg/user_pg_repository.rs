@@ -472,8 +472,15 @@ impl UserRepository for UserPgRepository {
         Ok((user, flags))
     }
 
-    /// Gets a user by username
+    /// Gets a user by username.
+    ///
+    /// Lowercases the input before binding: usernames are stored in
+    /// canonical (lowercase, trimmed) form by `validate_username`
+    /// (see `docs/plan/username-lowercase.md`), and callers may pass
+    /// whatever case the user typed at the login form. Normalising
+    /// here means every caller doesn't have to remember.
     async fn get_user_by_username(&self, username: &str) -> UserRepositoryResult<User> {
+        let username = username.trim().to_ascii_lowercase();
         let row = sqlx::query(
             r#"
             SELECT
@@ -487,7 +494,7 @@ impl UserRepository for UserPgRepository {
             WHERE username = $1
             "#,
         )
-        .bind(username)
+        .bind(&username)
         .fetch_one(&*self.pool)
         .await
         .map_err(Self::map_sqlx_error)?;

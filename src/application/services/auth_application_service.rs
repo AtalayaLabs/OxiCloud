@@ -3425,34 +3425,37 @@ impl AuthApplicationService {
         &self,
         dto: crate::application::dtos::settings_dto::AdminCreateUserDto,
     ) -> Result<FullUserDto, DomainError> {
-        // Validate username length
-        if dto.username.len() < 3 || dto.username.len() > 254 {
-            return Err(DomainError::new(
-                ErrorKind::InvalidInput,
-                "User",
-                "Username must be between 3 and 254 characters".to_string(),
-            ));
-        }
+        // Normalise the username up-front — trim + lowercase — and use
+        // the canonical form for every downstream check + generated
+        // value below. `User::new` also normalises internally, but the
+        // placeholder-email fallback and the duplicate-check error
+        // message live above that call, so they'd otherwise capture the
+        // raw wire input (e.g. `UpperCase@oxicloud.local`).
+        // See docs/plan/username-lowercase.md § Design decision 5.
+        let username = User::validate_username(&dto.username).map_err(|e| {
+            DomainError::new(ErrorKind::InvalidInput, "User", format!("Username: {e}"))
+        })?;
 
         // Check for duplicate username
         if self
             .user_storage
-            .get_user_by_username(&dto.username)
+            .get_user_by_username(&username)
             .await
             .is_ok()
         {
             return Err(DomainError::new(
                 ErrorKind::AlreadyExists,
                 "User",
-                format!("User '{}' already exists", dto.username),
+                format!("User '{username}' already exists"),
             ));
         }
 
-        // Email: use provided or generate placeholder
+        // Email: use provided or generate placeholder from the
+        // canonical (lowercase) username.
         let email = dto
             .email
             .filter(|e| !e.trim().is_empty())
-            .unwrap_or_else(|| format!("{}@oxicloud.local", dto.username));
+            .unwrap_or_else(|| format!("{username}@oxicloud.local"));
 
         // Check email uniqueness
         if self.user_storage.get_user_by_email(&email).await.is_ok() {
@@ -3519,7 +3522,7 @@ impl AuthApplicationService {
         let user = if is_external {
             User::new(
                 email,
-                Some(dto.username.clone()),
+                Some(username.clone()),
                 Some(password_hash),
                 None, // federation_kind: admin-created external, no federation link yet
                 None, // federation_issuer
@@ -3531,7 +3534,7 @@ impl AuthApplicationService {
         } else {
             User::new(
                 email,
-                Some(dto.username.clone()),
+                Some(username.clone()),
                 Some(password_hash),
                 None, // federation_kind: admin-created local user
                 None, // federation_issuer
@@ -3750,12 +3753,124 @@ impl AuthApplicationService {
         Ok(())
     }
 
-    /// Activate or deactivate a user (admin only)
+    /// Activate or deactivate a user (admin only).
+    ///
+    /// **Reactivation collision handling** — when a deactivated account
+    /// holds a mixed-case username from before the lowercase-usernames
+    /// migration (its row was skipped by that migration precisely
+    /// because it was deactivated), reactivating it can produce a
+    /// username collision if `LOWER(other.username) == LOWER(this.username)`
+    /// for an active row. We resolve the collision by:
+    ///
+    /// 1. Re-normalising via `User::set_username` (returns the
+    ///    canonical lowercase form on success).
+    /// 2. If the canonical form is already taken by another active
+    ///    row, probe `<lower>-2`, `-3`, … via the shared
+    ///    `find_free_username_suffix` helper.
+    /// 3. Persist the resolved name BEFORE flipping `active = true`
+    ///    so no time window has two-active-users with the same
+    ///    lowercase form.
+    ///
+    /// See `docs/plan/username-lowercase.md § Design decision 7`.
+    /// Without this, un-soft-deleting the only pre-migration
+    /// mixed-case survivor would refuse-to-boot on the next restart.
     pub async fn set_user_active(&self, user_id: Uuid, active: bool) -> Result<(), DomainError> {
+        // Only the activate direction needs the collision-resolution
+        // dance — deactivation just flips a bit.
+        if active {
+            self.resolve_reactivation_collision(user_id).await?;
+        }
         self.user_storage
             .set_user_active_status(user_id, active)
             .await?;
         self.user_flags_cache.invalidate(&user_id).await;
+        Ok(())
+    }
+
+    /// Pre-flight for `set_user_active(active = true)`: ensures the
+    /// target user's username is canonical (lowercase) AND unique
+    /// against currently-active accounts. Renames the target row if
+    /// either invariant would break.
+    ///
+    /// NULL usernames (OPAQUE-migrated accounts) are a no-op — nothing
+    /// to normalise, nothing to collide.
+    async fn resolve_reactivation_collision(&self, user_id: Uuid) -> Result<(), DomainError> {
+        let target = self.user_storage.get_user_by_id(user_id).await?;
+        let Some(current) = target.username().map(str::to_string) else {
+            return Ok(());
+        };
+
+        let canonical = current.to_ascii_lowercase();
+
+        // Look for another ACTIVE user holding the canonical form.
+        // The migration CLI's `find_free_username_suffix` probes
+        // directly via a pool; here we don't have the pool
+        // (`AuthApplicationService` holds a `dyn UserRepository`
+        // trait object). Use `get_user_by_username` — the repo
+        // normalises input to lowercase before bind, so this
+        // resolves against the canonical row.
+        let collision = self
+            .user_storage
+            .get_user_by_username(&canonical)
+            .await
+            .ok()
+            .filter(|other| other.id() != user_id && other.is_active());
+
+        let chosen_name = match collision {
+            None => canonical,
+            Some(_) => {
+                // Collision — probe `<canonical>-2`, `-3`, … via
+                // repository lookups. Same shape as the migration
+                // CLI's `find_free_username_suffix`, just against
+                // the repo trait instead of a raw pool. Both paths
+                // agree by construction on the numbering scheme.
+                //
+                // Cap at 10_000 (matches the shared helper's cap —
+                // see `docs/plan/username-lowercase.md § 3. Suffix-
+                // collision robustness`). Reaching the cap means
+                // the account universe has an anomaly worth
+                // investigating; loud abort beats silent truncation.
+                const SUFFIX_PROBE_CAP: i32 = 10_000;
+                let mut chosen: Option<String> = None;
+                for n in 2..=SUFFIX_PROBE_CAP {
+                    let candidate = format!("{canonical}-{n}");
+                    match self.user_storage.get_user_by_username(&candidate).await {
+                        Ok(_) => continue,
+                        Err(_) => {
+                            chosen = Some(candidate);
+                            break;
+                        }
+                    }
+                }
+                let suffixed = chosen.ok_or_else(|| {
+                    DomainError::internal_error(
+                        "User",
+                        format!(
+                            "reactivation-collision suffix probe exhausted \
+                             {SUFFIX_PROBE_CAP} candidates for base '{canonical}'"
+                        ),
+                    )
+                })?;
+                tracing::info!(
+                    target: "audit",
+                    event = "user.reactivation_renamed",
+                    reason = "collision_with_active",
+                    target_id = %user_id,
+                    from = %current,
+                    to = %suffixed,
+                    "🔄 user reactivation renamed to avoid username collision",
+                );
+                suffixed
+            }
+        };
+
+        if target.username() != Some(chosen_name.as_str()) {
+            let mut renamed = target;
+            renamed
+                .set_username(chosen_name)
+                .map_err(|e| DomainError::internal_error("User", format!("set_username: {e}")))?;
+            self.user_storage.update_user(renamed).await?;
+        }
         Ok(())
     }
 
@@ -4435,10 +4550,14 @@ impl AuthApplicationService {
             .clone()
             .or(claims.name.clone())
             .unwrap_or_else(|| format!("oidc_{}", &claims.sub[..8.min(claims.sub.len())]));
+        // Placeholder-email fallback when the IdP omits `email` from
+        // the claim set. Lowercase the local-part so the fake address
+        // matches the storage convention for other placeholder-email
+        // paths (see `admin_create_user`'s `<username>@oxicloud.local`).
         let oidc_email = claims
             .email
             .clone()
-            .unwrap_or_else(|| format!("{}@oidc.local", oidc_username));
+            .unwrap_or_else(|| format!("{}@oidc.local", oidc_username.to_ascii_lowercase()));
 
         // 5. Look up existing user by OIDC subject.
         //
@@ -4652,16 +4771,30 @@ impl AuthApplicationService {
                         &oidc_username
                     };
 
-                    // Filter to valid username characters only, then truncate to 32 chars
+                    // Lowercase at JIT derivation. `validate_username` in
+                    // `User::new` would lowercase too, but the collision
+                    // check below (`get_user_by_username`) needs the
+                    // canonical form BEFORE `User::new` is called —
+                    // otherwise `Alice` from an IdP claim would look
+                    // "free" against an `alice` row on the first pass
+                    // and fail the DB unique constraint at INSERT time.
+                    // See `docs/plan/username-lowercase.md § 2. OIDC JIT
+                    // derivation`.
+                    //
+                    // ASCII-only by the char-filter below, so
+                    // `to_ascii_lowercase()` is deterministic and
+                    // locale-safe.
                     let mut username = base_username
                         .chars()
                         .filter(|c| {
                             c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == '.'
                         })
                         .take(32)
-                        .collect::<String>();
+                        .collect::<String>()
+                        .to_ascii_lowercase();
 
-                    // Filter helper: removes any chars that are not valid in a username
+                    // Filter helper: removes any chars that are not valid in a username.
+                    // Lowercases too so the collision-suffix path below writes canonical form.
                     let filter_username_chars = |s: &str| {
                         s.chars()
                             .filter(|c| {
@@ -4669,6 +4802,7 @@ impl AuthApplicationService {
                             })
                             .take(32)
                             .collect::<String>()
+                            .to_ascii_lowercase()
                     };
 
                     // Ensure minimum length (the padding suffix must also be filtered)

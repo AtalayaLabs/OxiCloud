@@ -82,11 +82,35 @@ pub enum Action {
         #[arg(long)]
         dry_run: bool,
     },
+
+    /// Lowercase every active user's username in `auth.users`.
+    ///
+    /// Enforcement-companion for the case-insensitive-usernames
+    /// migration (see `docs/plan/username-lowercase.md`). The server
+    /// refuses to boot after upgrade until this has run. Data touched
+    /// is `auth.users.username` only.
+    ///
+    /// Collision handling: when `Alice` and `alice` both exist,
+    /// tiebreak `(last_login_at DESC NULLS LAST, created_at ASC)` —
+    /// the winner keeps the canonical lowercased name, losers get
+    /// `<lowercase>-2`, `-3`, … via the shared
+    /// [`common::username_migration::find_free_username_suffix`]
+    /// probe. Sessions and grants survive the rename (they key on
+    /// `user_id`).
+    ///
+    /// Skipped: soft-deleted / disabled rows and rows where
+    /// `username IS NULL` (OPAQUE-migrated accounts).
+    LowercaseUsernames {
+        /// Print what would change without touching the DB.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 pub async fn run(action: Action) -> u8 {
     match action {
         Action::NfcFilenames { dry_run } => run_nfc_filenames(dry_run).await,
+        Action::LowercaseUsernames { dry_run } => run_lowercase_usernames(dry_run).await,
     }
 }
 
@@ -757,4 +781,294 @@ async fn run_folders(pool: &PgPool, dry_run: bool, stats: &mut Stats) -> Result<
         }
     }
     Ok(())
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// lowercase-usernames
+// ════════════════════════════════════════════════════════════════════════════
+
+#[derive(Default)]
+struct UsernameStats {
+    scanned: u64,
+    already_lowercase: u64,
+    normalized_in_place: u64,
+    /// Multi-member `LOWER(username)` group where the tiebreak
+    /// winner kept the canonical name.
+    collision_winners: u64,
+    /// Multi-member losers renamed to `<lowercase>-N`.
+    renamed_to_suffix: u64,
+    /// Rows the scan touched but the loop declined to modify. Today
+    /// this is inactive rows (soft-deleted / admin-disabled). NULL
+    /// usernames never enter the scan so they don't contribute here.
+    skipped: u64,
+}
+
+#[derive(Debug)]
+struct UsernameRow {
+    id: Uuid,
+    username: String,
+    /// Inactive rows (soft-deleted / admin-disabled) are read but not
+    /// modified — normalising a name we can't reach anyway risks
+    /// creating a `<lower>-N` conflict with a future re-activation of
+    /// the same handle. The loop uses this flag to skip and count.
+    active: bool,
+    // Kept for the SQL row-shape roundtrip (the SELECT ordering
+    // depends on them) even though the Rust-side grouping only
+    // reads `id` and `username`. Marked `#[allow(dead_code)]`
+    // so clippy doesn't nag; renaming to `_last_login_at` would
+    // work too but the SQL column names are load-bearing for the
+    // sqlx `Row::get` calls below.
+    #[allow(dead_code)]
+    last_login_at: Option<DateTime<Utc>>,
+    #[allow(dead_code)]
+    created_at: DateTime<Utc>,
+}
+
+async fn run_lowercase_usernames(dry_run: bool) -> u8 {
+    let database_url = match env::var("DATABASE_URL") {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("migrate lowercase-usernames: DATABASE_URL not set");
+            return 2;
+        }
+    };
+
+    let pool = match PgPool::connect(&database_url).await {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("migrate lowercase-usernames: failed to connect: {e}");
+            return 2;
+        }
+    };
+
+    if dry_run {
+        println!("migrate lowercase-usernames: DRY RUN (no writes)");
+    } else {
+        println!("migrate lowercase-usernames: applying changes");
+    }
+
+    // Load every user with a non-NULL username, active and inactive
+    // alike. Inactive rows are surfaced (not filtered at scan-time)
+    // so the `skipped (inactive)` counter can report them honestly —
+    // an operator reading the summary sees "10 rows scanned, 2
+    // inactive were passed on" instead of a phantom 0.
+    //
+    // NULL usernames stay out of the scan: there's nothing to
+    // normalise for OPAQUE-migrated rows, and pulling them would
+    // inflate `scanned` with rows the migration has no verb for.
+    //
+    // Ordering: alphabetic by `LOWER(username)` groups collisions
+    // together, then the intra-group order is the tiebreak
+    // (`last_login_at DESC NULLS LAST, created_at ASC` — most
+    // recently active wins the canonical name).
+    let rows: Vec<UsernameRow> = match sqlx::query(
+        r#"
+        SELECT id, username, active, last_login_at, created_at
+          FROM auth.users
+         WHERE username IS NOT NULL
+         ORDER BY LOWER(username),
+                  (last_login_at IS NULL),
+                  last_login_at DESC NULLS LAST,
+                  created_at ASC
+        "#,
+    )
+    .fetch_all(&pool)
+    .await
+    {
+        Ok(rs) => rs
+            .into_iter()
+            .map(|r| UsernameRow {
+                id: r.get::<Uuid, _>("id"),
+                username: r.get::<String, _>("username"),
+                active: r.get::<bool, _>("active"),
+                last_login_at: r.try_get::<DateTime<Utc>, _>("last_login_at").ok(),
+                created_at: r.get::<DateTime<Utc>, _>("created_at"),
+            })
+            .collect(),
+        Err(e) => {
+            eprintln!("migrate lowercase-usernames: initial scan failed: {e}");
+            return 2;
+        }
+    };
+
+    let mut stats = UsernameStats::default();
+
+    // Group by `LOWER(username)`. Order preserved from the SQL query
+    // → within a group, the FIRST row is the tiebreak winner.
+    //
+    // Inactive rows are filtered OUT of the grouping (not just
+    // skipped inside the loop) so they can't create a phantom
+    // collision with an active row sharing their lowercase form.
+    // Example: inactive `Alice` + active `alice` would otherwise
+    // look like a two-member group; filtering inactive first leaves
+    // `alice` as a clean singleton no-op. The count goes to
+    // `stats.skipped`, surfaced in the summary as `skipped (inactive)`.
+    let mut groups: Vec<(String, Vec<UsernameRow>)> = Vec::new();
+    for row in rows {
+        stats.scanned += 1;
+        if !row.active {
+            stats.skipped += 1;
+            continue;
+        }
+        let key = row.username.to_ascii_lowercase();
+        match groups.last_mut() {
+            Some((k, v)) if k == &key => v.push(row),
+            _ => groups.push((key, vec![row])),
+        }
+    }
+
+    for (lower, members) in groups {
+        if members.len() == 1 {
+            let row = &members[0];
+            if row.username == lower {
+                stats.already_lowercase += 1;
+                continue;
+            }
+            // Single-member group with a mixed-case name → straight
+            // rename to the lowercase form. No collision.
+            if !dry_run && let Err(e) = update_username(&pool, row.id, &lower).await {
+                eprintln!(
+                    "migrate lowercase-usernames: UPDATE failed for {}: {e}",
+                    row.id
+                );
+                return 1;
+            }
+            println!(
+                "NORMALIZE  user={}  '{}' → '{}'",
+                row.id, row.username, lower
+            );
+            stats.normalized_in_place += 1;
+            continue;
+        }
+
+        // Multi-member group → collision. Members are already ordered
+        // by the tiebreak. Winner takes the canonical lowercase name,
+        // losers get `<lower>-2`, `-3`, … via the shared suffix helper.
+        //
+        // ORDER MATTERS: losers must be renamed FIRST. If we renamed
+        // the winner to `<lower>` while a loser still holds that
+        // exact name (the common case where the winner is mixed-case
+        // and the loser is already-lowercase), the UNIQUE constraint
+        // `users_username_key` fires. Freeing the canonical form by
+        // suffixing every non-winner member first eliminates the
+        // race entirely.
+        let (winner, losers) = members.split_first().expect("non-empty by construction");
+
+        // Suffixes assigned inside this group during this run. Used
+        // to keep dry-run consistent (no DB writes → the shared
+        // suffix helper would hand the same probe back for every
+        // loser). During apply, the DB itself deduplicates, but
+        // tracking here keeps the two modes structurally identical.
+        let mut reserved_this_group: Vec<String> = Vec::new();
+        for loser in losers {
+            let suffixed =
+                match pick_free_suffix_avoiding(&pool, &lower, &reserved_this_group).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!(
+                            "migrate lowercase-usernames: suffix probe failed for {}: {e}",
+                            loser.id
+                        );
+                        return 1;
+                    }
+                };
+            if !dry_run && let Err(e) = update_username(&pool, loser.id, &suffixed).await {
+                eprintln!(
+                    "migrate lowercase-usernames: loser UPDATE failed for {}: {e}",
+                    loser.id
+                );
+                return 1;
+            }
+            println!(
+                "RENAME     user={}  '{}' → '{}'  (collision suffix)",
+                loser.id, loser.username, suffixed
+            );
+            stats.renamed_to_suffix += 1;
+            reserved_this_group.push(suffixed);
+        }
+
+        if winner.username == lower {
+            // Winner already holds the canonical name (a lowercase
+            // row happened to be the most recently active; other
+            // members are the ones needing renames).
+            stats.already_lowercase += 1;
+        } else {
+            if !dry_run && let Err(e) = update_username(&pool, winner.id, &lower).await {
+                eprintln!(
+                    "migrate lowercase-usernames: winner UPDATE failed for {}: {e}",
+                    winner.id
+                );
+                return 1;
+            }
+            println!(
+                "NORMALIZE  user={}  '{}' → '{}'  (collision winner)",
+                winner.id, winner.username, lower
+            );
+            stats.collision_winners += 1;
+        }
+    }
+
+    println!();
+    println!("Summary:");
+    println!("  scanned:             {}", stats.scanned);
+    println!("  already-lowercase:   {}", stats.already_lowercase);
+    println!("  normalized in place: {}", stats.normalized_in_place);
+    println!("  collision winners:   {}", stats.collision_winners);
+    println!("  renamed to suffix:   {}", stats.renamed_to_suffix);
+    println!("  skipped (inactive):  {}", stats.skipped);
+    if dry_run
+        && (stats.normalized_in_place + stats.collision_winners + stats.renamed_to_suffix) > 0
+    {
+        println!();
+        println!("(dry-run — re-run without --dry-run to apply)");
+    }
+    0
+}
+
+async fn update_username(pool: &PgPool, id: Uuid, new_name: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE auth.users SET username = $1, updated_at = NOW() WHERE id = $2")
+        .bind(new_name)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Pick the next free `<base>-<N>` suffix, skipping any suffix already
+/// reserved earlier in this migration run.
+///
+/// Wraps [`crate::common::username_migration::find_free_username_suffix`]
+/// with an additional local guard: in dry-run mode, no UPDATEs land so
+/// the DB probe would return the same suffix for every loser in a
+/// multi-loser group. The `reserved` slice lets the caller feed back
+/// the suffixes it has already announced, and the probe steps past
+/// them. In apply mode the DB probe alone would be enough (each real
+/// UPDATE moves the state forward), but the same code path keeps the
+/// two modes structurally identical.
+async fn pick_free_suffix_avoiding(
+    pool: &PgPool,
+    base: &str,
+    reserved: &[String],
+) -> Result<String, sqlx::Error> {
+    // Try the shared helper's default candidate first; if it collides
+    // with a same-run reservation, increment past it and probe again.
+    let mut n = 2;
+    loop {
+        let candidate = format!("{base}-{n}");
+        let db_taken: (bool,) =
+            sqlx::query_as("SELECT EXISTS(SELECT 1 FROM auth.users WHERE username = $1)")
+                .bind(&candidate)
+                .fetch_one(pool)
+                .await?;
+        let locally_taken = reserved.iter().any(|s| s == &candidate);
+        if !db_taken.0 && !locally_taken {
+            return Ok(candidate);
+        }
+        n += 1;
+        if n > 10_000 {
+            // Same cap as the shared helper — a loud panic beats a
+            // silent truncation for an anomaly this rare.
+            panic!("pick_free_suffix_avoiding: exhausted 10000 suffix probes for base '{base}'",);
+        }
+    }
 }

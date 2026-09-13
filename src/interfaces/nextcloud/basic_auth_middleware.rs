@@ -94,6 +94,19 @@ pub async fn basic_auth_middleware(
     let (raw_username, password) =
         parse_basic_auth(auth_header).ok_or(NextcloudAuthError::Unauthorized)?;
 
+    // Canonicalise the whole Basic-Auth username to lowercase.
+    //
+    // Usernames are canonical (lowercase) in the DB post-migration
+    // (`docs/plan/username-lowercase.md`), and NC / DAVX5 clients that
+    // cached URLs from before the migration keep sending `Alice:pass`
+    // — the server continues to accept that indefinitely by
+    // lowercasing here. Safe for the multi-drive `user~drive_uuid`
+    // composite because UUID hex `[0-9a-f-]` lowercases to itself.
+    //
+    // ASCII-only by `validate_username`'s charset check, so
+    // `to_ascii_lowercase` is deterministic and locale-safe.
+    let raw_username = raw_username.to_ascii_lowercase();
+
     // ── Multi-drive composite-username parse ────────────────────────
     // POC wire shape: `{username}~{drive_marker}` may appear in the
     // Basic Auth header. `~` was chosen because it needs no URL
@@ -319,7 +332,13 @@ pub fn parse_basic_auth(header_value: &str) -> Option<(String, String)> {
     let decoded = String::from_utf8(decoded).ok()?;
     let (user, pass) = decoded.split_once(':')?;
 
-    Some((user.to_string(), pass.to_string()))
+    // Canonicalise the username to lowercase here too, so any caller
+    // that reaches for `parse_basic_auth` directly (bypassing the
+    // middleware wrapper) also sees the canonical form. Redundant with
+    // the middleware's explicit `to_ascii_lowercase` on `raw_username`
+    // — belt-and-braces to keep the invariant local to the parser too.
+    // See `docs/plan/username-lowercase.md § 4. NextCloud DAV surface`.
+    Some((user.to_ascii_lowercase(), pass.to_string()))
 }
 
 #[cfg(test)]
