@@ -183,7 +183,32 @@ pub async fn resolve_live_role(
     user_id: Uuid,
     claim_role: &str,
 ) -> LiveRole {
+    if let Some(live) = anonymous_live_role(claim_role) {
+        return live;
+    }
     decide_live_role(auth.get_user_flags(user_id).await, user_id, claim_role)
+}
+
+/// `Some` when the claim is an anonymous public-share session, which must
+/// skip the live re-check entirely.
+///
+/// Such a session has no `auth.users` row by design, so the re-check would
+/// look one up, find nothing, and report the token as revoked — every share
+/// request 401ing.
+///
+/// Skipping is safe because the re-check exists to catch deactivation,
+/// deletion and DEMOTION, and none applies here: there is no account to
+/// deactivate, and `anonymous` is already the floor of the role order, so a
+/// stale claim cannot be an over-privileged one. The claim itself is inside
+/// a signed JWT, so it cannot be forged — and forging it would only ever
+/// *reduce* what the bearer can reach.
+///
+/// The staleness this leaves is bounded elsewhere — by the session's own
+/// short TTL and by share revocation — not by the user-flags cache.
+fn anonymous_live_role(claim_role: &str) -> Option<LiveRole> {
+    UserRole::from_session(claim_role)
+        .filter(|r| r.is_anonymous())
+        .map(|r| LiveRole::Active(SmolStr::new_static(r.as_str())))
 }
 
 /// Pure decision core of [`resolve_live_role`], split out so the
@@ -449,6 +474,31 @@ mod tests {
         let err = DomainError::new(ErrorKind::InternalError, "User", "connection reset");
         let live = decide_live_role(Err(err), Uuid::nil(), "admin");
         assert_eq!(live, LiveRole::Active(SmolStr::new_static("admin")));
+    }
+
+    /// An anonymous session skips the live re-check — there is no user row
+    /// to re-check against, and without this every share request 401s.
+    #[test]
+    fn anonymous_claim_skips_the_live_recheck() {
+        assert_eq!(
+            anonymous_live_role("anonymous"),
+            Some(LiveRole::Active(SmolStr::new_static("anonymous"))),
+        );
+    }
+
+    /// Every other claim must still go through the DB re-check. If this
+    /// ever returned `Some`, a demoted admin or a deleted account would
+    /// keep its token's frozen privileges until expiry — the exact thing
+    /// `resolve_live_role` exists to prevent.
+    #[test]
+    fn only_anonymous_skips_the_live_recheck() {
+        for claim in ["user", "admin", "", "Anonymous", "anonymous ", "root"] {
+            assert_eq!(
+                anonymous_live_role(claim),
+                None,
+                "claim {claim:?} must not bypass the live re-check",
+            );
+        }
     }
 
     #[test]
