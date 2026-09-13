@@ -30,6 +30,7 @@
 		notifications as persistentNotifications,
 		useNotifications
 	} from '$lib/composables/useNotifications.svelte';
+	import NotificationRow from '$lib/components/NotificationRow.svelte';
 	import { errorToast } from '$lib/utils/errors';
 	import { formatBytes } from '$lib/utils/format';
 
@@ -345,67 +346,6 @@
 	// user sees one number and one bell for both classes.
 	const totalUnread = $derived(ui.unread + persistentNotifications.unread);
 	const totalUnreadBadge = $derived(totalUnread > 99 ? '99+' : String(totalUnread));
-
-	/** Format the server-side `created_at` for a persistent row. */
-	function formatPersistentTime(iso: string): string {
-		try {
-			return formatTime(new Date(iso).getTime());
-		} catch {
-			return '';
-		}
-	}
-
-	/** Human summary for a persistent notification. Kind-specific
-	 *  wording lives here so the DTO stays payload-agnostic. */
-	function persistentSummary(row: { kind: string; payload: Record<string, unknown> }): string {
-		switch (row.kind) {
-			case 'share_granted': {
-				const role = String(row.payload.role ?? 'a role');
-				const resType = String(row.payload.resource_type ?? 'resource');
-				return t(
-					'notifications.persistent.share_granted',
-					{ role, resType },
-					`You were granted ${role} on a ${resType}.`
-				);
-			}
-			case 'new_login_from_new_device':
-				return t(
-					'notifications.persistent.new_device_login',
-					'A new device signed into your account.'
-				);
-			case 'job_completed_for_you': {
-				const name = String(row.payload.name ?? row.payload.job_name ?? 'a job');
-				return t('notifications.persistent.job_completed', { name }, `Job "${name}" finished.`);
-			}
-			case 'storage_quota_threshold':
-				return t(
-					'notifications.persistent.quota_threshold',
-					'You are approaching your storage quota.'
-				);
-			default:
-				return t(
-					'notifications.persistent.generic',
-					{ kind: row.kind },
-					`Notification (${row.kind}).`
-				);
-		}
-	}
-
-	/** Icon for a persistent row's kind. Falls back to a generic bell. */
-	function persistentIcon(kind: string): string {
-		switch (kind) {
-			case 'share_granted':
-				return 'user-plus';
-			case 'new_login_from_new_device':
-				return 'shield-alt';
-			case 'job_completed_for_you':
-				return 'check-circle';
-			case 'storage_quota_threshold':
-				return 'database';
-			default:
-				return 'bell';
-		}
-	}
 
 	function openMobileSearch() {
 		searchActive = true;
@@ -966,32 +906,7 @@
 									></div>
 								{/if}
 								{#each persistentNotifications.items as row (row.id)}
-									<div
-										class="notif-item notif-item--{row.kind}"
-										role="button"
-										tabindex="0"
-										data-testid="appshell-notif-persistent-item"
-										aria-label={persistentSummary(row)}
-										style:font-weight={row.read_at === null ? '500' : 'normal'}
-										style:cursor="pointer"
-										onclick={() => void persistentNotifications.markRead(row.id)}
-										onkeydown={(e) => {
-											if (e.key === 'Enter' || e.key === ' ') {
-												e.preventDefault();
-												void persistentNotifications.markRead(row.id);
-											}
-										}}
-									>
-										<span class="notif-item-icon">
-											<Icon name={persistentIcon(row.kind)} />
-										</span>
-										<div class="notif-item-body">
-											<div class="notif-item-text">{persistentSummary(row)}</div>
-											<div class="notif-item-time">
-												{formatPersistentTime(row.created_at)}
-											</div>
-										</div>
-									</div>
+									<NotificationRow {row} onactivate={() => (notifOpen = false)} />
 								{/each}
 							{/if}
 						{/if}

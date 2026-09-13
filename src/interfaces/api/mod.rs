@@ -172,6 +172,12 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::recent_handler::record_item_access,
         handlers::recent_handler::remove_from_recent,
         handlers::recent_handler::clear_recent_items,
+        // Notifications (Slice E — bell + retention)
+        handlers::notifications_handler::list_notifications,
+        handlers::notifications_handler::unread_count,
+        handlers::notifications_handler::mark_read,
+        handlers::notifications_handler::mark_all_read,
+        handlers::notifications_handler::delete_notification,
         // Photos handler (free function)
         handlers::photos_handler::list_photos,
         handlers::photos_handler::list_photos_geo,
@@ -382,6 +388,17 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             // Public server-config discovery — `GET /api/config`.
             ServerConfigDto,
             FeaturesDto,
+            // Notifications (Slice E) — bell REST DTOs + per-kind
+            // typed payload structs. The generic `NotificationDto.payload`
+            // stays `serde_json::Value` on the schema; each per-kind
+            // struct (e.g. `SharegrantedPayload`) is registered here
+            // so FE consumers can type-narrow on `kind`. Adding a
+            // new kind = one more entry here + one Rust struct.
+            handlers::notifications_handler::NotificationDto,
+            handlers::notifications_handler::ListResponseDto,
+            handlers::notifications_handler::UnreadCountDto,
+            handlers::notifications_handler::MarkAllReadResponseDto,
+            crate::domain::entities::notification::SharegrantedPayload,
             HeaderPayload,
             ProgressHeader,
             OidcProviderInfoDto,

@@ -40,6 +40,8 @@
 import { messageBus } from '$lib/message-bus/client.svelte';
 import { session } from '$lib/stores/session.svelte';
 import { serverConfig } from '$lib/stores/serverConfig.svelte';
+import { ui } from '$lib/stores/ui.svelte';
+import { t } from '$lib/i18n/index.svelte';
 import {
 	deleteNotification as apiDelete,
 	getUnreadCount,
@@ -47,10 +49,53 @@ import {
 	markAllNotificationsRead,
 	markNotificationRead
 } from '$lib/api/endpoints/notifications';
-import type { Notification } from '$lib/api/types';
+import type { Notification, SharegrantedPayload } from '$lib/api/types';
+import { NOTIFICATION_KIND } from '$lib/api/types';
 import log from 'loglevel';
 
 const bellLog = log.getLogger('oxi:notifications');
+
+/**
+ * Plain-string summary of a persistent notification — used for the
+ * transient toast preview (fade-to-bell UX affordance) and for
+ * accessible labels where a component can't render rich content.
+ *
+ * Rich Svelte rendering lives in `NotificationRow.svelte`. This is
+ * the string-only equivalent for toasts and aria-labels.
+ */
+export function summaryFor(row: Notification): string {
+	switch (row.kind) {
+		case NOTIFICATION_KIND.SHARE_GRANTED: {
+			const p = row.payload as unknown as SharegrantedPayload;
+			const resource = p.resource_name ?? p.resource_type ?? 'a resource';
+			return t(
+				'notifications.persistent.share_granted',
+				{ role: p.role ?? 'access', resource },
+				`Someone shared "${resource}" with you (${p.role ?? 'access'}).`
+			);
+		}
+		case NOTIFICATION_KIND.NEW_LOGIN_FROM_NEW_DEVICE:
+			return t(
+				'notifications.persistent.new_device_login',
+				'A new device signed into your account.'
+			);
+		case NOTIFICATION_KIND.JOB_COMPLETED_FOR_YOU: {
+			const name = String((row.payload as { name?: unknown }).name ?? 'a job');
+			return t('notifications.persistent.job_completed', { name }, `Job "${name}" finished.`);
+		}
+		case NOTIFICATION_KIND.STORAGE_QUOTA_THRESHOLD:
+			return t(
+				'notifications.persistent.quota_threshold',
+				'You are approaching your storage quota.'
+			);
+		default:
+			return t(
+				'notifications.persistent.generic',
+				{ kind: row.kind },
+				`Notification (${row.kind}).`
+			);
+	}
+}
 
 /**
  * Merge `incoming` rows into `existing`, deduplicating on `id`.
@@ -125,6 +170,13 @@ class NotificationsStore {
 	 * Merges via `mergeById` so a concurrent WS push and reconnect
 	 * catch-up can't double-count a row that landed twice.
 	 *
+	 * Fresh rows — rows the local set didn't have before the merge —
+	 * each fire a transient toast via `ui.notify(..., record: false)`
+	 * so the user gets a peripheral awareness cue that fades to the
+	 * bell (which keeps the row in its persistent history). The
+	 * bell's ring animation plays via `ui.ringBell()` so a single
+	 * bump signals "something new is in there".
+	 *
 	 * Silent no-op when the server returns 0 rows — we're already in
 	 * sync. Updates `#lastReceivedAt` to the newest of the merged set.
 	 */
@@ -144,10 +196,30 @@ class NotificationsStore {
 				limit: 100
 			});
 			if (res.items.length > 0) {
+				// Snapshot the pre-merge id set so we can identify
+				// which rows are genuinely fresh vs already-known
+				// (an already-known row can come back on a delta
+				// fetch if its read_at flipped on another device).
+				const before = new Set(this.#items.map((n) => n.id));
 				this.#items = mergeById(this.#items, res.items);
 				// Newest of merged set — take the first item's
 				// created_at since the result is sorted DESC.
 				this.#lastReceivedAt = res.items[0].created_at;
+
+				// Toast preview for every fresh row. Pass
+				// `record: false` so it doesn't add a phantom
+				// transient entry to `ui.notifications` that would
+				// duplicate the persistent row already in
+				// `notifications.items` (the bell dropdown shows
+				// them side by side). `ui.ringBell()` bumps the
+				// bell-ring animation once for the batch.
+				const fresh = res.items.filter((r) => !before.has(r.id));
+				if (fresh.length > 0) {
+					for (const row of fresh) {
+						ui.notify(summaryFor(row), 'info', 4000, false);
+					}
+					ui.ringBell();
+				}
 			}
 			// unread_count is the authoritative live server count —
 			// always update it even when the delta was empty (a row

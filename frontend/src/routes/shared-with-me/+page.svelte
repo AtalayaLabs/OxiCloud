@@ -4,7 +4,8 @@
 	import { primeContextPage } from '$lib/utils/listContext';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import { onMount } from 'svelte';
+	import { page } from '$app/state';
+	import { onMount, untrack } from 'svelte';
 	import {
 		addFavorite,
 		dateBucket,
@@ -131,6 +132,63 @@
 		if (viewerOpen) void fileViewer.load();
 	});
 
+	// ── File-preview deep link (?file=<id>) ──────────────────────────────────
+	// Notification bell's `share_granted` for a FILE resource links here with
+	// `?file=<id>` because `/files/{uuid}` requires a folder id and the
+	// recipient may not have access to the file's parent folder. Every
+	// recipient of a `share_granted` sees the shared item in this list, so
+	// this route is the guaranteed-accessible home for the deep link.
+	// Mirrors the URL↔viewer pattern in `routes/files/[...path]/+page.svelte`.
+	// See `docs/plan/templated-messages.md § File notification routing`.
+	//
+	// URL → viewer. Runs on navigation, on Back/Forward, and once the initial
+	// listing arrives (the item may not be in `items` yet on cold deep link).
+	// `untrack` stops re-firing on viewer-state changes so a user-initiated
+	// close can't be re-opened here.
+	$effect(() => {
+		const fileId = page.url.searchParams.get('file');
+		const currentItems = items;
+		untrack(() => {
+			if (!fileId) {
+				if (viewerOpen) viewerOpen = false;
+				return;
+			}
+			if (viewerOpen && viewerFile?.id === fileId) return;
+			const match = currentItems.find((it) => isFile(it) && it.id === fileId);
+			if (match && isFile(match)) {
+				viewerFile = match;
+				viewerOpen = true;
+			}
+			// If the file isn't in the current page yet, do nothing —
+			// the next `load()` completion re-fires this effect (items
+			// is `$derived`) and picks up the deep link when the item
+			// lands. A shared file the caller no longer has access to
+			// (revoked between notification and click) never lands and
+			// the viewer stays closed — same failure mode as any
+			// deferred-navigation dangling reference.
+		});
+	});
+
+	// Viewer → URL: on close (X / Esc / backdrop), drop the `?file=` param.
+	// `replaceState` so closing doesn't add a history entry. Only act on a
+	// genuine open→closed transition — on cold deep link the viewer starts
+	// closed *with* the param while the listing is still loading, and
+	// stripping it there would race the URL→viewer effect above.
+	let viewerWasOpen = false;
+	$effect(() => {
+		const open = viewerOpen;
+		const hasParam = page.url.searchParams.get('file') !== null;
+		untrack(() => {
+			if (viewerWasOpen && !open && hasParam) {
+				const url = new URL(page.url);
+				url.searchParams.delete('file');
+				// eslint-disable-next-line svelte/no-navigation-without-resolve
+				void goto(url, { keepFocus: true, noScroll: true, replaceState: true });
+			}
+			viewerWasOpen = open;
+		});
+	});
+
 	function open(item: FileItem | FolderItem) {
 		if (!isFile(item)) {
 			goto(resolve(`/files/${item.id}`));
@@ -138,6 +196,18 @@
 		}
 		viewerFile = item;
 		viewerOpen = true;
+		// Reflect the open file in the URL — makes the view linkable
+		// (paste-into-slack a `/shared-with-me?file=<id>` and it opens
+		// straight into the viewer), matches the pattern
+		// `/files/[...path]` uses, and lets the browser's Back button
+		// close the viewer. `pushState` (not `replaceState`) so Back
+		// pops the viewer off history instead of leaving the page.
+		const url = new URL(page.url);
+		if (url.searchParams.get('file') !== item.id) {
+			url.searchParams.set('file', item.id);
+			// eslint-disable-next-line svelte/no-navigation-without-resolve
+			void goto(url, { keepFocus: true, noScroll: true });
+		}
 	}
 
 	/**

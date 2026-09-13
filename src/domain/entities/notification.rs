@@ -68,3 +68,65 @@ pub struct NewNotification {
     pub kind: String,
     pub payload: serde_json::Value,
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// Per-kind payload types (OpenAPI-owned)
+//
+// Each kind's payload shape lives here as a real Rust struct with
+// `#[derive(ToSchema)]`. OpenAPI auto-derives the schema from Rust;
+// AsyncAPI never sees these types (the bus event is a pure poke —
+// see `docs/plan/templated-messages.md § Schema ownership`). Adding
+// a new kind = new struct here + a Rust `kind::` const above + a
+// template branch in `NotificationRow.svelte`.
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Payload written on the DB row when a `share_granted` notification
+/// is created. Kind = [`kind::SHARE_GRANTED`].
+///
+/// The `resource_name` and `resource_path` fields are snapshotted at
+/// grant time — even if the resource is later renamed or moved, the
+/// notification still reflects what it was called when the share
+/// happened. `resource_path` is populated for kinds addressable via
+/// `/files/[...path]` (folders + files); `None` for calendars,
+/// address books, playlists, drives.
+///
+/// Wire form matches the `payload` JSONB column exactly — Rust is
+/// the source of truth, OpenAPI schema auto-derives via
+/// `#[derive(ToSchema)]`. Adding a new field is additive on the
+/// JSONB column; no migration needed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct SharegrantedPayload {
+    /// The user who created the grant.
+    pub granter_id: Uuid,
+    /// Resource kind slug: `folder`, `file`, `drive`, `calendar`,
+    /// `address_book`, `playlist`. Same string form as
+    /// [`crate::domain::services::authorization::Resource::type_str`].
+    pub resource_type: String,
+    /// Resource UUID.
+    pub resource_id: Uuid,
+    /// Display name at grant time. `None` if the lookup failed at
+    /// ingest (bell renders a generic fallback in that case).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_name: Option<String>,
+    /// Storage path at grant time. Populated for
+    /// `folder` / `file` kinds; `None` for other kinds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_path: Option<String>,
+    /// FE-navigation hint — the folder id the notification link
+    /// should route to. Populated when `resource_type` isn't itself
+    /// a folder-shaped resource but the FE still wants to land in
+    /// `/files/{id}` (concretely: **drives** — the recipient lands
+    /// on the drive's root folder). For `resource_type == 'folder'`
+    /// the FE uses `resource_id` directly and this field stays
+    /// `None`; same for `file` (routes to `/shared-with-me?file=`
+    /// via a different path). `None` for calendar / address_book /
+    /// playlist — those aren't reachable via `/files/*` at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub navigate_folder_id: Option<Uuid>,
+    /// Role granted (`viewer`, `editor`, `owner`, …). Same string
+    /// form as [`crate::domain::services::authorization::Role::as_str`].
+    pub role: String,
+    /// Grant expiry, if bounded. `None` = never expires.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+}

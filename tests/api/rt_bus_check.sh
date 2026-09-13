@@ -779,13 +779,14 @@ fi
   || { cat "$out_s13"; die "S13: expected 1 event, got $(jq -r '.events | length' "$out_s13")"; }
 [[ "$(jq -r '.events[0].event' "$out_s13")" == "notification_received" ]] \
   || die "S13: wrong event discriminator: $(jq -r '.events[0].event' "$out_s13")"
-[[ "$(jq -r '.events[0].data.kind' "$out_s13")" == "share_granted" ]] \
-  || die "S13: wrong notification kind: $(jq -r '.events[0].data.kind' "$out_s13")"
-# `notification_id` is a fresh UUID stamped by the DB — check it's
-# non-empty and non-null. Value asserted by S14 via GET /api/notifications.
-[[ -n "$(jq -r '.events[0].data.notification_id' "$out_s13")" ]] \
-  && [[ "$(jq -r '.events[0].data.notification_id' "$out_s13")" != "null" ]] \
-  || die "S13: notification_id missing on wire payload"
+# Pure cache-invalidation event — `data` is intentionally an empty
+# object. Everything about the notification (id, kind, payload) is
+# on the REST wire (asserted by S14 below), not here. See
+# `docs/plan/templated-messages.md § Bus event is a pure poke`.
+# If a future change adds fields back to the wire, this assertion
+# will fail loudly so the drift is caught.
+[[ "$(jq -c '.events[0].data' "$out_s13")" == "{}" ]] \
+  || { cat "$out_s13"; die "S13: expected empty data on the wire, got $(jq -c '.events[0].data' "$out_s13")"; }
 log "S13 OK"
 
 # ── Scenario 14 — Notification DB row (Slice E) ─────────────────────────────
@@ -814,6 +815,26 @@ first_read_at=$(printf '%s' "$notifs" | jq -r --arg fc "$folder_c" \
   'first(.items[] | select(.kind == "share_granted" and .payload.resource_id == $fc)) | .read_at')
 [[ "$first_read_at" == "null" ]] \
   || die "S14: matched row unexpectedly marked read: read_at=$first_read_at"
+
+# Payload enrichment (Slice E — templated messages): the ingester
+# snapshots the resource's display name + storage path at grant
+# time so the FE bell can render "Alice shared 'rt_bus_C_…'" with
+# a clickable link. If enrichment silently regressed to ID-only,
+# the FE would still work via generic fallback but lose the
+# clickable / labelled UX. Assert the enrichment fields landed on
+# the folder-C row.
+folder_c_name="rt_bus_C_$suffix"
+first_name=$(printf '%s' "$notifs" | jq -r --arg fc "$folder_c" \
+  'first(.items[] | select(.kind == "share_granted" and .payload.resource_id == $fc)) | .payload.resource_name')
+[[ "$first_name" == "$folder_c_name" ]] \
+  || { printf '%s\n' "$notifs" >&2; die "S14: expected resource_name='$folder_c_name', got '$first_name'"; }
+first_path=$(printf '%s' "$notifs" | jq -r --arg fc "$folder_c" \
+  'first(.items[] | select(.kind == "share_granted" and .payload.resource_id == $fc)) | .payload.resource_path')
+# Path must be non-null AND non-empty AND end with the folder's
+# name — the FE builds `/files${path}` for the bell's anchor, so a
+# missing/wrong path breaks the click-through.
+[[ -n "$first_path" && "$first_path" != "null" && "$first_path" == *"$folder_c_name" ]] \
+  || { printf '%s\n' "$notifs" >&2; die "S14: expected resource_path ending with '$folder_c_name', got '$first_path'"; }
 log "S14 OK"
 
 # ── Scenario 15 — Cross-user notifications identity gate ────────────────────
