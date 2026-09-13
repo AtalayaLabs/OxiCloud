@@ -151,11 +151,25 @@ That makes `resources/gen/openapi.json` a *tested* description of the
 authorization boundary. Today it says "a session is required" for everything from
 `GET /api/version` to `PUT /api/admin/users/{id}/role` — true, and useless.
 
-### Enforcement: allowlist at the middleware
+### Enforcement: allowlist as a `route_layer` *(shipped — see note)*
 
-Anonymous sessions reach **only** routes on an explicit allowlist constant.
-Everything else is denied at `middleware/auth.rs:229 / :294 / :365`, before any
-handler, bespoke extractor or hand-rolled gate can see the principal.
+Anonymous sessions reach **only** routes on an explicit allowlist constant
+(`middleware/anonymous_allowlist.rs`). Everything else is denied before the
+handler runs.
+
+> **Implementation note.** The draft placed this in `auth_middleware`. It
+> ships as a `route_layer` instead, because matching must be on axum's
+> `MatchedPath` — the route *pattern* (`/api/files/{id}`), never the concrete
+> URI — and `MatchedPath` is only populated **after** routing, which
+> `.layer()` precedes. An absent `MatchedPath` is a **denial**, so misplacing
+> the layer breaks anonymous access loudly rather than leaking quietly.
+>
+> I also argued once for skipping this layer entirely, on the grounds that
+> every protected handler already takes a guarded extractor (verified: they
+> do). That was wrong twice — it contradicted the three-independent-layers
+> principle used everywhere else here, and it mistook a snapshot for an
+> invariant. Positive enumeration is the stronger property precisely because
+> it does not depend on the 201st handler being written correctly.
 
 The allowlist, and nothing more:
 
@@ -172,32 +186,67 @@ layer: `GET /api/wopi/editor-url` mints a WOPI token usable for
 write (`register_shared_link_access`, `share_handler.rs:243`). GET-that-writes is
 normal in this codebase.
 
-### Session model
+### Session model — stateless. **REVISED during implementation.**
 
-- **`role = anonymous`**, **`origin = SessionOrigin::Share`** (new variant + CHECK
-  migration). `origin` is the discriminator for metrics, cleanup and admin
-  filtering — a positive assertion, unlike an absent `user_id`.
-- **`sessions.user_id` becomes nullable**, with
-  `CHECK ((role = 'anonymous') = (user_id IS NULL))`.
-  **Reusing the share owner's uuid is disqualified**: `handle_session`
-  auto-subscribes on `caller_id` with no authz check (`rt_ws.rs:402`, `:412`) and
-  hardcodes `Subject::User(caller_id)` at `:657`, so the visitor would join the
-  owner's authz/notification streams and could subscribe to any folder in the
-  owner's drive.
-- **Distinct, share-scoped cookie name** — *not* `oxicloud_access`. That cookie is
-  `Path=/`, so reusing it means **a logged-in user who clicks a public share link
-  has their real session overwritten** and every subsequent request becomes
-  anonymous. Follow the existing `oxi_share_unlock_{token}` precedent
-  (`share_unlock_cookie.rs:79`).
-- **Short TTL (≈4 h, capped by `share.expires_at`), no refresh.** `POST
-  /api/auth/refresh` is outside `auth_middleware`, so it must reject anonymous
-  explicitly — otherwise a visitor renews indefinitely past share revocation. The
-  page silently re-runs `/s/{token}/verify` on expiry; the unlock is idempotent.
-- **Session carries a bag of share ids.** `subject_match_set`
-  (`pg_acl_engine.rs:663-675`) already returns `(Vec<&str>, Vec<Uuid>)`, so
-  "any of my tokens grants this" needs **no query change**. This is what makes
-  multi-tab work and removes any precedence rule between a user session and a
-  share.
+> The original design here called for an `auth.sessions` row with a nullable
+> `user_id`, a `SessionOrigin::Share` variant, a CHECK pairing the two,
+> metrics exclusions and a cleanup predicate. **All of that is dropped.**
+> Kept as a record of why, because the reasoning is the interesting part.
+
+Checking what a session row would actually buy killed it:
+
+| a row gives | what we decided |
+|---|---|
+| refresh-token rotation | anonymous **cannot** refresh |
+| per-session revocation | we revoke the **share** |
+| liveness metrics | anonymous must be **excluded** |
+| admin sessions panel | anonymous must be **excluded** |
+
+Every one is unwanted or something we would immediately suppress — while the
+cost is a nullable FK, an `Option<Uuid>` refactor across the `Session` entity
+and its callers, a cleanup predicate, metrics exclusions, and a 7+90-day
+retention problem for rows nobody reads.
+
+It also avoids a runtime hazard: `Session.user_id` is `Uuid` and the repo
+does `row.get("user_id")`, so a NULL column would **panic on load** rather
+than fail cleanly.
+
+**So an anonymous session is a signed JWT and nothing else:**
+
+- `role = anonymous` + `share_id` claim. No `auth.sessions` row, no `sid`.
+- **Revocation still works, at the granularity that matters.** The engine
+  re-checks the token grant on every request, so deleting a share drops its
+  grant (cascade trigger) and every outstanding token is denied immediately.
+  Verified the hot path allows this: `validate_token` is pure HMAC + expiry,
+  and `resolve_live_role` looks up the *user* — already short-circuited for
+  anonymous. No session-row read per request.
+- Consistent with what already ships: `oxi_share_unlock_{token}` is exactly
+  this shape — signed, expiring, non-revocable.
+- **`OXICLOUD_SHARE_SESSION_EXPIRY_SECS`, default 4 h.** Separate from
+  `access_token_expiry_secs` because with no refresh this value is the ENTIRE
+  visit; at 1 h a visitor browsing a large folder stops working mid-browse.
+  Going longer costs little — the token is strictly *weaker* than the link
+  that produced it, and anyone holding the link can mint another. The one
+  real window is a password-protected share, where an outstanding token
+  survives a password change until expiry.
+- **No refresh.** `POST /api/auth/refresh` is outside `auth_middleware`, so it
+  rejects anonymous explicitly. A visitor whose token expires re-opens the
+  share link.
+
+Still required, unchanged from the original design:
+
+- **Distinct, share-scoped cookie name** — *not* `oxicloud_access`, which is
+  `Path=/`: reusing it means **a logged-in user who clicks a share link has
+  their real session overwritten**. Follow the `oxi_share_unlock_{token}`
+  precedent (`share_unlock_cookie.rs:79`).
+- **Reusing the share owner's uuid as the principal id is disqualified** —
+  `handle_session` auto-subscribes on `caller_id` with no authz check
+  (`rt_ws.rs:402`, `:412`) and hardcodes `Subject::User(caller_id)` at `:657`.
+
+**Known limitation, deferred not designed around:** one share per session.
+`Subject` is single-valued, so two share links in two tabs clobber each other.
+`subject_match_set` (`pg_acl_engine.rs:663-675`) already returns a *set* of
+ids, so the fix is a `Subject::Tokens(Vec<Uuid>)` variant with no SQL change.
 
 ### No WebSocket — and the draft's claim was wrong
 
@@ -276,45 +325,65 @@ lines of the share page.
 
 ## Phases
 
-### Phase 0 — Principal plumbing *(no behaviour change; ships alone)*
+### Phase 0 — Principal plumbing ✅ **DONE** *(no behaviour change; all dormant)*
 
-1. `UserRole::Anonymous`, `SessionOrigin::Share` + CHECK migration, nullable
-   `sessions.user_id` + the paired CHECK, `CurrentUser::is_anonymous()`.
-2. **Anonymous short-circuit in `auth_middleware`** at `auth.rs:198`, `:208`,
-   `:340`, `:349` — today an anonymous session cannot even pass: the nil-sub check
-   rejects it, and `resolve_live_role` → `get_user_flags` → `NotFound` →
-   `LiveRole::Revoked` → 401. Early return in
-   `require_no_password_change_pending_layer` (`user.rs:320`) too, or every
-   anonymous request pays an uncached `auth.users` SELECT (moka never caches
-   errors).
-3. **Allowlist layer** + `403` + `authz.denied` audit for anything off it.
-4. **Close the fail-open sites**: `require_internal_user` (`user.rs:64-71`) admits
-   a rowless principal through its `_ => Ok(())` arm — the only middleware
-   guarding `/webdav`, `/caldav`, `/carddav`. Also `decide_live_role`
-   (`:169-176`), which resurrects the *claim* role on a transient DB error.
-5. **Patch the four bypasses**: `middleware/admin.rs:61` and `:119`; the three DAV
-   `extract_user` functions; `rt_ws.rs:240-255`.
-6. Thread `Subject` into seven entry points — `folder_service.rs:448, :529, :1170,
-   :1312, :1377`; `file_retrieval_service.rs:192, :212, :230, :252`;
-   `file_management_service.rs:440`. Precedent: `drive_management_service.rs:83`
-   already takes `Subject` and guards tokens at `:104`.
-7. **Skip `notify_file_accessed`** for callers with no user id
-   (`file_retrieval_service.rs:542, :637, :664, :709`) — `auth.user_recent_files.user_id`
-   is `NOT NULL REFERENCES auth.users(id)`, so every anonymous download is a
-   guaranteed FK violation: spawned and warn-logged, not fatal, but a log flood
-   and a permanently poisoned moka throttle entry.
-8. **Token predicate in `fetch_ancestor_walk`** (`folder_db_repository.rs:1550`) —
-   `has_folder_grant` **only, never the drive grant**. Today the walk is blind to
-   token grants, so the chain empties and ancestors 404. With the predicate the
-   boundary lands exactly on the share root and nothing above it is returned.
+Eleven commits, each gated and independently reviewable. Nothing mints an
+anonymous session yet, so no behaviour changed.
 
-### Phase 1 — `/s/{token}` mints the session
+1. ✅ `UserRole::Anonymous` with **two** parsers — `from_stored` (cannot yield
+   anonymous; the DB has no such row) and `from_session` (can). Ordering is an
+   explicit `rank()`, not a derived `Ord`, so reordering variants cannot
+   silently invert every comparison. **No migration** — see the revised session
+   model above.
+   *Discovered here:* every existing parse site is `Some("admin") => Admin,
+   _ => User` — fail-**open**. Adding a variant to an enum whose parsers default
+   to `User` would have made `role: "anonymous"` a privilege escalation.
+   `CurrentUser::role_enum()` resolves unknowns to `Anonymous` instead.
+2. ✅ **`AuthUser` and `CurrentUserId` reject anonymous**, keeping ~200 handlers
+   closed with zero edits. `OptionalUserId` **deleted** — zero call sites, so
+   teaching it about anonymous would have guarded nothing.
+   `require_role(&cu, min)` returns a `Result`, so `?` makes it unignorable.
+3. ✅ **Allowlist** as a `route_layer` (see the note above).
+4. ✅ **Anonymous short-circuit** in `resolve_live_role` — extracted as
+   `anonymous_live_role` so the branch is testable rather than sitting untested
+   in the authentication path.
+5. ✅ **Fail-open site closed**: `require_internal_user`'s `_ => Ok(())` admitted
+   a rowless principal past the only middleware guarding all three DAV
+   surfaces. `NotFound` now denies; transient errors deliberately stay open,
+   and that distinction is now written down and tested.
+6. ✅ **Four bypasses patched.** The three DAV `extract_user` copies were
+   **extracted into one** `auth_user_from_extensions` rather than patched
+   three times — three copies is three chances to forget, which is how they
+   drifted apart originally.
+7. ✅ **`Subject` threaded** through the service entry points. Only the five
+   read-path methods on `FileRetrievalUseCase` move; the other nine keep
+   `caller_id: Uuid` **deliberately**, so the signature records which
+   operations a non-user principal may reach.
+   Added `Subject::user_id()` / `token_id()` — `Subject::id()` is the trap they
+   exist to avoid, since it returns a share id that satisfies no FK.
+8. ✅ **`notify_file_accessed` skipped** for callers with no user id — otherwise
+   every share download is a guaranteed FK violation on
+   `auth.user_recent_files`.
+9. ✅ **Token predicate in `fetch_ancestor_walk`**, on `has_folder_grant` only.
+   The breadcrumb then truncates at the share root with **no share-specific
+   code in the caller**. Also stopped resolving `fetch_grant_by` for token
+   callers — it would have published the **owner's username** to anonymous
+   visitors.
+10. ✅ **`CallerSubject`** — the single place a session (`role`) becomes an
+    authorization subject (`Subject`). Refuses incoherent principals rather
+    than guessing: `anonymous` with no `share_id` would otherwise fall back to
+    `Subject::User(cu.id)` and match a *session* id against user grants.
+11. ✅ **Stateless share sessions** — `share_id` JWT claim, no DB row, own TTL.
 
-`/verify` (and the no-password path) resolves via `get_shared_link_with_unlock` —
-**one call that preserves the password gate and expiry**, being the same call the
-bespoke path makes — then mints or augments the anonymous session, adding
-`share_id` to its bag. Reshape `GET /api/s/{token}`. Rate-limit `/verify`. Legacy
-endpoints stay alive.
+### Phase 1 — `/s/{token}` mints the session *(in progress)*
+
+`/verify` (and the no-password path) resolves via `get_shared_link_with_unlock`
+— **one call that preserves the password gate and expiry**, being the same call
+the bespoke path makes — then mints the anonymous JWT and sets a share-scoped
+cookie. Reshape `GET /api/s/{token}`. Rate-limit `/verify`. Swap the seven
+allowlisted routes to `CallerSubject`. Validate the `role`/`share_id` pairing at
+**construction** in `auth_middleware`, not only at use, so an incoherent
+principal never enters a request. Legacy endpoints stay alive.
 
 ### Phase 2 — Disclosure fixes *(the ones most likely to be missed)*
 
@@ -386,17 +455,16 @@ Plus:
 
 ## Operational
 
-- **Metrics**: add `AND origin <> 'share'` to all three queries in
-  `session_liveness_gauges.rs:108-135` and to `SessionSummaryDto::is_online`.
-  `oxicloud_sessions_online_users` is `COUNT(DISTINCT user_id)`, which **silently
-  skips NULLs** — so sessions would inflate while users would not, corrupting the
-  documented tabs-per-user ratio with no error anywhere. Consider not stamping
-  `last_seen_at` at all for anonymous (`auth.rs:240-242`, `:373-375`).
-- **Cleanup**: today a visitor row would persist **7 + 90 days**
-  (`expires_at` + `RETENTION_DAYS`). Add a second predicate —
-  `origin = 'share' AND expires_at < NOW()` — and revoke anonymous sessions when
-  their share is revoked or expires (`share_service.rs:443`). Nothing can reach
-  them today: `revoke_all_user_sessions` is keyed on `user_id`.
+- **Metrics and cleanup: no longer applicable.** Both existed only because of
+  the session row. Stateless sessions create nothing to count, nothing to
+  exclude from `session_liveness_gauges`, nothing to purge, and no 7+90-day
+  retention problem. The only residual check is that an anonymous JWT carries
+  **no `sid`**, so `LastSeenTracker::stamp` never fires for one — it is keyed
+  on `sid` (`auth.rs:240-242`, `:373-375`), so this holds by construction.
+  *(The original text noted that `oxicloud_sessions_online_users` is
+  `COUNT(DISTINCT user_id)`, which silently skips NULLs — sessions would have
+  inflated while users did not, corrupting the tabs-per-user ratio with no
+  error anywhere. Worth remembering if a session row is ever reconsidered.)*
 - **Docs**: no session taxonomy exists anywhere. `architecture/auth-model.md` gains
   a "Session roles" section covering the three roles and the six existing
   `SessionOrigin` variants; `architecture/share-integration.md:35-40, :66-67`
@@ -411,7 +479,8 @@ Plus:
 |---|---|---|
 | A fifth auth bypass is added later | **Critical** | Route-coverage test over the assembled router; allowlist constant |
 | `role` is a `SmolStr` — no compile error guides the change | **High** | `CurrentUser::is_anonymous()` as the single grep point |
-| Anonymous refresh outliving share revocation | **High** | No refresh for anonymous; short TTL; revoke-on-share-revoke |
+| Anonymous refresh outliving share revocation | ~~High~~ **Resolved by design** | Stateless sessions cannot refresh, and the engine re-checks the token grant per request — deleting a share denies every outstanding token immediately, whatever its TTL |
+| Outstanding token survives a share **password** change until TTL | **Low** | Bounded by `OXICLOUD_SHARE_SESSION_EXPIRY_SECS` (4 h). The pre-existing `oxi_share_unlock_{token}` cookie already has this property, so it is not a regression |
 | Cookie collision downgrades a logged-in user's session | **High** | Distinct share-scoped cookie name |
 | A share with no `role_grants` token row 404s | **High** | Pre-flight gate on Phase 4: count must be 0, else backfill |
 | A Nextcloud surface builds `/api/s/{token}/file/{id}` | **High** | `public_shares.hurl:139-147` claims so — grep `nextcloud/`; **hard gate on Phase 4** |
