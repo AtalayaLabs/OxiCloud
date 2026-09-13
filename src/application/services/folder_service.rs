@@ -1160,15 +1160,11 @@ impl FolderService {
     pub async fn get_ancestors_with_perms(
         &self,
         leaf_id: &str,
-        caller_id: Uuid,
+        caller: Subject,
     ) -> Result<FolderAncestorsDto, DomainError> {
         // Gate: caller must have Read on the leaf. Denial → 404 (anti-enum).
         self.authz
-            .require(
-                Subject::User(caller_id),
-                Permission::Read,
-                Self::folder_resource(leaf_id)?,
-            )
+            .require(caller, Permission::Read, Self::folder_resource(leaf_id)?)
             .await?;
 
         let leaf_uuid =
@@ -1176,7 +1172,7 @@ impl FolderService {
 
         let mut rows = self
             .folder_storage
-            .fetch_ancestor_walk(caller_id, leaf_uuid)
+            .fetch_ancestor_walk(caller, leaf_uuid)
             .await?;
         if rows.is_empty() {
             return Err(DomainError::not_found("Folder", leaf_id));
@@ -1213,10 +1209,20 @@ impl FolderService {
         } else {
             ("folder", top.id)
         };
-        let grant_by = self
-            .folder_storage
-            .fetch_grant_by(caller_id, grant_resource_type, grant_resource_id)
-            .await?;
+        let grant_by = match caller.user_id() {
+            Some(uid) => {
+                self.folder_storage
+                    .fetch_grant_by(uid, grant_resource_type, grant_resource_id)
+                    .await?
+            }
+            // Deliberately left unresolved for a public-share visitor. This
+            // lookup exists to name the person who shared ("via Design"),
+            // and it does `SELECT username FROM auth.users WHERE id =
+            // granted_by` — which would publish the owner's identity to an
+            // anonymous caller. `None` renders as "no named sharer", the
+            // correct answer for a link that is anonymous by design.
+            None => None,
+        };
         let subject = grant_by
             .as_ref()
             .map(

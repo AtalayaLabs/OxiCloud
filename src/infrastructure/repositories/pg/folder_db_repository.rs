@@ -8,6 +8,7 @@
 //! database triggers, so reading a folder's full path is always O(1) — no
 //! recursive CTEs or N+1 queries.
 
+use crate::domain::services::authorization::Subject;
 use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -1509,9 +1510,26 @@ impl FolderDbRepository {
     /// the leaf, growing as we move up. `has_drive_grant` / `has_folder_grant`
     /// are the two Read predicates the service uses to identify the
     /// share/drive boundary and choose the access-source kind.
+    /// Takes a [`Subject`] so a public-share visitor can walk the chain as
+    /// `Subject::Token(share_id)`.
+    ///
+    /// The token predicate is added to `has_folder_grant` **only, never to
+    /// `has_drive_grant`** — a share token must not be able to satisfy a
+    /// drive-wide grant, which would make the whole drive its boundary
+    /// instead of the shared folder.
+    ///
+    /// This is what makes the breadcrumb truncate correctly with no
+    /// share-specific code in the caller: the shared folder is the only
+    /// ancestor carrying a token grant, so the boundary search in
+    /// `folder_service` lands exactly on it and everything above is
+    /// discarded. Folders between the share root and the leaf have no grant
+    /// of their own but sit below the boundary, so they are retained.
+    ///
+    /// For a user caller `$3` binds to `NULL`, so the added disjunct is
+    /// `NULL` — never true — and the query plan is unchanged.
     pub async fn fetch_ancestor_walk(
         &self,
-        caller_id: Uuid,
+        caller: Subject,
         leaf_id: Uuid,
     ) -> Result<Vec<AncestorRow>, DomainError> {
         // Recursive CTE walks `parent_id` from the leaf upward. Group ids
@@ -1548,7 +1566,8 @@ impl FolderDbRepository {
                        AND g.resource_id = c.id
                        AND (g.expires_at IS NULL OR g.expires_at > NOW())
                        AND ((g.subject_type = 'user'  AND g.subject_id = $1)
-                         OR (g.subject_type = 'group' AND g.subject_id = ANY(groups.ids)))
+                         OR (g.subject_type = 'group' AND g.subject_id = ANY(groups.ids))
+                         OR (g.subject_type = 'token' AND g.subject_id = $3))
                 ) AS has_folder_grant,
                 EXISTS (
                     SELECT 1 FROM storage.role_grants g, groups
@@ -1561,9 +1580,13 @@ impl FolderDbRepository {
               FROM chain c
              ORDER BY c.depth DESC
         "#;
+        // A token caller has no user id; `storage.caller_group_ids(nil)` is a
+        // plain recursive walk over `subject_group_members` and returns an
+        // empty set for it rather than erroring.
         sqlx::query_as::<_, AncestorRow>(sql)
-            .bind(caller_id)
+            .bind(caller.user_id().unwrap_or_else(Uuid::nil))
             .bind(leaf_id)
+            .bind(caller.token_id())
             .fetch_all(self.pool())
             .await
             .map_err(|e| DomainError::internal_error("FolderDb", format!("ancestor walk: {e}")))

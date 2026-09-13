@@ -24,6 +24,7 @@ use crate::application::services::folder_service::FolderService;
 use crate::application::services::mount_registry::MountConfig;
 use crate::common::di::AppState as GlobalAppState;
 use crate::domain::entities::file::File;
+use crate::domain::services::authorization::Subject;
 use crate::domain::services::external_mount_id::{
     NodeId, encode_child_id, virtual_file_etag, virtual_folder_etag,
 };
@@ -121,7 +122,10 @@ impl FolderHandler {
         Path(id): Path<String>,
     ) -> impl IntoResponse {
         let service = &state.applications.folder_service_concrete;
-        match service.get_ancestors_with_perms(&id, auth_user.id).await {
+        match service
+            .get_ancestors_with_perms(&id, Subject::User(auth_user.id))
+            .await
+        {
             Ok(dto) => (StatusCode::OK, Json(dto)).into_response(),
             Err(err) => AppError::from(err).into_response(),
         }

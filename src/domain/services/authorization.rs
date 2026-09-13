@@ -58,6 +58,19 @@ impl Subject {
         }
     }
 
+    /// The `storage.shares.id` behind this subject, if it is a share token.
+    ///
+    /// Counterpart to [`Self::user_id`]. Binding this as a nullable SQL
+    /// parameter lets one query serve both principal kinds: for a user it
+    /// is `NULL`, so any `subject_id = $n` comparison against it is `NULL`
+    /// — never true — and the existing plan is unchanged.
+    pub fn token_id(&self) -> Option<Uuid> {
+        match self {
+            Subject::Token(id) => Some(*id),
+            Subject::User(_) | Subject::Group(_) => None,
+        }
+    }
+
     /// Reconstruct from a SQL row's `(subject_type, subject_id)` pair.
     ///
     /// `"external"` is no longer accepted: PR-2 of the external-users
