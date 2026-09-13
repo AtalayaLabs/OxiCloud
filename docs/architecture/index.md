@@ -77,3 +77,4 @@ src/
 - [Backend Storage →](/architecture/backend-storage)
 - [Derived and Attached Blobs →](/architecture/derived-and-attached-blobs) — thumbnails, transcodes and uploaded previews: why content-keyed and file-keyed artifacts need separate tables
 - [Background Jobs →](/architecture/jobs)
+- [Message Bus & Notifications →](/architecture/message-bus-and-notifications) — real-time WebSocket bus (topics, AuthZ scopes, tab-visibility grace-close), persistent notifications (bell), AsyncAPI vs OpenAPI schema ownership

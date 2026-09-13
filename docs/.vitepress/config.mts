@@ -176,6 +176,10 @@ export default defineConfig({
             { text: "Authentication model", link: "/architecture/auth-model" },
             { text: "Magic-link auth", link: "/architecture/magic-link-auth" },
             { text: "Background jobs", link: "/architecture/jobs" },
+            {
+              text: "Message bus & notifications",
+              link: "/architecture/message-bus-and-notifications",
+            },
             { text: "UI diagnostics", link: "/architecture/ui-diagnostics" },
           ],
         },
