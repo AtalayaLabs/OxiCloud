@@ -35,7 +35,7 @@ use crate::common::errors::DomainError;
 use crate::domain::entities::file::File;
 use crate::domain::entities::folder::Folder;
 use crate::domain::repositories::folder_repository::FolderRepository;
-use crate::domain::services::authorization::Permission;
+use crate::domain::services::authorization::{Permission, Subject};
 use crate::domain::services::i18n_service::{I18nResult, I18nService, Locale};
 use crate::domain::services::path_service::StoragePath;
 
@@ -649,7 +649,7 @@ pub struct StubFileManagementUseCase;
 impl FileManagementUseCase for StubFileManagementUseCase {
     async fn require_permission(
         &self,
-        _caller_id: Uuid,
+        _caller: Subject,
         _permission: Permission,
         _file_id: &str,
     ) -> Result<(), DomainError> {

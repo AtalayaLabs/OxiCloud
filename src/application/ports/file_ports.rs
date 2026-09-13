@@ -10,7 +10,7 @@ use crate::application::services::file_management_service::FileManagementService
 use crate::application::services::file_retrieval_service::FileRetrievalService;
 use crate::application::services::file_upload_service::FileUploadService;
 use crate::common::errors::DomainError;
-use crate::domain::services::authorization::Permission;
+use crate::domain::services::authorization::{Permission, Subject};
 
 // ─────────────────────────────────────────────────────
 // Upload port
@@ -308,9 +308,15 @@ pub trait FileRetrievalUseCase: Send + Sync + 'static {
 
 /// Primary port for file management operations
 pub trait FileManagementUseCase: Send + Sync + 'static {
+    /// Takes a [`Subject`] rather than a bare `caller_id: Uuid` because the
+    /// caller is not always a user: a public-share visitor authorises as
+    /// `Subject::Token(share_id)`, which the engine already understands.
+    /// Wrapping a `Uuid` in `Subject::User` at the call site keeps the
+    /// decision about *what kind of principal this is* with the caller,
+    /// where it is known, instead of assuming it here.
     async fn require_permission(
         &self,
-        caller_id: Uuid,
+        caller: Subject,
         permission: Permission,
         file_id: &str,
     ) -> Result<(), DomainError>;

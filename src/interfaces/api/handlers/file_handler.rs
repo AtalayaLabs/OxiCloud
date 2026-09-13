@@ -27,7 +27,10 @@ use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
 use crate::interfaces::range_requests::not_modified_response;
 use crate::interfaces::upload_ingest;
-use crate::{application::dtos::file_dto::FileDto, domain::services::authorization::Permission};
+use crate::{
+    application::dtos::file_dto::FileDto,
+    domain::services::authorization::{Permission, Subject},
+};
 use std::sync::Arc;
 
 /**
@@ -456,7 +459,7 @@ impl FileHandler {
         if let Err(err) = state
             .applications
             .file_management_service
-            .require_permission(auth_user.id, Permission::Read, &id)
+            .require_permission(Subject::User(auth_user.id), Permission::Read, &id)
             .await
         {
             return AppError::from(err).into_response();
@@ -716,7 +719,7 @@ impl FileHandler {
         if let Err(err) = state
             .applications
             .file_management_service
-            .require_permission(auth_user.id, Permission::Update, &id)
+            .require_permission(Subject::User(auth_user.id), Permission::Update, &id)
             .await
         {
             return AppError::from(err).into_response();
@@ -1238,7 +1241,7 @@ impl FileHandler {
         if let Err(err) = state
             .applications
             .file_management_service
-            .require_permission(auth_user.id, Permission::Read, &file_id)
+            .require_permission(Subject::User(auth_user.id), Permission::Read, &file_id)
             .await
         {
             return AppError::from(err).into_response();
