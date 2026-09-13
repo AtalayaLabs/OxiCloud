@@ -59,6 +59,7 @@ pub mod satellites_consistency_service;
 pub mod search_index;
 pub mod session_cleanup_service;
 pub mod session_liveness_gauges;
+pub mod share_ring;
 pub mod share_unlock_cookie;
 pub mod smtp_email_sender;
 pub mod swappable_blob_backend;
