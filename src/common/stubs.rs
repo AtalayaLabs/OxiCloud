@@ -383,7 +383,7 @@ pub struct StubFolderUseCase;
 impl FolderUseCase for StubFolderUseCase {
     async fn require_permission(
         &self,
-        _caller_id: Uuid,
+        _caller: Subject,
         _permission: Permission,
         _file_id: &str,
     ) -> Result<(), DomainError> {

@@ -6,12 +6,16 @@ use crate::application::dtos::folder_dto::{
 };
 
 use crate::common::errors::DomainError;
-use crate::domain::services::authorization::Permission;
+use crate::domain::services::authorization::{Permission, Subject};
 
 pub trait FolderUseCase: Send + Sync + 'static {
+    /// Takes a [`Subject`] rather than a bare `caller_id: Uuid` — a
+    /// public-share visitor authorises as `Subject::Token(share_id)`, which
+    /// the engine already understands. See the note on
+    /// `FileManagementUseCase::require_permission`.
     async fn require_permission(
         &self,
-        caller_id: Uuid,
+        caller: Subject,
         permission: Permission,
         folder_id: &str,
     ) -> Result<(), DomainError>;

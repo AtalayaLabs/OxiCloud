@@ -195,7 +195,7 @@ impl FolderService {
         impl FolderUseCase for FolderServiceStub {
             async fn require_permission(
                 &self,
-                _caller_id: Uuid,
+                _caller: Subject,
                 _permission: Permission,
                 _folder_id: &str,
             ) -> Result<(), DomainError> {
@@ -325,14 +325,12 @@ impl FolderUseCase for FolderService {
     /// DB write — this is a UX/resource optimization, not a security boundary.
     async fn require_permission(
         &self,
-        caller_id: Uuid,
+        caller: Subject,
         permission: Permission,
         folder_id: &str,
     ) -> Result<(), DomainError> {
         let resource = Self::folder_resource(folder_id)?;
-        self.authz
-            .require(Subject::User(caller_id), permission, resource)
-            .await
+        self.authz.require(caller, permission, resource).await
     }
 
     /// Creates a new folder

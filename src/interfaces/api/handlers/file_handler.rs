@@ -225,7 +225,7 @@ impl FileHandler {
                     && let Err(err) = state
                         .applications
                         .folder_service_concrete
-                        .require_permission(auth_user.id, Permission::Create, fid)
+                        .require_permission(Subject::User(auth_user.id), Permission::Create, fid)
                         .await
                 {
                     tracing::warn!(
