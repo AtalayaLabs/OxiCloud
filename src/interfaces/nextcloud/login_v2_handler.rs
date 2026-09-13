@@ -345,6 +345,8 @@ pub async fn handle_oidc_login_completion(
         // NC login-flow-v2 mints an app password — no browser, no
         // WebCrypto, always unbound. DPoP middleware exempts.
         dpop_jkt: None,
+        // An app-password principal is always a real user.
+        share_id: None,
     };
 
     let drives = match state
@@ -559,6 +561,8 @@ pub async fn handle_drive_pick(
         // NC login-flow-v2 mints an app password — no browser, no
         // WebCrypto, always unbound. DPoP middleware exempts.
         dpop_jkt: None,
+        // An app-password principal is always a real user.
+        share_id: None,
     };
 
     let _folder = match state

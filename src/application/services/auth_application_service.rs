@@ -1765,6 +1765,8 @@ impl AuthApplicationService {
             // flows); the DPoP middleware never reads CurrentUser
             // populated by this method. Leaving None is safe.
             dpop_jkt: None,
+            // A credential-verified principal is always a real user.
+            share_id: None,
         })
     }
 

@@ -501,6 +501,17 @@ pub struct CurrentUser {
     /// hot path (see `docs/plan/dpop.md` Gate 9).
     #[serde(skip)]
     pub dpop_jkt: Option<String>,
+    /// `storage.shares.id` when this principal is a public-share visitor.
+    ///
+    /// `Some` exactly when `role == anonymous`; the pairing is enforced by
+    /// `CallerSubject`, which refuses to build a principal where the two
+    /// disagree rather than guessing which one is right.
+    ///
+    /// This is what `CallerSubject` turns into `Subject::Token(share_id)`.
+    /// `id` is NOT that value: for an anonymous session `id` is the session's
+    /// own identifier and corresponds to no `auth.users` row.
+    #[serde(skip)]
+    pub share_id: Option<Uuid>,
 }
 
 impl CurrentUser {

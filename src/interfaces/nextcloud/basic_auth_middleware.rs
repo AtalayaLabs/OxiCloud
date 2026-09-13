@@ -225,6 +225,8 @@ pub async fn basic_auth_middleware(
                 email,
                 role,
                 dpop_jkt: None,
+                // Basic auth is app-password only; never a share visitor.
+                share_id: None,
             });
 
             // ── Resolve chroot from the Basic Auth drive marker ─────
