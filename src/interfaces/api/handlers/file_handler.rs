@@ -582,7 +582,7 @@ impl FileHandler {
         let file_retrieval_service = &state.applications.file_retrieval_service;
 
         let file = match file_retrieval_service
-            .get_file_or_trashed_with_perms(&id, auth_user.id)
+            .get_file_or_trashed_with_perms(&id, Subject::User(auth_user.id))
             .await
         {
             Ok(f) => f,
@@ -755,7 +755,7 @@ impl FileHandler {
         // Validate file ownership
         let file_retrieval_service = &state.applications.file_retrieval_service;
         if let Err(err) = file_retrieval_service
-            .get_file_with_perms(&id, auth_user.id)
+            .get_file_with_perms(&id, Subject::User(auth_user.id))
             .await
         {
             return AppError::from(err).into_response();
@@ -864,7 +864,10 @@ impl FileHandler {
         let retrieval = &state.applications.file_retrieval_service;
 
         // ── Get file metadata (ownership-scoped) ────────────────────────
-        let file_dto = match retrieval.get_file_with_perms(&id, auth_user.id).await {
+        let file_dto = match retrieval
+            .get_file_with_perms(&id, Subject::User(auth_user.id))
+            .await
+        {
             Ok(f) => f,
             Err(err) => {
                 return AppError::from(err).into_response();

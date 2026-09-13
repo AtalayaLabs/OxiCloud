@@ -21,6 +21,7 @@ use crate::application::services::folder_service::FolderService;
 use crate::application::services::trash_service::TrashService;
 use crate::common::config::AppConfig;
 use crate::common::errors::DomainError;
+use crate::domain::services::authorization::Subject;
 use uuid::Uuid;
 
 /// Specific errors for batch operations
@@ -335,7 +336,9 @@ impl BatchOperationService {
             let retrieval = self.file_retrieval.clone();
 
             async move {
-                let get_result = retrieval.get_file_with_perms(&file_id, user_id).await;
+                let get_result = retrieval
+                    .get_file_with_perms(&file_id, Subject::User(user_id))
+                    .await;
                 (file_id, get_result)
             }
         }))
@@ -853,7 +856,7 @@ impl BatchOperationService {
         let stream = match caller_id {
             Some(uid) => self
                 .file_retrieval
-                .get_file_stream_with_perms(file_id, uid)
+                .get_file_stream_with_perms(file_id, Subject::User(uid))
                 .await
                 .map_err(BatchOperationError::Domain)?,
             None => self

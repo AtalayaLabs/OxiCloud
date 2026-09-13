@@ -157,16 +157,28 @@ pub trait FileRetrievalUseCase: Send + Sync + 'static {
     /// Gets a file by its ID (system/internal — no ownership check).
     async fn get_file(&self, id: &str) -> Result<FileDto, DomainError>;
 
-    /// Gets a file by its ID, enforcing that `caller_id` is the owner.
+    // ── Read path: `Subject`, not `caller_id: Uuid` ──────────────────
+    //
+    // The five methods below take a `Subject` because a public-share
+    // visitor must be able to reach them as `Subject::Token(share_id)`.
+    // Every other method on this trait keeps `caller_id: Uuid` — and that
+    // asymmetry is deliberate documentation, not an oversight: a method
+    // taking a `Uuid` *cannot* be called with a token principal, so the
+    // signature itself records which operations a non-user caller may
+    // perform. Widening one to `Subject` is a decision to expose it, and
+    // should be made on purpose.
+
+    /// Gets a file by its ID, enforcing that `caller` may read it.
     ///
-    /// Returns `NotFound` if the file does not exist **or** belongs to
-    /// another user.  All user-facing handlers should use this method.
-    async fn get_file_with_perms(&self, id: &str, caller_id: Uuid) -> Result<FileDto, DomainError>;
+    /// Returns `NotFound` when the file does not exist **or** the caller
+    /// has no grant reaching it. All user-facing handlers should use this
+    /// method.
+    async fn get_file_with_perms(&self, id: &str, caller: Subject) -> Result<FileDto, DomainError>;
 
     async fn get_file_or_trashed_with_perms(
         &self,
         id: &str,
-        caller_id: Uuid,
+        caller: Subject,
     ) -> Result<FileDto, DomainError>;
 
     /// Gets a file by its path (for WebDAV), scoped to a drive.
@@ -200,7 +212,7 @@ pub trait FileRetrievalUseCase: Send + Sync + 'static {
     async fn get_file_stream_with_perms(
         &self,
         id: &str,
-        caller_id: Uuid,
+        caller: Subject,
     ) -> Result<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>, DomainError>;
 
     /// Optimized multi-tier download.
@@ -222,7 +234,7 @@ pub trait FileRetrievalUseCase: Send + Sync + 'static {
     async fn get_file_optimized_with_perms(
         &self,
         id: &str,
-        caller_id: Uuid,
+        caller: Subject,
         accept_webp: bool,
         prefer_original: bool,
     ) -> Result<(FileDto, OptimizedFileContent), DomainError>;
@@ -254,7 +266,7 @@ pub trait FileRetrievalUseCase: Send + Sync + 'static {
     async fn get_file_range_stream_with_perms(
         &self,
         id: &str,
-        caller_id: Uuid,
+        caller: Subject,
         start: u64,
         end: Option<u64>,
     ) -> Result<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>, DomainError>;

@@ -532,7 +532,7 @@ impl FileRetrievalUseCase for StubFileRetrievalUseCase {
     async fn get_file_or_trashed_with_perms(
         &self,
         _id: &str,
-        _owner_id: Uuid,
+        _caller: Subject,
     ) -> Result<FileDto, DomainError> {
         Ok(FileDto::default())
     }
@@ -560,7 +560,7 @@ impl FileRetrievalUseCase for StubFileRetrievalUseCase {
     async fn get_file_stream_with_perms(
         &self,
         _id: &str,
-        _caller_id: Uuid,
+        _caller: Subject,
     ) -> Result<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>, DomainError> {
         let empty_stream = futures::stream::empty::<Result<Bytes, std::io::Error>>();
         Ok(Box::new(empty_stream))
@@ -606,7 +606,7 @@ impl FileRetrievalUseCase for StubFileRetrievalUseCase {
     async fn get_file_with_perms(
         &self,
         _id: &str,
-        _caller_id: Uuid,
+        _caller: Subject,
     ) -> Result<FileDto, DomainError> {
         Ok(FileDto::default())
     }
@@ -614,7 +614,7 @@ impl FileRetrievalUseCase for StubFileRetrievalUseCase {
     async fn get_file_optimized_with_perms(
         &self,
         _id: &str,
-        _caller_id: Uuid,
+        _caller: Subject,
         _accept_webp: bool,
         _prefer_original: bool,
     ) -> Result<(FileDto, OptimizedFileContent), DomainError> {
@@ -631,7 +631,7 @@ impl FileRetrievalUseCase for StubFileRetrievalUseCase {
     async fn get_file_range_stream_with_perms(
         &self,
         _id: &str,
-        _caller_id: Uuid,
+        _caller: Subject,
         _start: u64,
         _end: Option<u64>,
     ) -> Result<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>, DomainError> {

@@ -2136,17 +2136,18 @@ pub(crate) async fn splice_patch_streams(
     end: Option<u64>,
     file_size: u64,
 ) -> Result<(RangeSegment, RangeSegment), AppError> {
-    let prefix_stream: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> =
-        if start == 0 {
-            Box::pin(stream::empty())
-        } else {
-            Box::into_pin(
-                file_retrieval
-                    .get_file_range_stream_with_perms(file_id, caller_id, 0, Some(start))
-                    .await
-                    .map_err(AppError::from)?,
-            )
-        };
+    let prefix_stream: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> = if start
+        == 0
+    {
+        Box::pin(stream::empty())
+    } else {
+        Box::into_pin(
+            file_retrieval
+                .get_file_range_stream_with_perms(file_id, Subject::User(caller_id), 0, Some(start))
+                .await
+                .map_err(AppError::from)?,
+        )
+    };
     let suffix_len = match end {
         Some(end) if end + 1 < file_size => file_size - (end + 1),
         _ => 0,
@@ -2155,7 +2156,7 @@ pub(crate) async fn splice_patch_streams(
     {
         Some(end) if end + 1 < file_size => Box::into_pin(
             file_retrieval
-                .get_file_range_stream_with_perms(file_id, caller_id, end + 1, None)
+                .get_file_range_stream_with_perms(file_id, Subject::User(caller_id), end + 1, None)
                 .await
                 .map_err(AppError::from)?,
         ),

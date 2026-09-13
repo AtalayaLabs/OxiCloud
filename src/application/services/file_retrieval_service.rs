@@ -136,6 +136,25 @@ impl FileRetrievalService {
         }
     }
 
+    /// [`Self::notify_file_accessed`] for a caller that may not be a user.
+    ///
+    /// A `Subject::Token` — a public-share visitor — has no `auth.users`
+    /// row, and `auth.user_recent_files.user_id` is `NOT NULL REFERENCES
+    /// auth.users(id)`. Recording an access for one is therefore a
+    /// guaranteed FK violation on **every download through a share link**.
+    /// The hook is spawned and its error only `warn`-logged, so it would
+    /// not break the response — it would produce a per-download log flood
+    /// and a permanently poisoned throttle entry, which is the kind of
+    /// failure nobody notices until the disk fills.
+    ///
+    /// "Recent files" is also meaningless for an anonymous visitor: there
+    /// is no one to show it to.
+    fn notify_subject_accessed(&self, caller: Subject, file_id: &str) {
+        if let Some(user_id) = caller.user_id() {
+            self.notify_file_accessed(user_id, file_id);
+        }
+    }
+
     // ── private helpers ──────────────────────────────────────────
 
     /// Read a file's full content through the streaming API into a single
@@ -182,15 +201,13 @@ impl FileRetrievalService {
         &self,
         file_id: &str,
         perm: Permission,
-        caller_id: Uuid,
+        caller: Subject,
     ) -> Result<(), DomainError> {
         let authz = self.authz.as_ref().ok_or_else(|| {
             DomainError::internal_error("FileRetrieval", "Authorization engine unavailable")
         })?;
         let uuid = Uuid::parse_str(file_id).map_err(|_| DomainError::not_found("File", file_id))?;
-        authz
-            .require(Subject::User(caller_id), perm, Resource::File(uuid))
-            .await
+        authz.require(caller, perm, Resource::File(uuid)).await
     }
 
     /// Engine check for a target folder. `None` is allowed (root namespace,
@@ -532,23 +549,23 @@ impl FileRetrievalUseCase for FileRetrievalService {
         Ok(FileDto::from(file))
     }
 
-    async fn get_file_with_perms(&self, id: &str, caller_id: Uuid) -> Result<FileDto, DomainError> {
-        self.require_file(id, Permission::Read, caller_id).await?;
+    async fn get_file_with_perms(&self, id: &str, caller: Subject) -> Result<FileDto, DomainError> {
+        self.require_file(id, Permission::Read, caller).await?;
         let file = self.file_read.get_file(id).await?;
         // After authZ + lookup succeed: this caller has just inspected the
         // file. Recent listing observes via the hook. The throttle in the
         // recording impl coalesces repeat metadata fetches against the same
         // file (file viewer poll, browse-then-download pattern).
-        self.notify_file_accessed(caller_id, id);
+        self.notify_subject_accessed(caller, id);
         Ok(FileDto::from(file))
     }
 
     async fn get_file_or_trashed_with_perms(
         &self,
         id: &str,
-        caller_id: Uuid,
+        caller: Subject,
     ) -> Result<FileDto, DomainError> {
-        self.require_file(id, Permission::Read, caller_id).await?;
+        self.require_file(id, Permission::Read, caller).await?;
         let file = self.file_read.get_file_or_trashed(id).await?;
         Ok(FileDto::from(file))
     }
@@ -631,10 +648,10 @@ impl FileRetrievalUseCase for FileRetrievalService {
     async fn get_file_stream_with_perms(
         &self,
         id: &str,
-        caller_id: Uuid,
+        caller: Subject,
     ) -> Result<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>, DomainError> {
-        self.require_file(id, Permission::Read, caller_id).await?;
-        self.notify_file_accessed(caller_id, id);
+        self.require_file(id, Permission::Read, caller).await?;
+        self.notify_subject_accessed(caller, id);
         self.file_read.get_file_stream(id).await
     }
 
@@ -654,14 +671,14 @@ impl FileRetrievalUseCase for FileRetrievalService {
     async fn get_file_optimized_with_perms(
         &self,
         id: &str,
-        caller_id: Uuid,
+        caller: Subject,
         accept_webp: bool,
         prefer_original: bool,
     ) -> Result<(FileDto, OptimizedFileContent), DomainError> {
-        self.require_file(id, Permission::Read, caller_id).await?;
+        self.require_file(id, Permission::Read, caller).await?;
         let file = self.file_read.get_file(id).await?;
         let dto = FileDto::from(file);
-        self.notify_file_accessed(caller_id, id);
+        self.notify_subject_accessed(caller, id);
         self.optimized_inner(id, dto, accept_webp, prefer_original)
             .await
     }
@@ -698,15 +715,15 @@ impl FileRetrievalUseCase for FileRetrievalService {
     async fn get_file_range_stream_with_perms(
         &self,
         id: &str,
-        caller_id: Uuid,
+        caller: Subject,
         start: u64,
         end: Option<u64>,
     ) -> Result<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>, DomainError> {
-        self.require_file(id, Permission::Read, caller_id).await?;
+        self.require_file(id, Permission::Read, caller).await?;
         // Range requests are bursty (video seeks, NC chunked downloads) —
         // the recording hook's per-(caller, file) throttle absorbs the
         // storm so one watched video lands as one Recent row, not 1000.
-        self.notify_file_accessed(caller_id, id);
+        self.notify_subject_accessed(caller, id);
         self.file_read.get_file_range_stream(id, start, end).await
     }
 
