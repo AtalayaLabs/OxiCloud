@@ -160,6 +160,7 @@ fn section_identity(iters: u64) {
         role: "user".to_string(),
         dpop_jkt: None,
         sid: None,
+        share_id: None,
     });
 
     let (bn, ba) = measure("BEFORE String clones + role to_string", iters, || {

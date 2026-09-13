@@ -70,6 +70,19 @@ pub struct TokenClaims {
     /// harmless — the missing sid just means no stamp fires, and
     /// the token still authenticates normally).
     pub sid: Option<Uuid>,
+    /// `storage.shares.id` when this token is a public-share session —
+    /// present exactly when `role == "anonymous"`.
+    ///
+    /// Such a session is **stateless**: no `auth.sessions` row, no `sid`,
+    /// the JWT is the whole session. It cannot refresh (the visitor
+    /// re-opens the share link instead), is never revoked individually,
+    /// and must not appear in liveness metrics or the admin sessions
+    /// panel — so a row would exist only to be excluded from everything.
+    ///
+    /// Revocation is at the SHARE, not the session: deleting a share drops
+    /// its token grant, and the engine then denies every request carrying
+    /// this token regardless of how long it has left to run.
+    pub share_id: Option<Uuid>,
 }
 
 /// Port for JWT token operations.

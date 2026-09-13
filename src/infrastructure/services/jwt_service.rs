@@ -66,6 +66,22 @@ struct JwtClaims {
     /// silently.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sid: Option<String>,
+    /// `storage.shares.id` when this token is a public-share session.
+    ///
+    /// Present exactly when `role == "anonymous"`. Such a session has NO
+    /// `auth.sessions` row and no `sid`: the JWT is the whole session.
+    /// That is deliberate — an anonymous session cannot refresh, is not
+    /// revoked individually, and must not appear in liveness metrics or the
+    /// admin sessions panel, so a row would exist only to be excluded from
+    /// everything. Revocation happens at the share instead: deleting it
+    /// drops the token grant, and every subsequent request is denied by the
+    /// engine regardless of how long this token has left.
+    ///
+    /// Wire type is `String` for the same reason as `sid` — a malformed
+    /// value fails at decode with a clear parse error rather than poisoning
+    /// the field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub share_id: Option<String>,
 }
 
 /// RFC 9449 §5 confirmation-key wrapper. Only the `jkt` member is
@@ -94,6 +110,11 @@ impl From<JwtClaims> for TokenClaims {
             .sid
             .as_deref()
             .and_then(|s| uuid::Uuid::parse_str(s).ok());
+        // Same boundary-parse rationale as `sid`.
+        let share_id = claims
+            .share_id
+            .as_deref()
+            .and_then(|s| uuid::Uuid::parse_str(s).ok());
         TokenClaims {
             sub_id,
             sub: claims.sub,
@@ -105,6 +126,7 @@ impl From<JwtClaims> for TokenClaims {
             role: claims.role,
             dpop_jkt: claims.cnf.map(|c| c.jkt),
             sid,
+            share_id,
         }
     }
 }
@@ -244,6 +266,8 @@ impl TokenServicePort for JwtTokenService {
                 jkt: jkt.to_string(),
             }),
             sid: session_id.map(|id| id.to_string()),
+            // Never a share session — this path mints for a real `User`.
+            share_id: None,
         };
 
         // Log JWT claims for debugging
