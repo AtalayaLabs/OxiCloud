@@ -2,6 +2,72 @@
 
 This file provides guidance to coding agents (Claude Code, Codex, Cursor, Aider, …) working with this repository. Claude Code reads it via `@AGENTS.md` in `CLAUDE.md`.
 
+# Purpose — what OxiCloud is, and what it is not
+
+Read this before designing anything. Most "should we…" questions are answered by
+the scale target rather than by taste.
+
+- **Open source, and it stays that way.** MIT (`LICENSE`). This is a constraint on
+  what you may add, not a footnote: dependencies must be license-compatible — a
+  GPL/AGPL crate or npm package would force the whole project to relicense, and
+  that is not on the table. No feature may be gated behind a licence key or an
+  "enterprise edition", and nothing core may hard-depend on a proprietary service
+  or SDK. Vendored frontend assets (`frontend/static/vendors/`) carry the same
+  rule; record the licence when vendoring.
+- **Self-hosted**, for an individual or an enterprise. The operator is not an SRE
+  team: defaults must be safe, failures loud, and nothing may silently depend on a
+  cloud service.
+- **Target scale is up to ~10k users.** Design against that number in both
+  directions. Do not build million-user machinery (sharding, eventual consistency,
+  service decomposition) for a load that will never arrive; equally, never ship
+  anything O(users) per request, or a table scan that is fine at 50 users and
+  fatal at 10k.
+- **Not a mass hoster.** OxiCloud does not claim to serve millions of users on one
+  deployment, and trade-offs should not pretend otherwise.
+- **Decentralised by intent.** Many instances federating beats one large instance —
+  OpenCloudMesh is one route. Prefer designs that survive "this is one of many
+  instances" over ones assuming a single authoritative deployment.
+
+Targets:
+
+- **Feature ambition: Google Workspace / Office 365.** Breadth of capability is a
+  goal, not scope creep.
+- **Collaboration is the main feature axis.** OxiCloud is not a personal backup
+  drive that happens to have sharing bolted on — sharing, shared drives, grants,
+  co-editing (WOPI) and live updates are the product. When choosing what to build
+  or how to build it, the multi-user case is the primary one, not the case to
+  generalise to later. A feature that works only for a single owner is unfinished.
+- **Customer target: NextCloud users.** Hence the NextCloud-compatible API surface
+  (`/remote.php`, `/ocs`, `/status.php`) — compatibility is a feature, and breaking
+  it costs adopters.
+
+## Design axes
+
+Four things decide an open design question. **Security and resilience are
+absolute** — they are not traded against anything. Performance is measured against
+the 10k target. Privacy is a direction with a stated endpoint.
+
+- **Resilience.** This is a storage product: **no data loss, no data corruption,
+  ever.** Anything that can silently drop or alter bytes is a top-severity defect,
+  not a trade-off. In practice that means: a job that skips work must never report
+  success (pause at a cursor instead — `docs/plan/jobs-handling-recoverable-error.md`);
+  a read failure is never proof that data is absent; content-addressing and
+  ref-counting are load-bearing, not decoration; and consistency checks are
+  discovery-only unless repair is explicitly requested.
+- **Security.** Prefer deny-by-default over assert-later; a guarantee enforced by
+  the type system or the router beats one a reviewer must remember. AuthZ lives in
+  the service layer, never in handlers. See `src/AGENTS.md` § AuthZ enforcement
+  points.
+- **Performance.** Measure against 10k users, not a dev instance. The hot paths are
+  listing, thumbnails and auth — a per-row query or an extra round trip there is a
+  real regression even when it looks harmless.
+- **Privacy.** When the backend belongs to a third party (S3, Azure), encryption at
+  rest is a *should-have*; **end-to-end encryption is the target.** Designs that
+  assume the server can always read plaintext will have to be undone — the `Vault`
+  drive kind is reserved for the E2E case.
+
+Where two conflict, resilience and security win, and the cost is documented.
+
 # Architecture
 
 This project is split into two parts:
