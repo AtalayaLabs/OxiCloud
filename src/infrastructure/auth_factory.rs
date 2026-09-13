@@ -25,6 +25,7 @@ pub async fn create_auth_services(
         config.auth.jwt_secret.clone(),
         config.auth.access_token_expiry_secs,
         config.auth.refresh_token_expiry_secs,
+        config.auth.share_session_expiry_secs,
     ));
 
     // Create password hashing service with configured Argon2id parameters

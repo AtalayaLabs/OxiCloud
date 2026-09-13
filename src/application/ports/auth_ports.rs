@@ -114,6 +114,21 @@ pub trait TokenServicePort: Send + Sync + 'static {
     /// just that one.
     fn validate_token(&self, token: &str) -> Result<Arc<TokenClaims>, DomainError>;
 
+    /// Mint a public-share (anonymous) session token.
+    ///
+    /// Carries `role = "anonymous"` and the `share_id` claim; no `sid`, and
+    /// no `auth.sessions` row exists for it — the JWT **is** the session.
+    /// See `docs/plan/rationalize-publicshare.md`.
+    ///
+    /// `sub` is a freshly generated UUID identifying this visit. It is NOT a
+    /// user id and corresponds to no row anywhere; every extractor refuses
+    /// `anonymous` before anything could mistake it for one.
+    ///
+    /// TTL comes from `share_session_expiry_secs`, deliberately separate
+    /// from the access-token TTL: an anonymous session cannot refresh, so
+    /// that value is the whole visit rather than a renewal interval.
+    fn generate_share_token(&self, share_id: Uuid) -> Result<String, DomainError>;
+
     /// Generate a refresh token
     fn generate_refresh_token(&self) -> String;
 

@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 use crate::application::ports::auth_ports::{TokenClaims, TokenServicePort};
 use crate::common::errors::{DomainError, ErrorKind};
-use crate::domain::entities::user::User;
+use crate::domain::entities::user::{User, UserRole};
 
 /// Internal JWT claims structure for serialization.
 /// This is the actual JWT payload structure used by jsonwebtoken crate.
@@ -169,6 +169,10 @@ pub struct JwtTokenService {
     access_token_expiry: i64,
     /// Expiration time for refresh tokens in seconds
     refresh_token_expiry: i64,
+    /// Lifetime of a public-share (anonymous) session token. Separate from
+    /// `access_token_expiry` because such a session cannot refresh — this is
+    /// the whole visit, not a renewal interval.
+    share_session_expiry: i64,
     /// Validation result cache: blake3(token) → Arc<TokenClaims>.
     /// `Arc` so a cache hit is a refcount bump, not a multi-`String` clone.
     validation_cache: Cache<[u8; 32], Arc<TokenClaims>>,
@@ -195,6 +199,7 @@ impl JwtTokenService {
         jwt_secret: String,
         access_token_expiry_secs: i64,
         refresh_token_expiry_secs: i64,
+        share_session_expiry_secs: i64,
     ) -> Self {
         let validation_cache = Cache::builder()
             .max_capacity(VALIDATION_CACHE_MAX_ENTRIES)
@@ -213,6 +218,7 @@ impl JwtTokenService {
             validation: Validation::new(Algorithm::HS256),
             access_token_expiry: access_token_expiry_secs,
             refresh_token_expiry: refresh_token_expiry_secs,
+            share_session_expiry: share_session_expiry_secs,
             validation_cache,
             cache_hits: AtomicU64::new(0),
             cache_misses: AtomicU64::new(0),
@@ -335,6 +341,38 @@ impl TokenServicePort for JwtTokenService {
         Ok(claims)
     }
 
+    fn generate_share_token(&self, share_id: Uuid) -> Result<String, DomainError> {
+        let now = Utc::now().timestamp();
+        let claims = JwtClaims {
+            // A fresh id per visit. NOT a user id and not a session-row id —
+            // nothing is stored for an anonymous session. It exists so the
+            // token has a distinct `sub` and so audit lines can correlate
+            // one visitor's requests.
+            sub: Uuid::new_v4().to_string(),
+            exp: now + self.share_session_expiry,
+            iat: now,
+            jti: Uuid::new_v4().to_string(),
+            // Empty rather than fabricated. These are display fields on a
+            // real account; inventing values here would put fictional
+            // identity into audit lines and the admin UI.
+            username: Arc::from(""),
+            email: Arc::from(""),
+            role: UserRole::Anonymous.as_str().to_string(),
+            // Unbound: a share visitor has no DPoP keypair. The DPoP
+            // middleware exempts unbound sessions, same as app passwords.
+            cnf: None,
+            // No `sid`: there is no `auth.sessions` row. This also keeps
+            // `LastSeenTracker::stamp` from firing — it is keyed on `sid` —
+            // so share visits never touch the session liveness gauges.
+            sid: None,
+            share_id: Some(share_id.to_string()),
+        };
+
+        encode(&Header::default(), &claims, &self.encoding_key).map_err(|e| {
+            DomainError::internal_error("Auth", format!("Failed to mint share token: {e}"))
+        })
+    }
+
     fn generate_refresh_token(&self) -> String {
         Uuid::new_v4().to_string()
     }
@@ -376,6 +414,7 @@ mod tests {
             "test_secret_key_at_least_32_bytes_long".to_string(),
             3600,  // 1 hour
             86400, // 1 day
+            14400, // 4 hours — share session
         );
 
         let user = create_test_user();
@@ -391,9 +430,66 @@ mod tests {
         assert_eq!(&*claims.email, user.email());
     }
 
+    /// A minted share token must round-trip with exactly the shape the
+    /// extractors depend on. Every assertion here is load-bearing:
+    /// `role` is what `AuthUser` refuses, `share_id` is what `CallerSubject`
+    /// turns into `Subject::Token`, and a missing `sid` is what keeps share
+    /// visits out of the session liveness gauges.
+    #[test]
+    fn share_token_carries_anonymous_role_and_share_id() {
+        let service = JwtTokenService::new(
+            "test_secret_key_at_least_32_bytes_long".to_string(),
+            3600,
+            86400,
+            14400,
+        );
+        let share_id = Uuid::new_v4();
+
+        let token = service
+            .generate_share_token(share_id)
+            .expect("should mint a share token");
+        let claims = service.validate_token(&token).expect("should validate");
+
+        assert_eq!(claims.role, "anonymous");
+        assert_eq!(claims.share_id, Some(share_id));
+        // No session row exists, so no `sid` — `LastSeenTracker::stamp` is
+        // keyed on it and must never fire for a share visit.
+        assert_eq!(claims.sid, None);
+        // Unbound: no DPoP keypair, so the middleware exempts it.
+        assert_eq!(claims.dpop_jkt, None);
+        // `sub` is a fresh per-visit id, NOT the share id and not a user id.
+        assert_ne!(claims.sub, share_id.to_string());
+        assert_ne!(claims.sub_id, Uuid::nil());
+        // No fabricated identity — these are display fields on real accounts.
+        assert_eq!(&*claims.username, "");
+        assert_eq!(&*claims.email, "");
+    }
+
+    /// Two visits to the same share are distinct tokens. If `sub` were
+    /// derived from the share id, every visitor would share one identity and
+    /// audit lines could not tell them apart.
+    #[test]
+    fn each_share_visit_gets_a_distinct_subject() {
+        let service = JwtTokenService::new(
+            "test_secret_key_at_least_32_bytes_long".to_string(),
+            3600,
+            86400,
+            14400,
+        );
+        let share_id = Uuid::new_v4();
+
+        let a = service.generate_share_token(share_id).unwrap();
+        let b = service.generate_share_token(share_id).unwrap();
+
+        let ca = service.validate_token(&a).unwrap();
+        let cb = service.validate_token(&b).unwrap();
+        assert_ne!(ca.sub, cb.sub);
+        assert_eq!(ca.share_id, cb.share_id);
+    }
+
     #[test]
     fn test_refresh_token_is_unique() {
-        let service = JwtTokenService::new("secret".to_string(), 3600, 86400);
+        let service = JwtTokenService::new("secret".to_string(), 3600, 86400, 14400);
 
         let token1 = service.generate_refresh_token();
         let token2 = service.generate_refresh_token();
@@ -403,7 +499,7 @@ mod tests {
 
     #[test]
     fn test_invalid_token() {
-        let service = JwtTokenService::new("secret".to_string(), 3600, 86400);
+        let service = JwtTokenService::new("secret".to_string(), 3600, 86400, 14400);
 
         let result = service.validate_token("invalid_token");
         assert!(result.is_err());
@@ -415,6 +511,7 @@ mod tests {
             "test_secret_key_at_least_32_bytes_long".to_string(),
             3600,
             86400,
+            14400,
         );
 
         let user = create_test_user();
@@ -444,6 +541,7 @@ mod tests {
             "test_secret_key_at_least_32_bytes_long".to_string(),
             3600,
             86400,
+            14400,
         );
         let token = service
             .generate_access_token(&create_test_user(), Some(Uuid::new_v4()), None)
@@ -465,7 +563,7 @@ mod tests {
 
     #[test]
     fn test_invalid_token_not_cached() {
-        let service = JwtTokenService::new("secret".to_string(), 3600, 86400);
+        let service = JwtTokenService::new("secret".to_string(), 3600, 86400, 14400);
 
         // Invalid tokens should never be cached
         let _ = service.validate_token("bad_token");
@@ -486,6 +584,7 @@ mod tests {
             "test_secret_key_at_least_32_bytes_long".to_string(),
             3600,
             86400,
+            14400,
         );
         let user = create_test_user();
         let session_id = Uuid::new_v4();
@@ -508,6 +607,7 @@ mod tests {
             "test_secret_key_at_least_32_bytes_long".to_string(),
             3600,
             86400,
+            14400,
         );
         let user = create_test_user();
         let token = service
