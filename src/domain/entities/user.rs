@@ -9,6 +9,10 @@ pub use super::entity_errors::{UserError, UserResult};
 pub enum UserRole {
     Admin,
     User,
+    /// A public-share visitor. **Never stored in `auth.users`** — it exists
+    /// only on a session and its JWT, and `from_stored` deliberately cannot
+    /// produce it. See `docs/plan/rationalize-publicshare.md`.
+    Anonymous,
 }
 
 impl UserRole {
@@ -18,7 +22,56 @@ impl UserRole {
         match self {
             UserRole::Admin => "admin",
             UserRole::User => "user",
+            UserRole::Anonymous => "anonymous",
         }
+    }
+
+    /// Parse a role that is legitimately stored on `auth.users`.
+    ///
+    /// Returns `None` for anything else — including `"anonymous"`, which has
+    /// no user row by construction. Callers reading the database previously
+    /// used `_ => UserRole::User`, which is fail-OPEN: an unrecognised value
+    /// silently became a real user. Use this instead and decide explicitly.
+    pub fn from_stored(raw: &str) -> Option<Self> {
+        match raw {
+            "admin" => Some(UserRole::Admin),
+            "user" => Some(UserRole::User),
+            _ => None,
+        }
+    }
+
+    /// Parse a role as carried on a **session** — a JWT claim or
+    /// `CurrentUser`. Unlike [`Self::from_stored`] this can yield
+    /// `Anonymous`: a share visitor has a session role but no user row.
+    pub fn from_session(raw: &str) -> Option<Self> {
+        match raw {
+            "anonymous" => Some(UserRole::Anonymous),
+            other => UserRole::from_stored(other),
+        }
+    }
+
+    /// Privilege order: `Anonymous` < `User` < `Admin`.
+    ///
+    /// Deliberately an explicit rank rather than a derived `Ord` — a derive
+    /// follows declaration order, so reordering the variants would silently
+    /// invert every comparison.
+    pub fn rank(self) -> u8 {
+        match self {
+            UserRole::Anonymous => 0,
+            UserRole::User => 1,
+            UserRole::Admin => 2,
+        }
+    }
+
+    /// True when this role satisfies a `min` requirement. The comparison
+    /// behind `require_role`.
+    pub fn at_least(self, min: UserRole) -> bool {
+        self.rank() >= min.rank()
+    }
+
+    /// True for a principal with no `auth.users` row behind it.
+    pub fn is_anonymous(self) -> bool {
+        matches!(self, UserRole::Anonymous)
     }
 }
 
@@ -982,6 +1035,51 @@ impl User {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod role_tests {
+    use super::*;
+
+    /// The privilege order `require_role` depends on. Written out rather
+    /// than derived, so a variant reorder cannot silently invert it.
+    #[test]
+    fn anonymous_is_below_user_is_below_admin() {
+        assert!(UserRole::Anonymous.rank() < UserRole::User.rank());
+        assert!(UserRole::User.rank() < UserRole::Admin.rank());
+
+        // An admin satisfies a "user or better" requirement…
+        assert!(UserRole::Admin.at_least(UserRole::User));
+        assert!(UserRole::User.at_least(UserRole::User));
+        // …and anonymous satisfies neither.
+        assert!(!UserRole::Anonymous.at_least(UserRole::User));
+        assert!(!UserRole::Anonymous.at_least(UserRole::Admin));
+        // The one that matters most: anonymous is never admin.
+        assert!(!UserRole::Anonymous.at_least(UserRole::Admin));
+    }
+
+    /// `anonymous` has no `auth.users` row, so it must be unparseable from
+    /// stored data. The old `_ => UserRole::User` default was fail-open:
+    /// an unrecognised value became a real user.
+    #[test]
+    fn anonymous_is_not_parseable_from_storage() {
+        assert_eq!(UserRole::from_stored("admin"), Some(UserRole::Admin));
+        assert_eq!(UserRole::from_stored("user"), Some(UserRole::User));
+        assert_eq!(UserRole::from_stored("anonymous"), None);
+        assert_eq!(UserRole::from_stored("Admin"), None);
+        assert_eq!(UserRole::from_stored(""), None);
+    }
+
+    /// The wire spelling is a contract — the JWT claim, the audit lines and
+    /// the OpenAPI pseudo-scopes all key off it.
+    #[test]
+    fn wire_spelling_is_stable() {
+        assert_eq!(UserRole::Anonymous.as_str(), "anonymous");
+        assert_eq!(UserRole::User.as_str(), "user");
+        assert_eq!(UserRole::Admin.as_str(), "admin");
+        assert!(UserRole::Anonymous.is_anonymous());
+        assert!(!UserRole::User.is_anonymous());
     }
 }
 

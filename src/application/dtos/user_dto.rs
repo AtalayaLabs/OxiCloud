@@ -503,6 +503,27 @@ pub struct CurrentUser {
     pub dpop_jkt: Option<String>,
 }
 
+impl CurrentUser {
+    /// Typed view of the `role` string.
+    ///
+    /// An unrecognised value resolves to `Anonymous` — the *least*
+    /// privileged answer. This deliberately inverts the older
+    /// `_ => UserRole::User` habit found at every other parse site, which
+    /// is fail-open: a corrupt, truncated or future role silently became a
+    /// real user. Here it becomes the principal that can reach almost
+    /// nothing.
+    pub fn role_enum(&self) -> crate::domain::entities::user::UserRole {
+        crate::domain::entities::user::UserRole::from_session(&self.role)
+            .unwrap_or(crate::domain::entities::user::UserRole::Anonymous)
+    }
+
+    /// True for a principal with no `auth.users` row behind it — today,
+    /// a public-share visitor.
+    pub fn is_anonymous(&self) -> bool {
+        self.role_enum().is_anonymous()
+    }
+}
+
 // ============================================================================
 // App Password DTOs
 // ============================================================================

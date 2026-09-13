@@ -4,7 +4,6 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use std::convert::Infallible;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -13,6 +12,7 @@ use crate::common::di::AppState;
 // Re-export CurrentUser from application layer for use in handlers
 pub use crate::application::dtos::user_dto::CurrentUser;
 use crate::application::ports::auth_ports::TokenServicePort;
+use crate::domain::entities::user::UserRole;
 use crate::interfaces::middleware::user::{LiveRole, resolve_live_role};
 
 /// Marker inserted into request extensions when the user was authenticated
@@ -45,8 +45,45 @@ impl std::ops::Deref for AuthUser {
 #[derive(Clone, Debug)]
 pub struct CurrentUserId(pub Uuid);
 
+/// Assert that `cu` meets a minimum role, or deny.
+///
+/// The single place a role requirement is expressed. Returns a `Result`
+/// rather than a bool on purpose: with `?` the outcome cannot be ignored,
+/// which an `is_anonymous()` bool invites.
+///
+/// **This is not the only enforcement point.** Four paths authenticate
+/// without ever reaching an extractor — `middleware/admin.rs`'s
+/// `require_authenticated`, the three DAV handlers' hand-rolled
+/// `extract_user`, `POST /api/auth/refresh` (mounted outside
+/// `auth_middleware`), and `GET /api/rt/ws` (self-auths from a raw Bearer).
+/// Each must call this too; see `src/AGENTS.md` § AuthZ enforcement points.
+pub fn require_role(cu: &CurrentUser, min: UserRole) -> Result<(), AuthError> {
+    if cu.role_enum().at_least(min) {
+        return Ok(());
+    }
+    tracing::info!(
+        target: "audit",
+        event = "authz.denied",
+        reason = "insufficient_role",
+        caller_id = %cu.id,
+        role = %cu.role,
+        required = min.as_str(),
+        "👮🏻‍♂️ principal role is below the minimum this endpoint requires",
+    );
+    Err(AuthError::AccessDenied(format!(
+        "This endpoint requires role `{}`",
+        min.as_str()
+    )))
+}
+
 // Implement FromRequestParts for AuthUser — allows using `auth_user: AuthUser` in handlers.
 // Cost: 1 atomic increment (~1 ns) instead of 3 String clones (~100 ns + 3 mallocs).
+//
+// `AuthUser` means "a real user principal". It REJECTS `role = anonymous`,
+// which is what keeps the ~200 handlers taking it fail-closed against
+// public-share sessions with no edit to any of them. A route that should be
+// reachable by a share visitor opts in explicitly with a different extractor
+// rather than this one relaxing.
 impl<S> FromRequestParts<S> for AuthUser
 where
     S: Send + Sync,
@@ -54,12 +91,13 @@ where
     type Rejection = AuthError;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        parts
+        let cu = parts
             .extensions
             .get::<Arc<CurrentUser>>()
             .cloned()
-            .map(AuthUser)
-            .ok_or(AuthError::UserNotFound)
+            .ok_or(AuthError::UserNotFound)?;
+        require_role(&cu, UserRole::User)?;
+        Ok(AuthUser(cu))
     }
 }
 
@@ -71,31 +109,27 @@ where
     type Rejection = AuthError;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        parts
+        let cu = parts
             .extensions
             .get::<Arc<CurrentUser>>()
-            .map(|cu| CurrentUserId(cu.id))
-            .ok_or(AuthError::UserNotFound)
+            .ok_or(AuthError::UserNotFound)?;
+        // Same contract as `AuthUser` — this yields a `user_id`, and an
+        // anonymous principal has no `auth.users` row for that id to mean.
+        // It also closes the message-bus door for free: `POST /api/rt/ticket`
+        // takes this extractor, so no ticket is minted and the WS upgrade has
+        // no credential to present.
+        require_role(cu, UserRole::User)?;
+        Ok(CurrentUserId(cu.id))
     }
 }
 
-/// Optional user ID extractor – never fails.
-/// Yields `Some(id)` when auth middleware ran, `None` otherwise.
-#[derive(Clone, Debug)]
-pub struct OptionalUserId(pub Option<Uuid>);
-
-impl<S> FromRequestParts<S> for OptionalUserId
-where
-    S: Send + Sync,
-{
-    type Rejection = Infallible;
-
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        Ok(OptionalUserId(
-            parts.extensions.get::<Arc<CurrentUser>>().map(|cu| cu.id),
-        ))
-    }
-}
+// `OptionalUserId` used to live here — an infallible extractor yielding
+// `Option<Uuid>`. It was deleted rather than taught about anonymous roles:
+// it had ZERO call sites in `src/` and `tests/`, so "it returns None for
+// anonymous" would have been a protection that guarded nothing. An
+// unused permissive extractor is a trap for the next person who reaches
+// for it; if an optional principal is ever genuinely needed, reintroduce
+// it deliberately with a role decision baked in.
 
 // Error for authentication operations
 #[derive(Debug, thiserror::Error)]
@@ -476,6 +510,54 @@ pub async fn require_admin(request: Request, next: Next) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use smol_str::SmolStr;
+
+    fn principal(role: &str) -> CurrentUser {
+        CurrentUser {
+            id: Uuid::new_v4(),
+            username: "visitor".into(),
+            email: "".into(),
+            role: SmolStr::new(role),
+            dpop_jkt: None,
+        }
+    }
+
+    /// The property the whole public-share design rests on: `AuthUser` —
+    /// the extractor ~200 handlers take — refuses an anonymous principal.
+    /// If this ever passes for `anonymous`, every one of those handlers is
+    /// reachable by a share-link visitor.
+    #[test]
+    fn anonymous_is_refused_a_user_role() {
+        let err = require_role(&principal("anonymous"), UserRole::User)
+            .expect_err("anonymous must not satisfy a user requirement");
+        assert!(matches!(err, AuthError::AccessDenied(_)));
+
+        require_role(&principal("user"), UserRole::User).expect("a user satisfies user");
+        require_role(&principal("admin"), UserRole::User).expect("an admin satisfies user");
+    }
+
+    #[test]
+    fn only_admin_satisfies_admin() {
+        require_role(&principal("admin"), UserRole::Admin).expect("admin satisfies admin");
+        assert!(require_role(&principal("user"), UserRole::Admin).is_err());
+        assert!(require_role(&principal("anonymous"), UserRole::Admin).is_err());
+    }
+
+    /// An unrecognised role resolves to the LEAST privileged answer, not the
+    /// most. Every other parse site in the tree uses `_ => UserRole::User`,
+    /// which is fail-open: a corrupt or future value silently becomes a real
+    /// user. Here a garbage role can reach nothing.
+    #[test]
+    fn unknown_roles_fail_closed_not_open() {
+        for role in ["", "superuser", "Admin", "ANONYMOUS", "root", "user "] {
+            let cu = principal(role);
+            assert!(
+                cu.is_anonymous(),
+                "unrecognised role {role:?} must degrade to anonymous, not user",
+            );
+            assert!(require_role(&cu, UserRole::User).is_err());
+        }
+    }
 
     #[test]
     fn dav_paths_receive_basic_auth_challenge() {
