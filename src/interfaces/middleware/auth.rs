@@ -770,6 +770,85 @@ mod tests {
         );
     }
 
+    /// Builds the subject set the way the extractor does, without a request.
+    ///
+    /// The extractor reads two extensions and composes them; the composition
+    /// is the part worth pinning, so it is exercised directly rather than
+    /// through a router that would test axum more than it tests this.
+    fn subjects_for(cu: &CurrentUser, ring: Option<&share_ring::Ring>) -> Vec<Subject> {
+        let mut subjects = Vec::new();
+        if !cu.is_anonymous() {
+            subjects.push(Subject::User(cu.id));
+        }
+        if let Some(ring) = ring {
+            subjects.extend(ring.shares.iter().copied().map(Subject::Token));
+        }
+        subjects
+    }
+
+    /// A visitor's `id` is a ring visitor id — a well-formed UUID that
+    /// belongs to no `auth.users` row. Turning it into `Subject::User` would
+    /// not error; it would run the grant query and quietly match nothing,
+    /// which reads as "denied" for the wrong reason and would hide a real
+    /// bug behind a plausible 404.
+    #[test]
+    fn an_anonymous_visitor_contributes_no_user_subject() {
+        let visitor = principal("anonymous");
+        let share = Uuid::new_v4();
+        let ring = share_ring::Ring {
+            visitor_id: visitor.id,
+            shares: vec![share],
+        };
+
+        assert_eq!(
+            subjects_for(&visitor, Some(&ring)),
+            vec![Subject::Token(share)],
+        );
+    }
+
+    /// Alice clicking a colleague's share link keeps her identity AND gains
+    /// the share. Neither credential may displace the other: dropping hers
+    /// silently downgrades her session, dropping the ring 404s the shared
+    /// file she was invited to.
+    ///
+    /// Her own subject must come FIRST — ordinary browsing is then decided on
+    /// the first check and never pays for the ring.
+    #[test]
+    fn a_logged_in_user_carries_their_identity_and_the_ring() {
+        let alice = principal("user");
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        let ring = share_ring::Ring {
+            visitor_id: Uuid::new_v4(),
+            shares: vec![first, second],
+        };
+
+        assert_eq!(
+            subjects_for(&alice, Some(&ring)),
+            vec![
+                Subject::User(alice.id),
+                Subject::Token(first),
+                Subject::Token(second),
+            ],
+        );
+    }
+
+    /// No ring is the overwhelmingly common case and must cost nothing.
+    #[test]
+    fn a_user_without_a_ring_is_a_single_subject() {
+        let alice = principal("user");
+        assert_eq!(subjects_for(&alice, None), vec![Subject::User(alice.id)]);
+    }
+
+    /// The empty set is what the extractor refuses outright. It is
+    /// unreachable — holding a ring is what makes a principal anonymous —
+    /// but if it ever arises it must not reach the engine, where an empty
+    /// subject list could read as "nothing objected".
+    #[test]
+    fn an_anonymous_principal_without_a_ring_yields_nothing() {
+        assert!(subjects_for(&principal("anonymous"), None).is_empty());
+    }
+
     #[test]
     fn account_inactive_maps_to_401() {
         // A token that is still cryptographically valid but whose account was
