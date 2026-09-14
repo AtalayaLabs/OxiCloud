@@ -378,10 +378,23 @@ jsonpath "$.items[1].resource.created_by" not exists
 
 
 # The breadcrumb. The walk truncates at the share root — a visitor
-# must not learn the names of the folders above it.
+# must not learn the names of the folders above it — and reports
+# `token`, not `direct_share`.
+#
+# The distinction is not cosmetic: `direct_share` makes the FE render
+# "Shared with you by X" and link the root chip to `/shared-with-me`,
+# neither of which exists for a visitor. `subject` and `drive` must be
+# absent — naming the sharer would publish the owner's identity to an
+# anonymous caller, and the drive is not the visitor's to know.
 GET {{base_url}}/api/folders/{{anon_folder_id}}/ancestors
 
 HTTP 200
+[Asserts]
+jsonpath "$.access_source.kind" == "token"
+jsonpath "$.access_source.subject" not exists
+jsonpath "$.access_source.drive" not exists
+jsonpath "$.ancestors" count == 1
+jsonpath "$.ancestors[0].id" == "{{anon_folder_id}}"
 
 
 # The ZIP of the shared subtree — the same bytes the legacy
@@ -409,9 +422,18 @@ GET {{base_url}}/api/folders/{{child_folder_id}}/resources
 HTTP 200
 
 
+# Two crumbs, not the full chain from the drive root: the walk stops
+# at the share boundary. This is the assertion that proves truncation
+# rather than merely observing a short chain — the child genuinely has
+# ancestors above the share root, and none of them may appear.
 GET {{base_url}}/api/folders/{{child_folder_id}}/ancestors
 
 HTTP 200
+[Asserts]
+jsonpath "$.access_source.kind" == "token"
+jsonpath "$.ancestors" count == 2
+jsonpath "$.ancestors[0].id" == "{{anon_folder_id}}"
+jsonpath "$.ancestors[1].id" == "{{child_folder_id}}"
 
 
 GET {{base_url}}/api/folders/{{child_folder_id}}/download

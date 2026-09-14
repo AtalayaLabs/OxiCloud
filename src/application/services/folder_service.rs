@@ -1241,7 +1241,27 @@ impl FolderService {
             .and_then(|(_, _, _, role_str)| Role::parse(role_str))
             .map(RoleDto::from);
 
-        let access_source = if top.has_drive_grant {
+        let access_source = if caller.token_id().is_some() {
+            // A public-share visitor. Reported as its own kind rather than
+            // `DirectShare`: the two are not the same thing to a client, and
+            // `DirectShare` implies a named sharer the FE would try to render
+            // ("shared with you by X") for a caller who is never told one.
+            //
+            // `has_drive_grant` is false here by construction — token grants
+            // are matched on `has_folder_grant` only (`fetch_ancestor_walk`),
+            // which is what makes the breadcrumb truncate at the share root —
+            // so this arm cannot steal a drive-membership case from below.
+            AccessSourceDto {
+                kind: AccessSourceKind::Token,
+                drive: None,
+                // Both already `None` on this path: `grant_by` is skipped for
+                // a token caller, and `caller_role` derives from it. Written
+                // literally so the guarantee is visible here and does not
+                // depend on reading the branch 40 lines up.
+                subject: None,
+                caller_role: None,
+            }
+        } else if top.has_drive_grant {
             // Drive-membership Read — even if a direct folder grant also
             // exists, the drive channel is the more useful "how did I
             // get here" signal (it names the drive the caller sees in

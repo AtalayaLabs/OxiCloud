@@ -440,10 +440,17 @@ pub enum AccessSourceKind {
     /// ancestor. The `subject` field (if known) says who was granted
     /// (self or a group); render the share icon.
     DirectShare,
-    /// Reserved for public/token access. Not emitted by the MVP
-    /// endpoint — no live UI code path drives an authenticated /files
-    /// request via token yet.
-    #[allow(dead_code)]
+    /// Caller reached the topmost ancestor with a public-share token —
+    /// they are browsing a link, not an account.
+    ///
+    /// `drive` and `subject` are always absent: a visitor is told neither
+    /// which drive the folder lives in nor who shared it (naming the sharer
+    /// would publish the owner's identity to an anonymous caller).
+    ///
+    /// Treat this kind itself as the read-only signal. `caller_role` is not
+    /// populated for a token caller — inferring read-only from the kind keeps
+    /// one source of truth, rather than restating an invariant that lives in
+    /// `ShareService::create_shared_link` (which always grants Viewer).
     Token,
 }
 
