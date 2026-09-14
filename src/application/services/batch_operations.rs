@@ -777,7 +777,7 @@ impl BatchOperationService {
         for folder_id in &folder_ids {
             match self
                 .folder_service
-                .get_folder_with_perms(folder_id, user_id)
+                .get_folder_with_perms(folder_id, Subject::User(user_id))
                 .await
             {
                 Ok(root_folder) => {
@@ -1117,7 +1117,7 @@ impl BatchOperationService {
 
             async move {
                 let get_result = folder_service
-                    .get_folder_with_perms(&folder_id, user_id)
+                    .get_folder_with_perms(&folder_id, Subject::User(user_id))
                     .await;
                 (folder_id, get_result)
             }

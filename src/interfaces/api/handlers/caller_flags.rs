@@ -21,19 +21,41 @@ use uuid::Uuid;
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::common::di::AppState as GlobalAppState;
+use crate::domain::services::authorization::Subject;
+
+/// Both flags are caller-relative, and a public-share visitor is not a
+/// caller either of them can describe.
+///
+/// `is_favorite` is per-user state a visitor has none of. `is_shared` is
+/// worse: it is a **subject-less** EXISTS over `storage.shares`, so it would
+/// answer "is this separately shared with anyone at all" — telling a visitor
+/// which items inside the share the owner has also published elsewhere. That
+/// is the disclosure `docs/plan/rationalize-publicshare.md` §Phase 2 names.
+///
+/// Taking a `Subject` rather than a `Uuid` is what makes this unforgettable:
+/// a token caller has no `user_id`, so every present and future callsite gets
+/// the `false` default without having to remember the rule. Passing
+/// `Subject::User(id)` at a callsite that genuinely has a user is a no-op.
+fn caller_user_for_flags(caller: Subject) -> Option<Uuid> {
+    caller.user_id()
+}
 
 /// Populate the `is_favorite` + `is_shared` flags on a `FolderDto`.
 ///
 /// Silently leaves the flags at their default `false` when the
-/// favorites service isn't wired (feature-off) or when the resource
-/// id doesn't parse as a UUID — the DTO stays valid on the wire and
-/// the misleading-`false` window closes as soon as the next listing
-/// refetch runs.
+/// favorites service isn't wired (feature-off), when the resource
+/// id doesn't parse as a UUID, or when the caller is not a user
+/// (see [`caller_user_for_flags`]) — the DTO stays valid on the wire
+/// and the misleading-`false` window closes as soon as the next
+/// listing refetch runs.
 pub async fn enrich_folder_flags(
     state: &Arc<GlobalAppState>,
     dto: &mut FolderDto,
-    caller_id: Uuid,
+    caller: Subject,
 ) {
+    let Some(caller_id) = caller_user_for_flags(caller) else {
+        return;
+    };
     let Some(favs) = state.favorites_service.as_ref() else {
         return;
     };
@@ -47,7 +69,10 @@ pub async fn enrich_folder_flags(
 }
 
 /// File counterpart of [`enrich_folder_flags`] — see that doc.
-pub async fn enrich_file_flags(state: &Arc<GlobalAppState>, dto: &mut FileDto, caller_id: Uuid) {
+pub async fn enrich_file_flags(state: &Arc<GlobalAppState>, dto: &mut FileDto, caller: Subject) {
+    let Some(caller_id) = caller_user_for_flags(caller) else {
+        return;
+    };
     let Some(favs) = state.favorites_service.as_ref() else {
         return;
     };
@@ -69,10 +94,10 @@ pub async fn enrich_file_flags(state: &Arc<GlobalAppState>, dto: &mut FileDto, c
 pub async fn enrich_file_flags_batch(
     state: &Arc<GlobalAppState>,
     dtos: &mut [FileDto],
-    caller_id: Uuid,
+    caller: Subject,
 ) {
     for dto in dtos.iter_mut() {
-        enrich_file_flags(state, dto, caller_id).await;
+        enrich_file_flags(state, dto, caller).await;
     }
 }
 
@@ -80,9 +105,9 @@ pub async fn enrich_file_flags_batch(
 pub async fn enrich_folder_flags_batch(
     state: &Arc<GlobalAppState>,
     dtos: &mut [FolderDto],
-    caller_id: Uuid,
+    caller: Subject,
 ) {
     for dto in dtos.iter_mut() {
-        enrich_folder_flags(state, dto, caller_id).await;
+        enrich_folder_flags(state, dto, caller).await;
     }
 }

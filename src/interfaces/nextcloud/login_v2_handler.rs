@@ -564,7 +564,10 @@ pub async fn handle_drive_pick(
     let _folder = match state
         .applications
         .folder_service
-        .get_folder_with_perms(&drive_id, user_id)
+        .get_folder_with_perms(
+            &drive_id,
+            crate::domain::services::authorization::Subject::User(user_id),
+        )
         .await
     {
         Ok(f) => f,

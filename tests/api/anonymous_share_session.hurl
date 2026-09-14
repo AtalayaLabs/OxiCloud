@@ -40,6 +40,12 @@
 #      through both routes, because they must agree — one opened
 #      without the other is how a visitor gains a capability
 #      nobody meant to grant.
+#   4b. The folder routes, as a matrix: the share root and a CHILD
+#      of it resolve (the cascade descends), while the PARENT and a
+#      SIBLING 404 (it neither climbs nor wanders sideways). All
+#      four routes are asserted on every folder — the ZIP most of
+#      all, since it is the one that would stream the owner's whole
+#      tree if it were the route that got it wrong.
 #   5. A sweep of routes outside the anonymous allowlist — user
 #      profiles, shares, drives, favorites, trash, search, the
 #      bare folder listing, a DELETE, /api/auth/me — all 403.
@@ -129,6 +135,35 @@ HTTP 201
 outside_file_id: jsonpath "$.id"
 
 
+# A CHILD of the shared folder. Without this the suite never proves
+# the cascade DESCENDS — every other assertion targets the share
+# root itself, so a cascade broken downward would still pass.
+POST {{base_url}}/api/folders
+Authorization: Bearer {{admin_token}}
+Content-Type: application/json
+{ "name": "anon-session-child", "parent_id": "{{anon_folder_id}}" }
+
+HTTP 201
+[Captures]
+child_folder_id: jsonpath "$.id"
+
+
+# A SIBLING of the shared folder: same parent, same drive, neither
+# ancestor nor descendant. The parent case above pins that the
+# cascade does not climb; this pins that it does not wander
+# sideways. Same SQL predicate, different shape of mistake — and it
+# is the one that would survive someone "simplifying" the check
+# into a same-drive test.
+POST {{base_url}}/api/folders
+Authorization: Bearer {{admin_token}}
+Content-Type: application/json
+{ "name": "anon-session-sibling", "parent_id": "{{admin_home_id}}" }
+
+HTTP 201
+[Captures]
+sibling_folder_id: jsonpath "$.id"
+
+
 # Both shares are minted now, while authenticated — after the
 # logout below there is no one left who may create them.
 POST {{base_url}}/api/shares
@@ -198,6 +233,20 @@ Authorization: Bearer {{admin_token}}
 HTTP 200
 
 
+# The OWNER's view of the shared folder, captured here so the
+# anonymous view further down can be compared against it rather
+# than asserted in isolation. Both fields below are withheld from a
+# token caller, and a test that only checked the anonymous side
+# would also pass if the fields had simply stopped working.
+GET {{base_url}}/api/folders/{{anon_folder_id}}
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.path" != ""
+jsonpath "$.is_shared" == true
+
+
 # ─────────────────────────────────────────────────────────────
 # 3 — End the admin session. This clears `oxicloud_access`,
 #     `oxicloud_refresh` and `oxicloud_csrf`; `oxi_shares` has a
@@ -262,6 +311,153 @@ HTTP 404
 
 
 GET {{base_url}}/api/files/{{outside_file_id}}/thumbnail/preview
+
+HTTP 404
+
+
+# ─────────────────────────────────────────────────────────────
+# 4b — The folder routes. These are what make the share BROWSABLE
+#      with the ordinary components instead of the bespoke
+#      `/api/s/{token}/contents` mirror.
+#
+#      Each carries a disclosure the owner's view has and the
+#      visitor's must not — compare against the owner assertions
+#      captured in step 2.
+# ─────────────────────────────────────────────────────────────
+
+# The shared folder itself. `path` is blanked because it names the
+# folder's position in the OWNER's tree, including ancestors above
+# the share root. `is_shared` is blanked because it is a
+# subject-less EXISTS over `role_grants` — computed honestly it
+# would be `true` here (the share's own token grant is such a row),
+# which is precisely the signal a visitor must not receive.
+GET {{base_url}}/api/folders/{{anon_folder_id}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.id" == "{{anon_folder_id}}"
+jsonpath "$.path" == ""
+jsonpath "$.is_shared" == false
+jsonpath "$.is_favorite" == false
+
+
+# The listing. Both children are visible, and `is_shared` must be
+# false on every row or the visitor learns which items the owner
+# has ALSO published elsewhere.
+#
+# `$.items[N].resource.*` — `ResourceContentDto` is `#[serde(untagged)]`,
+# so the file/folder fields sit directly under `resource` with no
+# wrapper key; `resource_type` alongside it is the discriminator.
+# Rows are asserted by index rather than by filter because the
+# default `order_by=name` puts folders first — pinning the order is
+# deliberate, so a change to it fails loudly instead of quietly
+# skipping the row it was meant to check.
+GET {{base_url}}/api/folders/{{anon_folder_id}}/resources
+
+HTTP 200
+[Asserts]
+jsonpath "$.items" isCollection
+jsonpath "$.items" count == 2
+jsonpath "$.items[0].resource_type" == "folder"
+jsonpath "$.items[0].resource.id" == "{{child_folder_id}}"
+jsonpath "$.items[0].resource.is_shared" == false
+jsonpath "$.items[0].resource.is_favorite" == false
+jsonpath "$.items[1].resource_type" == "file"
+jsonpath "$.items[1].resource.id" == "{{inside_file_id}}"
+jsonpath "$.items[1].resource.is_shared" == false
+jsonpath "$.items[1].resource.is_favorite" == false
+
+
+# The breadcrumb. The walk truncates at the share root — a visitor
+# must not learn the names of the folders above it.
+GET {{base_url}}/api/folders/{{anon_folder_id}}/ancestors
+
+HTTP 200
+
+
+# The ZIP of the shared subtree — the same bytes the legacy
+# `/api/s/{token}/zip` endpoint has always served.
+GET {{base_url}}/api/folders/{{anon_folder_id}}/download
+
+HTTP 200
+[Asserts]
+header "Content-Type" contains "zip"
+
+
+# ── The cascade DESCENDS: a child of the share root ──────────
+# Without these, a cascade broken downward would pass every other
+# assertion in this file — they all target the share root itself.
+GET {{base_url}}/api/folders/{{child_folder_id}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.path" == ""
+jsonpath "$.is_shared" == false
+
+
+GET {{base_url}}/api/folders/{{child_folder_id}}/resources
+
+HTTP 200
+
+
+GET {{base_url}}/api/folders/{{child_folder_id}}/ancestors
+
+HTTP 200
+
+
+GET {{base_url}}/api/folders/{{child_folder_id}}/download
+
+HTTP 200
+[Asserts]
+header "Content-Type" contains "zip"
+
+
+# ── The cascade does NOT climb: the parent of the share root ──
+# The ltree cascade grants downward only, so walking UP must 404 —
+# the folder counterpart of the outside-file assertions above.
+# Every route, because the zip is the one that would stream the
+# owner's entire tree if it were the route that got it wrong.
+GET {{base_url}}/api/folders/{{admin_home_id}}
+
+HTTP 404
+
+
+GET {{base_url}}/api/folders/{{admin_home_id}}/resources
+
+HTTP 404
+
+
+GET {{base_url}}/api/folders/{{admin_home_id}}/ancestors
+
+HTTP 404
+
+
+GET {{base_url}}/api/folders/{{admin_home_id}}/download
+
+HTTP 404
+
+
+# ── The cascade does NOT wander sideways: a sibling ───────────
+# Same parent, same drive, neither ancestor nor descendant. The
+# parent block above would also fail if the check were loosened to
+# "same drive"; this one fails if it were loosened to "same parent",
+# which is the likelier slip.
+GET {{base_url}}/api/folders/{{sibling_folder_id}}
+
+HTTP 404
+
+
+GET {{base_url}}/api/folders/{{sibling_folder_id}}/resources
+
+HTTP 404
+
+
+GET {{base_url}}/api/folders/{{sibling_folder_id}}/ancestors
+
+HTTP 404
+
+
+GET {{base_url}}/api/folders/{{sibling_folder_id}}/download
 
 HTTP 404
 
@@ -468,6 +664,14 @@ admin_token: jsonpath "$.access_token"
 
 
 DELETE {{base_url}}/api/files/{{outside_file_id}}
+Authorization: Bearer {{admin_token}}
+
+HTTP 204
+
+
+# The sibling also lives in admin's home folder, so it needs its own
+# delete. The child does not — it goes with the shared folder below.
+DELETE {{base_url}}/api/folders/{{sibling_folder_id}}
 Authorization: Bearer {{admin_token}}
 
 HTTP 204

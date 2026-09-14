@@ -383,11 +383,11 @@ pub struct StubFolderUseCase;
 impl FolderUseCase for StubFolderUseCase {
     async fn require_permission(
         &self,
-        _caller: Subject,
+        _callers: &[Subject],
         _permission: Permission,
         _file_id: &str,
-    ) -> Result<(), DomainError> {
-        Ok(())
+    ) -> Result<Subject, DomainError> {
+        Ok(Subject::User(Uuid::nil()))
     }
 
     async fn create_folder_with_perms(
@@ -405,7 +405,7 @@ impl FolderUseCase for StubFolderUseCase {
     async fn get_folder_with_perms(
         &self,
         _id: &str,
-        _caller_id: Uuid,
+        _caller: Subject,
     ) -> Result<FolderDto, DomainError> {
         Ok(FolderDto::default())
     }

@@ -158,6 +158,10 @@ pub trait AuthorizationEngine: Send + Sync + 'static {
     /// single-subject service call for the same resource must pass this one
     /// back — passing any other member of the set would re-run the search and
     /// could deny what was just allowed.
+    ///
+    /// Bind it as `authorized_as`, never `granted_by`: `role_grants.granted_by`
+    /// is the user who ISSUED the grant (the sharer), so that name here would
+    /// denote the opposite party.
     async fn require_any(
         &self,
         subjects: &[Subject],

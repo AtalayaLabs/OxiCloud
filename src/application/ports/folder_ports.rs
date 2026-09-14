@@ -9,16 +9,19 @@ use crate::common::errors::DomainError;
 use crate::domain::services::authorization::{Permission, Subject};
 
 pub trait FolderUseCase: Send + Sync + 'static {
-    /// Takes a [`Subject`] rather than a bare `caller_id: Uuid` — a
+    /// Takes a **set** of [`Subject`]s rather than a bare `caller_id: Uuid` —
+    /// one HTTP caller can hold several credentials at once, and a
     /// public-share visitor authorises as `Subject::Token(share_id)`, which
-    /// the engine already understands. See the note on
+    /// the engine already understands. Returns the credential that granted,
+    /// so a handler making a further single-subject call for the same folder
+    /// passes back the one that worked. See the note on
     /// `FileManagementUseCase::require_permission`.
     async fn require_permission(
         &self,
-        caller: Subject,
+        callers: &[Subject],
         permission: Permission,
         folder_id: &str,
-    ) -> Result<(), DomainError>;
+    ) -> Result<Subject, DomainError>;
 
     /// Creates a new folder
     async fn create_folder_with_perms(
@@ -34,10 +37,13 @@ pub trait FolderUseCase: Send + Sync + 'static {
     ///
     /// Returns `NotFound` if the folder does not exist **or** belongs to
     /// another user.  All user-facing handlers should use this method.
+    /// Takes a [`Subject`], not a `Uuid`: this is on the anonymous allowlist,
+    /// so the caller may be a share token. Pass the subject that actually
+    /// granted (see [`Self::require_permission`]) rather than re-deriving one.
     async fn get_folder_with_perms(
         &self,
         id: &str,
-        caller_id: Uuid,
+        caller: Subject,
     ) -> Result<FolderDto, DomainError>;
 
     /// Gets a folder by its path within the caller's tree.

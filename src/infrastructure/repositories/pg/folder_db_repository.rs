@@ -1687,16 +1687,32 @@ impl FolderDbRepository {
     /// detect the existence of a next page).  Returns raw [`FolderResourceRow`]
     /// values; the handler / service layer converts them to DTOs.
     #[allow(clippy::too_many_arguments)]
+    /// Takes a [`Subject`], not a `Uuid`, because this listing is reachable
+    /// by a public-share visitor and two of its output columns are
+    /// caller-relative:
+    ///
+    /// - `is_favorite` is per-user state a token caller has none of — it
+    ///   binds a nil uuid and matches nothing, which is the honest answer.
+    /// - `is_shared` is a **subject-less** EXISTS over `role_grants`, so left
+    ///   alone it would tell a visitor which items inside the share the owner
+    ///   has ALSO published elsewhere. `$8` forces it to `false` for a token
+    ///   caller (`docs/plan/rationalize-publicshare.md` §Phase 2).
+    ///
+    /// Gating in SQL rather than zeroing the column afterwards keeps the
+    /// disclosure impossible to reintroduce by adding a callsite.
     pub async fn list_resources_paged(
         &self,
         parent_id: Uuid,
-        caller_id: Uuid,
+        caller: Subject,
         limit: usize,
         cursor: Option<&FolderResourceCursor>,
         order_by: &str,
         kinds: Option<&[ResourceKind]>,
         reverse: bool,
     ) -> Result<Vec<FolderResourceRow>, DomainError> {
+        // A token caller has no `auth.users` row; nil matches no favourite.
+        let caller_id = caller.user_id().unwrap_or_else(Uuid::nil);
+        let show_is_shared = caller.user_id().is_some();
         let include_folders = kinds.is_none_or(|k| k.contains(&ResourceKind::Folder));
         let include_files = kinds.is_none_or(|k| k.contains(&ResourceKind::File));
 
@@ -1725,11 +1741,11 @@ impl FolderDbRepository {
                        AND uf.item_id   = f.id::text
                        AND uf.item_type = 'folder'
                 )                         AS is_favorite,
-                EXISTS (
+                ($8::bool AND EXISTS (
                     SELECT 1 FROM storage.role_grants g
                      WHERE g.resource_id   = f.id
                        AND g.resource_type = 'folder'
-                )                         AS is_shared,
+                ))                        AS is_shared,
                 LOWER(f.name)             AS sort_str,
                 0::bigint                 AS type_order,
                 0::int                    AS folder_first
@@ -1757,11 +1773,11 @@ impl FolderDbRepository {
                        AND uf.item_id   = fm.id::text
                        AND uf.item_type = 'file'
                 )                         AS is_favorite,
-                EXISTS (
+                ($8::bool AND EXISTS (
                     SELECT 1 FROM storage.role_grants g
                      WHERE g.resource_id   = fm.id
                        AND g.resource_type = 'file'
-                )                         AS is_shared,
+                ))                        AS is_shared,
                 LOWER(fm.name)            AS sort_str,
                 fm.category_order::bigint AS type_order,
                 1::int                    AS folder_first
@@ -1982,6 +1998,7 @@ impl FolderDbRepository {
             .bind(cursor_id)
             .bind(limit as i64)
             .bind(caller_id)
+            .bind(show_is_shared)
             .fetch_all(self.pool())
             .await
             .map_err(|e| {

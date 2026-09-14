@@ -195,11 +195,11 @@ impl FolderService {
         impl FolderUseCase for FolderServiceStub {
             async fn require_permission(
                 &self,
-                _caller: Subject,
+                _callers: &[Subject],
                 _permission: Permission,
                 _folder_id: &str,
-            ) -> Result<(), DomainError> {
-                Ok(())
+            ) -> Result<Subject, DomainError> {
+                Ok(Subject::User(Uuid::nil()))
             }
             async fn create_folder_with_perms(
                 &self,
@@ -216,7 +216,7 @@ impl FolderService {
             async fn get_folder_with_perms(
                 &self,
                 _id: &str,
-                _caller_id: Uuid,
+                _caller: Subject,
             ) -> Result<FolderDto, DomainError> {
                 Ok(FolderDto::empty())
             }
@@ -325,12 +325,12 @@ impl FolderUseCase for FolderService {
     /// DB write — this is a UX/resource optimization, not a security boundary.
     async fn require_permission(
         &self,
-        caller: Subject,
+        callers: &[Subject],
         permission: Permission,
         folder_id: &str,
-    ) -> Result<(), DomainError> {
+    ) -> Result<Subject, DomainError> {
         let resource = Self::folder_resource(folder_id)?;
-        self.authz.require(caller, permission, resource).await
+        self.authz.require_any(callers, permission, resource).await
     }
 
     /// Creates a new folder
@@ -441,14 +441,10 @@ impl FolderUseCase for FolderService {
     async fn get_folder_with_perms(
         &self,
         id: &str,
-        caller_id: Uuid,
+        caller: Subject,
     ) -> Result<FolderDto, DomainError> {
         self.authz
-            .require(
-                Subject::User(caller_id),
-                Permission::Read,
-                Self::folder_resource(id)?,
-            )
+            .require(caller, Permission::Read, Self::folder_resource(id)?)
             .await?;
         self.get_folder(id).await
     }
@@ -1307,16 +1303,12 @@ impl FolderService {
     pub async fn list_resources_paged_with_perms(
         &self,
         parent_id: &str,
-        caller_id: Uuid,
+        caller: Subject,
         opts: ListResourcesOptions<'_>,
     ) -> Result<(Vec<FolderResourceRow>, Option<String>), DomainError> {
         // 1. AuthZ — same check as list_folders_with_perms
         self.authz
-            .require(
-                Subject::User(caller_id),
-                Permission::Read,
-                Self::folder_resource(parent_id)?,
-            )
+            .require(caller, Permission::Read, Self::folder_resource(parent_id)?)
             .await?;
 
         let pid =
@@ -1335,7 +1327,7 @@ impl FolderService {
             .folder_storage
             .list_resources_paged(
                 pid,
-                caller_id,
+                caller,
                 limit + 1,
                 cursor.as_ref(),
                 order_by,
