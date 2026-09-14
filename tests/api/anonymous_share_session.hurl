@@ -51,12 +51,16 @@ admin_token: jsonpath "$.access_token"
 
 # The share owner's own id, so step 5 can try to read their
 # profile the way a visitor holding only a share link might.
+#
+# `$.full.user.id`, not `$.id`: `/api/auth/me` returns the Self view
+# composed over Full over Public (`user_dto.rs`), and the layers are
+# NOT serde-flattened — the nesting is on the wire.
 GET {{base_url}}/api/auth/me
 Authorization: Bearer {{admin_token}}
 
 HTTP 200
 [Captures]
-admin_user_id: jsonpath "$.id"
+admin_user_id: jsonpath "$.full.user.id"
 
 
 GET {{base_url}}/api/folders
