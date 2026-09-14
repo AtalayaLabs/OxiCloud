@@ -14,6 +14,7 @@ pub use crate::application::dtos::user_dto::CurrentUser;
 use crate::application::ports::auth_ports::TokenServicePort;
 use crate::domain::entities::user::UserRole;
 use crate::domain::services::authorization::Subject;
+use crate::infrastructure::services::share_ring;
 use crate::interfaces::middleware::user::{LiveRole, resolve_live_role};
 
 /// Marker inserted into request extensions when the user was authenticated
@@ -46,53 +47,20 @@ impl std::ops::Deref for AuthUser {
 #[derive(Clone, Debug)]
 pub struct CurrentUserId(pub Uuid);
 
-/// Record the principal on the request span — `share_id` for a public-share
-/// session, `user_id` otherwise. **Never both.**
+/// Record the principal on the request span — `visitor_id` for a public-share
+/// visitor, `user_id` otherwise. **Never both.**
 ///
-/// An anonymous session's `sub` is a fresh per-visit uuid matching no
-/// `auth.users` row. Recording it as `user_id` would hand operators an id
-/// that looks lookupable and is not, and would make share traffic
-/// indistinguishable from user traffic in every log query. A line carrying
-/// `share_id` says what the caller actually is.
-fn record_principal_on_span(user_id: Uuid, share_id: Option<Uuid>) {
+/// A share visitor's id is the ring's per-visitor uuid: it matches no
+/// `auth.users` row and never will. Recording it as `user_id` would hand
+/// operators an id that looks lookupable and is not, and would make share
+/// traffic indistinguishable from user traffic in every log query.
+fn record_principal_on_span(cu: &CurrentUser) {
     let span = tracing::Span::current();
-    match share_id {
-        Some(sid) => span.record("share_id", tracing::field::display(sid)),
-        None => span.record("user_id", tracing::field::display(user_id)),
+    if cu.is_anonymous() {
+        span.record("visitor_id", tracing::field::display(cu.id));
+    } else {
+        span.record("user_id", tracing::field::display(cu.id));
     };
-}
-
-/// Reject a token whose `role` and `share_id` claims disagree, before any
-/// `CurrentUser` is built from them.
-///
-/// `CallerSubject` refuses the same shapes at *use*; this refuses them at
-/// *construction*, so an incoherent principal never enters a request at all.
-/// That matters because `CurrentUser.id` is read at ~200 sites which are
-/// safe today only because `AuthUser` rejects anonymous first — a second
-/// control doing the work, rather than the invariant holding on its own.
-///
-/// The dangerous shape is `anonymous` with no `share_id`: anything falling
-/// back to `Subject::User(cu.id)` would match a *session* id against user
-/// grants — a valid UUID belonging to no user, so the query runs and
-/// silently returns nothing.
-fn validate_principal_shape(role: &str, share_id: Option<Uuid>) -> Result<(), AuthError> {
-    let anonymous = UserRole::from_session(role).is_some_and(|r| r.is_anonymous());
-    match (anonymous, share_id) {
-        (true, Some(_)) | (false, None) => Ok(()),
-        (true, None) | (false, Some(_)) => {
-            tracing::error!(
-                target: "audit",
-                event = "auth.rejected",
-                reason = "incoherent_principal",
-                role = %role,
-                has_share = share_id.is_some(),
-                "👮🏻‍♂️ token role and share_id disagree — refusing to build a principal",
-            );
-            Err(AuthError::InvalidToken(
-                "Malformed token principal".to_string(),
-            ))
-        }
-    }
 }
 
 /// Assert that `cu` meets a minimum role, or deny.
@@ -126,22 +94,36 @@ pub fn require_role(cu: &CurrentUser, min: UserRole) -> Result<(), AuthError> {
     )))
 }
 
-/// A caller expressed as an authorization [`Subject`] — the only extractor
-/// that accepts a public-share visitor.
+/// The unlocked share ring, inserted into request extensions by
+/// `auth_middleware` when the browser presents a valid `oxi_shares` cookie.
 ///
-/// `AuthUser` means "a real user" and refuses `anonymous`. A route that
-/// should be reachable through a share link opts in by taking this instead.
-/// The swap is one line, visible in the signature, and reviewable per route
-/// — which is the point: widening a route is a decision, not a default.
-///
-/// This is the single place a *session* concept (`role`) is translated into
-/// an *authorization* concept (`Subject`). Handlers never see the role and
-/// never branch on it; services take the `Subject` and the engine matches
-/// grants against it. Keeping the two vocabularies separated here is what
-/// lets the engine stay ignorant of HTTP sessions entirely.
-pub struct CallerSubject(pub Subject);
+/// Separate from `CurrentUser` on purpose: the ring says what you have
+/// *unlocked*, not who you *are*. A logged-in user carries both.
+#[derive(Clone, Debug)]
+pub struct ShareRing(pub share_ring::Ring);
 
-impl<S> FromRequestParts<S> for CallerSubject
+/// Every credential the caller holds, as authorization subjects — the only
+/// extractor that accepts a public-share visitor.
+///
+/// `AuthUser` means "a real user" and refuses `anonymous`. A route reachable
+/// through a share link opts in by taking this instead: one line, visible in
+/// the signature, reviewable per route. Widening a route stays a decision
+/// rather than becoming a default.
+///
+/// Returns a **set**, because a browser can hold more than one credential and
+/// the request cannot say which it means — an `<img>` tag sends every cookie
+/// it has and nothing else. The user's own subject comes first so ordinary
+/// browsing is decided on the first check; see
+/// [`AuthorizationEngine::require_any`].
+///
+/// This is the single place a *session* concept (`role`, cookies) becomes an
+/// *authorization* concept (`Subject`). Handlers never see the role and never
+/// branch on it; services take the subjects and the engine matches grants
+/// against them. Keeping the two vocabularies apart here is what lets the
+/// engine stay ignorant of HTTP sessions entirely.
+pub struct CallerSubjects(pub Vec<Subject>);
+
+impl<S> FromRequestParts<S> for CallerSubjects
 where
     S: Send + Sync,
 {
@@ -153,34 +135,34 @@ where
             .get::<Arc<CurrentUser>>()
             .ok_or(AuthError::UserNotFound)?;
 
-        match (cu.is_anonymous(), cu.share_id) {
-            // A share visitor authorises as the share's token grant — the
-            // row `share_service` already writes on every share creation.
-            (true, Some(share_id)) => Ok(CallerSubject(Subject::Token(share_id))),
-            (false, None) => Ok(CallerSubject(Subject::User(cu.id))),
-
-            // The two fields disagree. Refuse rather than pick one: an
-            // anonymous principal with no share would fall back to
-            // `Subject::User(cu.id)` — and `cu.id` for an anonymous session
-            // is a SESSION id, which would be matched against user grants.
-            // A non-anonymous principal carrying a share id is equally
-            // incoherent. Neither should be reachable; both are denied
-            // loudly if they ever are.
-            (true, None) | (false, Some(_)) => {
-                tracing::error!(
-                    target: "audit",
-                    event = "authz.denied",
-                    reason = "incoherent_principal",
-                    caller_id = %cu.id,
-                    role = %cu.role,
-                    has_share = cu.share_id.is_some(),
-                    "👮🏻‍♂️ principal role and share_id disagree — refusing to guess",
-                );
-                Err(AuthError::AccessDenied(
-                    "Malformed session principal".to_string(),
-                ))
-            }
+        let mut subjects = Vec::new();
+        // A real user authorises as themselves. An anonymous visitor's `id`
+        // is a ring visitor id matching no `auth.users` row, so it must NOT
+        // become a `Subject::User` — that would match a visitor id against
+        // user grants: a valid UUID belonging to nobody, so the query runs
+        // and silently returns nothing.
+        if !cu.is_anonymous() {
+            subjects.push(Subject::User(cu.id));
         }
+        if let Some(ShareRing(ring)) = parts.extensions.get::<ShareRing>() {
+            subjects.extend(ring.shares.iter().copied().map(Subject::Token));
+        }
+
+        if subjects.is_empty() {
+            // An anonymous principal with no ring. Unreachable — the ring is
+            // what makes a principal anonymous in the first place — but an
+            // empty credential set must never read as "nothing objected".
+            tracing::error!(
+                target: "audit",
+                event = "authz.denied",
+                reason = "no_credentials",
+                caller_id = %cu.id,
+                role = %cu.role,
+                "👮🏻‍♂️ principal carries no usable credential",
+            );
+            return Err(AuthError::AccessDenied("No usable credential".to_string()));
+        }
+        Ok(CallerSubjects(subjects))
     }
 }
 
@@ -377,9 +359,6 @@ pub async fn auth_middleware(
                                 LiveRole::Active(role) => role,
                                 LiveRole::Revoked => return Err(AuthError::AccountInactive),
                             };
-                            // Refuse an incoherent token before a principal
-                            // exists to be misread downstream.
-                            validate_principal_shape(&role, claims.share_id)?;
                             // `username`/`email` are `Arc<str>` refcount
                             // bumps out of the cached claims; `role` is an
                             // inline SmolStr — the whole build is 1 alloc
@@ -390,10 +369,9 @@ pub async fn auth_middleware(
                                 email: Arc::clone(&claims.email),
                                 role,
                                 dpop_jkt: claims.dpop_jkt.clone(),
-                                share_id: claims.share_id,
                             });
+                            record_principal_on_span(&current_user);
                             request.extensions_mut().insert(current_user);
-                            record_principal_on_span(user_id, claims.share_id);
                             // Bump per-session liveness for the
                             // Prometheus gauges. O(1) DashMap upsert
                             // — no I/O on this hot path. The `sid`
@@ -456,11 +434,10 @@ pub async fn auth_middleware(
                                 role,
                                 dpop_jkt: None,
                                 // Basic auth is app-password only.
-                                share_id: None,
                             });
-                            request.extensions_mut().insert(current_user);
                             // Basic auth is app-password only — never a share.
-                            record_principal_on_span(user_id, None);
+                            record_principal_on_span(&current_user);
+                            request.extensions_mut().insert(current_user);
                             return Ok(next.run(request).await);
                         }
                         Err(e) => {
@@ -527,13 +504,10 @@ pub async fn auth_middleware(
                                     email: Arc::clone(&claims.email),
                                     role,
                                     dpop_jkt: claims.dpop_jkt.clone(),
-                                    // The cookie arm — the one a share
-                                    // visitor actually arrives through.
-                                    share_id: claims.share_id,
                                 });
+                                record_principal_on_span(&current_user);
                                 request.extensions_mut().insert(current_user);
                                 request.extensions_mut().insert(CookieAuthenticated);
-                                record_principal_on_span(user_id, claims.share_id);
                                 // Cookie-auth branch stamps the same
                                 // way as the Bearer branch above —
                                 // see that site for the O(1) /
@@ -654,49 +628,7 @@ mod tests {
             email: "".into(),
             role: SmolStr::new(role),
             dpop_jkt: None,
-            share_id: None,
         }
-    }
-
-    /// Construction-time refusal — the incoherent token never becomes a
-    /// principal at all, so nothing downstream can misread it.
-    #[test]
-    fn incoherent_token_shapes_are_refused_before_a_principal_exists() {
-        let share = Uuid::new_v4();
-
-        // The coherent pair.
-        assert!(validate_principal_shape("anonymous", Some(share)).is_ok());
-        assert!(validate_principal_shape("user", None).is_ok());
-        assert!(validate_principal_shape("admin", None).is_ok());
-
-        // The dangerous one: anything falling back to `Subject::User(cu.id)`
-        // here would match a SESSION id against user grants.
-        assert!(validate_principal_shape("anonymous", None).is_err());
-        // And its mirror — a real role has no business carrying a share.
-        assert!(validate_principal_shape("user", Some(share)).is_err());
-        assert!(validate_principal_shape("admin", Some(share)).is_err());
-
-        // An unparseable role is not anonymous, so it must not carry a share.
-        assert!(validate_principal_shape("bogus", None).is_ok());
-        assert!(validate_principal_shape("bogus", Some(share)).is_err());
-    }
-
-    /// `role` and `share_id` must agree. The pairing is what stops a
-    /// half-built principal from authorising as the wrong subject.
-    #[test]
-    fn role_and_share_id_must_agree() {
-        let anon_no_share = principal("anonymous");
-        assert!(anon_no_share.is_anonymous() && anon_no_share.share_id.is_none());
-
-        let mut user_with_share = principal("user");
-        user_with_share.share_id = Some(Uuid::new_v4());
-        assert!(!user_with_share.is_anonymous() && user_with_share.share_id.is_some());
-
-        // Both shapes above are incoherent and `CallerSubject` refuses them.
-        // The dangerous one is the first: falling back to
-        // `Subject::User(cu.id)` there would match a SESSION id against user
-        // grants — an id that belongs to no user but is a valid UUID, so the
-        // query would run and quietly return nothing (or, worse, something).
     }
 
     /// The property the whole public-share design rests on: `AuthUser` —

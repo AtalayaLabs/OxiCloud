@@ -70,19 +70,6 @@ pub struct TokenClaims {
     /// harmless — the missing sid just means no stamp fires, and
     /// the token still authenticates normally).
     pub sid: Option<Uuid>,
-    /// `storage.shares.id` when this token is a public-share session —
-    /// present exactly when `role == "anonymous"`.
-    ///
-    /// Such a session is **stateless**: no `auth.sessions` row, no `sid`,
-    /// the JWT is the whole session. It cannot refresh (the visitor
-    /// re-opens the share link instead), is never revoked individually,
-    /// and must not appear in liveness metrics or the admin sessions
-    /// panel — so a row would exist only to be excluded from everything.
-    ///
-    /// Revocation is at the SHARE, not the session: deleting a share drops
-    /// its token grant, and the engine then denies every request carrying
-    /// this token regardless of how long it has left to run.
-    pub share_id: Option<Uuid>,
 }
 
 /// Port for JWT token operations.
@@ -113,21 +100,6 @@ pub trait TokenServicePort: Send + Sync + 'static {
     /// only read fields go through `Deref`; the few that retain a field clone
     /// just that one.
     fn validate_token(&self, token: &str) -> Result<Arc<TokenClaims>, DomainError>;
-
-    /// Mint a public-share (anonymous) session token.
-    ///
-    /// Carries `role = "anonymous"` and the `share_id` claim; no `sid`, and
-    /// no `auth.sessions` row exists for it — the JWT **is** the session.
-    /// See `docs/plan/rationalize-publicshare.md`.
-    ///
-    /// `sub` is a freshly generated UUID identifying this visit. It is NOT a
-    /// user id and corresponds to no row anywhere; every extractor refuses
-    /// `anonymous` before anything could mistake it for one.
-    ///
-    /// TTL comes from `share_session_expiry_secs`, deliberately separate
-    /// from the access-token TTL: an anonymous session cannot refresh, so
-    /// that value is the whole visit rather than a renewal interval.
-    fn generate_share_token(&self, share_id: Uuid) -> Result<String, DomainError>;
 
     /// Generate a refresh token
     fn generate_refresh_token(&self) -> String;

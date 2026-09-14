@@ -67,14 +67,35 @@ const RING_TYP: &str = "share-ring";
 #[derive(Debug, Serialize, Deserialize)]
 struct RingClaims {
     typ: String,
+    /// Visitor id — stable for the life of this ring.
+    ///
+    /// The ring IS the anonymous session, so this is the only identifier a
+    /// public-share visitor has. It is not a user id and matches no row; it
+    /// exists so one visitor's requests can be correlated in logs, and so
+    /// `CurrentUser.id` has something honest to hold.
+    vid: Uuid,
     /// `storage.shares.id` values, oldest first.
     shares: Vec<Uuid>,
     exp: i64,
     iat: i64,
 }
 
+/// What a valid ring carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ring {
+    /// Stable per-visitor id — see [`RingClaims::vid`].
+    pub visitor_id: Uuid,
+    /// Unlocked shares, oldest first.
+    pub shares: Vec<Uuid>,
+}
+
 /// Mint a ring holding `shares` (already capped by the caller via [`append`]).
-pub fn issue(secret: &str, shares: &[Uuid], ttl_secs: i64) -> Result<String, DomainError> {
+pub fn issue(
+    secret: &str,
+    visitor_id: Uuid,
+    shares: &[Uuid],
+    ttl_secs: i64,
+) -> Result<String, DomainError> {
     if secret.is_empty() {
         return Err(DomainError::internal_error(
             "ShareRing",
@@ -84,6 +105,7 @@ pub fn issue(secret: &str, shares: &[Uuid], ttl_secs: i64) -> Result<String, Dom
     let now = chrono::Utc::now().timestamp();
     let claims = RingClaims {
         typ: RING_TYP.to_string(),
+        vid: visitor_id,
         shares: shares.to_vec(),
         exp: now + ttl_secs,
         iat: now,
@@ -103,7 +125,7 @@ pub fn issue(secret: &str, shares: &[Uuid], ttl_secs: i64) -> Result<String, Dom
 /// difference between "tampered", "expired" and "absent" — in all three the
 /// bearer has unlocked nothing — and distinguishing them in a response would
 /// tell an attacker which of their guesses was closer.
-pub fn verify(secret: &str, jwt: &str) -> Option<Vec<Uuid>> {
+pub fn verify(secret: &str, jwt: &str) -> Option<Ring> {
     if secret.is_empty() {
         return None;
     }
@@ -122,7 +144,10 @@ pub fn verify(secret: &str, jwt: &str) -> Option<Vec<Uuid>> {
     if data.claims.typ != RING_TYP {
         return None;
     }
-    Some(data.claims.shares)
+    Some(Ring {
+        visitor_id: data.claims.vid,
+        shares: data.claims.shares,
+    })
 }
 
 /// Add `share_id` to the ring carried in `existing`, returning a fresh token.
@@ -140,9 +165,13 @@ pub fn append(
     share_id: Uuid,
     ttl_secs: i64,
 ) -> Result<String, DomainError> {
-    let mut shares = existing
-        .and_then(|jwt| verify(secret, jwt))
-        .unwrap_or_default();
+    let held = existing.and_then(|jwt| verify(secret, jwt));
+
+    // Keep the visitor id across appends so one person's requests stay
+    // correlatable in logs as they unlock more links. A ring that could not
+    // be read starts a new visitor rather than failing — see the doc above.
+    let visitor_id = held.as_ref().map_or_else(Uuid::new_v4, |r| r.visitor_id);
+    let mut shares = held.map(|r| r.shares).unwrap_or_default();
 
     shares.retain(|&s| s != share_id);
     shares.push(share_id);
@@ -153,7 +182,7 @@ pub fn append(
     let overflow = shares.len().saturating_sub(MAX_RING_SIZE);
     shares.drain(..overflow);
 
-    issue(secret, &shares, ttl_secs)
+    issue(secret, visitor_id, &shares, ttl_secs)
 }
 
 /// Find the ring token in a `Cookie:` header value.
@@ -189,12 +218,17 @@ mod tests {
     const SECRET: &str = "test-secret-do-not-use-in-prod-minimum-32-chars";
     const TTL: i64 = 3600;
 
+    /// Most assertions care only about the share list.
+    fn shares_of(jwt: &str) -> Option<Vec<Uuid>> {
+        verify(SECRET, jwt).map(|r| r.shares)
+    }
+
     #[test]
     fn a_ring_round_trips() {
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
-        let jwt = issue(SECRET, &[a, b], TTL).unwrap();
-        assert_eq!(verify(SECRET, &jwt), Some(vec![a, b]));
+        let jwt = issue(SECRET, Uuid::new_v4(), &[a, b], TTL).unwrap();
+        assert_eq!(shares_of(&jwt), Some(vec![a, b]));
     }
 
     #[test]
@@ -203,10 +237,21 @@ mod tests {
         let b = Uuid::new_v4();
 
         let first = append(SECRET, None, a, TTL).unwrap();
-        assert_eq!(verify(SECRET, &first), Some(vec![a]));
+        assert_eq!(shares_of(&first), Some(vec![a]));
 
         let second = append(SECRET, Some(&first), b, TTL).unwrap();
-        assert_eq!(verify(SECRET, &second), Some(vec![a, b]));
+        assert_eq!(shares_of(&second), Some(vec![a, b]));
+    }
+
+    /// One visitor stays one visitor as they unlock more links — otherwise
+    /// their requests could not be correlated in logs across a visit.
+    #[test]
+    fn the_visitor_id_survives_appends() {
+        let first = append(SECRET, None, Uuid::new_v4(), TTL).unwrap();
+        let vid = verify(SECRET, &first).unwrap().visitor_id;
+
+        let second = append(SECRET, Some(&first), Uuid::new_v4(), TTL).unwrap();
+        assert_eq!(verify(SECRET, &second).unwrap().visitor_id, vid);
     }
 
     /// Re-opening a link must not consume a second slot — it refreshes the
@@ -220,7 +265,7 @@ mod tests {
         let r = append(SECRET, Some(&r), b, TTL).unwrap();
         let r = append(SECRET, Some(&r), a, TTL).unwrap();
 
-        assert_eq!(verify(SECRET, &r), Some(vec![b, a]));
+        assert_eq!(shares_of(&r), Some(vec![b, a]));
     }
 
     /// The cap is what stops the ring growing without bound on every request
@@ -234,7 +279,7 @@ mod tests {
             ring = Some(append(SECRET, ring.as_deref(), *id, TTL).unwrap());
         }
 
-        let held = verify(SECRET, ring.as_deref().unwrap()).unwrap();
+        let held = shares_of(ring.as_deref().unwrap()).unwrap();
         assert_eq!(held.len(), MAX_RING_SIZE);
         // The three oldest are gone, the newest survive in order.
         assert_eq!(held, ids[3..], "eviction must be oldest-first");
@@ -247,6 +292,7 @@ mod tests {
     fn a_foreign_signature_is_rejected() {
         let jwt = issue(
             "some-other-secret-at-least-32-bytes-long!!",
+            Uuid::new_v4(),
             &[Uuid::new_v4()],
             TTL,
         )
@@ -284,7 +330,7 @@ mod tests {
 
     #[test]
     fn an_expired_ring_is_rejected() {
-        let jwt = issue(SECRET, &[Uuid::new_v4()], -10).unwrap();
+        let jwt = issue(SECRET, Uuid::new_v4(), &[Uuid::new_v4()], -10).unwrap();
         assert_eq!(verify(SECRET, &jwt), None);
     }
 
@@ -294,7 +340,7 @@ mod tests {
     fn append_treats_an_unreadable_ring_as_empty() {
         let a = Uuid::new_v4();
         let fresh = append(SECRET, Some("not.a.jwt"), a, TTL).unwrap();
-        assert_eq!(verify(SECRET, &fresh), Some(vec![a]));
+        assert_eq!(shares_of(&fresh), Some(vec![a]));
     }
 
     #[test]

@@ -160,7 +160,6 @@ fn section_identity(iters: u64) {
         role: "user".to_string(),
         dpop_jkt: None,
         sid: None,
-        share_id: None,
     });
 
     let (bn, ba) = measure("BEFORE String clones + role to_string", iters, || {
@@ -175,7 +174,6 @@ fn section_identity(iters: u64) {
             email: Arc::clone(&new_claims.email),
             role,
             dpop_jkt: None,
-            share_id: None,
         })
     });
 
@@ -187,7 +185,6 @@ fn section_identity(iters: u64) {
         email: Arc::clone(&new_claims.email),
         role: SmolStr::new_static("user"),
         dpop_jkt: None,
-        share_id: None,
     });
     assert_eq!(old.username, *new.username);
     assert_eq!(old.email, *new.email);

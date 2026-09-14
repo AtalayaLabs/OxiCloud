@@ -1765,8 +1765,6 @@ impl AuthApplicationService {
             // flows); the DPoP middleware never reads CurrentUser
             // populated by this method. Leaving None is safe.
             dpop_jkt: None,
-            // A credential-verified principal is always a real user.
-            share_id: None,
         })
     }
 
@@ -5083,7 +5081,6 @@ mod phase4_gate_integration_tests {
             "test-secret-do-not-use-in-prod-minimum-32-chars".to_string(),
             3600,
             86400,
-            14400,
         ));
         let opaque_repo = Arc::new(OpaquePgRepository::new(pool.clone()));
 
