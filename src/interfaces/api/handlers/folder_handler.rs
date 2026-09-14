@@ -124,10 +124,11 @@ impl FolderHandler {
                 enrich_folder_flags(&state, &mut folder, authorized_as).await;
                 // `path` names the folder's position in the OWNER's tree,
                 // including ancestors above the share root that this caller
-                // was never given. Withheld whenever a share token is what
-                // granted access, matching `GET /api/files/{id}?metadata=true`.
+                // was never given; `created_by` / `updated_by` name the
+                // people. Withheld whenever a share token is what granted
+                // access — see `FolderDto::redacted_for_token`.
                 if authorized_as.token_id().is_some() {
-                    folder = folder.without_hierarchy_info();
+                    folder = folder.redacted_for_token();
                 }
                 (StatusCode::OK, Json(folder)).into_response()
             }
@@ -630,6 +631,10 @@ pub async fn list_folder_resources(
         .await
     {
         Ok((rows, next_cursor)) => {
+            // Decided once, not per row. `is_favorite` / `is_shared` were
+            // already handled in SQL; this covers the owner's identifiers,
+            // which come straight off the row.
+            let redact = authorized_as.token_id().is_some();
             let items: Vec<FolderResourceItemDto> = rows
                 .into_iter()
                 .map(|row| {
@@ -654,6 +659,11 @@ pub async fn list_folder_resources(
                             updated_by: row.updated_by,
                             is_favorite: row.is_favorite,
                             is_shared: row.is_shared,
+                        };
+                        let dto = if redact {
+                            dto.redacted_for_token()
+                        } else {
+                            dto
                         };
                         FolderResourceItemDto {
                             resource_type: ResourceTypeDto::Folder,
@@ -707,6 +717,11 @@ pub async fn list_folder_resources(
                             updated_by: row.updated_by,
                             is_favorite: row.is_favorite,
                             is_shared: row.is_shared,
+                        };
+                        let dto = if redact {
+                            dto.redacted_for_token()
+                        } else {
+                            dto
                         };
                         FolderResourceItemDto {
                             resource_type: ResourceTypeDto::File,

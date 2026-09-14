@@ -178,6 +178,32 @@ impl FolderDto {
         }
     }
 
+    /// Everything withheld from a caller holding only a share token.
+    ///
+    /// Strictly wider than [`Self::without_hierarchy_info`], which is used for
+    /// signed-in share recipients: those callers have an account, so naming
+    /// the people involved tells them nothing they could not ask the sharer.
+    /// A public-share visitor is anonymous and may be anyone, so the owner's
+    /// identifiers come off too.
+    ///
+    /// `created_by` / `updated_by` are bare UUIDs a visitor cannot resolve to
+    /// a name — `/api/users/{id}` is off the anonymous allowlist. They are
+    /// still worth withholding: they are *stable*, so the same id appearing
+    /// across two unrelated public links correlates them to one person. That
+    /// is a fact about the owner, disclosed to someone who only ever proved
+    /// they hold a link.
+    ///
+    /// `parent_id` is deliberately kept — sub-folder navigation needs it, and
+    /// it names a folder the cascade already grants.
+    #[must_use]
+    pub fn redacted_for_token(self) -> Self {
+        Self {
+            created_by: None,
+            updated_by: None,
+            ..self.without_hierarchy_info()
+        }
+    }
+
     /// Creates an empty folder DTO for stub implementations
     pub fn empty() -> Self {
         Self {

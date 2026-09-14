@@ -245,6 +245,7 @@ HTTP 200
 [Asserts]
 jsonpath "$.path" != ""
 jsonpath "$.is_shared" == true
+jsonpath "$.created_by" exists
 
 
 # ─────────────────────────────────────────────────────────────
@@ -339,6 +340,11 @@ jsonpath "$.id" == "{{anon_folder_id}}"
 jsonpath "$.path" == ""
 jsonpath "$.is_shared" == false
 jsonpath "$.is_favorite" == false
+# The owner's stable identifiers. A visitor cannot resolve them to a
+# name, but the same id across two unrelated public links correlates
+# them to one person — see `FolderDto::redacted_for_token`.
+jsonpath "$.created_by" not exists
+jsonpath "$.updated_by" not exists
 
 
 # The listing. Both children are visible, and `is_shared` must be
@@ -366,6 +372,9 @@ jsonpath "$.items[1].resource_type" == "file"
 jsonpath "$.items[1].resource.id" == "{{inside_file_id}}"
 jsonpath "$.items[1].resource.is_shared" == false
 jsonpath "$.items[1].resource.is_favorite" == false
+# Redaction applies per row, to files as well as folders.
+jsonpath "$.items[0].resource.created_by" not exists
+jsonpath "$.items[1].resource.created_by" not exists
 
 
 # The breadcrumb. The walk truncates at the share root — a visitor
