@@ -375,15 +375,45 @@ anonymous session yet, so no behaviour changed.
     `Subject::User(cu.id)` and match a *session* id against user grants.
 11. ✅ **Stateless share sessions** — `share_id` JWT claim, no DB row, own TTL.
 
-### Phase 1 — `/s/{token}` mints the session *(in progress)*
+### Phase 1 — `/s/{token}` mints the session
 
-`/verify` (and the no-password path) resolves via `get_shared_link_with_unlock`
-— **one call that preserves the password gate and expiry**, being the same call
-the bespoke path makes — then mints the anonymous JWT and sets a share-scoped
-cookie. Reshape `GET /api/s/{token}`. Rate-limit `/verify`. Swap the seven
-allowlisted routes to `CallerSubject`. Validate the `role`/`share_id` pairing at
-**construction** in `auth_middleware`, not only at use, so an incoherent
-principal never enters a request. Legacy endpoints stay alive.
+**Vertical slice shipped** (`7ecce01f`, tests `730a4309`). One route swapped —
+`GET /api/files/{id}/thumbnail/{size}` — which is enough to close #721 and to
+exercise every layer end to end. What landed:
+
+- `auth_middleware` parses `oxi_shares` **once, before any credential arm**, and
+  inserts `ShareRing` for every caller — a logged-in Alice who opens a
+  colleague's link keeps her identity *and* gains the share. A fourth arm builds
+  the `Anonymous` principal when a valid ring exists and no user credential
+  does, placed **after** the DAV challenge so a ring can never authenticate
+  WebDAV/CalDAV/CardDAV.
+- Both unlock paths mint: `POST /api/s/{token}/verify` on a correct password,
+  and `GET /api/s/{token}` when the share has none — reaching `Ok` there already
+  means the share is open to this caller. `attach_ring_cookie` is shared by
+  both; failure is silent, degrading to the legacy endpoints rather than
+  denying.
+- `/verify` is rate-limited, budgeted from the **login** limits rather than a
+  new knob: it is unauthenticated and runs Argon2id per call — a password oracle
+  and a memory amplifier, the two properties that earned `/api/auth/login` its
+  limiter. The three existing limiters collapsed into one `enforce`.
+- `FileManagementUseCase::require_permission` takes `&[Subject]` and **returns
+  the credential that granted**; `require_any` likewise. `get_thumbnail` hands
+  `granted_by` to its cache-miss fetch — re-deriving the subject there could
+  deny what was just allowed.
+- The force-password-change layer skips anonymous principals. Without it every
+  thumbnail request looked up a `visitor_id` matching no row, missing the flags
+  cache and hitting the DB on the hottest GET in the app.
+
+Ring TTL is its own `DEFAULT_TTL_SECS` (8h), deliberately not the access-token
+TTL: there is no session for a visitor to refresh, and the share's `expires_at`
+is still checked per request, so a long ring cannot outlive the share.
+
+**Superseded from the draft:** `validate_principal_shape` is gone. The ring *is*
+the anonymous session, so "holds a ring, is not a user" is what makes a
+principal anonymous — the pairing is structural, leaving nothing to validate.
+
+**Remaining in this phase:** swap the other six allowlisted routes to
+`CallerSubjects`. Legacy endpoints stay alive throughout.
 
 ### Phase 2 — Disclosure fixes *(the ones most likely to be missed)*
 
@@ -437,17 +467,41 @@ assert every path either denies anonymous or appears in the allowlist constant.
 With four independent auth paths, enumeration is the only durable guarantee — a
 reviewer will not catch the fifth.
 
-Plus:
-- Anonymous denied on `/api/users/{id}`, `/api/groups/search`,
-  `/api/address-books`, `/api/admin/*`, `/webdav`, `/caldav`, `/carddav`,
-  `POST /api/auth/refresh`, `POST /api/auth/app-passwords`,
-  `POST /api/rt/ticket`, and `GET /api/rt/ws` **with a bearer token**.
-- All seven allowlisted paths work for an anonymous session; ids outside the share
-  404.
-- Two share tokens in one session both resolve.
-- A logged-in user with no grant still reads a colleague's share.
+**Shipped** in `tests/api/anonymous_share_session.hurl` (`730a4309`) — hurl keeps
+one cookie jar per file, so it behaves like a browser, which also makes the
+"logged-in Alice carries both credentials" case the default rather than a
+special setup:
+
+- Ring issued on the password-less `GET /api/s/{token}`; `HttpOnly`, `Path=/`.
+- Anonymous `GET /api/files/{id}/thumbnail/preview` → 200 (#721), via the ltree
+  cascade from a *folder* share down to a file inside it.
+- A file the same owner holds outside the shared subtree → **404, not 403**.
+- Denied with a valid ring: `/api/users/{id}` (the owner's own name and email —
+  and the visitor knows the owner exists), `/api/shares`, `/api/drives`,
+  `/api/favorites`, `/api/trash/resources`, `/api/search`, `/api/auth/me`. Each
+  403s *before* the handler rather than returning an empty list.
+- Allowlist shape: `/api/folders` must not inherit from the allowlisted
+  `/api/folders/{id}` (pattern, not prefix), and `DELETE` must not inherit from
+  a listed path's `GET`.
+- Password share issues **no** ring on the bare GET or a wrong password; the
+  right password does.
+- The ring **appends** — a second unlock does not evict the first.
+- Revoking the shares kills access though the signed cookie still names them.
+  This is what justifies the 8h TTL.
+
+Unit: `CallerSubjects` composition (visitor contributes no `Subject::User`; a
+user's own subject comes first; empty set refused) and the `require_role` gate.
+
+Still to do:
+- **The route-coverage test above** — not yet written; it is the one that
+  catches the fifth auth path.
+- Anonymous denied on `/api/groups/search`, `/api/address-books`,
+  `/api/admin/*`, `/webdav`, `/caldav`, `/carddav`, `POST /api/auth/refresh`,
+  `POST /api/auth/app-passwords`, `POST /api/rt/ticket`, and `GET /api/rt/ws`
+  **with a bearer token**.
+- The other six allowlisted paths, once Phase 1 swaps them.
 - A file added *after* sharing is visible (no positive test exists today).
-- Trash regressions; password 401-then-200; expiry after revoke.
+- Trash regressions.
 - Playwright: every grid image request matches `/thumbnail/`, none a bare
   `/files/{id}` — the direct #721 regression.
 
