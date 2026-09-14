@@ -15,6 +15,15 @@ Non-obvious rules that trip up new code. Terse on purpose.
 - Any new endpoint that mints or consumes credentials/tokens must consult one of the `is_*_login_allowed()` helpers, not the raw allowlist.
 - Any new "policy-disabled" refusal must emit an `audit`-target line before returning — matches `auth.login_rejected`, `magic_link.redemption_rejected` conventions.
 
+## AuthZ enforcement points
+
+- **The extractors are NOT a choke point.** Four paths authenticate without ever touching `AuthUser` / `CurrentUserId`: `middleware/admin.rs::require_authenticated` (re-parses the JWT from header *or* cookie itself), the three DAV handlers' hand-rolled `extract_user` (`webdav_handler.rs:154`, `caldav_handler.rs:421`, `carddav_handler.rs:173`), `POST /api/auth/refresh` (mounted outside `auth_middleware`, `main.rs:775`), and `GET /api/rt/ws` (self-auths from a raw Bearer and never reads `claims.role`, `rt_ws.rs:240-255`). A rule added to an extractor does not hold until it is added to these too.
+- **Never hand-roll principal extraction.** `req.extensions().get::<Arc<CurrentUser>>()` inside a handler is exactly the anti-pattern above — it bypasses every `FromRequestParts` guard. Take the extractor, or call the shared assertion.
+- **A method check is not an authorization check.** GETs that mint credentials or write exist: `GET /api/wopi/editor-url` returns a WOPI token usable for `POST /wopi/files/{id}/contents`; `GET /api/s/{token}` writes via `register_shared_link_access`; `GET /api/auth/device/verify` is an oracle on live device codes; `GET /api/batch/download` builds an arbitrary ZIP from a querystring. Never gate on verb alone.
+- **An auth helper's `_ =>` arm must DENY.** Two fail-open gates exist and are bugs, not patterns to copy: `require_internal_user` (`middleware/user.rs:64-71`) admits the caller on *any* `get_user_flags` error, and `decide_live_role` (`:169-176`) resurrects the claim role on a transient DB error. The first is the only middleware guarding all three DAV surfaces.
+- **Prefer deny-by-default over assert-in-handler.** A restriction enforced inside the extractor covers ~200 call sites with no edits; the same restriction as "handler takes an optional principal and asserts" is one forgotten call away from silently accepting. `OptionalUserId` (`middleware/auth.rs:85-98`) is the cautionary tale — it exists, it is dead code, and nothing ever used it.
+- Anonymous-session direction (share links as a principal): `docs/plan/rationalize-publicshare.md`.
+
 ## Storage backend access
 
 - **Read blob content through `Arc<DedupService>`.** It's the ONE canonical read abstraction — CDC-manifest-aware (`file.blob_hash` may reference a chunk manifest, not a blob), backend-agnostic (Local/S3/Azure), wrapper-transparent (encryption/retry/cache). Never take `Arc<dyn BlobStorageBackend>` directly in a service that reads content; you'll silently break on any file ≥ 64 KiB (`CDC_MIN_CHUNK`). Follow `thumbnail_service`, `audio_metadata_service`, `media_metadata_service`, `face_indexing_service`, `search_index::content_index_worker` as reference impls.
@@ -30,3 +39,9 @@ Non-obvious rules that trip up new code. Terse on purpose.
 - **After adding: `cargo run --bin generate-openapi`** to regenerate `resources/gen/openapi.json`, then `git diff resources/gen/openapi.json` — the new path + its request/response schemas must be present. Zero-diff means you missed the registration.
 - Sanity check for the whole surface: `diff <(grep -oE 'path = "/api[^"]+"' src/interfaces/api/handlers/*.rs | grep -oE '/api[^"]+' | sort -u) <(jq -r '.paths | keys | .[]' resources/gen/openapi.json | sort -u)` — should always be empty. Non-empty diff = drift.
 - Handlers referenced by the `paths(...)` list MUST be `pub` (module-visible from the paths list). Private `async fn` compiles at the router mount but breaks the paths list with a visibility error — see `get_smtp_info`, `send_smtp_test`, `get_user_profile` for the retrofit.
+
+### Security / scope in the spec
+
+- **`security(("bearerAuth" = []))` — the empty array is the SCOPES list**, not decoration. Every route currently declares the same thing, so the spec claims "a session is required" for `GET /api/version` and `PUT /api/admin/users/{id}/role` alike: true, and useless. If a route's gate differs from the default, declare it there.
+- OpenAPI has **no field for a minimum role** — OAuth2 has no role concept, so the spec has nowhere to put one. Use a pseudo-scope (`["role:admin"]`) rather than a vendor extension no tooling renders.
+- **Declaring is not enforcing.** utoipa's `security` wires nothing, so it drifts from the real gate silently. Any scope worth declaring is worth a test cross-checking it against the actual mount — otherwise the spec becomes a parallel description of the authorization boundary rather than a picture of it.
