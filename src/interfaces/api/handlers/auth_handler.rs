@@ -1301,15 +1301,41 @@ pub async fn setup_admin(
         ));
     }
 
-    // 5. Create the first admin user (we hold the exclusive claim)
-    let user = auth_service
+    // 5. Create the first admin user (we hold the exclusive claim).
+    //    If creation fails (e.g. password < 8 chars, invalid username),
+    //    release the claim so the operator can retry without dropping
+    //    the DB. Without this rollback the placeholder claim persists
+    //    with `updated_by = Uuid::nil()` and every retry bounces with
+    //    "System is already initialized". AtalayaLabs/OxiCloud#677.
+    let user = match auth_service
         .auth_application_service
         .setup_create_admin(dto.username.clone(), dto.email, dto.password)
         .await
-        .map_err(|e| {
+    {
+        Ok(u) => u,
+        Err(e) => {
             tracing::error!("Setup admin creation failed: {}", e);
-            AppError::from(e)
-        })?;
+            // Best-effort release. If it fails we log and still return
+            // the original error — the operator sees a clear message
+            // and the log points at the follow-up cleanup.
+            if let Err(release_err) = admin_svc.release_initialization_claim().await {
+                tracing::error!(
+                    target: "audit",
+                    event = "setup.claim_release_failed",
+                    reason = %release_err,
+                    "🚨 setup admin failed AND claim rollback failed — manual DB cleanup required (DELETE FROM auth.admin_settings WHERE key='system_initialized')"
+                );
+            } else {
+                tracing::info!(
+                    target: "audit",
+                    event = "setup.claim_released",
+                    reason = %e,
+                    "🔄 setup admin failed; released initialization claim so retries can proceed"
+                );
+            }
+            return Err(AppError::from(e));
+        }
+    };
 
     // 5. Update the initialization record with the real admin user_id
     let real_user_id = Uuid::parse_str(&user.id).unwrap_or_default();

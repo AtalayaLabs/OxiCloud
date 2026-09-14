@@ -23,6 +23,7 @@
 	import { i18n, SUPPORTED_LOCALES, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
 	import { loginErrorMessage } from '$lib/auth/loginError';
 	import { session } from '$lib/stores/session.svelte';
+	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { hasSessionHint } from '$lib/api/csrf';
 
 	type Mode = 'login' | 'register' | 'setup';
@@ -266,6 +267,22 @@
 	async function onRegister(e: SubmitEvent) {
 		e.preventDefault();
 		regError = '';
+		// Client-side password length gate. Reads the same threshold
+		// the server enforces (`AuthConfig::min_password_length`, env
+		// `OXICLOUD_AUTH_MIN_PASSWORD_LENGTH`) from
+		// `serverConfig.auth`. Skipped entirely for email-only signup
+		// (regPassword empty = magic-link bootstrap path).
+		if (regPassword.length > 0) {
+			const minLen = serverConfig.auth.min_password_length;
+			if (regPassword.length < minLen) {
+				regError = t(
+					'auth.password_too_short',
+					{ min: String(minLen) },
+					'Password must be at least {{min}} characters long'
+				);
+				return;
+			}
+		}
 		if (regPassword !== regConfirm) {
 			regError = t('auth.passwords_mismatch', 'Passwords do not match');
 			return;
@@ -297,6 +314,24 @@
 		e.preventDefault();
 		setupError = '';
 		setupSuccess = '';
+		// Client-side password length gate. The threshold comes from
+		// `/api/config` (hydrated at boot in `serverConfig.auth`), so
+		// this check ALWAYS matches whatever the server enforces —
+		// operator overrides via `OXICLOUD_AUTH_MIN_PASSWORD_LENGTH`
+		// take effect on the UI without a rebuild. Without this check
+		// a short password used to land in the FE as a generic error
+		// AFTER the server had already claimed system-initialization
+		// (see AtalayaLabs/OxiCloud#677). The server rollback fixes
+		// the lock-out; this check makes the failure feedback instant.
+		const minLen = serverConfig.auth.min_password_length;
+		if (setupPassword.length < minLen) {
+			setupError = t(
+				'auth.password_too_short',
+				{ min: String(minLen) },
+				'Password must be at least {{min}} characters long'
+			);
+			return;
+		}
 		if (setupPassword !== setupConfirm) {
 			setupError = t('auth.passwords_mismatch', 'Passwords do not match');
 			return;

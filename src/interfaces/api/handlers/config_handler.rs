@@ -50,6 +50,13 @@ pub struct ServerConfigDto {
     /// have no delivery channel).
     pub features: FeaturesDto,
 
+    /// Auth-related tunables the SPA needs to gate submit locally.
+    /// Composes with `/api/auth/oidc/providers` — that endpoint lists
+    /// federation options; this one carries the numeric thresholds
+    /// (password length today, more later) that the form has to check
+    /// before firing the request.
+    pub auth: AuthDto,
+
     /// Live server-status snapshot — exact same shape and field
     /// names as the `X-Server-Status` response header. Clients use
     /// this to hydrate their reactive store at boot; subsequent live
@@ -59,6 +66,30 @@ pub struct ServerConfigDto {
     /// has a definite value; `readonly: false` with no `migration`
     /// or `rotation` is the "everything nominal" case.
     pub server_status: HeaderPayload,
+}
+
+/// Auth block within [`ServerConfigDto`]. Non-privacy-implicating
+/// tunables the SPA needs at boot so form validation matches server
+/// enforcement.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct AuthDto {
+    /// Minimum password length (UTF-8 bytes). Mirrors
+    /// `AuthConfig::min_password_length`, which every server-side
+    /// password-bearing endpoint uses. The SPA gates submit on the
+    /// same value so users see the failure instantly instead of
+    /// after a round-trip. See AtalayaLabs/OxiCloud#677.
+    pub min_password_length: u8,
+
+    /// OPAQUE deployment mode — one of `"off"`, `"migrate"`,
+    /// `"opaque_only"`. Mirrors `AuthConfig::opaque.mode` (env
+    /// `OXICLOUD_AUTH_OPAQUE_MODE`). Login already discovers this
+    /// per-user via `POST /api/auth/opaque/login/lookup`; exposing
+    /// the server-wide mode here is for future consumers (admin
+    /// panel status indicators, OPAQUE-native setup / register
+    /// flows). Login callers should NOT branch on this value —
+    /// keep using the per-user lookup so mixed populations during
+    /// migration stay honest.
+    pub opaque_mode: &'static str,
 }
 
 /// Feature-flag block within [`ServerConfigDto`]. One boolean per
@@ -128,6 +159,14 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<ServerConfig
             faces: f.enable_faces,
             video_thumbnails: f.enable_video_thumbnails,
             external_mounts: f.enable_external_mounts,
+        },
+        auth: AuthDto {
+            min_password_length: state.core.config.auth.min_password_length,
+            // OpaqueConfig lives at `config.opaque`, not `config.auth.opaque`
+            // — top-level sibling of `auth`. Grouping the mode under
+            // `auth` on the wire is a UX choice for FE consumers who
+            // expect all identity-related tunables side-by-side.
+            opaque_mode: state.core.config.opaque.mode.as_str(),
         },
         server_status: build_header_payload(&state),
     })

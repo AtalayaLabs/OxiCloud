@@ -452,6 +452,13 @@ pub struct AuthApplicationService {
     /// `is_password_login_allowed()` / `is_magic_link_login_allowed()`
     /// so callers don't have to reach for the app config.
     allowed_auth_methods: Vec<AuthMethod>,
+    /// Minimum password length enforced by every password-bearing
+    /// endpoint (setup, register, admin create, admin reset,
+    /// self-service change-password). Mirrors
+    /// `AuthConfig::min_password_length` and is advertised via
+    /// `GET /api/config` so the SPA gates submit on the same value.
+    /// Default 8 when the DI builder isn't called (test builds).
+    min_password_length: u8,
     /// Additive auth-policy switches (mirrors `AuthConfig::auth_policies`).
     /// Consulted by handlers / providers-info endpoint to compose the
     /// login-page UX hints (e.g. `AutoRedirectIfStandaloneOidc`) without
@@ -519,6 +526,7 @@ impl AuthApplicationService {
                 .time_to_live(USER_FLAGS_CACHE_TTL)
                 .build(),
             allowed_auth_methods: vec![AuthMethod::Password, AuthMethod::MagicLink],
+            min_password_length: 8,
             auth_policies: Vec::new(),
             require_verified_email: false,
             opaque_repo: None,
@@ -535,11 +543,38 @@ impl AuthApplicationService {
         allowed_methods: Vec<AuthMethod>,
         auth_policies: Vec<AuthPolicy>,
         require_verified_email: bool,
+        min_password_length: u8,
     ) -> Self {
         self.allowed_auth_methods = allowed_methods;
         self.auth_policies = auth_policies;
         self.require_verified_email = require_verified_email;
+        self.min_password_length = min_password_length;
         self
+    }
+
+    /// Advertised minimum password length. Used by `/api/config` so the
+    /// SPA enforces the same rule client-side that
+    /// [`require_password_length`](Self::require_password_length) does
+    /// on the server.
+    pub fn min_password_length(&self) -> u8 {
+        self.min_password_length
+    }
+
+    /// Uniform password-length gate for every credential-bearing
+    /// endpoint. Six sites used to inline `if pw.len() < 8 { … }`; this
+    /// helper centralises the threshold on `AuthConfig::min_password_length`
+    /// so operator overrides via `OXICLOUD_AUTH_MIN_PASSWORD_LENGTH`
+    /// take effect everywhere at once.
+    fn require_password_length(&self, password: &str) -> Result<(), DomainError> {
+        let min = self.min_password_length as usize;
+        if password.len() < min {
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "User",
+                format!("Password must be at least {min} characters long"),
+            ));
+        }
+        Ok(())
     }
 
     /// True iff `POST /api/auth/login` is a supported endpoint on this
@@ -825,13 +860,7 @@ impl AuthApplicationService {
         // magic-link bootstrap path.
         let password_hash = match dto.password {
             Some(ref pw) => {
-                if pw.len() < 8 {
-                    return Err(DomainError::new(
-                        ErrorKind::InvalidInput,
-                        "User",
-                        "Password must be at least 8 characters long",
-                    ));
-                }
+                self.require_password_length(pw)?;
                 Some(self.password_hasher.hash_password(pw).await?)
             }
             None => None,
@@ -929,13 +958,7 @@ impl AuthApplicationService {
         }
 
         // Validate password
-        if password.len() < 8 {
-            return Err(DomainError::new(
-                ErrorKind::InvalidInput,
-                "User",
-                "Password must be at least 8 characters long".to_string(),
-            ));
-        }
+        self.require_password_length(&password)?;
 
         let role = UserRole::Admin;
         let quota = self.capped_quota(&role);
@@ -2150,13 +2173,7 @@ impl AuthApplicationService {
         //     for this deployment (otherwise no login path post-upgrade).
         let password_hash = match dto.password.as_deref() {
             Some(pw) if !pw.is_empty() => {
-                if pw.len() < 8 {
-                    return Err(DomainError::new(
-                        ErrorKind::InvalidInput,
-                        "User",
-                        "Password must be at least 8 characters long",
-                    ));
-                }
+                self.require_password_length(pw)?;
                 Some(self.password_hasher.hash_password(pw).await?)
             }
             _ => {
@@ -2401,13 +2418,7 @@ impl AuthApplicationService {
         }
 
         // Validate new password
-        if dto.new_password.len() < 8 {
-            return Err(DomainError::new(
-                ErrorKind::InvalidInput,
-                "User",
-                "Password must be at least 8 characters long",
-            ));
-        }
+        self.require_password_length(&dto.new_password)?;
 
         // Reject same-as-current. Load-bearing when the caller is on
         // an admin-picked temp password (force_password_change_at_next_login
@@ -3467,13 +3478,7 @@ impl AuthApplicationService {
         }
 
         // Validate password
-        if dto.password.len() < 8 {
-            return Err(DomainError::new(
-                ErrorKind::InvalidInput,
-                "User",
-                "Password must be at least 8 characters long".to_string(),
-            ));
-        }
+        self.require_password_length(&dto.password)?;
 
         // Determine role
         let role = match dto.role.as_deref() {
@@ -3613,13 +3618,7 @@ impl AuthApplicationService {
             ));
         }
 
-        if new_password.len() < 8 {
-            return Err(DomainError::new(
-                ErrorKind::InvalidInput,
-                "User",
-                "Password must be at least 8 characters long".to_string(),
-            ));
-        }
+        self.require_password_length(new_password)?;
         let hash = self.password_hasher.hash_password(new_password).await?;
         self.user_storage.change_password(user_id, &hash).await?;
 

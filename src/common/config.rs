@@ -1439,6 +1439,28 @@ pub struct AuthConfig {
     /// `OXICLOUD_OIDC_DISABLE_PASSWORD_LOGIN=true` still removes
     /// Password from this list when set (backwards-compat).
     pub allowed_auth_methods: Vec<AuthMethod>,
+    /// Minimum length (in UTF-8 bytes) enforced by every password-
+    /// bearing endpoint: `POST /api/setup`, `POST /api/auth/register`,
+    /// `POST /api/admin/users`, admin password reset, and self-service
+    /// `PATCH /api/auth/me/password`. Advertised on `GET /api/config`
+    /// so the SPA can gate submit on the same rule the server enforces
+    /// — no drift possible, and users see the failure instantly rather
+    /// than after a round-trip (see AtalayaLabs/OxiCloud#677).
+    ///
+    /// Under the current plaintext-then-argon2 register/setup flow the
+    /// server always sees the password and can enforce this
+    /// authoritatively. If setup ever moves to OPAQUE-native (client
+    /// blinds the passphrase before it leaves the browser), the value
+    /// is still meaningful — but only the client-side check runs,
+    /// making /api/config the single source of truth even more
+    /// important.
+    ///
+    /// Env: `OXICLOUD_AUTH_MIN_PASSWORD_LENGTH` (default `8`, the
+    /// long-standing hardcoded threshold). Values below 8 are accepted
+    /// but log a warning at boot — modern password guidelines put the
+    /// practical floor at 8-12 bytes for interactive credentials.
+    pub min_password_length: u8,
+
     /// Require the user's email to be verified before login is
     /// permitted. When `true`, `POST /api/auth/login` returns 403
     /// `EmailNotVerified` for any account whose `email_verified_at`
@@ -1671,6 +1693,7 @@ impl Default for AuthConfig {
             auth_policies: Vec::new(),
             allowed_auth_methods: vec![AuthMethod::Password, AuthMethod::MagicLink],
             require_verified_email: false,
+            min_password_length: 8,
             dpop_mode: DpopMode::Off,
         }
     }
@@ -3314,6 +3337,31 @@ impl AppConfig {
 
         if let Ok(v) = env::var("OXICLOUD_REQUIRE_VERIFIED_EMAIL") {
             config.auth.require_verified_email = v.parse::<bool>().unwrap_or(false);
+        }
+
+        // Minimum password length — advertised via `GET /api/config` so
+        // the SPA and server enforce the same rule. Default 8 matches
+        // the historical hardcoded threshold. See
+        // `AuthConfig::min_password_length` for the full rationale.
+        if let Ok(v) = env::var("OXICLOUD_AUTH_MIN_PASSWORD_LENGTH") {
+            match v.parse::<u8>() {
+                Ok(n) => {
+                    if n < 8 {
+                        tracing::warn!(
+                            "OXICLOUD_AUTH_MIN_PASSWORD_LENGTH={} is below the recommended \
+                             floor of 8; accepting anyway. Consider raising to at least 8 — \
+                             OWASP interactive-auth guidance is 8+ bytes.",
+                            n
+                        );
+                    }
+                    config.auth.min_password_length = n;
+                }
+                Err(_) => tracing::warn!(
+                    "OXICLOUD_AUTH_MIN_PASSWORD_LENGTH={} — not a valid u8; keeping default {}",
+                    v,
+                    config.auth.min_password_length
+                ),
+            }
         }
 
         // Auth-policy vector. Additive — each recognised token adds a

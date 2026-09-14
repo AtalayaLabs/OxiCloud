@@ -8,6 +8,7 @@
 	import { ApiError } from '$lib/api/client';
 	import { getOidcProviders, upgradeToInternal, type OidcProviders } from '$lib/api/endpoints/auth';
 	import { t } from '$lib/i18n/index.svelte';
+	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { session } from '$lib/stores/session.svelte';
 
 	let password = $state('');
@@ -49,8 +50,16 @@
 			error = t('auth.passwords_mismatch', 'Passwords do not match');
 			return;
 		}
-		if (password.length > 0 && password.length < 8) {
-			error = t('upgrade.password_too_short', 'Password must be at least 8 characters long.');
+		// Client-side length gate against the server's advertised
+		// `AuthConfig::min_password_length` — same rule the register /
+		// setup / change-password paths honour.
+		const minLen = serverConfig.auth.min_password_length;
+		if (password.length > 0 && password.length < minLen) {
+			error = t(
+				'auth.password_too_short',
+				{ min: String(minLen) },
+				'Password must be at least {{min}} characters long'
+			);
 			return;
 		}
 		busy = true;

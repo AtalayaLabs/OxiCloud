@@ -1211,8 +1211,16 @@
 	async function submitReset(e: SubmitEvent) {
 		e.preventDefault();
 		if (!resetModal) return;
-		if (resetPassword.length < 8) {
-			resetError = t('admin.error_password_short', 'Password must be at least 8 characters.');
+		// Length gate against the server's advertised
+		// `AuthConfig::min_password_length` — same rule the create-user /
+		// register / setup / self-change paths honour.
+		const minLen = serverConfig.auth.min_password_length;
+		if (resetPassword.length < minLen) {
+			resetError = t(
+				'auth.password_too_short',
+				{ min: String(minLen) },
+				'Password must be at least {{min}} characters long'
+			);
 			return;
 		}
 		resetting = true;
@@ -1265,8 +1273,16 @@
 			createError = t('admin.error_username_short', 'Username must be at least 3 characters.');
 			return;
 		}
-		if (newUser.password.length < 8) {
-			createError = t('admin.error_password_short', 'Password must be at least 8 characters.');
+		// Length gate against the server's advertised
+		// `AuthConfig::min_password_length` — same rule the public
+		// register / setup / upgrade / self-change paths honour.
+		const minLen = serverConfig.auth.min_password_length;
+		if (newUser.password.length < minLen) {
+			createError = t(
+				'auth.password_too_short',
+				{ min: String(minLen) },
+				'Password must be at least {{min}} characters long'
+			);
 			return;
 		}
 		creating = true;

@@ -60,6 +60,7 @@ pub async fn create_auth_services(
         config.auth.allowed_auth_methods.clone(),
         config.auth.auth_policies.clone(),
         config.auth.require_verified_email,
+        config.auth.min_password_length,
     );
 
     // Wire the magic-link token repo. Enables `GET /magic/v1/{token}`

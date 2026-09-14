@@ -203,6 +203,18 @@ impl OpaqueMode {
             _ => None,
         }
     }
+
+    /// Canonical wire spelling — the token the operator sets in
+    /// `OXICLOUD_AUTH_OPAQUE_MODE` and the value published on
+    /// `GET /api/config`. Kept in sync with `parse()` on the primary
+    /// spellings.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Migrate => "migrate",
+            Self::OpaqueOnly => "opaque_only",
+        }
+    }
 }
 
 #[cfg(test)]
