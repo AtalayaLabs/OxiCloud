@@ -125,10 +125,16 @@ impl StorageUsageService {
     }
 
     /// Same as [`Self::update_user_storage_usage`], keyed by username.
+    ///
+    /// Lowercases input before bind — same rule as
+    /// `UserRepository::get_user_by_username`. Usernames are canonical
+    /// (lowercase) in the DB post-migration; callers may pass any case.
+    /// See `docs/plan/username-lowercase.md`.
     pub async fn update_user_storage_usage_by_username(
         &self,
         username: &str,
     ) -> Result<i64, DomainError> {
+        let username = username.trim().to_ascii_lowercase();
         let total_usage: Option<i64> = sqlx::query_scalar(
             r#"
             UPDATE auth.users u
@@ -146,7 +152,7 @@ impl StorageUsageService {
             RETURNING u.storage_used_bytes
             "#,
         )
-        .bind(username)
+        .bind(&username)
         .fetch_optional(self.pool.as_ref())
         .await
         .map_err(|e| {

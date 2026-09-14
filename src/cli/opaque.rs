@@ -128,8 +128,15 @@ async fn run_reset(user: Option<String>, all: bool, dry_run: bool) -> u8 {
     let rows_result = if all {
         sqlx::query(select_sql).fetch_all(&pool).await
     } else {
-        let ident = user.as_deref().unwrap();
-        sqlx::query(select_sql).bind(ident).fetch_all(&pool).await
+        // Normalise before bind so the CLI accepts any case for
+        // the username branch (email is already case-insensitive
+        // via a functional index on LOWER(email); lowercasing here
+        // for both branches is harmless — emails are lowercase
+        // ASCII in `auth.users.email` too).
+        // See `docs/plan/username-lowercase.md § 3. Lookup normalization`.
+        let ident_raw = user.as_deref().unwrap();
+        let ident = ident_raw.trim().to_ascii_lowercase();
+        sqlx::query(select_sql).bind(&ident).fetch_all(&pool).await
     };
     let rows = match rows_result {
         Ok(r) => r,
@@ -204,8 +211,14 @@ async fn run_reset(user: Option<String>, all: bool, dry_run: bool) -> u8 {
     let write_result = if all {
         sqlx::query(update_sql_all).execute(&pool).await
     } else {
-        let ident = user.as_deref().unwrap();
-        sqlx::query(update_sql_one).bind(ident).execute(&pool).await
+        // Same normalisation as the read path above — usernames are
+        // canonical lowercase in the DB. See docs/plan/username-lowercase.md.
+        let ident_raw = user.as_deref().unwrap();
+        let ident = ident_raw.trim().to_ascii_lowercase();
+        sqlx::query(update_sql_one)
+            .bind(&ident)
+            .execute(&pool)
+            .await
     };
     let affected = match write_result {
         Ok(r) => r.rows_affected(),

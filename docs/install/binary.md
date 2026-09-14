@@ -217,6 +217,75 @@ supported by sqlx's migration model; if you need to roll back, stop
 the server, roll back your Postgres data directory to a snapshot, and
 install the previous binary.
 
+### Upgrading from a case-sensitive-usernames release
+
+Releases that predate the case-insensitive-usernames change stored
+`Alice`, `alice`, and `ALICE` as three separate accounts. The
+current release treats usernames as case-insensitive (canonical
+lowercase in the database). What happens on the first boot after
+upgrade depends on your data:
+
+**No mixed-case usernames.** The check is a no-op; the server
+starts normally. Nothing to do.
+
+**Mixed-case usernames with no collision.** The server
+**auto-lowercases** them in one atomic transaction at boot and
+continues. Each rename is recorded in the audit log
+(`user.username_lowercased_on_boot`) and a WARN summary line
+names the total count. `Alice` (with no `alice` row alongside)
+becomes `alice`; no ops action needed. This covers the vast
+majority of single-admin self-hosted deployments.
+
+**Mixed-case usernames WITH a collision** (`Alice` + `alice`
+both exist as active accounts). The server **refuses to boot**
+— tiebreak requires a human. Run the migration:
+
+```
+# Preview the tiebreak — no writes.
+sudo -u oxicloud DATABASE_URL="postgres://..." \
+    /usr/local/bin/oxicloud migrate lowercase-usernames --dry-run
+
+# Apply. Renames run in a single transaction; safe to re-run if aborted.
+sudo -u oxicloud DATABASE_URL="postgres://..." \
+    /usr/local/bin/oxicloud migrate lowercase-usernames
+```
+
+On collision, the migration picks a winner by `(last_login_at
+DESC NULLS LAST, created_at ASC)` — most recently active keeps
+the canonical lowercase name; the loser gets `alice-2`, `-3`, …
+as a suffix. **Sessions and grants survive the rename** — both
+key on the user's UUID, not the username.
+
+Skipped in every path above: soft-deleted / disabled accounts
+and OPAQUE-migrated users whose `username` column is NULL.
+Neither blocks boot.
+
+After the migration completes, restart the service:
+
+```
+sudo systemctl start oxicloud
+```
+
+**Nextcloud desktop clients** will prompt a one-time re-sync on
+their first PROPFIND after upgrade — the account URL case
+changed. Data is safe (files re-verify via ETag, not re-uploaded).
+DAVX5 (calendars, contacts) and NC mobile handle the URL case
+change silently. **No client upgrade or reconfiguration is
+required** — the server accepts uppercase URL segments (`Alice`
+in `/remote.php/dav/files/Alice/...`) indefinitely.
+
+The refusal message printed by the server on boot (collision
+path only) includes the exact CLI command above, so you can't
+miss it. Full plan and rationale in
+`docs/plan/username-lowercase.md`.
+
+**Explicit-preview path.** If you'd rather run the migration
+before the binary swap — to review renames on your own schedule
+or to gate a backup step — run `oxicloud migrate
+lowercase-usernames --dry-run` against the OLD binary's DB
+first, then apply. On next boot the new binary sees a
+lowercase-clean DB and the auto-rename path is a no-op.
+
 ## Installing via `cargo binstall`
 
 If you already have the Rust toolchain and just want the binary
