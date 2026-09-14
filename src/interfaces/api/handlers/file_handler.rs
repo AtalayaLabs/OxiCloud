@@ -850,23 +850,40 @@ impl FileHandler {
     /// and optional compression.
     pub(super) async fn download_file_impl(
         State(state): State<GlobalState>,
-        auth_user: AuthUser,
+        callers: CallerSubjects,
         Path(id): Path<String>,
         Query(params): Query<HashMap<String, String>>,
         headers: &HeaderMap,
     ) -> impl IntoResponse + use<> {
+        // Authorize against every credential the caller holds, and keep the
+        // one that granted: the reads below are single-subject and must be
+        // made with the credential that actually opened this file, not a
+        // re-derived guess.
+        let granted_by = match state
+            .applications
+            .file_management_service
+            .require_permission(&callers.0, Permission::Read, &id)
+            .await
+        {
+            Ok(subject) => subject,
+            Err(err) => return AppError::from(err).into_response(),
+        };
+
         // External mount: download a file living on the provider's backend.
         // (A mount-root UUID is a folder and is not downloadable — it falls
         // through and 404s as a non-file.)
+        //
+        // Restricted to user callers. The mount layer authenticates to the
+        // remote provider on behalf of a *user*, and a public-share visitor
+        // has no identity there to borrow. 404 rather than 403: whether this
+        // id is a mount child is not something a visitor should be able to
+        // probe.
         if let ResolvedId::MountChild { cfg, node_id } = state.mount_router.classify(&id) {
+            let Some(user_id) = granted_by.user_id() else {
+                return AppError::not_found("File not found").into_response();
+            };
             return Self::download_mount_file(
-                &state,
-                &cfg,
-                &node_id,
-                &id,
-                auth_user.id,
-                &params,
-                headers,
+                &state, &cfg, &node_id, &id, user_id, &params, headers,
             )
             .await;
         }
@@ -874,10 +891,7 @@ impl FileHandler {
         let retrieval = &state.applications.file_retrieval_service;
 
         // ── Get file metadata (ownership-scoped) ────────────────────────
-        let file_dto = match retrieval
-            .get_file_with_perms(&id, Subject::User(auth_user.id))
-            .await
-        {
+        let file_dto = match retrieval.get_file_with_perms(&id, granted_by).await {
             Ok(f) => f,
             Err(err) => {
                 return AppError::from(err).into_response();
@@ -889,20 +903,27 @@ impl FileHandler {
             .get("metadata")
             .is_some_and(|v| v == "true" || v == "1")
         {
-            return (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "id": file_dto.id,
-                    "name": file_dto.name,
-                    "path": file_dto.path,
-                    "size": file_dto.size,
-                    "mime_type": file_dto.mime_type,
-                    "folder_id": file_dto.folder_id,
-                    "created_at": file_dto.created_at,
-                    "modified_at": file_dto.modified_at
-                })),
-            )
-                .into_response();
+            let mut body = serde_json::json!({
+                "id": file_dto.id,
+                "name": file_dto.name,
+                "size": file_dto.size,
+                "mime_type": file_dto.mime_type,
+                "folder_id": file_dto.folder_id,
+                "created_at": file_dto.created_at,
+                "modified_at": file_dto.modified_at
+            });
+            // `path` is the file's location in the OWNER's tree, so it names
+            // folders above the share root that the caller was never given.
+            // Withheld whenever a share token is what granted access — the
+            // condition is "this credential", not "this account", so a
+            // logged-in user reaching a file only through someone else's
+            // share is treated the same as an anonymous visitor.
+            if granted_by.token_id().is_none()
+                && let Some(obj) = body.as_object_mut()
+            {
+                obj.insert("path".into(), serde_json::json!(file_dto.path));
+            }
+            return (StatusCode::OK, Json(body)).into_response();
         }
 
         // Route through `FileDto::etag` so this REST download
@@ -1648,7 +1669,7 @@ pub async fn create_file_by_hash(
 )]
 pub async fn download_file(
     state: State<GlobalState>,
-    auth_user: AuthUser,
+    callers: CallerSubjects,
     path: Path<String>,
     query: Query<HashMap<String, String>>,
     req: axum::extract::Request,
@@ -1656,7 +1677,7 @@ pub async fn download_file(
     // Borrow the headers (`req.headers()`) instead of the `HeaderMap` extractor's
     // full clone — every download AND every media Range seek hit this path
     // (benches/ROUND22.md §H1).
-    FileHandler::download_file_impl(state, auth_user, path, query, req.headers()).await
+    FileHandler::download_file_impl(state, callers, path, query, req.headers()).await
 }
 
 #[utoipa::path(

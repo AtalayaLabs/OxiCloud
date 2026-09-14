@@ -10,35 +10,53 @@
 # which is why issue #721 (public shares fetching full-resolution
 # images because /api/files/*/thumbnail 401'd) happened at all.
 #
-# Hurl keeps a cookie jar for the whole file, so it behaves like
-# a browser. That matters: the admin requests below authenticate
-# with a Bearer header and ALSO carry the ring once it exists,
-# which is exactly the "logged-in Alice clicks a colleague's
-# share link" case the ring was designed for.
+# ── READ THIS BEFORE ADDING A REQUEST ────────────────────────
+# Hurl keeps ONE cookie jar for the whole file, and
+# `POST /api/auth/login` sets `oxicloud_access` (HttpOnly,
+# `Path=/`) alongside the Bearer token it returns. So every entry
+# after a login is cookie-authenticated as that user whether or
+# not it carries an `Authorization` header — dropping the header
+# does NOT make a request anonymous.
+#
+# This file is therefore split into explicit sessions separated
+# by `POST /api/auth/logout`, which clears the three auth cookies
+# and leaves `oxi_shares` (a different name) untouched. The first
+# entry of every anonymous section is a canary asserting we really
+# are logged out; without it a jar leak silently turns the whole
+# section into a test of the admin's own permissions, which passes
+# for entirely the wrong reason.
 #
 # Coverage:
-#   1. Setup — folder + image inside it, plus an image OUTSIDE it.
-#   2. Password-less share → GET /api/s/{token} issues the ring.
-#   3. Anonymous GET /api/files/{in-share}/thumbnail/preview → 200.
-#   4. Anonymous GET /api/files/{outside}/thumbnail/preview → 404
-#      (anti-enum: same shape as "no such file").
-#   5. A sweep of routes OUTSIDE the anonymous allowlist — user
+#   1. Setup as admin — folder + image inside it, an image
+#      OUTSIDE it, and both shares (they must be minted while
+#      still authenticated).
+#   2. Still logged in: unlocking a share must NOT downgrade a
+#      real session — admin keeps reading their own files.
+#   3. Logout → genuinely anonymous. Canary, then the payoff:
+#      `GET /api/files/{in-share}` and its `/thumbnail/preview`
+#      → 200.
+#   4. A file OUTSIDE the share → 404 on BOTH (anti-enum: the same
+#      shape as "no such file"). Every file request is asserted
+#      through both routes, because they must agree — one opened
+#      without the other is how a visitor gains a capability
+#      nobody meant to grant.
+#   5. A sweep of routes outside the anonymous allowlist — user
 #      profiles, shares, drives, favorites, trash, search, the
-#      bare folder listing, a DELETE, /api/auth/me — all 403 even
-#      though the ring is valid. The ring is a key to one share,
-#      not a login.
+#      bare folder listing, a DELETE, /api/auth/me — all 403.
+#      The ring is a key to one share, not a login.
 #   6. Password share: the bare GET and a wrong password issue
 #      NO ring; the right password does.
 #   7. The ring APPENDS — after unlocking a second share the
 #      first still works.
-#   8. Revoking a share kills access even though the ring still
-#      names it: authority lives in the grant, not the cookie.
+#   8. Revoking the shares kills access even though the ring
+#      still names them: authority lives in the grant, not the
+#      cookie.
 #   9. Teardown.
 # =============================================================
 
 
 # ─────────────────────────────────────────────────────────────
-# 1 — Setup
+# 1 — Setup (admin session #1)
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/auth/login
 Content-Type: application/json
@@ -49,7 +67,7 @@ HTTP 200
 admin_token: jsonpath "$.access_token"
 
 
-# The share owner's own id, so step 5 can try to read their
+# The share owner's own id, so the sweep can try to read their
 # profile the way a visitor holding only a share link might.
 #
 # `$.full.user.id`, not `$.id`: `/api/auth/me` returns the Self view
@@ -95,9 +113,11 @@ HTTP 201
 inside_file_id: jsonpath "$.id"
 
 
-# Same owner, but OUTSIDE the shared subtree. The share must not
-# reach it — this is the file that proves the ring grants the
-# share's scope and not the owner's account.
+# Same owner, but OUTSIDE the shared subtree — it sits in the
+# PARENT of the shared folder, so it is only reachable by walking
+# UP. The ltree cascade grants downward only; this is the file
+# that proves the ring carries the share's scope and not the
+# owner's account.
 POST {{base_url}}/api/files/upload
 Authorization: Bearer {{admin_token}}
 [MultipartFormData]
@@ -109,12 +129,8 @@ HTTP 201
 outside_file_id: jsonpath "$.id"
 
 
-# ─────────────────────────────────────────────────────────────
-# 2 — A password-less share hands over the ring on first contact.
-#     No second round-trip: reaching 200 here already means the
-#     share is open to this caller, which is the whole condition
-#     for issuing one.
-# ─────────────────────────────────────────────────────────────
+# Both shares are minted now, while authenticated — after the
+# logout below there is no one left who may create them.
 POST {{base_url}}/api/shares
 Authorization: Bearer {{admin_token}}
 Content-Type: application/json
@@ -129,6 +145,34 @@ open_share_id:    jsonpath "$.id"
 open_share_token: jsonpath "$.token"
 
 
+POST {{base_url}}/api/shares
+Authorization: Bearer {{admin_token}}
+Content-Type: application/json
+{
+  "item_id":   "{{anon_folder_id}}",
+  "item_type": "folder",
+  "password":  "anon-ring-password-1!"
+}
+
+HTTP 201
+[Captures]
+pw_share_id:    jsonpath "$.id"
+pw_share_token: jsonpath "$.token"
+[Asserts]
+jsonpath "$.has_password" == true
+
+
+# ─────────────────────────────────────────────────────────────
+# 2 — A password-less share hands over the ring on first contact:
+#     reaching 200 here already means the share is open to this
+#     caller, which is the whole condition for issuing one. No
+#     second round-trip.
+#
+#     Done while still logged in on purpose. `require_any` puts
+#     the user's own subject first, so gaining a ring must cost
+#     the user nothing — the assertion below is that admin still
+#     reads a file the ring does NOT cover.
+# ─────────────────────────────────────────────────────────────
 GET {{base_url}}/api/s/{{open_share_token}}
 
 HTTP 200
@@ -138,12 +182,59 @@ cookie "oxi_shares[HttpOnly]" exists
 cookie "oxi_shares[Path]" == "/"
 
 
+# Admin now holds BOTH credentials — their session cookie and the
+# ring. The outside file is theirs and stays readable: clicking a
+# share link must never downgrade a real session.
+
+GET {{base_url}}/api/files/{{outside_file_id}}
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+
+
+GET {{base_url}}/api/files/{{outside_file_id}}/thumbnail/preview
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+
+
 # ─────────────────────────────────────────────────────────────
-# 3 — The payoff (issue #721). No Authorization header: the ring
-#     alone authenticates, and the grant written at share-creation
-#     time authorizes. The share is on the FOLDER, so this also
-#     exercises the ltree cascade down to a file inside it.
+# 3 — End the admin session. This clears `oxicloud_access`,
+#     `oxicloud_refresh` and `oxicloud_csrf`; `oxi_shares` has a
+#     different name and survives, which is exactly the state a
+#     share visitor is in.
+#
+#     Bearer is CSRF-exempt (`csrf.rs`), and the refresh token the
+#     handler needs comes from the cookie the jar already holds.
 # ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/auth/logout
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+
+
+# CANARY. Everything below depends on being anonymous, and the
+# failure mode is silent: a surviving session cookie would make
+# the next assertions test the admin's own permissions instead.
+# 403 here means the principal is a share visitor — `AuthUser`'s
+# role gate refused it — and not a user.
+GET {{base_url}}/api/auth/me
+
+HTTP 403
+
+
+# ─────────────────────────────────────────────────────────────
+# 3.1 — The payoff (issue #721). No session, no Authorization
+#     header: the ring alone authenticates, and the grant written
+#     at share-creation time authorizes. The share is on the
+#     FOLDER, so this also exercises the ltree cascade down to a
+#     file inside it.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/files/{{inside_file_id}}
+
+HTTP 200
+
+
 GET {{base_url}}/api/files/{{inside_file_id}}/thumbnail/preview
 
 HTTP 200
@@ -153,10 +244,23 @@ header "Content-Type" contains "image"
 
 # ─────────────────────────────────────────────────────────────
 # 4 — A file the SHARE OWNER owns but that is not in the share
-#     must 404, not 403. The visitor has no Read on it, so the
+#     must 404, not 403: the visitor has no Read on it, so the
 #     graduated-denial rule collapses to the anti-enumeration
 #     shape and the response cannot be used to probe file ids.
+#
+#     Both routes are asserted because they must agree. They take
+#     different paths to the same answer — the download route
+#     authorizes then reads a DTO, the thumbnail route authorizes
+#     then resolves a derived blob — and a divergence between them
+#     is exactly the shape of bug worth catching: one route opened
+#     without the other is how a share visitor ends up with a
+#     capability nobody meant to grant.
 # ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/files/{{outside_file_id}}
+
+HTTP 404
+
+
 GET {{base_url}}/api/files/{{outside_file_id}}/thumbnail/preview
 
 HTTP 404
@@ -166,10 +270,9 @@ HTTP 404
 # 5 — The ring is a key to one share, not a login. Every route
 #     below is an ordinary authenticated read that a valid
 #     principal may call — nothing about the ring's *authority*
-#     stops them, and several would even return useful data if
-#     they ran. They are refused because a public-share visitor is
-#     confined to an explicit allowlist, and none of these is on
-#     it.
+#     stops them, and several would return useful data if they
+#     ran. They are refused because a public-share visitor is
+#     confined to an explicit allowlist, and none is on it.
 #
 #     This is the layer that matters most for the routes with no
 #     resource id in the path: `/api/shares`, `/api/drives`,
@@ -180,8 +283,8 @@ HTTP 404
 #     `/api/users/{id}` is the one to watch hardest: it is the
 #     owner's own profile — name, email — and the visitor knows
 #     the owner exists because they are reading their share. 403
-#     here means the allowlist stopped it before the handler, not
-#     that the profile happened to be empty.
+#     means the allowlist stopped it before the handler, not that
+#     the profile happened to be empty.
 # ─────────────────────────────────────────────────────────────
 GET {{base_url}}/api/users/{{admin_user_id}}
 
@@ -214,10 +317,10 @@ HTTP 403
 
 
 # `/api/folders` with no id — the bare listing. `/api/folders/{id}`
-# IS allowlisted (a share visitor must be able to browse the shared
-# folder), so this pins that the allowlist matches on the ROUTE
-# pattern and not on a prefix: one extra path segment must not
-# carry anonymous access to a sibling route.
+# IS allowlisted (a share visitor must be able to browse the
+# shared folder), so this pins that the allowlist matches on the
+# ROUTE pattern and not on a prefix: one extra path segment must
+# not carry anonymous access to a sibling route.
 GET {{base_url}}/api/folders
 
 HTTP 403
@@ -225,21 +328,12 @@ HTTP 403
 
 # A write on an allowlisted PATH. `GET /api/files/{id}` is on the
 # list; `DELETE` on the same path is not, because the allowlist is
-# GET-only — without that rule, mounting a new method on an already
-# listed path would silently inherit anonymous access. CSRF would
-# also refuse this, which is the point of having both: the file
-# must still be here for the teardown, and it is (step 7 re-reads
-# its thumbnail).
+# GET-only — without that rule, mounting a new method on an
+# already listed path would silently inherit anonymous access.
+# CSRF would also refuse this, which is the point of having both.
+# The file must survive for the teardown, and it does — step 7
+# re-reads its thumbnail.
 DELETE {{base_url}}/api/files/{{inside_file_id}}
-
-HTTP 403
-
-
-# `/api/auth/me` — a visitor has no account, so there is no "me"
-# to return. Refused whether by the allowlist or by the role gate
-# on `AuthUser`; both are closed, and the point here is that no
-# principal information leaks back.
-GET {{base_url}}/api/auth/me
 
 HTTP 403
 
@@ -249,21 +343,6 @@ HTTP 403
 #     ring: the share is not unlocked, so there is nothing to
 #     grant. Same for a wrong password.
 # ─────────────────────────────────────────────────────────────
-POST {{base_url}}/api/shares
-Authorization: Bearer {{admin_token}}
-Content-Type: application/json
-{
-  "item_id":   "{{anon_folder_id}}",
-  "item_type": "folder",
-  "password":  "anon-ring-password-1!"
-}
-
-HTTP 201
-[Captures]
-pw_share_id:    jsonpath "$.id"
-pw_share_token: jsonpath "$.token"
-
-
 GET {{base_url}}/api/s/{{pw_share_token}}
 
 HTTP 401
@@ -293,28 +372,42 @@ cookie "oxi_shares" exists
 
 
 # ─────────────────────────────────────────────────────────────
-# 7 — The ring APPENDS. Unlocking the password share must not
-#     evict the first one: a visitor with two tabs open would
-#     otherwise watch the older tab stop loading. One cookie
-#     holding many shares is the entire reason it is a ring and
-#     not one cookie per share.
+# 7 — The ring APPENDS. Unlocking the second share must not evict
+#     the first: a visitor with two tabs open would otherwise
+#     watch the older one stop loading. One cookie holding many
+#     shares is the entire reason it is a ring and not one cookie
+#     per share.
 # ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/files/{{inside_file_id}}
+
+HTTP 200
+
+
 GET {{base_url}}/api/files/{{inside_file_id}}/thumbnail/preview
 
 HTTP 200
 
 
 # ─────────────────────────────────────────────────────────────
-# 8 — Revocation wins over the cookie. The ring still names the
-#     share — it is a signed bearer token and cannot be recalled —
-#     but the grant behind it is gone, and the grant is where the
-#     authority actually lives. This is what makes a long ring TTL
-#     safe.
+# 8 — Revocation wins over the cookie. The ring still names both
+#     shares — it is a signed bearer token and cannot be recalled
+#     — but the grants behind them are gone, and the grant is
+#     where the authority actually lives. This is what makes a
+#     long ring TTL safe.
 #
-#     Both shares point at the same folder, so BOTH must go before
-#     access stops; revoking only one would still leave the other
-#     granting, and the test would pass for the wrong reason.
+#     Both shares point at the same folder, so BOTH must go
+#     before access stops; revoking one would leave the other
+#     granting and the test would pass for the wrong reason.
 # ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/auth/login
+Content-Type: application/json
+{ "username": "{{username}}", "password": "{{password}}" }
+
+HTTP 200
+[Captures]
+admin_token: jsonpath "$.access_token"
+
+
 DELETE {{base_url}}/api/shares/{{open_share_id}}
 Authorization: Bearer {{admin_token}}
 
@@ -327,6 +420,34 @@ Authorization: Bearer {{admin_token}}
 HTTP 204
 
 
+# Back to the visitor's seat — the revocation check is only
+# meaningful without a session behind it.
+POST {{base_url}}/api/auth/logout
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+
+
+GET {{base_url}}/api/auth/me
+
+HTTP 403
+
+GET {{base_url}}/api/files/{{inside_file_id}}
+
+HTTP 404
+
+
+# The revoked-link check that matters. The grant row is removed by
+# the `trg_cleanup_role_grants_token` trigger on `storage.shares`
+# — in the DATABASE, so it never passes through
+# `PgAclEngine::clear_role` and never fires the cascade-cache flush
+# that every other File/Folder revocation gets.
+#
+# A 200 here means the engine is still serving a cached decision
+# this visitor seeded a few requests ago. That window is the full
+# 30 s cache TTL, and the whole run takes under a second, so
+# without the explicit flush in `delete_shared_link` this assertion
+# fails every time — as it did.
 GET {{base_url}}/api/files/{{inside_file_id}}/thumbnail/preview
 
 HTTP 404
@@ -337,6 +458,15 @@ HTTP 404
 #     it is deleted explicitly — later files in the runner upload
 #     to the same folder and would hit the live-name unique index.
 # ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/auth/login
+Content-Type: application/json
+{ "username": "{{username}}", "password": "{{password}}" }
+
+HTTP 200
+[Captures]
+admin_token: jsonpath "$.access_token"
+
+
 DELETE {{base_url}}/api/files/{{outside_file_id}}
 Authorization: Bearer {{admin_token}}
 

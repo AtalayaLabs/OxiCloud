@@ -412,17 +412,46 @@ is still checked per request, so a long ring cannot outlive the share.
 the anonymous session, so "holds a ring, is not a user" is what makes a
 principal anonymous — the pairing is structural, leaving nothing to validate.
 
-**Remaining in this phase:** swap the other six allowlisted routes to
+`GET /api/files/{id}` (`download_file`) followed, driven by a finding from the
+API test: asserting each file through BOTH routes showed them disagreeing —
+the thumbnail gave the authorization answer while the download route gave the
+role-gate 403. Two routes over the same resource that do not agree is how a
+visitor ends up with a capability nobody meant to grant, so they were brought
+into line. Its Phase 2 disclosure fix had to land in the same commit rather
+than after it (see below). The external-mount branch denies token callers with
+404: the mount layer authenticates to the remote provider as a *user*, and a
+visitor has no identity there to borrow.
+
+**Two revocation bugs surfaced** (fixed in `7dcde85e`) — both latent until the
+ring made token grants readable at request time:
+
+- `trg_cleanup_role_grants_token` deletes the grant row in the DATABASE, so it
+  bypasses `PgAclEngine::clear_role` and its `cascade_grant_cache` flush. A
+  revoked link kept working for the full 30 s TTL.
+- `set_expiry_for_subject` never flushed either, though `set_role` and
+  `clear_role` both do. Shortening a share's expiry to a past instant is a
+  revocation.
+
+**Remaining in this phase:** swap the other five allowlisted routes to
 `CallerSubjects`. Legacy endpoints stay alive throughout.
 
 ### Phase 2 — Disclosure fixes *(the ones most likely to be missed)*
 
-The endpoints "work" without these, which is exactly why they get skipped:
+The endpoints "work" without these, which is exactly why they get skipped.
 
+**A disclosure fix cannot lag its route swap.** `GET /api/files/{id}` proved
+the ordering: opening the route first would have handed visitors `path` for a
+release. So each remaining swap carries its own fix in the same commit, and
+this phase is now a checklist against Phase 1 rather than a stage after it.
+
+- ✅ **`GET /api/files/{id}?metadata=true` no longer returns `path`** to a
+  token-granted caller. Keyed on the *credential that granted*, not the
+  account: a logged-in user reaching a file only through someone else's share
+  is treated exactly like an anonymous visitor.
 - **`GET /api/folders/{id}` leaks the owner's absolute storage path** plus
   `created_by`/`updated_by`. `without_hierarchy_info()` already exists
-  (`folder_dto.rs:174`, used at `grant_handler.rs:1074`). Same on
-  `GET /api/files/{id}?metadata=true` (`file_handler.rs:881`).
+  (`folder_dto.rs:174`, used at `grant_handler.rs:1074`). Must land with that
+  route's swap.
 - **Force `is_shared = false`** for token callers — it is a *subject-less* EXISTS
   (`folder_db_repository.rs:1705-1709`, `:1737-1741`) that tells a visitor which
   items inside the share are separately shared.
@@ -431,8 +460,10 @@ The endpoints "work" without these, which is exactly why they get skipped:
   `fetch_grant_by` unmatched deliberately: its
   `SELECT username FROM auth.users WHERE id = granted_by` would publish the
   owner's username.
-- Decide the two **mount branches** (`folder_handler.rs:544-561`,
-  `file_handler.rs:848-859`): thread `Subject` or deny tokens outright.
+- ✅ The **file mount branch** denies token callers (404). The mount layer
+  authenticates to the remote provider as a *user*; a visitor has no identity
+  there to borrow, and 404 keeps "is this id a mount child" unprobeable.
+  `folder_handler.rs:544-561` still to decide — same answer expected.
 
 ### Phase 3 — Component read-only + share page rewrite
 
@@ -471,6 +502,20 @@ reviewer will not catch the fifth.
 one cookie jar per file, so it behaves like a browser, which also makes the
 "logged-in Alice carries both credentials" case the default rather than a
 special setup:
+
+**The jar is the trap.** `POST /api/auth/login` sets `oxicloud_access`
+(HttpOnly, `Path=/`) alongside the Bearer token, and hurl keeps one cookie jar
+per file — so dropping the `Authorization` header does NOT make a request
+anonymous. The first draft tested the admin's own permissions throughout and
+looked like an authorization leak. The file is now split into sessions
+separated by `POST /api/auth/logout` (which clears the three auth cookies and
+leaves `oxi_shares` alone), and every anonymous section opens with a
+`GET /api/auth/me` → 403 canary, because the failure is otherwise silent.
+
+**Both routes, every time.** Each file assertion runs through
+`/api/files/{id}` AND `/api/files/{id}/thumbnail/{size}`. They reach the same
+answer by different paths, and the disagreement between them is what exposed
+the un-swapped route.
 
 - Ring issued on the password-less `GET /api/s/{token}`; `HttpOnly`, `Path=/`.
 - Anonymous `GET /api/files/{id}/thumbnail/preview` → 200 (#721), via the ltree
