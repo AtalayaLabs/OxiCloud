@@ -316,6 +316,30 @@ pub async fn auth_middleware(
     // (benches/ROUND14.md §A4). The borrow is dead by the time each arm
     // reaches `request.extensions_mut()` / `next.run(request)` (NLL), so no
     // owned copy is needed.
+    // Parse the share ring once, before any credential arm, because a
+    // LOGGED-IN user can carry one too: Alice opening a colleague's public
+    // link keeps her own identity and gains the share. Arm 4 below also uses
+    // it as the anonymous principal when no user credential is present.
+    //
+    // A malformed, expired or foreign-signed ring is simply absent — the
+    // caller cannot act on the distinction, and an unreadable cookie must
+    // never break an otherwise valid user request.
+    if let Some(ring) = request
+        .headers()
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(share_ring::extract_from_cookie_header)
+        .and_then(|jwt| share_ring::verify(&state.core.config.auth.jwt_secret, jwt))
+    {
+        request.extensions_mut().insert(ShareRing(ring));
+    }
+
+    // Borrow the Authorization header straight from the request instead of
+    // taking axum's `HeaderMap` extractor, which clones the whole map (~2
+    // allocs) on every authenticated request purely to read it
+    // (benches/ROUND14.md §A4). The borrow is dead by the time each arm
+    // reaches `request.extensions_mut()` / `next.run(request)` (NLL), so no
+    // owned copy is needed.
     let auth_header = request
         .headers()
         .get(header::AUTHORIZATION)
@@ -550,6 +574,39 @@ pub async fn auth_middleware(
     // header — keeping browser sessions redirecting to /login as before.
     if is_dav_path(request.uri().path()) {
         return Ok(dav_basic_auth_challenge("Authentication required"));
+    }
+
+    // ── 4. Share ring only: a public-share visitor ───────────────
+    //
+    // Reached when no user credential was presented but the browser carries
+    // a valid `oxi_shares` cookie. The ring IS the anonymous session —
+    // there is no `auth.sessions` row and no second token — so "holds a
+    // ring, is not a user" is exactly what makes a principal anonymous.
+    //
+    // Note this runs AFTER the DAV challenge above: a ring must never
+    // authenticate a WebDAV/CalDAV/CardDAV request. Those surfaces are
+    // user-only, and `require_internal_user` would refuse anyway, but the
+    // ordering means the question never arises.
+    //
+    // The principal is built ONLY from a verified ring, which is what makes
+    // "anonymous implies a share credential" structural rather than checked.
+    if let Some(ring) = request.extensions().get::<ShareRing>().cloned() {
+        let current_user = Arc::new(CurrentUser {
+            // The ring's visitor id: stable across this visit, matching no
+            // `auth.users` row. Logged as `visitor_id`, never `user_id`.
+            id: ring.0.visitor_id,
+            // Empty rather than fabricated — a visitor has no account, and
+            // inventing a name would be indistinguishable from a real one.
+            username: Arc::from(""),
+            email: Arc::from(""),
+            role: smol_str::SmolStr::new_static(UserRole::Anonymous.as_str()),
+            // Unbound: no DPoP keypair, so the middleware exempts it exactly
+            // as it does app passwords.
+            dpop_jkt: None,
+        });
+        record_principal_on_span(&current_user);
+        request.extensions_mut().insert(current_user);
+        return Ok(next.run(request).await);
     }
 
     Err(AuthError::TokenNotProvided)

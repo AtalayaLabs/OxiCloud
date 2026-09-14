@@ -24,7 +24,7 @@ use crate::common::di::AppState;
 use crate::domain::errors::DomainError;
 use crate::domain::services::external_mount_id::{NodeId, virtual_file_etag};
 use crate::interfaces::errors::AppError;
-use crate::interfaces::middleware::auth::AuthUser;
+use crate::interfaces::middleware::auth::{AuthUser, CallerSubjects};
 use crate::interfaces::range_requests::not_modified_response;
 use crate::interfaces::upload_ingest;
 use crate::{
@@ -449,21 +449,28 @@ impl FileHandler {
     /// upload if background generation hasn't finished).
     pub(super) async fn get_thumbnail_impl(
         State(state): State<GlobalState>,
-        auth_user: AuthUser,
+        callers: CallerSubjects,
         headers: &HeaderMap,
         Path((id, size)): Path<(String, String)>,
     ) -> impl IntoResponse + use<> {
         use crate::application::ports::thumbnail_ports::{ThumbnailFormat, ThumbnailSize};
 
-        // check first that user can access this resource
-        if let Err(err) = state
+        // Authorize against every credential the caller holds, not just a user
+        // id: this is the route a public-share visitor needs (issue #721), and
+        // the grant they match on was already written at share-creation time.
+        //
+        // Nothing below this check knows or cares which credential granted —
+        // the thumbnail bytes are the same either way, so there is no
+        // share-specific code path to keep in sync.
+        let granted_by = match state
             .applications
             .file_management_service
-            .require_permission(Subject::User(auth_user.id), Permission::Read, &id)
+            .require_permission(&callers.0, Permission::Read, &id)
             .await
         {
-            return AppError::from(err).into_response();
-        }
+            Ok(subject) => subject,
+            Err(err) => return AppError::from(err).into_response(),
+        };
 
         let thumbnail_service = &state.core.thumbnail_service;
 
@@ -581,8 +588,11 @@ impl FileHandler {
         // ── Cache miss — need DB for ownership + blob resolution ─────
         let file_retrieval_service = &state.applications.file_retrieval_service;
 
+        // `granted_by`, not an arbitrary member of the set: the check above
+        // already decided which credential opens this file, and re-deriving it
+        // here could deny what was just allowed.
         let file = match file_retrieval_service
-            .get_file_or_trashed_with_perms(&id, Subject::User(auth_user.id))
+            .get_file_or_trashed_with_perms(&id, granted_by)
             .await
         {
             Ok(f) => f,
@@ -719,7 +729,7 @@ impl FileHandler {
         if let Err(err) = state
             .applications
             .file_management_service
-            .require_permission(Subject::User(auth_user.id), Permission::Update, &id)
+            .require_permission(&[Subject::User(auth_user.id)], Permission::Update, &id)
             .await
         {
             return AppError::from(err).into_response();
@@ -1244,7 +1254,7 @@ impl FileHandler {
         if let Err(err) = state
             .applications
             .file_management_service
-            .require_permission(Subject::User(auth_user.id), Permission::Read, &file_id)
+            .require_permission(&[Subject::User(auth_user.id)], Permission::Read, &file_id)
             .await
         {
             return AppError::from(err).into_response();
@@ -1667,14 +1677,14 @@ pub async fn download_file(
 )]
 pub async fn get_thumbnail(
     state: State<GlobalState>,
-    auth_user: AuthUser,
+    callers: CallerSubjects,
     path: Path<(String, String)>,
     req: axum::extract::Request,
 ) -> impl IntoResponse {
     // Borrow the headers (`req.headers()`) instead of the `HeaderMap` extractor's
     // full clone — thumbnails are the highest-frequency GET (one per grid tile),
     // and this handler reads only Accept + If-None-Match (benches/ROUND22.md §H1).
-    FileHandler::get_thumbnail_impl(state, auth_user, req.headers(), path).await
+    FileHandler::get_thumbnail_impl(state, callers, req.headers(), path).await
 }
 
 #[utoipa::path(

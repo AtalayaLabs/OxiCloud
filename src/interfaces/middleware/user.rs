@@ -382,10 +382,18 @@ pub async fn require_no_password_change_pending_layer(
         return next.run(request).await;
     }
 
-    let caller_id = request
-        .extensions()
-        .get::<Arc<CurrentUser>>()
-        .map(|cu| cu.id);
+    let current_user = request.extensions().get::<Arc<CurrentUser>>();
+
+    // An anonymous public-share visitor has no account, so no password can be
+    // pending a forced change. Skipping is not only correctness: without it
+    // every such request looks up a `visitor_id` matching no row, which misses
+    // the flags cache and reaches the database — on the highest-frequency GET
+    // in the app (one per thumbnail tile).
+    if current_user.is_some_and(|cu| cu.is_anonymous()) {
+        return next.run(request).await;
+    }
+
+    let caller_id = current_user.map(|cu| cu.id);
 
     let (Some(caller_id), Some(svc)) = (
         caller_id,

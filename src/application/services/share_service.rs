@@ -234,6 +234,29 @@ impl ShareService {
         )
     }
 
+    /// Add `share_id` to the caller's share ring, minting one if absent.
+    ///
+    /// Called only after the share has actually been unlocked — either it had
+    /// no password, or `/verify` accepted one. The returned JWT is the
+    /// visitor's anonymous session: `auth_middleware` reads it back and builds
+    /// an `Anonymous` principal from it, and `CallerSubjects` turns each id
+    /// into a `Subject::Token` the ReBAC engine already has grants for.
+    ///
+    /// `existing` is the caller's current ring cookie, if any, so that opening
+    /// a second share keeps the first — one cookie, not one per share.
+    pub fn grant_ring(
+        &self,
+        existing: Option<&str>,
+        share_id: Uuid,
+    ) -> Result<String, DomainError> {
+        crate::infrastructure::services::share_ring::append(
+            &self.config.auth.jwt_secret,
+            existing,
+            share_id,
+            crate::infrastructure::services::share_ring::DEFAULT_TTL_SECS,
+        )
+    }
+
     pub async fn get_shared_link_with_unlock(
         &self,
         token: &str,

@@ -114,11 +114,27 @@ pub fn create_public_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppStat
     if let Some(share_service) = share_service {
         use crate::interfaces::api::handlers::share_handler;
 
+        use crate::interfaces::middleware::rate_limit::{RateLimiter, rate_limit_share_verify};
+
+        // Share-password verification is budgeted from the login limits —
+        // see `rate_limit_share_verify`. Built here rather than in `main.rs`
+        // alongside the other three because this router is assembled here and
+        // threading a limiter through `create_public_api_routes` would make
+        // every caller of this function know about rate limiting.
+        let rl = &app_state.core.config.auth.rate_limit;
+        let verify_limiter = Arc::new(RateLimiter::new(
+            rl.login_max_requests,
+            rl.login_window_secs,
+            100_000,
+        ));
+
         let public_share_router = Router::new()
             .route("/{token}", get(share_handler::access_shared_item))
             .route(
                 "/{token}/verify",
-                post(share_handler::verify_shared_item_password),
+                post(share_handler::verify_shared_item_password).layer(
+                    axum::middleware::from_fn_with_state(verify_limiter, rate_limit_share_verify),
+                ),
             )
             .with_state(share_service);
 

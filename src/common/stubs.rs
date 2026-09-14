@@ -649,11 +649,11 @@ pub struct StubFileManagementUseCase;
 impl FileManagementUseCase for StubFileManagementUseCase {
     async fn require_permission(
         &self,
-        _caller: Subject,
+        _callers: &[Subject],
         _permission: Permission,
         _file_id: &str,
-    ) -> Result<(), DomainError> {
-        Ok(())
+    ) -> Result<Subject, DomainError> {
+        Ok(Subject::User(Uuid::nil()))
     }
 
     async fn copy_file_with_perms(

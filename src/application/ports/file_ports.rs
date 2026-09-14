@@ -320,18 +320,29 @@ pub trait FileRetrievalUseCase: Send + Sync + 'static {
 
 /// Primary port for file management operations
 pub trait FileManagementUseCase: Send + Sync + 'static {
-    /// Takes a [`Subject`] rather than a bare `caller_id: Uuid` because the
-    /// caller is not always a user: a public-share visitor authorises as
-    /// `Subject::Token(share_id)`, which the engine already understands.
+    /// Takes a **set** of [`Subject`]s rather than a bare `caller_id: Uuid`
+    /// because one HTTP caller can hold several credentials at once: a
+    /// logged-in Alice who has also opened a public share carries
+    /// `Subject::User(alice)` *and* one `Subject::Token(share_id)` per share
+    /// in her ring. Passing the whole set lets the engine grant on any of
+    /// them (see `AuthorizationEngine::require_any`), which is the only shape
+    /// under which "click a colleague's share link" neither downgrades her
+    /// session nor 404s the shared file.
+    ///
     /// Wrapping a `Uuid` in `Subject::User` at the call site keeps the
     /// decision about *what kind of principal this is* with the caller,
-    /// where it is known, instead of assuming it here.
+    /// where it is known, instead of assuming it here. A one-element slice is
+    /// the normal case and behaves exactly as a single-subject check.
+    ///
+    /// Returns the credential that granted, so a handler making a further
+    /// single-subject call for the same file passes back the one that worked
+    /// rather than guessing.
     async fn require_permission(
         &self,
-        caller: Subject,
+        callers: &[Subject],
         permission: Permission,
         file_id: &str,
-    ) -> Result<(), DomainError>;
+    ) -> Result<Subject, DomainError>;
 
     /// Moves a file, enforcing that `caller_id` is the owner.
     async fn move_file_with_perms(

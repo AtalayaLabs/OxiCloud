@@ -129,28 +129,6 @@ pub trait AuthorizationEngine: Send + Sync + 'static {
         Ok(allowed)
     }
 
-    /// Graduated-denial wrapper around `check`. Semantics:
-    ///
-    /// - `permission` granted → `Ok(())`
-    /// - `permission` denied, `Read` also denied → `DomainError::not_found`
-    ///   (404, anti-enumeration — same shape as "doesn't exist" so a probing
-    ///   caller can't distinguish "wrong id" from "no access")
-    /// - `permission` denied, `Read` granted → `DomainError::access_denied`
-    ///   (403 — the caller can already see the resource, so hiding existence
-    ///   leaks nothing new; a clear 403 beats a confusing 404 for UX and for
-    ///   API-first clients like rclone)
-    ///
-    /// Special case: when `permission == Read`, the visibility gate collapses
-    /// onto itself — a `Read` denial IS a "hidden" outcome by definition, so
-    /// the method short-circuits to the strict anti-enum 404 without a second
-    /// DB round-trip. That's why there's only one method: strict Read-denial
-    /// and graduated write-denial fall out of the same signature.
-    ///
-    /// Do NOT use this in search / enumeration paths where existence itself is
-    /// the attack vector — those must filter at the SQL/index layer, never
-    /// touch this method with per-row ids. Cross-tenant probes on ids the
-    /// caller has no prior read handle for degrade to the 404 shape naturally
-    /// (Read denied → `Hidden`).
     /// Allow when **any** of `subjects` grants `permission` on `resource`.
     ///
     /// A browser can hold more than one credential at once: a logged-in user
@@ -175,12 +153,17 @@ pub trait AuthorizationEngine: Send + Sync + 'static {
     /// first subject, so graduated visibility and the audit line are not
     /// duplicated here. That re-checks the first subject, which the cache has
     /// just answered.
+    ///
+    /// Returns the subject that granted. Callers that go on to make a second,
+    /// single-subject service call for the same resource must pass this one
+    /// back — passing any other member of the set would re-run the search and
+    /// could deny what was just allowed.
     async fn require_any(
         &self,
         subjects: &[Subject],
         permission: Permission,
         resource: Resource,
-    ) -> Result<(), DomainError> {
+    ) -> Result<Subject, DomainError> {
         for &subject in subjects {
             if self.check(subject, permission, resource).await? {
                 tracing::debug!(
@@ -193,12 +176,15 @@ pub trait AuthorizationEngine: Send + Sync + 'static {
                     resource_id = %resource.id(),
                     "👮🏻‍♂️ perms: ✔ '{subject}' has '{permission}' on '{resource}'",
                 );
-                return Ok(());
+                return Ok(subject);
             }
         }
 
         match subjects.first() {
-            Some(&primary) => self.require(primary, permission, resource).await,
+            Some(&primary) => self
+                .require(primary, permission, resource)
+                .await
+                .map(|()| primary),
             // No credential at all. Unreachable through the extractors, which
             // refuse a request with no principal — but fail closed rather
             // than treating "nothing to check" as "nothing objected".
@@ -220,6 +206,32 @@ pub trait AuthorizationEngine: Send + Sync + 'static {
         }
     }
 
+    /// Graduated-denial wrapper around `check`. Semantics:
+    ///
+    /// - `permission` granted → `Ok(())`
+    /// - `permission` denied, `Read` also denied → `DomainError::not_found`
+    ///   (404, anti-enumeration — same shape as "doesn't exist" so a probing
+    ///   caller can't distinguish "wrong id" from "no access")
+    /// - `permission` denied, `Read` granted → `DomainError::access_denied`
+    ///   (403 — the caller can already see the resource, so hiding existence
+    ///   leaks nothing new; a clear 403 beats a confusing 404 for UX and for
+    ///   API-first clients like rclone)
+    ///
+    /// Special case: when `permission == Read`, the visibility gate collapses
+    /// onto itself — a `Read` denial IS a "hidden" outcome by definition, so
+    /// the method short-circuits to the strict anti-enum 404 without a second
+    /// DB round-trip. That's why there's only one method: strict Read-denial
+    /// and graduated write-denial fall out of the same signature.
+    ///
+    /// Do NOT use this in search / enumeration paths where existence itself is
+    /// the attack vector — those must filter at the SQL/index layer, never
+    /// touch this method with per-row ids. Cross-tenant probes on ids the
+    /// caller has no prior read handle for degrade to the 404 shape naturally
+    /// (Read denied → `Hidden`).
+    ///
+    /// [`Self::require_any`] is the multi-credential form and produces its
+    /// denial shape by delegating here, so the semantics above are the single
+    /// definition for both.
     async fn require(
         &self,
         subject: Subject,

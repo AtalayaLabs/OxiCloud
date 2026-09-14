@@ -16,7 +16,7 @@ use utoipa::ToSchema;
 use crate::application::ports::file_ports::RangeContent;
 use crate::application::services::share_browse_service::ZipTarget;
 use crate::application::services::share_service::ShareService;
-use crate::infrastructure::services::share_unlock_cookie;
+use crate::infrastructure::services::{share_ring, share_unlock_cookie};
 use crate::interfaces::api::handlers::file_handler::build_content_disposition;
 use crate::{
     application::{
@@ -39,6 +39,50 @@ fn unlock_jwt_from_headers(headers: &HeaderMap, share_token: &str) -> Option<Str
         .and_then(|cookie_header| {
             share_unlock_cookie::extract_from_cookie_header(cookie_header, share_token)
         })
+}
+
+/// Attach the visitor's share ring to a successful unlock response.
+///
+/// Both unlock paths end here — the password-less `GET /api/s/{token}` and the
+/// `POST /api/s/{token}/verify` that accepted a password — because "the share
+/// opened" is the single condition that earns a ring, and duplicating the
+/// cookie construction across the two would let them drift.
+///
+/// Failure is silent by design: a visitor who cannot receive the ring still
+/// gets the share metadata and the legacy `/api/s/*` endpoints. The ring only
+/// unlocks the *normal* API, so its absence degrades features, not access.
+fn attach_ring_cookie(
+    share_use_case: &ShareService,
+    headers: &HeaderMap,
+    share_id: &str,
+    response: &mut Response,
+) {
+    let Ok(share_id) = Uuid::parse_str(share_id) else {
+        return;
+    };
+    let existing = headers
+        .get(header::COOKIE)
+        .and_then(|h| h.to_str().ok())
+        .and_then(share_ring::extract_from_cookie_header);
+
+    match share_use_case.grant_ring(existing, share_id) {
+        Ok(jwt) => {
+            let cookie = share_ring::build_set_cookie(&jwt, share_ring::DEFAULT_TTL_SECS);
+            if let Ok(value) = header::HeaderValue::from_str(&cookie) {
+                // `append`, not `insert`: `/verify` also sets the legacy
+                // per-share unlock cookie, and the two must both survive.
+                response.headers_mut().append(header::SET_COOKIE, value);
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "oxicloud::shares",
+                share_id = %share_id,
+                error = %e,
+                "failed to mint share ring — visitor falls back to legacy share endpoints"
+            );
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -246,7 +290,16 @@ pub async fn access_shared_item(
     );
 
     match item {
-        Ok(item) => (StatusCode::OK, Json(item)).into_response(),
+        Ok(item) => {
+            // Reaching `Ok` means the share is open to this caller: either it
+            // has no password, or an unlock cookie satisfied it. That is
+            // exactly the condition for handing over a ring, so the visitor of
+            // a password-less share is session-bearing from the first request
+            // with no extra round-trip.
+            let mut response = (StatusCode::OK, Json(&item)).into_response();
+            attach_ring_cookie(&share_use_case, req.headers(), &item.id, &mut response);
+            response
+        }
         Err(err) => {
             // Special handling for share access errors
             if err.kind == ErrorKind::AccessDenied {
@@ -284,23 +337,28 @@ pub async fn access_shared_item(
 pub async fn verify_shared_item_password(
     State(share_use_case): State<Arc<ShareService>>,
     Path(token): Path<String>,
+    headers: HeaderMap,
     Json(req): Json<VerifyPasswordRequest>,
 ) -> impl IntoResponse {
     match share_use_case
         .verify_shared_link_password(&token, &req.password)
         .await
     {
-        Ok(item) => match share_use_case.issue_unlock_jwt(&token) {
-            Ok(jwt) => {
-                let cookie = share_unlock_cookie::build_set_cookie(
-                    &token,
-                    &jwt,
-                    share_unlock_cookie::DEFAULT_TTL_SECS,
-                );
-                (StatusCode::OK, [(header::SET_COOKIE, cookie)], Json(item)).into_response()
-            }
-            Err(_) => (StatusCode::OK, Json(item)).into_response(),
-        },
+        Ok(item) => {
+            let mut response = match share_use_case.issue_unlock_jwt(&token) {
+                Ok(jwt) => {
+                    let cookie = share_unlock_cookie::build_set_cookie(
+                        &token,
+                        &jwt,
+                        share_unlock_cookie::DEFAULT_TTL_SECS,
+                    );
+                    (StatusCode::OK, [(header::SET_COOKIE, cookie)], Json(&item)).into_response()
+                }
+                Err(_) => (StatusCode::OK, Json(&item)).into_response(),
+            };
+            attach_ring_cookie(&share_use_case, &headers, &item.id, &mut response);
+            response
+        }
         Err(err) => {
             if err.kind == ErrorKind::AccessDenied {
                 if err.message.contains("expired") {

@@ -55,6 +55,17 @@ pub const SHARE_RING_COOKIE: &str = "oxi_shares";
 /// Maximum shares held at once. Oldest are evicted first.
 pub const MAX_RING_SIZE: usize = 10;
 
+/// Ring lifetime, deliberately independent of `access_token_expiry_secs`.
+///
+/// An access token is short because it is a bearer credential for a real
+/// account, refreshable in the background by a running SPA. A ring is neither:
+/// it grants only what the share owner already published, and expiring it
+/// mid-visit means a gallery that silently stops loading thumbnails with no
+/// session for the visitor to refresh. Eight hours covers a working day of
+/// browsing; the share's own `expires_at` is still checked per request, so a
+/// long ring cannot outlive the share it names.
+pub const DEFAULT_TTL_SECS: i64 = 8 * 3600;
+
 /// Claim type discriminator.
 ///
 /// The unlock cookie predating this module has no `typ` and is signed with
