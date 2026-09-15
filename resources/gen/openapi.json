@@ -9683,6 +9683,26 @@
           }
         }
       },
+      "AuthDto": {
+        "type": "object",
+        "description": "Auth block within [`ServerConfigDto`]. Non-privacy-implicating\ntunables the SPA needs at boot so form validation matches server\nenforcement.",
+        "required": [
+          "min_password_length",
+          "opaque_mode"
+        ],
+        "properties": {
+          "min_password_length": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Minimum password length (UTF-8 bytes). Mirrors\n`AuthConfig::min_password_length`, which every server-side\npassword-bearing endpoint uses. The SPA gates submit on the\nsame value so users see the failure instantly instead of\nafter a round-trip. See AtalayaLabs/OxiCloud#677.",
+            "minimum": 0
+          },
+          "opaque_mode": {
+            "type": "string",
+            "description": "OPAQUE deployment mode — one of `\"off\"`, `\"migrate\"`,\n`\"opaque_only\"`. Mirrors `AuthConfig::opaque.mode` (env\n`OXICLOUD_AUTH_OPAQUE_MODE`). Login already discovers this\nper-user via `POST /api/auth/opaque/login/lookup`; exposing\nthe server-wide mode here is for future consumers (admin\npanel status indicators, OPAQUE-native setup / register\nflows). Login callers should NOT branch on this value —\nkeep using the per-user lookup so mixed populations during\nmigration stay honest."
+          }
+        }
+      },
       "AuthResponseDto": {
         "type": "object",
         "required": [
@@ -13533,9 +13553,14 @@
         "required": [
           "version",
           "features",
+          "auth",
           "server_status"
         ],
         "properties": {
+          "auth": {
+            "$ref": "#/components/schemas/AuthDto",
+            "description": "Auth-related tunables the SPA needs to gate submit locally.\nComposes with `/api/auth/oidc/providers` — that endpoint lists\nfederation options; this one carries the numeric thresholds\n(password length today, more later) that the form has to check\nbefore firing the request."
+          },
           "features": {
             "$ref": "#/components/schemas/FeaturesDto",
             "description": "Feature flags — which subsystems the server has enabled.\nClients gate optional UI on these (e.g. hide the notification\nbell if `features.message_bus` is false, since the bell would\nhave no delivery channel)."
@@ -14102,13 +14127,18 @@
         "required": [
           "initialized",
           "admin_count",
-          "registration_allowed"
+          "registration_allowed",
+          "faces_enabled"
         ],
         "properties": {
           "admin_count": {
             "type": "integer",
             "format": "int64",
             "description": "Number of admin users in the system."
+          },
+          "faces_enabled": {
+            "type": "boolean",
+            "description": "Whether the People routes are available in this running instance."
           },
           "initialized": {
             "type": "boolean",

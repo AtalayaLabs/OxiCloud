@@ -1,17 +1,10 @@
 /** People (faces) endpoints — ported from features/library/people.js. */
 import { apiFetch } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
+import { getAuthStatus } from './auth';
 
-/** An identity cluster from `GET /api/people`. */
-export interface Person {
-	id: string;
-	/** Absent until the user names the person. */
-	name?: string;
-	/** File id of the cover face's photo, for the tile thumbnail. */
-	cover_file_id?: string;
-	face_count: number;
-	is_hidden: boolean;
-}
+export type { PersonDto as Person } from '../generated/types.gen';
+import type { PersonDto as Person } from '../generated/types.gen';
 
 /**
  * List identity clusters. The feature is gated on `OXICLOUD_ENABLE_FACES` —
@@ -24,16 +17,11 @@ export async function fetchPeople(): Promise<Person[]> {
 }
 
 /**
- * Probe whether the People feature is available (faces enabled). Used to reveal
+ * Read the advertised People capability without probing a disabled route. Used to reveal
  * the People tab only when the backend can serve it.
  */
 export async function peopleEnabled(): Promise<boolean> {
-	try {
-		const res = await apiFetch('/api/people', { credentials: 'same-origin' });
-		return res.ok;
-	} catch {
-		return false;
-	}
+	return (await getAuthStatus()).faces_enabled === true;
 }
 
 /** File ids of the photos a person appears in. */

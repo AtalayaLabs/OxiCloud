@@ -5,6 +5,7 @@
  */
 import { ApiError, apiFetch } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
+import type { SystemStatus } from '../generated/types.gen';
 import type { AuthResponse, SelfUser } from '$lib/api/types';
 
 /**
@@ -31,96 +32,27 @@ async function parseErrorBody(res: Response): Promise<{ errorType?: string; mess
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
-/**
- * Probe the current session. Uses the raw `fetch` (NOT apiFetch) on purpose:
- * a 401 here just means "not logged in" and must not trigger the global
- * refresh-and-redirect (which would bounce the app in a refresh loop on the
- * unauthenticated initial load). Returns null when unauthenticated.
- *
- * Attaches a DPoP proof manually — under `OXICLOUD_DPOP_MODE=required` a
- * BOUND session that presents no proof gets 401'd by the middleware
- * (Gate 9), and this probe fires on every SPA bootstrap for authenticated
- * users. Without the proof, the session load loop would always land in
- * "not logged in" on fresh page loads even though cookies are still valid.
- * Failure to build a proof (no keypair, missing WebCrypto) falls back to a
- * headerless request — the server still accepts it for unbound sessions.
- */
+/** Probe the session without refreshing or redirecting on an ordinary 401. */
 export async function fetchMe(): Promise<SelfUser | null> {
-	// Build + sign a DPoP proof, send with the header, harvest any
-	// `DPoP-Nonce` off the response into the shared client cache
-	// (so the NEXT apiFetch call reuses it — no wasted round trip).
-	// Handle the `use_dpop_nonce` challenge inline: the first request
-	// per fresh session has no cached nonce, and Gate 9 required-mode
-	// middleware 401-challenges a bound session's very first proof so
-	// the client picks up a fresh nonce. Without this retry, `/api/auth/me`
-	// on a fresh page load would always 401 → SPA thinks user isn't
-	// logged in → stuck on /login even though cookies are valid.
-	//
-	// Falls back to a plain fetch when the DPoP module is unavailable
-	// (SubtleCrypto disabled, IndexedDB blocked): unbound sessions
-	// still authenticate; bound sessions in required mode won't, but
-	// that's the fail-open contract from `docs/plan/dpop.md`.
-	let dpopMod: typeof import('$lib/auth/dpop-proof') | null = null;
-	try {
-		dpopMod = await import('$lib/auth/dpop-proof');
-	} catch {
-		/* no dpop module → plain fetch */
-	}
-	const url = `${location.origin}/api/auth/me`;
-	const send = async (): Promise<Response> => {
-		const proof = dpopMod ? await dpopMod.buildDpopProof('GET', url).catch(() => null) : null;
-		const headers: HeadersInit = proof ? { DPoP: proof } : {};
-		const r = await fetch('/api/auth/me', { credentials: 'same-origin', headers });
-		if (dpopMod) dpopMod.updateNonceFromResponse(r);
-		return r;
-	};
-	let res = await send();
-	// One retry on nonce challenge — mirror the apiFetch interceptor.
-	// A second challenge on the retry is a server bug; surface the 401.
-	if (dpopMod && dpopMod.isDpopNonceChallenge(res)) res = await send();
+	const res = await apiFetch('/api/auth/me', {
+		credentials: 'same-origin',
+		retryUnauthorized: false
+	});
 	if (res.status === 401) return null;
 	if (!res.ok) throw new Error(`/api/auth/me failed: ${res.status}`);
 	return (await res.json()) as SelfUser;
 }
 
-/**
- * Attempt a single token refresh (raw fetch, no interceptor). Returns whether
- * it succeeded. Used by the startup probe; mid-session refresh is handled
- * transparently by apiFetch for all other endpoints.
- *
- * Mirrors `fetchMe`'s DPoP handling: dynamic-imports the proof module and
- * attaches a signed proof so a bound session under `required` mode can still
- * refresh on page reload. Falls back to a headerless refresh if the module
- * is unavailable (unbound sessions still succeed; bound sessions in required
- * mode won't — the documented fail-open contract in `docs/plan/dpop.md`).
- * Retries ONCE on a `use_dpop_nonce` challenge so the very first request
- * after a page load can adopt the freshly-issued nonce.
- */
+/** Startup refresh through the generated client and shared DPoP nonce handling. */
 export async function tryRefresh(): Promise<boolean> {
-	let dpopMod: typeof import('$lib/auth/dpop-proof') | null = null;
 	try {
-		dpopMod = await import('$lib/auth/dpop-proof');
-	} catch {
-		/* no dpop module → plain fetch */
-	}
-	const url = `${location.origin}/api/auth/refresh`;
-	const send = async (): Promise<Response> => {
-		const proof = dpopMod ? await dpopMod.buildDpopProof('POST', url).catch(() => null) : null;
-		const headers: HeadersInit = proof
-			? { ...JSON_HEADERS, ...getCsrfHeaders(), DPoP: proof }
-			: { ...JSON_HEADERS, ...getCsrfHeaders() };
-		const r = await fetch('/api/auth/refresh', {
+		const res = await apiFetch('/api/auth/refresh', {
 			method: 'POST',
 			credentials: 'same-origin',
-			headers,
+			retryUnauthorized: false,
+			headers: JSON_HEADERS,
 			body: '{}'
 		});
-		if (dpopMod) dpopMod.updateNonceFromResponse(r);
-		return r;
-	};
-	try {
-		let res = await send();
-		if (dpopMod && dpopMod.isDpopNonceChallenge(res)) res = await send();
 		return res.ok;
 	} catch {
 		return false;
@@ -352,7 +284,7 @@ export interface OidcProviders {
 /** Public OIDC provider info for the login page. */
 export async function getOidcProviders(): Promise<OidcProviders> {
 	try {
-		const res = await fetch('/api/auth/oidc/providers');
+		const res = await apiFetch('/api/auth/oidc/providers');
 		if (!res.ok) return { enabled: false };
 		return (await res.json()) as OidcProviders;
 	} catch {
@@ -360,36 +292,36 @@ export async function getOidcProviders(): Promise<OidcProviders> {
 	}
 }
 
-export interface AuthStatus {
-	initialized: boolean;
-	admin_count: number;
-	registration_allowed: boolean;
-}
+export type AuthStatus = SystemStatus;
 
 /**
  * System bootstrap probe. When `initialized === false` no admin exists yet and
- * the login page must offer the first-run admin-setup flow. Raw `fetch` (NOT
- * apiFetch): this is unauthenticated and a non-2xx must not bounce through the
- * refresh interceptor. Defaults to "initialized" on any failure so a transient
+ * the login page must offer the first-run admin-setup flow. This auth primitive
+ * bypasses unauthorized retry in the shared transport. Defaults to "initialized" on any failure so a transient
  * error never strands operators on the setup wizard.
  */
 export async function getAuthStatus(): Promise<AuthStatus> {
+	const fallback: AuthStatus = {
+		initialized: true,
+		admin_count: 1,
+		registration_allowed: true,
+		faces_enabled: false
+	};
 	try {
-		const res = await fetch('/api/auth/status', { credentials: 'same-origin' });
-		if (!res.ok) return { initialized: true, admin_count: 1, registration_allowed: true };
-		return (await res.json()) as AuthStatus;
+		const res = await apiFetch('/api/auth/status', { credentials: 'same-origin' });
+		return res.ok ? ((await res.json()) as AuthStatus) : fallback;
 	} catch {
-		return { initialized: true, admin_count: 1, registration_allowed: true };
+		return fallback;
 	}
 }
 
 /**
  * First-run admin bootstrap. POSTs to `/api/setup`, which creates the admin
- * user and marks the system initialized. Raw `fetch` (NOT apiFetch) so a 401
- * surfaces as a genuine failure instead of triggering the refresh-and-redirect.
+ * user and marks the system initialized. An ordinary 401 surfaces to the caller.
  */
 export async function setupAdmin(email: string, password: string): Promise<void> {
-	const res = await fetch('/api/setup', {
+	const res = await apiFetch('/api/setup', {
+		retryUnauthorized: false,
 		method: 'POST',
 		credentials: 'same-origin',
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
@@ -404,13 +336,12 @@ export async function setupAdmin(email: string, password: string): Promise<void>
 /**
  * OIDC code-exchange fallback. When the IdP round-trip lands back on the login
  * page with `?oidc_code=`, exchange it for a session (cookies are set
- * server-side). Raw `fetch` (NOT apiFetch) — a 401 here is a genuine exchange
- * failure, not an expired access token. Returns the user on success, null on
+ * server-side). A 401 here is an exchange failure; the transport skips refresh. Returns the user on success, null on
  * any failure so the caller can fall through to the normal login UI.
  */
 export async function exchangeOidcCode(code: string): Promise<SelfUser | null> {
 	try {
-		const res = await fetch('/api/auth/oidc/exchange', {
+		const res = await apiFetch('/api/auth/oidc/exchange', {
 			method: 'POST',
 			credentials: 'same-origin',
 			headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
@@ -427,15 +358,13 @@ export async function exchangeOidcCode(code: string): Promise<SelfUser | null> {
 /**
  * Register a new user. Since PR 18 both `username` and `password` are optional
  * on the backend: an email-only signup is valid and mints a welcome magic-link.
- * Raw `fetch` (NOT apiFetch) so a 401/validation failure surfaces to the caller
- * instead of tripping the global refresh-and-redirect interceptor — mirrors
- * the login primitive.
+ * Like login, registration bypasses unauthorized retry in the shared transport.
  */
 export async function register(email: string, password?: string, username?: string): Promise<void> {
 	const body: Record<string, unknown> = { email, role: 'user' };
 	if (password) body.password = password;
 	if (username) body.username = username;
-	const res = await fetch('/api/auth/register', {
+	const res = await apiFetch('/api/auth/register', {
 		method: 'POST',
 		credentials: 'same-origin',
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
@@ -491,11 +420,10 @@ export type MagicLinkResult = 'sent' | 'unavailable';
  * Anti-enumeration sign-in by email. Any 2xx resolves to `sent` with a uniform
  * message regardless of whether the email maps to an account. 503 means SMTP
  * isn't configured (`unavailable`) — operators need to see that. Other non-2xx
- * throw so the caller can show a generic error. Raw `fetch` (NOT apiFetch):
- * unauthenticated, must not enter the refresh interceptor.
+ * throw so the caller can show a generic error. This auth primitive skips refresh.
  */
 export async function sendMagicLink(email: string): Promise<MagicLinkResult> {
-	const res = await fetch('/api/auth/magic-link/send', {
+	const res = await apiFetch('/api/auth/magic-link/send', {
 		method: 'POST',
 		credentials: 'same-origin',
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },

@@ -1,3 +1,4 @@
+import { client as generatedClient } from '../generated/client.gen';
 /**
  * Admin endpoints — ported from views/admin/admin.js. Covers users, plugins
  * (incl. logs/retention/live SSE tail), dashboard, settings (OIDC/storage/SMTP),
@@ -827,4 +828,34 @@ export async function createExternalMount(input: CreateExternalMountInput): Prom
 /** DELETE /api/admin/external-mounts/{id} — remove a mount (host content kept). */
 export function deleteExternalMount(mountFolderId: string): Promise<void> {
 	return mutate(`/api/admin/external-mounts/${mountFolderId}`, 'DELETE');
+}
+
+/** Subscribe to plugin logs through the generated client's SSE parser and transport. */
+export function subscribePluginLogs(
+	id: string,
+	onEntry: (entry: PluginLogEntry) => void,
+	onLagged: () => void
+): { close: () => void } {
+	const controller = new AbortController();
+	const consume = async () => {
+		const { stream } = await generatedClient.sse.get({
+			url: '/api/admin/plugins/{id}/logs/stream',
+			path: { id },
+			signal: controller.signal,
+			onSseEvent: ({ data, event }) => {
+				if (controller.signal.aborted) return;
+				if (event === 'lagged') onLagged();
+				else if ((!event || event === 'message') && data && typeof data === 'object') {
+					onEntry(data as PluginLogEntry);
+				}
+			}
+		});
+		for await (const _entry of stream) {
+			/* The callback handles named events too. */
+		}
+	};
+	void consume().catch(() => {
+		/* Closing the view cancels the stream. */
+	});
+	return { close: () => controller.abort() };
 }

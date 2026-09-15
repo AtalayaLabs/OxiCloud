@@ -31,7 +31,7 @@ let cachedExts: string[] | null = null;
 export async function getSupportedExtensions(): Promise<string[]> {
 	if (cachedExts) return cachedExts;
 	try {
-		const res = await fetch('/wopi/supported-extensions');
+		const res = await apiFetch('/wopi/supported-extensions', { retryUnauthorized: false });
 		if (res.ok) {
 			const exts = (await res.json()) as string[];
 			if (Array.isArray(exts) && exts.length > 0) {

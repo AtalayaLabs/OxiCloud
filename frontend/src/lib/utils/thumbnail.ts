@@ -1,3 +1,5 @@
+import { fetchAsset } from '$lib/utils/assets';
+import { apiFetch } from '$lib/api/client';
 /**
  * Client-side thumbnail generation + upload.
  *
@@ -116,7 +118,7 @@ function blobToDataUrl(blob: Blob): Promise<string> {
 async function sourceToBitmap(file: ThumbnailFile, source: string): Promise<ImageBitmap> {
 	const mime = file.mime_type ?? '';
 	if (mime.startsWith('image/')) {
-		const response = await fetch(source);
+		const response = await apiFetch(source);
 		if (!response.ok) throw new Error(`failed to fetch: ${response.status}`);
 		const blob = await response.blob();
 		return createImageBitmap(blob);
@@ -181,7 +183,7 @@ async function generate(
 				['large', largeBlob]
 			] as const
 		).map(([size, blob]) =>
-			fetch(`${window.location.origin}/api/files/${file.id}/thumbnail/${size}`, {
+			apiFetch(`${window.location.origin}/api/files/${file.id}/thumbnail/${size}`, {
 				method: 'PUT',
 				headers: { ...getCsrfHeaders(), 'Content-Type': FORMAT },
 				body: blob,
@@ -215,7 +217,7 @@ export function preloadPdf(): void {
 	});
 	if (pdfWorkerWarmed) return;
 	pdfWorkerWarmed = true;
-	fetch(PDFJS_WORKER_URL)
+	fetchAsset(PDFJS_WORKER_URL)
 		.then((r) => (r.ok ? r.blob() : Promise.reject(new Error(`HTTP ${r.status}`))))
 		.catch(() => {
 			pdfWorkerWarmed = false; // allow retry on a later sighting
