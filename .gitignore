@@ -74,6 +74,11 @@ logs/
 
 # Storage data (user files, blobs — never commit)
 storage/
+# …and the same thing reached through a symlink. `storage/` matches a
+# DIRECTORY only, so a worktree that points `storage` at the main
+# checkout's data dir left it untracked-but-not-ignored, where a
+# `git add -A` would sweep it in as a 1-line blob.
+/storage
 
 # TLS certificates and private keys — NEVER commit
 *.pem
