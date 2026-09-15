@@ -156,6 +156,34 @@ export type AdminUpdateDriveMemberDto = {
     role: RoleDto;
 };
 
+/**
+ * Auth block within [`ServerConfigDto`]. Non-privacy-implicating
+ * tunables the SPA needs at boot so form validation matches server
+ * enforcement.
+ */
+export type AuthDto = {
+    /**
+     * Minimum password length (UTF-8 bytes). Mirrors
+     * `AuthConfig::min_password_length`, which every server-side
+     * password-bearing endpoint uses. The SPA gates submit on the
+     * same value so users see the failure instantly instead of
+     * after a round-trip. See AtalayaLabs/OxiCloud#677.
+     */
+    min_password_length: number;
+    /**
+     * OPAQUE deployment mode — one of `"off"`, `"migrate"`,
+     * `"opaque_only"`. Mirrors `AuthConfig::opaque.mode` (env
+     * `OXICLOUD_AUTH_OPAQUE_MODE`). Login already discovers this
+     * per-user via `POST /api/auth/opaque/login/lookup`; exposing
+     * the server-wide mode here is for future consumers (admin
+     * panel status indicators, OPAQUE-native setup / register
+     * flows). Login callers should NOT branch on this value —
+     * keep using the per-user lookup so mixed populations during
+     * migration stay honest.
+     */
+    opaque_mode: string;
+};
+
 export type AuthResponseDto = {
     access_token: string;
     expires_in: number;
@@ -849,6 +877,61 @@ export type FavoritesResourceItemDto = {
 };
 
 /**
+ * Feature-flag block within [`ServerConfigDto`]. One boolean per
+ * optional subsystem. Adding a new feature: append a field with a
+ * default that matches the server-side default; NEVER remove a field
+ * (client code may depend on the absence of a `false` value to mean
+ * "unknown").
+ */
+export type FeaturesDto = {
+    /**
+     * Admin-configured external filesystem mounts. See
+     * `FeaturesConfig::enable_external_mounts`.
+     */
+    external_mounts: boolean;
+    /**
+     * Face detection + identity clustering ("People"). Biometric —
+     * OFF by default. See `FeaturesConfig::enable_faces`.
+     */
+    faces: boolean;
+    /**
+     * Message bus over WebSocket. When `false`, `/api/rt/ws` and
+     * `/api/rt/ticket` are not registered — clients skip WS setup
+     * entirely. See `FeaturesConfig::enable_message_bus`.
+     */
+    message_bus: boolean;
+    /**
+     * Music player + playlists. See `FeaturesConfig::enable_music`.
+     */
+    music: boolean;
+    /**
+     * Photo-map ("Places") tab. See `FeaturesConfig::enable_places`.
+     */
+    places: boolean;
+    /**
+     * Full-text and metadata search (`/api/search*`). See
+     * `FeaturesConfig::enable_search`.
+     */
+    search: boolean;
+    /**
+     * File sharing (public share links + user-to-user grants). See
+     * `FeaturesConfig::enable_file_sharing`.
+     */
+    sharing: boolean;
+    /**
+     * Recycle bin / soft-delete flow. When `false`, deletes are
+     * permanent — no `/api/trash` endpoint. See
+     * `FeaturesConfig::enable_trash`.
+     */
+    trash: boolean;
+    /**
+     * Server-side video-thumbnail generation via ffmpeg. See
+     * `FeaturesConfig::enable_video_thumbnails`.
+     */
+    video_thumbnails: boolean;
+};
+
+/**
  * DTO for file responses
  */
 export type FileDto = {
@@ -1308,6 +1391,33 @@ export type HashCheckResponse = {
 };
 
 /**
+ * Compact JSON shape written into the header. Fields are documented
+ * in `common::migration_progress::MigrationProgress`.
+ *
+ * Public because `GET /api/config` returns the same shape as the
+ * initial hydration snapshot for FE stores — the endpoint mirrors
+ * whatever the header carries so the client has a single wire
+ * vocabulary to render. Frontend treats the value as opaque JSON
+ * and pattern-matches on the fields it currently understands;
+ * adding a field is additive.
+ */
+export type HeaderPayload = {
+    migration?: null | ProgressHeader;
+    readonly: boolean;
+    rotation?: null | ProgressHeader;
+};
+
+export type ListResponseDto = {
+    items: Array<NotificationDto>;
+    /**
+     * Unread rows for this user across the whole table — the bell
+     * badge reads this. Kept on the list response so a bell open
+     * doesn't need a second round-trip for the badge.
+     */
+    unread_count: number;
+};
+
+/**
  * DTO for locale information
  */
 export type LocaleDto = {
@@ -1341,6 +1451,13 @@ export type LoginDto = {
      * typed in the "Username or email" field as-is.
      */
     username: string;
+};
+
+export type MarkAllReadResponseDto = {
+    /**
+     * Number of rows that transitioned unread → read.
+     */
+    marked: number;
 };
 
 export type MergeBody = {
@@ -1382,6 +1499,24 @@ export type MoveFolderDto = {
 export type MoveToTrashRequest = {
     item_id: string;
     item_type: string;
+};
+
+/**
+ * Wire shape for one notification row. `payload` stays a raw JSON
+ * value — per-kind decoding happens on the FE using the `kind`
+ * discriminant.
+ */
+export type NotificationDto = {
+    created_at: string;
+    id: string;
+    kind: string;
+    payload: {
+        [key: string]: unknown;
+    };
+    /**
+     * `null` = unread.
+     */
+    read_at?: string | null;
 };
 
 /**
@@ -1758,6 +1893,18 @@ export type PhoneDto = {
     is_primary: boolean;
     number: string;
     type: string;
+};
+
+/**
+ * Shared progress shape used by both `migration` and `rotation`
+ * header fields — same struct name, same JSON field names. Frontend
+ * treats them identically at the render layer.
+ */
+export type ProgressHeader = {
+    migrated: number;
+    percent: number;
+    target: string;
+    total: number;
 };
 
 /**
@@ -2490,6 +2637,45 @@ export type SendSmtpTestDto = {
 };
 
 /**
+ * Server-configuration DTO. Additive over time — clients ignore
+ * unknown fields, and no field is ever repurposed (same discipline
+ * as JSON-RPC error codes on the message bus).
+ */
+export type ServerConfigDto = {
+    /**
+     * Auth-related tunables the SPA needs to gate submit locally.
+     * Composes with `/api/auth/oidc/providers` — that endpoint lists
+     * federation options; this one carries the numeric thresholds
+     * (password length today, more later) that the form has to check
+     * before firing the request.
+     */
+    auth: AuthDto;
+    /**
+     * Feature flags — which subsystems the server has enabled.
+     * Clients gate optional UI on these (e.g. hide the notification
+     * bell if `features.message_bus` is false, since the bell would
+     * have no delivery channel).
+     */
+    features: FeaturesDto;
+    /**
+     * Live server-status snapshot — exact same shape and field
+     * names as the `X-Server-Status` response header. Clients use
+     * this to hydrate their reactive store at boot; subsequent live
+     * changes propagate through the header on every other request
+     * (the middleware and this endpoint share `build_header_payload`
+     * so drift is impossible). Non-optional so the client always
+     * has a definite value; `readonly: false` with no `migration`
+     * or `rotation` is the "everything nominal" case.
+     */
+    server_status: HeaderPayload;
+    /**
+     * Server version — `CARGO_PKG_VERSION` from `Cargo.toml`. Matches
+     * what `GET /api/version` returns.
+     */
+    version: string;
+};
+
+/**
  * How a session was originally minted. Set at INSERT by the login
  * handler; carried over on refresh (a rotation doesn't change how the
  * user first authenticated). Stored as `text` server-side with a CHECK
@@ -2641,6 +2827,70 @@ export type SharedWithMeItemDto = {
      */
     resource: ResourceContentDto;
     resource_type: ResourceTypeDto;
+};
+
+/**
+ * Payload written on the DB row when a `share_granted` notification
+ * is created. Kind = [`kind::SHARE_GRANTED`].
+ *
+ * The `resource_name` and `resource_path` fields are snapshotted at
+ * grant time — even if the resource is later renamed or moved, the
+ * notification still reflects what it was called when the share
+ * happened. `resource_path` is populated for kinds addressable via
+ * `/files/[...path]` (folders + files); `None` for calendars,
+ * address books, playlists, drives.
+ *
+ * Wire form matches the `payload` JSONB column exactly — Rust is
+ * the source of truth, OpenAPI schema auto-derives via
+ * `#[derive(ToSchema)]`. Adding a new field is additive on the
+ * JSONB column; no migration needed.
+ */
+export type SharegrantedPayload = {
+    /**
+     * Grant expiry, if bounded. `None` = never expires.
+     */
+    expires_at?: string | null;
+    /**
+     * The user who created the grant.
+     */
+    granter_id: string;
+    /**
+     * FE-navigation hint — the folder id the notification link
+     * should route to. Populated when `resource_type` isn't itself
+     * a folder-shaped resource but the FE still wants to land in
+     * `/files/{id}` (concretely: **drives** — the recipient lands
+     * on the drive's root folder). For `resource_type == 'folder'`
+     * the FE uses `resource_id` directly and this field stays
+     * `None`; same for `file` (routes to `/shared-with-me?file=`
+     * via a different path). `None` for calendar / address_book /
+     * playlist — those aren't reachable via `/files*` at all.
+     */
+    navigate_folder_id?: string | null;
+    /**
+     * Resource UUID.
+     */
+    resource_id: string;
+    /**
+     * Display name at grant time. `None` if the lookup failed at
+     * ingest (bell renders a generic fallback in that case).
+     */
+    resource_name?: string | null;
+    /**
+     * Storage path at grant time. Populated for
+     * `folder` / `file` kinds; `None` for other kinds.
+     */
+    resource_path?: string | null;
+    /**
+     * Resource kind slug: `folder`, `file`, `drive`, `calendar`,
+     * `address_book`, `playlist`. Same string form as
+     * [`crate::domain::services::authorization::Resource::type_str`].
+     */
+    resource_type: string;
+    /**
+     * Role granted (`viewer`, `editor`, `owner`, …). Same string
+     * form as [`crate::domain::services::authorization::Role::as_str`].
+     */
+    role: string;
 };
 
 /**
@@ -2921,6 +3171,10 @@ export type TrashedItemDto = {
     original_id: string;
     original_path: string;
     trashed_at: string;
+};
+
+export type UnreadCountDto = {
+    unread_count: number;
 };
 
 /**
@@ -6129,6 +6383,22 @@ export type TrashBatchResponses = {
     206: unknown;
 };
 
+export type GetConfigData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/config';
+};
+
+export type GetConfigResponses = {
+    /**
+     * Public server configuration
+     */
+    200: ServerConfigDto;
+};
+
+export type GetConfigResponse = GetConfigResponses[keyof GetConfigResponses];
+
 export type GetBlobData = {
     body?: never;
     path: {
@@ -8118,6 +8388,113 @@ export type TranslateResponses = {
 };
 
 export type TranslateResponse = TranslateResponses[keyof TranslateResponses];
+
+export type ListNotificationsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Only return unread rows
+         */
+        unread?: boolean;
+        /**
+         * Cursor — rows strictly before this created_at (load-older pagination)
+         */
+        before?: string;
+        /**
+         * Cursor — rows strictly after this created_at (delta catch-up on WS reconnect / tab reactivation)
+         */
+        after?: string;
+        /**
+         * Max rows (server-side clamp at 500)
+         */
+        limit?: number;
+    };
+    url: '/api/notifications';
+};
+
+export type ListNotificationsResponses = {
+    /**
+     * List of notifications
+     */
+    200: ListResponseDto;
+};
+
+export type ListNotificationsResponse = ListNotificationsResponses[keyof ListNotificationsResponses];
+
+export type MarkAllReadData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/notifications/read-all';
+};
+
+export type MarkAllReadResponses = {
+    /**
+     * Rows marked
+     */
+    200: MarkAllReadResponseDto;
+};
+
+export type MarkAllReadResponse = MarkAllReadResponses[keyof MarkAllReadResponses];
+
+export type UnreadCountData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/notifications/unread';
+};
+
+export type UnreadCountResponses = {
+    /**
+     * Unread count
+     */
+    200: UnreadCountDto;
+};
+
+export type UnreadCountResponse = UnreadCountResponses[keyof UnreadCountResponses];
+
+export type DeleteNotificationData = {
+    body?: never;
+    path: {
+        /**
+         * Notification id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/notifications/{id}';
+};
+
+export type DeleteNotificationResponses = {
+    /**
+     * Deleted (idempotent, anti-enum)
+     */
+    204: void;
+};
+
+export type DeleteNotificationResponse = DeleteNotificationResponses[keyof DeleteNotificationResponses];
+
+export type MarkReadData = {
+    body?: never;
+    path: {
+        /**
+         * Notification id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/notifications/{id}/read';
+};
+
+export type MarkReadResponses = {
+    /**
+     * Marked read (idempotent, anti-enum)
+     */
+    204: void;
+};
+
+export type MarkReadResponse = MarkReadResponses[keyof MarkReadResponses];
 
 export type ListPeopleData = {
     body?: never;
