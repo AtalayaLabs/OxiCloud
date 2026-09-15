@@ -64,7 +64,7 @@ export async function getSupportedExtensions(): Promise<string[]> {
  */
 export async function advertisedExtensions(): Promise<string[] | null> {
 	try {
-		const res = await fetch(withBase('/wopi/supported-extensions'));
+		const res = await apiFetch('/wopi/supported-extensions', { retryUnauthorized: false });
 		if (!res.ok) return null;
 		const exts = (await res.json()) as string[];
 		return Array.isArray(exts) && exts.length > 0 ? exts : null;

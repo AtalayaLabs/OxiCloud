@@ -34,7 +34,10 @@ export async function apiFetch(
 	const request = input instanceof Request ? input : undefined;
 	const headers = new Headers(request?.headers);
 	new Headers(requestInit.headers).forEach((value, name) => headers.set(name, value));
-	const url = new URL(typeof input === 'string' ? withBase(input) : urlString(input), globalThis.location?.origin ?? 'http://localhost');
+	const url = new URL(
+		typeof input === 'string' ? withBase(input) : urlString(input),
+		globalThis.location?.origin ?? 'http://localhost'
+	);
 	let response: Response | undefined;
 	try {
 		await client.request({

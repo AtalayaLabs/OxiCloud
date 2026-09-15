@@ -156,6 +156,67 @@ export type AdminUpdateDriveMemberDto = {
     role: RoleDto;
 };
 
+/**
+ * Response envelope for `GET /api/admin/users`. `users` is always
+ * `Vec<FullUserDto>` — same shape one row of `/me`'s embedded
+ * `full` block carries; the FE seeds `resolveUser` cache from
+ * `row.user` (kills the per-row `/api/users/{id}` fetch). See
+ * `docs/plan/userdto-refactor.md`.
+ */
+export type AdminUsersPageResponse = {
+    limit: number;
+    offset: number;
+    total: number;
+    users: Array<FullUserDto>;
+};
+
+export type AudioMetadataDto = {
+    album?: string | null;
+    album_artist?: string | null;
+    artist?: string | null;
+    bitrate?: number | null;
+    channels?: number | null;
+    created_at: string;
+    disc_number?: number | null;
+    duration_secs: number;
+    file_id: string;
+    format?: string | null;
+    genre?: string | null;
+    sample_rate?: number | null;
+    title?: string | null;
+    track_number?: number | null;
+    updated_at: string;
+    year?: number | null;
+};
+
+/**
+ * Auth block within [`ServerConfigDto`]. Non-privacy-implicating
+ * tunables the SPA needs at boot so form validation matches server
+ * enforcement.
+ */
+export type AuthDto = {
+    /**
+     * Minimum password length (UTF-8 bytes). Mirrors
+     * `AuthConfig::min_password_length`, which every server-side
+     * password-bearing endpoint uses. The SPA gates submit on the
+     * same value so users see the failure instantly instead of
+     * after a round-trip. See AtalayaLabs/OxiCloud#677.
+     */
+    min_password_length: number;
+    /**
+     * OPAQUE deployment mode — one of `"off"`, `"migrate"`,
+     * `"opaque_only"`. Mirrors `AuthConfig::opaque.mode` (env
+     * `OXICLOUD_AUTH_OPAQUE_MODE`). Login already discovers this
+     * per-user via `POST /api/auth/opaque/login/lookup`; exposing
+     * the server-wide mode here is for future consumers (admin
+     * panel status indicators, OPAQUE-native setup / register
+     * flows). Login callers should NOT branch on this value —
+     * keep using the per-user lookup so mixed populations during
+     * migration stay honest.
+     */
+    opaque_mode: string;
+};
+
 export type AuthResponseDto = {
     access_token: string;
     expires_in: number;
@@ -187,6 +248,31 @@ export type AuthResponseDto = {
      * fetch). See `docs/plan/userdto-refactor.md` § Endpoint mapping.
      */
     user: SelfUserDto;
+};
+
+/**
+ * `.blob-cache` tier occupancy snapshot (see [`DashboardStatsDto::backend_cache`]).
+ * Separate struct from the moka one so adding tier-specific fields
+ * later (eviction count, LRU age) doesn't force a shared schema.
+ */
+export type BackendCacheInfoDto = {
+    /**
+     * On-disk location where the cache files live. Shown on the
+     * admin UI so operators know where to point `du`, backups, or
+     * an SSD mount.
+     */
+    cache_dir: string;
+    /**
+     * Number of cached chunks (one entry per content-addressable
+     * blob). Unlike moka's assembled-file entries, these are the
+     * chunk-granular units of the dedup registry. The disk tier
+     * covers both source-file chunks AND satellite derived blobs
+     * (thumbnails, transcodes) — one unified disk cache serving
+     * every blob read.
+     */
+    chunks: number;
+    max_bytes: number;
+    size_bytes: number;
 };
 
 /**
@@ -413,6 +499,27 @@ export type ContactGroupDto = {
 };
 
 /**
+ * Moka content-cache occupancy snapshot (see [`DashboardStatsDto::content_cache`]).
+ *
+ * Each moka entry holds the ASSEMBLED bytes of one small file
+ * (<10 MB) keyed by the file's content hash — not individual
+ * chunks. So `files` is the honest name for the entry count here;
+ * use it against the sibling `BackendCacheInfoDto`'s `chunks` to
+ * avoid conflating the two tiers' granularities in dashboards or
+ * alerts.
+ */
+export type ContentCacheInfoDto = {
+    /**
+     * Number of cached files. For a file physically split into N
+     * chunks on-backend, moka still holds exactly ONE assembled
+     * entry here.
+     */
+    files: number;
+    max_bytes: number;
+    size_bytes: number;
+};
+
+/**
  * Request body for creating an address book.
  */
 export type CreateAddressBookRequest = {
@@ -573,6 +680,80 @@ export type CursorListResponse = {
      * Opaque cursor for the next page.  Absent when this is the last page.
      */
     next_cursor?: string | null;
+};
+
+/**
+ * Dashboard statistics
+ */
+export type DashboardStatsDto = {
+    active_users: number;
+    /**
+     * Currently-connected message-bus WebSocket sessions. One per
+     * browser tab that reached a folder view and hasn't closed the
+     * tab yet. Zero when `OXICLOUD_MESSAGEBUS_ENABLE=false`.
+     * Snapshot value — a subsequent request can see a different
+     * number if a connection opened/closed in between. Renders on
+     * the admin dashboard's "Live activity" section next to
+     * `online_sessions` (HTTP-driven distinct-user count).
+     */
+    active_ws_sessions: number;
+    admin_users: number;
+    backend_cache?: null | BackendCacheInfoDto;
+    /**
+     * Current occupancy of the in-memory file-content cache (moka).
+     * Admin dashboard renders `size_bytes / max_bytes` as a capacity
+     * bar; combined with `oxicloud_content_cache_hits_total /
+     * _misses_total` on `/metrics` the operator can see both
+     * "how full" and "how useful". Always present — the content
+     * cache runs unconditionally.
+     */
+    content_cache: ContentCacheInfoDto;
+    dedup_ratio?: number | null;
+    drive_usage: Array<DriveKindUsageDto>;
+    /**
+     * Grant-only accounts (magic-link / OIDC-only / OCM recipients).
+     * Filtered out of `total_users` / `active_users` since those
+     * columns count operational seats (see the SELECT comment). Here
+     * as its own metric because operators of external-heavy
+     * deployments (public shares, invited-collab shops) need to see
+     * the invited population at a glance.
+     */
+    external_users: number;
+    oidc_configured: boolean;
+    /**
+     * Non-revoked sessions active in the last 5 min. Answers "how
+     * many concurrent connections must I serve?". Ratio
+     * `online_sessions / online_users` is the multi-device factor.
+     */
+    online_sessions: number;
+    /**
+     * Distinct users behind non-revoked sessions active in the last
+     * 5 min. Answers "how many humans are here right now?".
+     */
+    online_users: number;
+    registration_enabled: boolean;
+    server_version: string;
+    /**
+     * `true` when the active storage backend is remote (S3 / Azure)
+     * and the local-disk blob cache is NOT enabled — i.e., every
+     * blob read pays a round-trip to the remote. Signals the admin
+     * UI to show the "enable the backend cache" banner. `false` on
+     * local-filesystem deployments (nothing to cache) and when the
+     * cache is already on.
+     */
+    storage_cache_recommended: boolean;
+    /**
+     * Current occupancy of the in-memory thumbnail cache (moka
+     * instance distinct from the file-content cache above —
+     * different key space, different budget, different eviction).
+     * Always present. See `docs/architecture/caching.md` for the
+     * two-tier memory topology and why they aren't merged.
+     */
+    thumbnail_cache: ThumbnailCacheInfoDto;
+    total_bytes_stored?: number | null;
+    total_users: number;
+    users_over_80_percent: number;
+    users_over_quota: number;
 };
 
 /**
@@ -747,6 +928,204 @@ export type DriveDto = {
 
 export type DriveKindDto = 'personal' | 'shared';
 
+/**
+ * One row of the dashboard's quota panel — usage aggregate for a
+ * single drive kind. Unlimited caps are excluded from `capped_quota_bytes`
+ * and counted in `unlimited_count` so the panel can render the ratio
+ * honestly ("X / Y over N capped drives · M unlimited").
+ */
+export type DriveKindUsageDto = {
+    /**
+     * Count of drives with a numeric cap. Used to hide rows with
+     * zero drives and denominate the ratio.
+     */
+    capped_count: number;
+    /**
+     * Sum of caps over capped drives only. `None` when there are no
+     * capped drives of this kind (would otherwise report `0 / 0`
+     * meaninglessly).
+     */
+    capped_quota_bytes?: number | null;
+    /**
+     * `"personal"` or `"shared"`.
+     */
+    kind: string;
+    /**
+     * Count of drives (personal: users) with no cap. Personal-kind
+     * unlimited = `auth.users.storage_quota_bytes = 0`; shared-kind
+     * unlimited = `storage.drives.quota_bytes IS NULL`.
+     */
+    unlimited_count: number;
+    /**
+     * Total bytes stored across drives of this kind. Excludes trashed
+     * files (see `bug_trash_excluded_from_quota` for the known gap).
+     */
+    used_bytes: number;
+};
+
+/**
+ * Typed mirror of the `policies` JSONB. Five known keys; the JSONB column
+ * remains the source of truth and may carry unknown keys verbatim — this
+ * struct is a read view for enforcement and a write view for the policy
+ * PATCH endpoint. Every field defaults to `false` (everything allowed)
+ * so a freshly-created drive doesn't need a populated policy bag.
+ *
+ * See `docs/plan/drive.md` §8 for the enforcement matrix
+ * (which callsite each key is checked at).
+ */
+export type DrivePolicies = {
+    /**
+     * Blocks MOVE when `src.drive_id != dst.drive_id`. Enforced at the
+     * move endpoints. Lands paired with D6's cross-drive move work.
+     */
+    forbid_cross_drive_move?: boolean;
+    /**
+     * Blocks grants whose subject has `users.is_external = true`. Enforced
+     * at `magic_link_invite_service::resolve_or_create_recipient` and
+     * `grant_handler::create_grant`.
+     */
+    forbid_external_sharing?: boolean;
+    /**
+     * Locks the Owner-role membership set: no owner can be added,
+     * removed, or demoted by another owner — only OxiCloud admin can
+     * change the Owner roster. Editor / Viewer mutations by remaining
+     * owners are unaffected. Personal drives are already
+     * single-owner-immutable via `refuse_if_personal`, so this policy
+     * only adds value on shared drives. Enforced at
+     * `DriveManagementService::set_member_role` (refuses Owner role
+     * writes) and `::remove_member` (refuses Owner removals) when the
+     * caller is non-admin.
+     */
+    forbid_owner_role_change?: boolean;
+    /**
+     * Blocks anonymous-link (token-share) creation on resources in this
+     * drive. Enforced at `share_service::create_shared_link`.
+     */
+    forbid_public_links?: boolean;
+    /**
+     * Disables per-resource grants on resources in this drive. Drive-level
+     * membership (Owner/Editor/Viewer) still works.
+     *
+     * The BROADER rule: it covers public links too, so it is enforced at
+     * `grant_handler::create_grant` (via [`DrivePolicies::refuse_sharing`])
+     * **and** on the public-link path (via
+     * [`DrivePolicies::refuse_public_links`]). Enforcing only the first left
+     * a drive that forbade sharing outright still minting anonymous links,
+     * while the admin editor greyed `forbid_public_links` out as "already
+     * enforced by" this one.
+     */
+    forbid_sharing?: boolean;
+    /**
+     * Same shape as `include_in_photo_index`, applied to the Music
+     * library surface (playlists today; a `/api/music/tracks` library
+     * view later). Symmetric opt-in — Music was originally cross-drive
+     * via a `forbid_music_index` opt-out, but that mixed-form naming
+     * created "one include-in, one forbid" confusion and the
+     * "shared audio is always intentional" claim didn't hold under
+     * scrutiny (voicemail MP3s in a work drive shouldn't bleed into
+     * the personal library). See §15.
+     */
+    include_in_music_index?: boolean;
+    /**
+     * Opts this drive into the `/api/photos` timeline (§15). Non-default
+     * drives are omitted by default so a random shared folder full of
+     * screenshots doesn't bleed into the personal timeline; owners flip
+     * this on when the drive genuinely is a photo library (e.g. "Family
+     * Photos"). Default personal drives get `true` on creation via the
+     * `PersonalDriveLifecycleHook` + a one-shot backfill for existing
+     * rows, so the SQL predicate is a single positive rule with no
+     * per-kind carve-out. Read at `file_blob_read_repository::
+     * list_media_files` + `list_geo_clusters`. See §15 for the query
+     * shape and rationale.
+     */
+    include_in_photo_index?: boolean;
+    /**
+     * Cap, in days, on how long an anonymous link in this drive may live.
+     * `None` = no cap, which is the LAXEST value — a link that never
+     * expires is permitted. Enforced at `share_service::create_shared_link`.
+     *
+     * The first non-boolean knob. Note the expiry it constrains lives on
+     * `storage.role_grants.expires_at` for the token grant, NOT on
+     * `storage.shares` — that column was dropped in
+     * `20260601000000_rebac_expiry_and_perms_cleanup.sql`.
+     */
+    max_public_link_days?: number | null;
+    /**
+     * **Full freeze / legal-hold.** When `true`, every mutation on
+     * resources in this drive is refused — user-initiated and
+     * background alike. Compliance-grade guarantee:
+     *
+     * - User-initiated: enforced at `PgAclEngine::check_inner`, which
+     * short-circuits `Create` / `Update` / `Delete` / `Share`
+     * permissions on any resource in a read-only drive. Read still
+     * passes. Manage-on-Drive still passes so admins can un-freeze.
+     * - Background jobs: the periodic trash-retention purge and
+     * orphan-upload sweep filter out read-only drives at SELECT
+     * time (SQL-side `JOIN storage.drives … WHERE (policies->>
+     * 'read_only')::boolean IS NOT TRUE`). Retention clock keeps
+     * ticking; on unfreeze, the next sweep tick catches up.
+     *
+     * Applies to both personal and shared drives — a user winding
+     * down their account, freezing a secondary personal archive, or
+     * putting a shared drive on legal hold all use the same knob.
+     * Mutation is admin-only via `PATCH /api/drives/{id}/policies`
+     * (per §8 — same carve-out as every other policy).
+     */
+    read_only?: boolean;
+    /**
+     * Requires every anonymous link in this drive to carry a password.
+     * Enforced at `share_service::create_shared_link`; the corresponding
+     * state is `storage.shares.password_hash IS NOT NULL`.
+     */
+    require_public_link_password?: boolean;
+};
+
+/**
+ * A public link on an ancestor folder (or the drive) that also reaches
+ * the requested folder.
+ *
+ * Carries the share's own metadata — a token grant alone would give a
+ * client nothing to show but an opaque id.
+ *
+ * **Not [`ShareDto`](crate::application::dtos::share_dto::ShareDto),
+ * deliberately.** That type carries `token` and `url` — the live
+ * secret — which is right when handing someone a link they own, and
+ * wrong here. The caller holds `Share` on a DESCENDANT; the ancestor's
+ * link may publish the whole ancestor tree, so "something above you is
+ * published, here is where" is the honest payload and a working URL is
+ * an escalation they never visited that folder to earn. Both fields
+ * are non-`Option` there, so reuse would mean `""` — a value a client
+ * could build a broken link from.
+ *
+ * `expires_at` is the GRANT's, not the share row's. The two can
+ * diverge, and the grant is what actually gates access.
+ */
+export type EffectiveLinkDto = {
+    expires_at?: string | null;
+    /**
+     * `storage.role_grants.id` of the token grant. Stable list key.
+     */
+    grant_id: string;
+    /**
+     * Whether opening the link requires a password.
+     */
+    has_password: boolean;
+    /**
+     * Operator-given link name. `None` when the creator never set one.
+     */
+    name?: string | null;
+    /**
+     * Where the link lives — the folder or drive carrying the grant.
+     * Clients resolve a folder's display name from `ancestors`.
+     */
+    resource: ResourceDto;
+    /**
+     * The share this link belongs to (`storage.shares.id`, which is the
+     * token grant's subject).
+     */
+    share_id: string;
+};
+
 export type EmailDto = {
     email: string;
     is_primary: boolean;
@@ -846,6 +1225,68 @@ export type FavoritesResourceItemDto = {
      */
     resource: ResourceContentDto;
     resource_type: ResourceTypeDto;
+};
+
+/**
+ * Feature-flag block within [`ServerConfigDto`]. One boolean per
+ * optional subsystem. Adding a new feature: append a field with a
+ * default that matches the server-side default; NEVER remove a field
+ * (client code may depend on the absence of a `false` value to mean
+ * "unknown").
+ */
+export type FeaturesDto = {
+    /**
+     * Admin-configured external filesystem mounts. See
+     * `FeaturesConfig::enable_external_mounts`.
+     */
+    external_mounts: boolean;
+    /**
+     * Face detection + identity clustering ("People"). Biometric —
+     * OFF by default. See `FeaturesConfig::enable_faces`.
+     */
+    faces: boolean;
+    /**
+     * Collaborative `.md` editing over the message-bus WebSocket
+     * (Yjs CRDT). When `false`, the FE hides the "New markdown"
+     * menu entry and falls back to the plain `.md` viewer when
+     * opening one. See `FeaturesConfig::enable_markdown_collab`.
+     */
+    markdown_collab: boolean;
+    /**
+     * Message bus over WebSocket. When `false`, `/api/rt/ws` and
+     * `/api/rt/ticket` are not registered — clients skip WS setup
+     * entirely. See `FeaturesConfig::enable_message_bus`.
+     */
+    message_bus: boolean;
+    /**
+     * Music player + playlists. See `FeaturesConfig::enable_music`.
+     */
+    music: boolean;
+    /**
+     * Photo-map ("Places") tab. See `FeaturesConfig::enable_places`.
+     */
+    places: boolean;
+    /**
+     * Full-text and metadata search (`/api/search*`). See
+     * `FeaturesConfig::enable_search`.
+     */
+    search: boolean;
+    /**
+     * File sharing (public share links + user-to-user grants). See
+     * `FeaturesConfig::enable_file_sharing`.
+     */
+    sharing: boolean;
+    /**
+     * Recycle bin / soft-delete flow. When `false`, deletes are
+     * permanent — no `/api/trash` endpoint. See
+     * `FeaturesConfig::enable_trash`.
+     */
+    trash: boolean;
+    /**
+     * Server-side video-thumbnail generation via ffmpeg. See
+     * `FeaturesConfig::enable_video_thumbnails`.
+     */
+    video_thumbnails: boolean;
 };
 
 /**
@@ -993,6 +1434,43 @@ export type FolderAncestorDto = {
 export type FolderAncestorsDto = {
     access_source: AccessSourceDto;
     ancestors: Array<FolderAncestorDto>;
+    /**
+     * Every grant that reaches the leaf: its own, each visible
+     * ancestor's, and the drive's. Answers "who can get at this
+     * folder, and through what?" — a question the per-resource grant
+     * listing cannot, because it only ever reports direct rows.
+     *
+     * **Present only for `?include_grants=true`.** Omitted otherwise
+     * because the breadcrumb calls this endpoint on every folder
+     * navigation and must not start paying for a grants query it never
+     * reads.
+     *
+     * No separate "source" field: each [`GrantDto`] already names the
+     * resource it sits on, so a client tells direct from inherited by
+     * comparing `resource.id` against the leaf, and resolves an
+     * inherited grant's display name from `ancestors` — which it
+     * already has in the same response.
+     *
+     * Safe by construction: the ancestor walk drops folders the caller
+     * cannot Read (see `get_ancestors_with_perms`), and this only
+     * collects grants for ancestors that survived. A caller can never
+     * learn of a folder — or of who holds access to one — that they
+     * could not already see.
+     */
+    effective_grants?: Array<GrantDto> | null;
+    /**
+     * Public links that reach the leaf, from the same walk.
+     *
+     * Split out of `effective_grants` rather than mixed in: a link is
+     * not a subject. It has no name to resolve, no role to change and
+     * nobody to notify, and clients render it in a different place
+     * entirely. Keeping both in one list made every consumer
+     * re-partition by `subject.type` before it could draw anything.
+     *
+     * Same presence rule as `effective_grants` — only for
+     * `?include_grants=true`.
+     */
+    effective_links?: Array<EffectiveLinkDto> | null;
 };
 
 /**
@@ -1200,6 +1678,28 @@ export type FullUserDto = {
     user: PublicUserDto;
 };
 
+/**
+ * A clustered group of geotagged photos within one aggregation cell.
+ */
+export type GeoCluster = {
+    /**
+     * Number of photos in the cluster.
+     */
+    count: number;
+    /**
+     * Cluster centroid latitude.
+     */
+    lat: number;
+    /**
+     * Cluster centroid longitude.
+     */
+    lng: number;
+    /**
+     * A representative photo id, for the cluster thumbnail.
+     */
+    sample_file_id: string;
+};
+
 export type GrantDto = {
     expires_at?: string | null;
     granted_at: string;
@@ -1308,6 +1808,33 @@ export type HashCheckResponse = {
 };
 
 /**
+ * Compact JSON shape written into the header. Fields are documented
+ * in `common::migration_progress::MigrationProgress`.
+ *
+ * Public because `GET /api/config` returns the same shape as the
+ * initial hydration snapshot for FE stores — the endpoint mirrors
+ * whatever the header carries so the client has a single wire
+ * vocabulary to render. Frontend treats the value as opaque JSON
+ * and pattern-matches on the fields it currently understands;
+ * adding a field is additive.
+ */
+export type HeaderPayload = {
+    migration?: null | ProgressHeader;
+    readonly: boolean;
+    rotation?: null | ProgressHeader;
+};
+
+export type ListResponseDto = {
+    items: Array<NotificationDto>;
+    /**
+     * Unread rows for this user across the whole table — the bell
+     * badge reads this. Kept on the list response so a bell open
+     * doesn't need a second round-trip for the badge.
+     */
+    unread_count: number;
+};
+
+/**
  * DTO for locale information
  */
 export type LocaleDto = {
@@ -1343,6 +1870,13 @@ export type LoginDto = {
     username: string;
 };
 
+export type MarkAllReadResponseDto = {
+    /**
+     * Number of rows that transitioned unread → read.
+     */
+    marked: number;
+};
+
 export type MergeBody = {
     /**
      * Cluster id being merged into `into`. Deleted after the merge.
@@ -1354,6 +1888,24 @@ export type MergeBody = {
      * larger / named cluster wins.
      */
     into: string;
+};
+
+/**
+ * Migration progress returned by `GET /api/admin/storage/migration`.
+ * Re-exports the `MigrationState` shape for the admin UI.
+ */
+export type MigrationStateDto = {
+    completed_at?: string | null;
+    failed_blobs: Array<string>;
+    migrated_blobs: number;
+    migrated_bytes: number;
+    started_at?: string | null;
+    status: string;
+    /**
+     * Estimated throughput in bytes/sec (for UI ETA calculation).
+     */
+    throughput_bytes_per_sec?: number | null;
+    total_blobs: number;
 };
 
 /**
@@ -1382,6 +1934,54 @@ export type MoveFolderDto = {
 export type MoveToTrashRequest = {
     item_id: string;
     item_type: string;
+};
+
+/**
+ * Wire shape for one notification row. `payload` stays a raw JSON
+ * value — per-kind decoding happens on the FE using the `kind`
+ * discriminant.
+ */
+export type NotificationDto = {
+    created_at: string;
+    id: string;
+    kind: string;
+    payload: {
+        [key: string]: unknown;
+    };
+    /**
+     * `null` = unread.
+     */
+    read_at?: string | null;
+};
+
+/**
+ * Read-only alerting policy, from `GET /api/admin/notify/info`.
+ *
+ * The *what gets sent* half, where `SmtpInfoDto` and [`WebhookInfoDto`]
+ * are the *how it travels* half. Configured through environment
+ * variables only, shown for confirmation rather than editing.
+ */
+export type NotifyInfoDto = {
+    /**
+     * `OXICLOUD_JOBS_NOTIFY_EMAIL_TO`, as parsed. Empty when mail
+     * alerting is off.
+     */
+    email_recipients: Array<string>;
+    /**
+     * Severity floor: `data_loss`, `inconsistent`, `anomaly`, or `none`.
+     *
+     * The field the panel was missing. An operator with a configured
+     * webhook and a healthy relay can still be told nothing, because the
+     * default floor admits only `data_loss` — and until this was
+     * surfaced, the only way to discover that was to read the server's
+     * environment.
+     */
+    min_severity: string;
+    /**
+     * Channels actually built and wired, by name — `webhook`, `email`.
+     * Empty means findings are recorded but nobody is told.
+     */
+    sinks: Array<string>;
 };
 
 /**
@@ -1486,6 +2086,32 @@ export type OidcProviderInfoDto = {
      * straight after signup.
      */
     require_verified_email?: boolean;
+};
+
+/**
+ * Current OIDC settings returned to admin UI (secrets masked)
+ */
+export type OidcSettingsDto = {
+    admin_groups: string;
+    auto_provision: boolean;
+    /**
+     * Auto-generated callback URL the admin must register in their IdP
+     */
+    callback_url: string;
+    client_id: string;
+    /**
+     * True if a client secret is configured (never reveals the actual value)
+     */
+    client_secret_set: boolean;
+    disable_password_login: boolean;
+    enabled: boolean;
+    /**
+     * Field names overridden by environment variables (read-only in UI)
+     */
+    env_overrides: Array<string>;
+    issuer_url: string;
+    provider_name: string;
+    scopes: string;
 };
 
 /**
@@ -1758,6 +2384,113 @@ export type PhoneDto = {
     is_primary: boolean;
     number: string;
     type: string;
+};
+
+/**
+ * Photos-timeline item: a `FileDto` plus the image's original pixel
+ * dimensions (from EXIF/metadata), flattened into the same JSON shape so
+ * the gallery can lay tiles out at their true aspect ratio without a
+ * second per-file metadata round-trip.
+ */
+export type PhotoDto = FileDto & {
+    height?: number | null;
+    width?: number | null;
+};
+
+export type PlaylistDto = {
+    cover_file_id?: string | null;
+    created_at: string;
+    description?: string | null;
+    id: string;
+    is_public: boolean;
+    name: string;
+    owner_id: string;
+    total_duration_secs?: number | null;
+    track_count?: number | null;
+    updated_at: string;
+};
+
+export type PlaylistItemDto = {
+    added_at: string;
+    album?: string | null;
+    artist?: string | null;
+    duration_secs?: number | null;
+    file_id: string;
+    file_name?: string | null;
+    file_size?: number | null;
+    id: string;
+    mime_type?: string | null;
+    playlist_id: string;
+    position: number;
+    title?: string | null;
+};
+
+export type PlaylistShareInfoDto = {
+    can_write: boolean;
+    user_id: string;
+};
+
+/**
+ * What changing a default would do, computed WITHOUT applying it.
+ *
+ * The point of the whole feature: an admin sees the blast radius before
+ * committing, rather than discovering it in a compliance report afterwards.
+ */
+export type PolicyDefaultsImpactDto = {
+    /**
+     * Per-knob breakdown, so the UI can say WHICH setting has the reach
+     * rather than only how many drives are involved.
+     */
+    by_knob: Array<PolicyKnobImpactDto>;
+    /**
+     * Drives whose effective policy the change actually moves — i.e. those
+     * inheriting the knob rather than overriding it.
+     */
+    drives_affected: number;
+    /**
+     * Drives of this kind that would end up LESS restrictive than the new
+     * default, because they explicitly override a knob it tightens. They
+     * keep their override — this is the count that will appear in the drift
+     * report.
+     */
+    drives_weaker_than_default: number;
+    /**
+     * The drives behind `drives_weaker_than_default`, named.
+     *
+     * The scan reports the same verdict and names the drive; this preview
+     * computes it over the same rows and had the ids in hand already. Giving
+     * back only a count made the two surfaces disagree about how much they
+     * were willing to say — an admin told "3 drives will stay weaker" right
+     * before saving cannot act on it, and has to save, run the scan, and
+     * come back to learn which 3. Naming them here is what makes this a
+     * pre-commit check rather than a warning.
+     */
+    weaker_drives: Array<WeakerDriveDto>;
+};
+
+export type PolicyKnobImpactDto = {
+    /**
+     * Drives that inherit this knob and would follow the new value.
+     */
+    follows: number;
+    knob: string;
+    /**
+     * Drives that override this knob and would stay put — reported as drift
+     * when their value is the laxer one.
+     */
+    overrides: number;
+};
+
+/**
+ * Shared progress shape used by both `migration` and `rotation`
+ * header fields — same struct name, same JSON field names. Frontend
+ * treats them identically at the render layer.
+ */
+export type ProgressHeader = {
+    migrated: number;
+    percent: number;
+    target: string;
+    total: number;
 };
 
 /**
@@ -2490,6 +3223,47 @@ export type SendSmtpTestDto = {
 };
 
 /**
+ * Server-configuration DTO. Additive over time — clients ignore
+ * unknown fields, and no field is ever repurposed (same discipline
+ * as JSON-RPC error codes on the message bus).
+ */
+export type ServerConfigDto = {
+    /**
+     * Auth-related tunables the SPA needs to gate submit locally.
+     * Composes with `/api/auth/oidc/providers` — that endpoint lists
+     * federation options; this one carries the numeric thresholds
+     * (password length today, more later) that the form has to check
+     * before firing the request.
+     */
+    auth: AuthDto;
+    /**
+     * Feature flags — which subsystems the server has enabled.
+     * Clients gate optional UI on these (e.g. hide the notification
+     * bell if `features.message_bus` is false, since the bell would
+     * have no delivery channel).
+     */
+    features: FeaturesDto;
+    /**
+     * Live server-status snapshot — exact same shape and field
+     * names as the `X-Server-Status` response header. Clients use
+     * this to hydrate their reactive store at boot; subsequent live
+     * changes propagate through the header on every other request
+     * (the middleware and this endpoint share `build_header_payload`
+     * so drift is impossible). Non-optional so the client always
+     * has a definite value; `readonly: false` with no `migration`
+     * or `rotation` is the "everything nominal" case.
+     */
+    server_status: HeaderPayload;
+    /**
+     * Server version — `OXICLOUD_VERSION` derived by `build.rs` from
+     * the git tag / `GITHUB_REF_NAME` / `git describe`. Matches what
+     * `GET /api/version` returns. Cargo.toml stays pinned at `0.0.0`;
+     * this string is the canonical build identity.
+     */
+    version: string;
+};
+
+/**
  * How a session was originally minted. Set at INSERT by the login
  * handler; carried over on refresh (a rotation doesn't change how the
  * user first authenticated). Stored as `text` server-side with a CHECK
@@ -2644,6 +3418,70 @@ export type SharedWithMeItemDto = {
 };
 
 /**
+ * Payload written on the DB row when a `share_granted` notification
+ * is created. Kind = [`kind::SHARE_GRANTED`].
+ *
+ * The `resource_name` and `resource_path` fields are snapshotted at
+ * grant time — even if the resource is later renamed or moved, the
+ * notification still reflects what it was called when the share
+ * happened. `resource_path` is populated for kinds addressable via
+ * `/files/[...path]` (folders + files); `None` for calendars,
+ * address books, playlists, drives.
+ *
+ * Wire form matches the `payload` JSONB column exactly — Rust is
+ * the source of truth, OpenAPI schema auto-derives via
+ * `#[derive(ToSchema)]`. Adding a new field is additive on the
+ * JSONB column; no migration needed.
+ */
+export type SharegrantedPayload = {
+    /**
+     * Grant expiry, if bounded. `None` = never expires.
+     */
+    expires_at?: string | null;
+    /**
+     * The user who created the grant.
+     */
+    granter_id: string;
+    /**
+     * FE-navigation hint — the folder id the notification link
+     * should route to. Populated when `resource_type` isn't itself
+     * a folder-shaped resource but the FE still wants to land in
+     * `/files/{id}` (concretely: **drives** — the recipient lands
+     * on the drive's root folder). For `resource_type == 'folder'`
+     * the FE uses `resource_id` directly and this field stays
+     * `None`; same for `file` (routes to `/shared-with-me?file=`
+     * via a different path). `None` for calendar / address_book /
+     * playlist — those aren't reachable via `/files*` at all.
+     */
+    navigate_folder_id?: string | null;
+    /**
+     * Resource UUID.
+     */
+    resource_id: string;
+    /**
+     * Display name at grant time. `None` if the lookup failed at
+     * ingest (bell renders a generic fallback in that case).
+     */
+    resource_name?: string | null;
+    /**
+     * Storage path at grant time. Populated for
+     * `folder` / `file` kinds; `None` for other kinds.
+     */
+    resource_path?: string | null;
+    /**
+     * Resource kind slug: `folder`, `file`, `drive`, `calendar`,
+     * `address_book`, `playlist`. Same string form as
+     * [`crate::domain::services::authorization::Resource::type_str`].
+     */
+    resource_type: string;
+    /**
+     * Role granted (`viewer`, `editor`, `owner`, …). Same string
+     * form as [`crate::domain::services::authorization::Role::as_str`].
+     */
+    role: string;
+};
+
+/**
  * Read-only SMTP info shown on the admin SMTP page. SMTP configuration
  * is sourced exclusively from environment variables — these fields are
  * for display only and any change has to happen by updating the env
@@ -2764,6 +3602,133 @@ export type StatsResponse = {
     unique_blobs: number;
 };
 
+/**
+ * One `<cipher>:<key>` pair rendered for the admin UI. Never
+ * carries key material — only cipher name + a truncated fingerprint
+ * safe to show operators.
+ */
+export type StorageEncryptionPairDto = {
+    /**
+     * `"aes-256-gcm"` for a real-cipher pair, `"none"` for a
+     * `none:` sentinel (writes as plaintext-v1).
+     */
+    cipher: string;
+    /**
+     * SSH-style colon-hex 8-byte truncation of `sha256(key)`.
+     * Matches the v1 header's `<key_fp>` field and the CLI's
+     * `oxicloud --fingerprint <key>` output. `None` for `none:`
+     * pairs (no key material to fingerprint).
+     */
+    fingerprint?: string | null;
+    /**
+     * True for the LAST pair in the list — the write pair. UI
+     * badges it distinctly ("← head" or an arrow). Exactly one
+     * pair has `is_head = true` when the list is non-empty.
+     */
+    is_head: boolean;
+};
+
+/**
+ * Per-entry summary emitted in `StorageSettingsDto.entries`. Never
+ * carries credentials — those live in env vars only. `is_active`
+ * marks which entry the LIVE backend uses right now (matches
+ * `active_entry_name` on the parent DTO).
+ */
+export type StorageEntrySummaryDto = {
+    /**
+     * Backend type — "local" / "s3" / "azure".
+     */
+    backend: string;
+    /**
+     * True when the entry has a per-entry encryption key. UI shows
+     * a lock icon. Presence-only — the key bytes never leave the
+     * server.
+     */
+    encryption_enabled: boolean;
+    /**
+     * Ordered pair-list summary — one entry per configured pair in
+     * `OXICLOUD_STORAGE_<NAME>_ENCRYPTION_KEY`, oldest first, head
+     * last. Empty vec means the entry has no `_ENCRYPTION_KEY`
+     * declared at all (pure plaintext-v1 writes today, no crypto).
+     *
+     * Frontend renders this on the entry card so operators can:
+     * - See which pairs are configured + their SSH-style
+     * fingerprints without inspecting `.env`.
+     * - Cross-reference the head pair against the `head_key_fp`
+     * from the last `backend_rotate` completion — if they
+     * match AND `failed = 0`, every on-disk blob is under the
+     * head, and non-head pairs are safe to remove.
+     */
+    encryption_pairs?: Array<StorageEncryptionPairDto>;
+    /**
+     * True for exactly one entry (the entry the LIVE backend is on).
+     * Frontend uses this to badge the active row and to exclude it
+     * from the migration-target dropdown.
+     */
+    is_active: boolean;
+    /**
+     * Human-readable physical location hint, if the backend surfaces
+     * one (`root_dir` for Local, `bucket` for S3, `container` for
+     * Azure). Cosmetic — helps the admin distinguish two Local
+     * entries pointing at different disks.
+     */
+    location_hint?: string | null;
+    name: string;
+};
+
+/**
+ * Current storage settings returned to admin UI.
+ *
+ * Post-multi-entry (`docs/plan/storage-multi-entry.md`) this exposes:
+ * - the entries declared in `.env` (safe: `location_hint` shows
+ * provider+bucket, credential-related fields never appear),
+ * - the name of the active entry (backend selection is admin-observable),
+ * - the read-only flag (drives the UI banner during migration),
+ * - the currently-live backend type + dedup stats (informational).
+ *
+ * The pre-multi-entry `s3_*` / `backend` / `env_overrides` fields
+ * used to also appear here — they duplicated `entries[]` and leaked
+ * stale legacy admin_settings rows, so slice-6 dropped them. Consumers
+ * wanting per-provider details read them off `entries[i].backend` and
+ * `entries[i].location_hint` instead.
+ */
+export type StorageSettingsDto = {
+    /**
+     * Name of the entry the LIVE backend is currently bound to.
+     * Populated as the boot-selected name (per
+     * `CoreServices.active_backend_name`). Empty string for the
+     * zero-entries legacy path (`"legacy"` sentinel).
+     */
+    active_entry_name: string;
+    /**
+     * Backend type currently in use (`"local"` / `"s3"` / `"azure"`) —
+     * what the LIVE `blob_backend` is bound to, from
+     * `blob_handler.backend().backend_type()`. Redundant with
+     * `entries[i where is_active].backend` in multi-entry mode; kept
+     * because pre-boot / mid-migration inspection may still find it
+     * useful.
+     */
+    current_backend: string;
+    dedup_ratio: number;
+    /**
+     * All named storage entries declared in env. Empty when running
+     * in legacy single-backend mode (`OXICLOUD_STORAGE_ENTRIES`
+     * unset AND no legacy synthesis happened). Order matches
+     * `_ENTRIES`.
+     */
+    entries: Array<StorageEntrySummaryDto>;
+    /**
+     * Global read-only flag — when true, all write-adjacent
+     * AuthZ checks refuse. Set by the migration handler at run
+     * start; cleared by the boot-clear rule after operator
+     * restart. Frontend renders a banner on the storage tab when
+     * true.
+     */
+    migration_readonly: boolean;
+    total_blobs: number;
+    total_bytes_stored: number;
+};
+
 export type SubjectDto = {
     id: string;
     type: SubjectTypeDto;
@@ -2813,6 +3778,38 @@ export type SystemStatus = {
      * Whether self-registration is allowed.
      */
     registration_allowed: boolean;
+};
+
+/**
+ * Thumbnail-moka occupancy snapshot. Separate struct from the
+ * file-content moka one because the granularity differs: each
+ * thumbnail entry is one encoded WebP/AVIF payload keyed by
+ * `(file_id, size)`, not an assembled file.
+ */
+export type ThumbnailCacheInfoDto = {
+    max_bytes: number;
+    size_bytes: number;
+    /**
+     * Number of cached thumbnail payloads. Each entry = one
+     * `(file_id, size, format)` tuple of encoded bytes.
+     */
+    thumbnails: number;
+};
+
+/**
+ * Request body for transferring server ownership.
+ *
+ * Separate from [`UpdateUserRoleDto`] on purpose: ownership is not an
+ * assignable role. The generic role endpoint refuses `"owner"`, because
+ * conferring it there would create a second owner rather than move the
+ * one that exists.
+ */
+export type TransferOwnershipDto = {
+    /**
+     * The user who becomes the new owner. The caller — who must be the
+     * current owner — is demoted to admin in the same transaction.
+     */
+    new_owner_id: string;
 };
 
 /**
@@ -2923,6 +3920,10 @@ export type TrashedItemDto = {
     trashed_at: string;
 };
 
+export type UnreadCountDto = {
+    unread_count: number;
+};
+
 /**
  * Request body for updating an address book.
  */
@@ -2981,7 +3982,29 @@ export type UpdateDrivePoliciesDto = {
     forbid_sharing?: boolean | null;
     include_in_music_index?: boolean | null;
     include_in_photo_index?: boolean | null;
+    /**
+     * Day cap on public links. Double `Option` so three states are
+     * distinguishable on the wire, which a single `Option` collapses:
+     *
+     * * absent     → `None`       → leave whatever this drive has
+     * * `null`     → `Some(None)` → REMOVE the override, inherit again
+     * * a number   → `Some(Some)` → set the cap here
+     *
+     * Without the middle case there would be no way to stop overriding a
+     * knob once you started — the drive would be pinned to its current
+     * value forever, silently ignoring every future default change.
+     *
+     * `deserialize_with` is REQUIRED, not decoration. Plain
+     * `#[serde(default)] Option<Option<u32>>` collapses the first two
+     * states: serde maps a JSON `null` onto the OUTER `Option`, so both
+     * absent and null arrive as `None` and the clear silently becomes a
+     * no-op. Forcing the field through a deserializer that wraps whatever
+     * it receives in `Some` is what keeps `null` distinguishable — the
+     * deserializer only runs when the key is present.
+     */
+    max_public_link_days?: number | null;
     read_only?: boolean | null;
+    require_public_link_password?: boolean | null;
 };
 
 /**
@@ -3173,6 +4196,84 @@ export type VerifyPasswordRequest = {
     password: string;
 };
 
+/**
+ * One drive that would remain laxer than the candidate default.
+ */
+export type WeakerDriveDto = {
+    id: string;
+    /**
+     * Which kind's default it is being judged against — the live report
+     * lists both kinds together, and "Personal" is every personal drive's
+     * name, so the row would otherwise be ambiguous.
+     */
+    kind: string;
+    /**
+     * The knobs on which it is laxer — the same per-knob verdict the scan
+     * emits one finding per, so the two lists read identically.
+     */
+    knobs: Array<string>;
+    name?: string | null;
+};
+
+/**
+ * Read-only webhook info, shown beside SMTP on the admin Notifications
+ * page. Like SMTP, configured only through environment variables.
+ */
+export type WebhookInfoDto = {
+    /**
+     * Whether `OXICLOUD_WEBHOOK_URL` is set and the sink was built.
+     */
+    enabled: boolean;
+    /**
+     * `generic`, `slack`, `discord`, `teams`, `telegram` or `ntfy`.
+     */
+    format: string;
+    /**
+     * Scheme and host of the endpoint — **never the full URL**.
+     *
+     * A Telegram endpoint embeds the bot token in its path
+     * (`/bot<TOKEN>/sendMessage`), and a Slack or Discord webhook URL is
+     * itself the credential: echoing either into an API response would
+     * put a secret in a browser's network log and anywhere that response
+     * gets pasted. The host is enough to confirm "it points where I
+     * think".
+     */
+    host: string;
+    /**
+     * Recipient for the formats that carry one — a Telegram chat id, an
+     * ntfy topic. Empty when unset or not applicable. Not a credential,
+     * and an operator checking their configuration needs to see it.
+     */
+    target: string;
+};
+
+/**
+ * Outcome of `POST /api/admin/webhook/test`.
+ *
+ * `code` + `message` mirror `SmtpTestResultDto` so the admin panel can
+ * render both transports' diagnostics the same way.
+ */
+export type WebhookTestResultDto = {
+    /**
+     * HTTP status the receiver returned. Absent when nothing answered —
+     * DNS failure, refused connection, timeout — which is itself the
+     * diagnosis.
+     */
+    code?: number | null;
+    /**
+     * The receiver's own response body, truncated — or the transport
+     * error when there was no response. Usually the useful part: a bare
+     * 403 does not distinguish a revoked token from a disabled channel,
+     * and the body says which.
+     */
+    message?: string | null;
+    /**
+     * Transport name, so a future second sink is distinguishable.
+     */
+    sink: string;
+    success: boolean;
+};
+
 export type ListAddressBooksData = {
     body?: never;
     path?: never;
@@ -3191,8 +4292,10 @@ export type ListAddressBooksResponses = {
     /**
      * List of address books
      */
-    200: unknown;
+    200: Array<AddressBookResponse>;
 };
+
+export type ListAddressBooksResponse = ListAddressBooksResponses[keyof ListAddressBooksResponses];
 
 export type CreateAddressBookData = {
     body: CreateAddressBookRequest;
@@ -3317,8 +4420,10 @@ export type ListContactsResponses = {
     /**
      * List of contacts
      */
-    200: unknown;
+    200: Array<ContactDto>;
 };
+
+export type ListContactsResponse = ListContactsResponses[keyof ListContactsResponses];
 
 export type CreateContactData = {
     body: CreateContactRequest;
@@ -3351,8 +4456,10 @@ export type CreateContactResponses = {
     /**
      * Contact created
      */
-    201: unknown;
+    201: ContactDto;
 };
+
+export type CreateContactResponse = CreateContactResponses[keyof CreateContactResponses];
 
 export type DeleteContactData = {
     body?: never;
@@ -3425,8 +4532,10 @@ export type GetContactResponses = {
     /**
      * Contact details
      */
-    200: unknown;
+    200: ContactDto;
 };
+
+export type GetContactResponse = GetContactResponses[keyof GetContactResponses];
 
 export type UpdateContactData = {
     body: UpdateContactRequest;
@@ -3467,8 +4576,10 @@ export type UpdateContactResponses = {
     /**
      * Contact updated
      */
-    200: unknown;
+    200: ContactDto;
 };
+
+export type UpdateContactResponse = UpdateContactResponses[keyof UpdateContactResponses];
 
 export type ListGroupsData = {
     body?: never;
@@ -3497,8 +4608,10 @@ export type ListGroupsResponses = {
     /**
      * List of contact groups
      */
-    200: unknown;
+    200: Array<ContactGroupDto>;
 };
+
+export type ListGroupsResponse = ListGroupsResponses[keyof ListGroupsResponses];
 
 export type CreateGroupData = {
     body: GroupNameRequest;
@@ -3527,8 +4640,10 @@ export type CreateGroupResponses = {
     /**
      * Group created
      */
-    201: unknown;
+    201: ContactGroupDto;
 };
+
+export type CreateGroupResponse = CreateGroupResponses[keyof CreateGroupResponses];
 
 export type DeleteGroupData = {
     body?: never;
@@ -3597,8 +4712,10 @@ export type GetGroupResponses = {
     /**
      * Group details
      */
-    200: unknown;
+    200: ContactGroupDto;
 };
+
+export type GetGroupResponse = GetGroupResponses[keyof GetGroupResponses];
 
 export type UpdateGroupData = {
     body: GroupNameRequest;
@@ -3631,8 +4748,10 @@ export type UpdateGroupResponses = {
     /**
      * Group updated
      */
-    200: unknown;
+    200: ContactGroupDto;
 };
+
+export type UpdateGroupResponse = UpdateGroupResponses[keyof UpdateGroupResponses];
 
 export type ListContactsInGroupData = {
     body?: never;
@@ -3665,8 +4784,10 @@ export type ListContactsInGroupResponses = {
     /**
      * Contacts in the group
      */
-    200: unknown;
+    200: Array<ContactDto>;
 };
+
+export type ListContactsInGroupResponse = ListContactsInGroupResponses[keyof ListContactsInGroupResponses];
 
 export type AddContactToGroupData = {
     body: AddMemberRequest;
@@ -3770,8 +4891,10 @@ export type GetDashboardStatsResponses = {
     /**
      * Dashboard statistics
      */
-    200: unknown;
+    200: DashboardStatsDto;
 };
+
+export type GetDashboardStatsResponse = GetDashboardStatsResponses[keyof GetDashboardStatsResponses];
 
 export type RecalculateStatsData = {
     body?: never;
@@ -3830,6 +4953,116 @@ export type GetStatsResponses = {
 };
 
 export type GetStatsResponse = GetStatsResponses[keyof GetStatsResponses];
+
+export type GetDrivePolicyDefaultsData = {
+    body?: never;
+    path: {
+        /**
+         * personal | shared
+         */
+        kind: string;
+    };
+    query?: never;
+    url: '/api/admin/drive-policies/defaults/{kind}';
+};
+
+export type GetDrivePolicyDefaultsErrors = {
+    /**
+     * Unknown drive kind
+     */
+    400: unknown;
+    /**
+     * Unauthorized
+     */
+    401: unknown;
+    /**
+     * Admin required
+     */
+    403: unknown;
+};
+
+export type GetDrivePolicyDefaultsResponses = {
+    /**
+     * Current defaults for this drive kind
+     */
+    200: DrivePolicies;
+};
+
+export type GetDrivePolicyDefaultsResponse = GetDrivePolicyDefaultsResponses[keyof GetDrivePolicyDefaultsResponses];
+
+export type SetDrivePolicyDefaultsData = {
+    body: unknown;
+    path: {
+        /**
+         * personal | shared
+         */
+        kind: string;
+    };
+    query?: {
+        /**
+         * When true, compute and return the impact WITHOUT saving.
+         *
+         * Send the literal `true` / `false`: `serde_urlencoded` refuses `1`,
+         * `yes` and `on` outright and fails the whole query struct, so a
+         * truthy-looking `?dry_run=1` is a 400 rather than a silent false.
+         */
+        dry_run?: boolean;
+    };
+    url: '/api/admin/drive-policies/defaults/{kind}';
+};
+
+export type SetDrivePolicyDefaultsErrors = {
+    /**
+     * Unknown kind, unknown knob, or a knob that cannot be defaulted
+     */
+    400: unknown;
+    /**
+     * Unauthorized
+     */
+    401: unknown;
+    /**
+     * Admin required
+     */
+    403: unknown;
+};
+
+export type SetDrivePolicyDefaultsResponses = {
+    /**
+     * Stored defaults, or the impact preview when dry_run=true
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type SetDrivePolicyDefaultsResponse = SetDrivePolicyDefaultsResponses[keyof SetDrivePolicyDefaultsResponses];
+
+export type GetDrivePolicyDriftData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/drive-policies/drift';
+};
+
+export type GetDrivePolicyDriftErrors = {
+    /**
+     * Unauthorized
+     */
+    401: unknown;
+    /**
+     * Admin required
+     */
+    403: unknown;
+};
+
+export type GetDrivePolicyDriftResponses = {
+    /**
+     * Drives laxer than their kind's default
+     */
+    200: Array<WeakerDriveDto>;
+};
+
+export type GetDrivePolicyDriftResponse = GetDrivePolicyDriftResponses[keyof GetDrivePolicyDriftResponses];
 
 export type ListAllDrivesData = {
     body?: never;
@@ -4088,42 +5321,12 @@ export type ListJobsResponses = {
     /**
      * Jobs listed
      */
-    200: unknown;
-};
-
-export type PurgeJobRunsData = {
-    body?: never;
-    path?: never;
-    query?: {
-        /**
-         * Retention window in days (default 30, minimum 1). Terminal runs older than this are deleted with their findings; non-terminal runs are always preserved.
-         */
-        days?: number;
+    200: {
+        [key: string]: unknown;
     };
-    url: '/api/admin/jobs/runs/purge';
 };
 
-export type PurgeJobRunsErrors = {
-    /**
-     * Unauthorized
-     */
-    401: unknown;
-    /**
-     * Admin required
-     */
-    403: unknown;
-    /**
-     * DB error
-     */
-    500: unknown;
-};
-
-export type PurgeJobRunsResponses = {
-    /**
-     * Purge complete
-     */
-    200: unknown;
-};
+export type ListJobsResponse = ListJobsResponses[keyof ListJobsResponses];
 
 export type CancelJobData = {
     body?: never;
@@ -4156,8 +5359,12 @@ export type CancelJobResponses = {
     /**
      * Cancel signalled (or no-op if nothing was running)
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type CancelJobResponse = CancelJobResponses[keyof CancelJobResponses];
 
 export type PauseJobData = {
     body?: never;
@@ -4190,8 +5397,12 @@ export type PauseJobResponses = {
     /**
      * Pause signalled (or no-op if nothing was running)
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type PauseJobResponse = PauseJobResponses[keyof PauseJobResponses];
 
 export type ListJobRunsData = {
     body?: never;
@@ -4229,8 +5440,12 @@ export type ListJobRunsResponses = {
     /**
      * Runs listed (may be empty)
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type ListJobRunsResponse = ListJobRunsResponses[keyof ListJobRunsResponses];
 
 export type GetJobRunData = {
     body?: never;
@@ -4271,8 +5486,12 @@ export type GetJobRunResponses = {
     /**
      * Run detail
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type GetJobRunResponse = GetJobRunResponses[keyof GetJobRunResponses];
 
 export type ListJobRunFindingsData = {
     body?: never;
@@ -4322,8 +5541,12 @@ export type ListJobRunFindingsResponses = {
     /**
      * Findings listed (may be empty)
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type ListJobRunFindingsResponse = ListJobRunFindingsResponses[keyof ListJobRunFindingsResponses];
 
 export type TriggerJobData = {
     body?: never;
@@ -4356,8 +5579,39 @@ export type TriggerJobResponses = {
     /**
      * Dispatched; outcome inline
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type TriggerJobResponse = TriggerJobResponses[keyof TriggerJobResponses];
+
+export type GetNotifyInfoData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/notify/info';
+};
+
+export type GetNotifyInfoErrors = {
+    /**
+     * Unauthorized
+     */
+    401: unknown;
+    /**
+     * Admin required
+     */
+    403: unknown;
+};
+
+export type GetNotifyInfoResponses = {
+    /**
+     * Current alerting policy
+     */
+    200: NotifyInfoDto;
+};
+
+export type GetNotifyInfoResponse = GetNotifyInfoResponses[keyof GetNotifyInfoResponses];
 
 export type ClearSearchCacheData = {
     body?: never;
@@ -4385,8 +5639,12 @@ export type ClearSearchCacheResponses = {
     /**
      * Cache cleared
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type ClearSearchCacheResponse = ClearSearchCacheResponses[keyof ClearSearchCacheResponses];
 
 export type ListSessionsData = {
     body?: never;
@@ -4427,8 +5685,12 @@ export type ListSessionsResponses = {
     /**
      * List of sessions
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type ListSessionsResponse = ListSessionsResponses[keyof ListSessionsResponses];
 
 export type RevokeSessionData = {
     body?: never;
@@ -4465,8 +5727,12 @@ export type RevokeSessionResponses = {
     /**
      * Session revoked
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type RevokeSessionResponse = RevokeSessionResponses[keyof RevokeSessionResponses];
 
 export type GetOidcSettingsData = {
     body?: never;
@@ -4490,8 +5756,10 @@ export type GetOidcSettingsResponses = {
     /**
      * OIDC settings
      */
-    200: unknown;
+    200: OidcSettingsDto;
 };
+
+export type GetOidcSettingsResponse = GetOidcSettingsResponses[keyof GetOidcSettingsResponses];
 
 export type SaveOidcSettingsData = {
     body: SaveOidcSettingsDto;
@@ -4515,8 +5783,12 @@ export type SaveOidcSettingsResponses = {
     /**
      * OIDC settings saved
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type SaveOidcSettingsResponse = SaveOidcSettingsResponses[keyof SaveOidcSettingsResponses];
 
 export type SetRegistrationSettingData = {
     body: unknown;
@@ -4544,8 +5816,12 @@ export type SetRegistrationSettingResponses = {
     /**
      * Registration setting updated
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type SetRegistrationSettingResponse = SetRegistrationSettingResponses[keyof SetRegistrationSettingResponses];
 
 export type GetStorageSettingsData = {
     body?: never;
@@ -4569,8 +5845,10 @@ export type GetStorageSettingsResponses = {
     /**
      * Storage settings
      */
-    200: unknown;
+    200: StorageSettingsDto;
 };
+
+export type GetStorageSettingsResponse = GetStorageSettingsResponses[keyof GetStorageSettingsResponses];
 
 export type SaveStorageSettingsData = {
     body: SaveStorageSettingsDto;
@@ -4594,8 +5872,12 @@ export type SaveStorageSettingsResponses = {
     /**
      * Storage settings saved
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type SaveStorageSettingsResponse = SaveStorageSettingsResponses[keyof SaveStorageSettingsResponses];
 
 export type GenerateEncryptionKeyData = {
     body?: never;
@@ -4619,8 +5901,12 @@ export type GenerateEncryptionKeyResponses = {
     /**
      * Generated AES-256 key
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type GenerateEncryptionKeyResponse = GenerateEncryptionKeyResponses[keyof GenerateEncryptionKeyResponses];
 
 export type GetSmtpInfoData = {
     body?: never;
@@ -4736,8 +6022,10 @@ export type GetMigrationStatusResponses = {
     /**
      * Current migration status
      */
-    200: unknown;
+    200: MigrationStateDto;
 };
+
+export type GetMigrationStatusResponse = GetMigrationStatusResponses[keyof GetMigrationStatusResponses];
 
 export type PauseMigrationData = {
     body?: never;
@@ -4761,8 +6049,12 @@ export type PauseMigrationResponses = {
     /**
      * Pause signalled (or no-op)
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type PauseMigrationResponse = PauseMigrationResponses[keyof PauseMigrationResponses];
 
 export type ResumeMigrationData = {
     body?: never;
@@ -4786,8 +6078,12 @@ export type ResumeMigrationResponses = {
     /**
      * Migration resumed (or already running)
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type ResumeMigrationResponse = ResumeMigrationResponses[keyof ResumeMigrationResponses];
 
 export type StartMigrationData = {
     body: StartMigrationDto;
@@ -4811,8 +6107,49 @@ export type StartMigrationResponses = {
     /**
      * Migration started
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type StartMigrationResponse = StartMigrationResponses[keyof StartMigrationResponses];
+
+export type TransferOwnershipData = {
+    body: TransferOwnershipDto;
+    path?: never;
+    query?: never;
+    url: '/api/admin/transfer-ownership';
+};
+
+export type TransferOwnershipErrors = {
+    /**
+     * Target cannot hold ownership, or is already the owner
+     */
+    400: unknown;
+    /**
+     * Unauthorized
+     */
+    401: unknown;
+    /**
+     * Only the current owner may transfer ownership
+     */
+    403: unknown;
+    /**
+     * Target user not found
+     */
+    404: unknown;
+};
+
+export type TransferOwnershipResponses = {
+    /**
+     * Ownership transferred
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type TransferOwnershipResponse = TransferOwnershipResponses[keyof TransferOwnershipResponses];
 
 export type ListUsersData = {
     body?: never;
@@ -4845,8 +6182,10 @@ export type ListUsersResponses = {
     /**
      * List of users
      */
-    200: unknown;
+    200: AdminUsersPageResponse;
 };
+
+export type ListUsersResponse = ListUsersResponses[keyof ListUsersResponses];
 
 export type CreateUserData = {
     body: AdminCreateUserDto;
@@ -4865,7 +6204,7 @@ export type CreateUserErrors = {
      */
     401: unknown;
     /**
-     * Admin required
+     * Admin required, and cannot create a role the caller does not outrank
      */
     403: unknown;
 };
@@ -4874,8 +6213,10 @@ export type CreateUserResponses = {
     /**
      * User created
      */
-    201: unknown;
+    201: FullUserDto;
 };
+
+export type CreateUserResponse = CreateUserResponses[keyof CreateUserResponses];
 
 export type DeleteUserData = {
     body?: never;
@@ -4908,8 +6249,12 @@ export type DeleteUserResponses = {
     /**
      * User deleted
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type DeleteUserResponse = DeleteUserResponses[keyof DeleteUserResponses];
 
 export type GetUserData = {
     body?: never;
@@ -4942,8 +6287,10 @@ export type GetUserResponses = {
     /**
      * User details
      */
-    200: unknown;
+    200: FullUserDto;
 };
+
+export type GetUserResponse = GetUserResponses[keyof GetUserResponses];
 
 export type UpdateUserActiveData = {
     body: UpdateUserActiveDto;
@@ -4976,8 +6323,12 @@ export type UpdateUserActiveResponses = {
     /**
      * User active status updated
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type UpdateUserActiveResponse = UpdateUserActiveResponses[keyof UpdateUserActiveResponses];
 
 export type ResetUserPasswordData = {
     body: AdminResetPasswordDto;
@@ -5001,7 +6352,7 @@ export type ResetUserPasswordErrors = {
      */
     401: unknown;
     /**
-     * Admin required
+     * Admin required, and must outrank the target
      */
     403: unknown;
 };
@@ -5010,8 +6361,12 @@ export type ResetUserPasswordResponses = {
     /**
      * Password reset
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type ResetUserPasswordResponse = ResetUserPasswordResponses[keyof ResetUserPasswordResponses];
 
 export type AdminPromoteExternalToInternalData = {
     body?: never;
@@ -5075,7 +6430,7 @@ export type UpdateUserQuotaErrors = {
      */
     401: unknown;
     /**
-     * Admin required
+     * Admin required, and must outrank the target
      */
     403: unknown;
 };
@@ -5084,8 +6439,12 @@ export type UpdateUserQuotaResponses = {
     /**
      * Quota updated
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type UpdateUserQuotaResponse = UpdateUserQuotaResponses[keyof UpdateUserQuotaResponses];
 
 export type UpdateUserRoleData = {
     body: UpdateUserRoleDto;
@@ -5101,7 +6460,7 @@ export type UpdateUserRoleData = {
 
 export type UpdateUserRoleErrors = {
     /**
-     * Cannot change own role
+     * Cannot change own role, or the target is the server owner
      */
     400: unknown;
     /**
@@ -5118,8 +6477,70 @@ export type UpdateUserRoleResponses = {
     /**
      * Role updated
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type UpdateUserRoleResponse = UpdateUserRoleResponses[keyof UpdateUserRoleResponses];
+
+export type GetWebhookInfoData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/webhook/info';
+};
+
+export type GetWebhookInfoErrors = {
+    /**
+     * Unauthorized
+     */
+    401: unknown;
+    /**
+     * Admin required
+     */
+    403: unknown;
+};
+
+export type GetWebhookInfoResponses = {
+    /**
+     * Current webhook settings
+     */
+    200: WebhookInfoDto;
+};
+
+export type GetWebhookInfoResponse = GetWebhookInfoResponses[keyof GetWebhookInfoResponses];
+
+export type SendWebhookTestData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/webhook/test';
+};
+
+export type SendWebhookTestErrors = {
+    /**
+     * Unauthorized
+     */
+    401: unknown;
+    /**
+     * Admin required
+     */
+    403: unknown;
+    /**
+     * No webhook configured
+     */
+    503: unknown;
+};
+
+export type SendWebhookTestResponses = {
+    /**
+     * Delivery attempted
+     */
+    200: WebhookTestResultDto;
+};
+
+export type SendWebhookTestResponse = SendWebhookTestResponses[keyof SendWebhookTestResponses];
 
 export type ChangePasswordData = {
     body: ChangePasswordDto;
@@ -5143,8 +6564,12 @@ export type ChangePasswordResponses = {
     /**
      * Password changed successfully
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type ChangePasswordResponse = ChangePasswordResponses[keyof ChangePasswordResponses];
 
 export type DpopBindData = {
     body: DpopBindDto;
@@ -5172,8 +6597,12 @@ export type DpopBindResponses = {
     /**
      * Thumbprint bound
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type DpopBindResponse = DpopBindResponses[keyof DpopBindResponses];
 
 export type LoginData = {
     body: LoginDto;
@@ -5229,8 +6658,12 @@ export type LogoutResponses = {
     /**
      * Logged out, auth cookies cleared
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type LogoutResponse = LogoutResponses[keyof LogoutResponses];
 
 export type SendMagicLinkData = {
     body: SendMagicLinkDto;
@@ -5250,8 +6683,12 @@ export type SendMagicLinkResponses = {
     /**
      * Uniform 'if an account exists, a link will be sent' response
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type SendMagicLinkResponse = SendMagicLinkResponses[keyof SendMagicLinkResponses];
 
 export type GetCurrentUserData = {
     body?: never;
@@ -5354,8 +6791,12 @@ export type OidcBackchannelLogoutResponses = {
     /**
      * Logout notification accepted (0 or more sessions revoked)
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type OidcBackchannelLogoutResponse = OidcBackchannelLogoutResponses[keyof OidcBackchannelLogoutResponses];
 
 export type OidcCallbackData = {
     body?: never;
@@ -5481,8 +6922,12 @@ export type OidcUnlinkResponses = {
     /**
      * OIDC identity unlinked (or was already unlinked)
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type OidcUnlinkResponse = OidcUnlinkResponses[keyof OidcUnlinkResponses];
 
 export type LoginKe1Data = {
     body: OpaqueLoginKe1Dto;
@@ -5705,7 +7150,9 @@ export type RegisterResponses = {
     /**
      * Uniform registration response (SMTP configured, anti-enumeration mode)
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
     /**
      * User registered successfully (SMTP not configured)
      */
@@ -5790,7 +7237,7 @@ export type DownloadBatchQuerystringData = {
 
 export type DownloadBatchQuerystringErrors = {
     /**
-     * Bad request
+     * Malformed request, or every item failed for DIFFERENT reasons
      */
     400: unknown;
     /**
@@ -5798,17 +7245,31 @@ export type DownloadBatchQuerystringErrors = {
      */
     401: unknown;
     /**
+     * Every item was denied and the caller can see the resources
+     */
+    403: unknown;
+    /**
+     * Every item was denied and the caller cannot see the resources
+     */
+    404: unknown;
+    /**
      * ZIP creation failed
      */
     500: unknown;
+    /**
+     * Every item exceeded the destination drive's quota
+     */
+    507: unknown;
 };
 
 export type DownloadBatchQuerystringResponses = {
     /**
      * ZIP archive stream
      */
-    200: unknown;
+    200: Blob | File;
 };
+
+export type DownloadBatchQuerystringResponse = DownloadBatchQuerystringResponses[keyof DownloadBatchQuerystringResponses];
 
 export type DownloadBatchPostData = {
     body: BatchDownloadRequest;
@@ -5819,7 +7280,7 @@ export type DownloadBatchPostData = {
 
 export type DownloadBatchPostErrors = {
     /**
-     * Bad request
+     * Malformed request, or every item failed for DIFFERENT reasons
      */
     400: unknown;
     /**
@@ -5827,17 +7288,31 @@ export type DownloadBatchPostErrors = {
      */
     401: unknown;
     /**
+     * Every item was denied and the caller can see the resources
+     */
+    403: unknown;
+    /**
+     * Every item was denied and the caller cannot see the resources
+     */
+    404: unknown;
+    /**
      * ZIP creation failed
      */
     500: unknown;
+    /**
+     * Every item exceeded the destination drive's quota
+     */
+    507: unknown;
 };
 
 export type DownloadBatchPostResponses = {
     /**
      * ZIP archive stream
      */
-    200: unknown;
+    200: Blob | File;
 };
+
+export type DownloadBatchPostResponse = DownloadBatchPostResponses[keyof DownloadBatchPostResponses];
 
 export type CopyFilesBatchData = {
     body: BatchFileOperationRequest;
@@ -5848,25 +7323,43 @@ export type CopyFilesBatchData = {
 
 export type CopyFilesBatchErrors = {
     /**
-     * Bad request
+     * Malformed request, or every item failed for DIFFERENT reasons
      */
     400: unknown;
     /**
      * Unauthorized
      */
     401: unknown;
+    /**
+     * Every item was denied and the caller can see the resources
+     */
+    403: unknown;
+    /**
+     * Every item was denied and the caller cannot see the resources
+     */
+    404: unknown;
+    /**
+     * Every item exceeded the destination drive's quota
+     */
+    507: unknown;
 };
 
 export type CopyFilesBatchResponses = {
     /**
      * All files copied
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
     /**
-     * Partial success
+     * Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause.
      */
-    206: unknown;
+    206: {
+        [key: string]: unknown;
+    };
 };
+
+export type CopyFilesBatchResponse = CopyFilesBatchResponses[keyof CopyFilesBatchResponses];
 
 export type DeleteFilesBatchData = {
     body: BatchFileOperationRequest;
@@ -5877,25 +7370,43 @@ export type DeleteFilesBatchData = {
 
 export type DeleteFilesBatchErrors = {
     /**
-     * Bad request
+     * Malformed request, or every item failed for DIFFERENT reasons
      */
     400: unknown;
     /**
      * Unauthorized
      */
     401: unknown;
+    /**
+     * Every item was denied and the caller can see the resources
+     */
+    403: unknown;
+    /**
+     * Every item was denied and the caller cannot see the resources
+     */
+    404: unknown;
+    /**
+     * Every item exceeded the destination drive's quota
+     */
+    507: unknown;
 };
 
 export type DeleteFilesBatchResponses = {
     /**
      * All files deleted
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
     /**
-     * Partial success
+     * Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause.
      */
-    206: unknown;
+    206: {
+        [key: string]: unknown;
+    };
 };
+
+export type DeleteFilesBatchResponse = DeleteFilesBatchResponses[keyof DeleteFilesBatchResponses];
 
 export type GetFilesBatchData = {
     body: BatchFileOperationRequest;
@@ -5906,25 +7417,43 @@ export type GetFilesBatchData = {
 
 export type GetFilesBatchErrors = {
     /**
-     * Bad request
+     * Malformed request, or every item failed for DIFFERENT reasons
      */
     400: unknown;
     /**
      * Unauthorized
      */
     401: unknown;
+    /**
+     * Every item was denied and the caller can see the resources
+     */
+    403: unknown;
+    /**
+     * Every item was denied and the caller cannot see the resources
+     */
+    404: unknown;
+    /**
+     * Every item exceeded the destination drive's quota
+     */
+    507: unknown;
 };
 
 export type GetFilesBatchResponses = {
     /**
      * Batch file details
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
     /**
-     * Partial success
+     * Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause.
      */
-    206: unknown;
+    206: {
+        [key: string]: unknown;
+    };
 };
+
+export type GetFilesBatchResponse = GetFilesBatchResponses[keyof GetFilesBatchResponses];
 
 export type MoveFilesBatchData = {
     body: BatchFileOperationRequest;
@@ -5935,25 +7464,43 @@ export type MoveFilesBatchData = {
 
 export type MoveFilesBatchErrors = {
     /**
-     * Bad request
+     * Malformed request, or every item failed for DIFFERENT reasons
      */
     400: unknown;
     /**
      * Unauthorized
      */
     401: unknown;
+    /**
+     * Every item was denied and the caller can see the resources
+     */
+    403: unknown;
+    /**
+     * Every item was denied and the caller cannot see the resources
+     */
+    404: unknown;
+    /**
+     * Every item exceeded the destination drive's quota
+     */
+    507: unknown;
 };
 
 export type MoveFilesBatchResponses = {
     /**
      * All files moved
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
     /**
-     * Partial success
+     * Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause.
      */
-    206: unknown;
+    206: {
+        [key: string]: unknown;
+    };
 };
+
+export type MoveFilesBatchResponse = MoveFilesBatchResponses[keyof MoveFilesBatchResponses];
 
 export type CopyFoldersBatchData = {
     body: BatchFolderOperationRequest;
@@ -5964,25 +7511,43 @@ export type CopyFoldersBatchData = {
 
 export type CopyFoldersBatchErrors = {
     /**
-     * Bad request
+     * Malformed request, or every item failed for DIFFERENT reasons
      */
     400: unknown;
     /**
      * Unauthorized
      */
     401: unknown;
+    /**
+     * Every item was denied and the caller can see the resources
+     */
+    403: unknown;
+    /**
+     * Every item was denied and the caller cannot see the resources
+     */
+    404: unknown;
+    /**
+     * Every item exceeded the destination drive's quota
+     */
+    507: unknown;
 };
 
 export type CopyFoldersBatchResponses = {
     /**
      * All folders copied
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
     /**
-     * Partial success
+     * Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause.
      */
-    206: unknown;
+    206: {
+        [key: string]: unknown;
+    };
 };
+
+export type CopyFoldersBatchResponse = CopyFoldersBatchResponses[keyof CopyFoldersBatchResponses];
 
 export type CreateFoldersBatchData = {
     body: BatchCreateFoldersRequest;
@@ -5993,25 +7558,43 @@ export type CreateFoldersBatchData = {
 
 export type CreateFoldersBatchErrors = {
     /**
-     * Bad request
+     * Malformed request, or every item failed for DIFFERENT reasons
      */
     400: unknown;
     /**
      * Unauthorized
      */
     401: unknown;
+    /**
+     * Every item was denied and the caller can see the resources
+     */
+    403: unknown;
+    /**
+     * Every item was denied and the caller cannot see the resources
+     */
+    404: unknown;
+    /**
+     * Every item exceeded the destination drive's quota
+     */
+    507: unknown;
 };
 
 export type CreateFoldersBatchResponses = {
     /**
      * All folders created
      */
-    201: unknown;
+    201: {
+        [key: string]: unknown;
+    };
     /**
-     * Partial success
+     * Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause.
      */
-    206: unknown;
+    206: {
+        [key: string]: unknown;
+    };
 };
+
+export type CreateFoldersBatchResponse = CreateFoldersBatchResponses[keyof CreateFoldersBatchResponses];
 
 export type DeleteFoldersBatchData = {
     body: BatchFolderOperationRequest;
@@ -6022,25 +7605,43 @@ export type DeleteFoldersBatchData = {
 
 export type DeleteFoldersBatchErrors = {
     /**
-     * Bad request
+     * Malformed request, or every item failed for DIFFERENT reasons
      */
     400: unknown;
     /**
      * Unauthorized
      */
     401: unknown;
+    /**
+     * Every item was denied and the caller can see the resources
+     */
+    403: unknown;
+    /**
+     * Every item was denied and the caller cannot see the resources
+     */
+    404: unknown;
+    /**
+     * Every item exceeded the destination drive's quota
+     */
+    507: unknown;
 };
 
 export type DeleteFoldersBatchResponses = {
     /**
      * All folders deleted
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
     /**
-     * Partial success
+     * Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause.
      */
-    206: unknown;
+    206: {
+        [key: string]: unknown;
+    };
 };
+
+export type DeleteFoldersBatchResponse = DeleteFoldersBatchResponses[keyof DeleteFoldersBatchResponses];
 
 export type GetFoldersBatchData = {
     body: BatchFolderOperationRequest;
@@ -6051,25 +7652,43 @@ export type GetFoldersBatchData = {
 
 export type GetFoldersBatchErrors = {
     /**
-     * Bad request
+     * Malformed request, or every item failed for DIFFERENT reasons
      */
     400: unknown;
     /**
      * Unauthorized
      */
     401: unknown;
+    /**
+     * Every item was denied and the caller can see the resources
+     */
+    403: unknown;
+    /**
+     * Every item was denied and the caller cannot see the resources
+     */
+    404: unknown;
+    /**
+     * Every item exceeded the destination drive's quota
+     */
+    507: unknown;
 };
 
 export type GetFoldersBatchResponses = {
     /**
      * Batch folder details
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
     /**
-     * Partial success
+     * Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause.
      */
-    206: unknown;
+    206: {
+        [key: string]: unknown;
+    };
 };
+
+export type GetFoldersBatchResponse = GetFoldersBatchResponses[keyof GetFoldersBatchResponses];
 
 export type MoveFoldersBatchData = {
     body: BatchFolderOperationRequest;
@@ -6080,25 +7699,43 @@ export type MoveFoldersBatchData = {
 
 export type MoveFoldersBatchErrors = {
     /**
-     * Bad request
+     * Malformed request, or every item failed for DIFFERENT reasons
      */
     400: unknown;
     /**
      * Unauthorized
      */
     401: unknown;
+    /**
+     * Every item was denied and the caller can see the resources
+     */
+    403: unknown;
+    /**
+     * Every item was denied and the caller cannot see the resources
+     */
+    404: unknown;
+    /**
+     * Every item exceeded the destination drive's quota
+     */
+    507: unknown;
 };
 
 export type MoveFoldersBatchResponses = {
     /**
      * All folders moved
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
     /**
-     * Partial success
+     * Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause.
      */
-    206: unknown;
+    206: {
+        [key: string]: unknown;
+    };
 };
+
+export type MoveFoldersBatchResponse = MoveFoldersBatchResponses[keyof MoveFoldersBatchResponses];
 
 export type TrashBatchData = {
     body: BatchTrashRequest;
@@ -6109,25 +7746,59 @@ export type TrashBatchData = {
 
 export type TrashBatchErrors = {
     /**
-     * Bad request
+     * Malformed request, or every item failed for DIFFERENT reasons
      */
     400: unknown;
     /**
      * Unauthorized
      */
     401: unknown;
+    /**
+     * Every item was denied and the caller can see the resources
+     */
+    403: unknown;
+    /**
+     * Every item was denied and the caller cannot see the resources
+     */
+    404: unknown;
+    /**
+     * Every item exceeded the destination drive's quota
+     */
+    507: unknown;
 };
 
 export type TrashBatchResponses = {
     /**
      * All items trashed
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
     /**
-     * Partial success
+     * Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause.
      */
-    206: unknown;
+    206: {
+        [key: string]: unknown;
+    };
 };
+
+export type TrashBatchResponse = TrashBatchResponses[keyof TrashBatchResponses];
+
+export type GetConfigData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/config';
+};
+
+export type GetConfigResponses = {
+    /**
+     * Public server configuration
+     */
+    200: ServerConfigDto;
+};
+
+export type GetConfigResponse = GetConfigResponses[keyof GetConfigResponses];
 
 export type GetBlobData = {
     body?: never;
@@ -6156,8 +7827,10 @@ export type GetBlobResponses = {
     /**
      * Raw blob content (user-scoped)
      */
-    200: unknown;
+    200: Blob | File;
 };
+
+export type GetBlobResponse = GetBlobResponses[keyof GetBlobResponses];
 
 export type CheckHashesBatchData = {
     body: HashBatchRequest;
@@ -6444,8 +8117,12 @@ export type UpdateDrivePoliciesResponses = {
     /**
      * Policies merged
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type UpdateDrivePoliciesResponse = UpdateDrivePoliciesResponses[keyof UpdateDrivePoliciesResponses];
 
 export type UpdateDriveQuotaData = {
     body: UpdateDriveQuotaDto;
@@ -6474,8 +8151,12 @@ export type UpdateDriveQuotaResponses = {
     /**
      * Quota updated
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type UpdateDriveQuotaResponse = UpdateDriveQuotaResponses[keyof UpdateDriveQuotaResponses];
 
 export type BatchAddFavoritesData = {
     body: BatchFavoritesRequest;
@@ -6573,8 +8254,12 @@ export type RemoveFavoriteResponses = {
     /**
      * Item removed from favorites
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type RemoveFavoriteResponse = RemoveFavoriteResponses[keyof RemoveFavoriteResponses];
 
 export type AddFavoriteData = {
     body?: never;
@@ -6603,8 +8288,12 @@ export type AddFavoriteResponses = {
     /**
      * Item added to favorites
      */
-    201: unknown;
+    201: {
+        [key: string]: unknown;
+    };
 };
+
+export type AddFavoriteResponse = AddFavoriteResponses[keyof AddFavoriteResponses];
 
 export type ListFilesQueryData = {
     body?: never;
@@ -6889,14 +8578,16 @@ export type DownloadFileErrors = {
 
 export type DownloadFileResponses = {
     /**
-     * File content
+     * File content (Content-Type on the actual response reflects the file's own mime type)
      */
-    200: unknown;
+    200: Blob | File;
     /**
-     * Partial content (Range request)
+     * Partial content (Range request) — same byte stream as the 200, scoped to the requested byte range. `Content-Type` on the actual response reflects the file's own mime type.
      */
-    206: unknown;
+    206: Blob | File;
 };
+
+export type DownloadFileResponse = DownloadFileResponses[keyof DownloadFileResponses];
 
 export type DeltaFileManifestData = {
     body?: never;
@@ -6953,8 +8644,12 @@ export type GetFileMetadataResponses = {
     /**
      * File metadata (EXIF, dimensions, duration, etc.)
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type GetFileMetadataResponse = GetFileMetadataResponses[keyof GetFileMetadataResponses];
 
 export type MoveFileSimpleData = {
     /**
@@ -7088,8 +8783,12 @@ export type UploadThumbnailResponses = {
     /**
      * Thumbnail stored
      */
-    201: unknown;
+    201: {
+        [key: string]: unknown;
+    };
 };
+
+export type UploadThumbnailResponse = UploadThumbnailResponses[keyof UploadThumbnailResponses];
 
 export type ListRootFoldersData = {
     body?: never;
@@ -7197,11 +8896,32 @@ export type GetFolderAncestorsData = {
          */
         id: string;
     };
-    query?: never;
+    query?: {
+        /**
+         * Include every grant that reaches this folder — its own, each
+         * visible ancestor's, and the drive's — in `effective_grants`.
+         * Default `false`.
+         *
+         * **Raises the permission the endpoint requires** from `Read` to
+         * `Share`: the breadcrumb only needs the chain, but listing who
+         * else holds access is what `Permission::Share` gates everywhere
+         * else. Enforced in `get_ancestors_with_perms`, not here.
+         *
+         * Send the literal `true` / `false`. `serde_urlencoded` rejects
+         * `1`, `yes` and `on` outright rather than guessing, and the
+         * whole query struct fails to deserialize when it does — so a
+         * truthy-looking `?include_grants=1` is a 400, not a silent false.
+         */
+        include_grants?: boolean;
+    };
     url: '/api/folders/{id}/ancestors';
 };
 
 export type GetFolderAncestorsErrors = {
+    /**
+     * `include_grants=true` and the caller lacks Share on the leaf
+     */
+    403: unknown;
     /**
      * Folder not found or caller lacks Read (anti-enum)
      */
@@ -7210,7 +8930,7 @@ export type GetFolderAncestorsErrors = {
 
 export type GetFolderAncestorsResponses = {
     /**
-     * Ancestor chain + access-source. `ancestors` is root-first, leaf-last (length ≥ 1). See `FolderAncestorsDto`.
+     * Ancestor chain + access-source. `ancestors` is root-first, leaf-last (length ≥ 1). With `include_grants=true`, also every grant reaching the leaf in `effective_grants`. See `FolderAncestorsDto`.
      */
     200: FolderAncestorsDto;
 };
@@ -7244,8 +8964,10 @@ export type DownloadFolderZipResponses = {
     /**
      * ZIP archive stream (application/zip)
      */
-    200: unknown;
+    200: Blob | File;
 };
+
+export type DownloadFolderZipResponse = DownloadFolderZipResponses[keyof DownloadFolderZipResponses];
 
 export type MoveFolderData = {
     /**
@@ -7956,8 +9678,12 @@ export type SubjectGroupAddMemberResponses = {
     /**
      * Member added
      */
-    201: unknown;
+    201: {
+        [key: string]: unknown;
+    };
 };
+
+export type SubjectGroupAddMemberResponse = SubjectGroupAddMemberResponses[keyof SubjectGroupAddMemberResponses];
 
 export type SubjectGroupRemoveGroupMemberData = {
     body?: never;
@@ -8078,8 +9804,12 @@ export type GetTranslationsByLocaleResponses = {
     /**
      * All translations for this locale
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type GetTranslationsByLocaleResponse = GetTranslationsByLocaleResponses[keyof GetTranslationsByLocaleResponses];
 
 export type TranslateData = {
     body?: never;
@@ -8118,6 +9848,113 @@ export type TranslateResponses = {
 };
 
 export type TranslateResponse = TranslateResponses[keyof TranslateResponses];
+
+export type ListNotificationsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Only return unread rows
+         */
+        unread?: boolean;
+        /**
+         * Cursor — rows strictly before this created_at (load-older pagination)
+         */
+        before?: string;
+        /**
+         * Cursor — rows strictly after this created_at (delta catch-up on WS reconnect / tab reactivation)
+         */
+        after?: string;
+        /**
+         * Max rows (server-side clamp at 500)
+         */
+        limit?: number;
+    };
+    url: '/api/notifications';
+};
+
+export type ListNotificationsResponses = {
+    /**
+     * List of notifications
+     */
+    200: ListResponseDto;
+};
+
+export type ListNotificationsResponse = ListNotificationsResponses[keyof ListNotificationsResponses];
+
+export type MarkAllReadData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/notifications/read-all';
+};
+
+export type MarkAllReadResponses = {
+    /**
+     * Rows marked
+     */
+    200: MarkAllReadResponseDto;
+};
+
+export type MarkAllReadResponse = MarkAllReadResponses[keyof MarkAllReadResponses];
+
+export type UnreadCountData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/notifications/unread';
+};
+
+export type UnreadCountResponses = {
+    /**
+     * Unread count
+     */
+    200: UnreadCountDto;
+};
+
+export type UnreadCountResponse = UnreadCountResponses[keyof UnreadCountResponses];
+
+export type DeleteNotificationData = {
+    body?: never;
+    path: {
+        /**
+         * Notification id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/notifications/{id}';
+};
+
+export type DeleteNotificationResponses = {
+    /**
+     * Deleted (idempotent, anti-enum)
+     */
+    204: void;
+};
+
+export type DeleteNotificationResponse = DeleteNotificationResponses[keyof DeleteNotificationResponses];
+
+export type MarkReadData = {
+    body?: never;
+    path: {
+        /**
+         * Notification id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/notifications/{id}/read';
+};
+
+export type MarkReadResponses = {
+    /**
+     * Marked read (idempotent, anti-enum)
+     */
+    204: void;
+};
+
+export type MarkReadResponse = MarkReadResponses[keyof MarkReadResponses];
 
 export type ListPeopleData = {
     body?: never;
@@ -8340,8 +10177,10 @@ export type ListPhotosResponses = {
     /**
      * List of media files sorted by capture date
      */
-    200: unknown;
+    200: Array<PhotoDto>;
 };
+
+export type ListPhotosResponse = ListPhotosResponses[keyof ListPhotosResponses];
 
 export type ListPhotosGeoData = {
     body?: never;
@@ -8372,10 +10211,12 @@ export type ListPhotosGeoErrors = {
 
 export type ListPhotosGeoResponses = {
     /**
-     * Geotagged photos aggregated into map clusters
+     * Geotagged photos aggregated into map clusters. Flat array; each entry is one aggregation cell carrying its centroid (lng/lat), the number of photos in the cell, and one representative sample_file_id usable as the cluster thumbnail.
      */
-    200: unknown;
+    200: Array<GeoCluster>;
 };
+
+export type ListPhotosGeoResponse = ListPhotosGeoResponses[keyof ListPhotosGeoResponses];
 
 export type ListPlaylistsData = {
     body?: never;
@@ -8395,8 +10236,10 @@ export type ListPlaylistsResponses = {
     /**
      * List of playlists
      */
-    200: unknown;
+    200: Array<PlaylistDto>;
 };
+
+export type ListPlaylistsResponse = ListPlaylistsResponses[keyof ListPlaylistsResponses];
 
 export type CreatePlaylistData = {
     body: CreatePlaylistDto;
@@ -8420,8 +10263,10 @@ export type CreatePlaylistResponses = {
     /**
      * Playlist created
      */
-    201: unknown;
+    201: PlaylistDto;
 };
+
+export type CreatePlaylistResponse = CreatePlaylistResponses[keyof CreatePlaylistResponses];
 
 export type GetAudioMetadataData = {
     body?: never;
@@ -8450,8 +10295,10 @@ export type GetAudioMetadataResponses = {
     /**
      * Audio metadata
      */
-    200: unknown;
+    200: AudioMetadataDto;
 };
+
+export type GetAudioMetadataResponse = GetAudioMetadataResponses[keyof GetAudioMetadataResponses];
 
 export type DeletePlaylistData = {
     body?: never;
@@ -8512,8 +10359,10 @@ export type GetPlaylistResponses = {
     /**
      * Playlist details
      */
-    200: unknown;
+    200: PlaylistDto;
 };
+
+export type GetPlaylistResponse = GetPlaylistResponses[keyof GetPlaylistResponses];
 
 export type UpdatePlaylistData = {
     body: UpdatePlaylistDto;
@@ -8542,8 +10391,10 @@ export type UpdatePlaylistResponses = {
     /**
      * Playlist updated
      */
-    200: unknown;
+    200: PlaylistDto;
 };
+
+export type UpdatePlaylistResponse = UpdatePlaylistResponses[keyof UpdatePlaylistResponses];
 
 export type ReorderTracksData = {
     body: ReorderTracksDto;
@@ -8672,8 +10523,10 @@ export type GetPlaylistSharesResponses = {
     /**
      * List of playlist shares
      */
-    200: unknown;
+    200: Array<PlaylistShareInfoDto>;
 };
+
+export type GetPlaylistSharesResponse = GetPlaylistSharesResponses[keyof GetPlaylistSharesResponses];
 
 export type ListPlaylistTracksData = {
     body?: never;
@@ -8702,8 +10555,10 @@ export type ListPlaylistTracksResponses = {
     /**
      * List of playlist tracks
      */
-    200: unknown;
+    200: Array<PlaylistItemDto>;
 };
+
+export type ListPlaylistTracksResponse = ListPlaylistTracksResponses[keyof ListPlaylistTracksResponses];
 
 export type AddTracksData = {
     body: AddTracksDto;
@@ -8732,8 +10587,10 @@ export type AddTracksResponses = {
     /**
      * Tracks added
      */
-    201: unknown;
+    201: Array<PlaylistItemDto>;
 };
+
+export type AddTracksResponse = AddTracksResponses[keyof AddTracksResponses];
 
 export type RemoveTrackData = {
     body?: never;
@@ -8782,8 +10639,12 @@ export type ClearRecentItemsResponses = {
     /**
      * Recent items cleared
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type ClearRecentItemsResponse = ClearRecentItemsResponses[keyof ClearRecentItemsResponses];
 
 export type ListRecentResourcesData = {
     body?: never;
@@ -8858,8 +10719,12 @@ export type RemoveFromRecentResponses = {
     /**
      * Item removed from recents
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type RemoveFromRecentResponse = RemoveFromRecentResponses[keyof RemoveFromRecentResponses];
 
 export type RecordItemAccessData = {
     body?: never;
@@ -8888,8 +10753,12 @@ export type RecordItemAccessResponses = {
     /**
      * Access recorded
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type RecordItemAccessResponse = RecordItemAccessResponses[keyof RecordItemAccessResponses];
 
 export type AccessSharedItemData = {
     body?: never;
@@ -8918,138 +10787,10 @@ export type AccessSharedItemResponses = {
     /**
      * Shared item details
      */
-    200: unknown;
+    200: ShareDto;
 };
 
-export type ListShareContentsRootData = {
-    body?: never;
-    path: {
-        /**
-         * Share token
-         */
-        token: string;
-    };
-    query?: never;
-    url: '/api/s/{token}/contents';
-};
-
-export type ListShareContentsRootErrors = {
-    /**
-     * Share is not a folder share
-     */
-    400: unknown;
-    /**
-     * Password required
-     */
-    401: unknown;
-    /**
-     * Share expired
-     */
-    410: unknown;
-    /**
-     * Sharing disabled
-     */
-    503: unknown;
-};
-
-export type ListShareContentsRootResponses = {
-    /**
-     * Folder contents (sub-folders + files)
-     */
-    200: unknown;
-};
-
-export type ListShareContentsSubfolderData = {
-    body?: never;
-    path: {
-        /**
-         * Share token
-         */
-        token: string;
-        /**
-         * Subfolder ID (must be inside the share)
-         */
-        folder_id: string;
-    };
-    query?: never;
-    url: '/api/s/{token}/contents/{folder_id}';
-};
-
-export type ListShareContentsSubfolderErrors = {
-    /**
-     * Share is not a folder share
-     */
-    400: unknown;
-    /**
-     * Password required
-     */
-    401: unknown;
-    /**
-     * Subfolder not found or not in share scope
-     */
-    404: unknown;
-    /**
-     * Share expired
-     */
-    410: unknown;
-    /**
-     * Sharing disabled
-     */
-    503: unknown;
-};
-
-export type ListShareContentsSubfolderResponses = {
-    /**
-     * Subfolder contents
-     */
-    200: unknown;
-};
-
-export type DownloadShareFileInFolderData = {
-    body?: never;
-    path: {
-        /**
-         * Share token
-         */
-        token: string;
-        /**
-         * File ID (must be inside the share)
-         */
-        file_id: string;
-    };
-    query?: never;
-    url: '/api/s/{token}/file/{file_id}';
-};
-
-export type DownloadShareFileInFolderErrors = {
-    /**
-     * Password required
-     */
-    401: unknown;
-    /**
-     * File not found or not in share scope
-     */
-    404: unknown;
-    /**
-     * Share expired
-     */
-    410: unknown;
-    /**
-     * Range not satisfiable
-     */
-    416: unknown;
-};
-
-export type DownloadShareFileInFolderResponses = {
-    /**
-     * File content (or 206 for Range request)
-     */
-    200: unknown;
-    /**
-     * Partial Content
-     */
-    206: unknown;
-};
+export type AccessSharedItemResponse = AccessSharedItemResponses[keyof AccessSharedItemResponses];
 
 export type VerifySharedItemPasswordData = {
     body: VerifyPasswordRequest;
@@ -9078,88 +10819,10 @@ export type VerifySharedItemPasswordResponses = {
     /**
      * Password verified, item details returned
      */
-    200: unknown;
+    200: ShareDto;
 };
 
-export type DownloadShareZipRootData = {
-    body?: never;
-    path: {
-        /**
-         * Share token
-         */
-        token: string;
-    };
-    query?: never;
-    url: '/api/s/{token}/zip';
-};
-
-export type DownloadShareZipRootErrors = {
-    /**
-     * Share is not a folder share
-     */
-    400: unknown;
-    /**
-     * Password required
-     */
-    401: unknown;
-    /**
-     * Share expired
-     */
-    410: unknown;
-    /**
-     * Sharing or ZIP service disabled
-     */
-    503: unknown;
-};
-
-export type DownloadShareZipRootResponses = {
-    /**
-     * ZIP archive of the shared folder
-     */
-    200: unknown;
-};
-
-export type DownloadShareZipSubfolderData = {
-    body?: never;
-    path: {
-        /**
-         * Share token
-         */
-        token: string;
-        /**
-         * Subfolder ID (must be inside the share)
-         */
-        folder_id: string;
-    };
-    query?: never;
-    url: '/api/s/{token}/zip/{folder_id}';
-};
-
-export type DownloadShareZipSubfolderErrors = {
-    /**
-     * Password required
-     */
-    401: unknown;
-    /**
-     * Subfolder not found or not in share scope
-     */
-    404: unknown;
-    /**
-     * Share expired
-     */
-    410: unknown;
-    /**
-     * Sharing or ZIP service disabled
-     */
-    503: unknown;
-};
-
-export type DownloadShareZipSubfolderResponses = {
-    /**
-     * ZIP archive of the subfolder
-     */
-    200: unknown;
-};
+export type VerifySharedItemPasswordResponse = VerifySharedItemPasswordResponses[keyof VerifySharedItemPasswordResponses];
 
 export type SearchResourcesData = {
     body?: never;
@@ -9458,8 +11121,12 @@ export type EmptyTrashForDriveResponses = {
     /**
      * Drive trash emptied successfully
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type EmptyTrashForDriveResponse = EmptyTrashForDriveResponses[keyof EmptyTrashForDriveResponses];
 
 export type EmptyTrashData = {
     body?: never;
@@ -9479,8 +11146,12 @@ export type EmptyTrashResponses = {
     /**
      * Trash emptied successfully
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type EmptyTrashResponse = EmptyTrashResponses[keyof EmptyTrashResponses];
 
 export type MoveFileToTrashData = {
     body?: never;
@@ -9505,8 +11176,12 @@ export type MoveFileToTrashResponses = {
     /**
      * File moved to trash
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type MoveFileToTrashResponse = MoveFileToTrashResponses[keyof MoveFileToTrashResponses];
 
 export type MoveFolderToTrashData = {
     body?: never;
@@ -9531,8 +11206,12 @@ export type MoveFolderToTrashResponses = {
     /**
      * Folder moved to trash
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type MoveFolderToTrashResponse = MoveFolderToTrashResponses[keyof MoveFolderToTrashResponses];
 
 export type GetTrashResourcesData = {
     body?: never;
@@ -9608,8 +11287,12 @@ export type DeletePermanentlyResponses = {
     /**
      * Item permanently deleted
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type DeletePermanentlyResponse = DeletePermanentlyResponses[keyof DeletePermanentlyResponses];
 
 export type RestoreFromTrashData = {
     body?: never;
@@ -9634,8 +11317,12 @@ export type RestoreFromTrashResponses = {
     /**
      * Item restored from trash
      */
-    200: unknown;
+    200: {
+        [key: string]: unknown;
+    };
 };
+
+export type RestoreFromTrashResponse = RestoreFromTrashResponses[keyof RestoreFromTrashResponses];
 
 export type CreateUploadData = {
     /**
@@ -9841,43 +11528,7 @@ export type GetUserProfileResponses = {
     /**
      * Profile of a user the caller can see
      */
-    200: unknown;
+    200: PublicUserDto;
 };
 
-export type DownloadSharedFileData = {
-    body?: never;
-    path: {
-        /**
-         * Share token
-         */
-        token: string;
-    };
-    query?: never;
-    url: '/s/{token}/download';
-};
-
-export type DownloadSharedFileErrors = {
-    /**
-     * Password required
-     */
-    401: unknown;
-    /**
-     * Share not found
-     */
-    404: unknown;
-    /**
-     * Share expired
-     */
-    410: unknown;
-    /**
-     * Sharing disabled
-     */
-    503: unknown;
-};
-
-export type DownloadSharedFileResponses = {
-    /**
-     * File content stream
-     */
-    200: unknown;
-};
+export type GetUserProfileResponse = GetUserProfileResponses[keyof GetUserProfileResponses];

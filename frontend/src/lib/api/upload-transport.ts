@@ -1,3 +1,4 @@
+import { appPath } from '$lib/utils/appPath';
 /** XHR wire adapter for the generated client: fetch has no upload progress events. */
 export function uploadTransport(
 	form: FormData,
@@ -9,7 +10,7 @@ export function uploadTransport(
 			init
 		);
 		// A token refresh uses the regular wire transport, never the upload body.
-		if (new URL(request.url).pathname !== '/api/files/upload') return fetch(request);
+		if (appPath(new URL(request.url).pathname) !== '/api/files/upload') return fetch(request);
 		return new Promise<Response>((resolve, reject) => {
 			const xhr = new XMLHttpRequest();
 			xhr.open(request.method, request.url);

@@ -1,5 +1,5 @@
 import { fetchAsset } from '$lib/utils/assets';
-import { apiFetch } from '$lib/api/client';
+import { apiFetch, withBase } from '$lib/api/client';
 /**
  * Client-side thumbnail generation + upload.
  *

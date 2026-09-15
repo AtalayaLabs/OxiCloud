@@ -6,7 +6,7 @@
     "license": {
       "name": "MIT"
     },
-    "version": "0.9.2"
+    "version": "d97bedda"
   },
   "paths": {
     "/api/address-books": {
@@ -16061,13 +16061,18 @@
         "required": [
           "initialized",
           "admin_count",
-          "registration_allowed"
+          "registration_allowed",
+          "faces_enabled"
         ],
         "properties": {
           "admin_count": {
             "type": "integer",
             "format": "int64",
             "description": "Number of admin users in the system."
+          },
+          "faces_enabled": {
+            "type": "boolean",
+            "description": "Whether the People routes are available in this running instance."
           },
           "initialized": {
             "type": "boolean",

@@ -1,6 +1,6 @@
 import { uploadTransport } from '../upload-transport';
 /** File endpoints — ported from fileOperations.js. */
-import { apiFetch } from '$lib/api/client';
+import { apiFetch, withBase } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type { FileItem } from '$lib/api/types';
 
