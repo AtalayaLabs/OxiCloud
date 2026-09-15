@@ -156,12 +156,6 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::share_handler::delete_shared_link,
         handlers::share_handler::access_shared_item,
         handlers::share_handler::verify_shared_item_password,
-        handlers::share_handler::download_shared_file,
-        handlers::share_handler::list_share_contents_root,
-        handlers::share_handler::list_share_contents_subfolder,
-        handlers::share_handler::download_share_file_in_folder,
-        handlers::share_handler::download_share_zip_root,
-        handlers::share_handler::download_share_zip_subfolder,
         // Favorites handlers (free functions)
         handlers::favorites_handler::list_favorites_resources,
         handlers::favorites_handler::add_favorite,
