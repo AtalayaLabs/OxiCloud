@@ -2,7 +2,7 @@
 //!
 //! Backs the bell UI. The message bus poke on
 //! `user:{user_id}:notifications` is a fast path; the row is truth.
-//! See `docs/plan/message-bus.md § Slice E` for the wire contract.
+//! See `docs/architecture/message-bus-and-notifications.md § Slice E` for the wire contract.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

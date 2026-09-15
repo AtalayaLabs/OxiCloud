@@ -455,7 +455,7 @@
 	// coalescer already prevents redundant work when the local mutation
 	// path and the bus event race.
 	//
-	// See `docs/plan/message-bus.md § D` and the `useFolderTopic`
+	// See `docs/architecture/message-bus-and-notifications.md § D` and the `useFolderTopic`
 	// composable for the wiring.
 	let reloadScheduled = false;
 	function scheduleLiveReload(_actor: string): void {
@@ -487,7 +487,7 @@
 			//     would show a zombie view. Toast + navigate to
 			//     `/files`, same UX as `onRevoked` for grant
 			//     eviction. See `TrashService::move_to_trash` and
-			//     `docs/plan/message-bus.md § Status` for the
+			//     `docs/architecture/message-bus-and-notifications.md § Status` for the
 			//     dual-topic publish rationale.
 			if (d.folder_id === currentId) {
 				ui.notify(t('files.folder_was_deleted', 'This folder was moved to trash.'), 'warning');

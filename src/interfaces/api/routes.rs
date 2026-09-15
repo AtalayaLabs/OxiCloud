@@ -708,7 +708,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     // Message bus — ticket issuance (`POST /api/rt/ticket`). Stays in
     // the protected router (auth + DPoP), so the caller proves session
     // + DPoP-key possession before a ticket is minted. See
-    // `handlers/rt_ticket_handler.rs` and `docs/plan/message-bus.md § F`.
+    // `handlers/rt_ticket_handler.rs` and `docs/architecture/message-bus-and-notifications.md § F`.
     //
     // Gated by `enable_message_bus`: when disabled, the route is NOT
     // registered — Axum returns 404 (no 5xx alerts, no ambiguous 403).

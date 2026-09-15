@@ -90,8 +90,21 @@ storage/
 *.swo
 nohup.out
 
-# Generated files (OpenAPI spec, etc.)
-resources/gen/
+# Generated API spec files — the two JSON schemas ARE committed so
+# PRs surface wire-shape changes in review (and so the VitePress
+# docs build can find them without a Rust toolchain step). Every
+# other file under resources/gen/ (macOS .DS_Store, future generator
+# artifacts) stays ignored. Regenerate via `just openapi` and
+# `just asyncapi`; `just check-message-bus-spec` fails CI on drift.
+resources/gen/*
+!resources/gen/openapi.json
+!resources/gen/asyncapi.json
+
+# VitePress-derived API references — produced from resources/gen/ at
+# every `docs:build` by scripts/prepare-specs.mjs. Committing them
+# would double the source of truth; the two JSON specs above are it.
+docs/public/api/
+docs/scripts/node_modules/
 
 # Helm chart dependencies
 charts/*/charts/*

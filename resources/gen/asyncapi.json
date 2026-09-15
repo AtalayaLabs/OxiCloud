@@ -1,0 +1,1180 @@
+{
+  "asyncapi": "3.0.0",
+  "channels": {
+    "Folder": {
+      "address": "folder:{folderId}",
+      "description": "A folder's mutation stream — file/subfolder created events fire here. AuthZ: caller must hold `Read` on the folder.",
+      "messages": {
+        "ErrorResponse": {
+          "$ref": "#/components/messages/RtErrorResponse"
+        },
+        "FolderEvent": {
+          "$ref": "#/components/messages/RtFolderEventNotification"
+        },
+        "PingRequest": {
+          "$ref": "#/components/messages/RtPingRequest"
+        },
+        "PongResponse": {
+          "$ref": "#/components/messages/RtPongResponse"
+        },
+        "RevokedNotification": {
+          "$ref": "#/components/messages/RtRevokedNotification"
+        },
+        "SubscribeRequest": {
+          "$ref": "#/components/messages/RtSubscribeRequest"
+        },
+        "SubscribedResponse": {
+          "$ref": "#/components/messages/RtSubscribedResponse"
+        },
+        "UnsubscribeRequest": {
+          "$ref": "#/components/messages/RtUnsubscribeRequest"
+        }
+      },
+      "parameters": {
+        "folderId": {
+          "description": "Folder UUID"
+        }
+      }
+    },
+    "Job": {
+      "address": "job:{jobName}",
+      "description": "A named background job's run lifecycle — Started / Progress / Ended. Consumed by the admin dashboard so operators who trigger a long-running job (backend migration, thumb import…) can navigate off the admin page and come back without losing progress. AuthZ: admin-only (Class 3 role-scoped) — non-admin gets `topic_forbidden`, indistinguishable on the wire from an unknown topic.",
+      "messages": {
+        "ErrorResponse": {
+          "$ref": "#/components/messages/RtErrorResponse"
+        },
+        "JobEvent": {
+          "$ref": "#/components/messages/RtFolderEventNotification"
+        },
+        "RevokedNotification": {
+          "$ref": "#/components/messages/RtRevokedNotification"
+        },
+        "SubscribeRequest": {
+          "$ref": "#/components/messages/RtSubscribeRequest"
+        },
+        "SubscribedResponse": {
+          "$ref": "#/components/messages/RtSubscribedResponse"
+        },
+        "UnsubscribeRequest": {
+          "$ref": "#/components/messages/RtUnsubscribeRequest"
+        }
+      },
+      "parameters": {
+        "jobName": {
+          "description": "Scheduler-registered short slug (e.g. `backend_migration`); `[a-z0-9_-]` chars only"
+        }
+      }
+    },
+    "UserAuthz": {
+      "address": "user:{userId}:authz",
+      "description": "A user's private AuthZ-change channel. Identity-scoped: caller_id must equal userId (no admin bypass).",
+      "messages": {
+        "SubscribeRequest": {
+          "$ref": "#/components/messages/RtSubscribeRequest"
+        },
+        "UnsubscribeRequest": {
+          "$ref": "#/components/messages/RtUnsubscribeRequest"
+        }
+      },
+      "parameters": {
+        "userId": {
+          "description": "User UUID — must match the authenticated caller"
+        }
+      }
+    },
+    "UserNotifications": {
+      "address": "user:{userId}:notifications",
+      "description": "A user's private notifications channel. Identity-scoped: caller_id must equal userId (no admin bypass). Auto-subscribed at session open; the FE bell refetches `GET /api/notifications` when a `notification_received` event fires. The DB row is authoritative — a missed push recovers on the next mount.",
+      "messages": {
+        "SubscribeRequest": {
+          "$ref": "#/components/messages/RtSubscribeRequest"
+        },
+        "UnsubscribeRequest": {
+          "$ref": "#/components/messages/RtUnsubscribeRequest"
+        }
+      },
+      "parameters": {
+        "userId": {
+          "description": "User UUID — must match the authenticated caller"
+        }
+      }
+    }
+  },
+  "components": {
+    "messages": {
+      "RtErrorResponse": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "name": "error-no-read",
+            "payload": {
+              "error": {
+                "code": -32001,
+                "data": {
+                  "topic": "folder:00000000-0000-0000-0000-000000000000"
+                },
+                "message": "no_read"
+              },
+              "id": 1,
+              "jsonrpc": "2.0"
+            },
+            "summary": "Server → client: rt.subscribe refused because caller lacks Read on the folder"
+          }
+        ],
+        "name": "rt.error",
+        "payload": {
+          "$ref": "#/components/schemas/RtErrorResponseBody"
+        },
+        "title": "JSON-RPC error object"
+      },
+      "RtFolderEventNotification": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "name": "event-file-created",
+            "payload": {
+              "jsonrpc": "2.0",
+              "method": "rt.event",
+              "params": {
+                "data": {
+                  "content_hash": "b3-…",
+                  "created_at": "2026-09-13T18:04:00Z",
+                  "id": "11111111-1111-1111-1111-111111111111",
+                  "name": "report.pdf",
+                  "size": 12345
+                },
+                "kind": "file.created",
+                "seq": 17,
+                "topic": "folder:00000000-0000-0000-0000-000000000000"
+              }
+            },
+            "summary": "Server → client: a file was created inside a subscribed folder"
+          }
+        ],
+        "name": "rt.event",
+        "payload": {
+          "$ref": "#/components/schemas/RtFolderEventBody"
+        },
+        "title": "Folder mutation event"
+      },
+      "RtPingRequest": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "name": "ping",
+            "payload": {
+              "id": 42,
+              "jsonrpc": "2.0",
+              "method": "rt.ping"
+            },
+            "summary": "Client → server: liveness probe (reply is rt.pong)"
+          }
+        ],
+        "name": "rt.ping",
+        "payload": {
+          "$ref": "#/components/schemas/RtPingRequestBody"
+        },
+        "title": "Keepalive ping"
+      },
+      "RtPongResponse": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "name": "pong",
+            "payload": {
+              "id": 42,
+              "jsonrpc": "2.0",
+              "result": {
+                "pong": true
+              }
+            },
+            "summary": "Server → client: reply to a client rt.ping"
+          }
+        ],
+        "name": "rt.pong",
+        "payload": {
+          "$ref": "#/components/schemas/RtPongResponseBody"
+        },
+        "title": "Reply to rt.ping — `result.pong == true`"
+      },
+      "RtRevokedNotification": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "name": "revoked-permission-lost",
+            "payload": {
+              "jsonrpc": "2.0",
+              "method": "rt.revoked",
+              "params": {
+                "reason": "permission_lost",
+                "topic": "folder:00000000-0000-0000-0000-000000000000"
+              }
+            },
+            "summary": "Server → client: subscription evicted because the caller lost Read on the folder"
+          }
+        ],
+        "name": "rt.revoked",
+        "payload": {
+          "$ref": "#/components/schemas/RtRevokedBody"
+        },
+        "title": "Subscription evicted"
+      },
+      "RtSubscribeRequest": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "name": "subscribe-folder",
+            "payload": {
+              "id": 1,
+              "jsonrpc": "2.0",
+              "method": "rt.subscribe",
+              "params": {
+                "topic": "folder:00000000-0000-0000-0000-000000000000"
+              }
+            },
+            "summary": "Client → server: subscribe to a folder's mutation stream"
+          }
+        ],
+        "name": "rt.subscribe",
+        "payload": {
+          "$ref": "#/components/schemas/RtSubscribeRequestBody"
+        },
+        "title": "Subscribe to a topic"
+      },
+      "RtSubscribedResponse": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "name": "subscribed-ok",
+            "payload": {
+              "id": 1,
+              "jsonrpc": "2.0",
+              "result": {
+                "ok": true
+              }
+            },
+            "summary": "Server → client: successful rt.subscribe / rt.unsubscribe ack"
+          }
+        ],
+        "name": "rt.subscribed",
+        "payload": {
+          "$ref": "#/components/schemas/RtSuccessResponseBody"
+        },
+        "title": "Subscribe / unsubscribe ack"
+      },
+      "RtUnsubscribeRequest": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "name": "unsubscribe-folder",
+            "payload": {
+              "id": 2,
+              "jsonrpc": "2.0",
+              "method": "rt.unsubscribe",
+              "params": {
+                "topic": "folder:00000000-0000-0000-0000-000000000000"
+              }
+            },
+            "summary": "Client → server: unsubscribe from a previously-joined folder"
+          }
+        ],
+        "name": "rt.unsubscribe",
+        "payload": {
+          "$ref": "#/components/schemas/RtUnsubscribeRequestBody"
+        },
+        "title": "Unsubscribe from a topic"
+      }
+    },
+    "schemas": {
+      "FileCreatedData": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "file_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "parent_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_id",
+          "name",
+          "parent_id",
+          "actor"
+        ],
+        "type": "object"
+      },
+      "FileDeletedData": {
+        "additionalProperties": false,
+        "description": "The wire doesn't distinguish soft (trash) vs. permanent delete — clients treat both as \"disappears from the folder view\". `parent_id` is the folder the file used to live in.",
+        "properties": {
+          "actor": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "file_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "parent_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_id",
+          "parent_id",
+          "actor"
+        ],
+        "type": "object"
+      },
+      "FileMovedData": {
+        "additionalProperties": false,
+        "description": "Emitted on BOTH the source (`from`) and destination (`to`) folder topics. Subscribers to either see the event exactly once because they're subscribed to only one of the two.",
+        "properties": {
+          "actor": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "file_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "from": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "to": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_id",
+          "name",
+          "from",
+          "to",
+          "actor"
+        ],
+        "type": "object"
+      },
+      "FileRenamedData": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "file_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "new_name": {
+            "type": "string"
+          },
+          "old_name": {
+            "type": "string"
+          },
+          "parent_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_id",
+          "old_name",
+          "new_name",
+          "parent_id",
+          "actor"
+        ],
+        "type": "object"
+      },
+      "FolderCreatedData": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "folder_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "parent_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "folder_id",
+          "name",
+          "parent_id",
+          "actor"
+        ],
+        "type": "object"
+      },
+      "FolderDeletedData": {
+        "additionalProperties": false,
+        "description": "Soft vs. permanent delete are indistinguishable on the wire.",
+        "properties": {
+          "actor": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "folder_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "parent_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "folder_id",
+          "parent_id",
+          "actor"
+        ],
+        "type": "object"
+      },
+      "FolderMovedData": {
+        "additionalProperties": false,
+        "description": "Emitted on BOTH the source (`from`) and destination (`to`) folder topics — same shape as `FileMoved`.",
+        "properties": {
+          "actor": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "folder_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "from": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "to": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "folder_id",
+          "name",
+          "from",
+          "to",
+          "actor"
+        ],
+        "type": "object"
+      },
+      "FolderRenamedData": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "folder_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "new_name": {
+            "type": "string"
+          },
+          "old_name": {
+            "type": "string"
+          },
+          "parent_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "folder_id",
+          "old_name",
+          "new_name",
+          "parent_id",
+          "actor"
+        ],
+        "type": "object"
+      },
+      "JobRunEndedData": {
+        "additionalProperties": false,
+        "description": "A background job's run ended. `success = true` for a normal completion; `false` for failure / timeout / cancelled / paused-with-unhandled-outcome. `reason` populates the toast text on the `false` branch and links to `/admin/jobs/<name>` for the full outcome. Consumer typically drops its subscription on receipt (job is done).",
+        "properties": {
+          "ended_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "success",
+          "ended_at"
+        ],
+        "type": "object"
+      },
+      "JobRunProgressData": {
+        "additionalProperties": false,
+        "description": "A background job made progress. Throttled at the publish site to at most one per 3 s per job (see scheduler engine). `step` / `total` populate a progress bar; all three fields are optional because different jobs report different granularities.",
+        "properties": {
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "step": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "total": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "JobRunStartedData": {
+        "additionalProperties": false,
+        "description": "A background job's run started. `name` matches the scheduler-registered job name (e.g. `backend_migration`). `actor` is `00000000-0000-0000-0000-000000000000` today — the scheduler doesn't yet thread the trigger caller through.",
+        "properties": {
+          "actor": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "started_at",
+          "actor"
+        ],
+        "type": "object"
+      },
+      "NotificationReceivedData": {
+        "additionalProperties": false,
+        "description": "A new notification was created for the caller. Pure cache-invalidation event — no fields on the wire. The FE refetches `GET /api/notifications` on receipt and reads the payload from the REST DTO (see `openapi.json`). Zero schema overlap between the bus wire (this file) and the REST wire — the strict form of the AsyncAPI-defines-envelope / OpenAPI-defines-payload split.",
+        "properties": {},
+        "type": "object"
+      },
+      "RtErrorCode": {
+        "description": "Stable integer error code. Values are frozen across releases — a new denial cause gets a new value, never repurposes an existing one. Application-defined codes (-32099..=-32000):\n· -32001 NO_READ — resource-scoped topic, caller lacks Read (or resource doesn't exist — indistinguishable by design)\n· -32002 NO_SHARE — resource requires Share, caller has Read but not Share\n· -32003 NO_COMMENT — resource requires Comment\n· -32004 TOPIC_FORBIDDEN — identity-scoped mismatch or unknown/malformed topic\n· -32005 SUB_LIMIT — per-connection subscription cap hit\n· -32006 RATE_LIMITED — subscribe-frame token bucket exhausted\n· -32007 NO_EDIT — CRDT edit frame from a caller without Edit\nStandard JSON-RPC 2.0 codes:\n· -32603 INTERNAL_ERROR · -32600 INVALID_REQUEST · -32601 METHOD_NOT_FOUND · -32602 INVALID_PARAMS",
+        "type": "integer"
+      },
+      "RtErrorMessage": {
+        "description": "Stable wire vocabulary; matches the corresponding `code`.",
+        "enum": [
+          "no_read",
+          "no_share",
+          "no_comment",
+          "topic_forbidden",
+          "sub_limit",
+          "rate_limited",
+          "no_edit",
+          "internal_error",
+          "invalid_request",
+          "method_not_found",
+          "invalid_params"
+        ],
+        "type": "string"
+      },
+      "RtErrorObject": {
+        "additionalProperties": false,
+        "description": "JSON-RPC 2.0 error object. `code` + `message` form a stable pair; `data` optionally carries caller-visible context (e.g. offending topic).",
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/RtErrorCode"
+          },
+          "data": {
+            "description": "Optional caller-facing context; shape depends on the specific `code`.",
+            "type": [
+              "object",
+              "array",
+              "string",
+              "number",
+              "integer",
+              "boolean",
+              "null"
+            ]
+          },
+          "message": {
+            "$ref": "#/components/schemas/RtErrorMessage"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "RtErrorResponseBody": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/RtErrorObject"
+          },
+          "id": {
+            "type": [
+              "integer",
+              "string",
+              "null"
+            ]
+          },
+          "jsonrpc": {
+            "const": "2.0",
+            "type": "string"
+          }
+        },
+        "required": [
+          "jsonrpc",
+          "id",
+          "error"
+        ],
+        "type": "object"
+      },
+      "RtEventDataUnion": {
+        "description": "Tagged union of every possible `rt.event` payload. Discriminated by the sibling `event` field (see `RtEventKind`).",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/FileCreatedData"
+          },
+          {
+            "$ref": "#/components/schemas/FileRenamedData"
+          },
+          {
+            "$ref": "#/components/schemas/FileMovedData"
+          },
+          {
+            "$ref": "#/components/schemas/FileDeletedData"
+          },
+          {
+            "$ref": "#/components/schemas/FolderCreatedData"
+          },
+          {
+            "$ref": "#/components/schemas/FolderRenamedData"
+          },
+          {
+            "$ref": "#/components/schemas/FolderMovedData"
+          },
+          {
+            "$ref": "#/components/schemas/FolderDeletedData"
+          },
+          {
+            "$ref": "#/components/schemas/NotificationReceivedData"
+          },
+          {
+            "$ref": "#/components/schemas/JobRunStartedData"
+          },
+          {
+            "$ref": "#/components/schemas/JobRunProgressData"
+          },
+          {
+            "$ref": "#/components/schemas/JobRunEndedData"
+          }
+        ]
+      },
+      "RtEventKind": {
+        "description": "Discriminator for the `data` payload. Mirrors the `#[serde(tag = \"event\", rename_all = \"snake_case\")]` variants of the Rust `MessageBusEvent` enum — a new event kind is a new enum variant on both sides.",
+        "enum": [
+          "file_created",
+          "file_renamed",
+          "file_moved",
+          "file_deleted",
+          "folder_created",
+          "folder_renamed",
+          "folder_moved",
+          "folder_deleted",
+          "notification_received",
+          "job_run_started",
+          "job_run_progress",
+          "job_run_ended"
+        ],
+        "type": "string"
+      },
+      "RtEventParams": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/RtEventDataUnion"
+          },
+          "event": {
+            "$ref": "#/components/schemas/RtEventKind"
+          },
+          "topic": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic",
+          "event",
+          "data"
+        ],
+        "type": "object"
+      },
+      "RtFolderEventBody": {
+        "additionalProperties": false,
+        "description": "JSON-RPC notification (no `id`). `method = \"rt.event\"`. `params` is hoisted to `RtEventParams`.",
+        "properties": {
+          "jsonrpc": {
+            "const": "2.0",
+            "type": "string"
+          },
+          "method": {
+            "const": "rt.event",
+            "type": "string"
+          },
+          "params": {
+            "$ref": "#/components/schemas/RtEventParams"
+          }
+        },
+        "required": [
+          "jsonrpc",
+          "method",
+          "params"
+        ],
+        "type": "object"
+      },
+      "RtPingRequestBody": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": [
+              "integer",
+              "string",
+              "null"
+            ]
+          },
+          "jsonrpc": {
+            "const": "2.0",
+            "type": "string"
+          },
+          "method": {
+            "const": "rt.ping",
+            "type": "string"
+          }
+        },
+        "required": [
+          "jsonrpc",
+          "id",
+          "method"
+        ],
+        "type": "object"
+      },
+      "RtPongResponseBody": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": [
+              "integer",
+              "string",
+              "null"
+            ]
+          },
+          "jsonrpc": {
+            "const": "2.0",
+            "type": "string"
+          },
+          "result": {
+            "$ref": "#/components/schemas/RtPongResult"
+          }
+        },
+        "required": [
+          "jsonrpc",
+          "id",
+          "result"
+        ],
+        "type": "object"
+      },
+      "RtPongResult": {
+        "additionalProperties": false,
+        "properties": {
+          "pong": {
+            "const": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "pong"
+        ],
+        "type": "object"
+      },
+      "RtRevokedBody": {
+        "additionalProperties": false,
+        "description": "JSON-RPC notification (no `id`). `method = \"rt.revoked\"`. `params` hoisted to `RtRevokedParams`.",
+        "properties": {
+          "jsonrpc": {
+            "const": "2.0",
+            "type": "string"
+          },
+          "method": {
+            "const": "rt.revoked",
+            "type": "string"
+          },
+          "params": {
+            "$ref": "#/components/schemas/RtRevokedParams"
+          }
+        },
+        "required": [
+          "jsonrpc",
+          "method",
+          "params"
+        ],
+        "type": "object"
+      },
+      "RtRevokedParams": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "$ref": "#/components/schemas/RtRevokedReason"
+          },
+          "topic": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "RtRevokedReason": {
+        "description": "Server-side eviction cause. Stable vocabulary; a new eviction reason is a new enum value.",
+        "enum": [
+          "grant_revoked",
+          "resource_deleted",
+          "group_membership_lost",
+          "admin_kick"
+        ],
+        "type": "string"
+      },
+      "RtSubscribeParams": {
+        "additionalProperties": false,
+        "properties": {
+          "topic": {
+            "description": "Wire form: `folder:<uuid>` or `user:<uuid>:authz`",
+            "examples": [
+              "folder:00000000-0000-0000-0000-000000000000"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic"
+        ],
+        "type": "object"
+      },
+      "RtSubscribeRequestBody": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": [
+              "integer",
+              "string",
+              "null"
+            ]
+          },
+          "jsonrpc": {
+            "const": "2.0",
+            "type": "string"
+          },
+          "method": {
+            "const": "rt.subscribe",
+            "type": "string"
+          },
+          "params": {
+            "$ref": "#/components/schemas/RtSubscribeParams"
+          }
+        },
+        "required": [
+          "jsonrpc",
+          "id",
+          "method"
+        ],
+        "type": "object"
+      },
+      "RtSuccessResponseBody": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": [
+              "integer",
+              "string",
+              "null"
+            ]
+          },
+          "jsonrpc": {
+            "const": "2.0",
+            "type": "string"
+          },
+          "result": {
+            "description": "Method-specific result payload. See the concrete response schema for each `method`.",
+            "type": [
+              "object",
+              "array",
+              "string",
+              "number",
+              "integer",
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "jsonrpc",
+          "id",
+          "result"
+        ],
+        "type": "object"
+      },
+      "RtUnsubscribeParams": {
+        "additionalProperties": false,
+        "properties": {
+          "topic": {
+            "description": "Wire form: `folder:<uuid>` or `user:<uuid>:authz`",
+            "examples": [
+              "folder:00000000-0000-0000-0000-000000000000"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic"
+        ],
+        "type": "object"
+      },
+      "RtUnsubscribeRequestBody": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": [
+              "integer",
+              "string",
+              "null"
+            ]
+          },
+          "jsonrpc": {
+            "const": "2.0",
+            "type": "string"
+          },
+          "method": {
+            "const": "rt.unsubscribe",
+            "type": "string"
+          },
+          "params": {
+            "$ref": "#/components/schemas/RtUnsubscribeParams"
+          }
+        },
+        "required": [
+          "jsonrpc",
+          "id",
+          "method"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "bearerFormat": "JWT",
+        "description": "OxiCloud JWT — same access_token minted by `POST /api/auth/login` (or the OPAQUE handshake). Programmatic clients set `Authorization: Bearer <jwt>` on the WS upgrade request. DPoP-bound tokens are refused on this path (the WS handshake cannot carry a DPoP proof); browsers use `ticketAuth` instead.",
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "ticketAuth": {
+        "description": "Browser path — the FE first calls `POST /api/rt/ticket` under the full REST middleware stack (auth + DPoP-proofed request), receives an opaque one-shot UUID with a 30 s TTL, then sets `Sec-WebSocket-Protocol: oxi.ticket.<uuid>` on the WS upgrade. The server redeems the ticket (single-use — a second attempt fails) and treats the WS session as authenticated for the caller who issued it. See `docs/architecture/message-bus-and-notifications.md § F` and `handlers/rt_ticket_handler.rs`.",
+        "in": "header",
+        "name": "Sec-WebSocket-Protocol",
+        "type": "httpApiKey"
+      }
+    }
+  },
+  "defaultContentType": "application/json",
+  "info": {
+    "description": "JSON-RPC 2.0 over WebSocket for control + events, Yjs sync protocol for\nCRDT binary frames. The wire is described here for the first-PR MVP\nsurface (folder-live updates); Phase B (comments, presence) and\nPhase C (sync-client push, album live) extend the same channels — see\n`docs/architecture/message-bus-and-notifications.md`.",
+    "license": {
+      "name": "MIT",
+      "url": "https://opensource.org/licenses/MIT"
+    },
+    "title": "OxiCloud message bus",
+    "version": "0.8.9"
+  },
+  "operations": {
+    "ping": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/Folder"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/Folder/messages/PingRequest"
+        }
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/Folder"
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/Folder/messages/PongResponse"
+          }
+        ]
+      },
+      "summary": "**`rt.ping`** → application-level liveness probe. Reply is `rt.pong` with `result.pong = true`. Distinct from RFC 6455 transport-level Ping; useful when a proxy black-holes traffic without dropping the socket.",
+      "title": "rt.ping — application-level keepalive"
+    },
+    "receiveFolderEvent": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/Folder"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/Folder/messages/FolderEvent"
+        }
+      ],
+      "summary": "**`rt.event`** → server pushes a mutation notice (file/subfolder created, renamed, deleted). Client updates its live view. Delivered only to subscribers holding `Read` on the folder.",
+      "title": "rt.event — folder mutation notification"
+    },
+    "receiveRevoked": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/Folder"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/Folder/messages/RevokedNotification"
+        }
+      ],
+      "summary": "**`rt.revoked`** → server evicts the client's subscription (grant revoked, resource deleted, session expired). Client stops rendering the topic and drops any local state.",
+      "title": "rt.revoked — subscription evicted"
+    },
+    "subscribeFolder": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/Folder"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/Folder/messages/SubscribeRequest"
+        }
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/Folder"
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/Folder/messages/SubscribedResponse"
+          },
+          {
+            "$ref": "#/channels/Folder/messages/ErrorResponse"
+          }
+        ]
+      },
+      "summary": "**`rt.subscribe`** → client joins a folder's mutation stream. Reply is `rt.subscribed` (ok) or `rt.error` (permission denied, unknown topic, etc.).",
+      "title": "rt.subscribe — join a folder's mutation stream"
+    },
+    "unsubscribeFolder": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/Folder"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/Folder/messages/UnsubscribeRequest"
+        }
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/Folder"
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/Folder/messages/SubscribedResponse"
+          },
+          {
+            "$ref": "#/channels/Folder/messages/ErrorResponse"
+          }
+        ]
+      },
+      "summary": "**`rt.unsubscribe`** → client leaves a previously-joined folder. Server acks with `rt.subscribed` (`result.ok = true`) — the ack message is shared with subscribe.",
+      "title": "rt.unsubscribe — leave a folder's mutation stream"
+    }
+  },
+  "servers": {
+    "default": {
+      "bindings": {
+        "ws": {
+          "subProtocol": "oxi.ticket.{ticket}"
+        }
+      },
+      "description": "OxiCloud message bus WebSocket endpoint. Text frames are JSON-RPC 2.0. Binary frames (out of AsyncAPI scope) are Yjs sync protocol for the collab editor — see `docs/plan/markdown-collab.md`.",
+      "host": "{host}",
+      "pathname": "/api/rt/ws",
+      "protocol": "wss",
+      "protocolVersion": "13",
+      "security": [
+        {
+          "$ref": "#/components/securitySchemes/bearerAuth"
+        },
+        {
+          "$ref": "#/components/securitySchemes/ticketAuth"
+        }
+      ],
+      "variables": {
+        "host": {
+          "default": "cloud.example.com",
+          "description": "Server host — replace with the deployment domain"
+        }
+      }
+    }
+  }
+}

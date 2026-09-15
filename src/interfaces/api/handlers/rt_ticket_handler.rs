@@ -8,7 +8,7 @@
 //! next WS upgrade.
 //!
 //! See `src/infrastructure/services/rt_ticket_store.rs` for the
-//! store semantics and `docs/plan/message-bus.md § F` for the
+//! store semantics and `docs/architecture/message-bus-and-notifications.md § F` for the
 //! architectural context.
 
 use std::sync::Arc;

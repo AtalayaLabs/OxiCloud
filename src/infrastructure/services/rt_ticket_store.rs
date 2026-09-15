@@ -7,7 +7,7 @@
 //! headers — only `Sec-WebSocket-Protocol` — so the upgrade GET
 //! arrives without a DPoP proof and `require_dpop_layer` refuses with
 //! 401 `proof_missing_on_bound_session`. See
-//! `docs/plan/message-bus.md § F`.
+//! `docs/architecture/message-bus-and-notifications.md § F`.
 //!
 //! # Solution
 //!

@@ -234,7 +234,7 @@
 	// polling reconciles.
 	//
 	// Progress publishes aren't wired yet (deferred — see
-	// `docs/plan/message-bus.md`), so the handler treats
+	// `docs/architecture/message-bus-and-notifications.md`), so the handler treats
 	// `job_run_progress` as a benign no-op and simply refetches the
 	// row's runs when a run ends. When per-handler progress emits
 	// land, this composable is where `onProgress` will map into the

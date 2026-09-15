@@ -1,10 +1,15 @@
 {
   "scripts": {
+    "docs:specs": "node scripts/prepare-specs.mjs",
+    "predocs:dev": "npm run docs:specs",
+    "predocs:build": "npm run docs:specs",
     "docs:dev": "vitepress dev .",
     "docs:build": "vitepress build .",
     "docs:preview": "vitepress preview ."
   },
   "devDependencies": {
+    "@asyncapi/react-component": "^3.1.8",
+    "swagger-ui-dist": "^5.17.14",
     "vitepress": "^1.6.3"
   }
 }
