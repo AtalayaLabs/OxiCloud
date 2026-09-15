@@ -914,11 +914,27 @@ impl FileHandler {
             .get("metadata")
             .is_some_and(|v| v == "true" || v == "1")
         {
-            let dto = if authorized_as.token_id().is_some() {
+            let mut dto = if authorized_as.token_id().is_some() {
                 file_dto.redacted_for_token()
             } else {
                 file_dto
             };
+            // `From<File>` hard-codes `is_favorite`/`is_shared` to false and
+            // documents that any caller emitting the DTO must override them.
+            // Widening this response from a hand-built literal to the whole
+            // DTO brought those fields onto the wire, so the obligation came
+            // with them — without this a signed-in owner reads
+            // `is_shared: false` on a file that IS shared.
+            //
+            // For a token caller the helper no-ops by design (see its doc),
+            // so a visitor still gets `false` for both — which is the honest
+            // answer, not a redaction.
+            crate::interfaces::api::handlers::caller_flags::enrich_file_flags(
+                &state,
+                &mut dto,
+                authorized_as,
+            )
+            .await;
             return (StatusCode::OK, Json(dto)).into_response();
         }
 
