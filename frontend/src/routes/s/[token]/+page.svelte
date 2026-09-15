@@ -31,7 +31,7 @@
 	import FolderBreadcrumb from '$lib/components/FolderBreadcrumb.svelte';
 	import PhotoLightbox from '$lib/components/PhotoLightbox.svelte';
 	import ResourceList from '$lib/components/ResourceList.svelte';
-	import { getFile } from '$lib/api/endpoints/files';
+	import { fileDownloadUrl, getFile } from '$lib/api/endpoints/files';
 	import { fetchFolderPage, folderZipUrl } from '$lib/api/endpoints/folders';
 	import { getShareMeta, verifySharePassword, type ShareMeta } from '$lib/api/endpoints/share';
 	import type { FileItem, FolderItem } from '$lib/api/types';
@@ -191,6 +191,10 @@
 			} else {
 				viewerFile = await getFile(r.data.item_id);
 				view = 'file';
+				// Open straight into the preview — a one-file link is a
+				// request to see that file, not a landing page. The card
+				// behind is what a close returns to.
+				viewerOpen = true;
 			}
 		} catch {
 			view = 'expired';
@@ -333,10 +337,34 @@
 		</div>
 	{:else if view === 'file' && viewerFile}
 		<!--
-			A single shared file. The viewer is always open — there is nothing
-			to navigate back to, so closing it would leave a blank page.
+			A single shared file. The viewer opens over this card rather than
+			instead of it: a share with one file has no listing to fall back
+			to, so dismissing a viewer that WAS the whole page left a blank
+			screen with no way back. The card is what the visitor returns to,
+			and it carries the two things they came for — the name and the
+			download — without needing the preview at all.
 		-->
-		<FileViewer open={true} file={viewerFile} readOnly />
+		<div class="share__center">
+			<BrandMark />
+			<Icon name="file" class="share__big-icon" />
+			<h1>{viewerFile.name}</h1>
+			<div class="share__file-actions">
+				<button type="button" class="share__btn" onclick={() => (viewerOpen = true)}>
+					<Icon name="expand" />
+					{t('share.preview', 'Preview')}
+				</button>
+				<a
+					class="share__btn"
+					data-testid="public-share-download-btn"
+					href={fileDownloadUrl(viewerFile.id)}
+					download
+					rel="external"
+				>
+					<Icon name="download" />
+					{t('share.download', 'Download')}
+				</a>
+			</div>
+		</div>
 	{:else if view === 'folder' && folderId}
 		<!--
 			`content-area` is AppShell's scrolling content container (global,
@@ -416,9 +444,12 @@
 
 <PhotoLightbox items={mediaFiles} bind:index={lightboxIndex} readOnly />
 
-{#if view === 'folder'}
-	<FileViewer bind:open={viewerOpen} file={viewerFile} readOnly />
-{/if}
+<!--
+	One viewer for both shapes of share. Bound, so its own close button drives
+	`viewerOpen` back to false and the page beneath reappears — the folder grid
+	or the single-file card.
+-->
+<FileViewer bind:open={viewerOpen} file={viewerFile} readOnly />
 
 <style>
 	/*
@@ -561,8 +592,18 @@
 		margin: 0;
 	}
 
+	.share__file-actions {
+		display: flex;
+		gap: var(--space-3);
+		flex-wrap: wrap;
+		justify-content: center;
+	}
+
 	.share__btn {
 		display: inline-flex;
+		border: none;
+		cursor: pointer;
+		font: inherit;
 		align-items: center;
 		gap: var(--space-2);
 		padding: var(--space-2) var(--space-4);
