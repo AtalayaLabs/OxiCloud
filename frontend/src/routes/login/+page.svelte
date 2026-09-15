@@ -343,10 +343,15 @@
 			// Admin now exists — fold the setup affordance away and return to login.
 			setupAvailable = false;
 			setupSuccess = t('auth.admin_success', 'Administrator created. You can now sign in.');
+			// 7 seconds — the message is one sentence; 2 s clipped it
+			// before the eye tracked from the button to the notice.
+			// The follow-up state (mode='login') is a UI reset with no
+			// data risk, so a longer read window is pure quality-of-
+			// life. Ed feedback 2026-09-15.
 			setTimeout(() => {
 				mode = 'login';
 				setupSuccess = '';
-			}, 2000);
+			}, 7000);
 		} catch (err) {
 			setupError =
 				err instanceof Error ? err.message : t('auth.admin_create_error', 'Setup failed');
