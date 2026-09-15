@@ -94,7 +94,13 @@ Authorization: Bearer {{owner_token}}
 folder_id: {{tight_root_id}}
 file: file,fixtures/chunk-over-cap-5mb.bin; application/octet-stream
 
+# `error_type` is the wire contract the SPA keys its user-facing
+# message on — "Not enough space…" rather than the operator-facing
+# byte arithmetic in `error`. Asserted here on the SINGLE-item path
+# so the batch path (step 11) can be checked to agree with it.
 HTTP 507
+[Asserts]
+jsonpath "$.error_type" == "Quota Exceeded"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -348,6 +354,10 @@ jsonpath "$.outcome.extra.bytes_reclaimed" exists
 #             a) MOVE a 5 MiB file from unlimited → tight → 507.
 #             b) COPY a 5 MiB file from unlimited → tight → 507.
 #             c) Sanity — same MOVE targeted at unlimited still 200.
+#             d) COPY a FOLDER whose tree exceeds the cap → 507.
+#                Its own service method with its own pre-flight, so
+#                wrapping the file in a folder must not be a way
+#                around the cap.
 # ─────────────────────────────────────────────────────────────
 
 # Capture the 5 MiB file id currently living in the unlimited drive
@@ -386,15 +396,23 @@ Content-Type: application/json
   "target_folder_id": "{{tight_root_id}}"
 }
 
-# Batch envelope: 200 all-ok, 206 partial, 400 all-failed. Our
-# single-item batch has one quota-refused item → 400 with the
-# failure in the `.failed[]` array (per `BatchOperationResponse`).
-HTTP 400
+# Batch envelope: 200 all-ok, 206 partial, and for an all-failed
+# batch the status of its single shared cause — here 507, the same
+# answer 11a gives on the single-item MOVE path.
+#
+# It used to be a flat 400 whatever the reason, which made "out of
+# space" indistinguishable from "malformed request": the SPA could
+# only say "the request failed", and a sync client could not tell a
+# permanent refusal from a retryable one. `error_type` carries the
+# machine-readable cause the SPA keys its message on — it must never
+# be matched on `error`, whose text is written for an operator.
+HTTP 507
 [Asserts]
-jsonpath "$.stats.failed"      == 1
-jsonpath "$.stats.successful"  == 0
-jsonpath "$.failed[0].id"      == "{{big_file_id}}"
-jsonpath "$.failed[0].error"   exists
+jsonpath "$.stats.failed"         == 1
+jsonpath "$.stats.successful"     == 0
+jsonpath "$.failed[0].id"         == "{{big_file_id}}"
+jsonpath "$.failed[0].error"      exists
+jsonpath "$.failed[0].error_type" == "Quota Exceeded"
 
 
 # 11c — Sanity: the file MOVE isn't universally broken. Targeting
@@ -411,7 +429,76 @@ Content-Type: application/json
 HTTP 200
 
 
-# `used_bytes` on the tight drive is unchanged — the two refused
+# 11d — COPY a FOLDER whose tree exceeds the target's quota.
+#
+#       Distinct from 11b: that copies a file whose own size is
+#       known up front, while this one must price a whole subtree
+#       before writing any of it. `copy_folder_tree_with_perms` is
+#       a separate service method with its own pre-flight, so a
+#       regression could land on one path and not the other — the
+#       cheapest way past a quota would be to put the file in a
+#       folder and copy that instead.
+#
+#       Build the source: a folder in the unlimited drive holding
+#       the 5 MiB file. Moving within the same drive shifts no
+#       bytes between drives, so the tight drive's usage is still
+#       untouched when the assertions below run.
+POST {{base_url}}/api/folders
+Authorization: Bearer {{owner_token}}
+Content-Type: application/json
+{ "name": "quota-copy-src", "parent_id": "{{unlimited_root_id}}" }
+
+HTTP 201
+[Captures]
+quota_src_folder_id: jsonpath "$.id"
+
+
+PUT {{base_url}}/api/files/{{big_file_id}}/move
+Authorization: Bearer {{owner_token}}
+Content-Type: application/json
+{
+  "folder_id": "{{quota_src_folder_id}}"
+}
+
+HTTP 200
+
+
+POST {{base_url}}/api/batch/folders/copy
+Authorization: Bearer {{owner_token}}
+Content-Type: application/json
+{
+  "folder_ids": ["{{quota_src_folder_id}}"],
+  "target_folder_id": "{{tight_root_id}}"
+}
+
+HTTP 507
+[Asserts]
+jsonpath "$.stats.failed"         == 1
+jsonpath "$.stats.successful"     == 0
+jsonpath "$.failed[0].id"         == "{{quota_src_folder_id}}"
+jsonpath "$.failed[0].error_type" == "Quota Exceeded"
+
+
+# Put the file back at the unlimited root and drop the scratch
+# folder, so the drive-usage assertions below read the same shape
+# they did before 11d existed.
+PUT {{base_url}}/api/files/{{big_file_id}}/move
+Authorization: Bearer {{owner_token}}
+Content-Type: application/json
+{
+  "folder_id": "{{unlimited_root_id}}"
+}
+
+HTTP 200
+
+
+DELETE {{base_url}}/api/folders/{{quota_src_folder_id}}
+Authorization: Bearer {{owner_token}}
+
+HTTP 204
+
+
+# `used_bytes` on the tight drive is unchanged — the refused
 # operations above never wrote anything. Trigger-sweep so the
 # check reads live SQL (see the class doc on the earlier
 # sweep + GET pair for the design rationale).

@@ -117,27 +117,38 @@ impl AppError {
     }
 }
 
+/// HTTP status for a domain error kind.
+///
+/// Split out of `From<DomainError> for AppError` so callers that hold a
+/// `kind` without a `DomainError` can reach the same decision — the batch
+/// endpoints need it to report a wholly-failed batch with the status its
+/// single cause deserves (a quota failure is 507, not 400) instead of
+/// inventing a second mapping that could drift from this one.
+pub fn status_for_kind(kind: ErrorKind) -> StatusCode {
+    match kind {
+        ErrorKind::NotFound => StatusCode::NOT_FOUND,
+        ErrorKind::AlreadyExists => StatusCode::CONFLICT,
+        ErrorKind::InvalidInput => StatusCode::BAD_REQUEST,
+        ErrorKind::AccessDenied => StatusCode::FORBIDDEN,
+        ErrorKind::Timeout => StatusCode::REQUEST_TIMEOUT,
+        ErrorKind::InternalError => StatusCode::INTERNAL_SERVER_ERROR,
+        ErrorKind::NotImplemented => StatusCode::NOT_IMPLEMENTED,
+        ErrorKind::UnsupportedOperation => StatusCode::METHOD_NOT_ALLOWED,
+        ErrorKind::DatabaseError => StatusCode::INTERNAL_SERVER_ERROR,
+        ErrorKind::QuotaExceeded => StatusCode::INSUFFICIENT_STORAGE,
+        ErrorKind::Conflict => StatusCode::CONFLICT,
+        ErrorKind::PreconditionFailed => StatusCode::PRECONDITION_FAILED,
+        // 503, not 500: the request was fine and the same request
+        // may well succeed shortly. That is what a caller needs to
+        // decide whether to retry, and it is what a reverse proxy
+        // keys off to avoid caching the failure.
+        ErrorKind::TransientBackend => StatusCode::SERVICE_UNAVAILABLE,
+    }
+}
+
 impl From<DomainError> for AppError {
     fn from(err: DomainError) -> Self {
-        let status_code = match err.kind {
-            ErrorKind::NotFound => StatusCode::NOT_FOUND,
-            ErrorKind::AlreadyExists => StatusCode::CONFLICT,
-            ErrorKind::InvalidInput => StatusCode::BAD_REQUEST,
-            ErrorKind::AccessDenied => StatusCode::FORBIDDEN,
-            ErrorKind::Timeout => StatusCode::REQUEST_TIMEOUT,
-            ErrorKind::InternalError => StatusCode::INTERNAL_SERVER_ERROR,
-            ErrorKind::NotImplemented => StatusCode::NOT_IMPLEMENTED,
-            ErrorKind::UnsupportedOperation => StatusCode::METHOD_NOT_ALLOWED,
-            ErrorKind::DatabaseError => StatusCode::INTERNAL_SERVER_ERROR,
-            ErrorKind::QuotaExceeded => StatusCode::INSUFFICIENT_STORAGE,
-            ErrorKind::Conflict => StatusCode::CONFLICT,
-            ErrorKind::PreconditionFailed => StatusCode::PRECONDITION_FAILED,
-            // 503, not 500: the request was fine and the same request
-            // may well succeed shortly. That is what a caller needs to
-            // decide whether to retry, and it is what a reverse proxy
-            // keys off to avoid caching the failure.
-            ErrorKind::TransientBackend => StatusCode::SERVICE_UNAVAILABLE,
-        };
+        let status_code = status_for_kind(err.kind);
 
         Self {
             status_code,

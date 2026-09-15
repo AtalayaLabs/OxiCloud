@@ -15,6 +15,7 @@ mod tests {
     use crate::application::services::file_retrieval_service::FileRetrievalService;
     use crate::application::services::folder_service::FolderService;
     use crate::common::config::AppConfig;
+    use crate::common::errors::DomainError;
     use crate::infrastructure::repositories::pg::file_blob_read_repository::FileBlobReadRepository;
     use crate::infrastructure::repositories::pg::file_blob_write_repository::FileBlobWriteRepository;
     use crate::infrastructure::repositories::pg::folder_db_repository::FolderDbRepository;
@@ -70,8 +71,10 @@ mod tests {
         result.successful.push("id3".to_string());
         result.stats.successful += 1;
 
-        result.failed.push(("id2".to_string(), "error".to_string()));
-        result.stats.failed += 1;
+        result.record_failure(
+            "id2".to_string(),
+            &DomainError::not_found("File", "id2".to_string()),
+        );
 
         assert_eq!(result.stats.successful, 2, "Should have 2 successful");
         assert_eq!(result.stats.failed, 1, "Should have 1 failed");

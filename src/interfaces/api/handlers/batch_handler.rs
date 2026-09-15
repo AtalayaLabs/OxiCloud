@@ -11,11 +11,12 @@ use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::application::ports::storage_ports::CopyFolderTreeResult;
 use crate::application::services::batch_operations::{
-    BatchOperationService, BatchResult, BatchStats,
+    BatchOperationService, BatchResult, BatchStats, sole_kind,
 };
+use crate::common::errors::ErrorKind;
 use crate::interfaces::api::deserializer;
 use crate::interfaces::api::handlers::ApiResult;
-use crate::interfaces::errors::AppError;
+use crate::interfaces::errors::{AppError, status_for_kind};
 use crate::interfaces::middleware::auth::AuthUser;
 
 /// Maximum number of items allowed in a single batch request.
@@ -86,6 +87,11 @@ pub struct FailedOperation {
     pub id: String,
     /// Error message
     pub error: String,
+    /// Machine-readable cause — the same vocabulary `AppError.error_type`
+    /// uses on single-item endpoints. The SPA switches on this, never on
+    /// `error`, so a batch failure can be reported as precisely as a
+    /// single-item one ("not enough space" rather than "request failed").
+    pub error_type: String,
 }
 
 /// Statistics for a batch operation
@@ -113,6 +119,38 @@ impl From<BatchStats> for BatchOperationStats {
     }
 }
 
+/// HTTP status for a finished batch.
+///
+/// - nothing failed → `200`
+/// - some failed → `206 Partial Content`
+/// - everything failed → the status the single shared cause deserves
+///
+/// That last rule is the point. A wholly-failed batch used to flatten to
+/// `400 Bad Request` whatever the reason, so a copy refused for lack of space
+/// was indistinguishable from a malformed request: the client could not tell
+/// the user what to do about it, and a caller like rclone could not tell a
+/// retryable condition from a permanent one. When every item failed the same
+/// way, that way is the honest answer — quota → `507`, denied → `403`,
+/// missing → `404`.
+///
+/// Mixed causes keep `400`: there is no one status that describes "one denied,
+/// one out of space", and the per-item `failed[]` list carries the detail.
+/// `success` is the all-succeeded status — `200` for operations on existing
+/// items, `201` for the ones that create (folder create / copy).
+fn batch_status<T>(
+    response: &BatchOperationResponse<T>,
+    sole_kind: Option<ErrorKind>,
+    success: StatusCode,
+) -> StatusCode {
+    if response.stats.failed == 0 {
+        return success;
+    }
+    if response.stats.successful > 0 {
+        return StatusCode::PARTIAL_CONTENT;
+    }
+    sole_kind.map_or(StatusCode::BAD_REQUEST, status_for_kind)
+}
+
 /// Converts domain BatchResult<T> to DTO
 impl<T, U> From<BatchResult<T>> for BatchOperationResponse<U>
 where
@@ -124,7 +162,11 @@ where
         let failed = result
             .failed
             .into_iter()
-            .map(|(id, error)| FailedOperation { id, error })
+            .map(|f| FailedOperation {
+                id: f.id,
+                error: f.message,
+                error_type: f.kind.as_str().to_string(),
+            })
             .collect();
 
         Self {
@@ -142,7 +184,10 @@ where
     responses(
         (status = 200, description = "All files moved"),
         (status = 206, description = "Partial success"),
-        (status = 400, description = "Bad request"),
+        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons"),
+        (status = 403, description = "Every item was denied and the caller can see the resources"),
+        (status = 404, description = "Every item was denied and the caller cannot see the resources"),
+        (status = 507, description = "Every item exceeded the destination drive's quota"),
         (status = 401, description = "Unauthorized")
     ),
     security(("bearerAuth" = [])),
@@ -187,18 +232,10 @@ pub async fn move_files_batch(
         })?;
 
     // Convert result to DTO
+    let sole_kind = result.sole_failure_kind();
     let response: BatchOperationResponse<FileDto> = result.into();
 
-    // Determine status code based on results
-    let status_code = if response.stats.failed > 0 {
-        if response.stats.successful > 0 {
-            StatusCode::PARTIAL_CONTENT // Some operations successful, others failed
-        } else {
-            StatusCode::BAD_REQUEST // All failed
-        }
-    } else {
-        StatusCode::OK // All successful
-    };
+    let status_code = batch_status(&response, sole_kind, StatusCode::OK);
 
     Ok((status_code, Json(response)).into_response())
 }
@@ -210,7 +247,10 @@ pub async fn move_files_batch(
     responses(
         (status = 200, description = "All files copied"),
         (status = 206, description = "Partial success"),
-        (status = 400, description = "Bad request"),
+        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons"),
+        (status = 403, description = "Every item was denied and the caller can see the resources"),
+        (status = 404, description = "Every item was denied and the caller cannot see the resources"),
+        (status = 507, description = "Every item exceeded the destination drive's quota"),
         (status = 401, description = "Unauthorized")
     ),
     security(("bearerAuth" = [])),
@@ -255,18 +295,10 @@ pub async fn copy_files_batch(
         })?;
 
     // Convert result to DTO
+    let sole_kind = result.sole_failure_kind();
     let response: BatchOperationResponse<FileDto> = result.into();
 
-    // Determine status code based on results
-    let status_code = if response.stats.failed > 0 {
-        if response.stats.successful > 0 {
-            StatusCode::PARTIAL_CONTENT // Some operations successful, others failed
-        } else {
-            StatusCode::BAD_REQUEST // All failed
-        }
-    } else {
-        StatusCode::OK // All successful
-    };
+    let status_code = batch_status(&response, sole_kind, StatusCode::OK);
 
     Ok((status_code, Json(response)).into_response())
 }
@@ -278,7 +310,10 @@ pub async fn copy_files_batch(
     responses(
         (status = 200, description = "All files deleted"),
         (status = 206, description = "Partial success"),
-        (status = 400, description = "Bad request"),
+        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons"),
+        (status = 403, description = "Every item was denied and the caller can see the resources"),
+        (status = 404, description = "Every item was denied and the caller cannot see the resources"),
+        (status = 507, description = "Every item exceeded the destination drive's quota"),
         (status = 401, description = "Unauthorized")
     ),
     security(("bearerAuth" = [])),
@@ -323,26 +358,22 @@ pub async fn delete_files_batch(
         })?;
 
     // Create custom response for string IDs
+    let sole_kind = result.sole_failure_kind();
     let response = BatchOperationResponse {
         successful: result.successful,
         failed: result
             .failed
             .into_iter()
-            .map(|(id, error)| FailedOperation { id, error })
+            .map(|f| FailedOperation {
+                id: f.id,
+                error: f.message,
+                error_type: f.kind.as_str().to_string(),
+            })
             .collect(),
         stats: result.stats.into(),
     };
 
-    // Determine status code based on results
-    let status_code = if response.stats.failed > 0 {
-        if response.stats.successful > 0 {
-            StatusCode::PARTIAL_CONTENT // Some operations successful, others failed
-        } else {
-            StatusCode::BAD_REQUEST // All failed
-        }
-    } else {
-        StatusCode::OK // All successful
-    };
+    let status_code = batch_status(&response, sole_kind, StatusCode::OK);
 
     Ok((status_code, Json(response)).into_response())
 }
@@ -354,7 +385,10 @@ pub async fn delete_files_batch(
     responses(
         (status = 200, description = "All folders deleted"),
         (status = 206, description = "Partial success"),
-        (status = 400, description = "Bad request"),
+        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons"),
+        (status = 403, description = "Every item was denied and the caller can see the resources"),
+        (status = 404, description = "Every item was denied and the caller cannot see the resources"),
+        (status = 507, description = "Every item exceeded the destination drive's quota"),
         (status = 401, description = "Unauthorized")
     ),
     security(("bearerAuth" = [])),
@@ -399,26 +433,22 @@ pub async fn delete_folders_batch(
         })?;
 
     // Create custom response for string IDs
+    let sole_kind = result.sole_failure_kind();
     let response = BatchOperationResponse {
         successful: result.successful,
         failed: result
             .failed
             .into_iter()
-            .map(|(id, error)| FailedOperation { id, error })
+            .map(|f| FailedOperation {
+                id: f.id,
+                error: f.message,
+                error_type: f.kind.as_str().to_string(),
+            })
             .collect(),
         stats: result.stats.into(),
     };
 
-    // Determine status code based on results
-    let status_code = if response.stats.failed > 0 {
-        if response.stats.successful > 0 {
-            StatusCode::PARTIAL_CONTENT // Some operations successful, others failed
-        } else {
-            StatusCode::BAD_REQUEST // All failed
-        }
-    } else {
-        StatusCode::OK // All successful
-    };
+    let status_code = batch_status(&response, sole_kind, StatusCode::OK);
 
     Ok((status_code, Json(response)).into_response())
 }
@@ -430,7 +460,10 @@ pub async fn delete_folders_batch(
     responses(
         (status = 201, description = "All folders created"),
         (status = 206, description = "Partial success"),
-        (status = 400, description = "Bad request"),
+        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons"),
+        (status = 403, description = "Every item was denied and the caller can see the resources"),
+        (status = 404, description = "Every item was denied and the caller cannot see the resources"),
+        (status = 507, description = "Every item exceeded the destination drive's quota"),
         (status = 401, description = "Unauthorized")
     ),
     security(("bearerAuth" = [])),
@@ -482,18 +515,10 @@ pub async fn create_folders_batch(
         })?;
 
     // Convert result to DTO
+    let sole_kind = result.sole_failure_kind();
     let response: BatchOperationResponse<FolderDto> = result.into();
 
-    // Determine status code based on results
-    let status_code = if response.stats.failed > 0 {
-        if response.stats.successful > 0 {
-            StatusCode::PARTIAL_CONTENT // Some operations successful, others failed
-        } else {
-            StatusCode::BAD_REQUEST // All failed
-        }
-    } else {
-        StatusCode::CREATED // All successful
-    };
+    let status_code = batch_status(&response, sole_kind, StatusCode::CREATED);
 
     Ok((status_code, Json(response)).into_response())
 }
@@ -505,7 +530,10 @@ pub async fn create_folders_batch(
     responses(
         (status = 200, description = "Batch file details"),
         (status = 206, description = "Partial success"),
-        (status = 400, description = "Bad request"),
+        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons"),
+        (status = 403, description = "Every item was denied and the caller can see the resources"),
+        (status = 404, description = "Every item was denied and the caller cannot see the resources"),
+        (status = 507, description = "Every item exceeded the destination drive's quota"),
         (status = 401, description = "Unauthorized")
     ),
     security(("bearerAuth" = [])),
@@ -550,18 +578,10 @@ pub async fn get_files_batch(
         })?;
 
     // Convert result to DTO
+    let sole_kind = result.sole_failure_kind();
     let response: BatchOperationResponse<FileDto> = result.into();
 
-    // Determine status code based on results
-    let status_code = if response.stats.failed > 0 {
-        if response.stats.successful > 0 {
-            StatusCode::PARTIAL_CONTENT // Some operations successful, others failed
-        } else {
-            StatusCode::BAD_REQUEST // All failed
-        }
-    } else {
-        StatusCode::OK // All successful
-    };
+    let status_code = batch_status(&response, sole_kind, StatusCode::OK);
 
     Ok((status_code, Json(response)).into_response())
 }
@@ -573,7 +593,10 @@ pub async fn get_files_batch(
     responses(
         (status = 200, description = "Batch folder details"),
         (status = 206, description = "Partial success"),
-        (status = 400, description = "Bad request"),
+        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons"),
+        (status = 403, description = "Every item was denied and the caller can see the resources"),
+        (status = 404, description = "Every item was denied and the caller cannot see the resources"),
+        (status = 507, description = "Every item exceeded the destination drive's quota"),
         (status = 401, description = "Unauthorized")
     ),
     security(("bearerAuth" = [])),
@@ -618,18 +641,10 @@ pub async fn get_folders_batch(
         })?;
 
     // Convert result to DTO
+    let sole_kind = result.sole_failure_kind();
     let response: BatchOperationResponse<FolderDto> = result.into();
 
-    // Determine status code based on results
-    let status_code = if response.stats.failed > 0 {
-        if response.stats.successful > 0 {
-            StatusCode::PARTIAL_CONTENT // Some operations successful, others failed
-        } else {
-            StatusCode::BAD_REQUEST // All failed
-        }
-    } else {
-        StatusCode::OK // All successful
-    };
+    let status_code = batch_status(&response, sole_kind, StatusCode::OK);
 
     Ok((status_code, Json(response)).into_response())
 }
@@ -681,7 +696,10 @@ impl From<BatchDownloadQuery> for BatchDownloadRequest {
     responses(
         (status = 200, description = "All items trashed"),
         (status = 206, description = "Partial success"),
-        (status = 400, description = "Bad request"),
+        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons"),
+        (status = 403, description = "Every item was denied and the caller can see the resources"),
+        (status = 404, description = "Every item was denied and the caller cannot see the resources"),
+        (status = 507, description = "Every item exceeded the destination drive's quota"),
         (status = 401, description = "Unauthorized")
     ),
     security(("bearerAuth" = [])),
@@ -714,6 +732,10 @@ pub async fn trash_batch(
 
     let mut all_successful: Vec<String> = Vec::new();
     let mut all_failed: Vec<FailedOperation> = Vec::new();
+    // Kinds are collected across BOTH sub-batches: this endpoint's status has
+    // to describe files and folders together, so "they all failed the same
+    // way" is a question about the merged set, not either half.
+    let mut failed_kinds: Vec<ErrorKind> = Vec::new();
     let total = request.file_ids.len() + request.folder_ids.len();
     let start_time = std::time::Instant::now();
 
@@ -726,12 +748,12 @@ pub async fn trash_batch(
         {
             Ok(result) => {
                 all_successful.extend(result.successful);
-                all_failed.extend(
-                    result
-                        .failed
-                        .into_iter()
-                        .map(|(id, error)| FailedOperation { id, error }),
-                );
+                failed_kinds.extend(result.failed.iter().map(|f| f.kind));
+                all_failed.extend(result.failed.into_iter().map(|f| FailedOperation {
+                    id: f.id,
+                    error: f.message,
+                    error_type: f.kind.as_str().to_string(),
+                }));
             }
             Err(e) => {
                 tracing::error!("Batch trash_files failed: {}", e);
@@ -753,12 +775,12 @@ pub async fn trash_batch(
         {
             Ok(result) => {
                 all_successful.extend(result.successful);
-                all_failed.extend(
-                    result
-                        .failed
-                        .into_iter()
-                        .map(|(id, error)| FailedOperation { id, error }),
-                );
+                failed_kinds.extend(result.failed.iter().map(|f| f.kind));
+                all_failed.extend(result.failed.into_iter().map(|f| FailedOperation {
+                    id: f.id,
+                    error: f.message,
+                    error_type: f.kind.as_str().to_string(),
+                }));
             }
             Err(e) => {
                 tracing::error!("Batch trash_folders failed: {}", e);
@@ -785,15 +807,7 @@ pub async fn trash_batch(
         },
     };
 
-    let status_code = if failed_count > 0 {
-        if successful_count > 0 {
-            StatusCode::PARTIAL_CONTENT
-        } else {
-            StatusCode::BAD_REQUEST
-        }
-    } else {
-        StatusCode::OK
-    };
+    let status_code = batch_status(&response, sole_kind(failed_kinds), StatusCode::OK);
 
     Ok((status_code, Json(response)).into_response())
 }
@@ -805,7 +819,10 @@ pub async fn trash_batch(
     responses(
         (status = 200, description = "All folders moved"),
         (status = 206, description = "Partial success"),
-        (status = 400, description = "Bad request"),
+        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons"),
+        (status = 403, description = "Every item was denied and the caller can see the resources"),
+        (status = 404, description = "Every item was denied and the caller cannot see the resources"),
+        (status = 507, description = "Every item exceeded the destination drive's quota"),
         (status = 401, description = "Unauthorized")
     ),
     security(("bearerAuth" = [])),
@@ -847,17 +864,10 @@ pub async fn move_folders_batch(
             )
         })?;
 
+    let sole_kind = result.sole_failure_kind();
     let response: BatchOperationResponse<FolderDto> = result.into();
 
-    let status_code = if response.stats.failed > 0 {
-        if response.stats.successful > 0 {
-            StatusCode::PARTIAL_CONTENT
-        } else {
-            StatusCode::BAD_REQUEST
-        }
-    } else {
-        StatusCode::OK
-    };
+    let status_code = batch_status(&response, sole_kind, StatusCode::OK);
 
     Ok((status_code, Json(response)).into_response())
 }
@@ -890,7 +900,10 @@ impl From<CopyFolderTreeResult> for CopiedFolderDto {
     responses(
         (status = 200, description = "All folders copied"),
         (status = 206, description = "Partial success"),
-        (status = 400, description = "Bad request"),
+        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons"),
+        (status = 403, description = "Every item was denied and the caller can see the resources"),
+        (status = 404, description = "Every item was denied and the caller cannot see the resources"),
+        (status = 507, description = "Every item exceeded the destination drive's quota"),
         (status = 401, description = "Unauthorized")
     ),
     security(("bearerAuth" = [])),
@@ -932,17 +945,10 @@ pub async fn copy_folders_batch(
             )
         })?;
 
+    let sole_kind = result.sole_failure_kind();
     let response: BatchOperationResponse<CopiedFolderDto> = result.into();
 
-    let status_code = if response.stats.failed > 0 {
-        if response.stats.successful > 0 {
-            StatusCode::PARTIAL_CONTENT
-        } else {
-            StatusCode::BAD_REQUEST
-        }
-    } else {
-        StatusCode::OK
-    };
+    let status_code = batch_status(&response, sole_kind, StatusCode::OK);
 
     Ok((status_code, Json(response)).into_response())
 }
@@ -957,7 +963,10 @@ pub async fn copy_folders_batch(
     ),
     responses(
         (status = 200, description = "ZIP archive stream"),
-        (status = 400, description = "Bad request"),
+        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons"),
+        (status = 403, description = "Every item was denied and the caller can see the resources"),
+        (status = 404, description = "Every item was denied and the caller cannot see the resources"),
+        (status = 507, description = "Every item exceeded the destination drive's quota"),
         (status = 401, description = "Unauthorized"),
         (status = 500, description = "ZIP creation failed")
     ),
@@ -980,7 +989,10 @@ pub async fn download_batch_querystring(
     path = "/api/batch/download",
     responses(
         (status = 200, description = "ZIP archive stream"),
-        (status = 400, description = "Bad request"),
+        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons"),
+        (status = 403, description = "Every item was denied and the caller can see the resources"),
+        (status = 404, description = "Every item was denied and the caller cannot see the resources"),
+        (status = 507, description = "Every item exceeded the destination drive's quota"),
         (status = 401, description = "Unauthorized"),
         (status = 500, description = "ZIP creation failed")
     ),

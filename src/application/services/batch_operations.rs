@@ -20,7 +20,7 @@ use crate::application::services::file_retrieval_service::FileRetrievalService;
 use crate::application::services::folder_service::FolderService;
 use crate::application::services::trash_service::TrashService;
 use crate::common::config::AppConfig;
-use crate::common::errors::DomainError;
+use crate::common::errors::{DomainError, ErrorKind};
 use crate::domain::services::authorization::Subject;
 use uuid::Uuid;
 
@@ -43,15 +43,89 @@ pub enum BatchOperationError {
     Internal(String),
 }
 
+/// One item's failure inside a batch.
+///
+/// Carries the `ErrorKind`, not just a rendered message. A batch used to
+/// reduce every failure to a `String`, which meant the HTTP layer had nothing
+/// to map: a batch that failed entirely on quota came back as a flat `400 Bad
+/// Request`, and the SPA — which by contract switches on `error_type`, never
+/// on message text — could say no more than "the request failed".
+#[derive(Debug, Clone)]
+pub struct BatchFailure {
+    /// Identifier of the item that failed.
+    pub id: String,
+    /// Human-readable rendering of the error.
+    pub message: String,
+    /// Machine-readable cause, so the caller can react to it.
+    pub kind: ErrorKind,
+}
+
+/// The single kind behind a run of failures, when they all agree.
+///
+/// A free function rather than only a method, because
+/// `POST /api/batch/trash` merges TWO `BatchResult`s — files and folders —
+/// into one response, and so has no single result to ask. Sharing the rule
+/// keeps that endpoint from drifting into a different answer from its
+/// siblings, which is exactly what happened when it kept a hand-written
+/// status ladder.
+pub(crate) fn sole_kind<I: IntoIterator<Item = ErrorKind>>(kinds: I) -> Option<ErrorKind> {
+    let mut kinds = kinds.into_iter();
+    let first = kinds.next()?;
+    kinds.all(|k| k == first).then_some(first)
+}
+
 /// Result of a batch operation with statistics
 #[derive(Debug, Clone)]
 pub struct BatchResult<T> {
     /// Successful results
     pub successful: Vec<T>,
     /// Failed operations with their errors
-    pub failed: Vec<(String, String)>,
+    pub failed: Vec<BatchFailure>,
     /// Operation statistics
     pub stats: BatchStats,
+}
+
+impl<T> BatchResult<T> {
+    /// Record one item's failure — and SAY SO.
+    ///
+    /// Every batch loop used to push the error into `failed` and bump the
+    /// counter, silently. The reason reached the client in the response body,
+    /// but the server log showed only "Batch copy completed: 0/1 successful",
+    /// which tells an operator that something failed and nothing about what.
+    /// Worse, the summary line is `info`, so a wholly-failed batch produced no
+    /// warning at all.
+    ///
+    /// `warn` rather than `error`: a batch item failing is usually the
+    /// caller's problem (no permission, quota, name clash), not the server's.
+    ///
+    /// Which batch operation this was is not a parameter — the request-scope
+    /// span already carries the method and URI (`/api/batch/files/copy`), the
+    /// same reason request id and client IP are not repeated in audit lines.
+    pub(crate) fn record_failure(&mut self, item_id: String, err: &DomainError) {
+        tracing::warn!(
+            target: "oxicloud::batch",
+            item_id = %item_id,
+            error_kind = ?err.kind,
+            error = %err,
+            "batch item failed",
+        );
+        self.failed.push(BatchFailure {
+            id: item_id,
+            message: err.to_string(),
+            kind: err.kind,
+        });
+        self.stats.failed += 1;
+    }
+
+    /// The single `ErrorKind` behind every failure, when they agree.
+    ///
+    /// `None` when the batch succeeded wholly, or when items failed for
+    /// DIFFERENT reasons — there is no one status that honestly describes
+    /// "one denied, one out of space", so the caller falls back to the
+    /// generic batch shape and reads the per-item list.
+    pub fn sole_failure_kind(&self) -> Option<ErrorKind> {
+        sole_kind(self.failed.iter().map(|f| f.kind))
+    }
 }
 
 /// Statistics of a batch operation
@@ -166,8 +240,7 @@ impl BatchOperationService {
                     result.stats.successful += 1;
                 }
                 Err(e) => {
-                    result.failed.push((file_id, e.to_string()));
-                    result.stats.failed += 1;
+                    result.record_failure(file_id, &e);
                 }
             }
         }
@@ -231,8 +304,7 @@ impl BatchOperationService {
                     result.stats.successful += 1;
                 }
                 Err(e) => {
-                    result.failed.push((file_id, e.to_string()));
-                    result.stats.failed += 1;
+                    result.record_failure(file_id, &e);
                 }
             }
         }
@@ -291,8 +363,7 @@ impl BatchOperationService {
                     result.stats.successful += 1;
                 }
                 Err(e) => {
-                    result.failed.push((file_id, e.to_string()));
-                    result.stats.failed += 1;
+                    result.record_failure(file_id, &e);
                 }
             }
         }
@@ -352,8 +423,7 @@ impl BatchOperationService {
                     result.stats.successful += 1;
                 }
                 Err(e) => {
-                    result.failed.push((file_id, e.to_string()));
-                    result.stats.failed += 1;
+                    result.record_failure(file_id, &e);
                 }
             }
         }
@@ -414,8 +484,7 @@ impl BatchOperationService {
                     result.stats.successful += 1;
                 }
                 Err(e) => {
-                    result.failed.push((folder_id, e.to_string()));
-                    result.stats.failed += 1;
+                    result.record_failure(folder_id, &e);
                 }
             }
         }
@@ -479,8 +548,7 @@ impl BatchOperationService {
                 }
                 Err(e) => {
                     tracing::debug!("Failed to trash file {}: {}", file_id, e);
-                    result.failed.push((file_id, e.to_string()));
-                    result.stats.failed += 1;
+                    result.record_failure(file_id, &e);
                 }
             }
         }
@@ -543,8 +611,7 @@ impl BatchOperationService {
                 }
                 Err(e) => {
                     tracing::debug!("Failed to trash folder {}: {}", folder_id, e);
-                    result.failed.push((folder_id, e.to_string()));
-                    result.stats.failed += 1;
+                    result.record_failure(folder_id, &e);
                 }
             }
         }
@@ -608,8 +675,7 @@ impl BatchOperationService {
                     result.stats.successful += 1;
                 }
                 Err(e) => {
-                    result.failed.push((folder_id, e.to_string()));
-                    result.stats.failed += 1;
+                    result.record_failure(folder_id, &e);
                 }
             }
         }
@@ -675,8 +741,7 @@ impl BatchOperationService {
                     result.stats.successful += 1;
                 }
                 Err(e) => {
-                    result.failed.push((folder_id, e.to_string()));
-                    result.stats.failed += 1;
+                    result.record_failure(folder_id, &e);
                 }
             }
         }
@@ -1007,8 +1072,7 @@ impl BatchOperationService {
                     result.stats.successful += 1;
                 }
                 Err(e) => {
-                    result.failed.push((format!("{:?}", item), e.to_string()));
-                    result.stats.failed += 1;
+                    result.record_failure(format!("{:?}", item), &e);
                 }
             }
         }
@@ -1071,8 +1135,7 @@ impl BatchOperationService {
                     result.stats.successful += 1;
                 }
                 Err(e) => {
-                    result.failed.push((id, e.to_string()));
-                    result.stats.failed += 1;
+                    result.record_failure(id, &e);
                 }
             }
         }
@@ -1132,8 +1195,7 @@ impl BatchOperationService {
                     result.stats.successful += 1;
                 }
                 Err(e) => {
-                    result.failed.push((folder_id, e.to_string()));
-                    result.stats.failed += 1;
+                    result.record_failure(folder_id, &e);
                 }
             }
         }
