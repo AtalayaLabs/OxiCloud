@@ -38,9 +38,14 @@ export const OxiIcons: Record<string, IconEntry> = {
     512,
     "M204.3 43.1C215.9 32 233 28.9 247.7 35.2S272 56 272 72l0 136.3 172.3-165.1C455.9 32 473 28.9 487.7 35.2S512 56 512 72l0 368c0 16-9.6 30.5-24.3 36.8s-31.8 3.2-43.4-7.9L272 303.7 272 440c0 16-9.6 30.5-24.3 36.8s-31.8 3.2-43.4-7.9l-192-184C4.5 277.3 0 266.9 0 256s4.5-21.3 12.3-28.9l192-184z"
   ],
+  // Font Awesome Free 7.3.1. Replaces a path that was a SOLID disc with one
+  // thin diagonal bar cut out of it — legible only as a heavy filled circle,
+  // not the ring-and-slash the name implies. Like the other circle icons here,
+  // it relies on `fill-rule: evenodd` (set in `Icon.svelte`): the two half-disc
+  // subpaths punch out of the outer disc, leaving the ring and the bar.
   "ban": [
     512,
-    "M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512zM159.3 388.7L388.7 159.3c4.6-4.6 11.5-5.9 17.4-3.5c14.5 6 26.4 15.3 35.1 27c3.8 5.2 3.2 12.3-1.2 16.8L210.2 428.4c-4.4 4.4-11.6 5-16.8 1.2c-11.7-8.7-21-20.6-27-35.1c-2.5-5.9-1.1-12.8 3.5-17.4z"
+    "M367.2 412.5L99.5 144.8c-22.4 31.4-35.5 69.8-35.5 111.2 0 106 86 192 192 192 41.5 0 79.9-13.1 111.2-35.5zm45.3-45.3c22.4-31.4 35.5-69.8 35.5-111.2 0-106-86-192-192-192-41.5 0-79.9 13.1-111.2 35.5L412.5 367.2zM0 256a256 256 0 1 1 512 0 256 256 0 1 1 -512 0z"
   ],
   "bars": [
     512,

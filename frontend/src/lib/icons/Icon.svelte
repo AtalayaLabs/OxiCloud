@@ -27,7 +27,20 @@
 		aria-label={title}
 	>
 		{#if title}<title>{title}</title>{/if}
-		<path d={path} />
+		<!--
+			`evenodd`, not the SVG default of `nonzero`.
+
+			The registry's paths are authored as a solid outer shape followed by
+			inner subpaths that are meant to CUT OUT of it — `ban` is a filled
+			disc plus a diagonal bar, `exclamation-circle` a filled disc plus a
+			"!". Those subpaths wind the same way as the outer shape, so under
+			`nonzero` they fill too and the icon renders as a plain blob with
+			its detail invisible. `evenodd` alternates, so they punch through.
+
+			Safe for the rest: an icon whose subpaths do not overlap (arrows,
+			bars) renders identically under either rule.
+		-->
+		<path d={path} fill-rule="evenodd" />
 	</svg>
 {/if}
 
