@@ -539,28 +539,34 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
 )]
 pub struct ApiDoc;
 
-/// Injects the `bearerAuth` HTTP Bearer security scheme into the generated spec.
+/// The vendor extension marking an operation reachable with only a
+/// public-share token. `share:read` names a CAPABILITY, not a caller: the set
+/// of reads a share link permits.
+pub const SHARE_READ_EXTENSION: &str = "x-oxicloud-scope";
+const SHARE_READ_SCOPE: &str = "share:read";
+
+/// Injects the `bearerAuth` HTTP Bearer security scheme into the generated
+/// spec, and marks the operations a public-share visitor may reach.
 ///
-/// ## Pseudo-scopes
+/// ## Why an extension and not a scope
 ///
-/// Operations carry a scopes list that OpenAPI has no other place for. OAuth2
-/// has no concept of a minimum role, so the spec cannot say "this endpoint
-/// needs an admin" — the scopes array is the only field available, and these
-/// names put both gates in one vocabulary:
+/// The obvious place for `share:read` is the scopes array on each operation's
+/// security requirement. It is the wrong place: OpenAPI defines that array
+/// only for `oauth2` and `openIdConnect` schemes and requires it to be EMPTY
+/// for every other type. `bearerAuth` is `http`/bearer, so scopes there make
+/// the document non-conformant — which is why Swagger UI renders nothing for
+/// them. Vendor extensions are the sanctioned way to carry information the
+/// spec has no field for, so the marker is `x-oxicloud-scope` and the scopes
+/// array stays empty. A sentence is appended to the operation's description
+/// as well, because that is the part Swagger UI actually shows a human.
 ///
-/// - `share:read` — reachable with only a public-share token. Names a
-///   CAPABILITY, not a caller: it is the set of reads a share link permits.
-///   Kept in step with `ANONYMOUS_ALLOWLIST` by
-///   `share_read_scope_matches_the_anonymous_allowlist`.
-/// - `role:admin` — the `/api/admin` nest.
-/// - *(empty)* — the implicit default, a signed-in user.
+/// ## Why it is generated, not annotated
 ///
-/// Only the two exceptional cases are declared: the risk lives in the
-/// exceptions, and annotating every ordinary endpoint would be noise that
-/// nobody keeps current.
-///
-/// These are documentation. The gates are `anonymous_allowlist_layer` and
-/// `require_admin`; a declaration here grants nothing.
+/// The marked set is read straight from `ANONYMOUS_ALLOWLIST` — the constant
+/// the runtime gate itself uses. Hand-annotating each handler would put the
+/// published description and the enforced rule in two places that can
+/// disagree; deriving one from the other means they cannot. The gate stays
+/// the authority: an extension here grants nothing.
 struct SecurityAddon;
 
 impl Modify for SecurityAddon {
@@ -570,6 +576,33 @@ impl Modify for SecurityAddon {
             "bearerAuth",
             SecurityScheme::Http(Http::new(HttpAuthScheme::Bearer)),
         );
+
+        // GET only, matching `anonymous_may_reach`: a method mounted later on
+        // an already-listed path does not inherit share access, and the spec
+        // must not imply it does.
+        for path in crate::interfaces::middleware::anonymous_allowlist::ANONYMOUS_ALLOWLIST {
+            let Some(item) = openapi.paths.paths.get_mut(*path) else {
+                // An allowlisted route with no `#[utoipa::path]` — undocumented
+                // rather than wrong. `share_read_marks_exactly_the_allowlist`
+                // fails on it, which is the nudge to document it.
+                continue;
+            };
+            let Some(op) = item.get.as_mut() else {
+                continue;
+            };
+            op.extensions = Some(
+                utoipa::openapi::extensions::ExtensionsBuilder::new()
+                    .add(SHARE_READ_EXTENSION, serde_json::json!(SHARE_READ_SCOPE))
+                    .build(),
+            );
+            let note = "Reachable with a public-share token (`share:read`): a visitor \
+                        holding an unlocked share link may call this, scoped to what \
+                        that share grants.";
+            op.description = Some(match op.description.take() {
+                Some(existing) if !existing.is_empty() => format!("{existing}\n\n{note}"),
+                _ => note.to_owned(),
+            });
+        }
     }
 }
 
@@ -633,24 +666,24 @@ mod tests {
         assert!(json.len() > 1000, "spec JSON suspiciously small");
     }
 
-    /// The spec's `share:read` declarations and the runtime allowlist must
-    /// name the same routes — checked in BOTH directions.
+    /// The spec marks exactly the allowlisted routes — checked in BOTH
+    /// directions.
     ///
-    /// utoipa's `security` is documentation, not enforcement: the annotation
-    /// and the gate are independent, so either can drift. One direction alone
-    /// would not catch it. Missing an annotation makes the spec understate
-    /// what a share link reaches; declaring one for a route the allowlist does
-    /// not carry promises visitors an endpoint that will 403 — and, worse,
-    /// invites someone to "fix" the mismatch by widening the allowlist.
+    /// The marker is generated FROM `ANONYMOUS_ALLOWLIST`, so this cannot
+    /// catch a human forgetting an annotation; it is a regression guard on the
+    /// generation. It still earns its place: it fails if an allowlisted route
+    /// carries no `#[utoipa::path]` (silently skipped by the injector, leaving
+    /// the spec understating what a share link reaches), and it fails if the
+    /// injector ever marks something the gate does not allow — which would
+    /// promise visitors an endpoint that 403s and, worse, invite someone to
+    /// "fix" the mismatch by widening the allowlist.
     ///
-    /// The allowlist is the authority. This test only asserts the published
-    /// description matches it.
+    /// The allowlist is the authority. This asserts the published description
+    /// matches it.
     #[test]
-    fn share_read_scope_matches_the_anonymous_allowlist() {
+    fn share_read_marks_exactly_the_allowlist() {
         use crate::interfaces::middleware::anonymous_allowlist::ANONYMOUS_ALLOWLIST;
         use std::collections::BTreeSet;
-
-        const SCOPE: &str = "share:read";
 
         // Walked as serialised JSON rather than through utoipa's types: this
         // is the document consumers actually read, and it does not break when
@@ -658,39 +691,45 @@ mod tests {
         let spec = serde_json::to_value(ApiDoc::openapi()).expect("spec should serialise");
         let paths = spec["paths"].as_object().expect("spec has no paths object");
 
-        let declares_scope = |operation: &serde_json::Value| -> bool {
-            operation["security"]
-                .as_array()
-                .is_some_and(|requirements| {
-                    requirements.iter().any(|req| {
-                        req.as_object().is_some_and(|schemes| {
-                            schemes.values().any(|scopes| {
-                                scopes
-                                    .as_array()
-                                    .is_some_and(|list| list.iter().any(|s| s == SCOPE))
-                            })
-                        })
-                    })
-                })
-        };
-
         let declared: BTreeSet<&str> = paths
             .iter()
             .filter(|(_, item)| {
-                item.as_object()
-                    .is_some_and(|methods| methods.values().any(declares_scope))
+                item.as_object().is_some_and(|methods| {
+                    methods
+                        .values()
+                        .any(|op| op[SHARE_READ_EXTENSION] == serde_json::json!(SHARE_READ_SCOPE))
+                })
             })
             .map(|(path, _)| path.as_str())
             .collect();
+
+        // Scopes belong to oauth2/openIdConnect schemes only; on an `http`
+        // scheme the array must stay empty or the document is non-conformant
+        // (and Swagger UI silently drops it). Pinned so nobody reintroduces
+        // the marker there.
+        for (path, item) in paths {
+            for (method, op) in item.as_object().into_iter().flatten() {
+                for req in op["security"].as_array().into_iter().flatten() {
+                    for (scheme, scopes) in req.as_object().into_iter().flatten() {
+                        assert!(
+                            scopes.as_array().is_none_or(|s| s.is_empty()),
+                            "{method} {path}: `{scheme}` is an http scheme, \
+                             so its scopes array must be empty (got {scopes})"
+                        );
+                    }
+                }
+            }
+        }
 
         let allowlisted: BTreeSet<&str> = ANONYMOUS_ALLOWLIST.iter().copied().collect();
 
         assert_eq!(
             declared,
             allowlisted,
-            "`{SCOPE}` in the OpenAPI spec has drifted from ANONYMOUS_ALLOWLIST.\n\
-             declared only in the spec: {:?}\n\
-             allowlisted but undeclared: {:?}",
+            "`{SHARE_READ_EXTENSION}: {SHARE_READ_SCOPE}` in the OpenAPI spec has \
+             drifted from ANONYMOUS_ALLOWLIST.\n\
+             marked only in the spec: {:?}\n\
+             allowlisted but unmarked (missing a `#[utoipa::path]`?): {:?}",
             declared.difference(&allowlisted).collect::<Vec<_>>(),
             allowlisted.difference(&declared).collect::<Vec<_>>(),
         );

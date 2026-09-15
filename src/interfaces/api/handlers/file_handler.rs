@@ -1666,7 +1666,7 @@ pub async fn create_file_by_hash(
         (status = 304, description = "Not modified"),
         (status = 404, description = "File not found"),
     ),
-    security(("bearerAuth" = ["share:read"])),
+    security(("bearerAuth" = [])),
     tag = "files"
 )]
 pub async fn download_file(
@@ -1695,7 +1695,7 @@ pub async fn download_file(
         (status = 304, description = "Not modified"),
         (status = 404, description = "File not found"),
     ),
-    security(("bearerAuth" = ["share:read"])),
+    security(("bearerAuth" = [])),
     tag = "files"
 )]
 pub async fn get_thumbnail(
@@ -1743,7 +1743,7 @@ pub async fn upload_thumbnail(
         (status = 200, description = "File metadata (EXIF, dimensions, duration, etc.)"),
         (status = 404, description = "File not found"),
     ),
-    security(("bearerAuth" = ["share:read"])),
+    security(("bearerAuth" = [])),
     tag = "files"
 )]
 pub async fn get_file_metadata(
