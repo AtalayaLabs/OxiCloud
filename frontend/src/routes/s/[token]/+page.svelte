@@ -24,7 +24,7 @@
 	 * simply passes none of them.
 	 */
 	import { page } from '$app/state';
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import Icon from '$lib/icons/Icon.svelte';
 	import BrandMark from '$lib/components/BrandMark.svelte';
 	import FileViewer from '$lib/components/FileViewer.svelte';
@@ -77,6 +77,55 @@
 		return m ? m[1] : undefined;
 	}
 
+	/** `?file=<id>` — the open preview, the same contract `/files` uses. */
+	function urlFileId(): string | null {
+		if (typeof location === 'undefined') return null;
+		return new URLSearchParams(location.search).get('file');
+	}
+
+	/**
+	 * Reflect the open preview into the URL so it is bookmarkable and Back
+	 * closes it.
+	 *
+	 * `push` on open — Back should dismiss the preview rather than leave the
+	 * share entirely. `replace` on close and on stepping through the lightbox,
+	 * so dismissing adds no entry and arrow-keying a gallery does not bury the
+	 * folder under a hundred history states.
+	 *
+	 * Raw `history` rather than `goto()` (which is how `/files` does it)
+	 * because folder navigation on this page already writes `#folder=` the
+	 * same way: one mechanism owning the URL cannot desync with the other.
+	 */
+	function syncFileParam(id: string | null, mode: 'push' | 'replace') {
+		if (typeof history === 'undefined' || typeof location === 'undefined') return;
+		const url = new URL(location.href);
+		if (id) url.searchParams.set('file', id);
+		else url.searchParams.delete('file');
+		if (url.href === location.href) return;
+		const state = history.state as unknown;
+		if (mode === 'push') history.pushState(state, '', url);
+		else history.replaceState(state, '', url);
+	}
+
+	/** Open whichever previewer suits the file's type. */
+	function showFile(file: FileItem) {
+		if (isMedia(file)) {
+			const i = mediaFiles.findIndex((m) => m.id === file.id);
+			if (i >= 0) lightboxIndex = i;
+			return;
+		}
+		viewerFile = file;
+		viewerOpen = true;
+	}
+
+	/** Open the file named by `?file=` once the listing that holds it exists. */
+	function openUrlFile() {
+		const id = urlFileId();
+		if (!id) return;
+		const f = files.find((x) => x.id === id);
+		if (f) showFile(f);
+	}
+
 	async function loadFolder(id: string, pushHistory = false) {
 		listLoading = true;
 		listError = null;
@@ -89,9 +138,13 @@
 			view = 'folder';
 			if (pushHistory && typeof history !== 'undefined') {
 				// The share ROOT carries no fragment, so the bare link stays
-				// clean; only a descendant needs one.
+				// clean; only a descendant needs one. `?file=` is dropped: it
+				// named a preview in the folder being left, and carrying it
+				// over would point at something this listing does not contain.
 				const hash = id === meta?.item_id ? '' : `#folder=${encodeURIComponent(id)}`;
-				history.pushState({ folderId: id }, '', location.pathname + location.search + hash);
+				const url = new URL(location.href);
+				url.searchParams.delete('file');
+				history.pushState({ folderId: id }, '', `${url.pathname}${url.search}${hash}`);
 			}
 		} catch {
 			listError = t('share.error', 'Something went wrong. Please try again.');
@@ -132,6 +185,9 @@
 				// to the root itself. Either way the ring cookie issued above
 				// is what authorizes the listing.
 				await loadFolder(hashFolderId() ?? r.data.item_id);
+				// The listing now exists, so a `?file=` from a cold deep link
+				// has something to resolve against.
+				openUrlFile();
 			} else {
 				viewerFile = await getFile(r.data.item_id);
 				view = 'file';
@@ -146,19 +202,30 @@
 			void loadFolder(item.id, true);
 			return;
 		}
-		if (isMedia(item)) {
-			const i = mediaFiles.findIndex((m) => m.id === item.id);
-			if (i >= 0) lightboxIndex = i;
-			return;
-		}
-		viewerFile = item;
-		viewerOpen = true;
+		showFile(item);
+		syncFileParam(item.id, 'push');
 	}
 
-	/** Browser back/forward — re-resolve the folder from the hash. */
+	/**
+	 * Browser back/forward. Reconciles BOTH halves of the URL: the folder from
+	 * `#folder=` and the preview from `?file=`. Going back out of a preview
+	 * changes only the query, so the folder reload is skipped — reloading it
+	 * would throw away the listing the preview is still reading from.
+	 */
 	function onPopState() {
 		if (view !== 'folder' || !meta) return;
-		void loadFolder(hashFolderId() ?? meta.item_id);
+		const target = hashFolderId() ?? meta.item_id;
+		if (target !== folderId) {
+			void loadFolder(target);
+			return;
+		}
+		const id = urlFileId();
+		if (!id) {
+			lightboxIndex = -1;
+			viewerOpen = false;
+			return;
+		}
+		openUrlFile();
 	}
 
 	async function submitPassword(e: SubmitEvent) {
@@ -181,6 +248,26 @@
 			pwBusy = false;
 		}
 	}
+
+	/**
+	 * Preview state → URL.
+	 *
+	 * Only a genuine open→closed transition clears the param. On a cold deep
+	 * link the previewer is briefly closed WITH `?file=` set while the listing
+	 * loads; clearing there would race the open and the preview would never
+	 * appear. While the lightbox is open, the param tracks the current photo,
+	 * so sharing the URL mid-gallery shares the photo being looked at.
+	 */
+	let previewWasOpen = false;
+	$effect(() => {
+		const open = lightboxIndex >= 0 || viewerOpen;
+		const currentId = lightboxIndex >= 0 ? mediaFiles[lightboxIndex]?.id : viewerFile?.id;
+		untrack(() => {
+			if (open && currentId) syncFileParam(currentId, 'replace');
+			else if (previewWasOpen && !open) syncFileParam(null, 'replace');
+			previewWasOpen = open;
+		});
+	});
 
 	onMount(() => {
 		void loadMeta();
