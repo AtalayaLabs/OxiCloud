@@ -899,31 +899,27 @@ impl FileHandler {
         };
 
         // ── Metadata-only request ────────────────────────────────────
+        //
+        // Emits the whole `FileDto`. It used to hand-build a seven-field JSON
+        // literal — a partial copy of the DTO that had to be edited in step
+        // with it, and that the redaction rule then had to be restated inside.
+        // Returning the DTO means `redacted_for_token` is the single place
+        // deciding what a share visitor may see, here as everywhere else.
+        //
+        // Widening is safe: every field the literal carried is still present,
+        // so this is additive on the wire. It also gives the public-share page
+        // a real `FileItem` for a single-file share, which is what lets that
+        // page reuse `FileViewer` instead of hand-rolling a download card.
         if params
             .get("metadata")
             .is_some_and(|v| v == "true" || v == "1")
         {
-            let mut body = serde_json::json!({
-                "id": file_dto.id,
-                "name": file_dto.name,
-                "size": file_dto.size,
-                "mime_type": file_dto.mime_type,
-                "folder_id": file_dto.folder_id,
-                "created_at": file_dto.created_at,
-                "modified_at": file_dto.modified_at
-            });
-            // `path` is the file's location in the OWNER's tree, so it names
-            // folders above the share root that the caller was never given.
-            // Withheld whenever a share token is what granted access — the
-            // condition is "this credential", not "this account", so a
-            // logged-in user reaching a file only through someone else's
-            // share is treated the same as an anonymous visitor.
-            if authorized_as.token_id().is_none()
-                && let Some(obj) = body.as_object_mut()
-            {
-                obj.insert("path".into(), serde_json::json!(file_dto.path));
-            }
-            return (StatusCode::OK, Json(body)).into_response();
+            let dto = if authorized_as.token_id().is_some() {
+                file_dto.redacted_for_token()
+            } else {
+                file_dto
+            };
+            return (StatusCode::OK, Json(dto)).into_response();
         }
 
         // Route through `FileDto::etag` so this REST download

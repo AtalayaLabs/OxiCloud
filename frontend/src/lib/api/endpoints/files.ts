@@ -1,6 +1,7 @@
 /** File endpoints — ported from fileOperations.js. */
 import { apiFetch } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
+import type { FileItem } from '$lib/api/types';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -208,6 +209,25 @@ export async function deleteFile(fileId: string): Promise<void> {
 		headers: getCsrfHeaders()
 	});
 	if (!res.ok) throw new Error(`delete file failed: ${res.status}`);
+}
+
+/**
+ * Fetch one file's metadata without downloading its bytes.
+ *
+ * `GET /api/files/{id}` streams content; the `metadata=true` flag makes it
+ * return the `FileDto` instead. Used where a page holds a file id but no
+ * listing to have learned the rest from — the public-share page rendering a
+ * single-file share is the case that needed it.
+ *
+ * Fields the caller is not entitled to are absent rather than blanked (the
+ * server omits them), so `created_by` and friends can be `null`.
+ */
+export async function getFile(fileId: string): Promise<FileItem> {
+	const res = await apiFetch(`/api/files/${fileId}?metadata=true`, {
+		credentials: 'same-origin'
+	});
+	if (!res.ok) throw new Error(`file metadata failed: ${res.status}`);
+	return (await res.json()) as FileItem;
 }
 
 export function fileDownloadUrl(fileId: string): string {

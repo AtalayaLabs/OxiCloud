@@ -7,6 +7,14 @@ import { apiFetch } from '$lib/api/client';
 import type { ItemType } from '$lib/api/types';
 
 export interface ShareMeta {
+	/**
+	 * The shared resource's own id — a folder id or a file id per
+	 * `item_type`. This is the handoff point between the share surface and
+	 * the ordinary one: `GET /api/s/{token}` is what issues the `oxi_shares`
+	 * ring cookie, and from here on the page addresses the resource through
+	 * `/api/folders/*` and `/api/files/*` like any other caller.
+	 */
+	item_id: string;
 	item_type: ItemType;
 	item_name: string;
 }

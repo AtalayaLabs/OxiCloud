@@ -9,6 +9,7 @@
 	import Icon from '$lib/icons/Icon.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 	import { resolveUser, type ResolvedUser } from '$lib/api/endpoints/users';
+	import { session } from '$lib/stores/session.svelte';
 	import { userInitials, avatarColorIndex } from '$lib/utils/avatar';
 
 	interface Props {
@@ -20,6 +21,19 @@
 
 	let resolved = $state<ResolvedUser | null>(null);
 	$effect(() => {
+		// `/api/users/{id}` is off the anonymous allowlist, so a public-share
+		// visitor can only ever get a 403 from it. Skip the call rather than
+		// fire one per rendered chip and fall back to the caller's label.
+		//
+		// The guard lives here, not at the callsites: whether this component
+		// is reachable anonymously depends on which props a page happens to
+		// pass (`ResourceList` only renders it when `showOwner` is set), and
+		// that is a convention a future page can forget. Refusing to resolve
+		// without a session makes it structural.
+		if (!session.isAuthenticated) {
+			resolved = null;
+			return;
+		}
 		let alive = true;
 		resolved = null;
 		void resolveUser(userId).then((u) => {
@@ -30,6 +44,12 @@
 		};
 	});
 
+	// Last resort is the raw `userId`. That stays as-is: it is only reachable
+	// for a signed-in caller who cannot see this profile, where a bare UUID is
+	// ugly but tells them nothing new. An anonymous viewer never gets here —
+	// the API redacts `created_by` to null for a token caller, so there is no
+	// id for a page to pass in the first place. A caller that renders this
+	// chip anonymously anyway must supply `fallbackLabel`.
 	const label = $derived(resolved?.name ?? fallbackLabel ?? userId);
 	const email = $derived(resolved?.email || fallbackSublabel || '');
 	const isExternal = $derived(resolved?.isExternal ?? false);
