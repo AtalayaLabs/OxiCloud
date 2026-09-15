@@ -205,31 +205,45 @@
 	{#if view === 'loading'}
 		<p class="share__status">{t('common.loading', 'Loading…')}</p>
 	{:else if view === 'invalid'}
+		<!--
+			Branded like the gate: a dead link is one of the three screens a
+			stranger can land on, and the only thing that says where they are.
+		-->
 		<div class="share__center">
+			<BrandMark />
 			<Icon name="ban" class="share__big-icon" />
 			<p>{t('share.invalid', 'This share link is invalid.')}</p>
 		</div>
 	{:else if view === 'expired'}
 		<div class="share__center">
+			<BrandMark />
 			<Icon name="ban" class="share__big-icon" />
 			<p>{t('share.expired', 'This share link is no longer available.')}</p>
 		</div>
 	{:else if view === 'password'}
-		<form class="share__pw" data-testid="public-share-password-form" onsubmit={submitPassword}>
-			<h1>{t('share.password_title', 'Password required')}</h1>
-			<input
-				type="password"
-				data-testid="public-share-password-input"
-				bind:value={pwInput}
-				placeholder={t('share.password', 'Password')}
-				disabled={pwBusy}
-				autocomplete="off"
-			/>
-			{#if pwError}<p class="share__error" role="alert">{pwError}</p>{/if}
-			<button type="submit" data-testid="public-share-unlock-btn" disabled={pwBusy}
-				>{t('share.unlock', 'Unlock')}</button
-			>
-		</form>
+		<!--
+			The gate is the first thing a visitor sees on a protected link, and
+			the only screen before the grid exists to carry the mark — so the
+			brand goes here rather than nowhere.
+		-->
+		<div class="share__gate">
+			<BrandMark />
+			<form class="share__pw" data-testid="public-share-password-form" onsubmit={submitPassword}>
+				<h1>{t('share.password_title', 'Password required')}</h1>
+				<input
+					type="password"
+					data-testid="public-share-password-input"
+					bind:value={pwInput}
+					placeholder={t('share.password', 'Password')}
+					disabled={pwBusy}
+					autocomplete="off"
+				/>
+				{#if pwError}<p class="share__error" role="alert">{pwError}</p>{/if}
+				<button type="submit" data-testid="public-share-unlock-btn" disabled={pwBusy}
+					>{t('share.unlock', 'Unlock')}</button
+				>
+			</form>
+		</div>
 	{:else if view === 'file' && viewerFile}
 		<!--
 			A single shared file. The viewer is always open — there is nothing
@@ -354,7 +368,7 @@
 	 */
 	.share__status,
 	.share__center,
-	.share__pw {
+	.share__gate {
 		padding-inline: var(--space-6);
 	}
 
@@ -380,14 +394,27 @@
 
 	/*
 	 * `.logo-container` carries the sidebar's own chrome — a bottom separator,
-	 * block padding and a bottom margin — none of which belong on a heading
-	 * row. Stripped here rather than in the shared rule, which the sidebar
-	 * still wants exactly as it is.
+	 * block padding and a bottom margin — none of which belongs on a heading
+	 * row or above a form. Stripped here rather than in the shared rule, which
+	 * the sidebar still wants exactly as it is.
 	 */
-	.share__heading :global(.logo-container) {
+	.share__heading :global(.logo-container),
+	.share__center :global(.logo-container),
+	.share__gate :global(.logo-container) {
 		padding: 0;
 		margin-bottom: 0;
 		border-bottom: none;
+	}
+
+	/* Owns the centring the form used to do, so the mark and the form move
+	   as one block. */
+	.share__gate {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: var(--space-6);
+		max-width: 22rem;
+		margin: 15vh auto 0;
 	}
 
 	/* `page-title` supplies the type; its bottom margin now belongs to the
@@ -416,8 +443,8 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-4);
-		max-width: 22rem;
-		margin: 15vh auto 0;
+		/* `.share__gate` positions the block now; the form just fills it. */
+		width: 100%;
 	}
 
 	.share__pw input {
