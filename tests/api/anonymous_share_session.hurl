@@ -650,14 +650,26 @@ HTTP 403
 # allowlist never sees it.
 #
 # A visitor holds only the `oxi_shares` cookie — no ticket, no
-# bearer — so `authorize_upgrade` ends at `no_credentials`. The
+# bearer — so `authenticate_upgrade` ends at `no_credentials`. The
 # handler ALSO refuses an anonymous-role bearer outright: without
 # that, closing `/api/rt/ticket` would not close this door, and a
 # scripted client could hold one socket per share visitor. That
 # path is unreachable today (the ring is a cookie of a different
-# `typ`, never a bearer), which is why this asserts the door
-# rather than the specific key.
+# `typ`, never a bearer), which is why this asserts the door rather
+# than the specific key.
+#
+# The handshake headers are REQUIRED to make this a real test.
+# `WebSocketUpgrade` is an extractor, so a plain GET is rejected
+# with 400 before the handler body — and a 400 would only prove
+# axum parses headers, not that the socket is closed to visitors.
+# With a valid handshake the extractor passes and the auth check
+# is what answers. `Sec-WebSocket-Key` is the RFC 6455 example
+# value; nothing verifies it on a rejected upgrade.
 GET {{base_url}}/api/rt/ws
+Connection: Upgrade
+Upgrade: websocket
+Sec-WebSocket-Version: 13
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
 
 HTTP 401
 
