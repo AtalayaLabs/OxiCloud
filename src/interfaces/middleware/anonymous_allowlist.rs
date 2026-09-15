@@ -56,7 +56,12 @@ use crate::application::dtos::user_dto::CurrentUser;
 ///
 /// Kept as route patterns so they can be compared directly against
 /// `MatchedPath`, and so this list can be cross-checked against the
-/// `role:anonymous` security declarations in the OpenAPI spec.
+/// `share:read` security declarations in the OpenAPI spec.
+///
+/// `share:read` names a CAPABILITY, not a caller: these are the reads a share
+/// token permits. An empty scopes array stays the implicit `role:user`
+/// default, and `role:admin` marks the admin nest — only the two exceptional
+/// cases are declared, because the risk lives in the exceptions.
 ///
 /// Adding an entry is a decision to expose that endpoint to anyone holding
 /// a share link. It is not a place to add something "just to make a test

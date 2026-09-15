@@ -540,6 +540,27 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
 pub struct ApiDoc;
 
 /// Injects the `bearerAuth` HTTP Bearer security scheme into the generated spec.
+///
+/// ## Pseudo-scopes
+///
+/// Operations carry a scopes list that OpenAPI has no other place for. OAuth2
+/// has no concept of a minimum role, so the spec cannot say "this endpoint
+/// needs an admin" — the scopes array is the only field available, and these
+/// names put both gates in one vocabulary:
+///
+/// - `share:read` — reachable with only a public-share token. Names a
+///   CAPABILITY, not a caller: it is the set of reads a share link permits.
+///   Kept in step with `ANONYMOUS_ALLOWLIST` by
+///   `share_read_scope_matches_the_anonymous_allowlist`.
+/// - `role:admin` — the `/api/admin` nest.
+/// - *(empty)* — the implicit default, a signed-in user.
+///
+/// Only the two exceptional cases are declared: the risk lives in the
+/// exceptions, and annotating every ordinary endpoint would be noise that
+/// nobody keeps current.
+///
+/// These are documentation. The gates are `anonymous_allowlist_layer` and
+/// `require_admin`; a declaration here grants nothing.
 struct SecurityAddon;
 
 impl Modify for SecurityAddon {
@@ -610,5 +631,68 @@ mod tests {
 
         let json = serde_json::to_string(&spec).expect("spec should serialise to JSON");
         assert!(json.len() > 1000, "spec JSON suspiciously small");
+    }
+
+    /// The spec's `share:read` declarations and the runtime allowlist must
+    /// name the same routes — checked in BOTH directions.
+    ///
+    /// utoipa's `security` is documentation, not enforcement: the annotation
+    /// and the gate are independent, so either can drift. One direction alone
+    /// would not catch it. Missing an annotation makes the spec understate
+    /// what a share link reaches; declaring one for a route the allowlist does
+    /// not carry promises visitors an endpoint that will 403 — and, worse,
+    /// invites someone to "fix" the mismatch by widening the allowlist.
+    ///
+    /// The allowlist is the authority. This test only asserts the published
+    /// description matches it.
+    #[test]
+    fn share_read_scope_matches_the_anonymous_allowlist() {
+        use crate::interfaces::middleware::anonymous_allowlist::ANONYMOUS_ALLOWLIST;
+        use std::collections::BTreeSet;
+
+        const SCOPE: &str = "share:read";
+
+        // Walked as serialised JSON rather than through utoipa's types: this
+        // is the document consumers actually read, and it does not break when
+        // `PathItem`'s shape changes between utoipa releases.
+        let spec = serde_json::to_value(ApiDoc::openapi()).expect("spec should serialise");
+        let paths = spec["paths"].as_object().expect("spec has no paths object");
+
+        let declares_scope = |operation: &serde_json::Value| -> bool {
+            operation["security"]
+                .as_array()
+                .is_some_and(|requirements| {
+                    requirements.iter().any(|req| {
+                        req.as_object().is_some_and(|schemes| {
+                            schemes.values().any(|scopes| {
+                                scopes
+                                    .as_array()
+                                    .is_some_and(|list| list.iter().any(|s| s == SCOPE))
+                            })
+                        })
+                    })
+                })
+        };
+
+        let declared: BTreeSet<&str> = paths
+            .iter()
+            .filter(|(_, item)| {
+                item.as_object()
+                    .is_some_and(|methods| methods.values().any(declares_scope))
+            })
+            .map(|(path, _)| path.as_str())
+            .collect();
+
+        let allowlisted: BTreeSet<&str> = ANONYMOUS_ALLOWLIST.iter().copied().collect();
+
+        assert_eq!(
+            declared,
+            allowlisted,
+            "`{SCOPE}` in the OpenAPI spec has drifted from ANONYMOUS_ALLOWLIST.\n\
+             declared only in the spec: {:?}\n\
+             allowlisted but undeclared: {:?}",
+            declared.difference(&allowlisted).collect::<Vec<_>>(),
+            allowlisted.difference(&declared).collect::<Vec<_>>(),
+        );
     }
 }

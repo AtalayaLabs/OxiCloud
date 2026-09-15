@@ -423,7 +423,7 @@ pub async fn create_folder(
         (status = 200, description = "Folder", body = FolderDto),
         (status = 404, description = "Folder not found"),
     ),
-    security(("bearerAuth" = [])),
+    security(("bearerAuth" = ["share:read"])),
     tag = "folders"
 )]
 pub async fn get_folder(
@@ -442,7 +442,7 @@ pub async fn get_folder(
         (status = 200, description = "Ancestor chain + access-source. `ancestors` is root-first, leaf-last (length ≥ 1). See `FolderAncestorsDto`.", body = FolderAncestorsDto),
         (status = 404, description = "Folder not found or caller lacks Read (anti-enum)"),
     ),
-    security(("bearerAuth" = [])),
+    security(("bearerAuth" = ["share:read"])),
     tag = "folders"
 )]
 pub async fn get_folder_ancestors(
@@ -539,7 +539,7 @@ pub async fn delete_folder_with_trash(
         (status = 404, description = "Folder not found"),
         (status = 501, description = "ZIP service not available"),
     ),
-    security(("bearerAuth" = [])),
+    security(("bearerAuth" = ["share:read"])),
     tag = "folders"
 )]
 pub async fn download_folder_zip(
@@ -571,7 +571,7 @@ pub async fn download_folder_zip(
          body = FolderResourcesDto),
         (status = 404, description = "Folder not found or access denied"),
     ),
-    security(("bearerAuth" = [])),
+    security(("bearerAuth" = ["share:read"])),
     tag = "folders"
 )]
 pub async fn list_folder_resources(
