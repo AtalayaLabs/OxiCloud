@@ -1,9 +1,37 @@
 # Rationalize public shares — anonymous sessions on the normal API
 
-**Status: proposed.** Triggered by issue #721 (public share grids load
-full-resolution originals) and by the TODO in `share_handler.rs:571` —
-*"remove this and use the classic /api/files & /api/folders get, but with the
-token as session ?"*
+**Status: IMPLEMENTED.** All five phases shipped; #721 is closed. Triggered by
+that issue (public share grids load full-resolution originals) and by the TODO
+in `share_handler.rs:571` — *"remove this and use the classic /api/files &
+/api/folders get, but with the token as session ?"* — which is precisely what
+this did, so the TODO went with the handler.
+
+Net: **867 lines deleted**, the share page 750 → ~390, and the six-endpoint
+mirror of `/api/folders/*` + `/api/files/*` gone along with the service behind
+it that executed as the share's OWNER.
+
+What the build actually changed from the design below, worth reading before
+trusting any section as written:
+
+- **The ring replaced the anonymous access token entirely.** There is no second
+  credential and no `auth.sessions` row — see §Session model. `share_id` claims,
+  `generate_share_token` and `validate_principal_shape` were all deleted as
+  redundant once the ring existed.
+- **`ResourceList` needed one read-only prop after all**, not none:
+  `allowThumbnailGenerate`. Every *other* mutating affordance there is opt-in
+  through its own callback, but the thumbnail `onerror` fallback is not — and it
+  fetches the full original, which is #721 again inside the component that fixed
+  it. The plan predicted this; the first implementation pass still missed it.
+- **Pseudo-scopes are a vendor extension, not a bearer scope.** OpenAPI defines
+  scope arrays only for `oauth2`/`openIdConnect` and requires them empty
+  elsewhere, so `security(("bearerAuth" = ["share:read"]))` made the document
+  non-conformant and Swagger UI dropped it. `x-oxicloud-scope` carries it, and
+  both markers are GENERATED from their gates rather than annotated per handler.
+- **Two revocation bugs surfaced**, latent until the ring made token grants
+  readable at request time: the `trg_cleanup_role_grants_token` trigger deletes
+  the grant row in SQL, bypassing `clear_role` and its cache flush, so a revoked
+  link kept working for the full 30 s TTL; `set_expiry_for_subject` never flushed
+  either.
 
 Three audits (API risk, read-path compatibility, WS/session lifecycle) were run
 against a draft of this design. They moved the enforcement point and found four
@@ -375,7 +403,11 @@ anonymous session yet, so no behaviour changed.
     `Subject::User(cu.id)` and match a *session* id against user grants.
 11. ✅ **Stateless share sessions** — `share_id` JWT claim, no DB row, own TTL.
 
-### Phase 1 — `/s/{token}` mints the session
+### Phase 1 — `/s/{token}` mints the session ✅ **DONE**
+
+All seven allowlisted routes swapped (`7ecce01f`, `e56fe672`, `63f53a13`),
+each carrying its own disclosure fix. The vertical slice below came first and
+is kept because it records why each piece is shaped as it is.
 
 **Vertical slice shipped** (`7ecce01f`, tests `730a4309`). One route swapped —
 `GET /api/files/{id}/thumbnail/{size}` — which is enough to close #721 and to
@@ -435,9 +467,11 @@ ring made token grants readable at request time:
 **Remaining in this phase:** swap the other five allowlisted routes to
 `CallerSubjects`. Legacy endpoints stay alive throughout.
 
-### Phase 2 — Disclosure fixes *(the ones most likely to be missed)*
+### Phase 2 — Disclosure fixes ✅ **DONE**
 
-The endpoints "work" without these, which is exactly why they get skipped.
+Shipped alongside each route swap, plus `4283e0d5` (owner identifiers) and
+`773888d9` (`AccessSourceKind::Token`). The endpoints "work" without these,
+which is exactly why they get skipped.
 
 **A disclosure fix cannot lag its route swap.** `GET /api/files/{id}` proved
 the ordering: opening the route first would have handed visitors `path` for a
@@ -465,7 +499,45 @@ this phase is now a checklist against Phase 1 rather than a stage after it.
   there to borrow, and 404 keeps "is this id a mount child" unprobeable.
   `folder_handler.rs:544-561` still to decide — same answer expected.
 
-### Phase 3 — Component read-only + share page rewrite
+### Phase 3 — Component read-only + share page rewrite ✅ **DONE**
+
+Shipped in `eee0ac45` (rewrite), `11031845` (layout), `a05254ed` (branding),
+`99c79f58` (`?file=` deep links), `eea3e1db` (single-file share),
+`772132a2` (the thumbnail-generation gate below).
+
+750 → ~390 lines, half of it CSS and the password form. `GET /api/s/{token}` is
+the only share-specific call left. Gone with the rewrite: a bespoke grid, a
+hand-rolled lightbox with its own keyboard handling, a lazy-video
+IntersectionObserver that seeked each `<video>` to rasterise a poster
+client-side, an image-retry action, a hand-built breadcrumb, and a private
+`oxi-share-view` localStorage toggle.
+
+**The warning below was right and worth the ink.** `ResourceList`'s thumbnail
+`onerror` fallback fetches the FULL ORIGINAL and `PUT`s three sizes back. For a
+visitor the PUTs 403 but the fetch SUCCEEDS — #721 reappearing inside the
+component that fixed it, on exactly the files most likely to be in a fresh
+share (no server thumbnail yet). `allowThumbnailGenerate` gates it. Kept
+separate from `enableThumbnails`, which governs *display*: a visitor should
+still see server-rendered thumbnails, just never generate one.
+
+Corrections to what follows: `readOnly` was needed on `PhotoLightbox`
+(favorite + delete, rendered unconditionally) and `FileViewer` (the WOPI Edit
+button, gated on whether the file TYPE is editable, not on permission) — but
+not on `ResourceList` beyond the thumbnail gate. `useFolderTopic` never needed
+guarding: no folder-view logic was factored out, the share page calls
+`fetchFolderPage` directly, and it issues zero `POST /api/rt/ticket`.
+
+Two layout traps, both from living outside `AppShell`: the page used
+`--spacing-*` tokens that do not exist (the scale is `--space-1`…`--space-24`),
+so every padding declaration was dead — and Stylelint enforces `var()` but not
+that the variable *resolves*, so `npm run check` passed throughout. And `body`
+is `display: flex`, so a bare `<main>` is a flex ITEM sized to its content: a
+~390px column. Both fixed by reusing AppShell's own `main-content` +
+`content-area` classes rather than approximating them.
+
+<details>
+<summary>Original plan text</summary>
+
 
 `readOnly` on `ResourceList`, `PhotoLightbox`, `FileViewer`. No `apiBase` — URLs
 don't change.
@@ -485,18 +557,35 @@ module, every share visitor's browser starts the ticket retry storm described
 above. Verified by a frontend test asserting the share page issues **zero**
 `POST /api/rt/ticket`.
 
-### Phase 4 — Delete the legacy surface *(BREAKING, single commit)*
+</details>
 
-After the pre-flight gates.
+### Phase 4 — Delete the legacy surface ✅ **DONE** *(BREAKING)*
+
+Shipped in `69623e7d`. 867 net lines: the six `/api/s/{token}` browsing
+endpoints, `ShareBrowseService`, `is_folder_in_subtree` /
+`is_file_in_subtree` on `FolderRepository` and its PG impl, and the frontend's
+`getShareContents` plus three URL builders.
+
+`public_shares.hurl` now asserts 404 on the deleted paths — the routing table
+answering rather than a handler — while the browsing behaviour they covered is
+exercised against the real endpoints in `anonymous_share_session.hurl`.
 
 ---
 
 ## Verification
 
-**A route-coverage test is the load-bearing one.** Walk the assembled router and
-assert every path either denies anonymous or appears in the allowlist constant.
-With four independent auth paths, enumeration is the only durable guarantee — a
-reviewer will not catch the fifth.
+**The route-coverage test is the load-bearing one** — ✅ shipped, though not in
+the shape proposed. Walking the assembled router turned out unnecessary: both
+markers are GENERATED from their gates (`ANONYMOUS_ALLOWLIST` and the
+`/api/admin` prefix), so `scope_markers_match_their_gates` asserts the spec and
+the gates agree in both directions, and drift by human omission is impossible
+by construction rather than caught after the fact.
+
+It still earns its place: it fails when an allowlisted route carries no
+`#[utoipa::path]` — silently skipped by the injector, which would leave the
+spec understating what a share link reaches. A second assertion pins that no
+`http` scheme carries non-empty scopes, so the non-conformance noted at the top
+cannot return.
 
 **Shipped** in `tests/api/anonymous_share_session.hurl` (`730a4309`) — hurl keeps
 one cookie jar per file, so it behaves like a browser, which also makes the
@@ -537,18 +626,34 @@ the un-swapped route.
 Unit: `CallerSubjects` composition (visitor contributes no `Subject::User`; a
 user's own subject comes first; empty set refused) and the `require_role` gate.
 
+Also shipped (`9c1fe7a2`) — the denials the allowlist does NOT cover, each
+refusing for its own reason, so a change to the allowlist would not affect them
+and nothing else in the suite would notice if one opened:
+
+- `/webdav/`, `/caldav/`, `/carddav/` → 401 + `WWW-Authenticate`. The DAV
+  challenge is emitted BEFORE the ring arm, so ordering is the guarantee.
+- `POST /api/auth/app-passwords` → 403 from `require_role`, not the allowlist:
+  the `/api/auth` nest has its own stack. Minting a DAV credential is the last
+  thing a share link should reach.
+- `POST /api/auth/refresh` → 401 from the handler itself (public, no middleware).
+- `GET /api/rt/ws` → 401 from `authenticate_upgrade`. Sends a real RFC 6455
+  handshake: `WebSocketUpgrade` is an extractor, so a plain GET is rejected
+  with 400 before the handler body and would only prove axum parses headers.
+- All seven allowlisted paths, as a 4×4 folder matrix — share root and a CHILD
+  resolve, the PARENT and a SIBLING 404. The child is the one that matters:
+  every other assertion targets the share root, so a cascade broken DOWNWARD
+  would pass the whole file.
+
 Still to do:
-- **The route-coverage test above** — not yet written; it is the one that
-  catches the fifth auth path.
-- Anonymous denied on `/api/groups/search`, `/api/address-books`,
-  `/api/admin/*`, `/webdav`, `/caldav`, `/carddav`, `POST /api/auth/refresh`,
-  `POST /api/auth/app-passwords`, `POST /api/rt/ticket`, and `GET /api/rt/ws`
-  **with a bearer token**.
-- The other six allowlisted paths, once Phase 1 swaps them.
-- A file added *after* sharing is visible (no positive test exists today).
+- **Playwright**: every grid image request on `/s/` matches `/thumbnail/`, none
+  a bare `/files/{id}` — the direct #721 regression. Lower value now that the
+  page structurally IS the real grid and the API test pins the thumbnail route
+  anonymously, but it is the only check that would catch a future component
+  change reintroducing a full-resolution fetch in the browser.
 - Trash regressions.
-- Playwright: every grid image request matches `/thumbnail/`, none a bare
-  `/files/{id}` — the direct #721 regression.
+- A file added *after* sharing is visible. **Declined** (Ed, 2026-09-16) — the
+  grant cascades at check time by construction, and the 4×4 matrix already
+  exercises the cascade in both directions.
 
 ---
 
