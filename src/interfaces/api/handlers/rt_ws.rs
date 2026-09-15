@@ -256,9 +256,7 @@ async fn authenticate_upgrade(
         // ticket gate was meant to prevent. A browser cannot set
         // `Authorization` on `new WebSocket()`, so only the adversarial case
         // is affected, which is precisely the one that matters.
-        if crate::domain::entities::user::UserRole::from_session(&claims.role)
-            .is_none_or(|r| r.is_anonymous())
-        {
+        if bearer_role_forbidden(&claims.role) {
             return Err("anonymous_forbidden");
         }
         return Ok(UpgradeAuth {
@@ -281,6 +279,22 @@ fn extract_ticket_subprotocol(headers: &HeaderMap) -> Option<String> {
 
 /// Extract `Authorization: Bearer <token>` if present. Returns the raw
 /// token string (never empty).
+/// Whether a bearer's role claim disqualifies it from opening a socket.
+///
+/// Split out of `authenticate_upgrade` so the decision is testable without an
+/// `AppState` — the same reason `middleware/user.rs` separates
+/// `decide_live_role` from `resolve_live_role`. The authorize path itself
+/// needs a JWT service and a ticket store, so the rule would otherwise be
+/// reachable only through an integration test.
+///
+/// Unknown roles are refused. Every other parse site in the tree historically
+/// defaulted to `user` on an unrecognised value, which fails OPEN; here a
+/// value we cannot interpret gets no socket.
+fn bearer_role_forbidden(claim_role: &str) -> bool {
+    crate::domain::entities::user::UserRole::from_session(claim_role)
+        .is_none_or(|r| r.is_anonymous())
+}
+
 fn extract_bearer(headers: &HeaderMap) -> Option<&str> {
     let value = headers.get("authorization")?.to_str().ok()?;
     let token = value.strip_prefix("Bearer ")?.trim();
@@ -915,6 +929,34 @@ fn audit_evicted(caller_id: Uuid, topic: &str, reason: &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The WS upgrade is registered OUTSIDE the protected router — a browser
+    /// cannot set `Authorization` on `new WebSocket()`, so it self-
+    /// authenticates and neither `auth_middleware` nor
+    /// `anonymous_allowlist_layer` ever sees it. Closing
+    /// `POST /api/rt/ticket` to anonymous sessions therefore does NOT close
+    /// this door; this check is the door.
+    ///
+    /// Unreachable today — the share ring is a cookie with its own `typ` and
+    /// never a bearer — but it is what stops a scripted client minting share
+    /// sessions and holding one socket per visitor, which is the connection
+    /// blast the ticket gate exists to prevent.
+    #[test]
+    fn anonymous_and_unknown_bearers_get_no_socket() {
+        assert!(bearer_role_forbidden("anonymous"));
+
+        // Fails closed on anything unrecognised — a corrupt or
+        // future-versioned claim gets no socket rather than a user's.
+        for role in ["", "superuser", "Admin", "ANONYMOUS", "user "] {
+            assert!(
+                bearer_role_forbidden(role),
+                "unrecognised role {role:?} must be refused"
+            );
+        }
+
+        assert!(!bearer_role_forbidden("user"));
+        assert!(!bearer_role_forbidden("admin"));
+    }
 
     #[test]
     fn success_response_shape() {

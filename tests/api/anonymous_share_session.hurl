@@ -566,6 +566,103 @@ HTTP 403
 
 
 # ─────────────────────────────────────────────────────────────
+# 5b — The surfaces the allowlist does NOT guard.
+#
+#      Everything above is refused by `anonymous_allowlist_layer`,
+#      which only wraps the protected `/api/*` router. These four
+#      groups sit outside it and each refuses for its own reason —
+#      which is exactly why they need asserting: a change to the
+#      allowlist would not affect any of them, so nothing else in
+#      this file would notice if one opened up.
+# ─────────────────────────────────────────────────────────────
+
+# Other authenticated `/api/*` reads. These ARE inside the router,
+# so the allowlist refuses them — listed because they are the
+# directory-style queries an audit asks about first.
+GET {{base_url}}/api/groups/search?q=a
+
+HTTP 403
+
+
+GET {{base_url}}/api/address-books
+
+HTTP 403
+
+
+# The DAV surfaces. `auth_middleware` emits the Basic-auth
+# challenge BEFORE it ever looks at the ring, so a ring can never
+# authenticate WebDAV/CalDAV/CardDAV — the ordering is the
+# guarantee, not a check. 401 + WWW-Authenticate, not 403.
+GET {{base_url}}/webdav/
+
+HTTP 401
+[Asserts]
+header "WWW-Authenticate" contains "Basic"
+
+
+GET {{base_url}}/caldav/
+
+HTTP 401
+
+
+GET {{base_url}}/carddav/
+
+HTTP 401
+
+
+# Session machinery a visitor must not reach.
+#
+# `refresh` is public and rate-limited — no middleware to consult,
+# it simply finds no refresh token and answers 401 itself.
+POST {{base_url}}/api/auth/refresh
+Content-Type: application/json
+{}
+
+HTTP 401
+
+
+# App passwords live in the `/api/auth` nest, which has its OWN
+# middleware stack and no allowlist layer. The refusal comes from
+# `require_role` inside the `AuthUser` extractor instead — the
+# second, independent gate, on a route the first never sees.
+# Minting a DAV credential is the last thing a share link should
+# be able to do.
+POST {{base_url}}/api/auth/app-passwords
+Content-Type: application/json
+{ "name": "visitor" }
+
+HTTP 403
+
+
+# `POST /api/rt/ticket` IS inside the protected router, so here the
+# allowlist is what refuses (unlisted, and POST besides).
+POST {{base_url}}/api/rt/ticket
+Content-Type: application/json
+{}
+
+HTTP 403
+
+
+# `GET /api/rt/ws` is the one that needed its own defence: it is
+# registered OUTSIDE the protected router (a browser cannot set
+# `Authorization` on `new WebSocket()`, so the upgrade carries its
+# credential in a subprotocol and self-authenticates). The
+# allowlist never sees it.
+#
+# A visitor holds only the `oxi_shares` cookie — no ticket, no
+# bearer — so `authorize_upgrade` ends at `no_credentials`. The
+# handler ALSO refuses an anonymous-role bearer outright: without
+# that, closing `/api/rt/ticket` would not close this door, and a
+# scripted client could hold one socket per share visitor. That
+# path is unreachable today (the ring is a cookie of a different
+# `typ`, never a bearer), which is why this asserts the door
+# rather than the specific key.
+GET {{base_url}}/api/rt/ws
+
+HTTP 401
+
+
+# ─────────────────────────────────────────────────────────────
 # 6 — Password-protected share. The bare GET must not hand out a
 #     ring: the share is not unlocked, so there is nothing to
 #     grant. Same for a wrong password.
