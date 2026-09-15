@@ -1,3 +1,4 @@
+import { fetchAsset } from '$lib/utils/assets';
 /**
  * Reactive i18n — ported from static/js/core/i18n.js.
  *
@@ -191,7 +192,7 @@ const store = $state<{ locale: string; loaded: boolean }>({
 async function loadDict(locale: string): Promise<Dict> {
 	if (dicts[locale]) return dicts[locale];
 	try {
-		const res = await fetch(`/locales/${locale}.json`);
+		const res = await fetchAsset(`/locales/${locale}.json`);
 		if (!res.ok) throw new Error(`locale ${locale} ${res.status}`);
 		dicts[locale] = (await res.json()) as Dict;
 	} catch (err) {

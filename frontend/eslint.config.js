@@ -57,6 +57,56 @@ export default ts.config(
 		}
 	},
 	{
+		files: ['src/**/*.{ts,svelte}'],
+		ignores: [
+			'src/**/*.test.ts',
+			'src/**/*.spec.ts',
+			'src/lib/api/generated/**',
+			'src/lib/api/transport.ts',
+			'src/lib/api/upload-transport.ts',
+			'src/lib/utils/assets.ts',
+			'src/service-worker.ts'
+		],
+		rules: {
+			'no-restricted-globals': [
+				'error',
+				{
+					name: 'fetch',
+					message: 'Use the generated API client, or fetchAsset for static assets.'
+				},
+				{ name: 'XMLHttpRequest', message: 'Use the API upload transport.' },
+				{ name: 'EventSource', message: 'Use the generated client SSE API.' }
+			],
+			'no-restricted-properties': [
+				'error',
+				{ object: 'globalThis', property: 'fetch', message: 'Use the generated API client.' },
+				{ object: 'window', property: 'fetch', message: 'Use the generated API client.' }
+			]
+		}
+	},
+	{
+		files: ['src/**/*.{ts,svelte}'],
+		ignores: [
+			'src/**/*.test.ts',
+			'src/**/*.spec.ts',
+			'src/lib/api/client.ts',
+			'src/lib/api/hey-api.ts'
+		],
+		rules: {
+			'no-restricted-imports': [
+				'error',
+				{
+					patterns: [
+						{
+							group: ['**/transport', '**/transport.ts'],
+							message: 'The wire transport is private; use the generated API client.'
+						}
+					]
+				}
+			]
+		}
+	},
+	{
 		// `static/` holds vendored, verbatim assets (the delta-upload worker and
 		// the wasm-bindgen hash glue) — lint them as the upstream ships them.
 		ignores: [

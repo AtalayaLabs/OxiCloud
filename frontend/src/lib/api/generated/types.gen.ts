@@ -2802,6 +2802,10 @@ export type SystemStatus = {
      */
     admin_count: number;
     /**
+     * Whether the People routes are available in this running instance.
+     */
+    faces_enabled: boolean;
+    /**
      * Whether the system has been set up with an admin.
      */
     initialized: boolean;
