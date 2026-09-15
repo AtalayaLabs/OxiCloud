@@ -389,6 +389,7 @@
 					hasMore={nextCursor !== undefined}
 					onloadmore={loadMore}
 					onopen={openItem}
+					allowThumbnailGenerate={false}
 					emptyIcon="folder-open"
 					emptyText={t('share.empty', 'This shared folder is empty.')}
 				>

@@ -361,6 +361,22 @@
 		 */
 		enableThumbnails?: boolean;
 		/**
+		 * Whether a FAILED server thumbnail may be regenerated client-side.
+		 *
+		 * Separate from `enableThumbnails`, which governs display: this is the
+		 * write half, and it is the one unconditional mutate path in this
+		 * component — every other action is opt-in through its own callback.
+		 * The fallback fetches the file's FULL ORIGINAL to rasterise, then
+		 * `PUT`s three sizes back.
+		 *
+		 * The public-share page turns it off. A visitor's `PUT`s would 403
+		 * (the anonymous allowlist is GET-only), and the original fetch would
+		 * SUCCEED — pulling a full-resolution file to build a thumbnail is
+		 * precisely the behaviour issue #721 was about, reappearing inside the
+		 * component that fixed it.
+		 */
+		allowThumbnailGenerate?: boolean;
+		/**
 		 * Enable per-row drag/drop hooks. Used by the files browser so
 		 * a folder row is a drop target and any row is draggable to
 		 * another folder or the breadcrumb. Pages that don't wire these
@@ -453,6 +469,7 @@
 		onsystemdrop,
 		systemDropOverlayActive = false,
 		enableThumbnails = true,
+		allowThumbnailGenerate = true,
 		isDraggable,
 		isDropTarget,
 		dropTargetId = null,
@@ -1156,6 +1173,9 @@
 						onerror={(e) => {
 							const img = e.currentTarget as HTMLImageElement;
 							img.style.display = 'none';
+							// Hiding the broken <img> is the whole fallback when
+							// regeneration is off: the type icon behind it stays.
+							if (!allowThumbnailGenerate) return;
 							if (mimeVal === 'application/pdf') preloadPdf();
 							void queueThumbnailGenerate(
 								{ id: item.id, name: item.name, mime_type: mimeVal },
