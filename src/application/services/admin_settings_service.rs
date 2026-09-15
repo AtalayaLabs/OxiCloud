@@ -402,6 +402,20 @@ impl AdminSettingsService {
             .await
     }
 
+    /// Release a previously-held initialization claim.
+    ///
+    /// Called by the setup handler when admin creation fails downstream
+    /// of `try_claim_initialization` (e.g. password validation refused
+    /// the request). Without this rollback the placeholder claim
+    /// persists in `auth.admin_settings` with `updated_by =
+    /// Uuid::nil()` and no user row backing it — every subsequent
+    /// setup attempt then bounces with "System is already initialized"
+    /// and the operator has to drop the DB to recover.
+    /// See AtalayaLabs/OxiCloud#677.
+    pub async fn release_initialization_claim(&self) -> Result<(), DomainError> {
+        self.settings_repo.delete("system_initialized").await
+    }
+
     // ========================================================================
     // Registration Control
     // ========================================================================

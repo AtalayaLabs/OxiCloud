@@ -23,6 +23,7 @@
 	import Icon from '$lib/icons/Icon.svelte';
 	import { confirmDialog } from '$lib/stores/dialogs.svelte';
 	import { preferences } from '$lib/stores/preferences.svelte';
+	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { session } from '$lib/stores/session.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { formatBytes } from '$lib/utils/format';
@@ -232,9 +233,18 @@
 			ui.notify(t('profile.password_mismatch', 'Passwords do not match'), 'error');
 			return;
 		}
-		if (newPw.length < 8) {
+		// Client-side length gate against the server's advertised
+		// `AuthConfig::min_password_length` — matches the same rule
+		// setup / register / upgrade honour, so operator overrides via
+		// `OXICLOUD_AUTH_MIN_PASSWORD_LENGTH` take effect uniformly.
+		const minLen = serverConfig.auth.min_password_length;
+		if (newPw.length < minLen) {
 			ui.notify(
-				t('profile.password_too_short', 'Password must be at least 8 characters.'),
+				t(
+					'auth.password_too_short',
+					{ min: String(minLen) },
+					'Password must be at least {{min}} characters long'
+				),
 				'error'
 			);
 			return;

@@ -928,10 +928,31 @@ export interface ServerStatus {
 	rotation?: ServerStatusProgress;
 }
 
+/** OPAQUE deployment mode, mirrored from `OXICLOUD_AUTH_OPAQUE_MODE`.
+ *  Login should NOT branch on this — use the per-user lookup at
+ *  `POST /api/auth/opaque/login/lookup` instead. Exposed for future
+ *  consumers (admin status indicators, OPAQUE-native setup). */
+export type OpaqueMode = 'off' | 'migrate' | 'opaque_only';
+
+/** Auth-related tunables the SPA needs to gate submit locally.
+ *  Mirrored from `AuthConfig` on the server; extends over time —
+ *  clients ignore unknown fields, and no field is ever repurposed
+ *  (same discipline as JSON-RPC error codes on the message bus). */
+export interface ServerAuth {
+	/** Minimum password length (UTF-8 bytes) enforced by every
+	 *  server-side password-bearing endpoint. The SPA gates submit on
+	 *  the same value so users see the failure instantly. See
+	 *  AtalayaLabs/OxiCloud#677. */
+	min_password_length: number;
+	/** OPAQUE server-wide mode. See [`OpaqueMode`] for callers. */
+	opaque_mode: OpaqueMode;
+}
+
 /** Response of `GET /api/config`. Public, unauthenticated. */
 export interface ServerConfig {
 	version: string;
 	features: ServerFeatures;
+	auth: ServerAuth;
 	server_status: ServerStatus;
 }
 

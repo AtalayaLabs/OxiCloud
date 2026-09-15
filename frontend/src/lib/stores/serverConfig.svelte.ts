@@ -24,7 +24,7 @@
 import log from 'loglevel';
 
 import { fetchServerConfig } from '$lib/api/endpoints/config';
-import type { ServerConfig, ServerFeatures, ServerStatus } from '$lib/api/types';
+import type { ServerAuth, ServerConfig, ServerFeatures, ServerStatus } from '$lib/api/types';
 
 /** Sensible defaults for every field. Used before `load()` resolves
  *  and as the fallback if the fetch fails — every feature enabled,
@@ -47,6 +47,18 @@ const DEFAULT_STATUS: ServerStatus = {
 	readonly: false
 };
 
+/** Pre-load default for the auth tunables. `8` matches the server's
+ *  historical hardcoded floor and the current `AuthConfig` default —
+ *  so a client that never loads the config still enforces the same
+ *  rule the server did before the feature landed. `opaque_mode`
+ *  defaults to `'off'` — matching the server's default when the
+ *  variable is unset — so pre-load code paths behave as though
+ *  OPAQUE isn't configured. */
+const DEFAULT_AUTH: ServerAuth = {
+	min_password_length: 8,
+	opaque_mode: 'off'
+};
+
 const cfgLog = log.getLogger('oxi:config');
 
 class ServerConfigStore {
@@ -55,6 +67,11 @@ class ServerConfigStore {
 	/** Feature flags. Defaults are all-enabled so pre-load code paths
 	 *  don't accidentally hide UI while the fetch is in flight. */
 	features = $state<ServerFeatures>({ ...DEFAULT_FEATURES });
+	/** Auth-related tunables the setup / register / change-password
+	 *  forms read to gate submit locally. Default matches the server's
+	 *  historical floor (8) so pre-load form validation isn't accidentally
+	 *  more permissive than the server. */
+	auth = $state<ServerAuth>({ ...DEFAULT_AUTH });
 	/** Server-status snapshot. Live changes after `load()` propagate
 	 *  through the `X-Server-Status` header (see
 	 *  `stores/serverStatus.svelte.ts` — separate store, updated by
@@ -71,10 +88,12 @@ class ServerConfigStore {
 			const cfg: ServerConfig = await fetchServerConfig();
 			this.version = cfg.version;
 			this.features = cfg.features;
+			this.auth = cfg.auth ?? { ...DEFAULT_AUTH };
 			this.serverStatus = cfg.server_status;
 			cfgLog.debug('server config loaded', {
 				version: cfg.version,
-				message_bus: cfg.features.message_bus
+				message_bus: cfg.features.message_bus,
+				min_password_length: this.auth.min_password_length
 			});
 		} catch (err) {
 			// Fall through to defaults — SPA still boots. Any feature

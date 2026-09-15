@@ -176,6 +176,56 @@ it('rejects a registration with mismatched passwords without calling the API', a
 	expect(auth.register).not.toHaveBeenCalled();
 });
 
+// AtalayaLabs/OxiCloud#677 — client-side length gate reads
+// `serverConfig.auth.min_password_length` (default 8 in unit-test
+// context, since `serverConfig.load()` is never called here). A
+// too-short password must be refused BEFORE any API call — pre-fix
+// the request would fly out and, on the setup path specifically,
+// leave a claim behind that locked the operator out.
+
+it('rejects a registration with a too-short password without calling the API', async () => {
+	render(LoginPage);
+	await screen.findByTestId('login-form');
+	await fireEvent.click(screen.getByTestId('login-to-register-btn'));
+	await fireEvent.input(screen.getByTestId('login-register-username-input'), {
+		target: { value: 'shorty' }
+	});
+	await fireEvent.input(screen.getByTestId('login-register-email-input'), {
+		target: { value: 'shorty@x.test' }
+	});
+	// 7 chars — one below the default `min_password_length` of 8.
+	await fireEvent.input(screen.getByTestId('login-register-password-input'), {
+		target: { value: '1234567' }
+	});
+	await fireEvent.input(screen.getByTestId('login-register-confirm-input'), {
+		target: { value: '1234567' }
+	});
+	await fireEvent.click(screen.getByTestId('login-register-submit-btn'));
+	expect(auth.register).not.toHaveBeenCalled();
+});
+
+it('rejects an admin-setup submission with a too-short password without calling the API', async () => {
+	m(auth.getAuthStatus).mockResolvedValue({ initialized: false });
+	m(auth.setupAdmin).mockResolvedValue(undefined);
+	render(LoginPage);
+	await screen.findByTestId('login-setup-form');
+	await fireEvent.input(screen.getByTestId('login-setup-email-input'), {
+		target: { value: 'admin@x.test' }
+	});
+	// 7 chars — below the min. `setupAdmin` must NOT fire: pre-fix
+	// this call would have locked the operator out because the server
+	// claimed initialization before it validated the password. The
+	// FE gate is the defence in depth.
+	await fireEvent.input(screen.getByTestId('login-setup-password-input'), {
+		target: { value: '1234567' }
+	});
+	await fireEvent.input(screen.getByTestId('login-setup-confirm-input'), {
+		target: { value: '1234567' }
+	});
+	await fireEvent.click(screen.getByTestId('login-setup-submit-btn'));
+	expect(auth.setupAdmin).not.toHaveBeenCalled();
+});
+
 it('creates the first administrator in setup mode', async () => {
 	m(auth.getAuthStatus).mockResolvedValue({ initialized: false });
 	m(auth.setupAdmin).mockResolvedValue(undefined);

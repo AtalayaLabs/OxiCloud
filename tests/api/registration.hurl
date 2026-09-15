@@ -13,6 +13,30 @@
 
 
 # ─────────────────────────────────────────────────────────────
+# Step 0 — Password-length gate on register (AtalayaLabs/OxiCloud#677).
+#
+# `POST /api/auth/register` refuses passwords shorter than
+# `OXICLOUD_AUTH_MIN_PASSWORD_LENGTH` (default 8) with 400. The
+# rule is shared with setup / admin-create / admin-reset /
+# change-password via `AuthApplicationService::require_password_length`
+# — the four sites can't drift, one const in the config.
+#
+# Anti-enumeration doesn't apply here: password rules are public
+# knowledge (they live on `/api/config`), so a 400 for a rule
+# violation reveals nothing about whether the email is taken.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/auth/register
+Content-Type: application/json
+{
+  "username": "shortpw_user",
+  "email": "shortpw@example.com",
+  "password": "short"
+}
+
+HTTP 400
+
+
+# ─────────────────────────────────────────────────────────────
 # Step 1 — admin login (cleanup ops at the end need her token).
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/auth/login
