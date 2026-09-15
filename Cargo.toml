@@ -35,6 +35,13 @@ tokio-stream = { version = "0.1.18", features = ["fs", "sync"] }
 # shipped in release; pinned to the same 0.28 axum 0.8.8 already brings
 # transitively so we don't duplicate the crate graph.
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake"], optional = true }
+# yrs — the Yjs CRDT engine (Rust port maintained by the Yjs author). Backs
+# the collaborative markdown editor's server-side doc actors. Wire-compatible
+# with the Yjs client: the WS handler routes binary frames (0x01-0x03 kinds)
+# into `CollabSessionService::apply_update`, which drives a `yrs::Doc` and
+# broadcasts the result back out through the same wire. See
+# docs/plan/markdown-collab.md § Backend.
+yrs = "0.27.4"
 bytes = "1.11.1"
 tempfile = "3.27.0"
 tower = "0.5.3"

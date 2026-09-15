@@ -1,5 +1,11 @@
 # Plan — Message bus over WebSocket
 
+> **Retained as roadmap + design record.** The durable, user-facing
+> reference for what the bus does and how to consume it is
+> [`docs/architecture/message-bus-and-notifications.md`](../architecture/message-bus-and-notifications.md).
+> This plan is kept for phase tracking and design history. If you
+> spot drift between the two, the arch doc wins.
+
 ## Context
 
 OxiCloud today has no server-push channel. Every "live-ish" surface
@@ -16,10 +22,10 @@ editing is one consumer on top; folder-live updates, notifications,
 job progress, presence, and sync-client push invalidation follow with
 almost no extra scaffolding.
 
-## Status — 2026-09-11
+## Status — 2026-09-14
 
-The `feat/message-bus` branch delivers **D + F + Job dashboard live +
-follow-ups shipped end-to-end** on the FE and BE, verified by S1–S12
+The bus is broadly shipped and consumed by three surfaces
+(folder-live, notifications bell, job dashboard). Verified by S1-S12
 in the api-test smoke suite plus manual multi-user E2E. Live today:
 
 - **Bus core** — `MessageBus` port + `InProcessMessageBus` +
@@ -82,18 +88,63 @@ in the api-test smoke suite plus manual multi-user E2E. Live today:
   poll doesn't churn subs). State flips within a network hop instead
   of waiting up to POLL_MS. Progress publishes are deferred (see
   below); the polling refresh stays as fallback.
+- **Notifications table + bell (Slice E) — SHIPPED.**
+  `migrations/20261026000000_notifications.sql` adds `notif.notifications`;
+  `NotificationService` inserts rows and publishes
+  `MessageBusEvent::NotificationReceived` on
+  `user:{recipient_id}:notifications`. REST surface live at
+  `GET /api/notifications`, `GET /api/notifications/unread_count`,
+  `POST /api/notifications/{id}/read`, `POST /api/notifications/read_all`.
+  `share.granted` ingester on `ShareService::grant` fires for direct
+  User grants AND group grants (with tx-boundary member snapshot +
+  1000-user fanout cap logging `notification.fanout_truncated`).
+  Placeholder-then-enrich publish pattern (dedup collapses the pair
+  so the bell only ever surfaces the enriched row). FE: singleton
+  `lib/stores/notifications.svelte.ts` auto-subscribes on session
+  open + refetches `GET /api/notifications` on `onReconnect` (the
+  DB row is authoritative, bus is the live path). Bell UI + toast
+  live in `lib/components/NotificationBell.svelte` /
+  `NotificationToast.svelte`.
+- **Tab-visibility grace-close — SHIPPED.** FE closes the WS after
+  60 s of hidden-tab state, reopens on `visibilitychange`. Halves
+  the "N tabs × M users" idle WS count on real deployments
+  without breaking desktop-notify semantics (the notification row
+  is already durable). Implementation in `hooks.client.ts` +
+  `lib/message-bus/client.svelte.ts`.
+- **AsyncAPI + OpenAPI publication on the docs site — SHIPPED.**
+  `docs/api/rest.md` iframes Swagger UI over the committed
+  `resources/gen/openapi.json`; `docs/api/bus.md` iframes the
+  `@asyncapi/react-component` viewer over `resources/gen/asyncapi.json`.
+  New top-level "API Reference" section in the VitePress nav.
+  Zero CDN dependency at page load; specs regenerate via
+  `just openapi` / `just asyncapi` and are committed so the
+  docs-deploy workflow needs no Rust toolchain step.
+- **`collab:{id}` reserved in the topic namespace** — mentioned in
+  the `Topic` enum's module doc as a future variant alongside the
+  four live ones (`Folder`, `UserAuthz`, `UserNotifications`, `Job`).
+  Not yet a real enum variant; when the C1 backend skeleton lands,
+  adding it is a one-line change plus a match arm in
+  `to_wire_key` / `parse` / `required_perm`. The wire-protocol
+  comment on the same module also reserves binary Yjs frames as
+  the data-plane transport for this topic family — see § Wire
+  protocol below.
 
 Active — still under Phase A, ordered by priority:
 
-- **Notifications table + bell** (E) — topic + producer + auto-sub
-  land here. Same pattern as `:authz`. Larger; unblocks Phase-B
-  `@mentions`.
 - **Job progress publishes** (small follow-up to Job dashboard) —
   handler-side per-run publisher + 3 s throttle so long jobs
   (backend_migration, thumb_derived_import…) push `JobRunProgress`
   events. Wire is already in place (`useJobTopic.onProgress`,
   `MessageBusEvent::JobRunProgress`); waits for a per-run
   `ProgressReporter` handle threaded into `JobHandler::run`.
+- **Notification-kind catalog expansion** — beyond `share.granted`,
+  the plan's target kinds (`share.link_created`, `share.revoked*`,
+  `job.completed_for_you`, `session.new_device_login`,
+  `quota.threshold_reached`, `magic_link.used_from_other_device`)
+  are ingester hooks not yet wired. The row/live/REST/UI substrate
+  is already in place — each remaining kind is a small "after-commit
+  publish + i18n template" pair, sized like the `share.granted`
+  ingester.
 
 Deferred — see the Roadmap section's `## Deferred` block and the
 `project_message_bus_reconnect_gap` memory:
