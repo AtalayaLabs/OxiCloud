@@ -111,7 +111,22 @@
 	} from '$lib/utils/thumbnail';
 
 	interface Props {
-		title: string;
+		/**
+		 * Page heading, rendered as the `<h1>` above the sticky header.
+		 * Ignored when [`Props::heading`] is supplied.
+		 */
+		title?: string;
+		/**
+		 * Replaces the default `<h1>` entirely, in the same place — OUTSIDE
+		 * the sticky header, so whatever it renders scrolls away on descent
+		 * and only the action bar stays pinned.
+		 *
+		 * Exists for the public-share page, which sets the OxiCloud mark
+		 * beside the shared item's name: a visitor has no sidebar, so the
+		 * brand has nowhere else to live, and a separate always-visible bar
+		 * would spend the scarce top-of-viewport strip on a logo.
+		 */
+		heading?: Snippet;
 		items: Array<FileItem | FolderItem>;
 		/**
 		 * Per-item envelope info keyed by `item.id`. See `ItemContext`
@@ -391,6 +406,7 @@
 
 	let {
 		title,
+		heading,
 		items,
 		contextMap,
 		resolveOwnerName,
@@ -1316,7 +1332,11 @@
 		provided, the breadcrumb — the two controls the user reaches for
 		while scrolling.
 	-->
-	<h1 class="page-title">{title}</h1>
+	{#if heading}
+		{@render heading()}
+	{:else if title}
+		<h1 class="page-title">{title}</h1>
+	{/if}
 	<div class="page-sticky-header">
 		<ActionBar>
 			{#snippet start()}

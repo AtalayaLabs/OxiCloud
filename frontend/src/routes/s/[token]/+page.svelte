@@ -26,6 +26,7 @@
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
 	import Icon from '$lib/icons/Icon.svelte';
+	import BrandMark from '$lib/components/BrandMark.svelte';
 	import FileViewer from '$lib/components/FileViewer.svelte';
 	import FolderBreadcrumb from '$lib/components/FolderBreadcrumb.svelte';
 	import PhotoLightbox from '$lib/components/PhotoLightbox.svelte';
@@ -189,7 +190,18 @@
 <svelte:head><title>{meta?.item_name ?? t('share.title', 'Shared')} · OxiCloud</title></svelte:head>
 <svelte:window onpopstate={onPopState} />
 
-<main class="share">
+<!--
+	`main-content` + `content-area` are the two global classes AppShell wraps
+	every authenticated page in (`ported/topbar.css`, `ported/content.css`).
+	Reused verbatim so this page lays out exactly like `/files` — the shell
+	minus its sidebar — rather than approximating it.
+
+	`main-content` is load-bearing, not cosmetic: `body` is `display: flex`
+	(a row, for sidebar + content), so a bare `<main>` is a flex ITEM and
+	sizes to its own content — a ~390px column with the grid crushed inside
+	it. `flex-grow: 1` is what makes it fill the viewport.
+-->
+<main class="share main-content">
 	{#if view === 'loading'}
 		<p class="share__status">{t('common.loading', 'Loading…')}</p>
 	{:else if view === 'invalid'}
@@ -234,31 +246,69 @@
 			and the list loses the shared `--gutter`.
 		-->
 		<div class="content-area">
-			<header class="share__header">
-				<FolderBreadcrumb {folderId} />
-				<a
-					class="share__btn"
-					data-testid="public-share-download-zip-btn"
-					href={folderZipUrl(folderId)}
-					download
-					rel="external"
+			<!--
+				The measure wrapper goes INSIDE `.content-area`, not on it:
+				`.content-area` is the scroll container, so capping it there
+				would pull the scrollbar off the viewport edge and into the
+				middle of the page.
+			-->
+			<div class="share__measure">
+				<ResourceList
+					{items}
+					loading={listLoading}
+					error={listError}
+					hasMore={nextCursor !== undefined}
+					onloadmore={loadMore}
+					onopen={openItem}
+					emptyIcon="folder-open"
+					emptyText={t('share.empty', 'This shared folder is empty.')}
 				>
-					<Icon name="download" />
-					{t('share.download_zip', 'Download all')}
-				</a>
-			</header>
+					<!--
+					The brand sits with the heading rather than in a bar of its
+					own, so it scrolls away on descent and the pinned strip
+					stays just the action bar + breadcrumb. A visitor has no
+					sidebar, so this is the only place the mark appears.
+					Unlinked: `/files` would only bounce them to login.
+				-->
+					{#snippet heading()}
+						<div class="share__heading">
+							<BrandMark />
+							<h1 class="page-title share__title">{meta?.item_name ?? ''}</h1>
+						</div>
+					{/snippet}
 
-			<ResourceList
-				title={meta?.item_name ?? ''}
-				{items}
-				loading={listLoading}
-				error={listError}
-				hasMore={nextCursor !== undefined}
-				onloadmore={loadMore}
-				onopen={openItem}
-				emptyIcon="folder-open"
-				emptyText={t('share.empty', 'This shared folder is empty.')}
-			/>
+					<!--
+					Breadcrumb and actions go THROUGH ResourceList, exactly as
+					`/files` passes them, so they render inside its own
+					`page-sticky-header` and stay put while the grid scrolls.
+					Rendering them in a sibling <header> looked close but was
+					not sticky and did not share the header's alignment.
+				-->
+					{#snippet breadcrumb()}
+						<FolderBreadcrumb {folderId} />
+					{/snippet}
+
+					<!--
+					Re-tested inside the snippet: a snippet is a closure, so
+					the `folderId` narrowing on the branch above does not reach
+					in here.
+				-->
+					{#snippet actions()}
+						{#if folderId}
+							<a
+								class="share__btn"
+								data-testid="public-share-download-zip-btn"
+								href={folderZipUrl(folderId)}
+								download
+								rel="external"
+							>
+								<Icon name="download" />
+								{t('share.download_zip', 'Download all')}
+							</a>
+						{/if}
+					{/snippet}
+				</ResourceList>
+			</div>
 		</div>
 	{/if}
 </main>
@@ -271,25 +321,35 @@
 
 <style>
 	/*
-	 * This page renders OUTSIDE `AppShell` — `/s/` is in the layout's
-	 * `PUBLIC_PREFIXES`, so nothing supplies the page background or the
-	 * flex column that `.content-area` grows inside.
+	 * Layout comes from `main-content` + `content-area` (see the markup) —
+	 * the same global classes AppShell gives `/files`. Nothing here restates
+	 * them: the flex column, the gutter and the scroll container are all
+	 * inherited, so this page cannot drift from the app's layout the way the
+	 * old hand-rolled grid drifted from `ResourceList`.
 	 *
-	 * `.share` therefore mirrors AppShell's `.main-content`: a viewport-tall
-	 * flex column. It deliberately does NOT add its own padding — the inner
-	 * `.content-area` owns the gutter, and duplicating it here would double
-	 * the inset and break `page-sticky-header`'s negative offset.
+	 * Only the text colour is set. `body` already paints `--color-bg-page`,
+	 * and adding padding here would double `.content-area`'s inset and break
+	 * `page-sticky-header`'s negative offset.
 	 */
 	.share {
-		display: flex;
-		flex-direction: column;
-		height: 100vh;
-		background: var(--color-bg-page);
+		/*
+		 * Reading measure for the share surface. `/files` runs full-bleed
+		 * because a sidebar already eats the left third; a visitor has no
+		 * sidebar, so an uncapped grid stretches a handful of tiles across a
+		 * whole desktop. `rem`, not `px`, so it tracks the user's font size.
+		 */
+		--share-measure: 80rem;
+
 		color: var(--color-text);
 	}
 
+	.share__measure {
+		max-width: var(--share-measure);
+		margin-inline: auto;
+	}
+
 	/*
-	 * The non-folder states are bare children of the flex column with no
+	 * The non-folder states are direct children of the flex column with no
 	 * `.content-area` to pad them, so they carry their own inset.
 	 */
 	.share__status,
@@ -298,13 +358,42 @@
 		padding-inline: var(--space-6);
 	}
 
-	.share__header {
+	/*
+	 * `flex: none` so the brand bar keeps its height instead of being
+	 * squeezed by `.content-area`'s `flex-grow: 1` sibling.
+	 *
+	 * `.logo-container` (global) already supplies the padding and separator;
+	 * only its sidebar-specific bottom margin is dropped, since here the
+	 * scroll container follows immediately.
+	 */
+	/*
+	 * Mark and title on one row, replacing ResourceList's bare `<h1>`. The
+	 * row takes over `page-title`'s bottom margin (zeroed below), keeping the
+	 * gap above the sticky header identical to every other page.
+	 */
+	.share__heading {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-4);
-		margin-bottom: var(--space-4);
-		flex-wrap: wrap;
+		gap: var(--space-3);
+		margin-bottom: var(--space-5);
+	}
+
+	/*
+	 * `.logo-container` carries the sidebar's own chrome — a bottom separator,
+	 * block padding and a bottom margin — none of which belong on a heading
+	 * row. Stripped here rather than in the shared rule, which the sidebar
+	 * still wants exactly as it is.
+	 */
+	.share__heading :global(.logo-container) {
+		padding: 0;
+		margin-bottom: 0;
+		border-bottom: none;
+	}
+
+	/* `page-title` supplies the type; its bottom margin now belongs to the
+	   row, which owns the spacing below the heading. */
+	.share__title {
+		margin-bottom: 0;
 	}
 
 	.share__status {

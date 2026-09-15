@@ -12,6 +12,7 @@
 	import type { FileItem, FolderItem, ItemType } from '$lib/api/types';
 	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
 	import DrivePicker from '$lib/components/DrivePicker.svelte';
+	import BrandMark from '$lib/components/BrandMark.svelte';
 	import ReadOnlyBanner from '$lib/components/ReadOnlyBanner.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
 	import { dateTimeFormatFor, iconNameFromClass } from '$lib/utils/display';
@@ -610,16 +611,7 @@
 ></div>
 
 <div class="sidebar" class:open={sidebarOpen}>
-	<a href={resolve('/files')} class="logo-container" data-testid="appshell-logo-link">
-		<div class="logo">
-			<svg viewBox="95 67 320 320" aria-hidden="true">
-				<path
-					d="M345 310c32 0 58-26 58-58s-26-58-58-58c-6.2 0-12 0.9-17.5 2.7C318 166 289 143 255 143c-34.3 0-63.1 22.6-73 53.7C176.9 195.7 171 195 165 195c-32 0-58 26-58 58s26 58 58 58h180z"
-				/>
-			</svg>
-		</div>
-		<div class="app-name">OxiCloud</div>
-	</a>
+	<BrandMark href={resolve('/files')} testId="appshell-logo-link" />
 
 	<nav
 		class="nav-menu"
