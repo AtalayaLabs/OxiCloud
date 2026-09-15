@@ -6,6 +6,7 @@
 	import { dateTimeFormatFor } from '$lib/utils/display';
 	import {
 		clearPluginLogs,
+		subscribePluginLogs,
 		createUser,
 		deletePlugin,
 		deleteUser,
@@ -803,7 +804,7 @@
 	let logsPage = $state(0);
 	let logsTotal = $state(0);
 	let logsLive = $state(true);
-	let logStream: EventSource | null = null;
+	let logStream: ReturnType<typeof subscribePluginLogs> | null = null;
 
 	/** Best-effort message text across the persisted (`msg`) and legacy shapes. */
 	function logMsg(e: PluginLogEntry): string {
@@ -825,20 +826,7 @@
 	function startLogStream() {
 		stopLogStream();
 		if (!logsPlugin || !logsLive) return;
-		const es = new EventSource(
-			`/api/admin/plugins/${encodeURIComponent(logsPlugin.id)}/logs/stream`,
-			{ withCredentials: true }
-		);
-		es.onmessage = (ev) => {
-			try {
-				onLiveLogEntry(JSON.parse(ev.data) as PluginLogEntry);
-			} catch {
-				/* ignore malformed frames */
-			}
-		};
-		// Fell behind the broadcast buffer — resync from the server.
-		es.addEventListener('lagged', () => void loadLogs());
-		logStream = es;
+		logStream = subscribePluginLogs(logsPlugin.id, onLiveLogEntry, () => void loadLogs());
 	}
 
 	/**
