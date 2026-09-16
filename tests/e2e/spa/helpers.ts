@@ -322,6 +322,31 @@ export async function apiCreateFolder(
   return res.json();
 }
 
+export type ApiShare = { id: string; token: string };
+
+/**
+ * Mint a public share link on a folder or file. Requires the page to be
+ * authenticated (see `apiLogin`) — creating a link needs `Share` on the
+ * resource, unlike CONSUMING one, which needs no account at all.
+ *
+ * Returned `token` goes in the `/s/{token}` URL. Visit it from a FRESH
+ * context: the whole point of a share is that it works without the session
+ * that created it, and reusing this page's context would test the owner's
+ * permissions instead.
+ */
+export async function apiCreateShare(
+  page: Page,
+  itemId: string,
+  itemType: 'folder' | 'file',
+): Promise<ApiShare> {
+  const res = await browserFetchJson<ApiShare>(page, 'POST', '/api/shares', {
+    item_id: itemId,
+    item_type: itemType,
+  });
+  if (!res.ok) throw new Error(`apiCreateShare(${itemId}) failed: ${res.status} ${res.body}`);
+  return res.json();
+}
+
 /**
  * Create a regular user via the admin API. Requires the page to be authenticated
  * as an admin (see `apiLogin`). Returns the created username. Handy for tests

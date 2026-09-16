@@ -24,7 +24,6 @@ use crate::application::services::people_service::PeopleService;
 use crate::application::services::places_service::PlacesService;
 use crate::application::services::recent_service::RecentService;
 use crate::application::services::search_service::SearchService;
-use crate::application::services::share_browse_service::ShareBrowseService;
 use crate::application::services::share_service::ShareService;
 use crate::application::services::trash_service::TrashService;
 use crate::application::services::{
@@ -1856,15 +1855,6 @@ impl AppServiceFactory {
         );
         apps.share_service = share_service.clone();
 
-        let share_browse_service = share_service.as_ref().map(|s| {
-            Arc::new(ShareBrowseService::new(
-                s.clone(),
-                apps.folder_service.clone(),
-                apps.file_retrieval_service.clone(),
-                repos.folder_repository.clone(),
-            ))
-        });
-
         // 6. Database-dependent services (PgPool always available in blob model)
         let favorites_service: Option<Arc<FavoritesService>>;
         let recent_service: Option<Arc<RecentService>>;
@@ -2361,7 +2351,6 @@ impl AppServiceFactory {
             plugin_management,
             trash_service,
             share_service,
-            share_browse_service,
             favorites_service,
             recent_service,
             places_service,
@@ -3355,7 +3344,6 @@ pub struct AppState {
     pub storage_settings_service: Option<Arc<StorageSettingsService>>,
     pub trash_service: Option<Arc<TrashService>>,
     pub share_service: Option<Arc<ShareService>>,
-    pub share_browse_service: Option<Arc<ShareBrowseService>>,
     pub favorites_service: Option<Arc<FavoritesService>>,
     pub recent_service: Option<Arc<RecentService>>,
     pub places_service: Option<Arc<PlacesService>>,

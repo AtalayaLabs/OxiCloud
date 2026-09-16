@@ -44,6 +44,33 @@ impl Subject {
         }
     }
 
+    /// The `auth.users.id` behind this subject, if there is one.
+    ///
+    /// `None` for `Token` (a public-share link) and `Group`, neither of
+    /// which has a user row. Use this — never [`Self::id`] — wherever a
+    /// value is about to be written to a column with an FK to
+    /// `auth.users`, or recorded as "this person did something":
+    /// `Subject::id()` would hand back a share id that satisfies neither.
+    pub fn user_id(&self) -> Option<Uuid> {
+        match self {
+            Subject::User(id) => Some(*id),
+            Subject::Group(_) | Subject::Token(_) => None,
+        }
+    }
+
+    /// The `storage.shares.id` behind this subject, if it is a share token.
+    ///
+    /// Counterpart to [`Self::user_id`]. Binding this as a nullable SQL
+    /// parameter lets one query serve both principal kinds: for a user it
+    /// is `NULL`, so any `subject_id = $n` comparison against it is `NULL`
+    /// — never true — and the existing plan is unchanged.
+    pub fn token_id(&self) -> Option<Uuid> {
+        match self {
+            Subject::Token(id) => Some(*id),
+            Subject::User(_) | Subject::Group(_) => None,
+        }
+    }
+
     /// Reconstruct from a SQL row's `(subject_type, subject_id)` pair.
     ///
     /// `"external"` is no longer accepted: PR-2 of the external-users

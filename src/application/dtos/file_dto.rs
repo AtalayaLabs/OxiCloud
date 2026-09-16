@@ -193,6 +193,19 @@ impl FileDto {
         }
     }
 
+    /// Everything withheld from a caller holding only a share token — the
+    /// file counterpart of `FolderDto::redacted_for_token`. See that doc for
+    /// why the owner's stable identifiers come off for an anonymous visitor
+    /// but not for a signed-in share recipient.
+    #[must_use]
+    pub fn redacted_for_token(self) -> Self {
+        Self {
+            created_by: None,
+            updated_by: None,
+            ..self.without_hierarchy_info()
+        }
+    }
+
     /// Creates an empty file DTO for stub implementations
     pub fn empty() -> Self {
         Self {

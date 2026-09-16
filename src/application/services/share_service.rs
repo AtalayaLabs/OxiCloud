@@ -234,6 +234,29 @@ impl ShareService {
         )
     }
 
+    /// Add `share_id` to the caller's share ring, minting one if absent.
+    ///
+    /// Called only after the share has actually been unlocked — either it had
+    /// no password, or `/verify` accepted one. The returned JWT is the
+    /// visitor's anonymous session: `auth_middleware` reads it back and builds
+    /// an `Anonymous` principal from it, and `CallerSubjects` turns each id
+    /// into a `Subject::Token` the ReBAC engine already has grants for.
+    ///
+    /// `existing` is the caller's current ring cookie, if any, so that opening
+    /// a second share keeps the first — one cookie, not one per share.
+    pub fn grant_ring(
+        &self,
+        existing: Option<&str>,
+        share_id: Uuid,
+    ) -> Result<String, DomainError> {
+        crate::infrastructure::services::share_ring::append(
+            &self.config.auth.jwt_secret,
+            existing,
+            share_id,
+            crate::infrastructure::services::share_ring::DEFAULT_TTL_SECS,
+        )
+    }
+
     pub async fn get_shared_link_with_unlock(
         &self,
         token: &str,
@@ -465,6 +488,29 @@ impl ShareUseCase for ShareService {
         self.share_repository
             .delete_share_for_user(id, requester_id)
             .await?;
+
+        // SECURITY: the token grant backing this share is removed by the
+        // `trg_cleanup_role_grants_token` trigger on `storage.shares` — in
+        // the DATABASE, so it never passes through `PgAclEngine::clear_role`
+        // and never triggers the cascade-cache flush that `clear_role` does
+        // for every other File/Folder revocation.
+        //
+        // The row disappearing is not enough: `cascade_grant_cache` is keyed
+        // by decision, and a visitor who loaded one thumbnail has already
+        // seeded `(Token(share), File(id), Read) => true`. Without this flush
+        // the revoked link keeps working until that entry's 30 s TTL expires.
+        //
+        // This was latent until the share ring landed — token grants were
+        // written at share creation and never read at request time, so a
+        // stale token decision could not be consulted. Now it can.
+        //
+        // Flush-all mirrors `clear_role`: the cache cannot be targeted
+        // without walking an unbounded set of descendants, and share
+        // revocation is rare next to the thumbnail reads the cache serves.
+        self.authorization
+            .invalidate_cascade_grant_cache_all()
+            .await;
+
         // Sharer's search cache no longer reflects `is_shared` truthfully
         // for the affected resource — flush their entries. Recipients are
         // still stale-until-TTL (see the struct field comment).

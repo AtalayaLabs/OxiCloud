@@ -13,9 +13,20 @@
 		/** Emitted when the viewer (or its embedded editor) closes, so the
 		 *  consumer can refresh the file list to pick up saves. */
 		onrefresh?: () => void;
+		/**
+		 * Hide every affordance that mutates. Set by the public-share page.
+		 *
+		 * Only the WOPI "Edit" button qualifies, and it needs this because
+		 * `canEdit` answers "is this file type editable", not "may this caller
+		 * edit it" — a visitor opening a .docx would be offered an editor that
+		 * cannot open, since `/wopi/*` is off the anonymous allowlist.
+		 *
+		 * Viewing, zooming and download stay: those are what the link grants.
+		 */
+		readOnly?: boolean;
 	}
 
-	let { open = $bindable(false), file, onrefresh }: Props = $props();
+	let { open = $bindable(false), file, onrefresh, readOnly = false }: Props = $props();
 
 	type Kind = 'image' | 'video' | 'audio' | 'pdf' | 'text' | 'other';
 
@@ -194,7 +205,7 @@
 							</button>
 						</div>
 					{/if}
-					{#if canEdit}
+					{#if canEdit && !readOnly}
 						<button
 							class="btn btn-primary btn-sm"
 							data-testid="file-viewer-edit-btn"

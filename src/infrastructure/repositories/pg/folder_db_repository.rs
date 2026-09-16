@@ -8,6 +8,7 @@
 //! database triggers, so reading a folder's full path is always O(1) — no
 //! recursive CTEs or N+1 queries.
 
+use crate::domain::services::authorization::Subject;
 use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -1422,71 +1423,6 @@ impl FolderRepository for FolderDbRepository {
             })
             .collect()
     }
-
-    async fn is_folder_in_subtree(
-        &self,
-        candidate_folder_id: &str,
-        root_folder_id: &str,
-    ) -> Result<bool, DomainError> {
-        let (Ok(candidate_uuid), Ok(root_uuid)) = (
-            Uuid::parse_str(candidate_folder_id),
-            Uuid::parse_str(root_folder_id),
-        ) else {
-            return Ok(false);
-        };
-
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (\
-                 SELECT 1 \
-                 FROM storage.folders c, storage.folders r \
-                 WHERE c.id = $1 \
-                   AND r.id = $2 \
-                   AND c.is_trashed = false \
-                   AND r.is_trashed = false \
-                   AND c.lpath <@ r.lpath \
-             )",
-        )
-        .bind(candidate_uuid)
-        .bind(root_uuid)
-        .fetch_one(self.pool())
-        .await
-        .map_err(|e| {
-            DomainError::internal_error("FolderDb", format!("is_folder_in_subtree: {e}"))
-        })?;
-        Ok(exists)
-    }
-
-    async fn is_file_in_subtree(
-        &self,
-        file_id: &str,
-        root_folder_id: &str,
-    ) -> Result<bool, DomainError> {
-        let (Ok(file_uuid), Ok(root_uuid)) =
-            (Uuid::parse_str(file_id), Uuid::parse_str(root_folder_id))
-        else {
-            return Ok(false);
-        };
-
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (\
-                 SELECT 1 \
-                 FROM storage.files f \
-                 JOIN storage.folders parent ON f.folder_id = parent.id \
-                 JOIN storage.folders root   ON root.id = $2 \
-                 WHERE f.id = $1 \
-                   AND f.is_trashed = false \
-                   AND parent.is_trashed = false \
-                   AND root.is_trashed = false \
-                   AND parent.lpath <@ root.lpath \
-             )",
-        )
-        .bind(file_uuid)
-        .bind(root_uuid)
-        .fetch_one(self.pool())
-        .await
-        .map_err(|e| DomainError::internal_error("FolderDb", format!("is_file_in_subtree: {e}")))?;
-        Ok(exists)
-    }
 }
 
 // ── Extra helpers for blob-storage bootstrap ──
@@ -1509,9 +1445,26 @@ impl FolderDbRepository {
     /// the leaf, growing as we move up. `has_drive_grant` / `has_folder_grant`
     /// are the two Read predicates the service uses to identify the
     /// share/drive boundary and choose the access-source kind.
+    /// Takes a [`Subject`] so a public-share visitor can walk the chain as
+    /// `Subject::Token(share_id)`.
+    ///
+    /// The token predicate is added to `has_folder_grant` **only, never to
+    /// `has_drive_grant`** — a share token must not be able to satisfy a
+    /// drive-wide grant, which would make the whole drive its boundary
+    /// instead of the shared folder.
+    ///
+    /// This is what makes the breadcrumb truncate correctly with no
+    /// share-specific code in the caller: the shared folder is the only
+    /// ancestor carrying a token grant, so the boundary search in
+    /// `folder_service` lands exactly on it and everything above is
+    /// discarded. Folders between the share root and the leaf have no grant
+    /// of their own but sit below the boundary, so they are retained.
+    ///
+    /// For a user caller `$3` binds to `NULL`, so the added disjunct is
+    /// `NULL` — never true — and the query plan is unchanged.
     pub async fn fetch_ancestor_walk(
         &self,
-        caller_id: Uuid,
+        caller: Subject,
         leaf_id: Uuid,
     ) -> Result<Vec<AncestorRow>, DomainError> {
         // Recursive CTE walks `parent_id` from the leaf upward. Group ids
@@ -1548,7 +1501,8 @@ impl FolderDbRepository {
                        AND g.resource_id = c.id
                        AND (g.expires_at IS NULL OR g.expires_at > NOW())
                        AND ((g.subject_type = 'user'  AND g.subject_id = $1)
-                         OR (g.subject_type = 'group' AND g.subject_id = ANY(groups.ids)))
+                         OR (g.subject_type = 'group' AND g.subject_id = ANY(groups.ids))
+                         OR (g.subject_type = 'token' AND g.subject_id = $3))
                 ) AS has_folder_grant,
                 EXISTS (
                     SELECT 1 FROM storage.role_grants g, groups
@@ -1561,9 +1515,13 @@ impl FolderDbRepository {
               FROM chain c
              ORDER BY c.depth DESC
         "#;
+        // A token caller has no user id; `storage.caller_group_ids(nil)` is a
+        // plain recursive walk over `subject_group_members` and returns an
+        // empty set for it rather than erroring.
         sqlx::query_as::<_, AncestorRow>(sql)
-            .bind(caller_id)
+            .bind(caller.user_id().unwrap_or_else(Uuid::nil))
             .bind(leaf_id)
+            .bind(caller.token_id())
             .fetch_all(self.pool())
             .await
             .map_err(|e| DomainError::internal_error("FolderDb", format!("ancestor walk: {e}")))
@@ -1664,16 +1622,32 @@ impl FolderDbRepository {
     /// detect the existence of a next page).  Returns raw [`FolderResourceRow`]
     /// values; the handler / service layer converts them to DTOs.
     #[allow(clippy::too_many_arguments)]
+    /// Takes a [`Subject`], not a `Uuid`, because this listing is reachable
+    /// by a public-share visitor and two of its output columns are
+    /// caller-relative:
+    ///
+    /// - `is_favorite` is per-user state a token caller has none of — it
+    ///   binds a nil uuid and matches nothing, which is the honest answer.
+    /// - `is_shared` is a **subject-less** EXISTS over `role_grants`, so left
+    ///   alone it would tell a visitor which items inside the share the owner
+    ///   has ALSO published elsewhere. `$8` forces it to `false` for a token
+    ///   caller (`docs/plan/rationalize-publicshare.md` §Phase 2).
+    ///
+    /// Gating in SQL rather than zeroing the column afterwards keeps the
+    /// disclosure impossible to reintroduce by adding a callsite.
     pub async fn list_resources_paged(
         &self,
         parent_id: Uuid,
-        caller_id: Uuid,
+        caller: Subject,
         limit: usize,
         cursor: Option<&FolderResourceCursor>,
         order_by: &str,
         kinds: Option<&[ResourceKind]>,
         reverse: bool,
     ) -> Result<Vec<FolderResourceRow>, DomainError> {
+        // A token caller has no `auth.users` row; nil matches no favourite.
+        let caller_id = caller.user_id().unwrap_or_else(Uuid::nil);
+        let show_is_shared = caller.user_id().is_some();
         let include_folders = kinds.is_none_or(|k| k.contains(&ResourceKind::Folder));
         let include_files = kinds.is_none_or(|k| k.contains(&ResourceKind::File));
 
@@ -1702,11 +1676,11 @@ impl FolderDbRepository {
                        AND uf.item_id   = f.id::text
                        AND uf.item_type = 'folder'
                 )                         AS is_favorite,
-                EXISTS (
+                ($8::bool AND EXISTS (
                     SELECT 1 FROM storage.role_grants g
                      WHERE g.resource_id   = f.id
                        AND g.resource_type = 'folder'
-                )                         AS is_shared,
+                ))                        AS is_shared,
                 LOWER(f.name)             AS sort_str,
                 0::bigint                 AS type_order,
                 0::int                    AS folder_first
@@ -1734,11 +1708,11 @@ impl FolderDbRepository {
                        AND uf.item_id   = fm.id::text
                        AND uf.item_type = 'file'
                 )                         AS is_favorite,
-                EXISTS (
+                ($8::bool AND EXISTS (
                     SELECT 1 FROM storage.role_grants g
                      WHERE g.resource_id   = fm.id
                        AND g.resource_type = 'file'
-                )                         AS is_shared,
+                ))                        AS is_shared,
                 LOWER(fm.name)            AS sort_str,
                 fm.category_order::bigint AS type_order,
                 1::int                    AS folder_first
@@ -1959,6 +1933,7 @@ impl FolderDbRepository {
             .bind(cursor_id)
             .bind(limit as i64)
             .bind(caller_id)
+            .bind(show_is_shared)
             .fetch_all(self.pool())
             .await
             .map_err(|e| {

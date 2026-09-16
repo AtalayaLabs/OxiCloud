@@ -4,26 +4,15 @@ vi.mock('$lib/api/client', () => ({ apiFetch: vi.fn(), apiJson: vi.fn() }));
 vi.mock('$lib/api/csrf', () => ({ getCsrfHeaders: () => ({}) }));
 
 import { apiFetch, apiJson } from '$lib/api/client';
-import {
-	shareDownloadUrl,
-	shareFileUrl,
-	shareZipUrl,
-	getShareMeta,
-	verifySharePassword,
-	getShareContents
-} from './share';
+import { getShareMeta, verifySharePassword } from './share';
 
 const fetchMock = apiFetch as unknown as ReturnType<typeof vi.fn>;
 const jsonMock = apiJson as unknown as ReturnType<typeof vi.fn>;
 
-describe('share URL builders', () => {
-	it('build encoded share URLs', () => {
-		expect(shareDownloadUrl('tok en')).toBe('/api/s/tok%20en/download');
-		expect(shareFileUrl('t', 'f/1')).toBe('/api/s/t/file/f%2F1');
-		expect(shareZipUrl('t')).toBe('/api/s/t/zip');
-		expect(shareZipUrl('t', 'fid')).toBe('/api/s/t/zip/fid');
-	});
-});
+// The URL builders and `getShareContents` are gone with the six `/api/s/*`
+// browsing endpoints they addressed. A visitor now browses through
+// `folders` / `files` like any other caller, so those paths are covered by
+// those modules' tests and by `tests/api/anonymous_share_session.hurl`.
 
 describe('share API calls', () => {
 	beforeEach(() => {
@@ -31,10 +20,9 @@ describe('share API calls', () => {
 		fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({}) });
 		jsonMock.mockResolvedValue({});
 	});
-	it('hit the API for meta / verify / contents', async () => {
+	it('hit the API for meta / verify', async () => {
 		await getShareMeta('t').catch(() => {});
 		await verifySharePassword('t', 'pw').catch(() => {});
-		await getShareContents('t').catch(() => {});
 		expect(fetchMock.mock.calls.length + jsonMock.mock.calls.length).toBeGreaterThan(0);
 	});
 });
@@ -77,16 +65,5 @@ describe('share status branches', () => {
 		expect(await verifySharePassword('t', 'pw')).toBe(true);
 		fetchMock.mockResolvedValueOnce(resp({ status: 401 }));
 		expect(await verifySharePassword('t', 'bad')).toBe(false);
-	});
-
-	it('lists contents and maps 401→password, 410→expired', async () => {
-		fetchMock.mockResolvedValueOnce(
-			resp({ ok: true, json: async () => ({ folders: [], files: [] }) })
-		);
-		expect((await getShareContents('t')).status).toBe('ok');
-		fetchMock.mockResolvedValueOnce(resp({ status: 401 }));
-		expect((await getShareContents('t')).status).toBe('password');
-		fetchMock.mockResolvedValueOnce(resp({ status: 410 }));
-		expect((await getShareContents('t', 'fid')).status).toBe('expired');
 	});
 });

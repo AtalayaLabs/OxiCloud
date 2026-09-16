@@ -110,6 +110,27 @@ pub fn too_many_requests(retry_after: u64) -> Response {
     resp
 }
 
+/// Shared body of every per-endpoint limiter below.
+///
+/// The public wrappers differ only in the `endpoint` they name in the warning,
+/// so the decision lives here once: each endpoint gets its own `RateLimiter`
+/// (its own budget), but they all enforce it identically.
+async fn enforce(
+    limiter: &RateLimiter,
+    endpoint: &'static str,
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    let ip = extract_client_ip(&req);
+    match limiter.check_and_increment(&ip) {
+        Ok(_) => next.run(req).await,
+        Err(()) => {
+            tracing::warn!(ip = %ip, endpoint, "Rate limit exceeded");
+            too_many_requests(limiter.retry_after())
+        }
+    }
+}
+
 /// Axum middleware: rate-limit login attempts.
 ///
 /// Inject via:
@@ -121,17 +142,7 @@ pub async fn rate_limit_login(
     req: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
-    let ip = extract_client_ip(&req);
-    match limiter.check_and_increment(&ip) {
-        Ok(_) => next.run(req).await,
-        Err(()) => {
-            tracing::warn!(
-                ip = %ip,
-                "Rate limit exceeded on login endpoint"
-            );
-            too_many_requests(limiter.retry_after())
-        }
-    }
+    enforce(&limiter, "login", req, next).await
 }
 
 /// Axum middleware: rate-limit registration attempts.
@@ -140,17 +151,7 @@ pub async fn rate_limit_register(
     req: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
-    let ip = extract_client_ip(&req);
-    match limiter.check_and_increment(&ip) {
-        Ok(_) => next.run(req).await,
-        Err(()) => {
-            tracing::warn!(
-                ip = %ip,
-                "Rate limit exceeded on register endpoint"
-            );
-            too_many_requests(limiter.retry_after())
-        }
-    }
+    enforce(&limiter, "register", req, next).await
 }
 
 /// Axum middleware: rate-limit token refresh attempts.
@@ -159,17 +160,23 @@ pub async fn rate_limit_refresh(
     req: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
-    let ip = extract_client_ip(&req);
-    match limiter.check_and_increment(&ip) {
-        Ok(_) => next.run(req).await,
-        Err(()) => {
-            tracing::warn!(
-                ip = %ip,
-                "Rate limit exceeded on refresh endpoint"
-            );
-            too_many_requests(limiter.retry_after())
-        }
-    }
+    enforce(&limiter, "refresh", req, next).await
+}
+
+/// Axum middleware: rate-limit share-password verification.
+///
+/// `POST /api/s/{token}/verify` is unauthenticated and runs Argon2id at the
+/// configured memory cost per call, so it is both a password oracle and a
+/// memory amplifier — the same two properties that earned `/api/auth/login` a
+/// limiter. It is budgeted from `login_max_requests`/`login_window_secs` for
+/// exactly that reason: a share password is a password, and an operator who
+/// tightens the login budget means to tighten password guessing everywhere.
+pub async fn rate_limit_share_verify(
+    State(limiter): axum::extract::State<Arc<RateLimiter>>,
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    enforce(&limiter, "share_verify", req, next).await
 }
 
 use axum::extract::State;

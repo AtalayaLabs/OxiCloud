@@ -40,7 +40,7 @@ use crate::application::ports::calendar_ports::CalendarUseCase;
 use crate::application::services::calendar_service::CalendarService;
 use crate::common::di::AppState;
 use crate::interfaces::errors::AppError;
-use crate::interfaces::middleware::auth::{AuthUser, CurrentUser};
+use crate::interfaces::middleware::auth::AuthUser;
 
 const HEADER_DAV: HeaderName = HeaderName::from_static("dav");
 
@@ -418,12 +418,10 @@ fn strip_username_prefix(path: &str) -> &str {
 
 // ─── Helper: extract user from request ───────────────────────────────
 
+/// Delegates to the shared helper — this surface receives a raw `Request`
+/// and so never passes through `AuthUser`'s `FromRequestParts` guard.
 fn extract_user(req: &Request<Body>) -> Result<AuthUser, AppError> {
-    req.extensions()
-        .get::<Arc<CurrentUser>>()
-        .cloned()
-        .map(AuthUser)
-        .ok_or_else(|| AppError::unauthorized("Authentication required"))
+    crate::interfaces::middleware::auth::auth_user_from_extensions(req.extensions())
 }
 
 fn get_calendar_service(state: &AppState) -> Result<&Arc<CalendarService>, AppError> {

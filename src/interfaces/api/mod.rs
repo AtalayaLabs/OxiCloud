@@ -156,12 +156,6 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::share_handler::delete_shared_link,
         handlers::share_handler::access_shared_item,
         handlers::share_handler::verify_shared_item_password,
-        handlers::share_handler::download_shared_file,
-        handlers::share_handler::list_share_contents_root,
-        handlers::share_handler::list_share_contents_subfolder,
-        handlers::share_handler::download_share_file_in_folder,
-        handlers::share_handler::download_share_zip_root,
-        handlers::share_handler::download_share_zip_subfolder,
         // Favorites handlers (free functions)
         handlers::favorites_handler::list_favorites_resources,
         handlers::favorites_handler::add_favorite,
@@ -545,7 +539,40 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
 )]
 pub struct ApiDoc;
 
-/// Injects the `bearerAuth` HTTP Bearer security scheme into the generated spec.
+/// The vendor extension marking an operation reachable with only a
+/// public-share token. `share:read` names a CAPABILITY, not a caller: the set
+/// of reads a share link permits.
+pub const SCOPE_EXTENSION: &str = "x-oxicloud-scope";
+const SHARE_READ_SCOPE: &str = "share:read";
+
+/// Prefix of the admin-only nest. `require_admin` wraps exactly this subtree
+/// (`routes.rs`), so the path prefix IS the gate — which is what lets the
+/// marker below be derived rather than hand-maintained across 40 handlers.
+const ADMIN_PREFIX: &str = "/api/admin";
+const ADMIN_SCOPE: &str = "role:admin";
+
+/// Injects the `bearerAuth` HTTP Bearer security scheme into the generated
+/// spec, and marks the operations a public-share visitor may reach.
+///
+/// ## Why an extension and not a scope
+///
+/// The obvious place for `share:read` is the scopes array on each operation's
+/// security requirement. It is the wrong place: OpenAPI defines that array
+/// only for `oauth2` and `openIdConnect` schemes and requires it to be EMPTY
+/// for every other type. `bearerAuth` is `http`/bearer, so scopes there make
+/// the document non-conformant — which is why Swagger UI renders nothing for
+/// them. Vendor extensions are the sanctioned way to carry information the
+/// spec has no field for, so the marker is `x-oxicloud-scope` and the scopes
+/// array stays empty. A sentence is appended to the operation's description
+/// as well, because that is the part Swagger UI actually shows a human.
+///
+/// ## Why it is generated, not annotated
+///
+/// The marked set is read straight from `ANONYMOUS_ALLOWLIST` — the constant
+/// the runtime gate itself uses. Hand-annotating each handler would put the
+/// published description and the enforced rule in two places that can
+/// disagree; deriving one from the other means they cannot. The gate stays
+/// the authority: an extension here grants nothing.
 struct SecurityAddon;
 
 impl Modify for SecurityAddon {
@@ -555,6 +582,74 @@ impl Modify for SecurityAddon {
             "bearerAuth",
             SecurityScheme::Http(Http::new(HttpAuthScheme::Bearer)),
         );
+
+        // GET only, matching `anonymous_may_reach`: a method mounted later on
+        // an already-listed path does not inherit share access, and the spec
+        // must not imply it does.
+        for path in crate::interfaces::middleware::anonymous_allowlist::ANONYMOUS_ALLOWLIST {
+            let Some(item) = openapi.paths.paths.get_mut(*path) else {
+                // An allowlisted route with no `#[utoipa::path]` — undocumented
+                // rather than wrong. `share_read_marks_exactly_the_allowlist`
+                // fails on it, which is the nudge to document it.
+                continue;
+            };
+            let Some(op) = item.get.as_mut() else {
+                continue;
+            };
+            op.extensions = Some(
+                utoipa::openapi::extensions::ExtensionsBuilder::new()
+                    .add(SCOPE_EXTENSION, serde_json::json!(SHARE_READ_SCOPE))
+                    .build(),
+            );
+            let note = "Reachable with a public-share token (`share:read`): a visitor \
+                        holding an unlocked share link may call this, scoped to what \
+                        that share grants.";
+            op.description = Some(match op.description.take() {
+                Some(existing) if !existing.is_empty() => format!("{existing}\n\n{note}"),
+                _ => note.to_owned(),
+            });
+        }
+
+        // The admin nest. Derived from the path prefix for the same reason:
+        // `require_admin` wraps exactly this subtree, so the prefix is the
+        // gate, and marking 40 handlers by hand would be 40 chances to forget.
+        //
+        // EVERY method, not just GET — unlike the share marker. A share
+        // visitor may only read, so a `PUT` on an allowlisted path is a
+        // different decision; admin is a property of the whole subtree.
+        let admin_note = "Requires the deployment administrator role \
+                          (`role:admin`); enforced by the `require_admin` layer \
+                          on the `/api/admin` nest.";
+        for (path, item) in openapi.paths.paths.iter_mut() {
+            if !path.starts_with(ADMIN_PREFIX) {
+                continue;
+            }
+            for op in [
+                item.get.as_mut(),
+                item.put.as_mut(),
+                item.post.as_mut(),
+                item.delete.as_mut(),
+                item.patch.as_mut(),
+                item.head.as_mut(),
+                item.options.as_mut(),
+                item.trace.as_mut(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                op.extensions = Some(
+                    utoipa::openapi::extensions::ExtensionsBuilder::new()
+                        .add(SCOPE_EXTENSION, serde_json::json!(ADMIN_SCOPE))
+                        .build(),
+                );
+                op.description = Some(match op.description.take() {
+                    Some(existing) if !existing.is_empty() => {
+                        format!("{existing}\n\n{admin_note}")
+                    }
+                    _ => admin_note.to_owned(),
+                });
+            }
+        }
     }
 }
 
@@ -616,5 +711,105 @@ mod tests {
 
         let json = serde_json::to_string(&spec).expect("spec should serialise to JSON");
         assert!(json.len() > 1000, "spec JSON suspiciously small");
+    }
+
+    /// The spec marks exactly the allowlisted routes — checked in BOTH
+    /// directions.
+    ///
+    /// The marker is generated FROM `ANONYMOUS_ALLOWLIST`, so this cannot
+    /// catch a human forgetting an annotation; it is a regression guard on the
+    /// generation. It still earns its place: it fails if an allowlisted route
+    /// carries no `#[utoipa::path]` (silently skipped by the injector, leaving
+    /// the spec understating what a share link reaches), and it fails if the
+    /// injector ever marks something the gate does not allow — which would
+    /// promise visitors an endpoint that 403s and, worse, invite someone to
+    /// "fix" the mismatch by widening the allowlist.
+    ///
+    /// The allowlist is the authority. This asserts the published description
+    /// matches it.
+    #[test]
+    fn scope_markers_match_their_gates() {
+        use crate::interfaces::middleware::anonymous_allowlist::ANONYMOUS_ALLOWLIST;
+        use std::collections::BTreeSet;
+
+        // Walked as serialised JSON rather than through utoipa's types: this
+        // is the document consumers actually read, and it does not break when
+        // `PathItem`'s shape changes between utoipa releases.
+        let spec = serde_json::to_value(ApiDoc::openapi()).expect("spec should serialise");
+        let paths = spec["paths"].as_object().expect("spec has no paths object");
+
+        let declared: BTreeSet<&str> = paths
+            .iter()
+            .filter(|(_, item)| {
+                item.as_object().is_some_and(|methods| {
+                    methods
+                        .values()
+                        .any(|op| op[SCOPE_EXTENSION] == serde_json::json!(SHARE_READ_SCOPE))
+                })
+            })
+            .map(|(path, _)| path.as_str())
+            .collect();
+
+        // Scopes belong to oauth2/openIdConnect schemes only; on an `http`
+        // scheme the array must stay empty or the document is non-conformant
+        // (and Swagger UI silently drops it). Pinned so nobody reintroduces
+        // the marker there.
+        for (path, item) in paths {
+            for (method, op) in item.as_object().into_iter().flatten() {
+                for req in op["security"].as_array().into_iter().flatten() {
+                    for (scheme, scopes) in req.as_object().into_iter().flatten() {
+                        assert!(
+                            scopes.as_array().is_none_or(|s| s.is_empty()),
+                            "{method} {path}: `{scheme}` is an http scheme, \
+                             so its scopes array must be empty (got {scopes})"
+                        );
+                    }
+                }
+            }
+        }
+
+        // The admin half of the same contract. `require_admin` wraps exactly
+        // the `/api/admin` nest, so prefix and marker must agree both ways: an
+        // unmarked admin path understates the requirement, and a marked path
+        // outside the nest claims a gate that is not there — the more
+        // dangerous direction, since it reads as "already protected".
+        let admin_marked: BTreeSet<&str> = paths
+            .iter()
+            .filter(|(_, item)| {
+                item.as_object().is_some_and(|methods| {
+                    methods
+                        .values()
+                        .any(|op| op[SCOPE_EXTENSION] == serde_json::json!(ADMIN_SCOPE))
+                })
+            })
+            .map(|(path, _)| path.as_str())
+            .collect();
+        let admin_nested: BTreeSet<&str> = paths
+            .keys()
+            .map(String::as_str)
+            .filter(|p| p.starts_with(ADMIN_PREFIX))
+            .collect();
+        assert_eq!(
+            admin_marked,
+            admin_nested,
+            "`{ADMIN_SCOPE}` has drifted from the `{ADMIN_PREFIX}` nest.\n\
+             marked but not nested: {:?}\n\
+             nested but unmarked: {:?}",
+            admin_marked.difference(&admin_nested).collect::<Vec<_>>(),
+            admin_nested.difference(&admin_marked).collect::<Vec<_>>(),
+        );
+
+        let allowlisted: BTreeSet<&str> = ANONYMOUS_ALLOWLIST.iter().copied().collect();
+
+        assert_eq!(
+            declared,
+            allowlisted,
+            "`{SCOPE_EXTENSION}: {SHARE_READ_SCOPE}` in the OpenAPI spec has \
+             drifted from ANONYMOUS_ALLOWLIST.\n\
+             marked only in the spec: {:?}\n\
+             allowlisted but unmarked (missing a `#[utoipa::path]`?): {:?}",
+            declared.difference(&allowlisted).collect::<Vec<_>>(),
+            allowlisted.difference(&declared).collect::<Vec<_>>(),
+        );
     }
 }

@@ -18,8 +18,10 @@
 #      anonymous probe of `/api/s/{token}` already exercises
 #      the access path; verify is exercised in the password
 #      branch below.
-#   7. GET  /api/s/{token}/contents     (no auth)          → 200
-#   8. GET  /api/s/{token}/file/{file_id} (no auth)        → 200 + body
+#   7. The browsing endpoints (/contents, /file/{id}, /zip,
+#      /download) are DELETED → 404 from the routing table.
+#      Browsing now happens through the ordinary API with an
+#      anonymous session; see anonymous_share_session.hurl.
 #   9. POST /api/shares — password-protected variant
 #  10. GET  /api/s/{pw_token}                              → 401 (password required)
 #  11. POST /api/s/{pw_token}/verify wrong pw              → 401
@@ -126,48 +128,37 @@ HTTP 200
 
 
 # ─────────────────────────────────────────────────────────────
-# 7 — Browse the shared folder contents (no auth).
+# 7 — The browsing endpoints are GONE.
+#
+#     `/contents`, `/contents/{folder_id}`, `/file/{file_id}`,
+#     `/zip`, `/zip/{folder_id}` and `/download` were a second
+#     implementation of `/api/folders/*` and `/api/files/*`,
+#     reached by a service that executed as the share's OWNER
+#     rather than as the caller. They are deleted: a visitor now
+#     unlocks a ring at `/api/s/{token}` and uses the ordinary
+#     API, authorized by the ReBAC grant the share already holds.
+#
+#     404 here is the routing table answering, not a handler —
+#     which is the point. Browsing coverage moved to
+#     `anonymous_share_session.hurl`, where it is exercised
+#     against the real endpoints with a real anonymous session.
 # ─────────────────────────────────────────────────────────────
 GET {{base_url}}/api/s/{{share_token}}/contents
 
-HTTP 200
-[Asserts]
-body contains "{{shared_file_id}}"
+HTTP 404
 
 
-# ─────────────────────────────────────────────────────────────
-# 8 — Fetch a file from inside the FOLDER share via
-#     /api/s/{folder-token}/file/{file_id}. This is the path NC
-#     desktop and web clients use to download a single file out
-#     of a shared folder without zipping the whole tree. The
-#     handler must (a) accept the file_id only when the file
-#     lives in the share's subtree, and (b) refuse with 404 for
-#     any file outside the subtree (anti-enumeration: the same
-#     status as "file doesn't exist", so the caller can't probe
-#     for foreign file ids).
-# ─────────────────────────────────────────────────────────────
 GET {{base_url}}/api/s/{{share_token}}/file/{{shared_file_id}}
 
-HTTP 200
-[Asserts]
-header "Content-Disposition" contains "hello.txt"
+HTTP 404
 
 
-# A file the caller owns but that isn't inside the shared
-# folder MUST 404 — same shape as "no such file", so the
-# response can't be used to enumerate file ids.
-POST {{base_url}}/api/files/upload
-Authorization: Bearer {{admin_token}}
-[MultipartFormData]
-folder_id: {{admin_home_id}}
-file: file,fixtures/hello.txt; text/plain
+GET {{base_url}}/api/s/{{share_token}}/zip
 
-HTTP 201
-[Captures]
-outsider_file_id: jsonpath "$.id"
+HTTP 404
 
 
-GET {{base_url}}/api/s/{{share_token}}/file/{{outsider_file_id}}
+GET {{base_url}}/api/s/{{share_token}}/download
 
 HTTP 404
 
@@ -362,14 +353,6 @@ Authorization: Bearer {{admin_token}}
 HTTP 204
 
 DELETE {{base_url}}/api/shares/{{file_share_id}}
-Authorization: Bearer {{admin_token}}
-HTTP 204
-
-# The "outsider" hello.txt sits in admin's home folder, not under the
-# shared subtree — delete it explicitly so the next test in the
-# runner (permissions.hurl) can upload its own hello.txt to the same
-# folder without hitting the live-name unique index (409).
-DELETE {{base_url}}/api/files/{{outsider_file_id}}
 Authorization: Bearer {{admin_token}}
 HTTP 204
 

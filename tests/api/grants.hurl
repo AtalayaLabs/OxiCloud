@@ -1110,6 +1110,17 @@ batch_file_2_id: jsonpath "$.id"
 # ════════════════════════════════════════════════════════════════════
 # Phase 3A — frank has NO grant. Every batch op returns 400 (all failed).
 # ════════════════════════════════════════════════════════════════════
+#
+# 404, not 400. A wholly-failed batch reports the status of its single
+# shared cause; here every item failed the same way, and frank holds no
+# grant at all — so Read is denied too and the graduated-denial rule
+# collapses to the anti-enumeration shape. Exactly what a single-item
+# endpoint answers for the same request, and what `/api/batch/download`
+# below has always answered.
+#
+# A flat 400 used to stand in for every cause, which made "no such
+# thing, as far as you're concerned" indistinguishable from "your
+# request was malformed".
 
 # Files — get
 POST {{base_url}}/api/batch/files/get
@@ -1117,10 +1128,11 @@ Authorization: Bearer {{frank_token}}
 Content-Type: application/json
 { "file_ids": ["{{batch_file_1_id}}", "{{batch_file_2_id}}"] }
 
-HTTP 400
+HTTP 404
 [Asserts]
 jsonpath "$.stats.successful" == 0
 jsonpath "$.stats.failed" == 2
+jsonpath "$.failed[0].error_type" == "Not Found"
 
 # Files — move
 POST {{base_url}}/api/batch/files/move
@@ -1128,7 +1140,7 @@ Authorization: Bearer {{frank_token}}
 Content-Type: application/json
 { "file_ids": ["{{batch_file_1_id}}"], "target_folder_id": "{{batch_sub_a_id}}" }
 
-HTTP 400
+HTTP 404
 [Asserts]
 jsonpath "$.stats.failed" == 1
 
@@ -1138,7 +1150,7 @@ Authorization: Bearer {{frank_token}}
 Content-Type: application/json
 { "file_ids": ["{{batch_file_1_id}}"], "target_folder_id": "{{batch_sub_a_id}}" }
 
-HTTP 400
+HTTP 404
 [Asserts]
 jsonpath "$.stats.failed" == 1
 
@@ -1148,7 +1160,7 @@ Authorization: Bearer {{frank_token}}
 Content-Type: application/json
 { "file_ids": ["{{batch_file_1_id}}"] }
 
-HTTP 400
+HTTP 404
 [Asserts]
 jsonpath "$.stats.failed" == 1
 
@@ -1158,7 +1170,7 @@ Authorization: Bearer {{frank_token}}
 Content-Type: application/json
 { "folder_ids": ["{{batch_sub_a_id}}", "{{batch_sub_b_id}}"] }
 
-HTTP 400
+HTTP 404
 [Asserts]
 jsonpath "$.stats.failed" == 2
 
@@ -1168,7 +1180,7 @@ Authorization: Bearer {{frank_token}}
 Content-Type: application/json
 { "folders": [{ "name": "frank-attack", "parent_id": "{{batch_root_id}}" }] }
 
-HTTP 400
+HTTP 404
 
 # Folders — move
 POST {{base_url}}/api/batch/folders/move
@@ -1176,7 +1188,7 @@ Authorization: Bearer {{frank_token}}
 Content-Type: application/json
 { "folder_ids": ["{{batch_sub_a_id}}"], "target_folder_id": "{{batch_sub_b_id}}" }
 
-HTTP 400
+HTTP 404
 
 # Folders — copy
 POST {{base_url}}/api/batch/folders/copy
@@ -1184,7 +1196,7 @@ Authorization: Bearer {{frank_token}}
 Content-Type: application/json
 { "folder_ids": ["{{batch_sub_a_id}}"], "target_folder_id": "{{batch_sub_b_id}}" }
 
-HTTP 400
+HTTP 404
 
 # Folders — delete
 POST {{base_url}}/api/batch/folders/delete
@@ -1192,7 +1204,7 @@ Authorization: Bearer {{frank_token}}
 Content-Type: application/json
 { "folder_ids": ["{{batch_sub_a_id}}"], "recursive": false }
 
-HTTP 400
+HTTP 404
 
 # Trash (mixed)
 POST {{base_url}}/api/batch/trash
@@ -1200,7 +1212,7 @@ Authorization: Bearer {{frank_token}}
 Content-Type: application/json
 { "file_ids": ["{{batch_file_1_id}}"], "folder_ids": ["{{batch_sub_a_id}}"] }
 
-HTTP 400
+HTTP 404
 [Asserts]
 jsonpath "$.stats.failed" == 2
 
@@ -1274,20 +1286,26 @@ HTTP 200
 [Asserts]
 header "Content-Type" == "application/zip"
 
-# Mutations still rejected
+# Mutations still rejected — but 403 now, not 404 like Phase 3A.
+# Frank is a Viewer here, so he HAS Read: the graduated-denial rule
+# says hiding existence leaks nothing he cannot already see, and a
+# clear "you may not" beats a confusing "no such thing". The two
+# phases asserting different statuses is the rule being documented.
 POST {{base_url}}/api/batch/files/move
 Authorization: Bearer {{frank_token}}
 Content-Type: application/json
 { "file_ids": ["{{batch_file_1_id}}"], "target_folder_id": "{{batch_sub_a_id}}" }
 
-HTTP 400
+HTTP 403
+[Asserts]
+jsonpath "$.failed[0].error_type" == "Access Denied"
 
 POST {{base_url}}/api/batch/files/delete
 Authorization: Bearer {{frank_token}}
 Content-Type: application/json
 { "file_ids": ["{{batch_file_1_id}}"] }
 
-HTTP 400
+HTTP 403
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -1358,20 +1376,22 @@ Content-Type: application/json
 
 HTTP 200
 
-# Batch delete still denied (Editor excludes Delete)
+# Batch delete still denied (Editor excludes Delete). 403, not 404:
+# an Editor plainly has Read, so the denial is visible rather than
+# hidden — same reasoning as Phase 3B above.
 POST {{base_url}}/api/batch/files/delete
 Authorization: Bearer {{frank_token}}
 Content-Type: application/json
 { "file_ids": ["{{batch_file_2_id}}"] }
 
-HTTP 400
+HTTP 403
 
 POST {{base_url}}/api/batch/folders/delete
 Authorization: Bearer {{frank_token}}
 Content-Type: application/json
 { "folder_ids": ["{{batch_sub_b_id}}"], "recursive": true }
 
-HTTP 400
+HTTP 403
 
 
 # ════════════════════════════════════════════════════════════════════

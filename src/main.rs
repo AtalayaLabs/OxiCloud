@@ -882,6 +882,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         // Protected API routes — require valid JWT token
         let protected_api = api_routes
+            // `route_layer`, NOT `layer` — this must run AFTER routing so
+            // `MatchedPath` is populated. It confines anonymous public-share
+            // sessions to an explicit allowlist and is independent of the
+            // extractor guards: neither relies on the other. See
+            // `middleware/anonymous_allowlist.rs`.
+            .route_layer(axum::middleware::from_fn(
+                oxicloud::interfaces::middleware::anonymous_allowlist::anonymous_allowlist_layer,
+            ))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 require_no_password_change_pending_layer,

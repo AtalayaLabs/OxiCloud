@@ -324,6 +324,7 @@
     "download": "Download",
     "download_zip": "Download ZIP",
     "empty_folder": "This folder is empty.",
+    "preview": "Preview",
     "error": "Something went wrong. Please try again.",
     "expired": "This share link is no longer available.",
     "expires_optional": "Expires (optional)",
@@ -602,6 +603,11 @@
     "reshare": "Reshare"
   },
   "errors": {
+    "quota_exceeded": "Not enough space. Free some up, or ask an administrator to raise the quota.",
+    "access_denied": "You don't have permission to do that.",
+    "not_found": "That item no longer exists.",
+    "conflict": "An item with that name is already there.",
+    "transient_backend": "Storage is temporarily unavailable. Try again.",
     "file_not_found": "File not found",
     "folder_not_found": "Folder not found",
     "delete_error": "Error deleting",

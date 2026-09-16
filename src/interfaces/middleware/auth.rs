@@ -4,7 +4,6 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use std::convert::Infallible;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -13,6 +12,9 @@ use crate::common::di::AppState;
 // Re-export CurrentUser from application layer for use in handlers
 pub use crate::application::dtos::user_dto::CurrentUser;
 use crate::application::ports::auth_ports::TokenServicePort;
+use crate::domain::entities::user::UserRole;
+use crate::domain::services::authorization::Subject;
+use crate::infrastructure::services::share_ring;
 use crate::interfaces::middleware::user::{LiveRole, resolve_live_role};
 
 /// Marker inserted into request extensions when the user was authenticated
@@ -45,8 +47,153 @@ impl std::ops::Deref for AuthUser {
 #[derive(Clone, Debug)]
 pub struct CurrentUserId(pub Uuid);
 
+/// Record the principal on the request span — `visitor_id` for a public-share
+/// visitor, `user_id` otherwise. **Never both.**
+///
+/// A share visitor's id is the ring's per-visitor uuid: it matches no
+/// `auth.users` row and never will. Recording it as `user_id` would hand
+/// operators an id that looks lookupable and is not, and would make share
+/// traffic indistinguishable from user traffic in every log query.
+fn record_principal_on_span(cu: &CurrentUser) {
+    let span = tracing::Span::current();
+    if cu.is_anonymous() {
+        span.record("visitor_id", tracing::field::display(cu.id));
+    } else {
+        span.record("user_id", tracing::field::display(cu.id));
+    };
+}
+
+/// Assert that `cu` meets a minimum role, or deny.
+///
+/// The single place a role requirement is expressed. Returns a `Result`
+/// rather than a bool on purpose: with `?` the outcome cannot be ignored,
+/// which an `is_anonymous()` bool invites.
+///
+/// **This is not the only enforcement point.** Four paths authenticate
+/// without ever reaching an extractor — `middleware/admin.rs`'s
+/// `require_authenticated`, the three DAV handlers' hand-rolled
+/// `extract_user`, `POST /api/auth/refresh` (mounted outside
+/// `auth_middleware`), and `GET /api/rt/ws` (self-auths from a raw Bearer).
+/// Each must call this too; see `src/AGENTS.md` § AuthZ enforcement points.
+pub fn require_role(cu: &CurrentUser, min: UserRole) -> Result<(), AuthError> {
+    if cu.role_enum().at_least(min) {
+        return Ok(());
+    }
+    tracing::info!(
+        target: "audit",
+        event = "authz.denied",
+        reason = "insufficient_role",
+        caller_id = %cu.id,
+        role = %cu.role,
+        required = min.as_str(),
+        "👮🏻‍♂️ principal role is below the minimum this endpoint requires",
+    );
+    Err(AuthError::AccessDenied(format!(
+        "This endpoint requires role `{}`",
+        min.as_str()
+    )))
+}
+
+/// The unlocked share ring, inserted into request extensions by
+/// `auth_middleware` when the browser presents a valid `oxi_shares` cookie.
+///
+/// Separate from `CurrentUser` on purpose: the ring says what you have
+/// *unlocked*, not who you *are*. A logged-in user carries both.
+#[derive(Clone, Debug)]
+pub struct ShareRing(pub share_ring::Ring);
+
+/// Every credential the caller holds, as authorization subjects — the only
+/// extractor that accepts a public-share visitor.
+///
+/// `AuthUser` means "a real user" and refuses `anonymous`. A route reachable
+/// through a share link opts in by taking this instead: one line, visible in
+/// the signature, reviewable per route. Widening a route stays a decision
+/// rather than becoming a default.
+///
+/// Returns a **set**, because a browser can hold more than one credential and
+/// the request cannot say which it means — an `<img>` tag sends every cookie
+/// it has and nothing else. The user's own subject comes first so ordinary
+/// browsing is decided on the first check; see
+/// [`AuthorizationEngine::require_any`].
+///
+/// This is the single place a *session* concept (`role`, cookies) becomes an
+/// *authorization* concept (`Subject`). Handlers never see the role and never
+/// branch on it; services take the subjects and the engine matches grants
+/// against them. Keeping the two vocabularies apart here is what lets the
+/// engine stay ignorant of HTTP sessions entirely.
+pub struct CallerSubjects(pub Vec<Subject>);
+
+impl<S> FromRequestParts<S> for CallerSubjects
+where
+    S: Send + Sync,
+{
+    type Rejection = AuthError;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let cu = parts
+            .extensions
+            .get::<Arc<CurrentUser>>()
+            .ok_or(AuthError::UserNotFound)?;
+
+        let mut subjects = Vec::new();
+        // A real user authorises as themselves. An anonymous visitor's `id`
+        // is a ring visitor id matching no `auth.users` row, so it must NOT
+        // become a `Subject::User` — that would match a visitor id against
+        // user grants: a valid UUID belonging to nobody, so the query runs
+        // and silently returns nothing.
+        if !cu.is_anonymous() {
+            subjects.push(Subject::User(cu.id));
+        }
+        if let Some(ShareRing(ring)) = parts.extensions.get::<ShareRing>() {
+            subjects.extend(ring.shares.iter().copied().map(Subject::Token));
+        }
+
+        if subjects.is_empty() {
+            // An anonymous principal with no ring. Unreachable — the ring is
+            // what makes a principal anonymous in the first place — but an
+            // empty credential set must never read as "nothing objected".
+            tracing::error!(
+                target: "audit",
+                event = "authz.denied",
+                reason = "no_credentials",
+                caller_id = %cu.id,
+                role = %cu.role,
+                "👮🏻‍♂️ principal carries no usable credential",
+            );
+            return Err(AuthError::AccessDenied("No usable credential".to_string()));
+        }
+        Ok(CallerSubjects(subjects))
+    }
+}
+
+/// Build an [`AuthUser`] from request extensions, for handlers that receive a
+/// raw `Request` and therefore cannot use `FromRequestParts`.
+///
+/// The three DAV surfaces (`/webdav`, `/caldav`, `/carddav`) each hand-rolled
+/// this, which meant the entire DAV surface was invisible to any rule added to
+/// the `AuthUser` extractor — three copies, three chances to forget. One
+/// implementation instead, so the guard cannot drift between them.
+pub fn auth_user_from_extensions(
+    ext: &axum::http::Extensions,
+) -> Result<AuthUser, crate::interfaces::errors::AppError> {
+    use crate::interfaces::errors::AppError;
+    let cu = ext
+        .get::<Arc<CurrentUser>>()
+        .cloned()
+        .ok_or_else(|| AppError::unauthorized("Authentication required"))?;
+    require_role(&cu, UserRole::User)
+        .map_err(|_| AppError::forbidden("This surface requires a user account"))?;
+    Ok(AuthUser(cu))
+}
+
 // Implement FromRequestParts for AuthUser — allows using `auth_user: AuthUser` in handlers.
 // Cost: 1 atomic increment (~1 ns) instead of 3 String clones (~100 ns + 3 mallocs).
+//
+// `AuthUser` means "a real user principal". It REJECTS `role = anonymous`,
+// which is what keeps the ~200 handlers taking it fail-closed against
+// public-share sessions with no edit to any of them. A route that should be
+// reachable by a share visitor opts in explicitly with a different extractor
+// rather than this one relaxing.
 impl<S> FromRequestParts<S> for AuthUser
 where
     S: Send + Sync,
@@ -54,12 +201,13 @@ where
     type Rejection = AuthError;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        parts
+        let cu = parts
             .extensions
             .get::<Arc<CurrentUser>>()
             .cloned()
-            .map(AuthUser)
-            .ok_or(AuthError::UserNotFound)
+            .ok_or(AuthError::UserNotFound)?;
+        require_role(&cu, UserRole::User)?;
+        Ok(AuthUser(cu))
     }
 }
 
@@ -71,31 +219,27 @@ where
     type Rejection = AuthError;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        parts
+        let cu = parts
             .extensions
             .get::<Arc<CurrentUser>>()
-            .map(|cu| CurrentUserId(cu.id))
-            .ok_or(AuthError::UserNotFound)
+            .ok_or(AuthError::UserNotFound)?;
+        // Same contract as `AuthUser` — this yields a `user_id`, and an
+        // anonymous principal has no `auth.users` row for that id to mean.
+        // It also closes the message-bus door for free: `POST /api/rt/ticket`
+        // takes this extractor, so no ticket is minted and the WS upgrade has
+        // no credential to present.
+        require_role(cu, UserRole::User)?;
+        Ok(CurrentUserId(cu.id))
     }
 }
 
-/// Optional user ID extractor – never fails.
-/// Yields `Some(id)` when auth middleware ran, `None` otherwise.
-#[derive(Clone, Debug)]
-pub struct OptionalUserId(pub Option<Uuid>);
-
-impl<S> FromRequestParts<S> for OptionalUserId
-where
-    S: Send + Sync,
-{
-    type Rejection = Infallible;
-
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        Ok(OptionalUserId(
-            parts.extensions.get::<Arc<CurrentUser>>().map(|cu| cu.id),
-        ))
-    }
-}
+// `OptionalUserId` used to live here — an infallible extractor yielding
+// `Option<Uuid>`. It was deleted rather than taught about anonymous roles:
+// it had ZERO call sites in `src/` and `tests/`, so "it returns None for
+// anonymous" would have been a protection that guarded nothing. An
+// unused permissive extractor is a trap for the next person who reaches
+// for it; if an optional principal is ever genuinely needed, reintroduce
+// it deliberately with a role decision baked in.
 
 // Error for authentication operations
 #[derive(Debug, thiserror::Error)]
@@ -172,6 +316,30 @@ pub async fn auth_middleware(
     // (benches/ROUND14.md §A4). The borrow is dead by the time each arm
     // reaches `request.extensions_mut()` / `next.run(request)` (NLL), so no
     // owned copy is needed.
+    // Parse the share ring once, before any credential arm, because a
+    // LOGGED-IN user can carry one too: Alice opening a colleague's public
+    // link keeps her own identity and gains the share. Arm 4 below also uses
+    // it as the anonymous principal when no user credential is present.
+    //
+    // A malformed, expired or foreign-signed ring is simply absent — the
+    // caller cannot act on the distinction, and an unreadable cookie must
+    // never break an otherwise valid user request.
+    if let Some(ring) = request
+        .headers()
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(share_ring::extract_from_cookie_header)
+        .and_then(|jwt| share_ring::verify(&state.core.config.auth.jwt_secret, jwt))
+    {
+        request.extensions_mut().insert(ShareRing(ring));
+    }
+
+    // Borrow the Authorization header straight from the request instead of
+    // taking axum's `HeaderMap` extractor, which clones the whole map (~2
+    // allocs) on every authenticated request purely to read it
+    // (benches/ROUND14.md §A4). The borrow is dead by the time each arm
+    // reaches `request.extensions_mut()` / `next.run(request)` (NLL), so no
+    // owned copy is needed.
     let auth_header = request
         .headers()
         .get(header::AUTHORIZATION)
@@ -226,9 +394,8 @@ pub async fn auth_middleware(
                                 role,
                                 dpop_jkt: claims.dpop_jkt.clone(),
                             });
+                            record_principal_on_span(&current_user);
                             request.extensions_mut().insert(current_user);
-                            tracing::Span::current()
-                                .record("user_id", tracing::field::display(user_id));
                             // Bump per-session liveness for the
                             // Prometheus gauges. O(1) DashMap upsert
                             // — no I/O on this hot path. The `sid`
@@ -290,10 +457,11 @@ pub async fn auth_middleware(
                                 email,
                                 role,
                                 dpop_jkt: None,
+                                // Basic auth is app-password only.
                             });
+                            // Basic auth is app-password only — never a share.
+                            record_principal_on_span(&current_user);
                             request.extensions_mut().insert(current_user);
-                            tracing::Span::current()
-                                .record("user_id", tracing::field::display(user_id));
                             return Ok(next.run(request).await);
                         }
                         Err(e) => {
@@ -361,10 +529,9 @@ pub async fn auth_middleware(
                                     role,
                                     dpop_jkt: claims.dpop_jkt.clone(),
                                 });
+                                record_principal_on_span(&current_user);
                                 request.extensions_mut().insert(current_user);
                                 request.extensions_mut().insert(CookieAuthenticated);
-                                tracing::Span::current()
-                                    .record("user_id", tracing::field::display(user_id));
                                 // Cookie-auth branch stamps the same
                                 // way as the Bearer branch above —
                                 // see that site for the O(1) /
@@ -407,6 +574,39 @@ pub async fn auth_middleware(
     // header — keeping browser sessions redirecting to /login as before.
     if is_dav_path(request.uri().path()) {
         return Ok(dav_basic_auth_challenge("Authentication required"));
+    }
+
+    // ── 4. Share ring only: a public-share visitor ───────────────
+    //
+    // Reached when no user credential was presented but the browser carries
+    // a valid `oxi_shares` cookie. The ring IS the anonymous session —
+    // there is no `auth.sessions` row and no second token — so "holds a
+    // ring, is not a user" is exactly what makes a principal anonymous.
+    //
+    // Note this runs AFTER the DAV challenge above: a ring must never
+    // authenticate a WebDAV/CalDAV/CardDAV request. Those surfaces are
+    // user-only, and `require_internal_user` would refuse anyway, but the
+    // ordering means the question never arises.
+    //
+    // The principal is built ONLY from a verified ring, which is what makes
+    // "anonymous implies a share credential" structural rather than checked.
+    if let Some(ring) = request.extensions().get::<ShareRing>().cloned() {
+        let current_user = Arc::new(CurrentUser {
+            // The ring's visitor id: stable across this visit, matching no
+            // `auth.users` row. Logged as `visitor_id`, never `user_id`.
+            id: ring.0.visitor_id,
+            // Empty rather than fabricated — a visitor has no account, and
+            // inventing a name would be indistinguishable from a real one.
+            username: Arc::from(""),
+            email: Arc::from(""),
+            role: smol_str::SmolStr::new_static(UserRole::Anonymous.as_str()),
+            // Unbound: no DPoP keypair, so the middleware exempts it exactly
+            // as it does app passwords.
+            dpop_jkt: None,
+        });
+        record_principal_on_span(&current_user);
+        request.extensions_mut().insert(current_user);
+        return Ok(next.run(request).await);
     }
 
     Err(AuthError::TokenNotProvided)
@@ -476,6 +676,54 @@ pub async fn require_admin(request: Request, next: Next) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use smol_str::SmolStr;
+
+    fn principal(role: &str) -> CurrentUser {
+        CurrentUser {
+            id: Uuid::new_v4(),
+            username: "visitor".into(),
+            email: "".into(),
+            role: SmolStr::new(role),
+            dpop_jkt: None,
+        }
+    }
+
+    /// The property the whole public-share design rests on: `AuthUser` —
+    /// the extractor ~200 handlers take — refuses an anonymous principal.
+    /// If this ever passes for `anonymous`, every one of those handlers is
+    /// reachable by a share-link visitor.
+    #[test]
+    fn anonymous_is_refused_a_user_role() {
+        let err = require_role(&principal("anonymous"), UserRole::User)
+            .expect_err("anonymous must not satisfy a user requirement");
+        assert!(matches!(err, AuthError::AccessDenied(_)));
+
+        require_role(&principal("user"), UserRole::User).expect("a user satisfies user");
+        require_role(&principal("admin"), UserRole::User).expect("an admin satisfies user");
+    }
+
+    #[test]
+    fn only_admin_satisfies_admin() {
+        require_role(&principal("admin"), UserRole::Admin).expect("admin satisfies admin");
+        assert!(require_role(&principal("user"), UserRole::Admin).is_err());
+        assert!(require_role(&principal("anonymous"), UserRole::Admin).is_err());
+    }
+
+    /// An unrecognised role resolves to the LEAST privileged answer, not the
+    /// most. Every other parse site in the tree uses `_ => UserRole::User`,
+    /// which is fail-open: a corrupt or future value silently becomes a real
+    /// user. Here a garbage role can reach nothing.
+    #[test]
+    fn unknown_roles_fail_closed_not_open() {
+        for role in ["", "superuser", "Admin", "ANONYMOUS", "root", "user "] {
+            let cu = principal(role);
+            assert!(
+                cu.is_anonymous(),
+                "unrecognised role {role:?} must degrade to anonymous, not user",
+            );
+            assert!(require_role(&cu, UserRole::User).is_err());
+        }
+    }
 
     #[test]
     fn dav_paths_receive_basic_auth_challenge() {
@@ -520,6 +768,85 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some(r#"Basic realm="OxiCloud""#),
         );
+    }
+
+    /// Builds the subject set the way the extractor does, without a request.
+    ///
+    /// The extractor reads two extensions and composes them; the composition
+    /// is the part worth pinning, so it is exercised directly rather than
+    /// through a router that would test axum more than it tests this.
+    fn subjects_for(cu: &CurrentUser, ring: Option<&share_ring::Ring>) -> Vec<Subject> {
+        let mut subjects = Vec::new();
+        if !cu.is_anonymous() {
+            subjects.push(Subject::User(cu.id));
+        }
+        if let Some(ring) = ring {
+            subjects.extend(ring.shares.iter().copied().map(Subject::Token));
+        }
+        subjects
+    }
+
+    /// A visitor's `id` is a ring visitor id — a well-formed UUID that
+    /// belongs to no `auth.users` row. Turning it into `Subject::User` would
+    /// not error; it would run the grant query and quietly match nothing,
+    /// which reads as "denied" for the wrong reason and would hide a real
+    /// bug behind a plausible 404.
+    #[test]
+    fn an_anonymous_visitor_contributes_no_user_subject() {
+        let visitor = principal("anonymous");
+        let share = Uuid::new_v4();
+        let ring = share_ring::Ring {
+            visitor_id: visitor.id,
+            shares: vec![share],
+        };
+
+        assert_eq!(
+            subjects_for(&visitor, Some(&ring)),
+            vec![Subject::Token(share)],
+        );
+    }
+
+    /// Alice clicking a colleague's share link keeps her identity AND gains
+    /// the share. Neither credential may displace the other: dropping hers
+    /// silently downgrades her session, dropping the ring 404s the shared
+    /// file she was invited to.
+    ///
+    /// Her own subject must come FIRST — ordinary browsing is then decided on
+    /// the first check and never pays for the ring.
+    #[test]
+    fn a_logged_in_user_carries_their_identity_and_the_ring() {
+        let alice = principal("user");
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        let ring = share_ring::Ring {
+            visitor_id: Uuid::new_v4(),
+            shares: vec![first, second],
+        };
+
+        assert_eq!(
+            subjects_for(&alice, Some(&ring)),
+            vec![
+                Subject::User(alice.id),
+                Subject::Token(first),
+                Subject::Token(second),
+            ],
+        );
+    }
+
+    /// No ring is the overwhelmingly common case and must cost nothing.
+    #[test]
+    fn a_user_without_a_ring_is_a_single_subject() {
+        let alice = principal("user");
+        assert_eq!(subjects_for(&alice, None), vec![Subject::User(alice.id)]);
+    }
+
+    /// The empty set is what the extractor refuses outright. It is
+    /// unreachable — holding a ring is what makes a principal anonymous —
+    /// but if it ever arises it must not reach the engine, where an empty
+    /// subject list could read as "nothing objected".
+    #[test]
+    fn an_anonymous_principal_without_a_ring_yields_nothing() {
+        assert!(subjects_for(&principal("anonymous"), None).is_empty());
     }
 
     #[test]

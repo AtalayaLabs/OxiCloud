@@ -24,7 +24,7 @@ use crate::application::ports::file_ports::FileUploadUseCase;
 use crate::application::ports::folder_ports::FolderUseCase;
 use crate::application::ports::storage_ports::StorageUsagePort;
 use crate::common::di::AppState;
-use crate::domain::services::authorization::Permission;
+use crate::domain::services::authorization::{Permission, Subject};
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
 use crate::interfaces::upload_ingest::{self, stream_body_to_path};
@@ -200,7 +200,7 @@ impl ChunkedUploadHandler {
             && let Err(err) = state
                 .applications
                 .folder_service_concrete
-                .require_permission(auth_user.id, Permission::Create, fid)
+                .require_permission(&[Subject::User(auth_user.id)], Permission::Create, fid)
                 .await
         {
             tracing::warn!(

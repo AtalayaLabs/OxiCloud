@@ -1358,6 +1358,22 @@ pub struct AuthConfig {
     pub jwt_secret: String,
     pub access_token_expiry_secs: i64,
     pub refresh_token_expiry_secs: i64,
+    /// Lifetime of a public-share (anonymous) session token.
+    ///
+    /// Separate from `access_token_expiry_secs` because an anonymous
+    /// session **cannot refresh** — this value is the entire session, not
+    /// the interval between silent renewals. At the 1 h access default a
+    /// visitor browsing a large shared folder would simply stop working
+    /// mid-browse, with no recovery except re-opening the link.
+    ///
+    /// Longer values cost little here: the token is strictly *weaker* than
+    /// the share link that produced it, and anyone holding the link can mint
+    /// a fresh one at will. The one case where it is a real window is a
+    /// password-protected share — until the token expires, a visitor keeps
+    /// access after the password changes. Revoking or deleting the share is
+    /// immediate regardless, because the engine re-checks the token grant on
+    /// every request.
+    pub share_session_expiry_secs: i64,
     /// Argon2id memory cost in KiB (default 65536 = 64 MiB)
     pub hash_memory_cost: u32,
     /// Argon2id time cost / iterations (default 3)
@@ -1685,7 +1701,11 @@ impl Default for AuthConfig {
             jwt_secret: String::new(),
             access_token_expiry_secs: 3600,    // 1 hour
             refresh_token_expiry_secs: 604800, // 7 days — with rotation, active sessions auto-renew
-            hash_memory_cost: 65536,           // 64 MiB
+            // 4 hours. No refresh, so this is the whole visit; long enough
+            // to browse and download a large shared folder without dying
+            // mid-way, short enough to bound the password-change window.
+            share_session_expiry_secs: 14400,
+            hash_memory_cost: 65536, // 64 MiB
             hash_time_cost: 3,
             hash_parallelism: 2,
             rate_limit: RateLimitConfig::default(),
@@ -3108,6 +3128,13 @@ impl AppConfig {
             && let Ok(val) = access_token_expiry
         {
             config.auth.access_token_expiry_secs = val;
+        }
+
+        if let Ok(share_session_expiry) =
+            env::var("OXICLOUD_SHARE_SESSION_EXPIRY_SECS").map(|v| v.parse::<i64>())
+            && let Ok(val) = share_session_expiry
+        {
+            config.auth.share_session_expiry_secs = val;
         }
 
         if let Ok(refresh_token_expiry) =

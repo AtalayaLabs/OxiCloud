@@ -61,13 +61,53 @@ pub async fn require_internal_user(
     auth: &AuthApplicationService,
     caller_id: Uuid,
 ) -> Result<(), AppError> {
-    match auth.get_user_flags(caller_id).await {
+    decide_internal_user(auth.get_user_flags(caller_id).await, caller_id)
+}
+
+/// Pure decision half of [`require_internal_user`].
+///
+/// Split out for the same reason as [`decide_live_role`] below: the policy
+/// is worth unit-testing without a live auth service, and this gate guards
+/// all three DAV surfaces.
+fn decide_internal_user(
+    flags: Result<UserFlags, DomainError>,
+    caller_id: Uuid,
+) -> Result<(), AppError> {
+    match flags {
         Ok(flags) if flags.is_external => Err(AppError::new(
             StatusCode::FORBIDDEN,
             "External users cannot access this endpoint",
             "Forbidden",
         )),
-        _ => Ok(()),
+        Ok(_) => Ok(()),
+        // A caller with NO user row lands here. The arm used to be a blanket
+        // `_ => Ok(())`, i.e. fail-OPEN: any lookup failure — including
+        // `NotFound` — admitted the caller. This is the only middleware
+        // guarding `/webdav`, `/caldav` and `/carddav`, so a principal
+        // without an `auth.users` row (an anonymous share session) walked
+        // straight through the "internal users only" gate.
+        //
+        // `NotFound` is now a denial. Other errors (a DB blip) stay open
+        // deliberately: this gate is a *restriction* on external users, not
+        // the authentication check, and failing every DAV request closed
+        // during a transient database hiccup trades one outage for a worse
+        // one. The authentication decision above it is what must fail
+        // closed, and does.
+        Err(e) if matches!(e.kind, ErrorKind::NotFound) => {
+            tracing::info!(
+                target: "audit",
+                event = "authz.denied",
+                reason = "no_user_row",
+                caller_id = %caller_id,
+                "👮🏻‍♂️ principal has no user record — refused an internal-user endpoint",
+            );
+            Err(AppError::new(
+                StatusCode::FORBIDDEN,
+                "This endpoint requires a user account",
+                "Forbidden",
+            ))
+        }
+        Err(_) => Ok(()),
     }
 }
 
@@ -143,7 +183,32 @@ pub async fn resolve_live_role(
     user_id: Uuid,
     claim_role: &str,
 ) -> LiveRole {
+    if let Some(live) = anonymous_live_role(claim_role) {
+        return live;
+    }
     decide_live_role(auth.get_user_flags(user_id).await, user_id, claim_role)
+}
+
+/// `Some` when the claim is an anonymous public-share session, which must
+/// skip the live re-check entirely.
+///
+/// Such a session has no `auth.users` row by design, so the re-check would
+/// look one up, find nothing, and report the token as revoked — every share
+/// request 401ing.
+///
+/// Skipping is safe because the re-check exists to catch deactivation,
+/// deletion and DEMOTION, and none applies here: there is no account to
+/// deactivate, and `anonymous` is already the floor of the role order, so a
+/// stale claim cannot be an over-privileged one. The claim itself is inside
+/// a signed JWT, so it cannot be forged — and forging it would only ever
+/// *reduce* what the bearer can reach.
+///
+/// The staleness this leaves is bounded elsewhere — by the session's own
+/// short TTL and by share revocation — not by the user-flags cache.
+fn anonymous_live_role(claim_role: &str) -> Option<LiveRole> {
+    UserRole::from_session(claim_role)
+        .filter(|r| r.is_anonymous())
+        .map(|r| LiveRole::Active(SmolStr::new_static(r.as_str())))
 }
 
 /// Pure decision core of [`resolve_live_role`], split out so the
@@ -317,10 +382,18 @@ pub async fn require_no_password_change_pending_layer(
         return next.run(request).await;
     }
 
-    let caller_id = request
-        .extensions()
-        .get::<Arc<CurrentUser>>()
-        .map(|cu| cu.id);
+    let current_user = request.extensions().get::<Arc<CurrentUser>>();
+
+    // An anonymous public-share visitor has no account, so no password can be
+    // pending a forced change. Skipping is not only correctness: without it
+    // every such request looks up a `visitor_id` matching no row, which misses
+    // the flags cache and reaches the database — on the highest-frequency GET
+    // in the app (one per thumbnail tile).
+    if current_user.is_some_and(|cu| cu.is_anonymous()) {
+        return next.run(request).await;
+    }
+
+    let caller_id = current_user.map(|cu| cu.id);
 
     let (Some(caller_id), Some(svc)) = (
         caller_id,
@@ -409,5 +482,65 @@ mod tests {
         let err = DomainError::new(ErrorKind::InternalError, "User", "connection reset");
         let live = decide_live_role(Err(err), Uuid::nil(), "admin");
         assert_eq!(live, LiveRole::Active(SmolStr::new_static("admin")));
+    }
+
+    /// An anonymous session skips the live re-check — there is no user row
+    /// to re-check against, and without this every share request 401s.
+    #[test]
+    fn anonymous_claim_skips_the_live_recheck() {
+        assert_eq!(
+            anonymous_live_role("anonymous"),
+            Some(LiveRole::Active(SmolStr::new_static("anonymous"))),
+        );
+    }
+
+    /// Every other claim must still go through the DB re-check. If this
+    /// ever returned `Some`, a demoted admin or a deleted account would
+    /// keep its token's frozen privileges until expiry — the exact thing
+    /// `resolve_live_role` exists to prevent.
+    #[test]
+    fn only_anonymous_skips_the_live_recheck() {
+        for claim in ["user", "admin", "", "Anonymous", "anonymous ", "root"] {
+            assert_eq!(
+                anonymous_live_role(claim),
+                None,
+                "claim {claim:?} must not bypass the live re-check",
+            );
+        }
+    }
+
+    #[test]
+    fn internal_user_gate_admits_an_internal_account() {
+        assert!(decide_internal_user(Ok(flags(UserRole::User, true)), Uuid::nil()).is_ok());
+    }
+
+    #[test]
+    fn internal_user_gate_refuses_an_external_account() {
+        let mut f = flags(UserRole::User, true);
+        f.is_external = true;
+        assert!(decide_internal_user(Ok(f), Uuid::nil()).is_err());
+    }
+
+    /// The regression this gate existed to have. A caller with no
+    /// `auth.users` row used to fall into a blanket `_ => Ok(())` and be
+    /// ADMITTED — and this is the only middleware guarding `/webdav`,
+    /// `/caldav` and `/carddav`.
+    #[test]
+    fn internal_user_gate_refuses_a_principal_with_no_user_row() {
+        let err = DomainError::new(ErrorKind::NotFound, "User", "no such user");
+        assert!(
+            decide_internal_user(Err(err), Uuid::nil()).is_err(),
+            "a principal with no user record must not pass the internal-user gate",
+        );
+    }
+
+    /// Deliberately still open. This gate is a restriction on external
+    /// users, not the authentication decision — failing every DAV request
+    /// closed during a database hiccup trades one outage for a worse one.
+    /// The authentication check above it is what fails closed.
+    #[test]
+    fn internal_user_gate_stays_open_on_a_transient_error() {
+        let err = DomainError::new(ErrorKind::InternalError, "User", "connection reset");
+        assert!(decide_internal_user(Err(err), Uuid::nil()).is_ok());
     }
 }

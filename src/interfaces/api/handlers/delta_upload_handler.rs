@@ -244,7 +244,7 @@ pub async fn delta_commit(
             crate::interfaces::api::handlers::caller_flags::enrich_file_flags(
                 &state,
                 &mut file,
-                auth_user.id,
+                crate::domain::services::authorization::Subject::User(auth_user.id),
             )
             .await;
             (status, Json(file)).into_response()

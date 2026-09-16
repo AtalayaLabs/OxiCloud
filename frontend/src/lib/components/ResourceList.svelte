@@ -111,7 +111,22 @@
 	} from '$lib/utils/thumbnail';
 
 	interface Props {
-		title: string;
+		/**
+		 * Page heading, rendered as the `<h1>` above the sticky header.
+		 * Ignored when [`Props::heading`] is supplied.
+		 */
+		title?: string;
+		/**
+		 * Replaces the default `<h1>` entirely, in the same place — OUTSIDE
+		 * the sticky header, so whatever it renders scrolls away on descent
+		 * and only the action bar stays pinned.
+		 *
+		 * Exists for the public-share page, which sets the OxiCloud mark
+		 * beside the shared item's name: a visitor has no sidebar, so the
+		 * brand has nowhere else to live, and a separate always-visible bar
+		 * would spend the scarce top-of-viewport strip on a logo.
+		 */
+		heading?: Snippet;
 		items: Array<FileItem | FolderItem>;
 		/**
 		 * Per-item envelope info keyed by `item.id`. See `ItemContext`
@@ -346,6 +361,22 @@
 		 */
 		enableThumbnails?: boolean;
 		/**
+		 * Whether a FAILED server thumbnail may be regenerated client-side.
+		 *
+		 * Separate from `enableThumbnails`, which governs display: this is the
+		 * write half, and it is the one unconditional mutate path in this
+		 * component — every other action is opt-in through its own callback.
+		 * The fallback fetches the file's FULL ORIGINAL to rasterise, then
+		 * `PUT`s three sizes back.
+		 *
+		 * The public-share page turns it off. A visitor's `PUT`s would 403
+		 * (the anonymous allowlist is GET-only), and the original fetch would
+		 * SUCCEED — pulling a full-resolution file to build a thumbnail is
+		 * precisely the behaviour issue #721 was about, reappearing inside the
+		 * component that fixed it.
+		 */
+		allowThumbnailGenerate?: boolean;
+		/**
 		 * Enable per-row drag/drop hooks. Used by the files browser so
 		 * a folder row is a drop target and any row is draggable to
 		 * another folder or the breadcrumb. Pages that don't wire these
@@ -391,6 +422,7 @@
 
 	let {
 		title,
+		heading,
 		items,
 		contextMap,
 		resolveOwnerName,
@@ -437,6 +469,7 @@
 		onsystemdrop,
 		systemDropOverlayActive = false,
 		enableThumbnails = true,
+		allowThumbnailGenerate = true,
 		isDraggable,
 		isDropTarget,
 		dropTargetId = null,
@@ -1140,6 +1173,9 @@
 						onerror={(e) => {
 							const img = e.currentTarget as HTMLImageElement;
 							img.style.display = 'none';
+							// Hiding the broken <img> is the whole fallback when
+							// regeneration is off: the type icon behind it stays.
+							if (!allowThumbnailGenerate) return;
 							if (mimeVal === 'application/pdf') preloadPdf();
 							void queueThumbnailGenerate(
 								{ id: item.id, name: item.name, mime_type: mimeVal },
@@ -1316,7 +1352,11 @@
 		provided, the breadcrumb — the two controls the user reaches for
 		while scrolling.
 	-->
-	<h1 class="page-title">{title}</h1>
+	{#if heading}
+		{@render heading()}
+	{:else if title}
+		<h1 class="page-title">{title}</h1>
+	{/if}
 	<div class="page-sticky-header">
 		<ActionBar>
 			{#snippet start()}

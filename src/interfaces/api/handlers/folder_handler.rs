@@ -24,11 +24,12 @@ use crate::application::services::folder_service::FolderService;
 use crate::application::services::mount_registry::MountConfig;
 use crate::common::di::AppState as GlobalAppState;
 use crate::domain::entities::file::File;
+use crate::domain::services::authorization::{Permission, Subject};
 use crate::domain::services::external_mount_id::{
     NodeId, encode_child_id, virtual_file_etag, virtual_folder_etag,
 };
 use crate::interfaces::errors::AppError;
-use crate::interfaces::middleware::auth::AuthUser;
+use crate::interfaces::middleware::auth::{AuthUser, CallerSubjects};
 
 type AppState = Arc<FolderService>;
 
@@ -88,7 +89,7 @@ impl FolderHandler {
 
         match service.create_folder_with_perms(dto, auth_user.id).await {
             Ok(mut folder) => {
-                enrich_folder_flags(&state, &mut folder, auth_user.id).await;
+                enrich_folder_flags(&state, &mut folder, Subject::User(auth_user.id)).await;
                 (StatusCode::CREATED, Json(folder)).into_response()
             }
             Err(err) => AppError::from(err).into_response(),
@@ -99,13 +100,36 @@ impl FolderHandler {
     /// Validates that the authenticated user owns the folder.
     pub(super) async fn get_folder_impl(
         State(state): State<Arc<GlobalAppState>>,
-        auth_user: AuthUser,
+        callers: CallerSubjects,
         Path(id): Path<String>,
     ) -> impl IntoResponse {
         let service = &state.applications.folder_service_concrete;
-        match service.get_folder_with_perms(&id, auth_user.id).await {
+
+        // Authorize against every credential the caller holds, and keep the
+        // one that granted — the read below is single-subject and must use
+        // the credential that actually opened this folder.
+        let authorized_as = match service
+            .require_permission(&callers.0, Permission::Read, &id)
+            .await
+        {
+            Ok(subject) => subject,
+            Err(err) => return AppError::from(err).into_response(),
+        };
+
+        match service.get_folder_with_perms(&id, authorized_as).await {
             Ok(mut folder) => {
-                enrich_folder_flags(&state, &mut folder, auth_user.id).await;
+                // `enrich_folder_flags` no-ops for a token caller, leaving
+                // `is_favorite` / `is_shared` at `false` — see its doc for
+                // why `is_shared` in particular must not be computed here.
+                enrich_folder_flags(&state, &mut folder, authorized_as).await;
+                // `path` names the folder's position in the OWNER's tree,
+                // including ancestors above the share root that this caller
+                // was never given; `created_by` / `updated_by` name the
+                // people. Withheld whenever a share token is what granted
+                // access — see `FolderDto::redacted_for_token`.
+                if authorized_as.token_id().is_some() {
+                    folder = folder.redacted_for_token();
+                }
                 (StatusCode::OK, Json(folder)).into_response()
             }
             Err(err) => AppError::from(err).into_response(),
@@ -117,11 +141,26 @@ impl FolderHandler {
     /// for the response shape. Anti-enum via `NotFound` on Read denial.
     pub(super) async fn get_folder_ancestors_impl(
         State(state): State<Arc<GlobalAppState>>,
-        auth_user: AuthUser,
+        callers: CallerSubjects,
         Path(id): Path<String>,
     ) -> impl IntoResponse {
         let service = &state.applications.folder_service_concrete;
-        match service.get_ancestors_with_perms(&id, auth_user.id).await {
+
+        // The walk itself is the disclosure control here, and it already
+        // handles a token caller: `fetch_ancestor_walk` matches token grants
+        // on `has_folder_grant` only, so the breadcrumb truncates at the share
+        // root instead of climbing into folders the visitor was never given.
+        // `fetch_grant_by` is deliberately left unmatched for tokens — its
+        // `SELECT username FROM auth.users` would publish the owner's name.
+        let authorized_as = match service
+            .require_permission(&callers.0, Permission::Read, &id)
+            .await
+        {
+            Ok(subject) => subject,
+            Err(err) => return AppError::from(err).into_response(),
+        };
+
+        match service.get_ancestors_with_perms(&id, authorized_as).await {
             Ok(dto) => (StatusCode::OK, Json(dto)).into_response(),
             Err(err) => AppError::from(err).into_response(),
         }
@@ -169,7 +208,7 @@ impl FolderHandler {
             .await
         {
             Ok(mut folder) => {
-                enrich_folder_flags(&state, &mut folder, auth_user.id).await;
+                enrich_folder_flags(&state, &mut folder, Subject::User(auth_user.id)).await;
                 (StatusCode::OK, Json(folder)).into_response()
             }
             Err(err) => AppError::from(err).into_response(),
@@ -186,7 +225,7 @@ impl FolderHandler {
         let service = &state.applications.folder_service_concrete;
         match service.move_folder_with_perms(&id, dto, auth_user.id).await {
             Ok(mut folder) => {
-                enrich_folder_flags(&state, &mut folder, auth_user.id).await;
+                enrich_folder_flags(&state, &mut folder, Subject::User(auth_user.id)).await;
                 (StatusCode::OK, Json(folder)).into_response()
             }
             Err(err) => AppError::from(err).into_response(),
@@ -263,7 +302,7 @@ impl FolderHandler {
     /// Downloads a folder and all its contents as a ZIP archive.
     pub(super) async fn download_folder_zip_impl(
         State(state): State<Arc<GlobalAppState>>,
-        auth_user: AuthUser,
+        callers: CallerSubjects,
         Path(id): Path<String>,
     ) -> impl IntoResponse {
         tracing::info!("Downloading folder as ZIP: {}", id);
@@ -271,8 +310,21 @@ impl FolderHandler {
         // Get folder information and verify ownership
         let folder_service = &state.applications.folder_service;
 
+        // The archive is the subtree BELOW the authorized folder, which is
+        // exactly what a folder share grants — the same bytes the legacy
+        // `/api/s/{token}/zip` endpoint has always served. Only `folder.name`
+        // is read from the DTO afterwards, so nothing here can leak the
+        // owner's hierarchy.
+        let authorized_as = match folder_service
+            .require_permission(&callers.0, Permission::Read, &id)
+            .await
+        {
+            Ok(subject) => subject,
+            Err(err) => return AppError::from(err).into_response(),
+        };
+
         match folder_service
-            .get_folder_with_perms(&id, auth_user.id)
+            .get_folder_with_perms(&id, authorized_as)
             .await
         {
             Ok(folder) => {
@@ -376,10 +428,10 @@ pub async fn create_folder(
 )]
 pub async fn get_folder(
     state: State<Arc<GlobalAppState>>,
-    auth_user: AuthUser,
+    callers: CallerSubjects,
     path: Path<String>,
 ) -> impl IntoResponse {
-    FolderHandler::get_folder_impl(state, auth_user, path).await
+    FolderHandler::get_folder_impl(state, callers, path).await
 }
 
 #[utoipa::path(
@@ -395,10 +447,10 @@ pub async fn get_folder(
 )]
 pub async fn get_folder_ancestors(
     state: State<Arc<GlobalAppState>>,
-    auth_user: AuthUser,
+    callers: CallerSubjects,
     path: Path<String>,
 ) -> impl IntoResponse {
-    FolderHandler::get_folder_ancestors_impl(state, auth_user, path).await
+    FolderHandler::get_folder_ancestors_impl(state, callers, path).await
 }
 
 #[utoipa::path(
@@ -492,14 +544,14 @@ pub async fn delete_folder_with_trash(
 )]
 pub async fn download_folder_zip(
     state: State<Arc<GlobalAppState>>,
-    auth_user: AuthUser,
+    callers: CallerSubjects,
     path: Path<String>,
 ) -> impl IntoResponse {
     // No `Query` extractor: the handler reads only the path `id`. axum ignores
     // any query string when no extractor is present, so the response is
     // byte-identical while a per-request HashMap + owned key/value Strings are
     // no longer parsed and dropped (benches/ROUND25.md §M3).
-    FolderHandler::download_folder_zip_impl(state, auth_user, path).await
+    FolderHandler::download_folder_zip_impl(state, callers, path).await
 }
 
 // ── GET /api/folders/{id}/resources ─────────────────────────────────────────
@@ -524,10 +576,21 @@ pub async fn download_folder_zip(
 )]
 pub async fn list_folder_resources(
     State(service): State<AppState>,
-    auth_user: AuthUser,
+    callers: CallerSubjects,
     Path(id): Path<String>,
     Query(q): Query<FolderResourcesQuery>,
 ) -> impl IntoResponse {
+    // Authorize once against the whole credential set; the listing below is
+    // single-subject and its `is_favorite` / `is_shared` columns are computed
+    // FROM that subject, so it must be the one that granted.
+    let authorized_as = match service
+        .require_permission(&callers.0, Permission::Read, &id)
+        .await
+    {
+        Ok(subject) => subject,
+        Err(err) => return AppError::from(err).into_response(),
+    };
+
     let order_by = q.order_by.clone().unwrap_or_else(|| "name".to_owned());
     let kinds = q.resource_kinds();
     let opts = ListResourcesOptions {
@@ -541,30 +604,37 @@ pub async fn list_folder_resources(
     // External mount branch: a mount-root UUID or an `ext:` id lists live from
     // the provider instead of the PostgreSQL UNION. The parent of each entry is
     // the requested id itself.
+    // Mount listings are restricted to user callers, like the file download
+    // mount branch: the mount layer authenticates to the remote provider on
+    // behalf of a *user*, and a share visitor has no identity there to borrow.
+    // 404 keeps "is this id a mount" unprobeable.
+    let mount_user = authorized_as.user_id();
     match service.mount_router().classify(&id) {
         ResolvedId::MountRoot { cfg } => {
-            return list_mount_dir_response(
-                &service,
-                &cfg,
-                &NodeId::default(),
-                &id,
-                auth_user.id,
-                opts,
-            )
-            .await;
+            let Some(user_id) = mount_user else {
+                return AppError::not_found("Folder not found").into_response();
+            };
+            return list_mount_dir_response(&service, &cfg, &NodeId::default(), &id, user_id, opts)
+                .await;
         }
         ResolvedId::MountChild { cfg, node_id } => {
-            return list_mount_dir_response(&service, &cfg, &node_id, &id, auth_user.id, opts)
-                .await;
+            let Some(user_id) = mount_user else {
+                return AppError::not_found("Folder not found").into_response();
+            };
+            return list_mount_dir_response(&service, &cfg, &node_id, &id, user_id, opts).await;
         }
         ResolvedId::Regular => {}
     }
 
     match service
-        .list_resources_paged_with_perms(&id, auth_user.id, opts)
+        .list_resources_paged_with_perms(&id, authorized_as, opts)
         .await
     {
         Ok((rows, next_cursor)) => {
+            // Decided once, not per row. `is_favorite` / `is_shared` were
+            // already handled in SQL; this covers the owner's identifiers,
+            // which come straight off the row.
+            let redact = authorized_as.token_id().is_some();
             let items: Vec<FolderResourceItemDto> = rows
                 .into_iter()
                 .map(|row| {
@@ -589,6 +659,11 @@ pub async fn list_folder_resources(
                             updated_by: row.updated_by,
                             is_favorite: row.is_favorite,
                             is_shared: row.is_shared,
+                        };
+                        let dto = if redact {
+                            dto.redacted_for_token()
+                        } else {
+                            dto
                         };
                         FolderResourceItemDto {
                             resource_type: ResourceTypeDto::Folder,
@@ -642,6 +717,11 @@ pub async fn list_folder_resources(
                             updated_by: row.updated_by,
                             is_favorite: row.is_favorite,
                             is_shared: row.is_shared,
+                        };
+                        let dto = if redact {
+                            dto.redacted_for_token()
+                        } else {
+                            dto
                         };
                         FolderResourceItemDto {
                             resource_type: ResourceTypeDto::File,

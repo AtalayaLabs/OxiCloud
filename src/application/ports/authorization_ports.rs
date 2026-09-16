@@ -129,6 +129,87 @@ pub trait AuthorizationEngine: Send + Sync + 'static {
         Ok(allowed)
     }
 
+    /// Allow when **any** of `subjects` grants `permission` on `resource`.
+    ///
+    /// A browser can hold more than one credential at once: a logged-in user
+    /// who has also unlocked public-share links carries their own identity
+    /// plus a *share ring* of token subjects. The request cannot say which
+    /// one it means — an `<img>` tag sends every cookie it has and nothing
+    /// else — so authorization tries what the caller holds.
+    ///
+    /// This is not a new authority model. `subject_match_set` already unions
+    /// a user with every group they belong to and asks whether *any* of them
+    /// grants access; share tokens join that union. The only difference is
+    /// that group membership is resolved server-side while the ring arrives
+    /// in a (server-signed) cookie.
+    ///
+    /// **Order matters for cost, not for outcome.** Callers pass the user
+    /// subject first, so ordinary browsing is decided on the first check and
+    /// the ring is consulted only when that denies. The consequence is that
+    /// denials are more expensive than allows — bounded by the ring cap and
+    /// largely absorbed by the engine's decision cache.
+    ///
+    /// On total denial the shape is produced by [`Self::require`] using the
+    /// first subject, so graduated visibility and the audit line are not
+    /// duplicated here. That re-checks the first subject, which the cache has
+    /// just answered.
+    ///
+    /// Returns the subject that granted. Callers that go on to make a second,
+    /// single-subject service call for the same resource must pass this one
+    /// back — passing any other member of the set would re-run the search and
+    /// could deny what was just allowed.
+    ///
+    /// Bind it as `authorized_as`, never `granted_by`: `role_grants.granted_by`
+    /// is the user who ISSUED the grant (the sharer), so that name here would
+    /// denote the opposite party.
+    async fn require_any(
+        &self,
+        subjects: &[Subject],
+        permission: Permission,
+        resource: Resource,
+    ) -> Result<Subject, DomainError> {
+        for &subject in subjects {
+            if self.check(subject, permission, resource).await? {
+                tracing::debug!(
+                    target: "oxicloud::authz",
+                    event = "authz.allowed",
+                    subject_type = subject.type_str(),
+                    subject_id = %subject.id(),
+                    permission = permission.as_str(),
+                    resource_type = resource.type_str(),
+                    resource_id = %resource.id(),
+                    "👮🏻‍♂️ perms: ✔ '{subject}' has '{permission}' on '{resource}'",
+                );
+                return Ok(subject);
+            }
+        }
+
+        match subjects.first() {
+            Some(&primary) => self
+                .require(primary, permission, resource)
+                .await
+                .map(|()| primary),
+            // No credential at all. Unreachable through the extractors, which
+            // refuse a request with no principal — but fail closed rather
+            // than treating "nothing to check" as "nothing objected".
+            None => {
+                tracing::warn!(
+                    target: "audit",
+                    event = "authz.denied",
+                    reason = "no_subjects",
+                    permission = permission.as_str(),
+                    resource_type = resource.type_str(),
+                    resource_id = %resource.id(),
+                    "👮🏻‍♂️ authorization attempted with an empty subject set",
+                );
+                Err(DomainError::not_found(
+                    resource.type_str(),
+                    resource.id().to_string(),
+                ))
+            }
+        }
+    }
+
     /// Graduated-denial wrapper around `check`. Semantics:
     ///
     /// - `permission` granted → `Ok(())`
@@ -151,6 +232,10 @@ pub trait AuthorizationEngine: Send + Sync + 'static {
     /// touch this method with per-row ids. Cross-tenant probes on ids the
     /// caller has no prior read handle for degrade to the 404 shape naturally
     /// (Read denied → `Hidden`).
+    ///
+    /// [`Self::require_any`] is the multi-credential form and produces its
+    /// denial shape by delegating here, so the semantics above are the single
+    /// definition for both.
     async fn require(
         &self,
         subject: Subject,
@@ -357,6 +442,177 @@ pub trait AuthorizationEngine: Send + Sync + 'static {
     /// succeeds to keep the two tables in sync during dual-write; after
     /// cleanup this is the canonical role-revocation entry point.
     async fn clear_role(&self, subject: Subject, resource: Resource) -> Result<(), DomainError>;
+}
+
+#[cfg(test)]
+mod require_any_tests {
+    use super::*;
+    use crate::domain::errors::ErrorKind;
+    use std::sync::Mutex;
+
+    /// Engine stub that grants a fixed set of subjects and records the order
+    /// `check` was called in, so short-circuiting is observable.
+    struct FakeEngine {
+        allowed: Vec<Subject>,
+        seen: Mutex<Vec<Subject>>,
+    }
+
+    impl FakeEngine {
+        fn granting(allowed: Vec<Subject>) -> Self {
+            Self {
+                allowed,
+                seen: Mutex::new(Vec::new()),
+            }
+        }
+        fn checked(&self) -> Vec<Subject> {
+            self.seen.lock().unwrap().clone()
+        }
+    }
+
+    impl AuthorizationEngine for FakeEngine {
+        async fn check(
+            &self,
+            subject: Subject,
+            _permission: Permission,
+            _resource: Resource,
+        ) -> Result<bool, DomainError> {
+            self.seen.lock().unwrap().push(subject);
+            Ok(self.allowed.contains(&subject))
+        }
+
+        // Everything below is outside what these tests exercise.
+        async fn list_incoming_grants(&self, _: Subject) -> Result<Vec<Grant>, DomainError> {
+            unimplemented!()
+        }
+        async fn list_incoming_resources_paged(
+            &self,
+            _: Subject,
+            _: &[ResourceKind],
+            _: u32,
+            _: Option<GrantCursor>,
+            _: &str,
+            _: bool,
+        ) -> Result<(Vec<IncomingGrantSummary>, Option<GrantCursor>), DomainError> {
+            unimplemented!()
+        }
+        async fn list_grants_on_resource(&self, _: Resource) -> Result<Vec<Grant>, DomainError> {
+            unimplemented!()
+        }
+        async fn list_outgoing_grants(&self, _: Uuid) -> Result<Vec<Grant>, DomainError> {
+            unimplemented!()
+        }
+        async fn list_outgoing_resources_paged(
+            &self,
+            _: Uuid,
+            _: u32,
+            _: Option<GrantCursor>,
+            _: &str,
+            _: bool,
+        ) -> Result<(Vec<OutgoingResourceSummary>, Option<GrantCursor>), DomainError> {
+            unimplemented!()
+        }
+        async fn set_expiry_for_subject(
+            &self,
+            _: Subject,
+            _: Option<chrono::DateTime<chrono::Utc>>,
+        ) -> Result<(), DomainError> {
+            unimplemented!()
+        }
+        async fn purge_expired_grants(&self, _: u32) -> Result<u64, DomainError> {
+            unimplemented!()
+        }
+        async fn revoke(&self, _: Uuid) -> Result<(), DomainError> {
+            unimplemented!()
+        }
+        async fn revoke_all_for_resource(&self, _: Resource) -> Result<usize, DomainError> {
+            unimplemented!()
+        }
+        async fn revoke_all_for_subject(&self, _: Subject) -> Result<usize, DomainError> {
+            unimplemented!()
+        }
+        async fn set_role(
+            &self,
+            _: Uuid,
+            _: Subject,
+            _: Role,
+            _: Resource,
+            _: Option<chrono::DateTime<chrono::Utc>>,
+        ) -> Result<Grant, DomainError> {
+            unimplemented!()
+        }
+        async fn clear_role(&self, _: Subject, _: Resource) -> Result<(), DomainError> {
+            unimplemented!()
+        }
+    }
+
+    fn file() -> Resource {
+        Resource::File(Uuid::new_v4())
+    }
+
+    /// The common case: a logged-in user reading their own file. The ring is
+    /// never consulted, so ordinary browsing costs exactly one check.
+    #[tokio::test]
+    async fn the_first_granting_subject_short_circuits() {
+        let alice = Subject::User(Uuid::new_v4());
+        let ring = Subject::Token(Uuid::new_v4());
+        let engine = FakeEngine::granting(vec![alice]);
+
+        engine
+            .require_any(&[alice, ring], Permission::Read, file())
+            .await
+            .expect("alice's own grant should allow");
+
+        assert_eq!(
+            engine.checked(),
+            vec![alice],
+            "the ring must not be consulted once the user's own grant allows",
+        );
+    }
+
+    /// Alice opening a colleague's share link: her own grants deny, the ring
+    /// allows. This is the case that regressed under every single-credential
+    /// design we considered.
+    #[tokio::test]
+    async fn the_ring_is_consulted_when_the_user_is_denied() {
+        let alice = Subject::User(Uuid::new_v4());
+        let ring = Subject::Token(Uuid::new_v4());
+        let engine = FakeEngine::granting(vec![ring]);
+
+        engine
+            .require_any(&[alice, ring], Permission::Read, file())
+            .await
+            .expect("the unlocked share should allow");
+
+        assert_eq!(engine.checked(), vec![alice, ring]);
+    }
+
+    #[tokio::test]
+    async fn denial_when_nothing_held_grants() {
+        let alice = Subject::User(Uuid::new_v4());
+        let ring = Subject::Token(Uuid::new_v4());
+        let engine = FakeEngine::granting(vec![]);
+
+        let err = engine
+            .require_any(&[alice, ring], Permission::Read, file())
+            .await
+            .expect_err("no credential grants — must deny");
+        assert_eq!(err.kind, ErrorKind::NotFound);
+    }
+
+    /// Fail closed. "Nothing to check" must never read as "nothing objected"
+    /// — unreachable through the extractors, but the wrong default here
+    /// would be an authorization bypass rather than a bug.
+    #[tokio::test]
+    async fn an_empty_subject_set_denies() {
+        let engine = FakeEngine::granting(vec![]);
+        assert!(
+            engine
+                .require_any(&[], Permission::Read, file())
+                .await
+                .is_err(),
+            "an empty credential set must deny, not allow",
+        );
+    }
 }
 
 #[cfg(test)]

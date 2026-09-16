@@ -195,11 +195,11 @@ impl FolderService {
         impl FolderUseCase for FolderServiceStub {
             async fn require_permission(
                 &self,
-                _caller_id: Uuid,
+                _callers: &[Subject],
                 _permission: Permission,
                 _folder_id: &str,
-            ) -> Result<(), DomainError> {
-                Ok(())
+            ) -> Result<Subject, DomainError> {
+                Ok(Subject::User(Uuid::nil()))
             }
             async fn create_folder_with_perms(
                 &self,
@@ -216,7 +216,7 @@ impl FolderService {
             async fn get_folder_with_perms(
                 &self,
                 _id: &str,
-                _caller_id: Uuid,
+                _caller: Subject,
             ) -> Result<FolderDto, DomainError> {
                 Ok(FolderDto::empty())
             }
@@ -325,14 +325,12 @@ impl FolderUseCase for FolderService {
     /// DB write — this is a UX/resource optimization, not a security boundary.
     async fn require_permission(
         &self,
-        caller_id: Uuid,
+        callers: &[Subject],
         permission: Permission,
         folder_id: &str,
-    ) -> Result<(), DomainError> {
+    ) -> Result<Subject, DomainError> {
         let resource = Self::folder_resource(folder_id)?;
-        self.authz
-            .require(Subject::User(caller_id), permission, resource)
-            .await
+        self.authz.require_any(callers, permission, resource).await
     }
 
     /// Creates a new folder
@@ -443,14 +441,10 @@ impl FolderUseCase for FolderService {
     async fn get_folder_with_perms(
         &self,
         id: &str,
-        caller_id: Uuid,
+        caller: Subject,
     ) -> Result<FolderDto, DomainError> {
         self.authz
-            .require(
-                Subject::User(caller_id),
-                Permission::Read,
-                Self::folder_resource(id)?,
-            )
+            .require(caller, Permission::Read, Self::folder_resource(id)?)
             .await?;
         self.get_folder(id).await
     }
@@ -1162,15 +1156,11 @@ impl FolderService {
     pub async fn get_ancestors_with_perms(
         &self,
         leaf_id: &str,
-        caller_id: Uuid,
+        caller: Subject,
     ) -> Result<FolderAncestorsDto, DomainError> {
         // Gate: caller must have Read on the leaf. Denial → 404 (anti-enum).
         self.authz
-            .require(
-                Subject::User(caller_id),
-                Permission::Read,
-                Self::folder_resource(leaf_id)?,
-            )
+            .require(caller, Permission::Read, Self::folder_resource(leaf_id)?)
             .await?;
 
         let leaf_uuid =
@@ -1178,7 +1168,7 @@ impl FolderService {
 
         let mut rows = self
             .folder_storage
-            .fetch_ancestor_walk(caller_id, leaf_uuid)
+            .fetch_ancestor_walk(caller, leaf_uuid)
             .await?;
         if rows.is_empty() {
             return Err(DomainError::not_found("Folder", leaf_id));
@@ -1215,10 +1205,20 @@ impl FolderService {
         } else {
             ("folder", top.id)
         };
-        let grant_by = self
-            .folder_storage
-            .fetch_grant_by(caller_id, grant_resource_type, grant_resource_id)
-            .await?;
+        let grant_by = match caller.user_id() {
+            Some(uid) => {
+                self.folder_storage
+                    .fetch_grant_by(uid, grant_resource_type, grant_resource_id)
+                    .await?
+            }
+            // Deliberately left unresolved for a public-share visitor. This
+            // lookup exists to name the person who shared ("via Design"),
+            // and it does `SELECT username FROM auth.users WHERE id =
+            // granted_by` — which would publish the owner's identity to an
+            // anonymous caller. `None` renders as "no named sharer", the
+            // correct answer for a link that is anonymous by design.
+            None => None,
+        };
         let subject = grant_by
             .as_ref()
             .map(
@@ -1241,7 +1241,27 @@ impl FolderService {
             .and_then(|(_, _, _, role_str)| Role::parse(role_str))
             .map(RoleDto::from);
 
-        let access_source = if top.has_drive_grant {
+        let access_source = if caller.token_id().is_some() {
+            // A public-share visitor. Reported as its own kind rather than
+            // `DirectShare`: the two are not the same thing to a client, and
+            // `DirectShare` implies a named sharer the FE would try to render
+            // ("shared with you by X") for a caller who is never told one.
+            //
+            // `has_drive_grant` is false here by construction — token grants
+            // are matched on `has_folder_grant` only (`fetch_ancestor_walk`),
+            // which is what makes the breadcrumb truncate at the share root —
+            // so this arm cannot steal a drive-membership case from below.
+            AccessSourceDto {
+                kind: AccessSourceKind::Token,
+                drive: None,
+                // Both already `None` on this path: `grant_by` is skipped for
+                // a token caller, and `caller_role` derives from it. Written
+                // literally so the guarantee is visible here and does not
+                // depend on reading the branch 40 lines up.
+                subject: None,
+                caller_role: None,
+            }
+        } else if top.has_drive_grant {
             // Drive-membership Read — even if a direct folder grant also
             // exists, the drive channel is the more useful "how did I
             // get here" signal (it names the drive the caller sees in
@@ -1303,16 +1323,12 @@ impl FolderService {
     pub async fn list_resources_paged_with_perms(
         &self,
         parent_id: &str,
-        caller_id: Uuid,
+        caller: Subject,
         opts: ListResourcesOptions<'_>,
     ) -> Result<(Vec<FolderResourceRow>, Option<String>), DomainError> {
         // 1. AuthZ — same check as list_folders_with_perms
         self.authz
-            .require(
-                Subject::User(caller_id),
-                Permission::Read,
-                Self::folder_resource(parent_id)?,
-            )
+            .require(caller, Permission::Read, Self::folder_resource(parent_id)?)
             .await?;
 
         let pid =
@@ -1331,7 +1347,7 @@ impl FolderService {
             .folder_storage
             .list_resources_paged(
                 pid,
-                caller_id,
+                caller,
                 limit + 1,
                 cursor.as_ref(),
                 order_by,

@@ -35,7 +35,7 @@ use crate::common::errors::DomainError;
 use crate::domain::entities::file::File;
 use crate::domain::entities::folder::Folder;
 use crate::domain::repositories::folder_repository::FolderRepository;
-use crate::domain::services::authorization::Permission;
+use crate::domain::services::authorization::{Permission, Subject};
 use crate::domain::services::i18n_service::{I18nResult, I18nService, Locale};
 use crate::domain::services::path_service::StoragePath;
 
@@ -383,11 +383,11 @@ pub struct StubFolderUseCase;
 impl FolderUseCase for StubFolderUseCase {
     async fn require_permission(
         &self,
-        _caller_id: Uuid,
+        _callers: &[Subject],
         _permission: Permission,
         _file_id: &str,
-    ) -> Result<(), DomainError> {
-        Ok(())
+    ) -> Result<Subject, DomainError> {
+        Ok(Subject::User(Uuid::nil()))
     }
 
     async fn create_folder_with_perms(
@@ -405,7 +405,7 @@ impl FolderUseCase for StubFolderUseCase {
     async fn get_folder_with_perms(
         &self,
         _id: &str,
-        _caller_id: Uuid,
+        _caller: Subject,
     ) -> Result<FolderDto, DomainError> {
         Ok(FolderDto::default())
     }
@@ -532,7 +532,7 @@ impl FileRetrievalUseCase for StubFileRetrievalUseCase {
     async fn get_file_or_trashed_with_perms(
         &self,
         _id: &str,
-        _owner_id: Uuid,
+        _caller: Subject,
     ) -> Result<FileDto, DomainError> {
         Ok(FileDto::default())
     }
@@ -560,7 +560,7 @@ impl FileRetrievalUseCase for StubFileRetrievalUseCase {
     async fn get_file_stream_with_perms(
         &self,
         _id: &str,
-        _caller_id: Uuid,
+        _caller: Subject,
     ) -> Result<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>, DomainError> {
         let empty_stream = futures::stream::empty::<Result<Bytes, std::io::Error>>();
         Ok(Box::new(empty_stream))
@@ -606,7 +606,7 @@ impl FileRetrievalUseCase for StubFileRetrievalUseCase {
     async fn get_file_with_perms(
         &self,
         _id: &str,
-        _caller_id: Uuid,
+        _caller: Subject,
     ) -> Result<FileDto, DomainError> {
         Ok(FileDto::default())
     }
@@ -614,7 +614,7 @@ impl FileRetrievalUseCase for StubFileRetrievalUseCase {
     async fn get_file_optimized_with_perms(
         &self,
         _id: &str,
-        _caller_id: Uuid,
+        _caller: Subject,
         _accept_webp: bool,
         _prefer_original: bool,
     ) -> Result<(FileDto, OptimizedFileContent), DomainError> {
@@ -631,7 +631,7 @@ impl FileRetrievalUseCase for StubFileRetrievalUseCase {
     async fn get_file_range_stream_with_perms(
         &self,
         _id: &str,
-        _caller_id: Uuid,
+        _caller: Subject,
         _start: u64,
         _end: Option<u64>,
     ) -> Result<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>, DomainError> {
@@ -649,11 +649,11 @@ pub struct StubFileManagementUseCase;
 impl FileManagementUseCase for StubFileManagementUseCase {
     async fn require_permission(
         &self,
-        _caller_id: Uuid,
+        _callers: &[Subject],
         _permission: Permission,
         _file_id: &str,
-    ) -> Result<(), DomainError> {
-        Ok(())
+    ) -> Result<Subject, DomainError> {
+        Ok(Subject::User(Uuid::nil()))
     }
 
     async fn copy_file_with_perms(

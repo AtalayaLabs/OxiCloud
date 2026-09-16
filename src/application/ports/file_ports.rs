@@ -10,7 +10,7 @@ use crate::application::services::file_management_service::FileManagementService
 use crate::application::services::file_retrieval_service::FileRetrievalService;
 use crate::application::services::file_upload_service::FileUploadService;
 use crate::common::errors::DomainError;
-use crate::domain::services::authorization::Permission;
+use crate::domain::services::authorization::{Permission, Subject};
 
 // ─────────────────────────────────────────────────────
 // Upload port
@@ -157,16 +157,28 @@ pub trait FileRetrievalUseCase: Send + Sync + 'static {
     /// Gets a file by its ID (system/internal — no ownership check).
     async fn get_file(&self, id: &str) -> Result<FileDto, DomainError>;
 
-    /// Gets a file by its ID, enforcing that `caller_id` is the owner.
+    // ── Read path: `Subject`, not `caller_id: Uuid` ──────────────────
+    //
+    // The five methods below take a `Subject` because a public-share
+    // visitor must be able to reach them as `Subject::Token(share_id)`.
+    // Every other method on this trait keeps `caller_id: Uuid` — and that
+    // asymmetry is deliberate documentation, not an oversight: a method
+    // taking a `Uuid` *cannot* be called with a token principal, so the
+    // signature itself records which operations a non-user caller may
+    // perform. Widening one to `Subject` is a decision to expose it, and
+    // should be made on purpose.
+
+    /// Gets a file by its ID, enforcing that `caller` may read it.
     ///
-    /// Returns `NotFound` if the file does not exist **or** belongs to
-    /// another user.  All user-facing handlers should use this method.
-    async fn get_file_with_perms(&self, id: &str, caller_id: Uuid) -> Result<FileDto, DomainError>;
+    /// Returns `NotFound` when the file does not exist **or** the caller
+    /// has no grant reaching it. All user-facing handlers should use this
+    /// method.
+    async fn get_file_with_perms(&self, id: &str, caller: Subject) -> Result<FileDto, DomainError>;
 
     async fn get_file_or_trashed_with_perms(
         &self,
         id: &str,
-        caller_id: Uuid,
+        caller: Subject,
     ) -> Result<FileDto, DomainError>;
 
     /// Gets a file by its path (for WebDAV), scoped to a drive.
@@ -200,7 +212,7 @@ pub trait FileRetrievalUseCase: Send + Sync + 'static {
     async fn get_file_stream_with_perms(
         &self,
         id: &str,
-        caller_id: Uuid,
+        caller: Subject,
     ) -> Result<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>, DomainError>;
 
     /// Optimized multi-tier download.
@@ -222,7 +234,7 @@ pub trait FileRetrievalUseCase: Send + Sync + 'static {
     async fn get_file_optimized_with_perms(
         &self,
         id: &str,
-        caller_id: Uuid,
+        caller: Subject,
         accept_webp: bool,
         prefer_original: bool,
     ) -> Result<(FileDto, OptimizedFileContent), DomainError>;
@@ -254,7 +266,7 @@ pub trait FileRetrievalUseCase: Send + Sync + 'static {
     async fn get_file_range_stream_with_perms(
         &self,
         id: &str,
-        caller_id: Uuid,
+        caller: Subject,
         start: u64,
         end: Option<u64>,
     ) -> Result<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>, DomainError>;
@@ -308,12 +320,29 @@ pub trait FileRetrievalUseCase: Send + Sync + 'static {
 
 /// Primary port for file management operations
 pub trait FileManagementUseCase: Send + Sync + 'static {
+    /// Takes a **set** of [`Subject`]s rather than a bare `caller_id: Uuid`
+    /// because one HTTP caller can hold several credentials at once: a
+    /// logged-in Alice who has also opened a public share carries
+    /// `Subject::User(alice)` *and* one `Subject::Token(share_id)` per share
+    /// in her ring. Passing the whole set lets the engine grant on any of
+    /// them (see `AuthorizationEngine::require_any`), which is the only shape
+    /// under which "click a colleague's share link" neither downgrades her
+    /// session nor 404s the shared file.
+    ///
+    /// Wrapping a `Uuid` in `Subject::User` at the call site keeps the
+    /// decision about *what kind of principal this is* with the caller,
+    /// where it is known, instead of assuming it here. A one-element slice is
+    /// the normal case and behaves exactly as a single-subject check.
+    ///
+    /// Returns the credential that granted, so a handler making a further
+    /// single-subject call for the same file passes back the one that worked
+    /// rather than guessing.
     async fn require_permission(
         &self,
-        caller_id: Uuid,
+        callers: &[Subject],
         permission: Permission,
         file_id: &str,
-    ) -> Result<(), DomainError>;
+    ) -> Result<Subject, DomainError>;
 
     /// Moves a file, enforcing that `caller_id` is the owner.
     async fn move_file_with_perms(

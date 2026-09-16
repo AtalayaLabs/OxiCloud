@@ -276,7 +276,10 @@ pub async fn basic_auth_middleware(
                 Some(folder_id) => state
                     .applications
                     .folder_service
-                    .get_folder_with_perms(folder_id, current_user.id)
+                    .get_folder_with_perms(
+                        folder_id,
+                        crate::domain::services::authorization::Subject::User(current_user.id),
+                    )
                     .await
                     .ok()
                     .map(Arc::new),

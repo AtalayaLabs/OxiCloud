@@ -1053,7 +1053,9 @@ pub async fn list_shared_with_me(
                 Some(file_dto) => {
                     let mut dto = file_dto.clone().without_hierarchy_info();
                     crate::interfaces::api::handlers::caller_flags::enrich_file_flags(
-                        &state, &mut dto, caller_id,
+                        &state,
+                        &mut dto,
+                        Subject::User(caller_id),
                     )
                     .await;
                     items.push(SharedWithMeItemDto {
@@ -1073,7 +1075,9 @@ pub async fn list_shared_with_me(
                 Some(folder_dto) => {
                     let mut dto = folder_dto.clone().without_hierarchy_info();
                     crate::interfaces::api::handlers::caller_flags::enrich_folder_flags(
-                        &state, &mut dto, caller_id,
+                        &state,
+                        &mut dto,
+                        Subject::User(caller_id),
                     )
                     .await;
                     items.push(SharedWithMeItemDto {
@@ -1332,7 +1336,9 @@ pub async fn list_my_shares(
                     // is_shared: TRUE by construction on this feed.
                     // is_favorite: real EXISTS via the shared helper.
                     crate::interfaces::api::handlers::caller_flags::enrich_file_flags(
-                        &state, &mut dto, caller_id,
+                        &state,
+                        &mut dto,
+                        Subject::User(caller_id),
                     )
                     .await;
                     dto.is_shared = true;
@@ -1352,7 +1358,9 @@ pub async fn list_my_shares(
                 Some(folder_dto) => {
                     let mut dto = folder_dto.clone();
                     crate::interfaces::api::handlers::caller_flags::enrich_folder_flags(
-                        &state, &mut dto, caller_id,
+                        &state,
+                        &mut dto,
+                        Subject::User(caller_id),
                     )
                     .await;
                     dto.is_shared = true;

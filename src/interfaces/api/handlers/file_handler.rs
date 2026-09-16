@@ -24,10 +24,13 @@ use crate::common::di::AppState;
 use crate::domain::errors::DomainError;
 use crate::domain::services::external_mount_id::{NodeId, virtual_file_etag};
 use crate::interfaces::errors::AppError;
-use crate::interfaces::middleware::auth::AuthUser;
+use crate::interfaces::middleware::auth::{AuthUser, CallerSubjects};
 use crate::interfaces::range_requests::not_modified_response;
 use crate::interfaces::upload_ingest;
-use crate::{application::dtos::file_dto::FileDto, domain::services::authorization::Permission};
+use crate::{
+    application::dtos::file_dto::FileDto,
+    domain::services::authorization::{Permission, Subject},
+};
 use std::sync::Arc;
 
 /**
@@ -73,7 +76,7 @@ impl FileHandler {
                 crate::interfaces::api::handlers::caller_flags::enrich_file_flags(
                     &state,
                     &mut file,
-                    auth_user.id,
+                    Subject::User(auth_user.id),
                 )
                 .await;
                 Self::created_json_response(&file).into_response()
@@ -132,7 +135,7 @@ impl FileHandler {
                 crate::interfaces::api::handlers::caller_flags::enrich_file_flags(
                     &state,
                     &mut file,
-                    auth_user.id,
+                    Subject::User(auth_user.id),
                 )
                 .await;
                 Self::created_json_response(&file).into_response()
@@ -222,7 +225,7 @@ impl FileHandler {
                     && let Err(err) = state
                         .applications
                         .folder_service_concrete
-                        .require_permission(auth_user.id, Permission::Create, fid)
+                        .require_permission(&[Subject::User(auth_user.id)], Permission::Create, fid)
                         .await
                 {
                     tracing::warn!(
@@ -446,21 +449,28 @@ impl FileHandler {
     /// upload if background generation hasn't finished).
     pub(super) async fn get_thumbnail_impl(
         State(state): State<GlobalState>,
-        auth_user: AuthUser,
+        callers: CallerSubjects,
         headers: &HeaderMap,
         Path((id, size)): Path<(String, String)>,
     ) -> impl IntoResponse + use<> {
         use crate::application::ports::thumbnail_ports::{ThumbnailFormat, ThumbnailSize};
 
-        // check first that user can access this resource
-        if let Err(err) = state
+        // Authorize against every credential the caller holds, not just a user
+        // id: this is the route a public-share visitor needs (issue #721), and
+        // the grant they match on was already written at share-creation time.
+        //
+        // Nothing below this check knows or cares which credential granted —
+        // the thumbnail bytes are the same either way, so there is no
+        // share-specific code path to keep in sync.
+        let authorized_as = match state
             .applications
             .file_management_service
-            .require_permission(auth_user.id, Permission::Read, &id)
+            .require_permission(&callers.0, Permission::Read, &id)
             .await
         {
-            return AppError::from(err).into_response();
-        }
+            Ok(subject) => subject,
+            Err(err) => return AppError::from(err).into_response(),
+        };
 
         let thumbnail_service = &state.core.thumbnail_service;
 
@@ -578,8 +588,11 @@ impl FileHandler {
         // ── Cache miss — need DB for ownership + blob resolution ─────
         let file_retrieval_service = &state.applications.file_retrieval_service;
 
+        // `authorized_as`, not an arbitrary member of the set: the check above
+        // already decided which credential opens this file, and re-deriving it
+        // here could deny what was just allowed.
         let file = match file_retrieval_service
-            .get_file_or_trashed_with_perms(&id, auth_user.id)
+            .get_file_or_trashed_with_perms(&id, authorized_as)
             .await
         {
             Ok(f) => f,
@@ -716,7 +729,7 @@ impl FileHandler {
         if let Err(err) = state
             .applications
             .file_management_service
-            .require_permission(auth_user.id, Permission::Update, &id)
+            .require_permission(&[Subject::User(auth_user.id)], Permission::Update, &id)
             .await
         {
             return AppError::from(err).into_response();
@@ -752,7 +765,7 @@ impl FileHandler {
         // Validate file ownership
         let file_retrieval_service = &state.applications.file_retrieval_service;
         if let Err(err) = file_retrieval_service
-            .get_file_with_perms(&id, auth_user.id)
+            .get_file_with_perms(&id, Subject::User(auth_user.id))
             .await
         {
             return AppError::from(err).into_response();
@@ -837,23 +850,40 @@ impl FileHandler {
     /// and optional compression.
     pub(super) async fn download_file_impl(
         State(state): State<GlobalState>,
-        auth_user: AuthUser,
+        callers: CallerSubjects,
         Path(id): Path<String>,
         Query(params): Query<HashMap<String, String>>,
         headers: &HeaderMap,
     ) -> impl IntoResponse + use<> {
+        // Authorize against every credential the caller holds, and keep the
+        // one that granted: the reads below are single-subject and must be
+        // made with the credential that actually opened this file, not a
+        // re-derived guess.
+        let authorized_as = match state
+            .applications
+            .file_management_service
+            .require_permission(&callers.0, Permission::Read, &id)
+            .await
+        {
+            Ok(subject) => subject,
+            Err(err) => return AppError::from(err).into_response(),
+        };
+
         // External mount: download a file living on the provider's backend.
         // (A mount-root UUID is a folder and is not downloadable — it falls
         // through and 404s as a non-file.)
+        //
+        // Restricted to user callers. The mount layer authenticates to the
+        // remote provider on behalf of a *user*, and a public-share visitor
+        // has no identity there to borrow. 404 rather than 403: whether this
+        // id is a mount child is not something a visitor should be able to
+        // probe.
         if let ResolvedId::MountChild { cfg, node_id } = state.mount_router.classify(&id) {
+            let Some(user_id) = authorized_as.user_id() else {
+                return AppError::not_found("File not found").into_response();
+            };
             return Self::download_mount_file(
-                &state,
-                &cfg,
-                &node_id,
-                &id,
-                auth_user.id,
-                &params,
-                headers,
+                &state, &cfg, &node_id, &id, user_id, &params, headers,
             )
             .await;
         }
@@ -861,7 +891,7 @@ impl FileHandler {
         let retrieval = &state.applications.file_retrieval_service;
 
         // ── Get file metadata (ownership-scoped) ────────────────────────
-        let file_dto = match retrieval.get_file_with_perms(&id, auth_user.id).await {
+        let file_dto = match retrieval.get_file_with_perms(&id, authorized_as).await {
             Ok(f) => f,
             Err(err) => {
                 return AppError::from(err).into_response();
@@ -869,24 +899,43 @@ impl FileHandler {
         };
 
         // ── Metadata-only request ────────────────────────────────────
+        //
+        // Emits the whole `FileDto`. It used to hand-build a seven-field JSON
+        // literal — a partial copy of the DTO that had to be edited in step
+        // with it, and that the redaction rule then had to be restated inside.
+        // Returning the DTO means `redacted_for_token` is the single place
+        // deciding what a share visitor may see, here as everywhere else.
+        //
+        // Widening is safe: every field the literal carried is still present,
+        // so this is additive on the wire. It also gives the public-share page
+        // a real `FileItem` for a single-file share, which is what lets that
+        // page reuse `FileViewer` instead of hand-rolling a download card.
         if params
             .get("metadata")
             .is_some_and(|v| v == "true" || v == "1")
         {
-            return (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "id": file_dto.id,
-                    "name": file_dto.name,
-                    "path": file_dto.path,
-                    "size": file_dto.size,
-                    "mime_type": file_dto.mime_type,
-                    "folder_id": file_dto.folder_id,
-                    "created_at": file_dto.created_at,
-                    "modified_at": file_dto.modified_at
-                })),
+            let mut dto = if authorized_as.token_id().is_some() {
+                file_dto.redacted_for_token()
+            } else {
+                file_dto
+            };
+            // `From<File>` hard-codes `is_favorite`/`is_shared` to false and
+            // documents that any caller emitting the DTO must override them.
+            // Widening this response from a hand-built literal to the whole
+            // DTO brought those fields onto the wire, so the obligation came
+            // with them — without this a signed-in owner reads
+            // `is_shared: false` on a file that IS shared.
+            //
+            // For a token caller the helper no-ops by design (see its doc),
+            // so a visitor still gets `false` for both — which is the honest
+            // answer, not a redaction.
+            crate::interfaces::api::handlers::caller_flags::enrich_file_flags(
+                &state,
+                &mut dto,
+                authorized_as,
             )
-                .into_response();
+            .await;
+            return (StatusCode::OK, Json(dto)).into_response();
         }
 
         // Route through `FileDto::etag` so this REST download
@@ -1216,7 +1265,7 @@ impl FileHandler {
         crate::interfaces::api::handlers::caller_flags::enrich_file_flags(
             &state,
             &mut file,
-            auth_user.id,
+            Subject::User(auth_user.id),
         )
         .await;
         Self::created_json_response(&file).into_response()
@@ -1231,14 +1280,20 @@ impl FileHandler {
     /// Used by the Photos lightbox and for testing EXIF extraction.
     pub(super) async fn get_file_metadata_impl(
         State(state): State<GlobalState>,
-        auth_user: AuthUser,
+        callers: CallerSubjects,
         Path(file_id): Path<String>,
     ) -> impl IntoResponse {
-        // check first that user can access this resource
+        // Authorize against every credential the caller holds — the Photos
+        // lightbox is one of the components a share visitor reuses.
+        //
+        // No disclosure fix needed here, unlike the sibling routes: the rows
+        // this returns are EXIF (capture time, GPS, camera, dimensions), which
+        // are carried in the image bytes the visitor may already download.
+        // Nothing here names the owner or their tree.
         if let Err(err) = state
             .applications
             .file_management_service
-            .require_permission(auth_user.id, Permission::Read, &file_id)
+            .require_permission(&callers.0, Permission::Read, &file_id)
             .await
         {
             return AppError::from(err).into_response();
@@ -1354,7 +1409,7 @@ impl FileHandler {
                 crate::interfaces::api::handlers::caller_flags::enrich_file_flags(
                     &state,
                     &mut file,
-                    auth_user.id,
+                    Subject::User(auth_user.id),
                 )
                 .await;
                 (StatusCode::OK, Json(file)).into_response()
@@ -1632,7 +1687,7 @@ pub async fn create_file_by_hash(
 )]
 pub async fn download_file(
     state: State<GlobalState>,
-    auth_user: AuthUser,
+    callers: CallerSubjects,
     path: Path<String>,
     query: Query<HashMap<String, String>>,
     req: axum::extract::Request,
@@ -1640,7 +1695,7 @@ pub async fn download_file(
     // Borrow the headers (`req.headers()`) instead of the `HeaderMap` extractor's
     // full clone — every download AND every media Range seek hit this path
     // (benches/ROUND22.md §H1).
-    FileHandler::download_file_impl(state, auth_user, path, query, req.headers()).await
+    FileHandler::download_file_impl(state, callers, path, query, req.headers()).await
 }
 
 #[utoipa::path(
@@ -1661,14 +1716,14 @@ pub async fn download_file(
 )]
 pub async fn get_thumbnail(
     state: State<GlobalState>,
-    auth_user: AuthUser,
+    callers: CallerSubjects,
     path: Path<(String, String)>,
     req: axum::extract::Request,
 ) -> impl IntoResponse {
     // Borrow the headers (`req.headers()`) instead of the `HeaderMap` extractor's
     // full clone — thumbnails are the highest-frequency GET (one per grid tile),
     // and this handler reads only Accept + If-None-Match (benches/ROUND22.md §H1).
-    FileHandler::get_thumbnail_impl(state, auth_user, req.headers(), path).await
+    FileHandler::get_thumbnail_impl(state, callers, req.headers(), path).await
 }
 
 #[utoipa::path(
@@ -1709,10 +1764,10 @@ pub async fn upload_thumbnail(
 )]
 pub async fn get_file_metadata(
     state: State<GlobalState>,
-    auth_user: AuthUser,
+    callers: CallerSubjects,
     path: Path<String>,
 ) -> impl IntoResponse {
-    FileHandler::get_file_metadata_impl(state, auth_user, path).await
+    FileHandler::get_file_metadata_impl(state, callers, path).await
 }
 
 #[utoipa::path(

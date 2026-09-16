@@ -26,9 +26,23 @@
 		index: number;
 		/** Called after a successful delete so the parent can drop it from `items`. */
 		onDelete?: (id: string) => void;
+		/**
+		 * Hide every affordance that mutates. Set by the public-share page,
+		 * whose viewer holds a link rather than an account.
+		 *
+		 * Favorite and delete are the two that need it: unlike `ResourceList`,
+		 * where each mutating affordance is opt-in via its own callback, these
+		 * two are rendered unconditionally and call the API directly. A share
+		 * visitor would see both and get a 403 from each — an affordance that
+		 * can only fail is worse than no affordance.
+		 *
+		 * Download and full-resolution stay: a visitor is entitled to both,
+		 * and `expandFullRes` is exactly what issue #721 is about.
+		 */
+		readOnly?: boolean;
 	}
 
-	let { items, index = $bindable(), onDelete }: Props = $props();
+	let { items, index = $bindable(), onDelete, readOnly = false }: Props = $props();
 
 	let showingOriginal = $state(false);
 	let fullResBusy = $state(false);
@@ -248,15 +262,17 @@
 			<button class="lb__tool" title={t('common.download', 'Download')} onclick={download}>
 				<Icon name="download" />
 			</button>
-			<button
-				class="lb__tool"
-				class:active={favorited}
-				title={t('common.favorite', 'Favorite')}
-				onclick={toggleFavorite}><Icon name={favorited ? 'star' : 'star-outline'} /></button
-			>
-			<button class="lb__tool" title={t('common.delete', 'Delete')} onclick={remove}>
-				<Icon name="trash" />
-			</button>
+			{#if !readOnly}
+				<button
+					class="lb__tool"
+					class:active={favorited}
+					title={t('common.favorite', 'Favorite')}
+					onclick={toggleFavorite}><Icon name={favorited ? 'star' : 'star-outline'} /></button
+				>
+				<button class="lb__tool" title={t('common.delete', 'Delete')} onclick={remove}>
+					<Icon name="trash" />
+				</button>
+			{/if}
 		</div>
 
 		<div class="lb__counter">{index + 1} / {items.length}</div>

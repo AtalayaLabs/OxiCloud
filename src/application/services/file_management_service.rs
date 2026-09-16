@@ -431,13 +431,13 @@ impl FileManagementService {
 impl FileManagementUseCase for FileManagementService {
     async fn require_permission(
         &self,
-        caller_id: Uuid,
+        callers: &[Subject],
         permission: Permission,
         file_id: &str,
-    ) -> Result<(), DomainError> {
+    ) -> Result<Subject, DomainError> {
         let uuid = Uuid::parse_str(file_id).map_err(|_| DomainError::not_found("File", file_id))?;
         self.authz
-            .require(Subject::User(caller_id), permission, Resource::File(uuid))
+            .require_any(callers, permission, Resource::File(uuid))
             .await
     }
 

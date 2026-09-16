@@ -302,27 +302,4 @@ pub trait FolderRepository: Send + Sync + 'static {
         matched.truncate(limit);
         Ok(matched)
     }
-
-    /// `true` if `candidate_folder_id` is `root_folder_id` itself or any
-    /// (transitive) descendant. Default impl fails closed so stubs deny
-    /// access by default.
-    async fn is_folder_in_subtree(
-        &self,
-        candidate_folder_id: &str,
-        root_folder_id: &str,
-    ) -> Result<bool, DomainError> {
-        let _ = (candidate_folder_id, root_folder_id);
-        Ok(false)
-    }
-
-    /// `true` if `file_id`'s parent folder lies within the subtree rooted
-    /// at `root_folder_id`.
-    async fn is_file_in_subtree(
-        &self,
-        file_id: &str,
-        root_folder_id: &str,
-    ) -> Result<bool, DomainError> {
-        let _ = (file_id, root_folder_id);
-        Ok(false)
-    }
 }

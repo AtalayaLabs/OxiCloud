@@ -31,7 +31,6 @@ pub mod places_service;
 pub mod recent_service;
 pub mod recipient_notification_service;
 pub mod search_service;
-pub mod share_browse_service;
 pub mod share_service;
 pub mod storage_settings_service;
 pub mod storage_usage_service;

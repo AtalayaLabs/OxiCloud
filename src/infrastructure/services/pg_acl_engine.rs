@@ -2859,6 +2859,18 @@ impl AuthorizationEngine for PgAclEngine {
         .map_err(|e| {
             DomainError::internal_error("PgAcl", format!("set_expiry_for_subject: {e}"))
         })?;
+
+        // Same immediacy contract as `set_role` / `clear_role`: this is a
+        // DIRECT grant mutation, so it must take effect on the next check
+        // rather than riding the 30 s TTL reserved for indirect changes.
+        //
+        // It matters most in the direction that tightens: shortening a public
+        // share's expiry to a past instant IS a revocation, and the owner
+        // doing it has every reason to expect the link to stop working now.
+        // The subject is not necessarily a File/Folder grant holder, so flush
+        // unconditionally — the query above is subject-wide and we do not
+        // know which resources it touched.
+        self.invalidate_cascade_grant_cache_all().await;
         Ok(())
     }
 
