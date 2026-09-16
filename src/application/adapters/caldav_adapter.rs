@@ -224,6 +224,26 @@ pub enum CalDavReportType {
 /// CalDAV adapter for converting between XML and domain objects
 pub struct CalDavAdapter;
 
+/// Element for an echoed client property. Known namespaces use the
+/// prefixes declared on the multistatus root; any other namespace gets a
+/// local `xmlns:U` declaration. The old fallback glued the namespace URI
+/// into the ELEMENT NAME (`<http://inf-it.com/ns/dav/:settings/>`), which
+/// is invalid XML and made strict clients (InfCloud/CalDavZAP) fail the
+/// whole PROPFIND parse.
+fn caldav_prop_el(namespace: &str, name: &str) -> BytesStart<'static> {
+    let (qname, xmlns) = match namespace {
+        "DAV:" => (format!("D:{name}"), None),
+        "urn:ietf:params:xml:ns:caldav" => (format!("C:{name}"), None),
+        "http://calendarserver.org/ns/" => (format!("CS:{name}"), None),
+        other => (format!("U:{name}"), Some(other)),
+    };
+    let mut el = BytesStart::new(qname);
+    if let Some(ns) = xmlns {
+        el.push_attribute(("xmlns:U", ns));
+    }
+    el
+}
+
 impl CalDavAdapter {
     /// Parse a REPORT XML request for CalDAV
     pub fn parse_report<R: Read>(reader: R) -> Result<CalDavReportType> {
@@ -609,16 +629,8 @@ impl CalDavAdapter {
                 }
                 _ => {
                     // Unknown property — write empty
-                    let prop_name = if prop.namespace == "http://calendarserver.org/ns/" {
-                        format!("CS:{}", prop.name)
-                    } else if prop.namespace == "urn:ietf:params:xml:ns:caldav" {
-                        format!("C:{}", prop.name)
-                    } else if prop.namespace == "DAV:" {
-                        format!("D:{}", prop.name)
-                    } else {
-                        format!("{}:{}", prop.namespace, prop.name)
-                    };
-                    xml_writer.write_event(Event::Empty(BytesStart::new(&prop_name)))?;
+                    xml_writer
+                        .write_event(Event::Empty(caldav_prop_el(&prop.namespace, &prop.name)))?;
                 }
             }
         }
@@ -716,16 +728,8 @@ impl CalDavAdapter {
                         .write_event(Event::End(BytesEnd::new("C:calendar-user-address-set")))?;
                 }
                 _ => {
-                    let prop_name = if prop.namespace == "http://calendarserver.org/ns/" {
-                        format!("CS:{}", prop.name)
-                    } else if prop.namespace == "urn:ietf:params:xml:ns:caldav" {
-                        format!("C:{}", prop.name)
-                    } else if prop.namespace == "DAV:" {
-                        format!("D:{}", prop.name)
-                    } else {
-                        format!("{}:{}", prop.namespace, prop.name)
-                    };
-                    xml_writer.write_event(Event::Empty(BytesStart::new(&prop_name)))?;
+                    xml_writer
+                        .write_event(Event::Empty(caldav_prop_el(&prop.namespace, &prop.name)))?;
                 }
             }
         }
@@ -1018,32 +1022,17 @@ impl CalDavAdapter {
                 _ => {
                     // Check if it's a custom property
                     if let Some(value) = calendar.custom_properties.get(&prop.name) {
-                        let prop_name = if prop.namespace == "http://calendarserver.org/ns/" {
-                            format!("CS:{}", prop.name)
-                        } else if prop.namespace == "urn:ietf:params:xml:ns:caldav" {
-                            format!("C:{}", prop.name)
-                        } else if prop.namespace == "DAV:" {
-                            format!("D:{}", prop.name)
-                        } else {
-                            format!("{}:{}", prop.namespace, prop.name)
-                        };
-
-                        xml_writer.write_event(Event::Start(BytesStart::new(&prop_name)))?;
+                        let prop_el = caldav_prop_el(&prop.namespace, &prop.name);
+                        let prop_end = prop_el.to_end().into_owned();
+                        xml_writer.write_event(Event::Start(prop_el))?;
                         xml_writer.write_event(Event::Text(BytesText::new(value)))?;
-                        xml_writer.write_event(Event::End(BytesEnd::new(&prop_name)))?;
+                        xml_writer.write_event(Event::End(prop_end))?;
                     } else {
                         // Property not found, write empty element
-                        let prop_name = if prop.namespace == "http://calendarserver.org/ns/" {
-                            format!("CS:{}", prop.name)
-                        } else if prop.namespace == "urn:ietf:params:xml:ns:caldav" {
-                            format!("C:{}", prop.name)
-                        } else if prop.namespace == "DAV:" {
-                            format!("D:{}", prop.name)
-                        } else {
-                            format!("{}:{}", prop.namespace, prop.name)
-                        };
-
-                        xml_writer.write_event(Event::Empty(BytesStart::new(&prop_name)))?;
+                        xml_writer.write_event(Event::Empty(caldav_prop_el(
+                            &prop.namespace,
+                            &prop.name,
+                        )))?;
                     }
                 }
             }
@@ -1415,17 +1404,8 @@ impl CalDavAdapter {
                 // Property not supported
                 _ => {
                     // Write empty element
-                    let prop_name = if prop.namespace == "http://calendarserver.org/ns/" {
-                        format!("CS:{}", prop.name)
-                    } else if prop.namespace == "urn:ietf:params:xml:ns:caldav" {
-                        format!("C:{}", prop.name)
-                    } else if prop.namespace == "DAV:" {
-                        format!("D:{}", prop.name)
-                    } else {
-                        format!("{}:{}", prop.namespace, prop.name)
-                    };
-
-                    xml_writer.write_event(Event::Empty(BytesStart::new(&prop_name)))?;
+                    xml_writer
+                        .write_event(Event::Empty(caldav_prop_el(&prop.namespace, &prop.name)))?;
                 }
             }
         }
@@ -1854,5 +1834,45 @@ mod time_range_parser_tests {
             }
             other => panic!("Expected CalendarQuery, got {:?}", other),
         }
+    }
+}
+
+#[cfg(test)]
+mod prop_el_tests {
+    use super::caldav_prop_el;
+
+    /// Known namespaces map to the prefixes declared on the multistatus
+    /// root — no inline declaration needed.
+    #[test]
+    fn known_namespaces_use_root_prefixes() {
+        for (ns, name, expected) in [
+            ("DAV:", "displayname", "D:displayname"),
+            (
+                "urn:ietf:params:xml:ns:caldav",
+                "calendar-home-set",
+                "C:calendar-home-set",
+            ),
+            ("http://calendarserver.org/ns/", "getctag", "CS:getctag"),
+        ] {
+            let el = caldav_prop_el(ns, name);
+            assert_eq!(el.name().as_ref(), expected.as_bytes());
+            assert!(el.try_get_attribute("xmlns:U").unwrap().is_none());
+        }
+    }
+
+    /// A foreign namespace must yield a legal XML name plus an inline
+    /// namespace declaration. The old code glued the URI into the element
+    /// name (`<http://inf-it.com/ns/dav/:settings/>`), which is invalid
+    /// XML and made strict clients (InfCloud/CalDavZAP) abort the whole
+    /// PROPFIND parse.
+    #[test]
+    fn foreign_namespace_gets_inline_declaration() {
+        let el = caldav_prop_el("http://inf-it.com/ns/dav/", "settings");
+        assert_eq!(el.name().as_ref(), b"U:settings");
+        let attr = el
+            .try_get_attribute("xmlns:U")
+            .unwrap()
+            .expect("xmlns:U declared");
+        assert_eq!(attr.value.as_ref(), b"http://inf-it.com/ns/dav/");
     }
 }
