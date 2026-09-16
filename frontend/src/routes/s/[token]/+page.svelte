@@ -525,6 +525,23 @@
 		border-bottom: none;
 	}
 
+	/*
+	 * `.app-name` is coloured `--color-sidebar-text-active`, which is legible
+	 * only against the sidebar's gradient — on the page background it was
+	 * white-on-white in light mode. Dark mode happened to look right, which is
+	 * what made it easy to miss.
+	 *
+	 * Recoloured rather than given the sidebar's background: this page has no
+	 * sidebar, so the mark should sit on the page like everything else around
+	 * it. `--color-text` is the same token the `<h1>` beside it uses, so the
+	 * two read as one heading instead of a transplanted widget.
+	 */
+	.share__heading :global(.app-name),
+	.share__center :global(.app-name),
+	.share__gate :global(.app-name) {
+		color: var(--color-text);
+	}
+
 	/* Owns the centring the form used to do, so the mark and the form move
 	   as one block. */
 	.share__gate {
