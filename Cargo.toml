@@ -179,7 +179,7 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 pdf-extract = "0.12.0"
 nom-exif = "3.6.1"
 extism = { version = "1.30.0", optional = true }
-toml = { version = "1.1.2", optional = true }
+toml = "1.1.2"
 file-rotate = { version = "0.7.6", optional = true }
 ort = { version = "2.0.0-rc.12", default-features = false, features = ["load-dynamic", "ndarray", "tracing", "api-24"], optional = true }
 ndarray = { version = "0.17.2", optional = true }
@@ -199,7 +199,7 @@ test_utils = ["mockall", "dep:tokio-tungstenite"]
 integration_tests = []
 # WASM plugin runtime (Extism). Opt-in: bundles wasmtime, a large engine most
 # deployments won't use. Activation also requires OXICLOUD_ENABLE_PLUGINS=true.
-plugins = ["dep:extism", "dep:toml", "dep:file-rotate"]
+plugins = ["dep:extism", "dep:file-rotate"]
 # Empty marker feature that gates the `load-seed` binary so it isn't built
 # by default (and skipped in prod Docker builds). Kept separate from
 # test_utils so enabling it doesn't change the oxicloud dependency graph —

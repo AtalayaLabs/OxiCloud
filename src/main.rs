@@ -148,16 +148,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // keeps their config in `.env` (i.e. every self-host on a
         // homelab, per the standard project layout).
         //
-        // Non-overriding `dotenv()` — a live shell export still wins,
-        // matching the server path's default-branch behaviour at
-        // line ~219 below. `--config <path>` (line ~177+ below) is
-        // NOT yet supported for subcommands — that would require
-        // hoisting the `--config` parse above this dispatch and is
-        // tracked as follow-up work. Operators needing pinned config
-        // for a subcommand today: `env $(cat prod.env | xargs)
-        // oxicloud migrate nfc-filenames`, or run under a systemd
-        // EnvironmentFile= directive.
-        dotenvy::dotenv().ok();
+        // A live shell export still wins over either source, as on the
+        // server path. `--config <path>` is not available here — the flag
+        // is parsed after this dispatch — so a subcommand takes its pinned
+        // config from `OXICLOUD_CONFIG`, which needs no argv parsing.
+        match std::env::var("OXICLOUD_CONFIG")
+            .ok()
+            .filter(|p| !p.is_empty())
+        {
+            Some(path) => {
+                if let Err(e) = load_config_file(&path) {
+                    eprintln!("failed to load config {path}: {e}");
+                    std::process::exit(2);
+                }
+            }
+            None => {
+                dotenvy::dotenv().ok();
+            }
+        }
 
         // `oxicloud::cli::run()` returns a plain `u8` exit-code, which
         // widens exactly into `i32` for `std::process::exit`. Values are
@@ -211,24 +219,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // `OXICLOUD_CONFIG` is the flag's environment equivalent — systemd units
+    // and container images set variables far more easily than argv.
+    let config_path = config_path.or_else(|| {
+        std::env::var("OXICLOUD_CONFIG")
+            .ok()
+            .filter(|p| !p.is_empty())
+    });
+
     match config_path {
         Some(ref path) => {
             // Explicit file → hard error on a missing/unreadable path.
             // Silent fallback would defeat the purpose of pinning the
             // config source.
-            //
-            // `from_filename_override` (not `from_filename`) so the
-            // config file wins over the shell's process env. Without
-            // this, an operator's leftover `export OXICLOUD_*` from a
-            // dev session leaks into a `--config` invocation and
-            // silently corrupts test/CI runs — a rejected shell var
-            // stays in effect despite the "explicit config" contract.
-            // For the default (no `--config`) path we KEEP the
-            // non-overriding `dotenvy::dotenv()` — that path is dev
-            // convenience where a live shell export is the expected
-            // ad-hoc override.
-            if let Err(e) = dotenvy::from_filename_override(path) {
-                eprintln!("failed to load --config {path}: {e}");
+            if let Err(e) = load_config_file(path) {
+                eprintln!("failed to load config {path}: {e}");
                 std::process::exit(2);
             }
         }
@@ -249,6 +254,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = build_runtime(&config.runtime)?;
 
     runtime.block_on(run(config))
+}
+
+/// Load a pinned config file: TOML by extension, otherwise a `.env`.
+///
+/// Neither overrides the surrounding environment — defaults < file <
+/// environment, the order operators expect from a mounted config file plus
+/// `-e` overrides. This is a change for `--config <file>.env`, which used to
+/// win over the process environment; the default `./.env` probe already
+/// yielded to it.
+fn load_config_file(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let path = std::path::Path::new(path);
+    if common::config_file::is_toml_path(path) {
+        let applied = common::config_file::apply(path)?;
+        // Too early for tracing — the subscriber is installed a few lines
+        // later, once the config it might configure has been read.
+        eprintln!(
+            "loaded {} settings from {}{}",
+            applied.set,
+            path.display(),
+            match applied.overridden {
+                0 => String::new(),
+                n => format!(" ({n} overridden by the environment)"),
+            }
+        );
+    } else {
+        dotenvy::from_filename(path)?;
+    }
+    Ok(())
 }
 
 /// Print the `--help` output. Kept as a fn (not an inline string) so
@@ -274,6 +307,9 @@ fn print_help() {
     println!("USAGE:");
     println!("  oxicloud [--config <path>]              Boot the server. This is the normal");
     println!("                                          invocation for a docker/systemd unit.");
+    println!("                                          <path> is a TOML config file (.toml) or");
+    println!("                                          a .env file; OXICLOUD_CONFIG=<path> does");
+    println!("                                          the same and is honoured by subcommands.");
     println!();
     println!("  oxicloud <subcommand> [args...]         Operator toolbox — one-shot tools that");
     println!("                                          exit after completing (see SUBCOMMANDS).");

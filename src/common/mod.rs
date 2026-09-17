@@ -1,4 +1,5 @@
 pub mod config;
+pub mod config_file;
 pub mod di;
 pub mod errors;
 pub mod fmt;
