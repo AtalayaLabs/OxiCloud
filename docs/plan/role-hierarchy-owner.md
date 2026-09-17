@@ -2,8 +2,9 @@
 
 Issue: [AtalayaLabs/OxiCloud#690](https://github.com/AtalayaLabs/OxiCloud/issues/690)
 
-**Status: IMPLEMENTED** on `feat/admin-vs-owner`. Unit, integration,
-Hurl API and frontend suites all green.
+**Status: IMPLEMENTED** on `feat/admin-vs-owner`. Every suite green:
+unit (977), integration (1037), Hurl API, frontend (438), Playwright
+(105).
 
 What landed, in order: Step 0 (14 fail-open role parsers converted to
 `from_stored`, the 3 external-identity guards restated as "not a plain
