@@ -23,6 +23,31 @@ pub struct DbPools {
     pub maintenance: PgPool,
 }
 
+/// Connection string with the password replaced by `redacted` for
+/// logging. The username stays visible — it is not a secret, and
+/// telling apart "wrong user" from "wrong password" is exactly what
+/// this log line is for; the marker still shows a password WAS set.
+///
+/// Parsed with the same `url` crate sqlx uses for `PgConnectOptions`,
+/// so every accepted connection string round-trips here; anything the
+/// parser rejects (e.g. a raw `/` in the password — libpq requires
+/// %2F) is replaced wholesale, never echoed.
+/// The previous version only PREPENDED a `[user]:[pass]@` marker after
+/// the scheme, leaving the real credentials in the log line.
+fn redact_db_url(raw: &str) -> String {
+    match url::Url::parse(raw) {
+        Ok(mut parsed) => {
+            if parsed.password().is_some() {
+                // Cannot fail: a password was parsed, so the URL has an
+                // authority.
+                let _ = parsed.set_password(Some("redacted"));
+            }
+            parsed.to_string()
+        }
+        Err(_) => "[unparseable database URL]".to_string(),
+    }
+}
+
 /// Create both the primary and maintenance database pools.
 ///
 /// Pending migrations are applied via the primary pool on startup.
@@ -31,10 +56,7 @@ pub struct DbPools {
 pub async fn create_database_pools(config: &AppConfig) -> Result<DbPools> {
     tracing::info!(
         "Initializing PostgreSQL connections with URL: {}",
-        config
-            .database
-            .connection_string
-            .replace("postgres://", "postgres://[user]:[pass]@")
+        redact_db_url(&config.database.connection_string)
     );
 
     // --- primary pool ---
@@ -282,4 +304,62 @@ fn format_error_chain(prefix: &str, e: &(dyn std::error::Error + 'static)) -> St
         cur = c.source();
     }
     out
+}
+
+#[cfg(test)]
+mod redact_tests {
+    use super::redact_db_url;
+
+    #[test]
+    fn password_is_replaced_username_stays() {
+        assert_eq!(
+            redact_db_url("postgres://oxicloud:s3cr3t@127.0.0.1:5435/oxicloud"),
+            "postgres://oxicloud:redacted@127.0.0.1:5435/oxicloud"
+        );
+    }
+
+    #[test]
+    fn username_without_password_is_unchanged() {
+        assert_eq!(
+            redact_db_url("postgres://oxicloud@127.0.0.1/db"),
+            "postgres://oxicloud@127.0.0.1/db"
+        );
+    }
+
+    #[test]
+    fn percent_encoded_password_is_replaced() {
+        assert_eq!(
+            redact_db_url("postgres://u:p%2Fa%40ss@host/db"),
+            "postgres://u:redacted@host/db"
+        );
+    }
+
+    #[test]
+    fn url_without_credentials_is_unchanged() {
+        assert_eq!(
+            redact_db_url("postgres://127.0.0.1:5435/oxicloud"),
+            "postgres://127.0.0.1:5435/oxicloud"
+        );
+    }
+
+    #[test]
+    fn at_sign_in_query_does_not_confuse_redaction() {
+        assert_eq!(
+            redact_db_url("postgres://host/db?options=-c%20app=a@b"),
+            "postgres://host/db?options=-c%20app=a@b"
+        );
+    }
+
+    /// A raw `/` in the password is not a valid URI (libpq's connection
+    /// URI spec requires %2F) and the parser — the same one sqlx uses —
+    /// rejects it. A log redactor must NEVER echo input it could not
+    /// parse, or the very string it failed on leaks.
+    #[test]
+    fn unparseable_input_never_echoes_the_value() {
+        assert_eq!(
+            redact_db_url("postgres://u:pa/ss@host/db"),
+            "[unparseable database URL]"
+        );
+        assert_eq!(redact_db_url("not a url"), "[unparseable database URL]");
+    }
 }
