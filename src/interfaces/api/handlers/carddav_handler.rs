@@ -72,7 +72,10 @@ pub fn well_known_routes() -> Router<Arc<AppState>> {
 async fn handle_well_known_carddav() -> Response<Body> {
     Response::builder()
         .status(StatusCode::MOVED_PERMANENTLY)
-        .header(header::LOCATION, "/carddav/")
+        .header(
+            header::LOCATION,
+            format!("{}/carddav/", crate::common::config::server_base_path()),
+        )
         .body(Body::empty())
         .unwrap()
 }
@@ -419,7 +422,7 @@ async fn handle_propfind(
             &mut response_body,
             &address_books,
             &propfind_request,
-            "/carddav/",
+            &format!("{}/carddav/", crate::common::config::server_base_path()),
             &user.username,
         )
         .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
@@ -465,7 +468,11 @@ async fn handle_propfind(
             .map_err(AppError::from)?;
 
         let user_part = path.split('/').next().unwrap_or(path);
-        let base_href = format!("/carddav/{}/", user_part);
+        let base_href = format!(
+            "{}/carddav/{}/",
+            crate::common::config::server_base_path(),
+            user_part
+        );
         let mut response_body = Vec::new();
         CardDavAdapter::generate_addressbooks_propfind_response(
             &mut response_body,
@@ -494,7 +501,11 @@ async fn handle_propfind(
             // Depth-1 streams the contact listing page by page; depth-0
             // has no contact section and keeps the tiny buffered path.
             if depth != "0" {
-                let base_href = format!("/carddav/{}/", address_book_id);
+                let base_href = format!(
+                    "{}/carddav/{}/",
+                    crate::common::config::server_base_path(),
+                    address_book_id
+                );
                 return Ok(build_streaming_book_propfind(
                     contact_svc.clone(),
                     address_book,
@@ -505,7 +516,11 @@ async fn handle_propfind(
                 ));
             }
 
-            let base_href = &format!("/carddav/{}/", address_book_id);
+            let base_href = &format!(
+                "{}/carddav/{}/",
+                crate::common::config::server_base_path(),
+                address_book_id
+            );
             let mut response_body = Vec::new();
 
             CardDavAdapter::generate_addressbook_collection_propfind(
@@ -537,7 +552,11 @@ async fn handle_propfind(
                 })?;
 
             // Build single-resource PROPFIND response
-            let base_href = &format!("/carddav/{}/", address_book_id);
+            let base_href = &format!(
+                "{}/carddav/{}/",
+                crate::common::config::server_base_path(),
+                address_book_id
+            );
             let report = CardDavReportType::AddressbookMultiget {
                 hrefs: vec![format!("{}{}.vcf", base_href, contact_uid)],
                 props: vec![],
@@ -590,7 +609,11 @@ async fn handle_report(
         &report,
         CardDavReportType::AddressbookQuery { .. } | CardDavReportType::SyncCollection { .. }
     ) {
-        let base_href = format!("/carddav/{}/", address_book_id);
+        let base_href = format!(
+            "{}/carddav/{}/",
+            crate::common::config::server_base_path(),
+            address_book_id
+        );
         return Ok(build_streaming_contacts_report(
             contact_svc.clone(),
             address_book_id.to_string(),
@@ -623,7 +646,11 @@ async fn handle_report(
         }
     };
 
-    let base_href = &format!("/carddav/{}/", address_book_id);
+    let base_href = &format!(
+        "{}/carddav/{}/",
+        crate::common::config::server_base_path(),
+        address_book_id
+    );
     let mut response_body = Vec::new();
     CardDavAdapter::generate_contacts_response(&mut response_body, &contacts, &report, base_href)
         .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
@@ -950,7 +977,11 @@ async fn handle_proppatch(
         }
     }
 
-    let href = format!("/carddav/{}", path);
+    let href = format!(
+        "{}/carddav/{}",
+        crate::common::config::server_base_path(),
+        path
+    );
     let mut response_body = Vec::new();
     crate::application::adapters::webdav_adapter::WebDavAdapter::generate_proppatch_response(
         &mut response_body,

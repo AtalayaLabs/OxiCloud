@@ -2,7 +2,7 @@ use crate::common::config::AppConfig;
 use crate::common::di::AppState;
 use axum::Router;
 use axum::extract::{Request, State};
-use axum::http::header::{CACHE_CONTROL, HeaderValue};
+use axum::http::header::{CACHE_CONTROL, HeaderName, HeaderValue};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get_service;
@@ -17,6 +17,9 @@ use tower_http::set_header::SetResponseHeaderLayer;
 
 #[cfg(feature = "bundled-assets")]
 pub mod embedded;
+mod shell;
+
+pub use shell::AppShell;
 
 /// Where the SPA + immutable assets are served from — filesystem
 /// (default and also the fallback on bundled builds when
@@ -126,7 +129,11 @@ pub fn resolve_static_path(config: &AppConfig) -> PathBuf {
 /// Caching: content-hashed assets under `/_app/immutable` are cached forever;
 /// everything else — crucially the `index.html` shell — is `no-cache` so a deploy
 /// can't leave a stale app pinned in browsers.
-pub fn create_web_routes(app_state: Arc<AppState>, source: StaticSource) -> Router<Arc<AppState>> {
+pub fn create_web_routes(
+    app_state: Arc<AppState>,
+    source: StaticSource,
+    shell: Option<Arc<AppShell>>,
+) -> Router<Arc<AppState>> {
     // `source` is resolved ONCE at boot in `main.rs::run()` and passed
     // in — see the sequence there. Previously this fn called
     // `AppConfig::from_env()` + `resolve_static_source(&config)` itself
@@ -140,9 +147,9 @@ pub fn create_web_routes(app_state: Arc<AppState>, source: StaticSource) -> Rout
     // layers common means the filesystem and embedded paths behave
     // identically at the wire boundary.
     let inner = match source {
-        StaticSource::Filesystem(static_path) => web_routes_filesystem(&static_path),
+        StaticSource::Filesystem(static_path) => web_routes_filesystem(&static_path, shell),
         #[cfg(feature = "bundled-assets")]
-        StaticSource::Embedded => web_routes_embedded(),
+        StaticSource::Embedded => web_routes_embedded(shell),
     };
 
     inner
@@ -172,15 +179,50 @@ pub fn create_web_routes(app_state: Arc<AppState>, source: StaticSource) -> Rout
         // The SPA carries the same predicate as belt-and-suspenders for
         // deep links / browser-cache hits that skip this hop.
         .layer(axum::middleware::from_fn_with_state(
-            app_state,
+            app_state.clone(),
             oidc_standalone_login_redirect,
         ))
+        // Authorize the DPoP service worker's widened scope on subpath
+        // deployments. The SPA's home URL is the BARE base path
+        // (`/oxicloud`, no trailing slash), which falls outside the
+        // default scope derived from the script URL (`/oxicloud/`) — an
+        // out-of-scope document never matches the registration and
+        // `navigator.serviceWorker.ready` never settles, hanging the
+        // boot splash. The SPA registers with `scope: base`; per the
+        // Service Worker spec that widening requires this header on the
+        // script response. Not sent at the root (scope is '/' there).
+        .layer(axum::middleware::from_fn_with_state(
+            app_state,
+            service_worker_allowed_header,
+        ))
+}
+
+/// Stamp `Service-Worker-Allowed: {base_path}` on the service-worker
+/// script response — see the layer comment in [`create_web_routes`].
+async fn service_worker_allowed_header(
+    State(state): State<Arc<AppState>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let is_sw_script = req.uri().path() == "/service-worker.js";
+    let mut res = next.run(req).await;
+    if is_sw_script
+        && !state.core.config.base_path.is_empty()
+        && let Ok(value) = HeaderValue::from_str(&state.core.config.base_path)
+    {
+        res.headers_mut()
+            .insert(HeaderName::from_static("service-worker-allowed"), value);
+    }
+    res
 }
 
 /// Filesystem-served SPA — the historical shape. Two `ServeDir` instances
 /// with tower-http's `precompressed_br().precompressed_gzip()` picking up
 /// Vite's precompressed siblings when present.
-fn web_routes_filesystem(static_path: &Path) -> Router<Arc<AppState>> {
+fn web_routes_filesystem(
+    static_path: &Path,
+    shell: Option<Arc<AppShell>>,
+) -> Router<Arc<AppState>> {
     // SPA fallback: serve the file if it exists, else the app shell.
     //
     // `precompressed_*`: if the frontend build emitted a sibling `.br`/`.gz`
@@ -190,33 +232,75 @@ fn web_routes_filesystem(static_path: &Path) -> Router<Arc<AppState>> {
     // `CompressionLayer` in `create_web_routes` then skips the already-encoded
     // response and remains only the fallback for assets without a
     // precompressed sibling (benches/STATIC-PRECOMPRESSED.md).
-    let spa = ServeDir::new(static_path)
-        .precompressed_br()
-        .precompressed_gzip()
-        .fallback(ServeFile::new(static_path.join("index.html")));
+    // The shell is served from memory (base path injected at boot), so the
+    // on-disk `index.html` is never sent as-is — not for `/`, not for
+    // `/index.html`, not for a deep client route.
+    let spa = spa_service(static_path, shell.clone());
 
     // Hashed, immutable assets (SvelteKit emits these under /_app/immutable).
     let app_immutable = ServeDir::new(static_path.join("_app").join("immutable"))
         .precompressed_br()
         .precompressed_gzip();
 
-    Router::new()
-        .nest_service(
-            "/_app/immutable",
-            get_service(app_immutable).layer(SetResponseHeaderLayer::overriding(
-                CACHE_CONTROL,
-                HeaderValue::from_static("public, max-age=31536000, immutable"),
-            )),
-        )
-        .fallback_service(spa)
+    let mut router = Router::new().nest_service(
+        "/_app/immutable",
+        get_service(app_immutable).layer(SetResponseHeaderLayer::overriding(
+            CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=31536000, immutable"),
+        )),
+    );
+    if let Some(shell) = shell {
+        router = router.route_service("/index.html", shell_service(shell));
+    }
+    router.fallback_service(spa)
+}
+
+/// `ServeDir` for the built frontend, answering unmatched paths with the shell.
+///
+/// `fallback`, not `not_found_service`: the latter forces the response status
+/// to 404, and a client route like `/files/<id>` is a page, not a miss.
+fn spa_service(
+    static_path: &Path,
+    shell: Option<Arc<AppShell>>,
+) -> ServeDir<axum::routing::MethodRouter<()>> {
+    let fallback = match shell {
+        Some(shell) => shell_service(shell),
+        None => axum::routing::any_service(ServeFile::new(static_path.join("index.html"))),
+    };
+    ServeDir::new(static_path)
+        .precompressed_br()
+        .precompressed_gzip()
+        // `/` is the shell too — never the raw index.html from disk.
+        .append_index_html_on_directories(false)
+        .fallback(fallback)
+}
+
+/// Serve the prepared shell, whatever the method or path.
+fn shell_service(shell: Arc<AppShell>) -> axum::routing::MethodRouter<()> {
+    axum::routing::any(move || {
+        let shell = shell.clone();
+        async move { shell.response() }
+    })
 }
 
 /// Embedded-assets SPA — mirror of `web_routes_filesystem` using the
 /// [`embedded`] module's handlers instead of `ServeDir`. Same URL shape,
 /// same cache-header layers, same SPA-shell fallback semantics.
 #[cfg(feature = "bundled-assets")]
-fn web_routes_embedded() -> Router<Arc<AppState>> {
+fn web_routes_embedded(shell: Option<Arc<AppShell>>) -> Router<Arc<AppState>> {
     use axum::routing::get;
+    let Some(shell) = shell else {
+        return Router::new()
+            .route(
+                "/_app/immutable/{*path}",
+                get(embedded::serve_immutable).layer(SetResponseHeaderLayer::overriding(
+                    CACHE_CONTROL,
+                    HeaderValue::from_static("public, max-age=31536000, immutable"),
+                )),
+            )
+            .route("/", get(embedded::serve_root_index))
+            .fallback(get(embedded::serve_root));
+    };
     Router::new()
         .route(
             "/_app/immutable/{*path}",
@@ -225,8 +309,14 @@ fn web_routes_embedded() -> Router<Arc<AppState>> {
                 HeaderValue::from_static("public, max-age=31536000, immutable"),
             )),
         )
-        .route("/", get(embedded::serve_root_index))
-        .fallback(get(embedded::serve_root))
+        .route_service("/", shell_service(shell.clone()))
+        .fallback_service({
+            let shell = shell.clone();
+            axum::routing::any(move |req: Request| {
+                let shell = shell.clone();
+                async move { embedded::serve_asset_or(req, &shell).await }
+            })
+        })
 }
 
 /// Intercept `GET /login` and 302 to `/api/auth/oidc/authorize` when OIDC is
@@ -260,7 +350,13 @@ async fn oidc_standalone_login_redirect(
                 .unwrap_or(false);
 
         if should_redirect {
-            return Redirect::temporary("/api/auth/oidc/authorize").into_response();
+            // Browser-facing Location header — must carry the deployment
+            // base path (the `/login` match above is nest-stripped, this
+            // is not).
+            return Redirect::temporary(
+                &state.core.config.prefixed_path("/api/auth/oidc/authorize"),
+            )
+            .into_response();
         }
     }
     next.run(req).await
@@ -553,6 +649,63 @@ mod tests {
         // and must not falsely capture anything downstream.
         let html = "<!-- unterminated <script>evil()</script>";
         assert!(inline_scripts(html).is_empty());
+    }
+
+    /// A client route is a page, not a miss: the shell answers it with 200.
+    /// `not_found_service` would rewrite that to 404 — which browsers tolerate
+    /// but crawlers, monitoring and `curl -f` do not.
+    #[tokio::test]
+    async fn unmatched_client_routes_get_the_shell() {
+        use axum::body::Body;
+        use axum::http::StatusCode;
+        use tower::ServiceExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("index.html"),
+            r#"<head><base href="/" /></head>"#,
+        )
+        .expect("write shell");
+        std::fs::write(dir.path().join("robots.txt"), "ok").expect("write asset");
+
+        let shell = AppShell::prepare(
+            &StaticSource::Filesystem(dir.path().to_path_buf()),
+            "/cloud",
+        )
+        .expect("prepare")
+        .map(Arc::new);
+        let service = spa_service(dir.path(), shell);
+
+        let res = service
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/files/9c1b")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(Body::new(res.into_body()), 64 * 1024)
+            .await
+            .expect("body");
+        assert!(
+            String::from_utf8_lossy(&body).contains(r#"<base href="/cloud/">"#),
+            "the deep route did not get the prepared shell"
+        );
+
+        // An asset that exists is still served from disk.
+        let res = service
+            .oneshot(
+                Request::builder()
+                    .uri("/robots.txt")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(res.status(), StatusCode::OK);
     }
 
     #[test]

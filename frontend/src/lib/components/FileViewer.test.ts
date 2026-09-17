@@ -1,6 +1,6 @@
 import { it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
-vi.mock('$lib/api/client', () => ({ apiFetch: vi.fn() }));
+vi.mock('$lib/api/client', () => ({ apiFetch: vi.fn(), withBase: (p: string) => p }));
 vi.mock('$lib/api/endpoints/files', () => ({
 	fileDownloadUrl: () => '/dl',
 	fileInlineUrl: () => '/in'

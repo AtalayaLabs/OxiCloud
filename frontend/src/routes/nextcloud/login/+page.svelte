@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { base } from '$app/paths';
 	// Route-scoped auth styles (this page uses the .auth-* classes).
 	import '$lib/styles/ported/auth.css';
 	import { page } from '$app/state';
@@ -101,7 +102,7 @@
 				<a
 					class="auth-button auth-button-sso"
 					data-testid="nextcloud-login-sso-link"
-					href={`/login/v2/flow/${token}/oidc`}
+					href={`${base}/login/v2/flow/${token}/oidc`}
 					rel="external"
 				>
 					{t('nextcloud.sign_in_with', { provider: oidcProvider }, 'Sign in with {{provider}}')}

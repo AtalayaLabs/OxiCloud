@@ -93,6 +93,70 @@ If Collabora/OnlyOffice is enabled:
 kubectl logs statefulset/oxicloud -n oxicloud | grep "WOPI discovery loaded"
 ```
 
+## Reverse Proxy & Subpath Deployments
+
+OxiCloud runs happily behind any reverse proxy (nginx, Apache, Caddy, Traefik).
+Two rules apply to every proxy setup:
+
+1. Set `OXICLOUD_BASE_URL` to the public URL (e.g. `https://cloud.example.com`)
+   so share links, OIDC callbacks and WOPI URLs are generated correctly, and
+   set `OXICLOUD_COOKIE_SECURE=true` when the proxy terminates TLS.
+2. Forward `X-Forwarded-Proto` and `X-Forwarded-Host` — the DPoP middleware
+   reconstructs the browser-visible URL from them; without them every bound
+   request fails with `dpop.verify_failed reason=wrong_htu`.
+
+### Serving under a subpath
+
+To serve OxiCloud under a URL prefix instead of a (sub)domain root — e.g.
+`https://example.com/oxicloud` — set `OXICLOUD_BASE_PATH=/oxicloud` and include
+the prefix in `OXICLOUD_BASE_URL` (`https://example.com/oxicloud`). That is the
+whole configuration: the prefix is a runtime setting, so the same binary and the
+same frontend build serve any prefix, and changing it is a restart.
+
+The frontend carries no prefix. Its asset URLs are relative and the shell's
+`<base href>` anchors them; the server fills that tag in from
+`OXICLOUD_BASE_PATH` when it serves `index.html`. A shell built by a frontend
+too old to carry the tag fails the boot with a rebuild hint.
+
+The proxy must forward the prefix **unstripped** — the server expects to see
+`/oxicloud/...` on the wire:
+
+::: code-group
+
+```nginx [nginx]
+location /oxicloud {
+    # No trailing slash on either side: the prefix is passed through as-is.
+    proxy_pass http://127.0.0.1:8086;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    # WebSocket upgrade for /oxicloud/api/rt/ws (message bus)
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    client_max_body_size 0;
+}
+```
+
+```apache [Apache]
+# mod_proxy + mod_proxy_http + mod_proxy_wstunnel
+ProxyPreserveHost On
+RequestHeader set X-Forwarded-Proto "https"
+
+# WebSocket upgrade (message bus) — upgrade=websocket handles it in-place
+ProxyPass        /oxicloud http://127.0.0.1:8086/oxicloud upgrade=websocket
+ProxyPassReverse /oxicloud http://127.0.0.1:8086/oxicloud
+```
+
+:::
+
+Known limitation: RFC 6764 requires the CalDAV/CardDAV **autodiscovery**
+endpoints `/.well-known/caldav` and `/.well-known/carddav` at the domain
+root, which a subpath deployment cannot own. DAV clients still work when
+given the full URL (`https://example.com/oxicloud/caldav/...`); to keep
+autodiscovery, have the proxy redirect the two well-known paths to the
+prefixed ones.
+
 ## Feature Dependency Matrix
 
 | Feature | Requires DB | Requires Auth | Feature Flag |

@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" content="light dark">
     <title>OxiCloud</title>
-    <link rel="icon" type="image/svg+xml" href="/logo/logo-plain.svg">
-    <link rel="stylesheet" href="/askama-common.css">
+    <link rel="icon" type="image/svg+xml" href="{{ base }}/logo/logo-plain.svg">
+    <link rel="stylesheet" href="{{ base }}/askama-common.css">
   </head>
   <body>
     <div class="auth-container">
@@ -26,7 +26,7 @@
           <button type="submit" class="auth-button">{{ offer.button_label }}</button>
         </form>
         {%- endif %}
-        <p class="auth-subtitle"><a href="/">{{ return_link }}</a></p>
+        <p class="auth-subtitle"><a href="{{ base }}/">{{ return_link }}</a></p>
       </div>
     </div>
   </body>

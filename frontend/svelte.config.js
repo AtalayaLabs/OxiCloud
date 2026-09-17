@@ -69,6 +69,21 @@ const config = {
 		alias: {
 			$lib: './src/lib'
 		},
+		// The build carries no deployment prefix. `relative: true` keeps the
+		// lazy-chunk URLs inside the bundles relative to the importing module,
+		// so they resolve at any prefix; the shell's own URLs are made relative
+		// by scripts/portable-shell.mjs and anchored by the <base href> the
+		// server fills in from OXICLOUD_BASE_PATH (see app.html).
+		paths: {
+			base: '',
+			relative: true
+		},
+		// The app registers the worker itself (see +layout.svelte): it needs the
+		// runtime prefix for both the script URL and the scope, which SvelteKit's
+		// own root-absolute `/service-worker.js` registration cannot carry.
+		serviceWorker: {
+			register: false
+		},
 		// Poll `_app/version.json` so an open tab notices a fresh deploy; the root
 		// layout reloads itself when it does, instead of silently running stale
 		// code after a rebuild (the classic "my fix isn't applied" trap).

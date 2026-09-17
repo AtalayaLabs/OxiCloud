@@ -40,7 +40,7 @@
 	import { canEditWithWopi, getEditorUrlWithFallback } from '$lib/api/endpoints/wopi';
 	import { addTracks, createPlaylist, listPlaylists } from '$lib/api/endpoints/music';
 	import { copyFiles, copyFolders } from '$lib/api/endpoints/batch';
-	import { apiFetch } from '$lib/api/client';
+	import { apiFetch, withBase } from '$lib/api/client';
 	import { getCsrfHeaders } from '$lib/api/csrf';
 	import { countHidden, filterDotfiles } from '$lib/utils/dotfileFilter';
 	import { preferences } from '$lib/stores/preferences.svelte';
@@ -1607,7 +1607,10 @@
 		const win = window.open('', '_blank');
 		try {
 			const data = await getEditorUrlWithFallback(id, name, 'edit');
-			const url = `/wopi/edit/${encodeURIComponent(id)}?access_token=${encodeURIComponent(data.access_token)}`;
+			// Browser navigation target — carries the deployment base path.
+			const url = withBase(
+				`/wopi/edit/${encodeURIComponent(id)}?access_token=${encodeURIComponent(data.access_token)}`
+			);
 			if (win) win.location.href = url;
 			else window.open(url, '_blank');
 		} catch (e) {

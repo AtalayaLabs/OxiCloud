@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-vi.mock('$lib/api/client', () => ({ apiFetch: vi.fn(), apiJson: vi.fn() }));
+vi.mock('$lib/api/client', () => ({
+	apiFetch: vi.fn(),
+	apiJson: vi.fn(),
+	withBase: (p: string) => p
+}));
 vi.mock('$lib/api/csrf', () => ({ getCsrfHeaders: () => ({}) }));
 // Controllable DPoP proof — `uploadFileWithProgress` uses XHR (needed
 // for upload-progress events) and manually signs a proof. Default null

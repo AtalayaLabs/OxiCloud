@@ -314,7 +314,10 @@ pub fn well_known_routes() -> Router<Arc<AppState>> {
 async fn handle_well_known_caldav() -> Response<Body> {
     Response::builder()
         .status(StatusCode::MOVED_PERMANENTLY)
-        .header(header::LOCATION, "/caldav/")
+        .header(
+            header::LOCATION,
+            format!("{}/caldav/", crate::common::config::server_base_path()),
+        )
         .body(Body::empty())
         .unwrap()
 }
@@ -496,7 +499,7 @@ async fn handle_propfind(
                 .map_err(AppError::from)?
         };
 
-        let base_href = "/caldav/";
+        let base_href = &format!("{}/caldav/", crate::common::config::server_base_path());
         let mut response_body = Vec::new();
         CalDavAdapter::generate_root_propfind_response(
             &mut response_body,
@@ -568,7 +571,11 @@ async fn handle_propfind(
                 // DTO + the full multistatus in RAM); depth-0 has no
                 // event section and keeps the tiny buffered path.
                 if depth != "0" {
-                    let base_href = format!("/caldav/{}/", first_segment);
+                    let base_href = format!(
+                        "{}/caldav/{}/",
+                        crate::common::config::server_base_path(),
+                        first_segment
+                    );
                     return Ok(build_streaming_collection_propfind(
                         calendar_service.clone(),
                         calendar,
@@ -580,7 +587,11 @@ async fn handle_propfind(
                     ));
                 }
 
-                let base_href = &format!("/caldav/{}/", first_segment);
+                let base_href = &format!(
+                    "{}/caldav/{}/",
+                    crate::common::config::server_base_path(),
+                    first_segment
+                );
                 let mut response_body = Vec::new();
 
                 CalDavAdapter::generate_calendar_collection_propfind(
@@ -619,7 +630,11 @@ async fn handle_propfind(
                     .await
                     .map_err(AppError::from)?;
 
-                let base_href = &format!("/caldav/{}/", first_segment);
+                let base_href = &format!(
+                    "{}/caldav/{}/",
+                    crate::common::config::server_base_path(),
+                    first_segment
+                );
                 let mut response_body = Vec::new();
 
                 CalDavAdapter::generate_calendars_propfind_response(
@@ -660,7 +675,12 @@ async fn handle_propfind(
                     // Same streaming/buffered split as the
                     // single-segment collection branch above.
                     if depth != "0" {
-                        let base_href = format!("/caldav/{}/{}/", first_segment, sub_parts[0]);
+                        let base_href = format!(
+                            "{}/caldav/{}/{}/",
+                            crate::common::config::server_base_path(),
+                            first_segment,
+                            sub_parts[0]
+                        );
                         return Ok(build_streaming_collection_propfind(
                             calendar_service.clone(),
                             cal,
@@ -672,7 +692,12 @@ async fn handle_propfind(
                         ));
                     }
 
-                    let base_href = &format!("/caldav/{}/{}/", first_segment, sub_parts[0]);
+                    let base_href = &format!(
+                        "{}/caldav/{}/{}/",
+                        crate::common::config::server_base_path(),
+                        first_segment,
+                        sub_parts[0]
+                    );
                     let mut response_body = Vec::new();
 
                     CalDavAdapter::generate_calendar_collection_propfind(
@@ -708,7 +733,11 @@ async fn handle_propfind(
                 .map_err(AppError::from)?
                 .ok_or_else(|| AppError::not_found(format!("Event not found: {}", ical_uid)))?;
 
-            let base_href = &format!("/caldav/{}/", calendar_id);
+            let base_href = &format!(
+                "{}/caldav/{}/",
+                crate::common::config::server_base_path(),
+                calendar_id
+            );
             let report_type = CalDavReportType::CalendarMultiget {
                 hrefs: vec![format!("{}{}.ics", base_href, ical_uid)],
                 props: vec![],
@@ -773,7 +802,11 @@ async fn handle_report(
             .get_calendar(calendar_id, user.id)
             .await
             .map_err(AppError::from)?;
-        let base_href = format!("/caldav/{}/", calendar_id);
+        let base_href = format!(
+            "{}/caldav/{}/",
+            crate::common::config::server_base_path(),
+            calendar_id
+        );
         return Ok(build_streaming_report_response(
             calendar_service.clone(),
             calendar_id.to_string(),
@@ -813,7 +846,11 @@ async fn handle_report(
         }
     };
 
-    let base_href = &format!("/caldav/{}/", calendar_id);
+    let base_href = &format!(
+        "{}/caldav/{}/",
+        crate::common::config::server_base_path(),
+        calendar_id
+    );
     let mut response_body = Vec::new();
     CalDavAdapter::generate_calendar_events_response(
         &mut response_body,
@@ -1146,7 +1183,11 @@ async fn handle_proppatch(
         }
     }
 
-    let href = format!("/caldav/{}", path);
+    let href = format!(
+        "{}/caldav/{}",
+        crate::common::config::server_base_path(),
+        path
+    );
     let mut response_body = Vec::new();
     crate::application::adapters::webdav_adapter::WebDavAdapter::generate_proppatch_response(
         &mut response_body,

@@ -207,7 +207,8 @@ async fn handle_propfind_session(
     body.push_str("<d:response>");
     let _ = write!(
         body,
-        "<d:href>/remote.php/dav/uploads/{}/{}/</d:href>",
+        "<d:href>{}/remote.php/dav/uploads/{}/{}/</d:href>",
+        crate::common::config::server_base_path(),
         xml_escape(&session.raw_username),
         xml_escape(upload_id)
     );
@@ -222,7 +223,8 @@ async fn handle_propfind_session(
         body.push_str("<d:response>");
         let _ = write!(
             body,
-            "<d:href>/remote.php/dav/uploads/{}/{}/{}</d:href>",
+            "<d:href>{}/remote.php/dav/uploads/{}/{}/{}</d:href>",
+            crate::common::config::server_base_path(),
             xml_escape(&session.raw_username),
             xml_escape(upload_id),
             xml_escape(&chunk.name)
@@ -546,7 +548,11 @@ fn content_length_from(req: &Request<Body>) -> Option<u64> {
 ///
 /// For full URLs the host is ignored — only the path component is used.
 fn extract_files_subpath(dest: &str, username: &str) -> Option<String> {
-    let prefix = format!("/remote.php/dav/files/{}/", username);
+    let prefix = format!(
+        "{}/remote.php/dav/files/{}/",
+        crate::common::config::server_base_path(),
+        username
+    );
     let path = if dest.starts_with("http://") || dest.starts_with("https://") {
         let after_scheme = dest.split_once("://")?.1;
         let path_start = after_scheme.find('/').unwrap_or(after_scheme.len());

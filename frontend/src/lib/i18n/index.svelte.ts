@@ -10,6 +10,7 @@
  * Storage key `oxicloud-locale` and the server round-trip via
  * PATCH /api/auth/me/profile are preserved for cross-device/email parity.
  */
+import { base } from '$app/paths';
 import { apiFetch } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 
@@ -191,7 +192,7 @@ const store = $state<{ locale: string; loaded: boolean }>({
 async function loadDict(locale: string): Promise<Dict> {
 	if (dicts[locale]) return dicts[locale];
 	try {
-		const res = await fetch(`/locales/${locale}.json`);
+		const res = await fetch(`${base}/locales/${locale}.json`);
 		if (!res.ok) throw new Error(`locale ${locale} ${res.status}`);
 		dicts[locale] = (await res.json()) as Dict;
 	} catch (err) {

@@ -7,6 +7,8 @@
  * MapLibre API the Places view touches, so the rest of the app stays `any`-free.
  */
 
+import { base } from '$app/paths';
+
 export interface MapBounds {
 	getWest(): number;
 	getSouth(): number;
@@ -82,12 +84,12 @@ export async function loadMapLibs(): Promise<MapLibs> {
 	if (!document.querySelector('link[data-vendor="maplibre-css"]')) {
 		const l = document.createElement('link');
 		l.rel = 'stylesheet';
-		l.href = '/vendors/maplibre-gl.css';
+		l.href = `${base}/vendors/maplibre-gl.css`;
 		l.dataset.vendor = 'maplibre-css';
 		document.head.appendChild(l);
 	}
-	await loadScript('/vendors/maplibre-gl.js');
-	await loadScript('/vendors/pmtiles.js');
+	await loadScript(`${base}/vendors/maplibre-gl.js`);
+	await loadScript(`${base}/vendors/pmtiles.js`);
 	const w = window as unknown as { maplibregl?: MapLibreModule; pmtiles?: PMTilesModule };
 	if (!w.maplibregl || !w.pmtiles) throw new Error('map libraries failed to initialise');
 	cached = { maplibregl: w.maplibregl, pmtiles: w.pmtiles };

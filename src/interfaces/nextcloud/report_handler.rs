@@ -663,6 +663,11 @@ async fn resolve_scope_folder(
 /// `admin~{uuid}` for multi-drive — so this matches whichever shape
 /// the NC client actually sent.
 fn extract_subpath_from_scope(href: &str, url_user: &str) -> Option<String> {
+    // Clients echo hrefs from our responses, which carry the deployment
+    // base path — strip it before matching (no-op at the root).
+    let href = href
+        .strip_prefix(crate::common::config::server_base_path())
+        .unwrap_or(href);
     let patterns = [
         format!("/remote.php/dav/files/{}/", url_user),
         format!("/files/{}/", url_user),

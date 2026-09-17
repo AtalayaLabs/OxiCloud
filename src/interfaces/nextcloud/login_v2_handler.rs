@@ -25,6 +25,8 @@ struct DriveOption {
 #[derive(Template)]
 #[template(path = "nextcloud/drive_picker.html")]
 struct DrivePickerTemplate {
+    /// Deployment base path for the shared asset links; `""` at the root.
+    base: String,
     form_action: String,
     drives: Vec<DriveOption>,
 }
@@ -151,7 +153,11 @@ pub async fn handle_login_page(
     // The grant-access page is now owned by the SvelteKit SPA at
     // /nextcloud/login; redirect the client's browser there with the flow
     // token. The page POSTs back to /login/v2/flow/{token} (handle_login_submit).
-    Redirect::to(&format!("/nextcloud/login?token={token}")).into_response()
+    Redirect::to(&format!(
+        "{}/nextcloud/login?token={token}",
+        crate::common::config::server_base_path()
+    ))
+    .into_response()
 }
 
 pub async fn handle_login_submit(
@@ -272,8 +278,11 @@ async fn resolve_drive_or_complete(
             // Flow token vanished (TTL?) between auth and here —
             // extremely unlikely but treat the same as any
             // session-expired case.
-            return axum::response::Redirect::to("/nextcloud/error?type=session-expired")
-                .into_response();
+            return axum::response::Redirect::to(&format!(
+                "{}/nextcloud/error?type=session-expired",
+                crate::common::config::server_base_path()
+            ))
+            .into_response();
         }
         // Persist the label so `handle_drive_pick` can pass the correct
         // provenance string when it later calls `complete_flow`. Set
@@ -380,7 +389,12 @@ fn render_drive_picker(
     drives: &[crate::application::dtos::folder_dto::FolderDto],
 ) -> Response {
     let template = DrivePickerTemplate {
-        form_action: format!("/login/v2/flow/{}/drive", token),
+        base: crate::common::config::server_base_path().to_string(),
+        form_action: format!(
+            "{}/login/v2/flow/{}/drive",
+            crate::common::config::server_base_path(),
+            token
+        ),
         drives: drives
             .iter()
             .map(|f| DriveOption {
@@ -477,13 +491,21 @@ async fn complete_flow(
         // "Open Nextcloud" fallback on the success page. Keep the
         // credentials out of the query string either way — the query
         // string reaches server access logs.
-        axum::response::Redirect::to("/nextcloud/success").into_response()
+        axum::response::Redirect::to(&format!(
+            "{}/nextcloud/success",
+            crate::common::config::server_base_path()
+        ))
+        .into_response()
     } else {
         tracing::error!(
             user = %user.username,
             "Login Flow v2: complete() returned false — flow token not found"
         );
-        axum::response::Redirect::to("/nextcloud/error?type=session-expired").into_response()
+        axum::response::Redirect::to(&format!(
+            "{}/nextcloud/error?type=session-expired",
+            crate::common::config::server_base_path()
+        ))
+        .into_response()
     }
 }
 
@@ -520,8 +542,11 @@ pub async fn handle_drive_pick(
                 reason = "no_pending_user",
                 "👮🏻‍♂️ NC drive pick rejected: flow has no pending user (replay or unknown token)"
             );
-            return axum::response::Redirect::to("/nextcloud/error?type=session-expired")
-                .into_response();
+            return axum::response::Redirect::to(&format!(
+                "{}/nextcloud/error?type=session-expired",
+                crate::common::config::server_base_path()
+            ))
+            .into_response();
         }
     };
 
@@ -659,8 +684,11 @@ pub async fn handle_login_oidc(
 
     // Verify the NC login flow token exists
     if !nextcloud.login_flow.flow_exists(&token) {
-        return axum::response::Redirect::to("/nextcloud/error?type=session-expired")
-            .into_response();
+        return axum::response::Redirect::to(&format!(
+            "{}/nextcloud/error?type=session-expired",
+            crate::common::config::server_base_path()
+        ))
+        .into_response();
     }
 
     // Verify auth + OIDC are configured and enabled
@@ -692,7 +720,11 @@ pub async fn handle_login_oidc(
 }
 
 fn login_failed_response(_err: DomainError) -> Response {
-    axum::response::Redirect::to("/nextcloud/error?type=invalid-credentials").into_response()
+    axum::response::Redirect::to(&format!(
+        "{}/nextcloud/error?type=invalid-credentials",
+        crate::common::config::server_base_path()
+    ))
+    .into_response()
 }
 
 fn parse_form(body: &str) -> HashMap<String, String> {

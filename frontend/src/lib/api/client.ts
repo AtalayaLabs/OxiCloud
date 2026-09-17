@@ -17,6 +17,8 @@
  *    and the call rejects.
  */
 
+import { appPath } from '$lib/utils/appPath';
+import { base } from '$app/paths';
 import { getCsrfHeaders } from './csrf';
 import { updateFromHeader } from '$lib/stores/serverStatus.svelte';
 import {
@@ -77,6 +79,25 @@ function urlString(input: RequestInfo | URL): string {
 	return input.url ?? '';
 }
 
+/**
+ * Prefix a root-relative URL string with the app's base path (subpath
+ * deployments — `kit.paths.base`, `''` at the root). Endpoint modules keep
+ * writing root-relative literals (`/api/…`); the prefix is glued on here,
+ * in the one place every call already flows through. Absolute URLs and
+ * `Request`/`URL` inputs (already resolved by the browser) pass untouched,
+ * as does anything already carrying the prefix.
+ */
+export function withBase(path: string): string {
+	if (!base || !path.startsWith('/') || path === base || path.startsWith(`${base}/`)) {
+		return path;
+	}
+	return base + path;
+}
+
+function withBaseInput(input: RequestInfo | URL): RequestInfo | URL {
+	return typeof input === 'string' ? withBase(input) : input;
+}
+
 function isCrossOrigin(urlStr: string, origin: string): boolean {
 	try {
 		return new URL(urlStr, origin).origin !== origin;
@@ -106,7 +127,7 @@ export function createApiFetch(deps: ApiClientDeps): FetchFn {
 		if (refreshInFlight) return refreshInFlight;
 		refreshInFlight = (async () => {
 			try {
-				const r = await dpopFetch(REFRESH_ENDPOINT, {
+				const r = await dpopFetch(withBase(REFRESH_ENDPOINT), {
 					method: 'POST',
 					credentials: 'same-origin',
 					headers: { 'Content-Type': 'application/json', ...getCsrfHeaders() },
@@ -170,6 +191,7 @@ export function createApiFetch(deps: ApiClientDeps): FetchFn {
 	}
 
 	const apiFetch: FetchFn = async (input, init) => {
+		input = withBaseInput(input);
 		const origin = deps.origin ?? globalThis.location?.origin ?? 'http://localhost';
 		// Session-teardown short-circuit. While a logout is in flight (or
 		// the caller has already navigated to /login post-logout without
@@ -269,7 +291,7 @@ function mergeHeader(base: HeadersInit | undefined, name: string, value: string)
 
 let sessionExpiredHandler: () => void = () => {
 	if (typeof window !== 'undefined') {
-		window.location.href = '/login?source=session_expired';
+		window.location.href = withBase('/login?source=session_expired');
 	}
 };
 
@@ -315,8 +337,8 @@ export function isLogoutInProgress(): boolean {
 // SPA's nav-guard still lands the user on the mandatory form.
 let passwordChangeRequiredHandler: () => void = () => {
 	if (typeof window !== 'undefined') {
-		const here = encodeURIComponent(window.location.pathname + window.location.search);
-		window.location.href = `/profile?forcePasswordChange=1&next=${here}`;
+		const here = encodeURIComponent(appPath(window.location.pathname) + window.location.search);
+		window.location.href = withBase(`/profile?forcePasswordChange=1&next=${here}`);
 	}
 };
 

@@ -340,6 +340,9 @@ async fn resend_magic_link(
 #[derive(Template)]
 #[template(path = "magic_link/page_expired_or_used.html")]
 struct ExpiredOrUsedTemplate {
+    /// Deployment base path (`AppConfig::base_path`) — glued in front of
+    /// the shared asset/home links in the template; `""` at the root.
+    base: String,
     locale_code: String,
     title: String,
     body: String,
@@ -359,6 +362,7 @@ struct ResendOffer {
 #[derive(Template)]
 #[template(path = "magic_link/page_cross_browser_confirm.html")]
 struct CrossBrowserConfirmTemplate {
+    base: String,
     locale_code: String,
     title: String,
     body: String,
@@ -370,6 +374,7 @@ struct CrossBrowserConfirmTemplate {
 #[derive(Template)]
 #[template(path = "magic_link/page_resend_confirmation.html")]
 struct ResendConfirmationTemplate {
+    base: String,
     locale_code: String,
     title: String,
     body: String,
@@ -379,6 +384,7 @@ struct ResendConfirmationTemplate {
 #[derive(Template)]
 #[template(path = "magic_link/page_generic_error.html")]
 struct GenericErrorTemplate {
+    base: String,
     locale_code: String,
     title: String,
     body: String,
@@ -431,7 +437,10 @@ async fn expired_or_used_page(state: &Arc<AppState>, locale: &Locale, token: &st
             translate(state, locale, "server.magic_link.page.expired_title").await,
             translate(state, locale, "server.magic_link.page.expired_body").await,
             Some(ResendOffer {
-                action_url: format!("/magic/v1/{}/resend", token),
+                action_url: state
+                    .core
+                    .config
+                    .prefixed_path(&format!("/magic/v1/{}/resend", token)),
                 button_label: translate_args(
                     state,
                     locale,
@@ -453,6 +462,7 @@ async fn expired_or_used_page(state: &Arc<AppState>, locale: &Locale, token: &st
     };
 
     let template = ExpiredOrUsedTemplate {
+        base: state.core.config.base_path.clone(),
         locale_code: locale.as_str().to_string(),
         title,
         body,
@@ -468,6 +478,7 @@ async fn cross_browser_confirmation_page(
     token: &str,
 ) -> Response {
     let template = CrossBrowserConfirmTemplate {
+        base: state.core.config.base_path.clone(),
         locale_code: locale.as_str().to_string(),
         title: translate(state, locale, "server.magic_link.page.cross_browser_title").await,
         body: translate(state, locale, "server.magic_link.page.cross_browser_body").await,
@@ -477,7 +488,10 @@ async fn cross_browser_confirmation_page(
             "server.magic_link.page.cross_browser_warning",
         )
         .await,
-        confirm_url: format!("/magic/v1/{}?confirm=1", token),
+        confirm_url: state
+            .core
+            .config
+            .prefixed_path(&format!("/magic/v1/{}?confirm=1", token)),
         continue_label: translate(
             state,
             locale,
@@ -490,6 +504,7 @@ async fn cross_browser_confirmation_page(
 
 async fn resend_confirmation_page(state: &Arc<AppState>, locale: &Locale) -> Response {
     let template = ResendConfirmationTemplate {
+        base: state.core.config.base_path.clone(),
         locale_code: locale.as_str().to_string(),
         title: translate(
             state,
@@ -510,6 +525,7 @@ async fn resend_confirmation_page(state: &Arc<AppState>, locale: &Locale) -> Res
 
 async fn service_unavailable_page(state: &Arc<AppState>, locale: &Locale) -> Response {
     let template = GenericErrorTemplate {
+        base: state.core.config.base_path.clone(),
         locale_code: locale.as_str().to_string(),
         title: translate(state, locale, "server.magic_link.page.expired_title").await,
         body: translate(state, locale, "server.magic_link.page.service_unavailable").await,
@@ -520,6 +536,7 @@ async fn service_unavailable_page(state: &Arc<AppState>, locale: &Locale) -> Res
 
 async fn internal_error_page(state: &Arc<AppState>, locale: &Locale) -> Response {
     let template = GenericErrorTemplate {
+        base: state.core.config.base_path.clone(),
         locale_code: locale.as_str().to_string(),
         title: translate(state, locale, "server.magic_link.page.expired_title").await,
         body: translate(state, locale, "server.magic_link.page.internal_error").await,
@@ -530,6 +547,7 @@ async fn internal_error_page(state: &Arc<AppState>, locale: &Locale) -> Response
 
 async fn resend_failure_page(state: &Arc<AppState>, locale: &Locale) -> Response {
     let template = GenericErrorTemplate {
+        base: state.core.config.base_path.clone(),
         locale_code: locale.as_str().to_string(),
         title: translate(state, locale, "server.magic_link.page.expired_title").await,
         body: translate(state, locale, "server.magic_link.page.resend_failure").await,
@@ -570,7 +588,11 @@ fn render<T: Template>(status: StatusCode, template: T) -> Response {
 }
 
 fn build_success_response(state: &Arc<AppState>, redemption: MagicLinkRedemption) -> Response {
-    let target = redirect_target(&redemption);
+    // Browser-facing Location header — carries the deployment base path.
+    let target = state
+        .core
+        .config
+        .prefixed_path(&redirect_target(&redemption));
 
     let mut response = (StatusCode::FOUND, [(LOCATION, target.as_str())]).into_response();
 

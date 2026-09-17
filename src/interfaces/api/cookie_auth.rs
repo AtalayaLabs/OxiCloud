@@ -101,9 +101,32 @@ fn resolve_cookie_secure() -> bool {
     }
 }
 
-/// Build a `Set-Cookie` header value.
+/// A cookie `Path` attribute for `path`, carrying the deployment base
+/// path. Cookie paths are browser-facing, so unlike server-side route
+/// matching (which sees nest-stripped URIs) they must carry the prefix.
+/// `cookie_path("/")` under base `/oxicloud` is `/oxicloud` (which
+/// path-matches `/oxicloud` and everything below it per RFC 6265, but
+/// not `/oxicloudfoo`), so root-scoped cookies stay scoped to the app.
+fn cookie_path(path: &str) -> String {
+    cookie_path_with_base(crate::common::config::server_base_path(), path)
+}
+
+/// Pure core of [`cookie_path`], split out for tests.
+fn cookie_path_with_base(base: &str, path: &str) -> String {
+    if base.is_empty() {
+        path.to_string()
+    } else if path == "/" {
+        base.to_string()
+    } else {
+        format!("{base}{path}")
+    }
+}
+
+/// Build a `Set-Cookie` header value. `path` is root-relative; the
+/// deployment base path is glued on here so no call site can forget it.
 fn build_cookie(name: &str, value: &str, path: &str, max_age_secs: i64, same_site: &str) -> String {
     let secure = if cookie_secure() { "; Secure" } else { "" };
+    let path = cookie_path(path);
     format!(
         "{name}={value}; HttpOnly; SameSite={same_site}; Path={path}; Max-Age={max_age_secs}{secure}",
     )
@@ -148,6 +171,7 @@ pub fn append_auth_cookies(
 pub fn append_clear_cookies(headers: &mut HeaderMap) {
     for (name, path) in [(ACCESS_COOKIE, "/"), (REFRESH_COOKIE, "/api/auth")] {
         let secure = if cookie_secure() { "; Secure" } else { "" };
+        let path = cookie_path(path);
         let val = format!("{name}=; HttpOnly; SameSite=Lax; Path={path}; Max-Age=0{secure}",);
         if let Ok(hv) = HeaderValue::from_str(&val) {
             headers.append(SET_COOKIE, hv);
@@ -192,7 +216,8 @@ pub fn generate_csrf_token() -> String {
 /// via `document.cookie` and echo it back in the `X-CSRF-Token` header.
 fn build_csrf_cookie(value: &str, max_age_secs: i64) -> String {
     let secure = if cookie_secure() { "; Secure" } else { "" };
-    format!("{CSRF_COOKIE}={value}; SameSite=Lax; Path=/; Max-Age={max_age_secs}{secure}",)
+    let path = cookie_path("/");
+    format!("{CSRF_COOKIE}={value}; SameSite=Lax; Path={path}; Max-Age={max_age_secs}{secure}",)
 }
 
 /// Append a CSRF double-submit cookie alongside the auth cookies.
@@ -237,8 +262,9 @@ pub fn append_magic_request_cookie(headers: &mut HeaderMap, value: &str, max_age
 /// browser confusing a later flow.
 pub fn append_clear_magic_request_cookie(headers: &mut HeaderMap) {
     let secure = if cookie_secure() { "; Secure" } else { "" };
+    let path = cookie_path("/magic");
     let val = format!(
-        "{MAGIC_REQUEST_COOKIE}=; HttpOnly; SameSite=Strict; Path=/magic; Max-Age=0{secure}",
+        "{MAGIC_REQUEST_COOKIE}=; HttpOnly; SameSite=Strict; Path={path}; Max-Age=0{secure}",
     );
     if let Ok(hv) = HeaderValue::from_str(&val) {
         headers.append(SET_COOKIE, hv);
@@ -267,8 +293,9 @@ pub fn maybe_append_dpop_nonce_cookie(
     }
     let value = nonce_service.current_or_rotate();
     let secure = if cookie_secure() { "; Secure" } else { "" };
+    let path = cookie_path("/");
     let val = format!(
-        "{DPOP_NONCE_COOKIE}={value}; SameSite=Strict; Path=/; Max-Age={DPOP_NONCE_COOKIE_MAX_AGE_SECS}{secure}",
+        "{DPOP_NONCE_COOKIE}={value}; SameSite=Strict; Path={path}; Max-Age={DPOP_NONCE_COOKIE_MAX_AGE_SECS}{secure}",
     );
     if let Ok(hv) = HeaderValue::from_str(&val) {
         headers.append(SET_COOKIE, hv);
@@ -278,8 +305,33 @@ pub fn maybe_append_dpop_nonce_cookie(
 /// Clear the CSRF cookie (on logout).
 pub fn append_clear_csrf_cookie(headers: &mut HeaderMap) {
     let secure = if cookie_secure() { "; Secure" } else { "" };
-    let val = format!("{CSRF_COOKIE}=; SameSite=Lax; Path=/; Max-Age=0{secure}",);
+    let path = cookie_path("/");
+    let val = format!("{CSRF_COOKIE}=; SameSite=Lax; Path={path}; Max-Age=0{secure}",);
     if let Ok(hv) = HeaderValue::from_str(&val) {
         headers.append(SET_COOKIE, hv);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// RFC 6265 path-matching drives these shapes: under a base path the
+    /// root-scoped cookies must scope to the app (`/oxicloud`, matching
+    /// `/oxicloud` and `/oxicloud/…` but not `/oxicloudfoo`), and the
+    /// narrow ones must keep their narrowing.
+    #[test]
+    fn cookie_paths_carry_the_base_path() {
+        assert_eq!(cookie_path_with_base("", "/"), "/");
+        assert_eq!(cookie_path_with_base("", "/api/auth"), "/api/auth");
+        assert_eq!(cookie_path_with_base("/oxicloud", "/"), "/oxicloud");
+        assert_eq!(
+            cookie_path_with_base("/oxicloud", "/api/auth"),
+            "/oxicloud/api/auth"
+        );
+        assert_eq!(
+            cookie_path_with_base("/oxicloud", "/magic"),
+            "/oxicloud/magic"
+        );
     }
 }

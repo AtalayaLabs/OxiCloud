@@ -1,6 +1,7 @@
 <script lang="ts">
+	import { appPath } from '$lib/utils/appPath';
 	import { goto } from '$app/navigation';
-	import { resolve } from '$app/paths';
+	import { base, resolve } from '$app/paths';
 	import type { Pathname } from '$app/types';
 	import { page, updated } from '$app/state';
 	import { onMount } from 'svelte';
@@ -57,7 +58,7 @@
 	// `window.location` if no `next` context (see the default handler
 	// in client.ts).
 	setPasswordChangeRequiredHandler(() => {
-		const path = page.url.pathname + page.url.search;
+		const path = appPath(page.url.pathname) + page.url.search;
 		void goto(resolve(`/profile?forcePasswordChange=1&next=${encodeURIComponent(path)}`), {
 			replaceState: true
 		});
@@ -116,8 +117,17 @@
 		// `.ready` resolves in ~1ms — the wait is a one-shot cost per
 		// browser profile.
 		if ('serviceWorker' in navigator) {
+			// `scope: base || '/'` — the app's home URL is the BARE base
+			// (`/oxicloud`, no trailing slash), which falls OUTSIDE the
+			// default scope derived from the script URL (`/oxicloud/`).
+			// An out-of-scope document never matches the registration, so
+			// `navigator.serviceWorker.ready` below would never settle
+			// and the boot splash would spin forever. The server sends
+			// `Service-Worker-Allowed: {base}` on the script response to
+			// authorize the widened scope (no-op at the root, where the
+			// scope is '/' either way).
 			void navigator.serviceWorker
-				.register('/service-worker.js', { type: 'module' })
+				.register(`${base}/service-worker.js`, { type: 'module', scope: base || '/' })
 				.catch((err) => console.debug('DPoP service worker registration failed', err));
 			try {
 				await navigator.serviceWorker.ready;
@@ -211,7 +221,7 @@
 		// the "signed out" banner (Ed's report: URL landed as
 		// `?redirect=%2Ffiles%2F…` instead of `?source=logged_out`).
 		if (isLogoutInProgress()) return;
-		const path = page.url.pathname;
+		const path = appPath(page.url.pathname);
 		if (session.isAuthenticated || isPublic(path)) return;
 
 		// SSO-only auto-redirect: mirror what the server-side /login
@@ -246,7 +256,7 @@
 		if (!ready) return;
 		if (!session.isAuthenticated) return;
 		if (!session.mustChangePassword) return;
-		const path = page.url.pathname;
+		const path = appPath(page.url.pathname);
 		if (path === '/profile' || isPublic(path)) return;
 		// Preserve the intended destination so the profile page can
 		// bounce back once the password is successfully changed.
@@ -255,7 +265,7 @@
 	});
 </script>
 
-{#if isPublic(page.url.pathname)}
+{#if isPublic(appPath(page.url.pathname))}
 	{@render children()}
 {:else if ready && session.isAuthenticated}
 	<AppShell {children} />

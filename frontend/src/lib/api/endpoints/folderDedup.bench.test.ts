@@ -1,6 +1,10 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-vi.mock('$lib/api/client', () => ({ apiFetch: vi.fn(), apiJson: vi.fn() }));
+vi.mock('$lib/api/client', () => ({
+	apiFetch: vi.fn(),
+	apiJson: vi.fn(),
+	withBase: (p: string) => p
+}));
 
 import { apiJson } from '$lib/api/client';
 import type { FolderItem } from '$lib/api/types';

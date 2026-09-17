@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { base } from '$app/paths';
 	/**
 	 * Places: geotagged photos on a self-hosted MapLibre GL map. Clusters are
 	 * computed server-side (`GET /api/photos/geo`), so we draw one lightweight HTML
@@ -23,11 +24,11 @@
 	} from '$lib/vendor/maplibre';
 	import { onDestroy, onMount } from 'svelte';
 
-	const BASEMAP_URL = '/basemaps/basemap.pmtiles';
+	const BASEMAP_URL = `${base}/basemaps/basemap.pmtiles`;
 	// Bundled lightweight world outline (Natural Earth 110m, public domain),
 	// shown when no Protomaps .pmtiles basemap is installed so Places is never a
 	// blank background. Same-origin asset — no external tiles (CSP-friendly).
-	const WORLD_GEOJSON_URL = '/geo/world-110m.geojson';
+	const WORLD_GEOJSON_URL = `${base}/geo/world-110m.geojson`;
 
 	let mapEl = $state<HTMLDivElement | null>(null);
 	let loading = $state(true);

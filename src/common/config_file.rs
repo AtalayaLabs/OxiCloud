@@ -47,6 +47,7 @@ pub const SECTIONS: &[&str] = &[
 /// for `env::var("OXICLOUD_…")` reads and fails on anything missing here.
 pub const KNOWN: &[(&str, &str)] = &[
     // ── [server] ─────────────────────────────────────────────────────────
+    ("server", "OXICLOUD_BASE_PATH"),
     ("server", "OXICLOUD_BASE_URL"),
     ("server", "OXICLOUD_DEFAULT_LOCALE"),
     ("server", "OXICLOUD_MAX_BLOCKING_THREADS"),

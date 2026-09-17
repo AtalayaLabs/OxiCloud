@@ -17,6 +17,7 @@
 // unauthenticated close is surfaced through `state = 'disconnected'`
 // and the console logger so users can diagnose without a redeploy.
 
+import { base } from '$app/paths';
 import log from 'loglevel';
 import { untrack } from 'svelte';
 
@@ -211,7 +212,7 @@ export class MessageBusClient {
 		// so this executes in the browser.
 		const defaultUrl = () => {
 			const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-			return `${proto}//${window.location.host}/api/rt/ws`;
+			return `${proto}//${window.location.host}${base}/api/rt/ws`;
 		};
 		this.#url = opts?.url ?? (typeof window !== 'undefined' ? defaultUrl() : '');
 		this.#WebSocketCtor = opts?.WebSocketCtor ?? WebSocket;

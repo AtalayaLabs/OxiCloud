@@ -219,8 +219,12 @@ pub fn nc_href_into(out: &mut String, encoded_user: &str, subpath: &str) {
     // on every NC PROPFIND/REPORT href (mirrors the native `encode_uri_path`).
     // Keeps `urlencoding::encode` so the emitted bytes are unchanged.
     const PREFIX: &str = "/remote.php/dav/files/";
+    // Client-facing href — carries the deployment base path, unlike the
+    // nest-stripped request URIs this handler matches on.
+    let base = crate::common::config::server_base_path();
     out.clear();
-    out.reserve(PREFIX.len() + encoded_user.len() + subpath.len() + 8);
+    out.reserve(base.len() + PREFIX.len() + encoded_user.len() + subpath.len() + 8);
+    out.push_str(base);
     out.push_str(PREFIX);
     out.push_str(encoded_user);
     out.push('/');
@@ -1714,7 +1718,11 @@ async fn handle_move(
 /// expected DAV prefix.  For full URLs the host is ignored — the path alone is
 /// used — so an attacker cannot redirect the server to a different host.
 pub fn extract_nc_subpath_from_dest(dest: &str, username: &str) -> Option<String> {
-    let prefix = format!("/remote.php/dav/files/{}/", username);
+    let prefix = format!(
+        "{}/remote.php/dav/files/{}/",
+        crate::common::config::server_base_path(),
+        username
+    );
     // For full URLs, extract the path portion (everything after the authority).
     let path = if dest.starts_with("http://") || dest.starts_with("https://") {
         // Find the start of the path after "scheme://host".

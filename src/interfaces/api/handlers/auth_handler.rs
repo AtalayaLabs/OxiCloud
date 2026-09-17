@@ -1491,7 +1491,9 @@ pub async fn oidc_providers(
         enabled: true,
         issuer,
         provider_name: config.provider_name.clone(),
-        authorize_endpoint: "/api/auth/oidc/authorize".to_string(),
+        // Browser-facing navigation target (the SPA window.location's to
+        // it verbatim) — must carry the deployment base path.
+        authorize_endpoint: state.core.config.prefixed_path("/api/auth/oidc/authorize"),
         password_login_enabled,
         magic_link_login_enabled,
         require_verified_email,

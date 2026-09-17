@@ -19,6 +19,8 @@
  * imported on first PDF encounter so image/video-only sessions never
  * pay the ~1 MB pdf.js download.
  */
+import { base } from '$app/paths';
+import { withBase } from '$lib/api/client';
 import type { FileItem } from '$lib/api/types';
 import { getCsrfHeaders } from '$lib/api/csrf';
 
@@ -32,8 +34,8 @@ import { getCsrfHeaders } from '$lib/api/csrf';
  */
 type ThumbnailFile = Pick<FileItem, 'id' | 'name' | 'mime_type'>;
 
-const PDFJS_LIB_URL = '/vendors/pdf.min.mjs';
-const PDFJS_WORKER_URL = '/vendors/pdf.worker.min.mjs';
+const PDFJS_LIB_URL = `${base}/vendors/pdf.min.mjs`;
+const PDFJS_WORKER_URL = `${base}/vendors/pdf.worker.min.mjs`;
 
 // Anything that ships a runtime API surface too broad to type here without
 // vendoring `@types/pdfjs-dist`; the two methods we call (`getDocument`,
@@ -161,7 +163,7 @@ async function generate(
 	onIconGenerated?: (dataUrl: string) => void,
 	onPreviewGenerated?: (dataUrl: string) => void
 ): Promise<void> {
-	const source = `${window.location.origin}/api/files/${file.id}`;
+	const source = `${window.location.origin}${withBase(`/api/files/${file.id}`)}`;
 	const bitmap = await sourceToBitmap(file, source);
 
 	const [iconBlob, previewBlob, largeBlob] = await Promise.all(
@@ -181,7 +183,7 @@ async function generate(
 				['large', largeBlob]
 			] as const
 		).map(([size, blob]) =>
-			fetch(`${window.location.origin}/api/files/${file.id}/thumbnail/${size}`, {
+			fetch(`${window.location.origin}${withBase(`/api/files/${file.id}/thumbnail/${size}`)}`, {
 				method: 'PUT',
 				headers: { ...getCsrfHeaders(), 'Content-Type': FORMAT },
 				body: blob,

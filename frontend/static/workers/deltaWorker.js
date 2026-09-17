@@ -20,9 +20,13 @@
  *         { type: 'fallback', reason }        — do a plain byte upload
  */
 
-// Absolute URLs on purpose: vendors/workers are served verbatim in both
-// dev and the static build (served verbatim from /static).
-const WASM_GLUE_URL = '/vendors/hash-wasm/oxicloud_hash_wasm.js';
+// The worker is served verbatim from /static at `{base}/workers/<name>.js`
+// in both dev and the static build. Derive the deployment base path from
+// our own URL (empty at the root) so the vendored WASM import and the API
+// calls below stay inside the app subtree under subpath deployments —
+// a plain worker script can't read SvelteKit's `$app/paths`.
+const BASE = self.location.pathname.replace(/\/workers\/[^/]*$/, '');
+const WASM_GLUE_URL = `${BASE}/vendors/hash-wasm/oxicloud_hash_wasm.js`;
 
 /** File read granularity — large enough to amortize Blob→ArrayBuffer. */
 const SLICE_BYTES = 8 * 1024 * 1024;
@@ -225,7 +229,7 @@ workerScope.onmessage = async (event) => {
                 log('debug', `chunk PUT: ${batch.length} chunks, ${wire.length} bytes`);
                 // eslint-disable-next-line no-await-in-loop -- bounded by pool size
                 const response = await withHeartbeat(() =>
-                    fetch('/api/files/delta/chunks', {
+                    fetch(`${BASE}/api/files/delta/chunks`, {
                         method: 'PUT',
                         headers: {
                             'Content-Type': 'application/octet-stream',
@@ -265,7 +269,7 @@ workerScope.onmessage = async (event) => {
             if (failed) return;
             try {
                 const response = await withHeartbeat(() =>
-                    fetch('/api/files/delta/negotiate', {
+                    fetch(`${BASE}/api/files/delta/negotiate`, {
                         method: 'POST',
                         headers: mutHeaders,
                         body: JSON.stringify({ chunks: fresh.map(({ h, s }) => ({ h, s })) })
@@ -368,7 +372,7 @@ workerScope.onmessage = async (event) => {
         for (let attempt = 0; ; attempt++) {
             // eslint-disable-next-line no-await-in-loop -- retry loop
             const response = await withHeartbeat(() =>
-                fetch('/api/files/delta/commit', {
+                fetch(`${BASE}/api/files/delta/commit`, {
                     method: 'POST',
                     headers: mutHeaders,
                     body: JSON.stringify(commitBody)
@@ -399,7 +403,7 @@ workerScope.onmessage = async (event) => {
                 const wire = await encodeFrames(retry);
                 // eslint-disable-next-line no-await-in-loop -- retry loop
                 const put = await withHeartbeat(() =>
-                    fetch('/api/files/delta/chunks', {
+                    fetch(`${BASE}/api/files/delta/chunks`, {
                         method: 'PUT',
                         headers: {
                             'Content-Type': 'application/octet-stream',

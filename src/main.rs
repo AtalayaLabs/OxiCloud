@@ -653,6 +653,14 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
     // downstream for both the locale loader (below) and the web router
     // (`create_web_routes`), so neither has to re-parse env or re-log.
     let static_source = resolve_static_source(&config);
+
+    // Prepare the SPA shell once: the deployment prefix goes into its
+    // `<base href>`, which is the only place the frontend build leaves
+    // open. Errors here mean a frontend too old to carry the placeholder.
+    let app_shell =
+        oxicloud::interfaces::web::AppShell::prepare(&static_source, &config.base_path)?
+            .map(std::sync::Arc::new);
+
     let locales_path = resolve_locales_path(&static_source);
     if !locales_path.is_dir() {
         panic!(
@@ -678,7 +686,7 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
     let api_routes = create_api_routes(&app_state);
     let public_api_routes = create_public_api_routes(&app_state);
     let health_routes = create_health_routes(&app_state);
-    let web_routes = create_web_routes(app_state.clone(), static_source);
+    let web_routes = create_web_routes(app_state.clone(), static_source, app_shell);
 
     let mut app;
 
@@ -1535,6 +1543,41 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
 
     // Provide the fully-built state to the router
     let app = app.with_state(app_state);
+
+    // Serve the entire surface under OXICLOUD_BASE_PATH when configured
+    // (subpath deployments, e.g. https://host/oxicloud behind a reverse
+    // proxy that forwards the prefix unstripped). A single `nest` here
+    // prefixes every route merged above at once — API, DAV, WOPI,
+    // Nextcloud, WebSocket and the SPA fallback included. Requests
+    // outside the prefix 404 at this outer router, which is correct:
+    // the origin root belongs to whatever else the proxy serves there.
+    let app = if config.base_path.is_empty() {
+        app
+    } else {
+        tracing::info!(
+            base_path = %config.base_path,
+            "serving the application under a URL base path"
+        );
+        // `nest` matches `{base}` and `{base}/…` but NOT the bare
+        // `{base}/` (axum 0.8 treats the prefix-with-trailing-slash as
+        // outside the nest), so register that one path explicitly as a
+        // 308 to `{base}`, preserving any query string.
+        let base = config.base_path.clone();
+        let trailing_slash = format!("{base}/");
+        let redirect_to_base = move |req: axum::extract::Request| {
+            let base = base.clone();
+            async move {
+                let target = match req.uri().query() {
+                    Some(q) => format!("{base}?{q}"),
+                    None => base,
+                };
+                axum::response::Redirect::permanent(&target)
+            }
+        };
+        Router::new()
+            .route(&trailing_slash, axum::routing::get(redirect_to_base))
+            .nest(&config.base_path, app)
+    };
 
     // TCP_NODELAY is inherited from the listening socket on Linux,
     // so every accepted connection already has Nagle disabled.

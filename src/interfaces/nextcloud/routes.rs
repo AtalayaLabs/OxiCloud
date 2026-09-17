@@ -259,7 +259,12 @@ async fn handle_dav_uploads_root(
 
 /// Legacy /remote.php/webdav/* — redirect to /remote.php/dav/files/{user}/*
 async fn handle_legacy_webdav(Path(subpath): Path<String>, user_ext: AuthUser) -> Response {
-    let location = format!("/remote.php/dav/files/{}/{}", user_ext.username, subpath);
+    let location = format!(
+        "{}/remote.php/dav/files/{}/{}",
+        crate::common::config::server_base_path(),
+        user_ext.username,
+        subpath
+    );
     Response::builder()
         .status(StatusCode::MOVED_PERMANENTLY)
         .header("location", location)
@@ -268,7 +273,11 @@ async fn handle_legacy_webdav(Path(subpath): Path<String>, user_ext: AuthUser) -
 }
 
 async fn handle_legacy_webdav_root(user_ext: AuthUser) -> Response {
-    let location = format!("/remote.php/dav/files/{}/", user_ext.username);
+    let location = format!(
+        "{}/remote.php/dav/files/{}/",
+        crate::common::config::server_base_path(),
+        user_ext.username
+    );
     Response::builder()
         .status(StatusCode::MOVED_PERMANENTLY)
         .header("location", location)

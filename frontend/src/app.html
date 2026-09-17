@@ -3,6 +3,11 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<!-- Anchor for every relative URL in this document. The server rewrites
+		     the value to OXICLOUD_BASE_PATH when it serves the shell, so one
+		     build runs under any deployment prefix. Must precede the tags
+		     below: <base> only affects URLs that come after it. -->
+		<base href="/" />
 		<!-- Icon set — mirrors the legacy static/index.html head. SVG is
 		     the primary (modern browsers use it, scales at every DPI); the
 		     .ico fallback covers old browsers + Windows taskbar shortcuts.
