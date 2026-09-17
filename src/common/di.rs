@@ -518,24 +518,16 @@ impl AppServiceFactory {
         // the choice (real extractor vs. no-op) is logged here instead of failing
         // per upload.
         let video_frame: Arc<dyn VideoFramePort> = {
-            let ffmpeg_path =
-                std::env::var("OXICLOUD_FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".to_string());
+            let video_cfg = &self.config.video_thumbnails;
+            let ffmpeg_path = video_cfg.ffmpeg_path.clone();
             if self.config.features.enable_video_thumbnails
                 && FfmpegVideoFrameService::is_available(&ffmpeg_path)
             {
                 let cpus = std::thread::available_parallelism()
                     .map(|n| n.get())
                     .unwrap_or(4);
-                let concurrency = std::env::var("OXICLOUD_VIDEO_THUMBNAIL_CONCURRENCY")
-                    .ok()
-                    .and_then(|v| v.parse::<usize>().ok())
-                    .unwrap_or((cpus / 2).max(1));
-                let timeout = std::time::Duration::from_secs(
-                    std::env::var("OXICLOUD_VIDEO_THUMBNAIL_TIMEOUT_SECS")
-                        .ok()
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(30),
-                );
+                let concurrency = video_cfg.concurrency.unwrap_or((cpus / 2).max(1));
+                let timeout = std::time::Duration::from_secs(video_cfg.timeout_secs);
                 tracing::info!(
                     "🎬 Video thumbnails enabled (ffmpeg '{}', concurrency {})",
                     ffmpeg_path,
@@ -561,10 +553,10 @@ impl AppServiceFactory {
         };
         // Cap on bytes streamed to a temp file for frame extraction (default 2 GB).
         // saturating_mul so an absurd MB value can't silently wrap to a tiny cap.
-        let video_max_bytes: u64 = std::env::var("OXICLOUD_VIDEO_THUMBNAIL_MAX_MB")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(2048)
+        let video_max_bytes: u64 = self
+            .config
+            .video_thumbnails
+            .max_mb
             .saturating_mul(1024 * 1024);
 
         let thumbnail_refresh_hook = Arc::new(ThumbnailRefreshHook::new(
@@ -1717,6 +1709,7 @@ impl AppServiceFactory {
             repos.file_read_repository.clone(),
             subject_group_repo.clone(),
             migration_readonly.clone(),
+            self.config.auth.authz_engine.as_deref(),
         );
 
         // Recent service + recording hook are built up-front so the
@@ -3576,10 +3569,11 @@ fn build_authorization_engine(
     >,
     group_repo: Arc<crate::infrastructure::repositories::pg::SubjectGroupPgRepository>,
     migration_readonly: Arc<std::sync::atomic::AtomicBool>,
+    authz_engine: Option<&str>,
 ) -> Arc<crate::infrastructure::services::pg_acl_engine::PgAclEngine> {
     use crate::infrastructure::services::pg_acl_engine::PgAclEngine;
 
-    if let Ok(other) = std::env::var("OXICLOUD_AUTHZ_ENGINE")
+    if let Some(other) = authz_engine
         && other != "postgres"
         && !other.is_empty()
     {
@@ -3616,10 +3610,7 @@ struct EmailSenderBundle {
 /// that captures every message instead of sending it. The harness
 /// retrieves captured messages via `GET /api/admin/smtp/test/captured`.
 fn build_email_sender(cfg: &crate::common::config::SmtpConfig) -> EmailSenderBundle {
-    if std::env::var("OXICLOUD_SMTP_MOCK")
-        .map(|v| v == "true" || v == "1")
-        .unwrap_or(false)
-    {
+    if cfg.mock {
         tracing::warn!(
             target: "oxicloud",
             event = "smtp.mock_enabled",

@@ -1817,10 +1817,7 @@ async fn get_captured_email(
     State(state): State<Arc<AppState>>,
     Query(params): Query<CapturedEmailQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    if !std::env::var("OXICLOUD_SMTP_MOCK")
-        .map(|v| v == "true" || v == "1")
-        .unwrap_or(false)
-    {
+    if !state.core.config.smtp.mock {
         return Err(AppError::not_found(
             "Capture endpoint is only available when OXICLOUD_SMTP_MOCK=true",
         ));

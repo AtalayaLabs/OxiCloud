@@ -1380,6 +1380,9 @@ pub struct AuthConfig {
     pub hash_time_cost: u32,
     /// Argon2id parallelism lanes (default 2)
     pub hash_parallelism: u32,
+    /// `OXICLOUD_AUTHZ_ENGINE` as given; only `postgres` (or unset/empty)
+    /// is implemented — DI panics on anything else.
+    pub authz_engine: Option<String>,
     /// Rate limiting / account lockout configuration
     pub rate_limit: RateLimitConfig,
     /// Allowlist of email domains accepted on the public `POST
@@ -1708,6 +1711,7 @@ impl Default for AuthConfig {
             hash_memory_cost: 65536, // 64 MiB
             hash_time_cost: 3,
             hash_parallelism: 2,
+            authz_engine: None,
             rate_limit: RateLimitConfig::default(),
             registration_allowed_email_domains: Vec::new(),
             auth_policies: Vec::new(),
@@ -2025,6 +2029,12 @@ pub struct WopiConfig {
     pub token_ttl_secs: i64,
     /// Lock expiration in seconds (default: 1800 = 30 minutes)
     pub lock_ttl_secs: u64,
+    /// URL the editor uses to call back into `/wopi/*`
+    /// (`OXICLOUD_WOPI_BASE_URL`). `None` = derive at wiring time.
+    pub base_url: Option<String>,
+    /// URL the browser uses for the host page and `postMessage` origin
+    /// (`OXICLOUD_WOPI_PUBLIC_BASE_URL`). `None` = derive at wiring time.
+    pub public_base_url: Option<String>,
 }
 
 impl Default for WopiConfig {
@@ -2035,6 +2045,8 @@ impl Default for WopiConfig {
             secret: String::new(),
             token_ttl_secs: 86400,
             lock_ttl_secs: 1800,
+            base_url: None,
+            public_base_url: None,
         }
     }
 }
@@ -2124,6 +2136,9 @@ pub struct SmtpConfig {
     pub from: String,
     /// Transport encryption mode. See [`SmtpTlsMode`].
     pub tls: SmtpTlsMode,
+    /// `OXICLOUD_SMTP_MOCK=true` — capture outbound mail in-process
+    /// instead of sending it. Test harness only, never in production.
+    pub mock: bool,
 }
 
 impl Default for SmtpConfig {
@@ -2135,6 +2150,7 @@ impl Default for SmtpConfig {
             pass: String::new(),
             from: String::new(),
             tls: SmtpTlsMode::Starttls,
+            mock: false,
         }
     }
 }
@@ -2798,6 +2814,11 @@ pub struct AppConfig {
     ///
     /// Dispatch is non-blocking — readiness never waits on a job.
     pub startup_jobs: Vec<StartupJob>,
+    /// `OXICLOUD_REUSE_PORT` — set `SO_REUSEPORT` on the listener so
+    /// several processes can bind the same port (rolling restarts).
+    pub reuse_port: bool,
+    /// Video thumbnail (ffmpeg) extraction knobs.
+    pub video_thumbnails: VideoThumbnailConfig,
     /// Cache configuration
     pub cache: CacheConfig,
     /// Timeout configuration
@@ -2897,6 +2918,39 @@ impl Default for I18nConfig {
     }
 }
 
+/// Server-side video thumbnail extraction (ffmpeg).
+#[derive(Debug, Clone)]
+pub struct VideoThumbnailConfig {
+    /// ffmpeg binary (`OXICLOUD_FFMPEG_PATH`); default resolves on `PATH`.
+    pub ffmpeg_path: String,
+    /// Parallel extractions (`OXICLOUD_VIDEO_THUMBNAIL_CONCURRENCY`);
+    /// `None` = half the available cores, at least 1.
+    pub concurrency: Option<usize>,
+    /// Per-video ffmpeg timeout (`OXICLOUD_VIDEO_THUMBNAIL_TIMEOUT_SECS`).
+    pub timeout_secs: u64,
+    /// Cap on bytes streamed to a temp file for extraction
+    /// (`OXICLOUD_VIDEO_THUMBNAIL_MAX_MB`).
+    pub max_mb: u64,
+}
+
+impl Default for VideoThumbnailConfig {
+    fn default() -> Self {
+        Self {
+            ffmpeg_path: "ffmpeg".to_string(),
+            concurrency: None,
+            timeout_secs: 30,
+            max_mb: 2048,
+        }
+    }
+}
+
+/// `Some(url)` without a trailing slash, or `None` for unset/empty.
+fn non_empty_url(var: Result<String, env::VarError>) -> Option<String> {
+    var.ok()
+        .map(|v| v.trim_end_matches('/').to_string())
+        .filter(|v| !v.is_empty())
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -2927,6 +2981,8 @@ impl Default for AppConfig {
             faces: FacesConfig::default(),
             metrics_listen: None,
             startup_jobs: parse_startup_jobs(DEFAULT_STARTUP_JOBS),
+            reuse_port: false,
+            video_thumbnails: VideoThumbnailConfig::default(),
         }
     }
 }
@@ -2985,6 +3041,33 @@ impl AppConfig {
         // line.
         if let Ok(raw) = env::var("OXICLOUD_STARTUP_JOBS") {
             config.startup_jobs = parse_startup_jobs(&raw);
+        }
+
+        if let Ok(v) = env::var("OXICLOUD_REUSE_PORT") {
+            config.reuse_port = v.eq_ignore_ascii_case("true") || v == "1";
+        }
+
+        if let Ok(v) = env::var("OXICLOUD_FFMPEG_PATH") {
+            config.video_thumbnails.ffmpeg_path = v;
+        }
+        if let Ok(v) = env::var("OXICLOUD_VIDEO_THUMBNAIL_CONCURRENCY")
+            && let Ok(n) = v.parse::<usize>()
+        {
+            config.video_thumbnails.concurrency = Some(n);
+        }
+        if let Ok(v) = env::var("OXICLOUD_VIDEO_THUMBNAIL_TIMEOUT_SECS")
+            && let Ok(n) = v.parse::<u64>()
+        {
+            config.video_thumbnails.timeout_secs = n;
+        }
+        if let Ok(v) = env::var("OXICLOUD_VIDEO_THUMBNAIL_MAX_MB")
+            && let Ok(n) = v.parse::<u64>()
+        {
+            config.video_thumbnails.max_mb = n;
+        }
+
+        if let Ok(v) = env::var("OXICLOUD_AUTHZ_ENGINE") {
+            config.auth.authz_engine = Some(v);
         }
 
         // Database configuration
@@ -3937,6 +4020,8 @@ impl AppConfig {
         {
             config.wopi.lock_ttl_secs = val;
         }
+        config.wopi.base_url = non_empty_url(env::var("OXICLOUD_WOPI_BASE_URL"));
+        config.wopi.public_base_url = non_empty_url(env::var("OXICLOUD_WOPI_PUBLIC_BASE_URL"));
 
         // WOPI secret fallback: use JWT secret if WOPI secret not set
         if config.wopi.enabled && config.wopi.secret.is_empty() {
@@ -3991,6 +4076,9 @@ impl AppConfig {
             && let Some(mode) = SmtpTlsMode::parse(&v)
         {
             config.smtp.tls = mode;
+        }
+        if let Ok(v) = env::var("OXICLOUD_SMTP_MOCK") {
+            config.smtp.mock = v == "true" || v == "1";
         }
 
         if config.smtp.is_enabled() && config.smtp.tls == SmtpTlsMode::None {
@@ -4143,6 +4231,36 @@ pub fn default_config() -> AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Optional URL knobs: unset and empty both mean "derive", a trailing
+    /// slash is trimmed so callers can glue paths on directly.
+    #[test]
+    fn non_empty_url_normalizes_optional_urls() {
+        assert_eq!(non_empty_url(Err(env::VarError::NotPresent)), None);
+        assert_eq!(non_empty_url(Ok(String::new())), None);
+        assert_eq!(non_empty_url(Ok("/".to_string())), None);
+        assert_eq!(
+            non_empty_url(Ok("http://oxicloud:8086/".to_string())),
+            Some("http://oxicloud:8086".to_string())
+        );
+    }
+
+    /// The knobs moved from ad-hoc `env::var` reads in di.rs keep the
+    /// exact defaults those reads had.
+    #[test]
+    fn video_thumbnail_defaults_match_previous_inline_literals() {
+        let v = VideoThumbnailConfig::default();
+        assert_eq!(v.ffmpeg_path, "ffmpeg");
+        assert_eq!(v.concurrency, None);
+        assert_eq!(v.timeout_secs, 30);
+        assert_eq!(v.max_mb, 2048);
+        let c = AppConfig::default();
+        assert!(!c.reuse_port);
+        assert!(!c.smtp.mock);
+        assert_eq!(c.auth.authz_engine, None);
+        assert_eq!(c.wopi.base_url, None);
+        assert_eq!(c.wopi.public_base_url, None);
+    }
 
     /// The per-caller limits moved from hardcoded literals in `di.rs` into
     /// config. The whole point was to add a knob, NOT to change behaviour
