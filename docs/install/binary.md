@@ -217,6 +217,37 @@ supported by sqlx's migration model; if you need to roll back, stop
 the server, roll back your Postgres data directory to a snapshot, and
 install the previous binary.
 
+### Upgrading from a release without a server owner
+
+**Upgrade-only.** A fresh installation already has an owner: the
+account created during first-run setup. Skip this section if you
+installed from scratch.
+
+Newer releases distinguish the **server owner** from ordinary
+administrators. The owner is the one account other administrators
+cannot act on — they cannot change its role, deactivate it, delete
+it, or reset its password. Without that distinction, any
+administrator can lock out any other, including you.
+
+An upgraded instance starts with no owner, because the server has no
+safe way to guess which administrator it should be — on a long-lived
+instance the earliest admin is often not the current maintainer.
+The server runs normally in this state; what it refuses is
+administrator-on-administrator changes, with a log line pointing
+here.
+
+Name your owner once, on the server, with the database reachable:
+
+```
+oxicloud user promote-to-owner <email-or-username>
+```
+
+Add `--dry-run` to see what it would change first. The command
+refuses if an owner already exists — from then on, ownership moves
+only by transfer, from the admin interface, by the owner themselves.
+
+A running server can take up to 30 seconds to notice the change.
+
 ### Upgrading from a case-sensitive-usernames release
 
 Releases that predate the case-insensitive-usernames change stored

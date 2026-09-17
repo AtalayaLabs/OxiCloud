@@ -2,10 +2,36 @@
 
 Issue: [AtalayaLabs/OxiCloud#690](https://github.com/AtalayaLabs/OxiCloud/issues/690)
 
-**Status:** design-only, **UNBLOCKED**. The `Anonymous` role work has
-landed (`refactor/rationalize-publicshare`), so the rebase conflict this
-plan was waiting on is resolved. What that branch left behind, which
-this design predates and must be read against:
+**Status: IMPLEMENTED** on `feat/admin-vs-owner`. Unit, integration,
+Hurl API and frontend suites all green.
+
+What landed, in order: Step 0 (14 fail-open role parsers converted to
+`from_stored`, the 3 external-identity guards restated as "not a plain
+user"), the `Owner` variant with its two migrations, hierarchy
+enforcement via `require_can_modify`, the transfer endpoint, the
+`oxicloud user promote-to-owner` CLI, the frontend badge and transfer
+flow, and docs.
+
+Three things the plan did not predict, each found by running something
+rather than by reading code — recorded because they are the parts a
+re-implementation would get wrong again:
+
+1. **Nine admin gates compared the role SPELLING** (`role == "admin"`)
+   against a `String`, not a `UserRole`. The typed sweep could not see
+   them, and every one denied the owner. `UserRole::str_at_least` now
+   covers them. Found by the Hurl suite.
+2. **`count_users_by_role("admin")` silently stopped counting
+   administrators** once setup created an `Owner`, and it feeds
+   `/api/auth/status`'s `initialized` and `registration_allowed`.
+   Replaced by a typed `count_privileged_users`.
+3. **Folding "self" into the rank comparison forbade every
+   self-directed admin action**, because nobody outranks themselves —
+   breaking an admin setting their own quota. The hierarchy governs
+   acting on *others*; the three genuine self-refusals are per-method.
+
+The `Anonymous` role work (`refactor/rationalize-publicshare`) landed
+first. What that branch left behind, which this design predates and
+must be read against:
 
 ```rust
 pub enum UserRole { Admin, User, Anonymous }
