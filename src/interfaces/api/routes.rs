@@ -749,11 +749,6 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     // Sub-nanosecond on the hot path (single atomic load), a few
     // µs on the cold path (only during a running migration). See
     // `middleware::server_status`.
-    let router = router.layer(axum::middleware::from_fn_with_state(
-        app_state.clone(),
-        crate::interfaces::middleware::server_status::server_status_middleware,
-    ));
-
     // No per-router layers beyond that: the global `TraceLayer` + request-id
     // stack in `main.rs` wraps the whole app (this `/api` router is nested
     // into it), so a second `TraceLayer` here just double-wrapped every
@@ -761,7 +756,10 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     // (benches/ROUND13.md §H1). Compression is likewise the global layer's
     // job — re-applying it here (no predicate) would compress media
     // downloads, burning CPU for ~0 gain and stripping `Content-Length`.
-    router
+    router.layer(axum::middleware::from_fn_with_state(
+        app_state.clone(),
+        crate::interfaces::middleware::server_status::server_status_middleware,
+    ))
 }
 
 /// Catch-all 404 for unknown `/api/*` paths. Pure log-anchoring
