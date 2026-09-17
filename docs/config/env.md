@@ -2,6 +2,9 @@
 
 Most runtime variables use the `OXICLOUD_` prefix. A few build-time or allocator variables do not.
 
+Every variable below can also be written in a TOML config file — the key is the name with the
+`OXICLOUD_` prefix dropped, lower-cased. See [toml.md](./toml.md).
+
 ## Server
 
 | Variable | Default | Description |
