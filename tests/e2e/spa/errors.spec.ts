@@ -21,6 +21,7 @@ test('creating a duplicate folder surfaces an error toast', async ({ page }) => 
   await page.goto(`/files/${parent.id}`);
   await expect(page.getByTestId(name)).toBeVisible({ timeout: 15_000 });
 
+  await page.getByTestId('files-add-btn').click();
   await page.getByTestId('files-new-folder-btn').click();
   await page.getByTestId('dialog-host-prompt-input').fill(name);
   await page.getByTestId('dialog-host-submit-btn').click();
@@ -45,5 +46,5 @@ test('an over-cap upload is handled without crashing', async ({ page }) => {
   });
   await page.waitForTimeout(2_000);
   // The page stays usable (the error path ran).
-  await expect(page.getByTestId('files-upload-btn')).toBeVisible();
+  await expect(page.getByTestId('files-add-btn')).toBeVisible();
 });

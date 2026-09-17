@@ -153,7 +153,7 @@ test('upload a folder via the hidden folder input', async ({ page }) => {
     .catch(() => {});
   await page.waitForTimeout(1500);
   // The page stays functional whether or not the upload fully completes.
-  await expect(page.getByTestId('files-upload-btn')).toBeVisible();
+  await expect(page.getByTestId('files-add-btn')).toBeVisible();
 });
 
 test('drag a file onto a subfolder to move it', async ({ page }) => {

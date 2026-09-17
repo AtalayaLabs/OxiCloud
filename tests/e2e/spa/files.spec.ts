@@ -18,6 +18,7 @@ function uniq(prefix: string): string {
 test('create a folder via the toolbar', async ({ page }) => {
   const name = uniq('Created');
   await page.goto('/files');
+  await page.getByTestId('files-add-btn').click();
   await page.getByTestId('files-new-folder-btn').click();
   await page.getByTestId('dialog-host-prompt-input').fill(name);
   await page.getByTestId('dialog-host-submit-btn').click();

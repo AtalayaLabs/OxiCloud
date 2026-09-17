@@ -76,3 +76,15 @@
     margin-left: var(--space-1);
     font-size: var(--text-xs);
 }
+
+.upload-dropdown-sep {
+    margin: var(--space-1) 0;
+    border: none;
+    border-top: 1px solid var(--color-border-light);
+}
+
+.upload-dropdown-item:disabled {
+    color: var(--color-text-subtle);
+    cursor: default;
+    background: none;
+}

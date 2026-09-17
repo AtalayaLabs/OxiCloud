@@ -252,7 +252,10 @@
     "add": "Add",
     "apply": "Apply",
     "clear": "Clear",
-    "remove": "Remove"
+    "remove": "Remove",
+    "new_document_text": "New text document",
+    "new_document_spreadsheet": "New spreadsheet",
+    "new_document_presentation": "New presentation"
   },
   "user_menu": {
     "appearance": "Appearance",
@@ -551,7 +554,9 @@
     "rename_dotfile_hidden": "Renamed to '{{name}}' — now hidden by your preference.",
     "new_folder_dotfile_hidden": "Created folder '{{name}}' — hidden by your dotfile preference.",
     "dotfiles_hidden_toast": "Dotfiles hidden",
-    "dotfiles_shown_toast": "Dotfiles shown"
+    "dotfiles_shown_toast": "Dotfiles shown",
+    "new_document": "New document",
+    "new_document_prompt": "Document name"
   },
   "dialogs": {
     "rename_folder": "Rename folder",
