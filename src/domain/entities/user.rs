@@ -7,6 +7,15 @@ pub use super::entity_errors::{UserError, UserResult};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 // We'll handle conversion manually for now until the type is properly set up in the database
 pub enum UserRole {
+    /// The server owner: an administrator that other administrators cannot
+    /// act on. Outranks [`Self::Admin`], so it satisfies every admin gate
+    /// without those gates naming it.
+    ///
+    /// At most one row may hold it today (`idx_users_single_owner`), but
+    /// that is policy rather than something this type assumes — nothing
+    /// here would need to change to allow several. See
+    /// `docs/plan/role-hierarchy-owner.md`.
+    Owner,
     Admin,
     User,
     /// A public-share visitor. **Never stored in `auth.users`** — it exists
@@ -20,6 +29,7 @@ impl UserRole {
     /// and every hot-path role render go through (no format machinery).
     pub fn as_str(self) -> &'static str {
         match self {
+            UserRole::Owner => "owner",
             UserRole::Admin => "admin",
             UserRole::User => "user",
             UserRole::Anonymous => "anonymous",
@@ -34,6 +44,7 @@ impl UserRole {
     /// silently became a real user. Use this instead and decide explicitly.
     pub fn from_stored(raw: &str) -> Option<Self> {
         match raw {
+            "owner" => Some(UserRole::Owner),
             "admin" => Some(UserRole::Admin),
             "user" => Some(UserRole::User),
             _ => None,
@@ -50,16 +61,21 @@ impl UserRole {
         }
     }
 
-    /// Privilege order: `Anonymous` < `User` < `Admin`.
+    /// Privilege order: `Anonymous` < `User` < `Admin` < `Owner`.
     ///
     /// Deliberately an explicit rank rather than a derived `Ord` — a derive
     /// follows declaration order, so reordering the variants would silently
     /// invert every comparison.
+    ///
+    /// Contiguous on purpose. Gaps "reserved for future roles" buy nothing:
+    /// adding a variant means revisiting every `match` on this enum anyway,
+    /// and the integers appear in no wire format.
     pub fn rank(self) -> u8 {
         match self {
             UserRole::Anonymous => 0,
             UserRole::User => 1,
             UserRole::Admin => 2,
+            UserRole::Owner => 3,
         }
     }
 
@@ -67,6 +83,19 @@ impl UserRole {
     /// behind `require_role`.
     pub fn at_least(self, min: UserRole) -> bool {
         self.rank() >= min.rank()
+    }
+
+    /// True when `self` may act on a user holding `target`.
+    ///
+    /// **Strict**, where [`Self::at_least`] is inclusive — that difference
+    /// is the whole hierarchy. An admin meets an admin-level requirement
+    /// (`at_least`) but may not act upon another admin (`outranks`), which
+    /// is what stops one rogue admin from locking out the rest.
+    ///
+    /// Self-directed actions do not go through here: changing your own
+    /// password is a `/me` operation, not an administrative one.
+    pub fn outranks(self, target: UserRole) -> bool {
+        self.rank() > target.rank()
     }
 
     /// True for a principal with no `auth.users` row behind it.
@@ -1062,9 +1091,17 @@ mod role_tests {
     /// The privilege order `require_role` depends on. Written out rather
     /// than derived, so a variant reorder cannot silently invert it.
     #[test]
-    fn anonymous_is_below_user_is_below_admin() {
+    fn anonymous_is_below_user_is_below_admin_is_below_owner() {
         assert!(UserRole::Anonymous.rank() < UserRole::User.rank());
         assert!(UserRole::User.rank() < UserRole::Admin.rank());
+        assert!(UserRole::Admin.rank() < UserRole::Owner.rank());
+
+        // The owner satisfies every admin gate without those gates naming
+        // them — the property that let `Owner` be added without touching
+        // `require_system_admin`, the admin middleware, or the admin
+        // service methods.
+        assert!(UserRole::Owner.at_least(UserRole::Admin));
+        assert!(UserRole::Owner.at_least(UserRole::User));
 
         // An admin satisfies a "user or better" requirement…
         assert!(UserRole::Admin.at_least(UserRole::User));
@@ -1084,9 +1121,59 @@ mod role_tests {
     /// Stated as the property rather than as cases: everything ranked
     /// above `User` is privileged, everything at or below is not. A new
     /// variant is covered the moment it has a rank.
+    /// `outranks` is STRICT where `at_least` is inclusive, and that
+    /// difference is the hierarchy: an admin meets an admin requirement but
+    /// may not act on a peer. Without it, one rogue admin can demote every
+    /// other admin — the situation issue #690 exists to end.
+    #[test]
+    fn outranking_is_strict_so_peers_cannot_act_on_each_other() {
+        assert!(!UserRole::Admin.outranks(UserRole::Admin));
+        assert!(!UserRole::User.outranks(UserRole::User));
+        assert!(!UserRole::Owner.outranks(UserRole::Owner));
+
+        assert!(UserRole::Owner.outranks(UserRole::Admin));
+        assert!(UserRole::Admin.outranks(UserRole::User));
+
+        // Nothing reaches the owner from below. Stated for every role
+        // rather than just admin, because this is the protection the whole
+        // feature exists to provide.
+        for role in [UserRole::Anonymous, UserRole::User, UserRole::Admin] {
+            assert!(
+                !role.outranks(UserRole::Owner),
+                "{role} must not be able to act on the owner",
+            );
+        }
+    }
+
+    /// The roster grew, so the round-trip has to cover `'owner'` in both
+    /// directions. A stored role read back as anything else is the silent
+    /// failure Step 0 removed: a privileged account quietly becoming a
+    /// plain user, with no error anywhere.
+    #[test]
+    fn owner_round_trips_through_both_parsers() {
+        assert_eq!(UserRole::Owner.as_str(), "owner");
+        assert_eq!(UserRole::from_stored("owner"), Some(UserRole::Owner));
+        // Inherited by the session parser, so an owner's own JWT does not
+        // downgrade them on every request.
+        assert_eq!(UserRole::from_session("owner"), Some(UserRole::Owner));
+
+        for role in [UserRole::Owner, UserRole::Admin, UserRole::User] {
+            assert_eq!(
+                UserRole::from_stored(role.as_str()),
+                Some(role),
+                "{role} must survive a store/load round-trip",
+            );
+        }
+    }
+
     #[test]
     fn privileged_means_outranks_a_plain_user() {
-        for role in [UserRole::Anonymous, UserRole::User, UserRole::Admin] {
+        for role in [
+            UserRole::Anonymous,
+            UserRole::User,
+            UserRole::Admin,
+            UserRole::Owner,
+        ] {
             assert_eq!(
                 role.is_privileged(),
                 role.rank() > UserRole::User.rank(),

@@ -25,6 +25,7 @@
 	import { preferences } from '$lib/stores/preferences.svelte';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { session } from '$lib/stores/session.svelte';
+	import { isAtLeastAdmin } from '$lib/utils/roles';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { formatBytes } from '$lib/utils/format';
 	import { formatDate } from '$lib/utils/display';
@@ -76,7 +77,7 @@
 	const isOidc = $derived(session.me?.full.federation_kind === 'oidc');
 	const isLocal = $derived(!session.me?.full.federation_kind);
 	const usernameClaimed = $derived(!!session.user?.username);
-	const isAdmin = $derived(session.user?.role === 'admin');
+	const isAdmin = $derived(isAtLeastAdmin(session.user?.role));
 	const canEditImage = $derived(session.me?.can_edit_image === true && isLocal);
 	// Show the change-password card when the user CAN change their
 	// local password: they have `password_hash` on file AND the

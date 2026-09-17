@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { errorMessage, errorToast } from '$lib/utils/errors';
+	import { isAtLeastAdmin, isOwner } from '$lib/utils/roles';
 	import { dateTimeFormatFor } from '$lib/utils/display';
 	import {
 		clearPluginLogs,
@@ -1151,7 +1152,12 @@
 
 	async function toggleRole(u: FullUser) {
 		if (isSelf(u)) return;
-		const role = u.user.role === 'admin' ? 'user' : 'admin';
+		// The owner is not part of the admin/user toggle: ownership moves
+		// only through the transfer flow, and the server refuses a role
+		// change on that row. The button is hidden for them too — this
+		// guard is for keyboard/programmatic paths.
+		if (isOwner(u.user.role)) return;
+		const role = isAtLeastAdmin(u.user.role) ? 'user' : 'admin';
 		if (!(await showConfirm(t('admin.confirm_role', { role }, 'Change role to {{role}}?')))) return;
 		try {
 			await setUserRole(u.user.id, role);
@@ -2959,8 +2965,16 @@
 								     badge is `white-space: nowrap` so the badge label
 								     itself never wraps mid-word either. -->
 								<div class="role-badges">
-									<span class="badge badge--{u.user.role === 'admin' ? 'admin' : 'user'}">
-										{#if u.user.role === 'admin'}<Icon name="shield-alt" />{/if}
+									<span
+										class="badge badge--{isOwner(u.user.role)
+											? 'owner'
+											: isAtLeastAdmin(u.user.role)
+												? 'admin'
+												: 'user'}"
+									>
+										{#if isOwner(u.user.role)}<Icon
+												name="crown"
+											/>{:else if isAtLeastAdmin(u.user.role)}<Icon name="shield-alt" />{/if}
 										{u.user.role}
 									</span>
 									{#if u.user.is_external}
@@ -3161,11 +3175,14 @@
 										<span class="icon-btn icon-btn--placeholder" aria-hidden="true"></span>
 									{/if}
 									<!-- Slot 3: role toggle. Hidden for externals — an
-									     external user cannot be admin (backend guard in
-									     `change_user_role` + DB CHECK
-									     `users_external_not_admin`). Promotion to
-									     internal is offered separately in slot 1. -->
-									{#if !u.user.is_external}
+									     external user cannot hold a privileged role
+									     (backend guard in `change_user_role` + DB CHECK
+									     `users_external_not_privileged`). Promotion to
+									     internal is offered separately in slot 1.
+									     Hidden for the server owner too: that row's role
+									     changes only through ownership transfer, and the
+									     backend refuses it here. -->
+									{#if !u.user.is_external && !isOwner(u.user.role)}
 										<button
 											class="icon-btn"
 											data-testid={`admin-user-toggle-role-${u.user.id}`}
@@ -3174,7 +3191,7 @@
 											disabled={isSelf(u)}
 											onclick={() => toggleRole(u)}
 										>
-											<Icon name={u.user.role === 'admin' ? 'user' : 'crown'} />
+											<Icon name={isAtLeastAdmin(u.user.role) ? 'user' : 'crown'} />
 										</button>
 									{:else}
 										<span class="icon-btn icon-btn--placeholder" aria-hidden="true"></span>
@@ -4926,6 +4943,18 @@
 	.badge--admin {
 		background: var(--color-info-bg);
 		color: var(--color-info-text);
+		text-transform: uppercase;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+	}
+
+	/* The server owner. Warmer than `--admin` so the one account that
+	   cannot be acted on reads as distinct at a glance, rather than as
+	   "admin with a different icon". */
+	.badge--owner {
+		background: var(--color-warning-bg);
+		color: var(--color-warning-text);
 		text-transform: uppercase;
 		display: inline-flex;
 		align-items: center;

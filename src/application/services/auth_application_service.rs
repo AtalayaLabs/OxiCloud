@@ -908,14 +908,31 @@ impl AuthApplicationService {
         ))))
     }
 
-    /// Create the first admin user during initial system setup.
+    /// Create the first user during initial system setup — the server
+    /// **owner**.
     ///
     /// This is called by the `/api/setup` endpoint after verifying the setup
-    /// token. It unconditionally creates an admin user. The caller (handler)
-    /// is responsible for:
+    /// token. The caller (handler) is responsible for:
     ///   1. Verifying the setup token
     ///   2. Checking that the system is not already initialized
     ///   3. Marking the system as initialized after this call succeeds
+    ///
+    /// Owner rather than Admin because a fresh install has exactly one
+    /// candidate and no history to be wrong about: whoever runs setup is by
+    /// definition the person standing the instance up. The caller's
+    /// once-only guard (`is_system_initialized` plus the atomic
+    /// `try_claim_initialization`) means no second request can arrive to
+    /// claim ownership instead.
+    ///
+    /// The *upgrade* path is deliberately different — there, ops name the
+    /// owner explicitly via `oxicloud user promote-to-owner`, because the
+    /// earliest admin of a long-lived install may not be the current
+    /// maintainer. That guess would be wrong often enough to matter; here
+    /// there is nothing to guess.
+    ///
+    /// Without this, every new install would start with no owner and refuse
+    /// admin-of-admin operations until someone ran a command they had no
+    /// reason to know existed. See `docs/plan/role-hierarchy-owner.md` § 4.
     pub async fn setup_create_admin(
         &self,
         username: String,
@@ -957,7 +974,7 @@ impl AuthApplicationService {
         // Validate password
         self.require_password_length(&password)?;
 
-        let role = UserRole::Admin;
+        let role = UserRole::Owner;
         let quota = self.capped_quota(&role);
         let password_hash = self.password_hasher.hash_password(&password).await?;
 
@@ -3241,14 +3258,20 @@ impl AuthApplicationService {
         Ok(PublicUserDto::new(user, false))
     }
 
-    // Method to count how many admin users exist in the system
-    // Used to determine if we have multiple admins or just the default one
+    /// How many users can administer this instance.
+    ///
+    /// Drives `/api/auth/status`, whose `initialized` and
+    /// `registration_allowed` both fall back to "does any administrator
+    /// exist". That must count the **owner** too: setup creates the first
+    /// user as `Owner`, so a literal `role = 'admin'` count reports zero
+    /// administrators for a freshly-installed instance that has one — and
+    /// the endpoint would then answer "not initialized, registration open".
     pub async fn count_admin_users(&self) -> Result<i64, DomainError> {
         // Scalar COUNT(*) — the old form fetched every admin's FULL row (incl.
         // the up-to-512 KiB avatar `image` + `ui_preferences` JSONB) only to
         // call `.len()`, on a status/init endpoint that is polled at bootstrap
         // (benches/ROUND29.md §G).
-        self.user_storage.count_users_by_role("admin").await
+        self.user_storage.count_privileged_users().await
     }
 
     /// Lists internal users only. External (grant-only) users are filtered
@@ -3884,36 +3907,64 @@ impl AuthApplicationService {
 
     /// Change user role (admin only).
     ///
-    /// Refuses `role = "admin"` when the target is external (grant-only).
-    /// The DB CHECK `users_external_not_admin` would also refuse this at
-    /// COMMIT, but surfacing it here yields a clean `InvalidInput` error
+    /// Assignable roles are `"admin"` and `"user"` — **`"owner"` is not
+    /// assignable here.** Ownership moves only through the dedicated
+    /// transfer flow, which swaps both rows in one transaction; conferring
+    /// it through this endpoint would create a second owner and trip
+    /// `idx_users_single_owner` with an opaque constraint error.
+    ///
+    /// The current owner is equally not a valid *target*: demoting them
+    /// would leave the instance ownerless, and the demoted owner could not
+    /// reach `/api/admin` to undo it. Recovery would need the CLI.
+    ///
+    /// Refuses a privileged role when the target is external (grant-only).
+    /// The DB CHECK `users_external_not_privileged` would also refuse this
+    /// at COMMIT, but surfacing it here yields a clean `InvalidInput` error
     /// with an audit line naming the reason, instead of a bare
     /// constraint-violation stringified out of Postgres.
     pub async fn change_user_role(&self, user_id: Uuid, role: &str) -> Result<(), DomainError> {
-        if role != "admin" && role != "user" {
-            return Err(DomainError::new(
-                ErrorKind::InvalidInput,
-                "User",
-                format!("Invalid role: {}. Must be 'admin' or 'user'", role),
-            ));
-        }
-
-        if role == "admin" {
-            let target = self.user_storage.get_user_by_id(user_id).await?;
-            if target.is_external() {
-                tracing::info!(
-                    target: "audit",
-                    event = "user.role_change_rejected",
-                    reason = "external_cannot_be_admin",
-                    target_id = %user_id,
-                    "👮🏻‍♂️ role change refused: external users cannot hold the admin role",
-                );
+        let requested = match UserRole::from_stored(role) {
+            Some(r @ (UserRole::Admin | UserRole::User)) => r,
+            _ => {
                 return Err(DomainError::new(
                     ErrorKind::InvalidInput,
                     "User",
-                    "External accounts cannot hold the admin role. Promote the user to internal first.",
+                    format!("Invalid role: {}. Must be 'admin' or 'user'", role),
                 ));
             }
+        };
+
+        let target = self.user_storage.get_user_by_id(user_id).await?;
+
+        if target.role() == UserRole::Owner {
+            tracing::info!(
+                target: "audit",
+                event = "user.role_change_rejected",
+                reason = "target_is_owner",
+                target_id = %user_id,
+                "👮🏻‍♂️ role change refused: the server owner cannot be demoted here",
+            );
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "User",
+                "The server owner's role cannot be changed here. Transfer ownership instead.",
+            ));
+        }
+
+        if requested.is_privileged() && target.is_external() {
+            tracing::info!(
+                target: "audit",
+                event = "user.role_change_rejected",
+                reason = "external_cannot_be_privileged",
+                target_id = %user_id,
+                requested_role = %requested,
+                "👮🏻‍♂️ role change refused: external users cannot hold a privileged role",
+            );
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "User",
+                "External accounts cannot hold a privileged role. Promote the user to internal first.",
+            ));
         }
 
         self.user_storage.change_role(user_id, role).await?;
@@ -5001,7 +5052,14 @@ impl AuthApplicationService {
         Ok(pending.auth_response)
     }
 
-    /// Map OIDC groups to internal role
+    /// Map OIDC groups to internal role.
+    ///
+    /// Tops out at [`UserRole::Admin`] on purpose: **ownership is never
+    /// conferred by an identity provider.** Group membership is
+    /// administered outside this instance, so an `owner_groups` setting
+    /// would hand whoever controls the IdP the one role no local admin can
+    /// act on. Ownership is claimed at setup or assigned by the CLI — both
+    /// require access to the instance itself.
     fn map_oidc_role(&self, groups: &[String], config: &OidcConfig) -> UserRole {
         if config.admin_groups.is_empty() {
             return UserRole::User;

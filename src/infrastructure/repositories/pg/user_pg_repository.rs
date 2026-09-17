@@ -1156,10 +1156,14 @@ impl UserRepository for UserPgRepository {
         Ok(())
     }
 
-    /// Counts users by role with a scalar `COUNT(*)` — no row hydration.
-    async fn count_users_by_role(&self, role: &str) -> UserRepositoryResult<i64> {
-        sqlx::query_scalar("SELECT COUNT(*) FROM auth.users WHERE role::text = $1")
-            .bind(role)
+    /// Counts administrators with a scalar `COUNT(*)` — no row hydration.
+    ///
+    /// `<> 'user'` rather than a list of privileged roles, matching
+    /// `UserRole::is_privileged()` and the `users_external_not_privileged`
+    /// CHECK: `role` is `NOT NULL` and enum-typed, so "not a plain user" is
+    /// total and stays correct as the roster grows.
+    async fn count_privileged_users(&self) -> UserRepositoryResult<i64> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM auth.users WHERE role <> 'user'")
             .fetch_one(&*self.pool)
             .await
             .map_err(Self::map_sqlx_error)
@@ -1677,8 +1681,8 @@ impl UserStoragePort for UserPgRepository {
             .map_err(DomainError::from)
     }
 
-    async fn count_users_by_role(&self, role: &str) -> Result<i64, DomainError> {
-        UserRepository::count_users_by_role(self, role)
+    async fn count_privileged_users(&self) -> Result<i64, DomainError> {
+        UserRepository::count_privileged_users(self)
             .await
             .map_err(DomainError::from)
     }

@@ -287,11 +287,12 @@ pub trait UserStoragePort: Send + Sync + 'static {
     /// Lists users by role (e.g., "admin" or "user")
     async fn list_users_by_role(&self, role: &str) -> Result<Vec<User>, DomainError>;
 
-    /// Counts users with a given role WITHOUT hydrating their rows — a scalar
-    /// `COUNT(*)` instead of fetching every full user row (incl. the up-to-512
-    /// KiB avatar `image` and the `ui_preferences` JSONB) only to `.len()` them
+    /// Counts users who can administer the instance — anything ranked above a
+    /// plain user — WITHOUT hydrating their rows: a scalar `COUNT(*)` instead
+    /// of fetching every full user row (incl. the up-to-512 KiB avatar `image`
+    /// and the `ui_preferences` JSONB) only to `.len()` them
     /// (benches/ROUND29.md §G).
-    async fn count_users_by_role(&self, role: &str) -> Result<i64, DomainError>;
+    async fn count_privileged_users(&self) -> Result<i64, DomainError>;
 
     /// Deletes a user by their ID
     async fn delete_user(&self, user_id: Uuid) -> Result<(), DomainError>;
