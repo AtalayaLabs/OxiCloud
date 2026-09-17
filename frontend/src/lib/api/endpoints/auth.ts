@@ -3,7 +3,7 @@
  * primitives here intentionally bypass it (see client.ts) so a 401 surfaces as
  * a genuine failure to the caller.
  */
-import { ApiError, apiFetch } from '$lib/api/client';
+import { ApiError, apiFetch, withBase } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type { AuthResponse, SelfUser } from '$lib/api/types';
 
@@ -66,11 +66,11 @@ export async function fetchMe(): Promise<SelfUser | null> {
 	} catch {
 		/* no dpop module → plain fetch */
 	}
-	const url = `${location.origin}/api/auth/me`;
+	const url = `${location.origin}${withBase('/api/auth/me')}`;
 	const send = async (): Promise<Response> => {
 		const proof = dpopMod ? await dpopMod.buildDpopProof('GET', url).catch(() => null) : null;
 		const headers: HeadersInit = proof ? { DPoP: proof } : {};
-		const r = await fetch('/api/auth/me', { credentials: 'same-origin', headers });
+		const r = await fetch(withBase('/api/auth/me'), { credentials: 'same-origin', headers });
 		if (dpopMod) dpopMod.updateNonceFromResponse(r);
 		return r;
 	};
@@ -103,13 +103,13 @@ export async function tryRefresh(): Promise<boolean> {
 	} catch {
 		/* no dpop module → plain fetch */
 	}
-	const url = `${location.origin}/api/auth/refresh`;
+	const url = `${location.origin}${withBase('/api/auth/refresh')}`;
 	const send = async (): Promise<Response> => {
 		const proof = dpopMod ? await dpopMod.buildDpopProof('POST', url).catch(() => null) : null;
 		const headers: HeadersInit = proof
 			? { ...JSON_HEADERS, ...getCsrfHeaders(), DPoP: proof }
 			: { ...JSON_HEADERS, ...getCsrfHeaders() };
-		const r = await fetch('/api/auth/refresh', {
+		const r = await fetch(withBase('/api/auth/refresh'), {
 			method: 'POST',
 			credentials: 'same-origin',
 			headers,
@@ -352,7 +352,7 @@ export interface OidcProviders {
 /** Public OIDC provider info for the login page. */
 export async function getOidcProviders(): Promise<OidcProviders> {
 	try {
-		const res = await fetch('/api/auth/oidc/providers');
+		const res = await fetch(withBase('/api/auth/oidc/providers'));
 		if (!res.ok) return { enabled: false };
 		return (await res.json()) as OidcProviders;
 	} catch {
@@ -375,7 +375,7 @@ export interface AuthStatus {
  */
 export async function getAuthStatus(): Promise<AuthStatus> {
 	try {
-		const res = await fetch('/api/auth/status', { credentials: 'same-origin' });
+		const res = await fetch(withBase('/api/auth/status'), { credentials: 'same-origin' });
 		if (!res.ok) return { initialized: true, admin_count: 1, registration_allowed: true };
 		return (await res.json()) as AuthStatus;
 	} catch {
@@ -389,7 +389,7 @@ export async function getAuthStatus(): Promise<AuthStatus> {
  * surfaces as a genuine failure instead of triggering the refresh-and-redirect.
  */
 export async function setupAdmin(email: string, password: string): Promise<void> {
-	const res = await fetch('/api/setup', {
+	const res = await fetch(withBase('/api/setup'), {
 		method: 'POST',
 		credentials: 'same-origin',
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
@@ -410,7 +410,7 @@ export async function setupAdmin(email: string, password: string): Promise<void>
  */
 export async function exchangeOidcCode(code: string): Promise<SelfUser | null> {
 	try {
-		const res = await fetch('/api/auth/oidc/exchange', {
+		const res = await fetch(withBase('/api/auth/oidc/exchange'), {
 			method: 'POST',
 			credentials: 'same-origin',
 			headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
@@ -435,7 +435,7 @@ export async function register(email: string, password?: string, username?: stri
 	const body: Record<string, unknown> = { email, role: 'user' };
 	if (password) body.password = password;
 	if (username) body.username = username;
-	const res = await fetch('/api/auth/register', {
+	const res = await fetch(withBase('/api/auth/register'), {
 		method: 'POST',
 		credentials: 'same-origin',
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
@@ -495,7 +495,7 @@ export type MagicLinkResult = 'sent' | 'unavailable';
  * unauthenticated, must not enter the refresh interceptor.
  */
 export async function sendMagicLink(email: string): Promise<MagicLinkResult> {
-	const res = await fetch('/api/auth/magic-link/send', {
+	const res = await fetch(withBase('/api/auth/magic-link/send'), {
 		method: 'POST',
 		credentials: 'same-origin',
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },

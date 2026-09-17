@@ -1,5 +1,5 @@
 /** File endpoints — ported from fileOperations.js. */
-import { apiFetch } from '$lib/api/client';
+import { apiFetch, withBase } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type { FileItem } from '$lib/api/types';
 
@@ -88,7 +88,7 @@ export async function uploadFileWithProgress(
 	} catch {
 		/* no dpop module → plain XHR */
 	}
-	const url = `${location.origin}/api/files/upload`;
+	const url = `${location.origin}${withBase('/api/files/upload')}`;
 
 	const attempt = (): Promise<void> =>
 		new Promise((resolve, reject) => {
@@ -96,7 +96,7 @@ export async function uploadFileWithProgress(
 			if (folderId) form.append('folder_id', folderId);
 			form.append('file', file);
 			const xhr = new XMLHttpRequest();
-			xhr.open('POST', '/api/files/upload');
+			xhr.open('POST', withBase('/api/files/upload'));
 			xhr.withCredentials = true;
 			for (const [k, v] of Object.entries(getCsrfHeaders())) xhr.setRequestHeader(k, v);
 
@@ -231,11 +231,11 @@ export async function getFile(fileId: string): Promise<FileItem> {
 }
 
 export function fileDownloadUrl(fileId: string): string {
-	return `/api/files/${fileId}`;
+	return withBase(`/api/files/${fileId}`);
 }
 
 export function fileInlineUrl(fileId: string): string {
-	return `/api/files/${fileId}?inline=true`;
+	return withBase(`/api/files/${fileId}?inline=true`);
 }
 
 /** Thumbnail URL for a file at the given size (server-rendered, content-typed). */
@@ -243,7 +243,7 @@ export function fileThumbnailUrl(
 	fileId: string,
 	size: 'icon' | 'preview' | 'large' = 'preview'
 ): string {
-	return `/api/files/${fileId}/thumbnail/${size}`;
+	return withBase(`/api/files/${fileId}/thumbnail/${size}`);
 }
 
 /**

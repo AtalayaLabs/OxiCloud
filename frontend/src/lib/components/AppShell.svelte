@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { appPath } from '$lib/utils/appPath';
 	import type { Snippet } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
@@ -162,11 +163,12 @@
 	// Any URL under /admin swaps the sidebar to admin mode. Uses
 	// startsWith so a trailing slash / query params / hash don't
 	// desync. Root `/admin` counts too (dashboard).
-	const isAdminSection = $derived(page.url.pathname.startsWith('/admin'));
+	const isAdminSection = $derived(appPath(page.url.pathname).startsWith('/admin'));
 	const currentLinks = $derived(isAdminSection ? ADMIN_LINKS : LINKS);
 
 	function active(href: string): boolean {
-		return page.url.pathname === href || page.url.pathname.startsWith(`${href}/`);
+		const path = appPath(page.url.pathname);
+		return path === href || path.startsWith(`${href}/`);
 	}
 
 	// Sidebar-item active check. Non-admin links use `active()`
@@ -176,7 +178,7 @@
 	// So `/admin` matches ONLY the exact path; every other admin
 	// item uses the same startsWith rule as before.
 	function activeLink(href: string): boolean {
-		if (href === '/admin') return page.url.pathname === '/admin';
+		if (href === '/admin') return appPath(page.url.pathname) === '/admin';
 		return active(href);
 	}
 

@@ -5,6 +5,7 @@
  * small file's whole-file BLAKE3 for instant ("by-hash") upload; large files
  * hash off-thread inside the delta worker instead.
  */
+import { base } from '$app/paths';
 
 interface HashWasmModule {
 	/** wasm-bindgen init; resolves once the `.wasm` is instantiated. */
@@ -13,7 +14,7 @@ interface HashWasmModule {
 	blake3Hex: (data: Uint8Array) => string;
 }
 
-const WASM_GLUE_URL = '/vendors/hash-wasm/oxicloud_hash_wasm.js';
+const WASM_GLUE_URL = `${base}/vendors/hash-wasm/oxicloud_hash_wasm.js`;
 
 let modPromise: Promise<HashWasmModule> | null = null;
 

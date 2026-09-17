@@ -7,6 +7,7 @@
  * commits. Any failure resolves `null` so the caller falls back to a plain
  * byte upload — delta is an optimization, never a gate.
  */
+import { base } from '$app/paths';
 import log from 'loglevel';
 import { getCsrfToken } from '$lib/api/csrf';
 import { createFileByHash, dedupCheckBatch } from '$lib/api/endpoints/files';
@@ -36,7 +37,7 @@ function newUploadId(): string {
  *  running at once can't exhaust the browser's ~6-per-host budget. */
 export const DELTA_UPLOAD_MIN_SIZE = 8 * 1024 * 1024;
 
-const DELTA_WORKER_URL = '/workers/deltaWorker.js';
+const DELTA_WORKER_URL = `${base}/workers/deltaWorker.js`;
 const DELTA_TIMEOUT_BASE_MS = 120_000;
 const DELTA_TIMEOUT_PER_GB_MS = 90_000;
 
@@ -330,7 +331,7 @@ export async function instantUploadOwned(
 	return null;
 }
 
-const HASH_WORKER_URL = '/workers/hashWorker.js';
+const HASH_WORKER_URL = `${base}/workers/hashWorker.js`;
 /** Parallel hashing lanes — enough to saturate small-file hashing without
  *  starving the upload workers of cores. */
 const HASH_POOL_SIZE = Math.min(4, Math.max(1, (navigator.hardwareConcurrency ?? 2) - 1));

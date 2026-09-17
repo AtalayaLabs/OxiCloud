@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // results are captured by mocking `@serenity-kit/opaque`'s client namespace.
 vi.mock('$lib/api/client', () => ({
 	apiFetch: vi.fn(),
+	withBase: (p: string) => p,
 	ApiError: class ApiError extends Error {
 		readonly status: number;
 		readonly statusText: string;

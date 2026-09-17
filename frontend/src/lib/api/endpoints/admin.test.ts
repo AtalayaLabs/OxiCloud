@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('$lib/api/client', () => ({ apiFetch: vi.fn(), apiJson: vi.fn() }));
+vi.mock('$lib/api/client', () => ({
+	apiFetch: vi.fn(),
+	apiJson: vi.fn(),
+	withBase: (p: string) => p
+}));
 vi.mock('$lib/api/csrf', () => ({ getCsrfHeaders: () => ({ 'x-csrf-token': 't' }) }));
 
 import { apiFetch, apiJson } from '$lib/api/client';

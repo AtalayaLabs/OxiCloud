@@ -14,7 +14,10 @@
  *                                              falls back to plain upload)
  */
 
-const WASM_GLUE_URL = '/vendors/hash-wasm/oxicloud_hash_wasm.js';
+// Served at `{base}/workers/hashWorker.js` — derive the deployment base
+// path from our own URL so the WASM import works under subpath deployments.
+const BASE = self.location.pathname.replace(/\/workers\/[^/]*$/, '');
+const WASM_GLUE_URL = `${BASE}/vendors/hash-wasm/oxicloud_hash_wasm.js`;
 
 let modPromise = null;
 function load() {

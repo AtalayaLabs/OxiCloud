@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { appPath } from '$lib/utils/appPath';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
@@ -22,7 +23,7 @@
 	// folder id, not the drive root); that's acceptable — D2 can refine this
 	// by resolving `folder.drive_id` server-side when the gap matters.
 	const firstFilesSegment = $derived.by(() => {
-		const m = /^\/files\/([^/]+)/.exec(page.url.pathname);
+		const m = /^\/files\/([^/]+)/.exec(appPath(page.url.pathname));
 		return m ? m[1] : null;
 	});
 

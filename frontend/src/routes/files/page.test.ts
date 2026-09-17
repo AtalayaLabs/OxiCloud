@@ -27,7 +27,7 @@ vi.mock('$app/state', () => ({ page: pageState }));
 vi.mock('$lib/stores/session.svelte', () => ({ session }));
 vi.mock('$lib/stores/ui.svelte', () => ({ ui }));
 vi.mock('$lib/stores/dialogs.svelte', () => ({ confirmDialog, promptDialog }));
-vi.mock('$lib/api/client', () => ({ apiFetch: vi.fn() }));
+vi.mock('$lib/api/client', () => ({ apiFetch: vi.fn(), withBase: (p: string) => p }));
 vi.mock('$lib/api/csrf', () => ({ getCsrfHeaders: () => ({}) }));
 vi.mock('$lib/api/endpoints/deltaUpload', () => ({
 	instantUploadOwned: vi.fn(),
