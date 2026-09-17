@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
-    "postbuild": "node scripts/emit-askama-common.mjs && node scripts/precompress.mjs ../static-dist",
+    "postbuild": "node scripts/emit-askama-common.mjs && node scripts/portable-shell.mjs && node scripts/precompress.mjs ../static-dist",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && eslint . && stylelint \"src/**/*.{css,svelte}\" && prettier --check .",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",

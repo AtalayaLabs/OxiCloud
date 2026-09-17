@@ -53,6 +53,12 @@ import {
 // `declare const self` needed under the SvelteKit build context.
 
 const ORIGIN = self.location.origin;
+// Deployment base path — derived from this script's own URL
+// (`{base}/service-worker.js`) rather than imported from `$service-worker`,
+// whose `base` is a build constant and would be empty on a prefixed
+// deployment. `''` at the root.
+const BASE = new URL('./', self.location.href).pathname.replace(/\/$/, '');
+const API_PREFIX = `${BASE}/api/`;
 
 // Fast-forward the SW lifecycle so open tabs pick up the new version
 // on the next navigation without waiting for every existing tab to
@@ -73,7 +79,7 @@ self.addEventListener('fetch', (event) => {
 	if (url.origin !== ORIGIN) return;
 	// Only DPoP-protected paths need signing. Static assets, locales,
 	// vendors are outside the middleware and don't need the crypto tax.
-	if (!url.pathname.startsWith('/api/')) return;
+	if (!url.pathname.startsWith(API_PREFIX)) return;
 	// Don't double-sign — page-context `apiFetch`, `fetchMe`, `tryRefresh`,
 	// and `uploadFileWithProgress` already attach a proof themselves.
 	if (req.headers.has('DPoP')) return;
