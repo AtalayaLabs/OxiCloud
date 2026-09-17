@@ -12,6 +12,8 @@
 //! All parsing is split into pure functions so the cgroup formats are unit-tested
 //! without touching `/sys`.
 
+use crate::common::config::RuntimeConfig;
+
 /// Parse cgroup **v2** `cpu.max` contents — `"<quota_us> <period_us>"`, or
 /// `"max <period_us>"` when unlimited. Returns the quota in whole cores (rounded
 /// up), or `None` when unlimited / unparseable.
@@ -73,30 +75,24 @@ pub fn effective_parallelism() -> usize {
     }
 }
 
-/// `(worker_threads, max_blocking_threads)` for the Tokio runtime, from env with
-/// CFS-aware defaults.
+/// `(worker_threads, max_blocking_threads)` for the Tokio runtime, resolving
+/// whatever [`RuntimeConfig`] leaves unset from the CPU budget.
 ///
-/// - `OXICLOUD_WORKER_THREADS` (or tokio's native `TOKIO_WORKER_THREADS`) sets
-///   the worker count; default [`effective_parallelism`].
-/// - `OXICLOUD_MAX_BLOCKING_THREADS` sets the blocking-pool cap; default
+/// - worker count: `cfg.worker_threads`, default [`effective_parallelism`].
+/// - blocking-pool cap: `cfg.max_blocking_threads`, default
 ///   `max(32, 8 × workers)` — vs tokio's flat **512**, which for this heavy
 ///   `spawn_blocking` user (thumbnails, transcode, zip, PDF/text extraction,
 ///   Argon2 ≈19 MB/hash) is a multi-GB RSS blast radius with no ceiling.
 ///
-/// Both are clamped to ≥1. Unset env on an uncontended host yields the same
-/// worker count as the previous `#[tokio::main]` default.
-pub fn runtime_pool_sizes() -> (usize, usize) {
-    let workers = std::env::var("OXICLOUD_WORKER_THREADS")
-        .or_else(|_| std::env::var("TOKIO_WORKER_THREADS"))
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|&n| n > 0)
+/// Both are clamped to ≥1. An unset config on an uncontended host yields the
+/// same worker count as the previous `#[tokio::main]` default.
+pub fn pool_sizes(cfg: &RuntimeConfig) -> (usize, usize) {
+    let workers = cfg
+        .worker_threads
         .unwrap_or_else(effective_parallelism)
         .max(1);
-    let max_blocking = std::env::var("OXICLOUD_MAX_BLOCKING_THREADS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|&n| n > 0)
+    let max_blocking = cfg
+        .max_blocking_threads
         .unwrap_or_else(|| (workers * 8).max(32));
     (workers, max_blocking)
 }
@@ -104,6 +100,37 @@ pub fn runtime_pool_sizes() -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The blocking pool has a floor of 32 threads — 8 × workers only takes
+    /// over once it exceeds that.
+    #[test]
+    fn blocking_pool_defaults_to_eight_per_worker_with_a_floor() {
+        let cfg = RuntimeConfig {
+            worker_threads: Some(2),
+            max_blocking_threads: None,
+        };
+        assert_eq!(pool_sizes(&cfg), (2, 32));
+        let cfg = RuntimeConfig {
+            worker_threads: Some(8),
+            max_blocking_threads: None,
+        };
+        assert_eq!(pool_sizes(&cfg), (8, 64));
+    }
+
+    /// Explicit values are taken as given, each independently of the other.
+    #[test]
+    fn explicit_pool_sizes_win() {
+        let cfg = RuntimeConfig {
+            worker_threads: Some(3),
+            max_blocking_threads: Some(7),
+        };
+        assert_eq!(pool_sizes(&cfg), (3, 7));
+        let cfg = RuntimeConfig {
+            worker_threads: None,
+            max_blocking_threads: Some(5),
+        };
+        assert_eq!(pool_sizes(&cfg).1, 5);
+    }
 
     #[test]
     fn v2_exact_two_cores() {

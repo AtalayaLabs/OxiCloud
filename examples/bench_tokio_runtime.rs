@@ -32,7 +32,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use oxicloud::common::runtime::{cgroup_cpu_quota, effective_parallelism, runtime_pool_sizes};
+use oxicloud::common::config::RuntimeConfig;
+use oxicloud::common::runtime::{cgroup_cpu_quota, effective_parallelism, pool_sizes};
 
 fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
     env::var(key)
@@ -189,7 +190,7 @@ fn main() {
     let hold_ms: u64 = env_or("BENCH_HOLD_MS", 120);
     let max_blocking_after: usize = env_or("BENCH_MAX_BLOCKING_AFTER", 16);
 
-    let (def_workers, def_max_blocking) = runtime_pool_sizes();
+    let (def_workers, def_max_blocking) = pool_sizes(&RuntimeConfig::from_env());
 
     println!("\n############################################################");
     println!("# Tokio runtime tuning benchmark");

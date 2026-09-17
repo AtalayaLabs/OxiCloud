@@ -238,12 +238,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Build the Tokio runtime — needed either way (the repair flag also
-    // needs async DB access). Sized from cgroup CPU quota — see
-    // `build_runtime`.
-    let runtime = build_runtime()?;
+    // Tracing first: `AppConfig::from_env()` warns about several
+    // misconfigurations, and those lines are only emitted once a
+    // subscriber is installed.
+    init_tracing();
 
-    runtime.block_on(run())
+    // The config is loaded here, before the runtime exists, because the
+    // runtime is sized from it.
+    let config = common::config::AppConfig::from_env();
+    let runtime = build_runtime(&config.runtime)?;
+
+    runtime.block_on(run(config))
 }
 
 /// Print the `--help` output. Kept as a fn (not an inline string) so
@@ -344,6 +349,50 @@ fn print_help() {
     println!("The full env-var surface is documented in `example.env` at the repo root.");
 }
 
+/// Install the tracing subscriber.
+fn init_tracing() {
+    // Initialize tracing.
+    //
+    // Default access-log policy — two independent directives are
+    // injected unless the operator has already named them:
+    //
+    //   `http=warn`         (4xx + 5xx for every access-log target)
+    //   `http::web=error`   (5xx only for static / ServeDir / catch-all)
+    //
+    // `http::web` is pulled down to ERROR because it's the noisiest
+    // surface (every CSS/JS/img/favicon request hits it) and its
+    // 4xx are almost always "browser asked for a file we don't ship",
+    // not a real signal. Operators investigating a 404 storm can
+    // promote it back: `RUST_LOG=info,http::web=warn`.
+    //
+    // The detection is substring-based:
+    //   - `http=` in RUST_LOG  → operator owns the http baseline.
+    //   - `http::web=` in RUST_LOG → operator owns the web subtarget.
+    // The two are independent — supplying `http=info` still gets a
+    // free `http::web=error` unless the operator named that too.
+    //
+    // Empty / unset / no http directives → both defaults applied.
+    // Note that `http::web=…` does NOT contain `http=` as a substring
+    // (different characters around the `:`), so the two checks don't
+    // alias each other.
+    let rust_log = match std::env::var("RUST_LOG").ok().filter(|s| !s.is_empty()) {
+        None => "info,http=warn,http::web=error".to_string(),
+        Some(mut s) => {
+            if !s.contains("http=") {
+                s.push_str(",http=warn");
+            }
+            if !s.contains("http::web=") {
+                s.push_str(",http::web=error");
+            }
+            s
+        }
+    };
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::new(rust_log))
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+}
+
 /// Construct the multi-threaded Tokio runtime with explicit, CFS-quota-aware
 /// pool sizes.
 ///
@@ -355,11 +404,12 @@ fn print_help() {
 ///   • the blocking pool defaults to a flat **512** threads — a multi-GB RSS
 ///     blast radius for this heavy `spawn_blocking` user.
 ///
-/// Both come from [`common::runtime::runtime_pool_sizes`] (env-overridable via
+/// Both come from [`common::runtime::pool_sizes`], filled from the config
+/// (env-overridable via
 /// `OXICLOUD_WORKER_THREADS` / `OXICLOUD_MAX_BLOCKING_THREADS`). Unset env on an
 /// uncontended host reproduces the previous behaviour.
-fn build_runtime() -> std::io::Result<tokio::runtime::Runtime> {
-    let (workers, max_blocking) = common::runtime::runtime_pool_sizes();
+fn build_runtime(cfg: &common::config::RuntimeConfig) -> std::io::Result<tokio::runtime::Runtime> {
+    let (workers, max_blocking) = common::runtime::pool_sizes(cfg);
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(workers)
         .max_blocking_threads(max_blocking)
@@ -455,48 +505,7 @@ fn extract_embedded_locales() -> std::path::PathBuf {
 }
 
 /// Async entrypoint, driven by the runtime built in [`main`].
-async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing.
-    //
-    // Default access-log policy — two independent directives are
-    // injected unless the operator has already named them:
-    //
-    //   `http=warn`         (4xx + 5xx for every access-log target)
-    //   `http::web=error`   (5xx only for static / ServeDir / catch-all)
-    //
-    // `http::web` is pulled down to ERROR because it's the noisiest
-    // surface (every CSS/JS/img/favicon request hits it) and its
-    // 4xx are almost always "browser asked for a file we don't ship",
-    // not a real signal. Operators investigating a 404 storm can
-    // promote it back: `RUST_LOG=info,http::web=warn`.
-    //
-    // The detection is substring-based:
-    //   - `http=` in RUST_LOG  → operator owns the http baseline.
-    //   - `http::web=` in RUST_LOG → operator owns the web subtarget.
-    // The two are independent — supplying `http=info` still gets a
-    // free `http::web=error` unless the operator named that too.
-    //
-    // Empty / unset / no http directives → both defaults applied.
-    // Note that `http::web=…` does NOT contain `http=` as a substring
-    // (different characters around the `:`), so the two checks don't
-    // alias each other.
-    let rust_log = match std::env::var("RUST_LOG").ok().filter(|s| !s.is_empty()) {
-        None => "info,http=warn,http::web=error".to_string(),
-        Some(mut s) => {
-            if !s.contains("http=") {
-                s.push_str(",http=warn");
-            }
-            if !s.contains("http::web=") {
-                s.push_str(",http::web=error");
-            }
-            s
-        }
-    };
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new(rust_log))
-        .with(tracing_subscriber::fmt::layer())
-        .init();
-
+async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error::Error>> {
     oxicloud::interfaces::middleware::trusted_proxy::log_config();
 
     tracing::info!(
@@ -506,11 +515,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         env!("GIT_HASH")
     );
 
-    // Surface the runtime pool sizing chosen in `build_runtime`. `available`
+    // Surface the runtime pool sizing `build_runtime` chose. It resolves the
+    // same `RuntimeConfig` from the environment before the runtime exists;
+    // reading it back off `config` here keeps one source of truth. `available`
     // is what tokio's default would have used; `cgroup_cpu_quota` is the CFS
     // limit it ignores. When the two diverge, the worker count tracks the
     // smaller (effective) value — the whole point of the explicit builder.
-    let (rt_workers, rt_max_blocking) = common::runtime::runtime_pool_sizes();
+    let (rt_workers, rt_max_blocking) = common::runtime::pool_sizes(&config.runtime);
     tracing::info!(
         worker_threads = rt_workers,
         max_blocking_threads = rt_max_blocking,
@@ -519,9 +530,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         cgroup_cpu_quota = ?common::runtime::cgroup_cpu_quota(),
         "Tokio runtime pools sized"
     );
-
-    // Load configuration from environment variables
-    let config = common::config::AppConfig::from_env();
 
     // SECURITY: fail-closed on incoherent auth-method configuration. A
     // magic-link-only policy without a working SMTP sender locks every
