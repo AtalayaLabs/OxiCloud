@@ -89,6 +89,7 @@
 	import { serverStatus } from '$lib/stores/serverStatus.svelte';
 	import AdminJobsPanel from '$lib/components/AdminJobsPanel.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
+	import ActionMenu, { type ActionMenuItem } from '$lib/components/ActionMenu.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import OwnerAvatarStack from '$lib/components/OwnerAvatarStack.svelte';
 	import PolicyList from '$lib/components/PolicyList.svelte';
@@ -1280,6 +1281,108 @@
 		} finally {
 			resetting = false;
 		}
+	}
+
+	/**
+	 * Everything you can do to one user row, as menu entries.
+	 *
+	 * Replaces six icon buttons per row. The conditions are unchanged —
+	 * what moved is the presentation: an entry that used to vanish (role
+	 * toggle on an external) still vanishes, and one that used to grey
+	 * out with a tooltip (deactivate on the owner) now states its reason
+	 * in the menu, where it can be read without hovering.
+	 *
+	 * Order is author order for benign actions; `danger` entries sink
+	 * below a separator inside ActionMenu, so Delete never sits flush
+	 * against a neighbour a mis-click could reach.
+	 */
+	function userActions(u: FullUser): ActionMenuItem[] {
+		const actions: ActionMenuItem[] = [];
+		const ownerRow = isOwner(u.user.role);
+
+		if (u.user.is_external) {
+			actions.push({
+				key: 'promote-internal',
+				label: t('admin.promote_to_internal_title', 'Promote to internal user'),
+				icon: 'user-plus',
+				run: () => void promoteExternal(u)
+			});
+		} else {
+			actions.push({
+				key: 'quota',
+				label: t('admin.edit_quota_title', 'Edit quota'),
+				icon: 'gauge-simple-high',
+				run: () => openQuota(u)
+			});
+		}
+
+		// OIDC and external accounts have no local password to reset.
+		if (!isOidcUser(u) && !u.user.is_external) {
+			actions.push({
+				key: 'reset-password',
+				label: t('admin.reset_password_title', 'Reset password'),
+				icon: 'key',
+				run: () => openReset(u)
+			});
+		}
+
+		// An external user cannot hold a privileged role, and the owner's
+		// role moves only by transfer — neither is offered here.
+		if (!u.user.is_external && !ownerRow) {
+			actions.push({
+				key: 'toggle-role',
+				label: isAtLeastAdmin(u.user.role)
+					? t('admin.make_user', 'Make regular user')
+					: t('admin.make_admin', 'Make administrator'),
+				icon: isAtLeastAdmin(u.user.role) ? 'user' : 'shield-alt',
+				disabled: isSelf(u),
+				hint: isSelf(u)
+					? t('admin.hint_not_own_role', 'You cannot change your own role')
+					: undefined,
+				run: () => void toggleRole(u)
+			});
+		}
+
+		if (viewerIsOwner && canReceiveOwnership(u)) {
+			actions.push({
+				key: 'transfer-ownership',
+				label: t('admin.transfer_ownership_title', 'Transfer ownership'),
+				icon: 'crown',
+				run: () => void transferOwnershipTo(u)
+			});
+		}
+
+		actions.push({
+			key: 'toggle-active',
+			label: u.active
+				? t('admin.deactivate_title', 'Deactivate')
+				: t('admin.activate_title', 'Activate'),
+			icon: u.active ? 'ban' : 'check',
+			danger: u.active,
+			disabled: ownerRow || (isSelf(u) && u.active),
+			hint: ownerRow
+				? t('admin.owner_protected_title', 'The server owner cannot be deactivated')
+				: isSelf(u) && u.active
+					? t('admin.hint_not_own_account', 'You cannot deactivate your own account')
+					: undefined,
+			run: () => void toggleActive(u)
+		});
+
+		actions.push({
+			key: 'delete',
+			label: t('admin.delete_title', 'Delete'),
+			icon: 'trash-alt',
+			danger: true,
+			disabled: ownerRow || isSelf(u),
+			hint: ownerRow
+				? t('admin.owner_protected_delete_title', 'The server owner cannot be deleted')
+				: isSelf(u)
+					? t('admin.hint_not_own_account_delete', 'You cannot delete your own account')
+					: undefined,
+			run: () => removeUser(u)
+		});
+
+		return actions;
 	}
 
 	function removeUser(u: FullUser) {
@@ -3173,139 +3276,24 @@
 							</td>
 							<td class="muted">{timeAgo(u.last_login_at)}</td>
 							<td>
-								<!-- Fixed 5-column grid keeps icons aligned across
-								     rows even when a row's user kind skips some
-								     actions (external users have no envelope so
-								     no quota edit, and no password so no reset;
-								     internals never get a promote). Inapplicable
-								     actions render as invisible placeholders. -->
+								<!-- One menu, not six icon buttons.
+								     The column had grown to six glyphs per row,
+								     several sharing a symbol for different things
+								     (a crown meant "make admin", "is the owner",
+								     and "hand over the server"). Labels settle
+								     that, and the fixed-width placeholder grid
+								     that kept the icons aligned is no longer
+								     needed — every row is one button wide. -->
 								<div class="actions actions--user">
-									<!-- Slot 1: quota (internal) OR promote (external). -->
-									{#if u.user.is_external}
-										<button
-											class="icon-btn icon-btn--success"
-											data-testid={`admin-user-promote-${u.user.id}`}
-											title={t('admin.promote_to_internal_title', 'Promote to internal user')}
-											aria-label={t('admin.promote_to_internal_title', 'Promote to internal user')}
-											onclick={() => promoteExternal(u)}
-										>
-											<Icon name="user-plus" />
-										</button>
-									{:else}
-										<button
-											class="icon-btn"
-											data-testid={`admin-user-quota-${u.user.id}`}
-											title={t('admin.edit_quota_title', 'Edit quota')}
-											aria-label={t('admin.edit_quota_title', 'Edit quota')}
-											onclick={() => openQuota(u)}
-										>
-											<Icon name="gauge-simple-high" />
-										</button>
-									{/if}
-									<!-- Slot 2: reset password (local internal only —
-									     OIDC and external accounts have no password
-									     to reset). Placeholder otherwise. -->
-									{#if !isOidcUser(u) && !u.user.is_external}
-										<button
-											class="icon-btn"
-											data-testid={`admin-user-reset-password-${u.user.id}`}
-											title={t('admin.reset_password_title', 'Reset password')}
-											aria-label={t('admin.reset_password_title', 'Reset password')}
-											onclick={() => openReset(u)}
-										>
-											<Icon name="key" />
-										</button>
-									{:else}
-										<span class="icon-btn icon-btn--placeholder" aria-hidden="true"></span>
-									{/if}
-									<!-- Slot 3: role toggle. Hidden for externals — an
-									     external user cannot hold a privileged role
-									     (backend guard in `change_user_role` + DB CHECK
-									     `users_external_not_privileged`). Promotion to
-									     internal is offered separately in slot 1.
-									     Hidden for the server owner too: that row's role
-									     changes only through ownership transfer, and the
-									     backend refuses it here. -->
-									{#if !u.user.is_external && !isOwner(u.user.role)}
-										<button
-											class="icon-btn"
-											data-testid={`admin-user-toggle-role-${u.user.id}`}
-											title={t('admin.toggle_role_title', 'Toggle admin role')}
-											aria-label={t('admin.toggle_role_title', 'Toggle admin role')}
-											disabled={isSelf(u)}
-											onclick={() => toggleRole(u)}
-										>
-											<!-- The icon shows the badge you will GET: a shield
-											     promotes to admin, a person demotes to user.
-											     This was a crown, which clicked through to a
-											     shield — and now collides with the owner badge
-											     and the transfer button beside it, where a
-											     crown genuinely does mean ownership. -->
-											<Icon name={isAtLeastAdmin(u.user.role) ? 'user' : 'shield-alt'} />
-										</button>
-									{:else}
-										<span class="icon-btn icon-btn--placeholder" aria-hidden="true"></span>
-									{/if}
-									<!-- Slot 3b: transfer ownership. Only the current owner
-									     sees this, and only on rows that can actually
-									     receive it (internal, active, not already the
-									     owner, not themselves). Hidden rather than
-									     disabled for everyone else: an admin has no use
-									     for a control they can never operate, and it
-									     would only invite a refused request. -->
-									{#if viewerIsOwner && canReceiveOwnership(u)}
-										<button
-											class="icon-btn"
-											data-testid={`admin-user-transfer-ownership-${u.user.id}`}
-											title={t('admin.transfer_ownership_title', 'Transfer ownership')}
-											aria-label={t('admin.transfer_ownership_title', 'Transfer ownership')}
-											onclick={() => transferOwnershipTo(u)}
-										>
-											<Icon name="crown" />
-										</button>
-									{/if}
-									<!-- Slots 4 and 5 are disabled on the owner's row. Nobody
-									     can deactivate or delete the owner — not another
-									     admin (refused on rank) and not the owner
-									     themselves (refused as a lockout / irreversible
-									     self-action), so the server answers every one of
-									     these with an error. Disabled rather than hidden:
-									     the row keeps its column alignment and the title
-									     says why, where a vanished button just looks like
-									     a rendering bug. -->
-									<!-- Slot 4: activate/deactivate. -->
-									<button
-										class="icon-btn {u.active ? 'icon-btn--danger' : 'icon-btn--success'}"
-										data-testid={`admin-user-toggle-active-${u.user.id}`}
-										title={isOwner(u.user.role)
-											? t('admin.owner_protected_title', 'The server owner cannot be deactivated')
-											: u.active
-												? t('admin.deactivate_title', 'Deactivate')
-												: t('admin.activate_title', 'Activate')}
-										aria-label={u.active
-											? t('admin.deactivate_title', 'Deactivate')
-											: t('admin.activate_title', 'Activate')}
-										disabled={(isSelf(u) && u.active) || isOwner(u.user.role)}
-										onclick={() => toggleActive(u)}
-									>
-										<Icon name={u.active ? 'ban' : 'check'} />
-									</button>
-									<!-- Slot 5: delete. -->
-									<button
-										class="icon-btn icon-btn--danger"
-										data-testid={`admin-user-delete-${u.user.id}`}
-										title={isOwner(u.user.role)
-											? t(
-													'admin.owner_protected_delete_title',
-													'The server owner cannot be deleted'
-												)
-											: t('admin.delete_title', 'Delete user')}
-										aria-label={t('admin.delete_title', 'Delete user')}
-										disabled={isSelf(u) || isOwner(u.user.role)}
-										onclick={() => removeUser(u)}
-									>
-										<Icon name="trash-alt" />
-									</button>
+									<ActionMenu
+										items={userActions(u)}
+										label={t(
+											'admin.user_actions',
+											{ name: u.user.username ?? u.user.email },
+											'Actions for {{name}}'
+										)}
+										testId={`admin-user-actions-${u.user.id}`}
+									/>
 								</div>
 							</td>
 						</tr>
@@ -6010,12 +5998,12 @@
 	   promote button). Prevents the last icon from wrapping to a new
 	   line when a placeholder + all five buttons would together push
 	   past the cell width. */
+	/* One "⋮" trigger, so the five-column placeholder grid that used to
+	   keep icons aligned across rows is gone with the icons. */
 	.actions--user {
-		display: grid;
-		grid-template-columns: repeat(5, auto);
-		justify-content: end;
+		display: flex;
+		justify-content: flex-end;
 		align-items: center;
-		gap: var(--space-1, 0.25rem);
 	}
 
 	.actions--drive {

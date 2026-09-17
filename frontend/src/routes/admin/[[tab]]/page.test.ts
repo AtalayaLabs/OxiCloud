@@ -285,11 +285,21 @@ it('deletes a mount through the confirm modal', async () => {
 	await waitFor(() => expect(admin.deleteExternalMount).toHaveBeenCalledWith('mnt-1'));
 });
 
+/**
+ * Row actions moved from six icon buttons into a "⋮" menu, so each one
+ * costs an extra click to open. Keyed by the action's stable `key`, not
+ * its label — labels go through `t()`.
+ */
+async function rowAction(userId: string, key: string) {
+	await fireEvent.click(await screen.findByTestId(`admin-user-actions-${userId}`));
+	await fireEvent.click(await screen.findByTestId(`admin-user-actions-${userId}-${key}`));
+}
+
 it("toggles a user's role through the confirm modal", async () => {
 	m(admin.setUserRole).mockResolvedValue(undefined);
 	setTab('users');
 	render(AdminPage);
-	await fireEvent.click(await screen.findByTestId('admin-user-toggle-role-u1'));
+	await rowAction('u1', 'toggle-role');
 	await fireEvent.click(await screen.findByTestId('admin-confirm-ok-btn'));
 	await waitFor(() => expect(admin.setUserRole).toHaveBeenCalledWith('u1', 'admin'));
 });
@@ -298,7 +308,7 @@ it('deactivates a user through the confirm modal', async () => {
 	m(admin.setUserActive).mockResolvedValue(undefined);
 	setTab('users');
 	render(AdminPage);
-	await fireEvent.click(await screen.findByTestId('admin-user-toggle-active-u1'));
+	await rowAction('u1', 'toggle-active');
 	await fireEvent.click(await screen.findByTestId('admin-confirm-ok-btn'));
 	await waitFor(() => expect(admin.setUserActive).toHaveBeenCalledWith('u1', false));
 });
