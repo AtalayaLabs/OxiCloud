@@ -76,9 +76,20 @@ pub fn extract_from_cookie_header(cookie_header: &str, share_token: &str) -> Opt
 
 pub fn build_set_cookie(share_token: &str, jwt: &str, ttl_secs: i64) -> String {
     format!(
-        "oxi_share_unlock_{}={}; HttpOnly; SameSite=Lax; Path=/; Max-Age={}",
-        share_token, jwt, ttl_secs
+        "oxi_share_unlock_{}={}; HttpOnly; SameSite=Lax; Path={}; Max-Age={}",
+        share_token,
+        jwt,
+        unlock_cookie_path(),
+        ttl_secs
     )
+}
+
+/// Cookie `Path` for the unlock cookie — the deployment base path
+/// (`OXICLOUD_BASE_PATH`) or `/` at the root. Browser-facing, so unlike
+/// nest-stripped route matching it must carry the prefix.
+fn unlock_cookie_path() -> &'static str {
+    let base = crate::common::config::server_base_path();
+    if base.is_empty() { "/" } else { base }
 }
 
 #[cfg(test)]

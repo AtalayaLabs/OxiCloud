@@ -87,6 +87,16 @@ pub async fn serve_root_index() -> Response {
     spa_shell_response()
 }
 
+/// Serve an embedded asset by request path, falling back to the prepared
+/// SPA shell for unmatched client routes.
+pub async fn serve_asset_or(req: Request, shell: &super::AppShell) -> Response {
+    let path = req.uri().path().trim_start_matches('/');
+    match EmbeddedAssets::get(path) {
+        Some(file) if !path.is_empty() => asset_response(path, file.data),
+        _ => shell.response(),
+    }
+}
+
 /// Serve an asset under the `/_app/immutable/*` prefix. The nested route
 /// registration in `super::create_web_routes` already strips the
 /// `/_app/immutable/` prefix from the captured path, so we look the
