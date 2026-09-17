@@ -2398,7 +2398,7 @@
             "description": "User active status updated"
           },
           "400": {
-            "description": "Cannot change your own active state"
+            "description": "Cannot deactivate own account"
           },
           "401": {
             "description": "Unauthorized"
@@ -2449,7 +2449,7 @@
             "description": "Password reset"
           },
           "400": {
-            "description": "Invalid password, or resetting your own (use /me)"
+            "description": "Invalid password"
           },
           "401": {
             "description": "Unauthorized"
@@ -2552,9 +2552,6 @@
         "responses": {
           "200": {
             "description": "Quota updated"
-          },
-          "400": {
-            "description": "Cannot set your own quota here"
           },
           "401": {
             "description": "Unauthorized"

@@ -3334,19 +3334,25 @@ impl AuthApplicationService {
     ///   compromised admin account cannot lock the others out.
     /// - Nobody may act on the owner, because nothing outranks them.
     ///
-    /// **Self is always refused**, and falls out of the same comparison: a
-    /// caller never outranks themselves. Administering your own account is
-    /// not an admin operation — changing your password or profile lives on
-    /// `/me`, which is a different surface with different rules. This
-    /// replaces three hand-rolled `if admin_id == id` checks that sat in
-    /// the handlers, where AGENTS.md says authorization must not live.
+    /// **Self is allowed through**, deliberately. The hierarchy answers
+    /// "may I act on someone else?"; it has nothing to say about your own
+    /// account, and a caller never outranks themselves, so folding self
+    /// into the rank comparison would silently forbid every self-directed
+    /// admin action at once.
     ///
-    /// One deliberate behaviour change comes with that consolidation:
-    /// `set_user_active(self, active = true)` used to be permitted (the
-    /// old guard refused only self-*de*activation). It is now refused like
-    /// every other self-directed admin action. Reactivating an account you
-    /// are already authenticated on is a no-op, and the admin UI disables
-    /// the control for your own row, so nothing asks for it.
+    /// That is exactly what an earlier version of this did, and it broke a
+    /// legitimate flow: an admin tightening their OWN quota (which the
+    /// NextCloud chunked-upload test does, to exercise the 507 path)
+    /// started returning 400. Setting your own quota is harmless, and
+    /// there was never a guard against it.
+    ///
+    /// The self-directed actions that ARE refused — changing your own
+    /// role, deleting your own account, deactivating yourself — are
+    /// refused individually by the methods that own them, because each is
+    /// its own rule with its own reason (escalation confusion, an
+    /// irreversible footgun, locking yourself out). Those three are the
+    /// set that existed before this hierarchy landed, and the set that
+    /// still exists after it.
     ///
     /// Both lookups hit the single-flight, image-free flags cache, so the
     /// gate costs two cache reads and no profile hydration.
@@ -3356,19 +3362,7 @@ impl AuthApplicationService {
         target_id: Uuid,
     ) -> Result<(), DomainError> {
         if caller_id == target_id {
-            tracing::info!(
-                target: "audit",
-                event = "user.admin_mutation_rejected",
-                reason = "self_target",
-                caller_id = %caller_id,
-                target_id = %target_id,
-                "👮🏻‍♂️ admin mutation refused: administrators act on others, not themselves",
-            );
-            return Err(DomainError::new(
-                ErrorKind::InvalidInput,
-                "User",
-                "You cannot perform this administrative action on your own account.",
-            ));
+            return Ok(());
         }
 
         let caller = self.get_user_flags(caller_id).await?;
@@ -3954,6 +3948,21 @@ impl AuthApplicationService {
         caller_id: Uuid,
         user_id: Uuid,
     ) -> Result<(), DomainError> {
+        // Irreversible and self-inflicted: refuse regardless of rank.
+        if caller_id == user_id {
+            tracing::info!(
+                target: "audit",
+                event = "user.delete_rejected",
+                reason = "self_target",
+                caller_id = %caller_id,
+                "👮🏻‍♂️ delete refused: callers cannot delete their own account",
+            );
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "User",
+                "You cannot delete your own account.",
+            ));
+        }
         self.require_can_modify(caller_id, user_id).await?;
 
         let user = self.user_storage.get_user_by_id(user_id).await?;
@@ -4021,6 +4030,24 @@ impl AuthApplicationService {
         user_id: Uuid,
         active: bool,
     ) -> Result<(), DomainError> {
+        // Asymmetric on purpose, preserving the guard this replaced:
+        // deactivating yourself locks you out, while activating an
+        // account you are already authenticated on is a no-op worth
+        // nobody's error message.
+        if caller_id == user_id && !active {
+            tracing::info!(
+                target: "audit",
+                event = "user.deactivate_rejected",
+                reason = "self_target",
+                caller_id = %caller_id,
+                "👮🏻‍♂️ deactivate refused: callers cannot deactivate themselves",
+            );
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "User",
+                "You cannot deactivate your own account.",
+            ));
+        }
         self.require_can_modify(caller_id, user_id).await?;
 
         // Only the activate direction needs the collision-resolution
@@ -4145,6 +4172,24 @@ impl AuthApplicationService {
         user_id: Uuid,
         role: &str,
     ) -> Result<(), DomainError> {
+        // Your own role is not yours to set, at any rank. Kept separate
+        // from the hierarchy check because it is a self rule, not a
+        // ranking one — an owner is equally forbidden from demoting
+        // themselves here (that is what transfer-ownership is for).
+        if caller_id == user_id {
+            tracing::info!(
+                target: "audit",
+                event = "user.role_change_rejected",
+                reason = "self_target",
+                caller_id = %caller_id,
+                "👮🏻‍♂️ role change refused: callers cannot change their own role",
+            );
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "User",
+                "You cannot change your own role.",
+            ));
+        }
         self.require_can_modify(caller_id, user_id).await?;
 
         let requested = match UserRole::from_stored(role) {
@@ -5523,5 +5568,176 @@ mod phase4_gate_integration_tests {
         )
         .await
         .expect("legacy login must succeed again after admin clear_registration");
+    }
+
+    /// Seed a user at an explicit role. Separate from
+    /// [`seed_user_with_password`] (which hard-codes `'user'`) because
+    /// the ownership tests need admins and owners without paying Argon2.
+    async fn seed_user_with_role(pool: &sqlx::PgPool, email: &str, role: &str) -> uuid::Uuid {
+        let id = uuid::Uuid::new_v4();
+        sqlx::query(
+            r#"
+            INSERT INTO auth.users (
+                id, username, email, password_hash, role,
+                storage_quota_bytes, storage_used_bytes,
+                created_at, updated_at, active, email_verified_at
+            ) VALUES (
+                $1, NULL, $2, NULL, $3::auth.userrole,
+                0, 0, NOW(), NOW(), TRUE, NOW()
+            )
+            "#,
+        )
+        .bind(id)
+        .bind(email)
+        .bind(role)
+        .execute(pool)
+        .await
+        .expect("seed test user at role");
+        id
+    }
+
+    async fn role_of(pool: &sqlx::PgPool, id: uuid::Uuid) -> String {
+        sqlx::query_scalar::<_, String>("SELECT role::text FROM auth.users WHERE id = $1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .expect("read back role")
+    }
+
+    /// **The single-owner invariant is enforced by the DATABASE, and
+    /// this is the only place that can prove it.**
+    ///
+    /// The API cannot: every route that could confer ownership either
+    /// refuses outright (`admin_create_user` and `change_user_role` both
+    /// reject `'owner'`) or *moves* it (`transfer_ownership` demotes and
+    /// promotes in one transaction). So an API-level test would be
+    /// asserting the absence of a path rather than the presence of a
+    /// guard, and would still pass if `idx_users_single_owner` were
+    /// dropped tomorrow.
+    ///
+    /// That matters because the API is not the only writer. `oxicloud
+    /// user promote-to-owner` issues `UPDATE auth.users SET role =
+    /// 'owner'` from a separate process, and its "is there already an
+    /// owner?" check is a read followed by a write — two operators
+    /// running it concurrently race. The index is what actually makes a
+    /// second owner unrepresentable rather than merely unlikely.
+    ///
+    /// **One test, two parts, and it must stay that way.** Ownership is
+    /// a global singleton, so any two tests that each need to be the
+    /// only owner cannot run concurrently — and cargo runs tests in
+    /// parallel against this shared database. Split across two
+    /// `#[tokio::test]`s, they fail at *seeding* with the very
+    /// constraint they exist to verify, which reads like a broken
+    /// invariant rather than a broken test. Keep new ownership
+    /// assertions inside this function.
+    #[tokio::test]
+    async fn the_database_permits_exactly_one_owner() {
+        let (_svc, _opaque, pool, _hasher) = build_service().await;
+        let tag = uuid::Uuid::new_v4();
+
+        let first =
+            seed_user_with_role(&pool, &format!("owner-a-{tag}@example.invalid"), "owner").await;
+
+        // Direct INSERT — the shape a second writer (CLI, SQL console,
+        // a future code path) would take.
+        let second_id = uuid::Uuid::new_v4();
+        let insert = sqlx::query(
+            r#"
+            INSERT INTO auth.users (
+                id, username, email, password_hash, role,
+                storage_quota_bytes, storage_used_bytes,
+                created_at, updated_at, active
+            ) VALUES ($1, NULL, $2, NULL, 'owner'::auth.userrole, 0, 0, NOW(), NOW(), TRUE)
+            "#,
+        )
+        .bind(second_id)
+        .bind(format!("owner-b-{tag}@example.invalid"))
+        .execute(&*pool)
+        .await;
+
+        let err = insert.expect_err("a second owner row must be rejected");
+        assert!(
+            err.to_string().contains("idx_users_single_owner"),
+            "expected the single-owner index to reject this, got: {err}"
+        );
+
+        // Promoting an existing admin is the same violation by another
+        // route — this is the one the CLI's TOCTOU window would hit.
+        let admin =
+            seed_user_with_role(&pool, &format!("admin-{tag}@example.invalid"), "admin").await;
+        let promote =
+            sqlx::query("UPDATE auth.users SET role = 'owner'::auth.userrole WHERE id = $1")
+                .bind(admin)
+                .execute(&*pool)
+                .await;
+        assert!(
+            promote.is_err(),
+            "promoting a second owner must be rejected while an owner exists"
+        );
+
+        // The existing owner is untouched by both failures.
+        assert_eq!(role_of(&pool, first).await, "owner");
+        assert_eq!(role_of(&pool, admin).await, "admin");
+
+        sqlx::query("DELETE FROM auth.users WHERE id = ANY($1)")
+            .bind(vec![first, admin])
+            .execute(&*pool)
+            .await
+            .expect("clean up");
+
+        // ── Part 2: why transfer demotes BEFORE it promotes ──────────
+        //
+        // The index is checked per statement, not per transaction, so
+        // the intuitive order — promote the heir, then demote the
+        // outgoing owner — briefly holds two owners and fails. The
+        // reverse passes through zero owners, which is legal and never
+        // observable outside the transaction.
+        //
+        // Pinned because the working order looks arbitrary at the
+        // callsite and would be an easy "tidy-up" for someone to swap.
+        let owner =
+            seed_user_with_role(&pool, &format!("xfer-owner-{tag}@example.invalid"), "owner").await;
+        let heir =
+            seed_user_with_role(&pool, &format!("xfer-heir-{tag}@example.invalid"), "admin").await;
+
+        // Wrong order: promote first.
+        let mut tx = pool.begin().await.expect("begin");
+        let promote_first =
+            sqlx::query("UPDATE auth.users SET role = 'owner'::auth.userrole WHERE id = $1")
+                .bind(heir)
+                .execute(&mut *tx)
+                .await;
+        assert!(
+            promote_first.is_err(),
+            "promoting before demoting must trip the single-owner index"
+        );
+        tx.rollback().await.expect("rollback");
+
+        // Nothing moved.
+        assert_eq!(role_of(&pool, owner).await, "owner");
+        assert_eq!(role_of(&pool, heir).await, "admin");
+
+        // Right order: demote, then promote — the repository's order.
+        let mut tx = pool.begin().await.expect("begin");
+        sqlx::query("UPDATE auth.users SET role = 'admin'::auth.userrole WHERE id = $1")
+            .bind(owner)
+            .execute(&mut *tx)
+            .await
+            .expect("demote outgoing owner");
+        sqlx::query("UPDATE auth.users SET role = 'owner'::auth.userrole WHERE id = $1")
+            .bind(heir)
+            .execute(&mut *tx)
+            .await
+            .expect("promote heir");
+        tx.commit().await.expect("commit transfer");
+
+        assert_eq!(role_of(&pool, owner).await, "admin");
+        assert_eq!(role_of(&pool, heir).await, "owner");
+
+        sqlx::query("DELETE FROM auth.users WHERE id = ANY($1)")
+            .bind(vec![owner, heir])
+            .execute(&*pool)
+            .await
+            .expect("clean up");
     }
 }

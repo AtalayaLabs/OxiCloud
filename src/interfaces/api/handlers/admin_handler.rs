@@ -1438,7 +1438,7 @@ pub async fn update_user_role(
     params(("id" = String, Path, description = "User UUID")),
     responses(
         (status = 200, description = "User active status updated"),
-        (status = 400, description = "Cannot change your own active state"),
+        (status = 400, description = "Cannot deactivate own account"),
         (status = 403, description = "Caller does not outrank the target"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required")
@@ -1461,11 +1461,10 @@ pub async fn update_user_active(
         .as_ref()
         .ok_or_else(|| AppError::internal_error("Auth service not configured"))?;
 
-    // Self-directed changes are refused in the service. That is slightly
-    // wider than the guard it replaces, which blocked self-deactivation
-    // but permitted self-activation; reactivating the account you are
-    // authenticated on is a no-op, and the admin UI disables the control
-    // for your own row.
+    // Self-deactivation (a lockout) and acting on anyone this caller does
+    // not outrank are both refused in the service. Self-*activation* stays
+    // permitted, as before — it is a no-op on the account you are already
+    // authenticated on.
     auth.auth_application_service
         .set_user_active(admin_id, id, dto.active)
         .await
@@ -1491,7 +1490,6 @@ pub async fn update_user_active(
     params(("id" = String, Path, description = "User UUID")),
     responses(
         (status = 200, description = "Quota updated"),
-        (status = 400, description = "Cannot set your own quota here"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required, and must outrank the target")
     ),
@@ -1574,7 +1572,7 @@ pub async fn create_user(
     params(("id" = String, Path, description = "User UUID")),
     responses(
         (status = 200, description = "Password reset"),
-        (status = 400, description = "Invalid password, or resetting your own (use /me)"),
+        (status = 400, description = "Invalid password"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required, and must outrank the target")
     ),

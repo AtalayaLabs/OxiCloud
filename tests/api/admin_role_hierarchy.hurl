@@ -290,9 +290,21 @@ HTTP 403
 
 
 # ─────────────────────────────────────────────────────────────
-# 7 — Self-directed admin actions are refused (400, not 403:
-#     the request is malformed in intent rather than
-#     unauthorized). /me is where you change your own account.
+# 7 — Self-directed actions: THREE are refused, the rest are not.
+#
+#     Exactly these three, because each is its own hazard —
+#     escalation confusion, an irreversible footgun, and locking
+#     yourself out. 400 rather than 403: the request is malformed
+#     in intent, not unauthorized.
+#
+#     The hierarchy itself says nothing about your own account,
+#     and must not: folding self into the rank comparison forbids
+#     every self-directed admin action at once, because nobody
+#     outranks themselves. That regression shipped briefly and
+#     broke an admin tightening their own quota — which is how
+#     tests/webdav/test_nextcloud_chunked_upload_cap.sh reaches
+#     the 507 path. The positive case at the end of this section
+#     is what pins it.
 # ─────────────────────────────────────────────────────────────
 PUT {{base_url}}/api/admin/users/{{peer_admin_id}}/role
 Authorization: Bearer {{peer_admin_token}}
@@ -314,6 +326,27 @@ Content-Type: application/json
 { "active": false }
 
 HTTP 400
+
+
+# Setting your OWN quota is allowed — there was never a guard
+# against it, and it is how the chunked-upload test drives a 507.
+PUT {{base_url}}/api/admin/users/{{peer_admin_id}}/quota
+Authorization: Bearer {{peer_admin_token}}
+Content-Type: application/json
+{ "quota_bytes": 52428800 }
+
+HTTP 200
+
+
+# So is re-activating yourself: a no-op on the account you are
+# already authenticated on, and the asymmetry the previous guard
+# had. Only the deactivate direction is a lockout.
+PUT {{base_url}}/api/admin/users/{{peer_admin_id}}/active
+Authorization: Bearer {{peer_admin_token}}
+Content-Type: application/json
+{ "active": true }
+
+HTTP 200
 
 
 # ─────────────────────────────────────────────────────────────
