@@ -2268,6 +2268,8 @@ impl AuthApplicationService {
         admin_id: Uuid,
         target_id: Uuid,
     ) -> Result<PublicUserDto, DomainError> {
+        self.require_can_modify(admin_id, target_id).await?;
+
         let mut user = self.user_storage.get_user_by_id(target_id).await?;
 
         if !user.is_external() {
@@ -3320,6 +3322,85 @@ impl AuthApplicationService {
             .collect())
     }
 
+    /// The hierarchy gate: may `caller` administer `target`?
+    ///
+    /// Every administrative mutation of another account goes through here.
+    /// The rule is a strict rank comparison — `caller.outranks(target)` —
+    /// which yields the three properties issue #690 asks for:
+    ///
+    /// - An admin may act on regular users.
+    /// - An admin may NOT act on another admin. Peers cannot demote,
+    ///   deactivate, delete or reset each other, so one rogue or
+    ///   compromised admin account cannot lock the others out.
+    /// - Nobody may act on the owner, because nothing outranks them.
+    ///
+    /// **Self is always refused**, and falls out of the same comparison: a
+    /// caller never outranks themselves. Administering your own account is
+    /// not an admin operation — changing your password or profile lives on
+    /// `/me`, which is a different surface with different rules. This
+    /// replaces three hand-rolled `if admin_id == id` checks that sat in
+    /// the handlers, where AGENTS.md says authorization must not live.
+    ///
+    /// One deliberate behaviour change comes with that consolidation:
+    /// `set_user_active(self, active = true)` used to be permitted (the
+    /// old guard refused only self-*de*activation). It is now refused like
+    /// every other self-directed admin action. Reactivating an account you
+    /// are already authenticated on is a no-op, and the admin UI disables
+    /// the control for your own row, so nothing asks for it.
+    ///
+    /// Both lookups hit the single-flight, image-free flags cache, so the
+    /// gate costs two cache reads and no profile hydration.
+    async fn require_can_modify(
+        &self,
+        caller_id: Uuid,
+        target_id: Uuid,
+    ) -> Result<(), DomainError> {
+        if caller_id == target_id {
+            tracing::info!(
+                target: "audit",
+                event = "user.admin_mutation_rejected",
+                reason = "self_target",
+                caller_id = %caller_id,
+                target_id = %target_id,
+                "👮🏻‍♂️ admin mutation refused: administrators act on others, not themselves",
+            );
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "User",
+                "You cannot perform this administrative action on your own account.",
+            ));
+        }
+
+        let caller = self.get_user_flags(caller_id).await?;
+        let target = self.get_user_flags(target_id).await?;
+
+        if !caller.role.outranks(target.role) {
+            tracing::info!(
+                target: "audit",
+                event = "user.admin_mutation_rejected",
+                reason = "does_not_outrank",
+                caller_id = %caller_id,
+                caller_role = %caller.role,
+                target_id = %target_id,
+                target_role = %target.role,
+                "👮🏻‍♂️ admin mutation refused: {} does not outrank {}",
+                caller.role,
+                target.role,
+            );
+            return Err(DomainError::new(
+                ErrorKind::AccessDenied,
+                "User",
+                format!(
+                    "Insufficient privileges: a {} cannot perform administrative \
+                     actions on a {}.",
+                    caller.role, target.role
+                ),
+            ));
+        }
+
+        Ok(())
+    }
+
     /// Service-layer gate for administrator-scoped user-directory operations.
     /// The route middleware remains a cheap first line of defence, but the
     /// application service is authoritative so alternate callers cannot bypass
@@ -3454,6 +3535,7 @@ impl AuthApplicationService {
     /// Admin-only: create a user bypassing registration guards.
     pub async fn admin_create_user(
         &self,
+        caller_id: Uuid,
         dto: crate::application::dtos::settings_dto::AdminCreateUserDto,
     ) -> Result<FullUserDto, DomainError> {
         // Normalise the username up-front — trim + lowercase — and use
@@ -3516,6 +3598,30 @@ impl AuthApplicationService {
                 )
             })?,
         };
+
+        // You may only create an account you could subsequently administer.
+        // Without this an admin could mint a peer admin — an account they
+        // are then forbidden to demote, deactivate or delete — which is a
+        // way around the hierarchy rather than an exception to it. Creating
+        // an owner is refused for every caller: ownership moves only
+        // through transfer.
+        let caller_role = self.get_user_flags(caller_id).await?.role;
+        if !caller_role.outranks(role) {
+            tracing::info!(
+                target: "audit",
+                event = "user.admin_create_rejected",
+                reason = "does_not_outrank_requested_role",
+                caller_id = %caller_id,
+                caller_role = %caller_role,
+                requested_role = %role,
+                "👮🏻‍♂️ user creation refused: {caller_role} cannot create a {role}",
+            );
+            return Err(DomainError::new(
+                ErrorKind::AccessDenied,
+                "User",
+                format!("Insufficient privileges: a {caller_role} cannot create a {role}."),
+            ));
+        }
 
         let is_external = dto.is_external.unwrap_or(false);
 
@@ -3637,9 +3743,12 @@ impl AuthApplicationService {
     /// Admin-only: reset a user's password.
     pub async fn admin_reset_password(
         &self,
+        caller_id: Uuid,
         user_id: Uuid,
         new_password: &str,
     ) -> Result<(), DomainError> {
+        self.require_can_modify(caller_id, user_id).await?;
+
         // Block password reset for OIDC-provisioned users
         let user = self.user_storage.get_user_by_id(user_id).await?;
         if user.is_oidc_user() {
@@ -3745,7 +3854,13 @@ impl AuthApplicationService {
     /// `PersonalDriveLifecycleHook` for future trash policy, …) can do
     /// their work atomically with the user DELETE. If any hook returns
     /// `Err`, the transaction rolls back and the user remains intact.
-    pub async fn delete_user_admin(&self, user_id: Uuid) -> Result<(), DomainError> {
+    pub async fn delete_user_admin(
+        &self,
+        caller_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<(), DomainError> {
+        self.require_can_modify(caller_id, user_id).await?;
+
         let user = self.user_storage.get_user_by_id(user_id).await?;
         tracing::info!(
             "Admin deleting user: {} ({})",
@@ -3805,7 +3920,14 @@ impl AuthApplicationService {
     /// See `docs/plan/username-lowercase.md § Design decision 7`.
     /// Without this, un-soft-deleting the only pre-migration
     /// mixed-case survivor would refuse-to-boot on the next restart.
-    pub async fn set_user_active(&self, user_id: Uuid, active: bool) -> Result<(), DomainError> {
+    pub async fn set_user_active(
+        &self,
+        caller_id: Uuid,
+        user_id: Uuid,
+        active: bool,
+    ) -> Result<(), DomainError> {
+        self.require_can_modify(caller_id, user_id).await?;
+
         // Only the activate direction needs the collision-resolution
         // dance — deactivation just flips a bit.
         if active {
@@ -3922,7 +4044,14 @@ impl AuthApplicationService {
     /// at COMMIT, but surfacing it here yields a clean `InvalidInput` error
     /// with an audit line naming the reason, instead of a bare
     /// constraint-violation stringified out of Postgres.
-    pub async fn change_user_role(&self, user_id: Uuid, role: &str) -> Result<(), DomainError> {
+    pub async fn change_user_role(
+        &self,
+        caller_id: Uuid,
+        user_id: Uuid,
+        role: &str,
+    ) -> Result<(), DomainError> {
+        self.require_can_modify(caller_id, user_id).await?;
+
         let requested = match UserRole::from_stored(role) {
             Some(r @ (UserRole::Admin | UserRole::User)) => r,
             _ => {
@@ -3975,9 +4104,12 @@ impl AuthApplicationService {
     /// Update user's storage quota (admin only)
     pub async fn update_user_quota(
         &self,
+        caller_id: Uuid,
         user_id: Uuid,
         quota_bytes: i64,
     ) -> Result<(), DomainError> {
+        self.require_can_modify(caller_id, user_id).await?;
+
         if quota_bytes < 0 {
             return Err(DomainError::new(
                 ErrorKind::InvalidInput,

@@ -1219,6 +1219,7 @@ pub async fn get_user(
     responses(
         (status = 200, description = "User deleted"),
         (status = 400, description = "Cannot delete own account"),
+        (status = 403, description = "Caller does not outrank the target"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required")
     ),
@@ -1234,24 +1235,19 @@ pub async fn delete_user(
 
     let id = Uuid::parse_str(&id).map_err(|_| AppError::bad_request("Invalid UUID"))?;
 
-    // Prevent self-deletion
-    if admin_id == id {
-        return Err(AppError::new(
-            StatusCode::BAD_REQUEST,
-            "Cannot delete your own account",
-            "SelfDeletion",
-        ));
-    }
-
     let auth = state
         .auth_service
         .as_ref()
         .ok_or_else(|| AppError::internal_error("Auth service not configured"))?;
 
+    // Self-deletion, and deleting anyone this caller does not outrank, are
+    // both refused by `require_can_modify` inside the service — AGENTS.md
+    // keeps authorization out of handlers. `map_err` preserves the
+    // service's status instead of flattening every refusal to a 500.
     auth.auth_application_service
-        .delete_user_admin(id)
+        .delete_user_admin(admin_id, id)
         .await
-        .map_err(|e| AppError::internal_error(format!("Failed to delete user: {}", e)))?;
+        .map_err(AppError::from)?;
 
     Ok((
         StatusCode::OK,
@@ -1392,7 +1388,8 @@ pub async fn revoke_session(
     params(("id" = String, Path, description = "User UUID")),
     responses(
         (status = 200, description = "Role updated"),
-        (status = 400, description = "Cannot change own role"),
+        (status = 400, description = "Cannot change own role, or the target is the server owner"),
+        (status = 403, description = "Caller does not outrank the target"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required")
     ),
@@ -1409,24 +1406,18 @@ pub async fn update_user_role(
 
     let id = Uuid::parse_str(&id).map_err(|_| AppError::bad_request("Invalid UUID"))?;
 
-    // Prevent changing own role
-    if admin_id == id {
-        return Err(AppError::new(
-            StatusCode::BAD_REQUEST,
-            "Cannot change your own role",
-            "SelfRoleChange",
-        ));
-    }
-
     let auth = state
         .auth_service
         .as_ref()
         .ok_or_else(|| AppError::internal_error("Auth service not configured"))?;
 
+    // Changing your own role, and changing the role of anyone this caller
+    // does not outrank (including the server owner), are refused inside
+    // the service.
     auth.auth_application_service
-        .change_user_role(id, &dto.role)
+        .change_user_role(admin_id, id, &dto.role)
         .await
-        .map_err(|e| AppError::internal_error(format!("Failed to change role: {}", e)))?;
+        .map_err(AppError::from)?;
 
     Ok((
         StatusCode::OK,
@@ -1443,7 +1434,8 @@ pub async fn update_user_role(
     params(("id" = String, Path, description = "User UUID")),
     responses(
         (status = 200, description = "User active status updated"),
-        (status = 400, description = "Cannot deactivate own account"),
+        (status = 400, description = "Cannot change your own active state"),
+        (status = 403, description = "Caller does not outrank the target"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required")
     ),
@@ -1460,24 +1452,20 @@ pub async fn update_user_active(
 
     let id = Uuid::parse_str(&id).map_err(|_| AppError::bad_request("Invalid UUID"))?;
 
-    // Prevent deactivating yourself
-    if admin_id == id && !dto.active {
-        return Err(AppError::new(
-            StatusCode::BAD_REQUEST,
-            "Cannot deactivate your own account",
-            "SelfDeactivation",
-        ));
-    }
-
     let auth = state
         .auth_service
         .as_ref()
         .ok_or_else(|| AppError::internal_error("Auth service not configured"))?;
 
+    // Self-directed changes are refused in the service. That is slightly
+    // wider than the guard it replaces, which blocked self-deactivation
+    // but permitted self-activation; reactivating the account you are
+    // authenticated on is a no-op, and the admin UI disables the control
+    // for your own row.
     auth.auth_application_service
-        .set_user_active(id, dto.active)
+        .set_user_active(admin_id, id, dto.active)
         .await
-        .map_err(|e| AppError::internal_error(format!("Failed to update user status: {}", e)))?;
+        .map_err(AppError::from)?;
 
     let status = if dto.active {
         "activated"
@@ -1499,14 +1487,16 @@ pub async fn update_user_active(
     params(("id" = String, Path, description = "User UUID")),
     responses(
         (status = 200, description = "Quota updated"),
+        (status = 400, description = "Cannot set your own quota here"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Admin required")
+        (status = 403, description = "Admin required, and must outrank the target")
     ),
     security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn update_user_quota(
     State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
     Path(id): Path<String>,
     Json(dto): Json<UpdateUserQuotaDto>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -1517,10 +1507,14 @@ pub async fn update_user_quota(
         .as_ref()
         .ok_or_else(|| AppError::internal_error("Auth service not configured"))?;
 
+    // This handler previously took no caller at all, leaning entirely on
+    // the route middleware's "is an admin" check — which cannot express
+    // "may this admin act on THAT user". The service gate needs the
+    // caller, so extract it.
     auth.auth_application_service
-        .update_user_quota(id, dto.quota_bytes)
+        .update_user_quota(auth_user.id, id, dto.quota_bytes)
         .await
-        .map_err(|e| AppError::internal_error(format!("Failed to update quota: {}", e)))?;
+        .map_err(AppError::from)?;
 
     Ok((
         StatusCode::OK,
@@ -1543,13 +1537,14 @@ pub async fn update_user_quota(
         (status = 201, description = "User created"),
         (status = 400, description = "Invalid user data"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Admin required")
+        (status = 403, description = "Admin required, and cannot create a role the caller does not outrank")
     ),
     security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn create_user(
     State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
     Json(dto): Json<AdminCreateUserDto>,
 ) -> Result<impl IntoResponse, AppError> {
     let auth = state
@@ -1557,17 +1552,13 @@ pub async fn create_user(
         .as_ref()
         .ok_or_else(|| AppError::internal_error("Auth service not configured"))?;
 
+    // The caller's own rank bounds the role they may create — an admin
+    // cannot mint a peer admin they would then be forbidden to manage.
     let user = auth
         .auth_application_service
-        .admin_create_user(dto)
+        .admin_create_user(auth_user.id, dto)
         .await
-        .map_err(|e| {
-            AppError::new(
-                StatusCode::BAD_REQUEST,
-                format!("Failed to create user: {}", e),
-                "CreateUserFailed",
-            )
-        })?;
+        .map_err(AppError::from)?;
 
     Ok((StatusCode::CREATED, Json(user)))
 }
@@ -1579,15 +1570,16 @@ pub async fn create_user(
     params(("id" = String, Path, description = "User UUID")),
     responses(
         (status = 200, description = "Password reset"),
-        (status = 400, description = "Invalid password"),
+        (status = 400, description = "Invalid password, or resetting your own (use /me)"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Admin required")
+        (status = 403, description = "Admin required, and must outrank the target")
     ),
     security(("bearerAuth" = [])),
     tag = "admin"
 )]
 pub async fn reset_user_password(
     State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
     Path(id): Path<String>,
     Json(dto): Json<AdminResetPasswordDto>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -1598,16 +1590,13 @@ pub async fn reset_user_password(
         .as_ref()
         .ok_or_else(|| AppError::internal_error("Auth service not configured"))?;
 
+    // Resetting a peer admin's password was the sharpest hole this gate
+    // closes: it is a full account takeover, and before #690 any admin
+    // could do it to any other admin — or to the server owner.
     auth.auth_application_service
-        .admin_reset_password(id, &dto.new_password)
+        .admin_reset_password(auth_user.id, id, &dto.new_password)
         .await
-        .map_err(|e| {
-            AppError::new(
-                StatusCode::BAD_REQUEST,
-                format!("Failed to reset password: {}", e),
-                "ResetPasswordFailed",
-            )
-        })?;
+        .map_err(AppError::from)?;
 
     Ok((
         StatusCode::OK,
