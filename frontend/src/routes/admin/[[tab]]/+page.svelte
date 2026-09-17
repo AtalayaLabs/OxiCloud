@@ -3235,7 +3235,13 @@
 											disabled={isSelf(u)}
 											onclick={() => toggleRole(u)}
 										>
-											<Icon name={isAtLeastAdmin(u.user.role) ? 'user' : 'crown'} />
+											<!-- The icon shows the badge you will GET: a shield
+											     promotes to admin, a person demotes to user.
+											     This was a crown, which clicked through to a
+											     shield — and now collides with the owner badge
+											     and the transfer button beside it, where a
+											     crown genuinely does mean ownership. -->
+											<Icon name={isAtLeastAdmin(u.user.role) ? 'user' : 'shield-alt'} />
 										</button>
 									{:else}
 										<span class="icon-btn icon-btn--placeholder" aria-hidden="true"></span>
