@@ -695,9 +695,10 @@ impl AuthApplicationService {
     /// Returns the default quota for the given role, capped to the available
     /// disk space on the filesystem that hosts the storage directory.
     fn capped_quota(&self, role: &UserRole) -> i64 {
-        let base_quota = match role {
-            UserRole::Admin => DEFAULT_ADMIN_QUOTA,
-            _ => DEFAULT_USER_QUOTA,
+        let base_quota = if role.at_least(UserRole::Admin) {
+            DEFAULT_ADMIN_QUOTA
+        } else {
+            DEFAULT_USER_QUOTA
         };
 
         match Self::available_disk_space(&self.storage_path) {
@@ -707,11 +708,7 @@ impl AuthApplicationService {
                     tracing::info!(
                         "Available disk space ({} bytes) is less than default {} quota ({} bytes) — capping quota",
                         avail_i64,
-                        if *role == UserRole::Admin {
-                            "admin"
-                        } else {
-                            "user"
-                        },
+                        role.as_str(),
                         base_quota,
                     );
                     avail_i64
@@ -1192,7 +1189,7 @@ impl AuthApplicationService {
         // orchestrates the side effect. Keeps this method side-effect-
         // free on the audit path.
         if self.require_verified_email
-            && !matches!(user.role(), UserRole::Admin)
+            && !user.role().at_least(UserRole::Admin)
             && !user.is_email_verified()
         {
             tracing::info!(
@@ -3157,8 +3154,8 @@ impl AuthApplicationService {
             return Ok(PublicUserDto::new(target, target_flags.is_online));
         }
 
-        // (5) Admin caller: always visible.
-        if caller.role() == UserRole::Admin {
+        // (5) Admin caller (or higher): always visible.
+        if caller.role().at_least(UserRole::Admin) {
             return Ok(PublicUserDto::new(target, target_flags.is_online));
         }
 
@@ -3480,10 +3477,21 @@ impl AuthApplicationService {
         // Validate password
         self.require_password_length(&dto.password)?;
 
-        // Determine role
+        // Determine role. Omitting `role` means "regular user" — that is
+        // the documented default and stays. But an unrecognised value is
+        // REJECTED rather than coerced: `_ => UserRole::User` answered a
+        // request for a role this binary does not know with a 201 and a
+        // plain user, so the caller was told their request succeeded when
+        // it had in fact been silently rewritten.
         let role = match dto.role.as_deref() {
-            Some("admin") => UserRole::Admin,
-            _ => UserRole::User,
+            None => UserRole::User,
+            Some(raw) => UserRole::from_stored(raw).ok_or_else(|| {
+                DomainError::new(
+                    ErrorKind::InvalidInput,
+                    "User",
+                    format!("Unknown role: {raw:?}"),
+                )
+            })?,
         };
 
         let is_external = dto.is_external.unwrap_or(false);
@@ -3494,14 +3502,15 @@ impl AuthApplicationService {
         // constraint violation. See the CHECK definition in
         // migrations/20260612000002_auth_users_is_external.sql for the
         // rationale.
-        if is_external && matches!(role, UserRole::Admin) {
+        if is_external && role.is_privileged() {
             return Err(DomainError::new(
                 ErrorKind::InvalidInput,
                 "User",
-                "External users cannot be admins. To promote an external user to admin, \
-                 first convert them to internal (set is_external = false), then update \
-                 the role separately."
-                    .to_string(),
+                format!(
+                    "External users cannot hold the {role} role. To grant an external \
+                     user a privileged role, first convert them to internal (set \
+                     is_external = false), then update the role separately."
+                ),
             ));
         }
 

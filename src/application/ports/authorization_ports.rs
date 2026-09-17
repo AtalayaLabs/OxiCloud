@@ -39,7 +39,10 @@ fn system_admin_denial_reason(
     match subject {
         Subject::User(_) if !active => Some("inactive"),
         Subject::User(_) if is_external => Some("external_account"),
-        Subject::User(_) if role != UserRole::Admin => Some("not_admin"),
+        // `at_least`, not `!=`: an admin gate must admit anything ranked
+        // above admin too, or a more privileged role would be refused
+        // admin surfaces it strictly outranks.
+        Subject::User(_) if !role.at_least(UserRole::Admin) => Some("not_admin"),
         Subject::User(_) => None,
         _ => Some("unsupported_subject"),
     }

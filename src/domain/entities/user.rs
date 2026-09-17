@@ -73,6 +73,23 @@ impl UserRole {
     pub fn is_anonymous(self) -> bool {
         matches!(self, UserRole::Anonymous)
     }
+
+    /// True for any role carrying more authority than a regular user.
+    ///
+    /// The external-identity guards ask this question — "may an
+    /// IdP-provisioned account hold this role?" — and they MUST ask it
+    /// this way rather than comparing against `Admin`. `Admin` was
+    /// historically the only privileged role, so the guards were written
+    /// as `role == Admin`; a role added *above* Admin would then walk
+    /// straight through them, letting a federated identity hold the most
+    /// privileged account on the instance.
+    ///
+    /// Phrased as a negative ("more than a plain user") this stays correct
+    /// for roles that do not exist yet. Do not respell it as a list.
+    /// See `docs/plan/role-hierarchy-owner.md`.
+    pub fn is_privileged(self) -> bool {
+        self.rank() > UserRole::User.rank()
+    }
 }
 
 impl std::fmt::Display for UserRole {
@@ -393,10 +410,10 @@ impl User {
         }
         // Schema-level CHECKs are mirrored at the entity layer so callers
         // get a typed error instead of an opaque DB rejection.
-        if is_external && matches!(role, UserRole::Admin) {
-            return Err(UserError::ValidationError(
-                "External users cannot hold the admin role".to_string(),
-            ));
+        if is_external && role.is_privileged() {
+            return Err(UserError::ValidationError(format!(
+                "External users cannot hold the {role} role"
+            )));
         }
         if is_external && storage_quota_bytes != 0 {
             return Err(UserError::ValidationError(
@@ -1057,6 +1074,31 @@ mod role_tests {
         assert!(!UserRole::Anonymous.at_least(UserRole::Admin));
         // The one that matters most: anonymous is never admin.
         assert!(!UserRole::Anonymous.at_least(UserRole::Admin));
+    }
+
+    /// The external-identity guards ask `is_privileged`, and they must
+    /// keep meaning "more than a plain user" as the roster grows — a role
+    /// added above `Admin` has to be caught by the same test that catches
+    /// `Admin` today, without anyone remembering to update it.
+    ///
+    /// Stated as the property rather than as cases: everything ranked
+    /// above `User` is privileged, everything at or below is not. A new
+    /// variant is covered the moment it has a rank.
+    #[test]
+    fn privileged_means_outranks_a_plain_user() {
+        for role in [UserRole::Anonymous, UserRole::User, UserRole::Admin] {
+            assert_eq!(
+                role.is_privileged(),
+                role.rank() > UserRole::User.rank(),
+                "{role} disagrees with its own rank about being privileged",
+            );
+        }
+
+        // Spelled out too, because these are the answers the SQL CHECK
+        // `NOT (is_external AND role <> 'user')` has to agree with.
+        assert!(UserRole::Admin.is_privileged());
+        assert!(!UserRole::User.is_privileged());
+        assert!(!UserRole::Anonymous.is_privileged());
     }
 
     /// `anonymous` has no `auth.users` row, so it must be unparseable from
