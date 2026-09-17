@@ -37,7 +37,11 @@
 		releaseUploadGuard
 	} from '$lib/upload/interruption';
 	import { addFavorite, removeFavorite } from '$lib/api/endpoints/favorites';
-	import { canEditWithWopi, getEditorUrlWithFallback } from '$lib/api/endpoints/wopi';
+	import {
+		advertisedExtensions,
+		canEditWithWopi,
+		getEditorUrlWithFallback
+	} from '$lib/api/endpoints/wopi';
 	import { addTracks, createPlaylist, listPlaylists } from '$lib/api/endpoints/music';
 	import { copyFiles, copyFolders } from '$lib/api/endpoints/batch';
 	import { apiFetch, withBase } from '$lib/api/client';
@@ -1945,10 +1949,39 @@
 		return () => window.removeEventListener('pointerdown', onDown);
 	});
 
+	// Document kinds the configured editor advertises. Empty until discovery
+	// answers, and empty for good when no editor is configured — creating a
+	// file nothing can open helps nobody.
+	let newDocKinds = $state<(keyof typeof NEW_DOC_KINDS)[]>([]);
+	$effect(() => {
+		void advertisedExtensions().then((exts) => {
+			newDocKinds = exts
+				? (Object.keys(NEW_DOC_KINDS) as (keyof typeof NEW_DOC_KINDS)[]).filter((k) =>
+						exts.includes(k)
+					)
+				: [];
+		});
+	});
+
 	const NEW_DOC_KINDS = {
-		odt: { mime: 'application/vnd.oasis.opendocument.text' },
-		ods: { mime: 'application/vnd.oasis.opendocument.spreadsheet' },
-		odp: { mime: 'application/vnd.oasis.opendocument.presentation' }
+		odt: {
+			mime: 'application/vnd.oasis.opendocument.text',
+			icon: 'file-word',
+			label: 'actions.new_document_text',
+			fallback: 'New text document'
+		},
+		ods: {
+			mime: 'application/vnd.oasis.opendocument.spreadsheet',
+			icon: 'file-excel',
+			label: 'actions.new_document_spreadsheet',
+			fallback: 'New spreadsheet'
+		},
+		odp: {
+			mime: 'application/vnd.oasis.opendocument.presentation',
+			icon: 'file-powerpoint',
+			label: 'actions.new_document_presentation',
+			fallback: 'New presentation'
+		}
 	} as const;
 
 	/**
@@ -2196,31 +2229,19 @@
 							<Icon name="folder-open" />
 							<span>{t('actions.upload_folder', 'Upload folder')}</span>
 						</button>
-						<hr class="upload-dropdown-sep" />
-						<button
-							class="upload-dropdown-item"
-							data-testid="files-newdoc-odt-item"
-							onclick={() => void onNewDocument('odt')}
-						>
-							<Icon name="file-word" />
-							<span>{t('actions.new_document_text', 'New text document')}</span>
-						</button>
-						<button
-							class="upload-dropdown-item"
-							data-testid="files-newdoc-ods-item"
-							onclick={() => void onNewDocument('ods')}
-						>
-							<Icon name="file-excel" />
-							<span>{t('actions.new_document_spreadsheet', 'New spreadsheet')}</span>
-						</button>
-						<button
-							class="upload-dropdown-item"
-							data-testid="files-newdoc-odp-item"
-							onclick={() => void onNewDocument('odp')}
-						>
-							<Icon name="file-powerpoint" />
-							<span>{t('actions.new_document_presentation', 'New presentation')}</span>
-						</button>
+						{#if newDocKinds.length > 0}
+							<hr class="upload-dropdown-sep" />
+							{#each newDocKinds as kind (kind)}
+								<button
+									class="upload-dropdown-item"
+									data-testid="files-newdoc-{kind}-item"
+									onclick={() => void onNewDocument(kind)}
+								>
+									<Icon name={NEW_DOC_KINDS[kind].icon} />
+									<span>{t(NEW_DOC_KINDS[kind].label, NEW_DOC_KINDS[kind].fallback)}</span>
+								</button>
+							{/each}
+						{/if}
 					</div>
 				{/if}
 			</div>
