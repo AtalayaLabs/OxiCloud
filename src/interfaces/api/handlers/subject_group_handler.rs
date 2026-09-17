@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 use crate::common::di::AppState;
 use crate::domain::entities::subject_group::{GroupMember, SubjectGroup};
+use crate::domain::entities::user::UserRole;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::admin::{require_admin, require_authenticated};
 
@@ -280,7 +281,7 @@ pub async fn search_groups(
         );
         return Err(err);
     }
-    let can_manage = role == "admin";
+    let can_manage = UserRole::str_at_least(&role, UserRole::Admin);
     let svc = service(&state)?;
     // The share-dialog autocomplete doesn't render a member-count chip, so
     // emit 0 rather than spending a `COUNT(*)` per row. Frontend consumers

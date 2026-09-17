@@ -12,6 +12,7 @@ use crate::application::dtos::search_dto::SearchCriteriaDto;
 use crate::application::ports::inbound::SearchUseCase;
 use crate::application::ports::storage_ports::StorageUsagePort;
 use crate::common::di::AppState;
+use crate::domain::entities::user::UserRole;
 use crate::interfaces::middleware::auth::AuthUser;
 
 /// Build an OCS success response with the given statuscode and data.
@@ -232,8 +233,11 @@ async fn user_provisioning_response(
         }
     };
 
-    // Determine groups based on role
-    let groups = if user_dto.user.role == "admin" {
+    // Determine groups based on role. Rank, not spelling: the owner is an
+    // administrator of this instance and NextCloud clients decide what to
+    // offer from this list, so omitting them would hide admin features
+    // from the one account that certainly has them.
+    let groups = if UserRole::str_at_least(&user_dto.user.role, UserRole::Admin) {
         vec!["admin", "users"]
     } else {
         vec!["users"]

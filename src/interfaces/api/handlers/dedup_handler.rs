@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::common::di::AppState;
+use crate::domain::entities::user::UserRole;
 use crate::interfaces::middleware::auth::AuthUser;
 use std::sync::Arc;
 
@@ -128,7 +129,7 @@ impl DedupHandler {
             // Admins also get the global ref_count for dedup accounting tests.
             let metadata = dedup.get_blob_metadata(&hash).await;
             let size = metadata.as_ref().map(|m| m.size);
-            let ref_count = if auth_user.role == "admin" {
+            let ref_count = if UserRole::str_at_least(&auth_user.role, UserRole::Admin) {
                 metadata.map(|m| m.ref_count)
             } else {
                 None // Never expose global ref_count to regular users

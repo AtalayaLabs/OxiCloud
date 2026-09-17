@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use crate::application::ports::auth_ports::TokenServicePort;
 use crate::common::di::AppState;
+use crate::domain::entities::user::UserRole;
 use crate::interfaces::api::cookie_auth::{ACCESS_COOKIE, extract_cookie_value};
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::user::{LiveRole, resolve_live_role};
@@ -58,7 +59,10 @@ pub async fn require_admin(
     )
     .await
     {
-        LiveRole::Active(role) if role == "admin" => Ok((user_id, role)),
+        // Rank, not spelling — the owner outranks admin and must pass.
+        LiveRole::Active(role) if UserRole::str_at_least(&role, UserRole::Admin) => {
+            Ok((user_id, role))
+        }
         LiveRole::Active(role) => {
             tracing::info!(
                 target: "audit",

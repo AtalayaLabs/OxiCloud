@@ -35,6 +35,7 @@
 		setUserActive,
 		setUserQuota,
 		setUserRole,
+		transferOwnership,
 		testOidc,
 		testStorage,
 		rotateStorageEntry,
@@ -1162,6 +1163,44 @@
 		try {
 			await setUserRole(u.user.id, role);
 			await loadUsers();
+		} catch (e) {
+			reportError(e);
+		}
+	}
+
+	/** Only the current owner sees the hand-over control. */
+	const viewerIsOwner = $derived(isOwner(session.user?.role));
+
+	/**
+	 * A row that could receive ownership: internal, active, not already the
+	 * owner, and not the viewer. The backend applies the same rules — this
+	 * only decides whether to offer the button, so a refused transfer is
+	 * never the first time the operator learns the target is ineligible.
+	 */
+	function canReceiveOwnership(u: FullUser): boolean {
+		return !u.user.is_external && u.active && !isOwner(u.user.role) && !isSelf(u);
+	}
+
+	async function transferOwnershipTo(u: FullUser) {
+		if (!viewerIsOwner || !canReceiveOwnership(u)) return;
+		// Spelled out rather than a generic "are you sure": this is the one
+		// action in the table that demotes the person performing it, and it
+		// cannot be undone without the new owner's cooperation.
+		const name = u.user.username ?? u.user.email;
+		const confirmed = await showConfirm(
+			t(
+				'admin.confirm_transfer_ownership',
+				{ name },
+				'Transfer server ownership to {{name}}? You will be demoted to administrator, and only they will be able to transfer it back.'
+			)
+		);
+		if (!confirmed) return;
+		try {
+			await transferOwnership(u.user.id);
+			// Both the table and the viewer's own role changed. Refresh the
+			// session too, or the sidebar keeps offering owner-only UI that
+			// the server now refuses.
+			await Promise.all([loadUsers(), session.refresh()]);
 		} catch (e) {
 			reportError(e);
 		}
@@ -3195,6 +3234,24 @@
 										</button>
 									{:else}
 										<span class="icon-btn icon-btn--placeholder" aria-hidden="true"></span>
+									{/if}
+									<!-- Slot 3b: transfer ownership. Only the current owner
+									     sees this, and only on rows that can actually
+									     receive it (internal, active, not already the
+									     owner, not themselves). Hidden rather than
+									     disabled for everyone else: an admin has no use
+									     for a control they can never operate, and it
+									     would only invite a refused request. -->
+									{#if viewerIsOwner && canReceiveOwnership(u)}
+										<button
+											class="icon-btn"
+											data-testid={`admin-user-transfer-ownership-${u.user.id}`}
+											title={t('admin.transfer_ownership_title', 'Transfer ownership')}
+											aria-label={t('admin.transfer_ownership_title', 'Transfer ownership')}
+											onclick={() => transferOwnershipTo(u)}
+										>
+											<Icon name="crown" />
+										</button>
 									{/if}
 									<!-- Slot 4: activate/deactivate. -->
 									<button

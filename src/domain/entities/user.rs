@@ -103,6 +103,23 @@ impl UserRole {
         matches!(self, UserRole::Anonymous)
     }
 
+    /// Does this **stringly-typed** role meet `min`?
+    ///
+    /// The role crosses several boundaries as a plain `String` — the JWT
+    /// claim, `CurrentUser.role`, `PublicUserDto.role`, the live-role
+    /// string — and before the Owner role existed, six sites compared
+    /// those strings to `"admin"` literally. Every one silently denied the
+    /// owner, who outranks admin: the admin API, the admin middleware, the
+    /// NextCloud OCS group list, group management, dedup ref-counts, and
+    /// shared-drive creation. The API test suite caught it as
+    /// `authz.admin_denied … role=owner`.
+    ///
+    /// Compare ranks, never spellings. An unparseable role is refused:
+    /// this is a gate, so the unknown answer is "no".
+    pub fn str_at_least(raw: &str, min: UserRole) -> bool {
+        UserRole::from_session(raw).is_some_and(|role| role.at_least(min))
+    }
+
     /// True for any role carrying more authority than a regular user.
     ///
     /// The external-identity guards ask this question — "may an
