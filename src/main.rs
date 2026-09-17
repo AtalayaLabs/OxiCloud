@@ -668,18 +668,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             // WOPI_PUBLIC_BASE_URL: the URL the browser uses to reach OxiCloud
             // Both must be set for Docker/multi-host deployments. WOPI_BASE_URL takes
             // precedence if both are set (supports the legacy single-URL pattern).
-            let wopi_base_url = std::env::var("OXICLOUD_WOPI_BASE_URL")
-                .or_else(|_| std::env::var("OXICLOUD_WOPI_PUBLIC_BASE_URL"))
-                .map(|v| v.trim_end_matches('/').to_string())
-                .ok()
-                .filter(|v| !v.is_empty())
+            let wopi_base_url = config
+                .wopi
+                .base_url
+                .clone()
+                .or_else(|| config.wopi.public_base_url.clone())
                 .unwrap_or_else(|| config.base_url());
 
-            let public_base_url = std::env::var("OXICLOUD_WOPI_PUBLIC_BASE_URL")
-                .or_else(|_| std::env::var("OXICLOUD_WOPI_BASE_URL"))
-                .map(|v| v.trim_end_matches('/').to_string())
-                .ok()
-                .filter(|v| !v.is_empty())
+            let public_base_url = config
+                .wopi
+                .public_base_url
+                .clone()
+                .or_else(|| config.wopi.base_url.clone())
                 .unwrap_or_else(|| config.base_url());
 
             // The single-URL fallback above means an OXICLOUD_WOPI_BASE_URL
@@ -701,9 +701,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "WOPI URLs resolved"
                 );
             }
-            if std::env::var("OXICLOUD_WOPI_PUBLIC_BASE_URL").is_err()
-                && std::env::var("OXICLOUD_WOPI_BASE_URL").is_ok()
-            {
+            if config.wopi.public_base_url.is_none() && config.wopi.base_url.is_some() {
                 tracing::warn!(
                     "OXICLOUD_WOPI_BASE_URL is set without OXICLOUD_WOPI_PUBLIC_BASE_URL — \
                      the browser will open the WOPI host page on the callback URL ({wopi_base_url}). \
@@ -1454,9 +1452,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // fails loudly instead of silently sharing the socket.  Set
     // OXICLOUD_REUSE_PORT=true only when you deliberately run multiple
     // workers (e.g. behind a process supervisor or during a rolling restart).
-    let reuse_port = std::env::var("OXICLOUD_REUSE_PORT")
-        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
-        .unwrap_or(false);
+    let reuse_port = config.reuse_port;
 
     if reuse_port {
         tracing::warn!(
