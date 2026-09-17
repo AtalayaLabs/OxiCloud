@@ -255,7 +255,11 @@ impl CardDavAdapter {
 
         xml_writer.write_event(Event::Start(BytesStart::new("D:response")))?;
 
-        let href = format!("/carddav/principals/{}/", username);
+        let href = format!(
+            "{}/carddav/principals/{}/",
+            crate::common::config::server_base_path(),
+            username
+        );
         xml_writer.write_event(Event::Start(BytesStart::new("D:href")))?;
         xml_writer.write_event(Event::Text(BytesText::new(&href)))?;
         xml_writer.write_event(Event::End(BytesEnd::new("D:href")))?;
@@ -547,7 +551,8 @@ impl CardDavAdapter {
         xml_writer.write_event(Event::Start(BytesStart::new("D:current-user-principal")))?;
         xml_writer.write_event(Event::Start(BytesStart::new("D:href")))?;
         xml_writer.write_event(Event::Text(BytesText::new(&format!(
-            "/carddav/principals/{}/",
+            "{}/carddav/principals/{}/",
+            crate::common::config::server_base_path(),
             username
         ))))?;
         xml_writer.write_event(Event::End(BytesEnd::new("D:href")))?;
@@ -564,7 +569,8 @@ impl CardDavAdapter {
         xml_writer.write_event(Event::Start(BytesStart::new("CR:addressbook-home-set")))?;
         xml_writer.write_event(Event::Start(BytesStart::new("D:href")))?;
         xml_writer.write_event(Event::Text(BytesText::new(&format!(
-            "/carddav/{}/",
+            "{}/carddav/{}/",
+            crate::common::config::server_base_path(),
             username
         ))))?;
         xml_writer.write_event(Event::End(BytesEnd::new("D:href")))?;

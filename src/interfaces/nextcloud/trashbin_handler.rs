@@ -386,7 +386,11 @@ fn write_trash_root_response<W: std::io::Write>(
     xml.write_event(Event::Start(BytesStart::new("d:response")))
         .map_err(|e| e.to_string())?;
 
-    let href = format!("/remote.php/dav/trashbin/{}/trash/", username);
+    let href = format!(
+        "{}/remote.php/dav/trashbin/{}/trash/",
+        crate::common::config::server_base_path(),
+        username
+    );
     write_text_element(xml, "d:href", &href)?;
 
     xml.write_event(Event::Start(BytesStart::new("d:propstat")))
@@ -434,7 +438,12 @@ fn write_trash_item_response<W: std::io::Write>(
         .map_err(|e| e.to_string())?;
 
     // href
-    let href = format!("/remote.php/dav/trashbin/{}/trash/{}", username, item.id);
+    let href = format!(
+        "{}/remote.php/dav/trashbin/{}/trash/{}",
+        crate::common::config::server_base_path(),
+        username,
+        item.id
+    );
     write_text_element(xml, "d:href", &href)?;
 
     xml.write_event(Event::Start(BytesStart::new("d:propstat")))

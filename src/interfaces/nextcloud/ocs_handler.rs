@@ -524,7 +524,11 @@ pub async fn handle_search(
             crate::interfaces::nextcloud::webdav_handler::nc_id_of(&file_id_map, &file.id);
 
         let thumbnail_url = match numeric_id {
-            Some(nid) => format!("/index.php/core/preview?fileId={}&x=32&y=32", nid),
+            Some(nid) => format!(
+                "{}/index.php/core/preview?fileId={}&x=32&y=32",
+                crate::common::config::server_base_path(),
+                nid
+            ),
             None => String::new(),
         };
         let resource_url = match numeric_id {

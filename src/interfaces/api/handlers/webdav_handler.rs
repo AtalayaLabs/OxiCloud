@@ -101,7 +101,15 @@ pub(crate) fn encode_uri_path(path: &str) -> String {
 /// of the choice on the same screen so an "is it a file or a
 /// folder?" reviewer can verify both branches at once.
 fn webdav_href(path: &str) -> String {
-    format!("/webdav/{}", encode_uri_path(path))
+    webdav_href_with_base(crate::common::config::server_base_path(), path)
+}
+
+/// Pure core of [`webdav_href`] — the deployment base path is explicit
+/// so subpath behaviour is unit-testable without process-global env.
+/// Hrefs are CLIENT-facing (resolved against the origin), so unlike the
+/// nest-stripped request URIs they must carry the prefix.
+fn webdav_href_with_base(base: &str, path: &str) -> String {
+    format!("{}/webdav/{}", base, encode_uri_path(path))
 }
 
 /// Build the `<D:href>` value for a collection (folder) resource.
@@ -537,9 +545,9 @@ async fn handle_propfind(
 
     // Use client-facing path for hrefs so responses match the request URL.
     let base_href = if client_path.is_empty() || client_path == "/" {
-        "/webdav/".to_string()
+        format!("{}/webdav/", crate::common::config::server_base_path())
     } else {
-        format!("/webdav/{}/", encode_uri_path(&client_path))
+        webdav_collection_href(&client_path)
     };
 
     // ── 5. Determine target resource ─────────────────────────────
@@ -2651,6 +2659,7 @@ fn canonical_collection_url(request_url_segments: &[String], canonical_last: &st
     let mut out = String::with_capacity(
         request_url_segments.iter().map(|s| s.len()).sum::<usize>() + canonical_last.len() + 16,
     );
+    out.push_str(crate::common::config::server_base_path());
     out.push_str("/webdav/");
     // Walk all segments except the last; the last is replaced with the
     // canonical (normalized) form.
@@ -3870,6 +3879,18 @@ mod tests {
         // but the helper still has to be robust to a path that
         // happens to end in `/` — exercise the idempotence path.
         assert_eq!(webdav_collection_href("Documents/"), "/webdav/Documents/");
+    }
+
+    #[test]
+    fn test_webdav_href_carries_the_deployment_base_path() {
+        // Hrefs are client-facing (resolved against the origin), so under
+        // a subpath deployment they must carry the prefix — unlike the
+        // nest-stripped request URIs the handlers match on.
+        assert_eq!(
+            webdav_href_with_base("/oxicloud", "Documents/report.pdf"),
+            "/oxicloud/webdav/Documents/report.pdf"
+        );
+        assert_eq!(webdav_href_with_base("", "file.txt"), "/webdav/file.txt");
     }
 
     #[test]

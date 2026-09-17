@@ -490,7 +490,11 @@ impl CalDavAdapter {
         xml_writer.write_event(Event::Start(BytesStart::new("D:response")))?;
 
         // href
-        let href = format!("/caldav/principals/{}/", username);
+        let href = format!(
+            "{}/caldav/principals/{}/",
+            crate::common::config::server_base_path(),
+            username
+        );
         xml_writer.write_event(Event::Start(BytesStart::new("D:href")))?;
         xml_writer.write_event(Event::Text(BytesText::new(&href)))?;
         xml_writer.write_event(Event::End(BytesEnd::new("D:href")))?;
@@ -548,7 +552,8 @@ impl CalDavAdapter {
                     .write_event(Event::Start(BytesStart::new("D:current-user-principal")))?;
                 xml_writer.write_event(Event::Start(BytesStart::new("D:href")))?;
                 xml_writer.write_event(Event::Text(BytesText::new(&format!(
-                    "/caldav/principals/{}/",
+                    "{}/caldav/principals/{}/",
+                    crate::common::config::server_base_path(),
                     username
                 ))))?;
                 xml_writer.write_event(Event::End(BytesEnd::new("D:href")))?;
@@ -558,7 +563,8 @@ impl CalDavAdapter {
                 xml_writer.write_event(Event::Start(BytesStart::new("C:calendar-home-set")))?;
                 xml_writer.write_event(Event::Start(BytesStart::new("D:href")))?;
                 xml_writer.write_event(Event::Text(BytesText::new(&format!(
-                    "/caldav/{}/",
+                    "{}/caldav/{}/",
+                    crate::common::config::server_base_path(),
                     username
                 ))))?;
                 xml_writer.write_event(Event::End(BytesEnd::new("D:href")))?;
@@ -605,7 +611,8 @@ impl CalDavAdapter {
                         .write_event(Event::Start(BytesStart::new("D:current-user-principal")))?;
                     xml_writer.write_event(Event::Start(BytesStart::new("D:href")))?;
                     xml_writer.write_event(Event::Text(BytesText::new(&format!(
-                        "/caldav/principals/{}/",
+                        "{}/caldav/principals/{}/",
+                        crate::common::config::server_base_path(),
                         username
                     ))))?;
                     xml_writer.write_event(Event::End(BytesEnd::new("D:href")))?;
@@ -616,7 +623,8 @@ impl CalDavAdapter {
                     xml_writer.write_event(Event::Start(BytesStart::new("C:calendar-home-set")))?;
                     xml_writer.write_event(Event::Start(BytesStart::new("D:href")))?;
                     xml_writer.write_event(Event::Text(BytesText::new(&format!(
-                        "/caldav/{}/",
+                        "{}/caldav/{}/",
+                        crate::common::config::server_base_path(),
                         username
                     ))))?;
                     xml_writer.write_event(Event::End(BytesEnd::new("D:href")))?;
@@ -654,7 +662,8 @@ impl CalDavAdapter {
         xml_writer.write_event(Event::Start(BytesStart::new("C:calendar-home-set")))?;
         xml_writer.write_event(Event::Start(BytesStart::new("D:href")))?;
         xml_writer.write_event(Event::Text(BytesText::new(&format!(
-            "/caldav/{}/",
+            "{}/caldav/{}/",
+            crate::common::config::server_base_path(),
             username
         ))))?;
         xml_writer.write_event(Event::End(BytesEnd::new("D:href")))?;
@@ -664,7 +673,8 @@ impl CalDavAdapter {
         xml_writer.write_event(Event::Start(BytesStart::new("D:current-user-principal")))?;
         xml_writer.write_event(Event::Start(BytesStart::new("D:href")))?;
         xml_writer.write_event(Event::Text(BytesText::new(&format!(
-            "/caldav/principals/{}/",
+            "{}/caldav/principals/{}/",
+            crate::common::config::server_base_path(),
             username
         ))))?;
         xml_writer.write_event(Event::End(BytesEnd::new("D:href")))?;
@@ -697,7 +707,8 @@ impl CalDavAdapter {
                         .write_event(Event::Start(BytesStart::new("D:current-user-principal")))?;
                     xml_writer.write_event(Event::Start(BytesStart::new("D:href")))?;
                     xml_writer.write_event(Event::Text(BytesText::new(&format!(
-                        "/caldav/principals/{}/",
+                        "{}/caldav/principals/{}/",
+                        crate::common::config::server_base_path(),
                         username
                     ))))?;
                     xml_writer.write_event(Event::End(BytesEnd::new("D:href")))?;
@@ -708,7 +719,8 @@ impl CalDavAdapter {
                     xml_writer.write_event(Event::Start(BytesStart::new("C:calendar-home-set")))?;
                     xml_writer.write_event(Event::Start(BytesStart::new("D:href")))?;
                     xml_writer.write_event(Event::Text(BytesText::new(&format!(
-                        "/caldav/{}/",
+                        "{}/caldav/{}/",
+                        crate::common::config::server_base_path(),
                         username
                     ))))?;
                     xml_writer.write_event(Event::End(BytesEnd::new("D:href")))?;
@@ -720,7 +732,8 @@ impl CalDavAdapter {
                     )))?;
                     xml_writer.write_event(Event::Start(BytesStart::new("D:href")))?;
                     xml_writer.write_event(Event::Text(BytesText::new(&format!(
-                        "/caldav/principals/{}/",
+                        "{}/caldav/principals/{}/",
+                        crate::common::config::server_base_path(),
                         username
                     ))))?;
                     xml_writer.write_event(Event::End(BytesEnd::new("D:href")))?;
