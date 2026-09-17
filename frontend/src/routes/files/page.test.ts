@@ -193,7 +193,7 @@ it('loads the home folder listing on mount and renders its contents', async () =
 	await waitFor(() => expect(fetchFolderPage).toHaveBeenCalledWith('home', expect.anything()));
 	// VirtualList windows rows by viewport height (0 in jsdom), so assert the
 	// surrounding chrome rendered rather than the windowed rows themselves.
-	await screen.findByTestId('files-new-folder-btn');
+	await screen.findByTestId('files-add-btn');
 });
 
 it('shows an error when the listing fails with no cache', async () => {
@@ -215,8 +215,29 @@ it('creates a new folder in the current directory', async () => {
 	promptDialog.mockResolvedValue('Reports');
 	m(createFolder).mockResolvedValue({ id: 'new', name: 'Reports' });
 	render(FilesPage);
+	// New folder lives in the Add split-button menu.
+	await fireEvent.click(await screen.findByTestId('files-add-btn'));
 	await fireEvent.click(await screen.findByTestId('files-new-folder-btn'));
 	await waitFor(() => expect(createFolder).toHaveBeenCalledWith('Reports', 'home'));
+});
+
+it('creates a new text document from the bundled blank template', async () => {
+	withListing();
+	promptDialog.mockResolvedValue('Memo');
+	m(uploadFileWithProgress).mockResolvedValue(undefined);
+	vi.stubGlobal(
+		'fetch',
+		vi.fn(async () => ({ ok: true, blob: async () => new Blob(['odf']) }))
+	);
+	render(FilesPage);
+	await fireEvent.click(await screen.findByTestId('files-add-btn'));
+	await fireEvent.click(await screen.findByTestId('files-newdoc-odt-item'));
+	await waitFor(() => expect(uploadFileWithProgress).toHaveBeenCalled());
+	expect(globalThis.fetch).toHaveBeenCalledWith(expect.stringContaining('/templates/blank.odt'));
+	const uploaded = m(uploadFileWithProgress).mock.calls[0];
+	expect(uploaded[0]).toBe('home');
+	expect((uploaded[1] as File).name).toBe('Memo.odt');
+	vi.unstubAllGlobals();
 });
 
 it('batch-deletes the whole selection after confirmation', async () => {

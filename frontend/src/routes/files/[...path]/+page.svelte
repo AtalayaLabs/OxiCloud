@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { errorMessage, errorToast } from '$lib/utils/errors';
 	import { goto } from '$app/navigation';
-	import { resolve } from '$app/paths';
+	import { base, resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { untrack } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
@@ -1930,18 +1930,52 @@
 		onFolderDrop(e, item);
 	}
 
-	// ── Upload split-button popup state ─────────────────────────────────────
-	let uploadMenuOpen = $state(false);
+	// ── Add split-button (new folder / upload / new document) popup state ────
+	let addMenuOpen = $state(false);
 
-	// Close the upload popup when clicking outside of it.
 	$effect(() => {
-		if (!uploadMenuOpen) return;
+		if (!addMenuOpen) return;
 		const onDown = (e: MouseEvent) => {
-			if (!(e.target as HTMLElement).closest('.upload-dropdown')) uploadMenuOpen = false;
+			if (!(e.target as HTMLElement).closest('.add-dropdown')) addMenuOpen = false;
 		};
 		window.addEventListener('pointerdown', onDown);
 		return () => window.removeEventListener('pointerdown', onDown);
 	});
+
+	const NEW_DOC_KINDS = {
+		odt: { mime: 'application/vnd.oasis.opendocument.text' },
+		ods: { mime: 'application/vnd.oasis.opendocument.spreadsheet' },
+		odp: { mime: 'application/vnd.oasis.opendocument.presentation' }
+	} as const;
+
+	/**
+	 * Create a new empty office document in the current folder and open it
+	 * in the WOPI editor. Client-side only: a bundled blank ODF template
+	 * (static/templates/) is uploaded under the chosen name through the
+	 * regular upload endpoint, so the server needs no template support.
+	 */
+	async function onNewDocument(kind: keyof typeof NEW_DOC_KINDS) {
+		addMenuOpen = false;
+		const name = await promptDialog({
+			title: t('files.new_document', 'New document'),
+			placeholder: t('files.new_document_prompt', 'Document name'),
+			confirmText: t('common.create', 'Create')
+		});
+		if (!name) return;
+		const fname = name.toLowerCase().endsWith(`.${kind}`) ? name : `${name}.${kind}`;
+		try {
+			const res = await fetch(`${base}/templates/blank.${kind}`);
+			if (!res.ok) throw new Error(`template fetch failed: ${res.status}`);
+			const blob = await res.blob();
+			const file = new File([blob], fname, { type: NEW_DOC_KINDS[kind].mime });
+			await uploadFileWithProgress(currentId, file, () => {});
+			await reloadAndTrackNew();
+			const created = listing.files.find((f) => f.name === fname);
+			if (created) openWopi(created.id, created.name, 'edit');
+		} catch (e) {
+			errorToast(e);
+		}
+	}
 
 	// Reload whenever the route path OR the server sort dimension/direction
 	// changes.
@@ -2109,52 +2143,84 @@
 		{/snippet}
 
 		{#snippet actions()}
-			<div class="upload-dropdown" data-testid="files-upload-dropdown">
+			<div class="upload-dropdown add-dropdown" data-testid="files-add-dropdown">
 				<button
 					class="btn btn-primary"
-					data-testid="files-upload-btn"
-					onclick={() => (uploadMenuOpen = !uploadMenuOpen)}
-					disabled={uploading}
+					data-testid="files-add-btn"
+					onclick={() => (addMenuOpen = !addMenuOpen)}
 					aria-haspopup="true"
-					aria-expanded={uploadMenuOpen}
+					aria-expanded={addMenuOpen}
 				>
-					<Icon name="cloud-upload-alt" class="icon-mr" />
-					<span
-						>{uploading ? t('files.uploading', 'Uploading…') : t('actions.upload', 'Upload')}</span
-					>
+					<Icon name="plus" class="icon-mr" />
+					<span>{uploading ? t('files.uploading', 'Uploading…') : t('actions.add', 'Add')}</span>
 					<Icon name="caret-down" class="upload-caret" />
 				</button>
-				{#if uploadMenuOpen}
-					<div class="upload-dropdown-menu" data-testid="files-upload-menu">
+				{#if addMenuOpen}
+					<div class="upload-dropdown-menu" data-testid="files-add-menu">
+						<button
+							class="upload-dropdown-item"
+							data-testid="files-new-folder-btn"
+							onclick={() => {
+								addMenuOpen = false;
+								void onNewFolder();
+							}}
+						>
+							<Icon name="folder-plus" />
+							<span>{t('actions.new_folder', 'New folder')}</span>
+						</button>
+						<hr class="upload-dropdown-sep" />
 						<button
 							class="upload-dropdown-item"
 							data-testid="files-upload-files-item"
+							disabled={uploading}
 							onclick={() => {
-								uploadMenuOpen = false;
+								addMenuOpen = false;
 								fileInput?.click();
 							}}
 						>
-							<Icon name="file" />
+							<Icon name="cloud-upload-alt" />
 							<span>{t('actions.upload_files', 'Upload files')}</span>
 						</button>
 						<button
 							class="upload-dropdown-item"
 							data-testid="files-upload-folder-item"
+							disabled={uploading}
 							onclick={() => {
-								uploadMenuOpen = false;
+								addMenuOpen = false;
 								folderInput?.click();
 							}}
 						>
 							<Icon name="folder-open" />
 							<span>{t('actions.upload_folder', 'Upload folder')}</span>
 						</button>
+						<hr class="upload-dropdown-sep" />
+						<button
+							class="upload-dropdown-item"
+							data-testid="files-newdoc-odt-item"
+							onclick={() => void onNewDocument('odt')}
+						>
+							<Icon name="file-word" />
+							<span>{t('actions.new_document_text', 'New text document')}</span>
+						</button>
+						<button
+							class="upload-dropdown-item"
+							data-testid="files-newdoc-ods-item"
+							onclick={() => void onNewDocument('ods')}
+						>
+							<Icon name="file-excel" />
+							<span>{t('actions.new_document_spreadsheet', 'New spreadsheet')}</span>
+						</button>
+						<button
+							class="upload-dropdown-item"
+							data-testid="files-newdoc-odp-item"
+							onclick={() => void onNewDocument('odp')}
+						>
+							<Icon name="file-powerpoint" />
+							<span>{t('actions.new_document_presentation', 'New presentation')}</span>
+						</button>
 					</div>
 				{/if}
 			</div>
-			<button class="btn btn-secondary" data-testid="files-new-folder-btn" onclick={onNewFolder}>
-				<Icon name="folder-plus" class="icon-mr" />
-				<span>{t('actions.new_folder', 'New folder')}</span>
-			</button>
 		{/snippet}
 
 		{#snippet batchActions(_sel)}
