@@ -2819,6 +2819,8 @@ pub struct AppConfig {
     pub reuse_port: bool,
     /// Video thumbnail (ffmpeg) extraction knobs.
     pub video_thumbnails: VideoThumbnailConfig,
+    /// Tokio runtime pool sizing.
+    pub runtime: RuntimeConfig,
     /// Cache configuration
     pub cache: CacheConfig,
     /// Timeout configuration
@@ -2918,6 +2920,47 @@ impl Default for I18nConfig {
     }
 }
 
+/// Tokio runtime pool sizing.
+///
+/// Both fields hold the operator's explicit choice; `None` means "size it
+/// from the CPU budget", which [`crate::common::runtime::pool_sizes`]
+/// resolves. `build_runtime` is handed this struct, so the config is loaded
+/// before the runtime it sizes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuntimeConfig {
+    /// `OXICLOUD_WORKER_THREADS` (or tokio's `TOKIO_WORKER_THREADS`).
+    pub worker_threads: Option<usize>,
+    /// `OXICLOUD_MAX_BLOCKING_THREADS`.
+    pub max_blocking_threads: Option<usize>,
+}
+
+/// A thread count is only honoured when it parses and is positive; anything
+/// else means "unset" and falls through to the CPU-derived default.
+fn parse_thread_count(raw: Option<String>) -> Option<usize> {
+    raw.and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0)
+}
+
+impl RuntimeConfig {
+    /// Read the pool sizes from the environment.
+    ///
+    /// `OXICLOUD_WORKER_THREADS` takes precedence over tokio's native
+    /// `TOKIO_WORKER_THREADS`: whichever is *set* first wins, and a value
+    /// that does not parse falls back to the CPU-derived default rather
+    /// than to the other variable.
+    pub fn from_env() -> Self {
+        Self {
+            worker_threads: parse_thread_count(
+                env::var("OXICLOUD_WORKER_THREADS")
+                    .or_else(|_| env::var("TOKIO_WORKER_THREADS"))
+                    .ok(),
+            ),
+            max_blocking_threads: parse_thread_count(
+                env::var("OXICLOUD_MAX_BLOCKING_THREADS").ok(),
+            ),
+        }
+    }
+}
+
 /// Server-side video thumbnail extraction (ffmpeg).
 #[derive(Debug, Clone)]
 pub struct VideoThumbnailConfig {
@@ -2983,6 +3026,7 @@ impl Default for AppConfig {
             startup_jobs: parse_startup_jobs(DEFAULT_STARTUP_JOBS),
             reuse_port: false,
             video_thumbnails: VideoThumbnailConfig::default(),
+            runtime: RuntimeConfig::default(),
         }
     }
 }
@@ -3046,6 +3090,8 @@ impl AppConfig {
         if let Ok(v) = env::var("OXICLOUD_REUSE_PORT") {
             config.reuse_port = v.eq_ignore_ascii_case("true") || v == "1";
         }
+
+        config.runtime = RuntimeConfig::from_env();
 
         if let Ok(v) = env::var("OXICLOUD_FFMPEG_PATH") {
             config.video_thumbnails.ffmpeg_path = v;
@@ -4243,6 +4289,18 @@ mod tests {
             non_empty_url(Ok("http://oxicloud:8086/".to_string())),
             Some("http://oxicloud:8086".to_string())
         );
+    }
+
+    /// A thread count is an operator override: it must parse and be
+    /// positive, or the CPU-derived default applies.
+    #[test]
+    fn thread_counts_reject_unparseable_and_zero() {
+        assert_eq!(parse_thread_count(None), None);
+        assert_eq!(parse_thread_count(Some(String::new())), None);
+        assert_eq!(parse_thread_count(Some("auto".to_string())), None);
+        assert_eq!(parse_thread_count(Some("0".to_string())), None);
+        assert_eq!(parse_thread_count(Some("4".to_string())), Some(4));
+        assert_eq!(AppConfig::default().runtime, RuntimeConfig::default());
     }
 
     /// The knobs moved from ad-hoc `env::var` reads in di.rs keep the

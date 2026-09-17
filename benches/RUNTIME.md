@@ -1,7 +1,7 @@
 # Tokio runtime tuning benchmark
 
 Measures the two things `build_runtime` (`src/main.rs`) changes versus the bare
-`#[tokio::main]` defaults, sized by `common::runtime::runtime_pool_sizes`:
+`#[tokio::main]` defaults, sized by `common::runtime::pool_sizes`:
 
 - **Worker count.** `#[tokio::main]` defaults to `available_parallelism()`, which
   honours CPU *affinity* (`sched_getaffinity`: cpuset, `taskset`) but **ignores
