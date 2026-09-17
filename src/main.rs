@@ -682,6 +682,36 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .filter(|v| !v.is_empty())
                 .unwrap_or_else(|| config.base_url());
 
+            // The single-URL fallback above means an OXICLOUD_WOPI_BASE_URL
+            // set to an internal callback address (docker/cluster/loopback)
+            // silently becomes the BROWSER-facing host-page URL too. That
+            // is the documented legacy pattern when the value is public,
+            // and a broken editor when it is not — surface the resolution
+            // so the misconfiguration is one log line instead of a blank
+            // editor iframe.
+            if wopi_base_url == public_base_url {
+                tracing::info!(
+                    url = %wopi_base_url,
+                    "WOPI URLs resolved (editor callback and browser host page share one URL)"
+                );
+            } else {
+                tracing::info!(
+                    callback = %wopi_base_url,
+                    public = %public_base_url,
+                    "WOPI URLs resolved"
+                );
+            }
+            if std::env::var("OXICLOUD_WOPI_PUBLIC_BASE_URL").is_err()
+                && std::env::var("OXICLOUD_WOPI_BASE_URL").is_ok()
+            {
+                tracing::warn!(
+                    "OXICLOUD_WOPI_BASE_URL is set without OXICLOUD_WOPI_PUBLIC_BASE_URL — \
+                     the browser will open the WOPI host page on the callback URL ({wopi_base_url}). \
+                     If that address is internal, set OXICLOUD_WOPI_PUBLIC_BASE_URL to OxiCloud's \
+                     public URL."
+                );
+            }
+
             let wopi_state = wopi_handler::WopiState {
                 token_service: token_svc.clone(),
                 lock_service: lock_svc.clone(),

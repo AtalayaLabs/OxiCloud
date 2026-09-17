@@ -35,7 +35,11 @@ OXICLOUD_WOPI_DISCOVERY_URL="http://collabora:9980/hosting/discovery"
 | `OXICLOUD_WOPI_TOKEN_TTL_SECS` | `86400` | Access token lifetime |
 | `OXICLOUD_WOPI_LOCK_TTL_SECS` | `1800` | Lock expiration |
 
-If Collabora or OnlyOffice runs on a separate hostname, `OXICLOUD_WOPI_PUBLIC_BASE_URL` should still point to OxiCloud's public URL, not the office URL. Use `OXICLOUD_WOPI_BASE_URL` only when the editor reaches OxiCloud through a different callback URL (for example an internal Docker or cluster address).
+If Collabora or OnlyOffice runs on a separate hostname, `OXICLOUD_WOPI_PUBLIC_BASE_URL` should still point to OxiCloud's public URL, not the office URL. Use `OXICLOUD_WOPI_BASE_URL` when the editor reaches OxiCloud through a different callback URL (for example an internal Docker or cluster address).
+
+::: warning
+When only `OXICLOUD_WOPI_BASE_URL` is set, `OXICLOUD_WOPI_PUBLIC_BASE_URL` falls back to it — the browser then opens the host page on the callback URL. That is fine for the legacy single-public-URL pattern, but if the callback address is internal (Docker service name, loopback), you **must** also set `OXICLOUD_WOPI_PUBLIC_BASE_URL`, or the editor page will point the browser at an unreachable address. OxiCloud logs the resolved pair at startup and warns about this combination.
+:::
 
 ## Docker Compose with Collabora
 
