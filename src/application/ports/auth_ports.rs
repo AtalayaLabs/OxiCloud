@@ -287,6 +287,15 @@ pub trait UserStoragePort: Send + Sync + 'static {
     /// Lists users by role (e.g., "admin" or "user")
     async fn list_users_by_role(&self, role: &str) -> Result<Vec<User>, DomainError>;
 
+    /// Move ownership between two users atomically, demoting the current
+    /// owner. Demote-then-promote inside one transaction — the single-owner
+    /// index is checked per statement, so promoting first trips it.
+    async fn transfer_ownership(
+        &self,
+        from_user_id: Uuid,
+        to_user_id: Uuid,
+    ) -> Result<(), DomainError>;
+
     /// Counts users who can administer the instance — anything ranked above a
     /// plain user — WITHOUT hydrating their rows: a scalar `COUNT(*)` instead
     /// of fetching every full user row (incl. the up-to-512 KiB avatar `image`

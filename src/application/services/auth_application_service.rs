@@ -3401,6 +3401,101 @@ impl AuthApplicationService {
         Ok(())
     }
 
+    /// Hand the instance to another user. **Only the current owner may do
+    /// this**, and it is the only way the owner's own role ever changes.
+    ///
+    /// The target must be an account that can actually receive it: internal
+    /// (an external, IdP-provisioned identity may not hold a privileged
+    /// role), active, and able to log in. Handing ownership to an account
+    /// nobody can sign into would strand the instance with an unreachable
+    /// owner and no way back short of the CLI.
+    ///
+    /// Deliberately NOT gated by `require_can_modify`: that asks "do you
+    /// outrank them?", and the answer here is yes for every valid target,
+    /// which is not the question. The question is "are you the owner?".
+    pub async fn transfer_ownership(
+        &self,
+        caller_id: Uuid,
+        new_owner_id: Uuid,
+    ) -> Result<(), DomainError> {
+        let caller = self.get_user_flags(caller_id).await?;
+        if caller.role != UserRole::Owner {
+            tracing::info!(
+                target: "audit",
+                event = "server_owner.transfer_rejected",
+                reason = "caller_not_owner",
+                caller_id = %caller_id,
+                caller_role = %caller.role,
+                target_id = %new_owner_id,
+                "👮🏻‍♂️ ownership transfer refused: caller is not the owner",
+            );
+            return Err(DomainError::new(
+                ErrorKind::AccessDenied,
+                "User",
+                "Only the server owner can transfer ownership.",
+            ));
+        }
+
+        if caller_id == new_owner_id {
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "User",
+                "You already own this instance.",
+            ));
+        }
+
+        let target = self.user_storage.get_user_by_id(new_owner_id).await?;
+
+        // Each of these would leave ownership held by an account that
+        // cannot exercise it. Refuse with a reason rather than let the
+        // transfer succeed into a dead end.
+        let refusal = if target.is_external() {
+            Some(("target_external", "an external account"))
+        } else if !target.is_active() {
+            Some(("target_inactive", "a deactivated account"))
+        } else if target.username().is_none() {
+            Some(("target_no_username", "an account with no username"))
+        } else {
+            None
+        };
+
+        if let Some((reason, described)) = refusal {
+            tracing::info!(
+                target: "audit",
+                event = "server_owner.transfer_rejected",
+                reason = reason,
+                caller_id = %caller_id,
+                target_id = %new_owner_id,
+                "👮🏻‍♂️ ownership transfer refused: target is {described}",
+            );
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "User",
+                format!("Ownership cannot be transferred to {described}."),
+            ));
+        }
+
+        self.user_storage
+            .transfer_ownership(caller_id, new_owner_id)
+            .await?;
+
+        // Both rows changed rank, and the flags cache is what every
+        // authorization check reads. Leaving it stale would let the former
+        // owner keep owner powers for up to the TTL.
+        self.user_flags_cache.invalidate(&caller_id).await;
+        self.user_flags_cache.invalidate(&new_owner_id).await;
+
+        tracing::info!(
+            target: "audit",
+            event = "server_owner.transferred",
+            from_user_id = %caller_id,
+            to_user_id = %new_owner_id,
+            "👑 server ownership transferred",
+        );
+
+        Ok(())
+    }
+
     /// Service-layer gate for administrator-scoped user-directory operations.
     /// The route middleware remains a cheap first line of defence, but the
     /// application service is authoritative so alternate callers cannot bypass

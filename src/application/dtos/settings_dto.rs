@@ -68,6 +68,19 @@ pub struct UpdateUserRoleDto {
     pub role: String,
 }
 
+/// Request body for transferring server ownership.
+///
+/// Separate from [`UpdateUserRoleDto`] on purpose: ownership is not an
+/// assignable role. The generic role endpoint refuses `"owner"`, because
+/// conferring it there would create a second owner rather than move the
+/// one that exists.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct TransferOwnershipDto {
+    /// The user who becomes the new owner. The caller — who must be the
+    /// current owner — is demoted to admin in the same transaction.
+    pub new_owner_id: String,
+}
+
 /// Request body for updating a user's active status
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct UpdateUserActiveDto {

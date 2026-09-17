@@ -1134,6 +1134,68 @@ impl UserRepository for UserPgRepository {
     }
 
     /// Changes a user's role
+    /// Move ownership from one user to another atomically.
+    ///
+    /// **Demote first, then promote.** `idx_users_single_owner` permits one
+    /// owner row, and a constraint is checked per statement — promoting
+    /// first would momentarily hold two owners and fail. The reverse order
+    /// passes through a legal intermediate state (zero owners) instead.
+    ///
+    /// Both statements share one transaction so that intermediate state is
+    /// never observable and a failure cannot strand the instance ownerless.
+    async fn transfer_ownership(
+        &self,
+        from_user_id: Uuid,
+        to_user_id: Uuid,
+    ) -> UserRepositoryResult<()> {
+        with_transaction(&self.pool, "transfer_ownership", |tx| {
+            Box::pin(async move {
+                let demoted = sqlx::query(
+                    r#"
+                    UPDATE auth.users
+                    SET role = 'admin'::auth.userrole, updated_at = NOW()
+                    WHERE id = $1 AND role = 'owner'::auth.userrole
+                    "#,
+                )
+                .bind(from_user_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(Self::map_sqlx_error)?;
+
+                // Zero rows means the caller was not the owner by the time
+                // the write ran — a concurrent transfer beat us. Abort
+                // rather than promote, which would otherwise create a
+                // second owner or hand ownership away on a stale premise.
+                if demoted.rows_affected() != 1 {
+                    return Err(UserRepositoryError::OperationNotAllowed(
+                        "Ownership changed concurrently; transfer aborted".to_string(),
+                    ));
+                }
+
+                let promoted = sqlx::query(
+                    r#"
+                    UPDATE auth.users
+                    SET role = 'owner'::auth.userrole, updated_at = NOW()
+                    WHERE id = $1
+                    "#,
+                )
+                .bind(to_user_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(Self::map_sqlx_error)?;
+
+                if promoted.rows_affected() != 1 {
+                    return Err(UserRepositoryError::NotFound(
+                        "Target user no longer exists".to_string(),
+                    ));
+                }
+
+                Ok(())
+            })
+        })
+        .await
+    }
+
     async fn change_role(&self, user_id: Uuid, role: UserRole) -> UserRepositoryResult<()> {
         // Convert the role to string for the binding
         let role_str = role.to_string();
@@ -1677,6 +1739,16 @@ impl UserStoragePort for UserPgRepository {
 
     async fn list_users_by_role(&self, role: &str) -> Result<Vec<User>, DomainError> {
         UserRepository::list_users_by_role(self, role)
+            .await
+            .map_err(DomainError::from)
+    }
+
+    async fn transfer_ownership(
+        &self,
+        from_user_id: Uuid,
+        to_user_id: Uuid,
+    ) -> Result<(), DomainError> {
+        UserRepository::transfer_ownership(self, from_user_id, to_user_id)
             .await
             .map_err(DomainError::from)
     }

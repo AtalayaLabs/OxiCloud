@@ -182,6 +182,15 @@ pub trait UserRepository: Send + Sync + 'static {
     /// Lists users by role (admin or user)
     async fn list_users_by_role(&self, role: &str) -> UserRepositoryResult<Vec<User>>;
 
+    /// Move ownership between two users in one transaction, demoting the
+    /// current owner to admin. Demote-then-promote: the single-owner index
+    /// is checked per statement, so the reverse order trips it.
+    async fn transfer_ownership(
+        &self,
+        from_user_id: Uuid,
+        to_user_id: Uuid,
+    ) -> UserRepositoryResult<()>;
+
     /// Counts users who can administer the instance — anything ranked above
     /// a plain user — via a scalar `COUNT(*)`, no row hydration
     /// (benches/ROUND29.md §G).

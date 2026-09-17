@@ -19,8 +19,8 @@ use crate::application::dtos::settings_dto::{
     AdminCreateUserDto, AdminResetPasswordDto, DashboardStatsDto, DriveKindUsageDto,
     ListSessionsQueryDto, ListUsersQueryDto, MigrationStateDto, SaveOidcSettingsDto,
     SaveStorageSettingsDto, SendSmtpTestDto, SmtpInfoDto, SmtpTestResultDto, StartMigrationDto,
-    TestOidcConnectionDto, TestStorageConnectionDto, UpdateUserActiveDto, UpdateUserQuotaDto,
-    UpdateUserRoleDto,
+    TestOidcConnectionDto, TestStorageConnectionDto, TransferOwnershipDto, UpdateUserActiveDto,
+    UpdateUserQuotaDto, UpdateUserRoleDto,
 };
 use crate::application::dtos::user_dto::{FullUserDto, PublicUserDto};
 use crate::application::ports::authorization_ports::AuthorizationEngine;
@@ -140,6 +140,10 @@ pub fn admin_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
             "/users/{id}/promote-to-internal",
             post(admin_promote_external_to_internal),
         )
+        // Ownership transfer. Not under /users/{id} because it mutates TWO
+        // rows — the caller is demoted as the target is promoted — so it
+        // reads as an instance-level operation, not a user edit.
+        .route("/transfer-ownership", post(transfer_ownership))
         // Registration control
         .route("/settings/registration", put(set_registration_setting))
         // Audio metadata
@@ -1602,6 +1606,53 @@ pub async fn reset_user_password(
         StatusCode::OK,
         Json(serde_json::json!({
             "message": "Password reset successfully"
+        })),
+    ))
+}
+
+/// POST /api/admin/transfer-ownership — hand the instance to another user.
+///
+/// Owner-only, and the only way the owner's own role ever changes: the
+/// generic role endpoint refuses `"owner"` in both directions. The swap is
+/// one transaction, so the instance is never briefly ownerless or briefly
+/// double-owned.
+#[utoipa::path(
+    post,
+    path = "/api/admin/transfer-ownership",
+    request_body = TransferOwnershipDto,
+    responses(
+        (status = 200, description = "Ownership transferred"),
+        (status = 400, description = "Target cannot hold ownership, or is already the owner"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Only the current owner may transfer ownership"),
+        (status = 404, description = "Target user not found"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn transfer_ownership(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+    Json(dto): Json<TransferOwnershipDto>,
+) -> Result<impl IntoResponse, AppError> {
+    let new_owner_id =
+        Uuid::parse_str(&dto.new_owner_id).map_err(|_| AppError::bad_request("Invalid UUID"))?;
+
+    let auth = state
+        .auth_service
+        .as_ref()
+        .ok_or_else(|| AppError::internal_error("Auth service not configured"))?;
+
+    auth.auth_application_service
+        .transfer_ownership(auth_user.id, new_owner_id)
+        .await
+        .map_err(AppError::from)?;
+
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "message": "Ownership transferred",
+            "new_owner_id": new_owner_id,
         })),
     ))
 }

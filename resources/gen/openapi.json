@@ -2154,6 +2154,49 @@
         "x-oxicloud-scope": "role:admin"
       }
     },
+    "/api/admin/transfer-ownership": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "POST /api/admin/transfer-ownership — hand the instance to another user.",
+        "description": "Owner-only, and the only way the owner's own role ever changes: the\ngeneric role endpoint refuses `\"owner\"` in both directions. The swap is\none transaction, so the instance is never briefly ownerless or briefly\ndouble-owned.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "operationId": "transfer_ownership",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransferOwnershipDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Ownership transferred"
+          },
+          "400": {
+            "description": "Target cannot hold ownership, or is already the owner"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Only the current owner may transfer ownership"
+          },
+          "404": {
+            "description": "Target user not found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-oxicloud-scope": "role:admin"
+      }
+    },
     "/api/admin/users": {
       "get": {
         "tags": [
@@ -14080,6 +14123,19 @@
           "registration_allowed": {
             "type": "boolean",
             "description": "Whether self-registration is allowed."
+          }
+        }
+      },
+      "TransferOwnershipDto": {
+        "type": "object",
+        "description": "Request body for transferring server ownership.\n\nSeparate from [`UpdateUserRoleDto`] on purpose: ownership is not an\nassignable role. The generic role endpoint refuses `\"owner\"`, because\nconferring it there would create a second owner rather than move the\none that exists.",
+        "required": [
+          "new_owner_id"
+        ],
+        "properties": {
+          "new_owner_id": {
+            "type": "string",
+            "description": "The user who becomes the new owner. The caller — who must be the\ncurrent owner — is demoted to admin in the same transaction."
           }
         }
       },

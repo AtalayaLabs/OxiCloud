@@ -48,6 +48,7 @@ use clap::{Parser, Subcommand};
 pub mod migrate;
 pub mod opaque;
 pub mod storage;
+pub mod user;
 
 #[derive(Parser)]
 #[command(
@@ -80,6 +81,11 @@ enum Domain {
         #[command(subcommand)]
         action: storage::Action,
     },
+    /// Account administration that needs no running server.
+    User {
+        #[command(subcommand)]
+        action: user::Action,
+    },
 }
 
 /// Entrypoint called from `src/main.rs` after it detects a subcommand
@@ -97,6 +103,7 @@ pub fn run() -> u8 {
             Domain::Opaque { action } => opaque::run(action).await,
             Domain::Migrate { action } => migrate::run(action).await,
             Domain::Storage { action } => storage::run(action).await,
+            Domain::User { action } => user::run(action).await,
         }
     })
 }
