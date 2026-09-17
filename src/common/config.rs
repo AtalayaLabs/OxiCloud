@@ -2793,6 +2793,16 @@ pub struct AppConfig {
     pub server_port: u16,
     /// Server host
     pub server_host: String,
+    /// URL path prefix the whole application is served under, e.g.
+    /// `/oxicloud` when the public URL is `https://example.com/oxicloud`.
+    ///
+    /// Env: `OXICLOUD_BASE_PATH`. Empty (the default) = served at the
+    /// origin root, exactly as before this knob existed. Normalized to
+    /// start with `/` and carry no trailing `/`. The SvelteKit frontend
+    /// bakes the same prefix in at build time (`BASE_PATH`), so the
+    /// server verifies the two match at startup and refuses to boot on
+    /// a mismatch.
+    pub base_path: String,
     /// Prometheus `/metrics` listener address, or `None` to disable.
     ///
     /// Env: `OXICLOUD_METRICS_LISTEN` (e.g. `127.0.0.1:9090`).
@@ -3002,6 +3012,7 @@ impl Default for AppConfig {
             temp_dir: env::temp_dir(),
             server_port: 8086,
             server_host: "127.0.0.1".to_string(),
+            base_path: String::new(),
             cache: CacheConfig::default(),
             timeouts: TimeoutConfig::default(),
             resources: ResourceConfig::default(),
@@ -3056,6 +3067,15 @@ impl AppConfig {
 
         if let Ok(server_host) = env::var("OXICLOUD_SERVER_HOST") {
             config.server_host = server_host;
+        }
+
+        // URL path prefix for subpath deployments. Panics on a malformed
+        // value rather than warning: the prefix shapes every URL the
+        // server emits, so a silently-dropped value boots a server whose
+        // links all 404 behind the prefixed proxy with nothing pointing
+        // back at this config line.
+        if let Ok(raw) = env::var("OXICLOUD_BASE_PATH") {
+            config.base_path = parse_base_path(&raw);
         }
 
         // Prometheus /metrics listener — opt-in, off by default. Empty
@@ -4262,11 +4282,73 @@ impl AppConfig {
 
         if host.starts_with("http://") || host.starts_with("https://") {
             // The user already provided a full origin — use it directly.
-            host.to_string()
+            format!("{}{}", host, self.base_path)
         } else {
-            format!("http://{}:{}", host, self.server_port)
+            format!("http://{}:{}{}", host, self.server_port, self.base_path)
         }
     }
+
+    /// Prefix a root-relative path with the configured [`Self::base_path`].
+    ///
+    /// `path` must start with `/`. With no base path configured this is
+    /// the identity, so call sites never special-case the root deployment.
+    pub fn prefixed_path(&self, path: &str) -> String {
+        debug_assert!(
+            path.starts_with('/'),
+            "prefixed_path expects a root-relative path, got {path:?}"
+        );
+        if self.base_path.is_empty() {
+            path.to_string()
+        } else {
+            format!("{}{}", self.base_path, path)
+        }
+    }
+}
+
+/// Memoised `OXICLOUD_BASE_PATH` for call sites without an `AppConfig`
+/// handle (pure DAV href builders, cookie helpers). Same one-time env
+/// read shape as the cookie `Secure` flag. `""` at the root.
+pub fn server_base_path() -> &'static str {
+    static BASE_PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BASE_PATH.get_or_init(|| {
+        std::env::var("OXICLOUD_BASE_PATH")
+            .map(|raw| parse_base_path(&raw))
+            .unwrap_or_default()
+    })
+}
+
+/// Normalize and validate an `OXICLOUD_BASE_PATH` value.
+///
+/// An empty value or `/` (common .env shapes for "no prefix") maps to the
+/// empty string — served at the origin root. Anything else must be an
+/// absolute, already-normalized path such as `/oxicloud` or `/cloud/oxi`.
+/// Trailing slashes are stripped so the result can be glued directly in
+/// front of root-relative paths (`{base}/api/...`).
+///
+/// Panics on malformed input (missing leading `/`, whitespace, empty /
+/// `.` / `..` segments) — see the call site in [`AppConfig::from_env`]
+/// for why this is fail-fast instead of warn-and-continue.
+pub fn parse_base_path(raw: &str) -> String {
+    let stripped = raw.trim().trim_end_matches('/');
+    if stripped.is_empty() {
+        return String::new();
+    }
+    assert!(
+        stripped.starts_with('/'),
+        "OXICLOUD_BASE_PATH must start with '/': got {raw:?}"
+    );
+    assert!(
+        !stripped.contains(char::is_whitespace),
+        "OXICLOUD_BASE_PATH must not contain whitespace: got {raw:?}"
+    );
+    for segment in stripped[1..].split('/') {
+        assert!(
+            !segment.is_empty() && segment != "." && segment != "..",
+            "OXICLOUD_BASE_PATH must be a normalized absolute path \
+             (no empty, '.' or '..' segments): got {raw:?}"
+        );
+    }
+    stripped.to_string()
 }
 
 /// Gets a default global configuration
@@ -4318,6 +4400,77 @@ mod tests {
         assert_eq!(c.auth.authz_engine, None);
         assert_eq!(c.wopi.base_url, None);
         assert_eq!(c.wopi.public_base_url, None);
+    }
+
+    /// Empty and `/` are the two common .env shapes for "no prefix"
+    /// (bare `OXICLOUD_BASE_PATH=` and an explicit root). Both must map
+    /// to the empty string so `{base}{path}` gluing yields unprefixed
+    /// paths byte-identical to the pre-knob behaviour.
+    #[test]
+    fn base_path_empty_and_root_mean_no_prefix() {
+        assert_eq!(parse_base_path(""), "");
+        assert_eq!(parse_base_path("  "), "");
+        assert_eq!(parse_base_path("/"), "");
+        assert_eq!(parse_base_path("///"), "");
+    }
+
+    #[test]
+    fn base_path_strips_trailing_slash_and_keeps_nested_prefixes() {
+        assert_eq!(parse_base_path("/oxicloud"), "/oxicloud");
+        assert_eq!(parse_base_path("/oxicloud/"), "/oxicloud");
+        assert_eq!(parse_base_path(" /oxicloud "), "/oxicloud");
+        assert_eq!(parse_base_path("/cloud/oxi"), "/cloud/oxi");
+    }
+
+    #[test]
+    #[should_panic(expected = "must start with '/'")]
+    fn base_path_rejects_missing_leading_slash() {
+        parse_base_path("oxicloud");
+    }
+
+    #[test]
+    #[should_panic(expected = "no empty, '.' or '..' segments")]
+    fn base_path_rejects_dot_segments() {
+        parse_base_path("/cloud/../oxicloud");
+    }
+
+    #[test]
+    #[should_panic(expected = "no empty, '.' or '..' segments")]
+    fn base_path_rejects_empty_segments() {
+        parse_base_path("/cloud//oxicloud");
+    }
+
+    #[test]
+    fn prefixed_path_is_identity_without_a_base_path() {
+        let config = AppConfig::default();
+        assert_eq!(config.prefixed_path("/login"), "/login");
+    }
+
+    #[test]
+    fn prefixed_path_glues_the_base_path_in_front() {
+        let config = AppConfig {
+            base_path: "/oxicloud".to_string(),
+            ..AppConfig::default()
+        };
+        assert_eq!(config.prefixed_path("/login"), "/oxicloud/login");
+        assert_eq!(config.prefixed_path("/api/auth"), "/oxicloud/api/auth");
+    }
+
+    /// The derived (no `OXICLOUD_BASE_URL`) public URL must carry the
+    /// base path, or share links and OIDC callbacks generated from it
+    /// would point at the origin root behind a prefixed proxy.
+    #[test]
+    fn derived_base_url_includes_the_base_path() {
+        let config = AppConfig {
+            base_path: "/oxicloud".to_string(),
+            ..AppConfig::default()
+        };
+        // Only meaningful when OXICLOUD_BASE_URL is unset; the explicit
+        // var (checked first in base_url) is documented to already
+        // include the prefix. Avoid env mutation in tests — skip if set.
+        if std::env::var("OXICLOUD_BASE_URL").is_err() {
+            assert_eq!(config.base_url(), "http://127.0.0.1:8086/oxicloud");
+        }
     }
 
     /// The per-caller limits moved from hardcoded literals in `di.rs` into

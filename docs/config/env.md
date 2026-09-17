@@ -15,6 +15,7 @@ Every variable below can also be written in a TOML config file — the key is th
 | `OXICLOUD_SERVER_PORT` | `8086` | Server port |
 | `OXICLOUD_SERVER_HOST` | `127.0.0.1` | Server bind address (IPv4 or IPv6 allowed) |
 | `OXICLOUD_BASE_URL` | (auto) | Public base URL for share links; defaults to `http://{host}:{port}` |
+| `OXICLOUD_BASE_PATH` | (empty) | URL path prefix the whole app is served under (e.g. `/oxicloud`) for subpath deployments behind a reverse proxy. Runtime-only — the same frontend build serves any prefix; the server injects it into the SPA shell's `<base href>`. The proxy must forward the prefix unstripped. See [Deployment](./deployment.md#reverse-proxy--subpath-deployments). |
 | `OXICLOUD_MAX_UPLOAD_SIZE` | `10737418240` | Whole-file size ceiling, in bytes (10 GB on 64-bit, 1 GB on 32-bit). Applies to BOTH direct PUTs (per-request body) and chunked uploads (declared `total_size`, checked upfront at session creation). |
 | `OXICLOUD_DIRECT_PUT_MAX_BYTES` | `1073741824` | Per-request cap for non-chunked PUT bodies, in bytes (1 GiB). Set below `OXICLOUD_MAX_UPLOAD_SIZE` so larger files are pushed onto the chunked protocol (resumable on failure). See [Storage Fine Tuning](./storage-fine-tuning.md). |
 | `OXICLOUD_CHUNK_MAX_BYTES` | `104857600` | Maximum size of a single chunked-upload PUT in bytes (100 MB). Per-chunk cap, independent of `OXICLOUD_MAX_UPLOAD_SIZE` (whole-file cap). See [Storage Fine Tuning](./storage-fine-tuning.md). |
