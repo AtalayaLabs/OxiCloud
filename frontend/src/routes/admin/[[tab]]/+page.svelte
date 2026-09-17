@@ -1208,6 +1208,7 @@
 
 	async function toggleActive(u: FullUser) {
 		if (isSelf(u) && u.active) return;
+		if (isOwner(u.user.role)) return;
 		const msg = u.active
 			? t('admin.confirm_deactivate', 'Deactivate this user?')
 			: t('admin.confirm_activate', 'Activate this user?');
@@ -1283,6 +1284,10 @@
 
 	function removeUser(u: FullUser) {
 		if (isSelf(u)) return;
+		// The button is disabled for the owner; this covers the keyboard
+		// and programmatic paths, so the confirm dialog never opens on a
+		// deletion the server is certain to refuse.
+		if (isOwner(u.user.role)) return;
 		openDeleteUser(u);
 	}
 
@@ -3253,17 +3258,28 @@
 											<Icon name="crown" />
 										</button>
 									{/if}
+									<!-- Slots 4 and 5 are disabled on the owner's row. Nobody
+									     can deactivate or delete the owner — not another
+									     admin (refused on rank) and not the owner
+									     themselves (refused as a lockout / irreversible
+									     self-action), so the server answers every one of
+									     these with an error. Disabled rather than hidden:
+									     the row keeps its column alignment and the title
+									     says why, where a vanished button just looks like
+									     a rendering bug. -->
 									<!-- Slot 4: activate/deactivate. -->
 									<button
 										class="icon-btn {u.active ? 'icon-btn--danger' : 'icon-btn--success'}"
 										data-testid={`admin-user-toggle-active-${u.user.id}`}
-										title={u.active
-											? t('admin.deactivate_title', 'Deactivate')
-											: t('admin.activate_title', 'Activate')}
+										title={isOwner(u.user.role)
+											? t('admin.owner_protected_title', 'The server owner cannot be deactivated')
+											: u.active
+												? t('admin.deactivate_title', 'Deactivate')
+												: t('admin.activate_title', 'Activate')}
 										aria-label={u.active
 											? t('admin.deactivate_title', 'Deactivate')
 											: t('admin.activate_title', 'Activate')}
-										disabled={isSelf(u) && u.active}
+										disabled={(isSelf(u) && u.active) || isOwner(u.user.role)}
 										onclick={() => toggleActive(u)}
 									>
 										<Icon name={u.active ? 'ban' : 'check'} />
@@ -3272,9 +3288,14 @@
 									<button
 										class="icon-btn icon-btn--danger"
 										data-testid={`admin-user-delete-${u.user.id}`}
-										title={t('admin.delete_title', 'Delete user')}
+										title={isOwner(u.user.role)
+											? t(
+													'admin.owner_protected_delete_title',
+													'The server owner cannot be deleted'
+												)
+											: t('admin.delete_title', 'Delete user')}
 										aria-label={t('admin.delete_title', 'Delete user')}
-										disabled={isSelf(u)}
+										disabled={isSelf(u) || isOwner(u.user.role)}
 										onclick={() => removeUser(u)}
 									>
 										<Icon name="trash-alt" />
