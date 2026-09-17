@@ -1,0 +1,364 @@
+/**
+ * Wire transport for Hey API: CSRF, DPoP and transparent 401 refresh/retry.
+ *
+ * Ported from static/js/core/fetchWrapper.js. Unlike that wrapper, this does
+ * NOT monkeypatch `window.fetch`. Endpoint modules enter through the
+ * generated-client facade in client.ts; only its runtime calls this module.
+ *
+ *  - A captured raw `fetch` is used for the real network calls so the refresh
+ *    request and the retry never re-enter the interceptor (no recursion).
+ *  - Concurrent 401s collapse into a single in-flight `/api/auth/refresh`.
+ *  - Cross-origin responses are passed through untouched.
+ *  - Auth primitives (login/logout/refresh/register/setup/oidc/device) and
+ *    public-share endpoints (/api/s/) bypass the refresh-and-retry path:
+ *    a 401 there is genuine ("bad credentials" / "password required"), not an
+ *    expired access token.
+ *  - When refresh fails, the session-expired handler fires (clear + redirect)
+ *    and the call rejects.
+ */
+
+import { getCsrfHeaders } from './csrf';
+import { updateFromHeader } from '$lib/stores/serverStatus.svelte';
+import {
+	buildDpopProof,
+	isDpopNonceChallenge,
+	updateNonceFromResponse
+} from '$lib/auth/dpop-proof';
+
+/**
+ * Name of the response header the server stamps while a
+ * maintenance event is live. Case-insensitive on the wire — the
+ * Fetch API's `Headers.get` matches irrespective of case, so this
+ * constant matches whatever axum emits.
+ */
+const SERVER_STATUS_HEADER = 'x-server-status';
+
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'TRACE']);
+
+const REFRESH_ENDPOINT = '/api/auth/refresh';
+
+/** Auth primitives — a 401 here is genuine, never an expired access token.
+ * Also used by the session-teardown gate to exempt endpoints that must
+ * still fire during / immediately after a logout (the logout POST itself,
+ * and every login path a user might retry on the /login landing). */
+const AUTH_PRIMITIVES = [
+	'/api/auth/login',
+	'/api/auth/logout',
+	'/api/auth/refresh',
+	'/api/auth/register',
+	'/api/auth/setup',
+	'/api/setup',
+	'/api/auth/oidc/',
+	'/api/auth/device/',
+	'/api/auth/opaque/',
+	'/api/auth/magic-link/',
+	'/api/auth/status',
+	'/api/auth/dpop/'
+];
+
+export type FetchFn = typeof fetch;
+
+export interface ApiClientDeps {
+	/** Underlying fetch used for the real network call (bypasses the interceptor). */
+	rawFetch: FetchFn;
+	/** Invoked once when a refresh definitively fails (clear session + redirect). */
+	onSessionExpired: () => void;
+	/**
+	 * Invoked when the server returns `403 { error_type: "PasswordChangeRequired" }`.
+	 * Typically routes the SPA to `/profile?forcePasswordChange=1` — the same
+	 * destination the root layout's nav-guard uses for a fresh navigation. Default
+	 * is a no-op; the app wires the real handler at startup.
+	 */
+	onPasswordChangeRequired?: () => void;
+	/** Test seam for `window.location.origin`. */
+	origin?: string;
+	/** Bootstrap probes must not refresh or redirect on an ordinary 401. */
+	retryUnauthorized?: boolean;
+}
+
+export function urlString(input: RequestInfo | URL): string {
+	if (typeof input === 'string') return input;
+	if (input instanceof URL) return input.href;
+	return input.url ?? '';
+}
+
+function isCrossOrigin(urlStr: string, origin: string): boolean {
+	try {
+		return new URL(urlStr, origin).origin !== origin;
+	} catch {
+		// Unparseable URL — treat as cross-origin so we pass it through untouched.
+		return true;
+	}
+}
+
+function bypassesRetry(urlStr: string): boolean {
+	return AUTH_PRIMITIVES.some((p) => urlStr.includes(p)) || urlStr.includes('/api/s/');
+}
+
+/**
+ * Build an isolated apiFetch with its own refresh-dedup state. Used directly in
+ * tests; the app uses the default singleton below.
+ */
+export function createApiFetch(deps: ApiClientDeps): FetchFn {
+	const { rawFetch, onSessionExpired } = deps;
+	// Default no-op keeps existing test callers that don't wire this
+	// dep from crashing on a 403 PasswordChangeRequired — they'd just
+	// see the raw 403 flow through, which is what they already assert.
+	const onPasswordChangeRequired = deps.onPasswordChangeRequired ?? (() => {});
+	let refreshInFlight: Promise<boolean> | null = null;
+
+	async function refresh(): Promise<boolean> {
+		if (refreshInFlight) return refreshInFlight;
+		refreshInFlight = (async () => {
+			try {
+				const r = await dpopFetch(REFRESH_ENDPOINT, {
+					method: 'POST',
+					credentials: 'same-origin',
+					headers: { 'Content-Type': 'application/json', ...getCsrfHeaders() },
+					body: '{}'
+				});
+				return r.ok;
+			} catch {
+				return false;
+			} finally {
+				refreshInFlight = null;
+			}
+		})();
+		return refreshInFlight;
+	}
+
+	/**
+	 * Wrap the raw fetch with DPoP proof injection + nonce challenge/retry.
+	 *
+	 *   1. Build proof for the request's method + canonical URL (no query).
+	 *   2. Attach as `DPoP` header. Fail-open if the keypair is unavailable
+	 *      (browser without SubtleCrypto / IndexedDB) — we simply skip the
+	 *      header and let the request go through unbound; server-side
+	 *      middleware exempts unbound sessions.
+	 *   3. After response, harvest a fresh `DPoP-Nonce` if the server sent
+	 *      one, so the NEXT request has the current nonce.
+	 *   4. If the response is a nonce challenge (`401 use_dpop_nonce`),
+	 *      REBUILD the proof with the just-received nonce and retry ONCE.
+	 *      A second challenge on the retry is a bug — surface it as a real
+	 *      401 rather than looping.
+	 *
+	 * Cross-origin requests skip DPoP and CSRF. Clone Request inputs for each
+	 * attempt so generated SDK mutations can replay their body after a nonce
+	 * challenge or session refresh without consuming the original request.
+	 */
+	async function dpopFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+		const origin = deps.origin ?? globalThis.location?.origin ?? 'http://localhost';
+		const urlStr = urlString(input as RequestInfo | URL);
+		if (isCrossOrigin(urlStr, origin)) return rawFetch(input, init);
+
+		const method = (
+			init?.method ?? (input instanceof Request ? input.method : 'GET')
+		).toUpperCase();
+		const headers = new Headers(input instanceof Request ? input.headers : undefined);
+		new Headers(init?.headers).forEach((value, name) => headers.set(name, value));
+		const withProof = async (): Promise<Response> => {
+			if (!SAFE_METHODS.has(method)) {
+				for (const [name, value] of Object.entries(getCsrfHeaders())) headers.set(name, value);
+			}
+			const proof = await buildDpopProof(method, urlStr);
+			const initWithProof: RequestInit = proof
+				? { ...init, headers: mergeHeader(headers, 'DPoP', proof) }
+				: { ...init, headers };
+			const res = await rawFetch(input instanceof Request ? input.clone() : input, initWithProof);
+			updateNonceFromResponse(res);
+			return res;
+		};
+
+		const first = await withProof();
+		if (!isDpopNonceChallenge(first)) return first;
+		// `updateNonceFromResponse` already stored the fresh nonce
+		// carried on this 401; the next `buildDpopProof` will pick it
+		// up. If the RETRY also produces `use_dpop_nonce`, surface it
+		// — infinite retry would mask a server-side nonce bug.
+		return withProof();
+	}
+
+	const apiFetch: FetchFn = async (input, init) => {
+		const origin = deps.origin ?? globalThis.location?.origin ?? 'http://localhost';
+		// Session-teardown short-circuit. While a logout is in flight (or
+		// the caller has already navigated to /login post-logout without
+		// re-authenticating), the session is dead — any subscriber-fired
+		// refresh (`session.load()` in the layout, a store `$effect` re-
+		// fetching its slice, an idle poll) would hit /me → 401 → refresh
+		// → 401 → sessionExpiredHandler and clobber the friendly
+		// "logged out" landing with `?source=session_expired`. Fail these
+		// fast with an AbortError so callers unwrap cleanly via their
+		// existing `.catch` blocks and no server hop occurs. The auth
+		// primitives themselves (notably `/api/auth/logout`) are exempt so
+		// the logout POST that FLIPPED the gate can still complete.
+		const urlStrEarly = urlString(input as RequestInfo | URL);
+		if (logoutInProgress && !bypassesRetry(urlStrEarly)) {
+			throw new DOMException('Session terminated', 'AbortError');
+		}
+		const response = await dpopFetch(input, init);
+		// Server-status header piggyback — the server stamps
+		// `x-server-status` on every response while a maintenance
+		// event is in progress (see middleware::server_status). Read
+		// it and update the reactive store; the AppShell banner
+		// subscribes and shows/hides itself. Absent header = nothing
+		// happening; the update fn resets the store to default in
+		// that case so a lingering banner disappears.
+		//
+		// Runs on EVERY response including a 401 (below) so a session
+		// refresh doesn't accidentally clear a live banner.
+		updateFromHeader(response.headers.get(SERVER_STATUS_HEADER));
+
+		// Backend `require_no_password_change_pending_layer` returns 403
+		// `PasswordChangeRequired` on every non-allowlisted endpoint
+		// while the caller's `force_password_change_at_next_login` flag
+		// is set (admin picked a temporary password). Intercepting here
+		// short-circuits any stale-tab request that outran the SPA's
+		// nav-guard — the user is bounced to `/profile` in mandatory
+		// mode, matching what the guard would do on a fresh navigation.
+		//
+		// Clones the body so downstream callers can still consume the
+		// response after we've peeked at the error_type. Skipped for
+		// non-JSON responses (WebDAV, etc.) — the check silently
+		// falls through and returns the original 403 to the caller,
+		// which will surface its own error the usual way.
+		if (response.status === 403) {
+			const clone = response.clone();
+			try {
+				const body = (await clone.json()) as { error_type?: unknown };
+				if (body?.error_type === 'PasswordChangeRequired') {
+					onPasswordChangeRequired();
+				}
+			} catch {
+				/* not JSON or parse failed — pass through as normal 403 */
+			}
+			return response;
+		}
+
+		if (
+			response.status !== 401 ||
+			deps.retryUnauthorized === false ||
+			isDpopNonceChallenge(response)
+		)
+			return response;
+
+		const urlStr = urlString(input as RequestInfo | URL);
+		if (isCrossOrigin(urlStr, origin)) return response;
+		if (bypassesRetry(urlStr)) return response;
+
+		const refreshed = await refresh();
+		if (!refreshed) {
+			// Suppress the session-expired divert while a logout POST
+			// is in flight — see `logoutInProgress` above. Without this
+			// gate the ambient 401 race cancels the pending logout and
+			// swallows its `post_logout_url` response body.
+			if (!logoutInProgress) {
+				onSessionExpired();
+			}
+			throw new Error('Session expired');
+		}
+		// Retry through dpopFetch (not rawFetch directly) so the
+		// post-refresh request also carries a valid DPoP proof —
+		// otherwise a session bound to a keypair would 401 again on
+		// the retry with `dpop_missing`.
+		const retryResponse = await dpopFetch(input, init);
+		updateFromHeader(retryResponse.headers.get(SERVER_STATUS_HEADER));
+		return retryResponse;
+	};
+
+	return apiFetch;
+}
+
+/**
+ * Merge a single header into an existing `HeadersInit` (`Headers`, plain
+ * object, or array-of-pairs), returning a fresh `Headers` so the caller's
+ * init isn't mutated. Preserves case-insensitivity via the `Headers` API.
+ */
+function mergeHeader(base: HeadersInit | undefined, name: string, value: string): Headers {
+	const merged = new Headers(base ?? {});
+	merged.set(name, value);
+	return merged;
+}
+
+// ── Default singleton ──────────────────────────────────────────────────────
+
+let sessionExpiredHandler: () => void = () => {
+	if (typeof window !== 'undefined') {
+		window.location.href = '/login?source=session_expired';
+	}
+};
+
+/** Wire the real session-expired behaviour (clear store + redirect) at startup. */
+export function setSessionExpiredHandler(fn: () => void): void {
+	sessionExpiredHandler = fn;
+}
+
+// Session-teardown gate. Flipped ON by `AppShell::onLogout` immediately
+// BEFORE it calls `logout()` and left ON across the redirect to /login
+// (module state persists over SvelteKit soft nav — a hard reload wipes
+// it back to `false`, which is the correct default for a fresh session).
+// While set:
+//   1. `apiFetch` short-circuits every non-auth-primitive request with
+//      an `AbortError` — no server hop, no 401, no audit noise. Callers
+//      unwrap through their existing `.catch` blocks.
+//   2. On a 401 the `sessionExpiredHandler` divert is suppressed so it
+//      cannot clobber the friendly `/login?source=logged_out` landing
+//      with `?source=session_expired`.
+// Rule (1) alone would defeat the logout POST itself, so the auth
+// primitives (`/api/auth/logout`, `/api/auth/refresh`, …) are exempted
+// via `bypassesRetry`. Rule (2) additionally covers the tail-end race
+// where the logout response's `post_logout_url` matters for OIDC — an
+// ambient 401 mid-flight cannot cancel the pending POST and swallow
+// its body, which would leave the IdP session live.
+let logoutInProgress = false;
+
+export function setLogoutInProgress(value: boolean): void {
+	logoutInProgress = value;
+}
+
+/** Read-only view of the gate — used by cross-tab handlers to distinguish
+ * OUR logout (already handled by AppShell.onLogout with source=logged_out)
+ * from ANOTHER tab's logout (which needs a bare redirect). */
+export function isLogoutInProgress(): boolean {
+	return logoutInProgress;
+}
+
+// Same shape as `sessionExpiredHandler` — mutable so the app can install
+// the real behaviour post-mount, and a fallback for the (rare) case
+// where no handler is wired yet (bootstrap, tests). The fallback does
+// a hard `window.location` navigation so a stale tab that outran the
+// SPA's nav-guard still lands the user on the mandatory form.
+let passwordChangeRequiredHandler: () => void = () => {
+	if (typeof window !== 'undefined') {
+		const here = encodeURIComponent(window.location.pathname + window.location.search);
+		window.location.href = `/profile?forcePasswordChange=1&next=${here}`;
+	}
+};
+
+/**
+ * Wire the SPA's mandatory-mode handler. Called once from the root
+ * layout: uses `goto()` for a soft nav so `next=` preserves the
+ * intended destination without triggering a full page reload.
+ */
+export function setPasswordChangeRequiredHandler(fn: () => void): void {
+	passwordChangeRequiredHandler = fn;
+}
+
+const rawFetch: FetchFn =
+	typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : (undefined as never);
+
+/** App-wide fetch — route every API call through this. */
+export function createApiTransport(wireFetch: FetchFn): FetchFn {
+	return createApiFetch({
+		rawFetch: wireFetch,
+		onSessionExpired: () => sessionExpiredHandler(),
+		onPasswordChangeRequired: () => passwordChangeRequiredHandler()
+	});
+}
+export const apiTransport: FetchFn = createApiTransport(rawFetch);
+
+/** Transport for unauthenticated/bootstrap requests; still handles DPoP nonces. */
+export const apiProbeTransport: FetchFn = createApiFetch({
+	rawFetch: (...args) => globalThis.fetch(...args),
+	onSessionExpired: () => {},
+	retryUnauthorized: false
+});

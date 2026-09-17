@@ -85,21 +85,11 @@ it('fetchMe returns null when the probe is not ok', async () => {
 	// `headers: new Headers()` matches real `fetch()` — the DPoP-aware
 	// path calls `response.headers.get('DPoP-Nonce')` on every reply
 	// and would crash on a bare `{ok, status, json}` mock.
-	vi.stubGlobal(
-		'fetch',
-		vi
-			.fn()
-			.mockResolvedValue({ ok: false, status: 401, headers: new Headers(), json: async () => ({}) })
-	);
+	f.mockResolvedValue({ ok: false, status: 401, headers: new Headers(), json: async () => ({}) });
 	await expect(auth.fetchMe()).resolves.toBeNull();
 });
 it('tryRefresh returns false when the refresh fails', async () => {
-	vi.stubGlobal(
-		'fetch',
-		vi
-			.fn()
-			.mockResolvedValue({ ok: false, status: 401, headers: new Headers(), json: async () => ({}) })
-	);
+	f.mockResolvedValue({ ok: false, status: 401, headers: new Headers(), json: async () => ({}) });
 	await expect(auth.tryRefresh()).resolves.toBe(false);
 });
 
@@ -479,7 +469,9 @@ describe('tryRefresh — DPoP wiring', () => {
 		json: async () => ({})
 	});
 
-	beforeEach(() => {
+	beforeEach(async () => {
+		const actual = await vi.importActual<typeof import('$lib/api/client')>('$lib/api/client');
+		f.mockImplementation(actual.apiFetch);
 		// Opt into DPoP-attached behaviour for this block; individual
 		// tests can still flip it back to null to check the fail-open.
 		dpopState.proof = 'proof.abc';
@@ -493,7 +485,7 @@ describe('tryRefresh — DPoP wiring', () => {
 		expect(ok).toBe(true);
 
 		const [url, init] = spy.mock.calls[0];
-		expect(url).toBe('/api/auth/refresh');
+		expect((url as Request).url).toBe(`${location.origin}/api/auth/refresh`);
 		const hdrs = new Headers((init as RequestInit).headers ?? {});
 		expect(hdrs.get('DPoP')).toBe('proof.abc');
 	});

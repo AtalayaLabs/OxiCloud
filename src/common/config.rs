@@ -3487,11 +3487,10 @@ impl AppConfig {
         if let Ok(v) = env::var("OXICLOUD_AUTH_POLICIES") {
             for token in v.split(',') {
                 match AuthPolicy::parse(token) {
-                    Some(policy) => {
-                        if !config.auth.auth_policies.contains(&policy) {
-                            config.auth.auth_policies.push(policy);
-                        }
+                    Some(policy) if !config.auth.auth_policies.contains(&policy) => {
+                        config.auth.auth_policies.push(policy);
                     }
+                    Some(_) => {}
                     None if !token.trim().is_empty() => {
                         eprintln!(
                             "⚠️  OXICLOUD_AUTH_POLICIES: ignoring unknown token '{}' \

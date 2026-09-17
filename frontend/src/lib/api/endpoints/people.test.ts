@@ -1,20 +1,35 @@
-import { it, expect, vi, beforeEach } from 'vitest';
-vi.mock('$lib/api/client', () => ({ apiFetch: vi.fn(), apiJson: vi.fn() }));
+import { beforeEach, expect, it, vi } from 'vitest';
+vi.mock('$lib/api/client', () => ({ apiFetch: vi.fn() }));
 vi.mock('$lib/api/csrf', () => ({ getCsrfHeaders: () => ({}) }));
-import { apiFetch, apiJson } from '$lib/api/client';
-import * as people from './people';
-const f = apiFetch as unknown as ReturnType<typeof vi.fn>;
-const j = apiJson as unknown as ReturnType<typeof vi.fn>;
-beforeEach(() => {
-	vi.clearAllMocks();
-	f.mockResolvedValue({ ok: true, status: 200, json: async () => ({}) });
-	j.mockResolvedValue([]);
+import { apiFetch } from '$lib/api/client';
+import { peopleEnabled, fetchPeople, fetchPersonPhotos, renamePerson } from './people';
+const request = vi.mocked(apiFetch);
+beforeEach(() => request.mockReset());
+
+it.each([true, false])(
+	'uses the advertised faces capability (%s), without probing /people',
+	async (enabled) => {
+		request.mockResolvedValue(Response.json({ initialized: true, faces_enabled: enabled }));
+		expect(await peopleEnabled()).toBe(enabled);
+		expect(request).toHaveBeenCalledOnce();
+		expect(request).toHaveBeenCalledWith('/api/auth/status', expect.anything());
+	}
+);
+it('does not expose People if the server cannot advertise its availability', async () => {
+	request.mockResolvedValue(new Response(null, { status: 503 }));
+	expect(await peopleEnabled()).toBe(false);
+	expect(request).toHaveBeenCalledOnce();
 });
-it('exercises the people endpoints', async () => {
-	await people.fetchPeople().catch(() => {});
-	await people.peopleEnabled().catch(() => {});
-	await people.fetchPersonPhotos('p').catch(() => {});
-	await people.renamePerson('p', 'Alice').catch(() => {});
-	await people.renamePerson('p', null).catch(() => {});
-	expect(f.mock.calls.length + j.mock.calls.length).toBeGreaterThan(0);
+it('lists people and photo ids and serializes renames', async () => {
+	const people = [{ id: 'p', face_count: 1, is_hidden: false }];
+	request.mockResolvedValueOnce(Response.json(people));
+	expect(await fetchPeople()).toEqual(people);
+	request.mockResolvedValueOnce(Response.json(['f']));
+	expect(await fetchPersonPhotos('p')).toEqual(['f']);
+	request.mockResolvedValueOnce(new Response(null, { status: 204 }));
+	await renamePerson('p', null);
+	expect(request).toHaveBeenLastCalledWith(
+		'/api/people/p',
+		expect.objectContaining({ method: 'PATCH', body: '{"name":null}' })
+	);
 });
