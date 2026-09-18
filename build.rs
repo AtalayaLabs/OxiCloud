@@ -14,6 +14,17 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    // `sqlx::migrate!()` (src/infrastructure/db.rs) embeds every file under
+    // `migrations/` at COMPILE time. Nothing else tells cargo those files
+    // are inputs, so editing one and rebuilding silently kept the old
+    // embedded copy — the binary and the schema disagreeing, with no error
+    // until something downstream hit the difference. The only workaround
+    // was touching db.rs, which you have to remember every time.
+    //
+    // A directory here means "watch everything beneath it", so adding,
+    // editing or renaming a .sql re-triggers the embed on its own. Same
+    // mechanism `bundled_assets_guard` uses for `static-dist`.
+    println!("cargo:rerun-if-changed=migrations");
     git_status();
     bundled_assets_guard();
 }
