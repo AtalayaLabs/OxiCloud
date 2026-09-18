@@ -2519,13 +2519,15 @@ impl AppServiceFactory {
                     ),
                 ));
             }
+        }
 
-            // Persistent in-app notifications (Slice E). Repo + bus
-            // are both always available when auth is on; the service
-            // wraps them into the ingester-facing `create()` +
-            // bell-facing reads. Always wired under `auth_service` —
-            // notifications are per-user and require an authenticated
-            // caller everywhere they surface.
+        if app_state.auth_service.is_some() {
+            // Persistent in-app notifications (Slice E). Repo + bus are both
+            // always available when auth is on, and nothing here sends mail —
+            // so this is gated on `auth_service`, not on SMTP. It used to sit
+            // inside the magic-link block above, which meant a deployment
+            // without SMTP served no `/api/notifications` at all and the SPA's
+            // bell polled a 404.
             let notif_repo: Arc<
                 dyn crate::domain::repositories::notification_repository::NotificationRepository,
             > = Arc::new(
@@ -2536,11 +2538,11 @@ impl AppServiceFactory {
             let notif_bus: Arc<dyn crate::application::ports::message_bus_ports::MessageBus> =
                 app_state.bus.clone();
             let notification_service = Arc::new(
-                crate::application::services::notification_application_service::NotificationApplicationService::new(
-                    notif_repo,
-                    notif_bus,
-                ),
-            );
+            crate::application::services::notification_application_service::NotificationApplicationService::new(
+                notif_repo,
+                notif_bus,
+            ),
+        );
             app_state.notification_service = Some(notification_service.clone());
 
             // Retention sweep — daily; deletes read notifications
@@ -2548,13 +2550,13 @@ impl AppServiceFactory {
             // self-registering pattern as `trash_cleanup`.
             let retention_days = app_state.core.config.features.notifications_retention_days;
             let _ = Arc::new(
-                crate::infrastructure::services::notifications_cleanup_service::NotificationsCleanupService::new(
-                    notification_service,
-                    retention_days,
-                ),
-            )
-            .register(&app_state.core.job_registry)
-            .await;
+            crate::infrastructure::services::notifications_cleanup_service::NotificationsCleanupService::new(
+                notification_service,
+                retention_days,
+            ),
+        )
+        .register(&app_state.core.job_registry)
+        .await;
         }
 
         // 9b. Wire admin settings service when auth is available
