@@ -27,6 +27,7 @@ use uuid::Uuid;
 use crate::application::dtos::drive_dto::DriveDto;
 use crate::application::dtos::grant_dto::{GrantDto, RoleDto, SubjectDto, SubjectTypeDto};
 use crate::common::di::AppState;
+use crate::domain::entities::user::UserRole;
 use crate::domain::repositories::drive_repository::DriveRepository;
 use crate::domain::services::authorization::Subject;
 use crate::interfaces::errors::AppError;
@@ -167,7 +168,7 @@ pub async fn create_drive(
     auth_user: AuthUser,
     Json(dto): Json<CreateDriveDto>,
 ) -> impl IntoResponse {
-    let caller_is_admin = auth_user.role == "admin";
+    let caller_is_admin = UserRole::str_at_least(&auth_user.role, UserRole::Admin);
 
     // Personal kind is a wire-shape placeholder — see DTO doc.
     if dto.kind == DriveKindDto::Personal {
@@ -448,7 +449,7 @@ pub async fn update_drive_policies(
     // OxiCloud-admin only. Anti-enumeration: return the same 404 a
     // non-existent drive would carry, never 403, so the policy
     // existence isn't probable by error shape.
-    if auth_user.role != "admin" {
+    if !UserRole::str_at_least(&auth_user.role, UserRole::Admin) {
         tracing::info!(
             target: "audit",
             event = "drive.policy_change_rejected",
@@ -583,7 +584,7 @@ pub async fn update_drive_quota(
     // caller can't distinguish "no such drive" from "you're not
     // admin" — the endpoint's existence isn't probable by error
     // shape.
-    if auth_user.role != "admin" {
+    if !UserRole::str_at_least(&auth_user.role, UserRole::Admin) {
         tracing::info!(
             target: "audit",
             event = "drive.quota_change_rejected",

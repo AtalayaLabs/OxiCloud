@@ -139,7 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `migrate-nfc-filenames` binaries in v0.9.0 so the release tarball
     // ships one executable. See docs/plan/bundled-binary.md § 1b.
     if let Some(first) = std::env::args().nth(1)
-        && matches!(first.as_str(), "opaque" | "migrate" | "storage")
+        && matches!(first.as_str(), "opaque" | "migrate" | "storage" | "user")
     {
         // Load `.env` from CWD before dispatching so subcommands see the
         // same `DATABASE_URL` / `OXICLOUD_*` variables the server-startup
@@ -344,6 +344,14 @@ fn print_help() {
     println!("                        <key_fp> field and the `backend_rotate` completion");
     println!("                        summary. Read stdin with `-` to keep keys out of shell");
     println!("                        history. Was `--fingerprint <k|->` before v0.9.0.");
+    println!();
+    println!("  user <action>         Account administration (no running server needed).");
+    println!("      promote-to-owner  Designate the server owner — the account other admins");
+    println!("                        cannot demote, deactivate, delete, or take over via a");
+    println!("                        password reset. For installs UPGRADED from before the");
+    println!("                        Owner role; fresh installs get one at setup. Refuses if");
+    println!("                        an owner already exists (transfer instead). Args:");
+    println!("                        <email|username>, plus --dry-run.");
     println!();
     println!("  Each subcommand has its own `--help`, e.g. `oxicloud opaque reset --help`.");
     println!("  Subcommands require the same env vars as the server (DATABASE_URL etc.).");

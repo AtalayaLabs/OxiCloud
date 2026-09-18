@@ -107,6 +107,25 @@ async function createUserRow(
   return row;
 }
 
+/**
+ * Run one row action.
+ *
+ * The per-row controls used to be six icon buttons; they are now entries
+ * in a "⋮" menu, so every action costs one extra click. The menu is
+ * rendered inside the row (position: fixed only moves it visually), which
+ * is why the item locator can stay row-scoped.
+ *
+ * Keyed by the action's stable `key`, never its label — labels go through
+ * `t()` and would tie these tests to the English locale.
+ */
+async function rowAction(
+  row: ReturnType<import('@playwright/test').Page['locator']>,
+  key: string,
+): Promise<void> {
+  await row.locator('[data-testid^="admin-user-actions-"]').first().click();
+  await row.locator(`[data-testid$="-${key}"]`).first().click();
+}
+
 test('create and delete a user', async ({ page }) => {
   const uname = uniqUser();
   const row = await createUserRow(page, uname);
@@ -115,7 +134,7 @@ test('create and delete a user', async ({ page }) => {
   // (destructive-action guard — see `.btn--danger` gate in +page.svelte).
   // The Delete button stays disabled until the admin re-types the
   // target's email.
-  await row.locator('[data-testid^="admin-user-delete-"]').first().click();
+  await rowAction(row, 'delete');
   await expect(page.getByTestId('admin-delete-user-form')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('admin-delete-user-email-input').fill(`${uname}@example.test`);
   await page.getByTestId('admin-delete-user-confirm-btn').click();
@@ -127,11 +146,11 @@ test('toggle a user role and active state', async ({ page }) => {
   const row = await createUserRow(page, uname);
 
   // Each of these confirms through the admin confirm modal.
-  await row.locator('[data-testid^="admin-user-toggle-role-"]').first().click();
+  await rowAction(row, 'toggle-role');
   await page.getByTestId('admin-confirm-ok-btn').click();
-  await row.locator('[data-testid^="admin-user-toggle-active-"]').first().click(); // deactivate
+  await rowAction(row, 'toggle-active'); // deactivate
   await page.getByTestId('admin-confirm-ok-btn').click();
-  await row.locator('[data-testid^="admin-user-toggle-active-"]').first().click(); // reactivate
+  await rowAction(row, 'toggle-active'); // reactivate
   await page.getByTestId('admin-confirm-ok-btn').click();
 
   await expect(row).toBeVisible();
@@ -141,7 +160,7 @@ test('reset a user password', async ({ page }) => {
   const uname = uniqUser();
   const row = await createUserRow(page, uname);
 
-  await row.locator('[data-testid^="admin-user-reset-password-"]').first().click();
+  await rowAction(row, 'reset-password');
   await expect(page.getByTestId('admin-reset-password-form')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('admin-reset-password-input').fill('NewPassword1!');
   await page.getByTestId('admin-reset-password-submit-btn').click();
@@ -152,18 +171,17 @@ test('save a user quota and deactivate the user', async ({ page }) => {
   const uname = uniqUser();
   const row = await createUserRow(page, uname);
 
-  // The quota row-button and the QuotaEditor modal now share the
-  // `admin-user-quota-` prefix — the button is `admin-user-quota-<id>`
-  // and the modal's form / save button are `admin-user-quota-form` /
-  // `admin-user-quota-save-btn`. Scope the row lookup to the button
-  // shape (trailing UUID) so the modal's siblings don't match first.
-  await row.locator('button[data-testid^="admin-user-quota-"]').first().click();
+  // The menu entry is `admin-user-actions-<id>-quota`; the QuotaEditor
+  // modal it opens uses `admin-user-quota-form` / `-save-btn`. The old
+  // prefix collision between the row button and the modal is gone now
+  // that the trigger lives under the `admin-user-actions-` prefix.
+  await rowAction(row, 'quota');
   await expect(page.getByTestId('admin-user-quota-form')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('admin-user-quota-save-btn').click();
   await expect(page.getByTestId('admin-user-quota-form')).toHaveCount(0, { timeout: 15_000 });
 
   // Deactivate (admin's own confirm modal).
-  await row.locator('[data-testid^="admin-user-toggle-active-"]').first().click();
+  await rowAction(row, 'toggle-active');
   await page.getByTestId('admin-confirm-ok-btn').click();
 });
 

@@ -65,11 +65,23 @@ jsonpath "$.auth.min_password_length" >= 8
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 1 – Create the first admin account.
+# Step 1 – Create the first account: the server OWNER.
 #
 # The `HTTP 201` here is the load-bearing assertion for the
 # rollback: two short-password attempts happened above; if the
 # claim was not released, this call would 403 instead.
+#
+# `role == "owner"`, not "admin". A fresh install has exactly one
+# candidate for ownership — whoever runs setup is by definition
+# standing the instance up — and setup is guarded once-only, so
+# there is nothing to guess. Upgraded installs take the other
+# path (`oxicloud user promote-to-owner`), where the earliest
+# admin may not be the current maintainer.
+#
+# This pins the difference, because the whole hierarchy rests on
+# it: if setup silently produced an Admin, the instance would
+# start ownerless and refuse admin-of-admin operations with no
+# indication why. See docs/plan/role-hierarchy-owner.md § 4.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/setup
 Content-Type: application/json
@@ -83,7 +95,7 @@ HTTP 201
 [Asserts]
 jsonpath "$.username" == "{{username}}"
 jsonpath "$.email" == "{{email}}"
-jsonpath "$.role" == "admin"
+jsonpath "$.role" == "owner"
 
 
 # ─────────────────────────────────────────────────────────────

@@ -295,6 +295,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::admin_handler::send_smtp_test,
         handlers::admin_handler::trigger_backend_rotate,
         handlers::admin_handler::admin_promote_external_to_internal,
+        handlers::admin_handler::transfer_ownership,
         // Admin sessions panel — list + revoke. Function names lack
         // the `_admin_` suffix; the `/api/admin/` prefix comes from
         // the router mount, not the handler name.

@@ -11,6 +11,7 @@
 	import { deleteFolder } from '$lib/api/endpoints/folders';
 	import { addFavorite } from '$lib/api/endpoints/favorites';
 	import type { FileItem, FolderItem, ItemType } from '$lib/api/types';
+	import { isAtLeastAdmin } from '$lib/utils/roles';
 	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
 	import DrivePicker from '$lib/components/DrivePicker.svelte';
 	import BrandMark from '$lib/components/BrandMark.svelte';
@@ -158,7 +159,7 @@
 		return links;
 	});
 
-	const isAdmin = $derived(session.user?.role === 'admin');
+	const isAdmin = $derived(isAtLeastAdmin(session.user?.role));
 
 	// Any URL under /admin swaps the sidebar to admin mode. Uses
 	// startsWith so a trailing slash / query params / hash don't

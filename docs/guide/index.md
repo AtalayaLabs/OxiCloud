@@ -45,6 +45,7 @@ NextCloud was too slow on a home server. So OxiCloud was built to run on minimal
 - **REST API** — complete JSON API
 
 ### Security
+- [Administrators & the owner](/guide/administrators) — administrators cannot change each other; one protected owner account
 - JWT + Argon2id password hashing
 - OIDC / SSO (Keycloak, Authentik, Authelia, Google, Azure AD)
 - Role-based access, per-folder permissions, storage quotas

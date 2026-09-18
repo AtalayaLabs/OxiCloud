@@ -169,6 +169,7 @@ export default defineConfig({
           items: [
             { text: "Drives", link: "/guide/drives" },
             { text: "Sharing", link: "/guide/sharing" },
+            { text: "Administrators & the Owner", link: "/guide/administrators" },
             { text: "WebDAV", link: "/guide/webdav" },
             { text: "CalDAV & CardDAV", link: "/guide/caldav-carddav" },
             { text: "DAV Client Setup", link: "/guide/dav-client-setup" },

@@ -199,6 +199,7 @@ hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test 
   "$API_DIR/nc_second_user_setup.hurl" \
   "$API_DIR/nc_admin_views_other_user.hurl" \
   "$API_DIR/admin_user_ops.hurl" \
+  "$API_DIR/admin_role_hierarchy.hurl" \
   "$API_DIR/external_mounts.hurl" \
   "$API_DIR/chunked_upload_cap.hurl" \
   "$API_DIR/nc_auth_failures.hurl" \

@@ -35,6 +35,33 @@ impl UserPgRepository {
         &self.pool
     }
 
+    /// Parse the `role::text` projection that every user SELECT in this
+    /// file carries as `role_text`.
+    ///
+    /// **Fail-closed.** An absent or unrecognised value is a corrupt row,
+    /// not a regular user. Twelve callsites previously spelled this as
+    /// `match … { Some("admin") => Admin, _ => User }`, which
+    /// [`UserRole::from_stored`] exists to retire — its own docs call that
+    /// shape fail-OPEN, because an unrecognised value silently became a
+    /// real account.
+    ///
+    /// The column is `auth.userrole NOT NULL`, so reaching the error means
+    /// the database holds a role this binary does not know — in practice a
+    /// rollback to a binary older than the schema. Erroring loudly is the
+    /// point: the alternative is silently downgrading whoever holds the
+    /// unknown role, which for a privileged role is a privilege change no
+    /// operator asked for and nobody would see.
+    fn role_from_row(row: &sqlx::postgres::PgRow) -> UserRepositoryResult<UserRole> {
+        let raw: Option<String> = row.try_get("role_text").unwrap_or(None);
+        match raw.as_deref().and_then(UserRole::from_stored) {
+            Some(role) => Ok(role),
+            None => Err(UserRepositoryError::DatabaseError(format!(
+                "unrecognised auth.users.role {:?} — schema and binary disagree",
+                raw.as_deref().unwrap_or("<null>")
+            ))),
+        }
+    }
+
     // Helper method to map SQL errors to domain errors
     pub fn map_sqlx_error(err: sqlx::Error) -> UserRepositoryError {
         match err {
@@ -75,11 +102,7 @@ impl UserPgRepository {
         .await
         .map_err(Self::map_sqlx_error)?;
 
-        let role_str: Option<String> = row.try_get("role_text").unwrap_or(None);
-        let role = match role_str.as_deref() {
-            Some("admin") => UserRole::Admin,
-            _ => UserRole::User,
-        };
+        let role = Self::role_from_row(&row)?;
 
         Ok(UserFlags {
             role,
@@ -354,11 +377,7 @@ impl UserRepository for UserPgRepository {
         .map_err(Self::map_sqlx_error)?;
 
         // Convert role string to UserRole enum
-        let role_str: Option<String> = row.try_get("role_text").unwrap_or(None);
-        let role = match role_str.as_deref() {
-            Some("admin") => UserRole::Admin,
-            _ => UserRole::User,
-        };
+        let role = Self::role_from_row(&row)?;
 
         Ok(User::from_data_full(
             row.get("id"),
@@ -431,11 +450,7 @@ impl UserRepository for UserPgRepository {
         .await
         .map_err(Self::map_sqlx_error)?;
 
-        let role_str: Option<String> = row.try_get("role_text").unwrap_or(None);
-        let role = match role_str.as_deref() {
-            Some("admin") => UserRole::Admin,
-            _ => UserRole::User,
-        };
+        let role = Self::role_from_row(&row)?;
 
         let user = User::from_data_full(
             row.get("id"),
@@ -500,11 +515,7 @@ impl UserRepository for UserPgRepository {
         .map_err(Self::map_sqlx_error)?;
 
         // Convert role string to UserRole enum
-        let role_str: Option<String> = row.try_get("role_text").unwrap_or(None);
-        let role = match role_str.as_deref() {
-            Some("admin") => UserRole::Admin,
-            _ => UserRole::User,
-        };
+        let role = Self::role_from_row(&row)?;
 
         Ok(User::from_data_full(
             row.get("id"),
@@ -555,11 +566,7 @@ impl UserRepository for UserPgRepository {
         .map_err(Self::map_sqlx_error)?;
 
         // Convert role string to UserRole enum
-        let role_str: Option<String> = row.try_get("role_text").unwrap_or(None);
-        let role = match role_str.as_deref() {
-            Some("admin") => UserRole::Admin,
-            _ => UserRole::User,
-        };
+        let role = Self::role_from_row(&row)?;
 
         Ok(User::from_data_full(
             row.get("id"),
@@ -622,12 +629,8 @@ impl UserRepository for UserPgRepository {
         let users = rows
             .into_iter()
             .map(|row| {
-                let role_str: Option<String> = row.try_get("role_text").unwrap_or(None);
-                let role = match role_str.as_deref() {
-                    Some("admin") => UserRole::Admin,
-                    _ => UserRole::User,
-                };
-                User::from_data_full(
+                let role = Self::role_from_row(&row)?;
+                Ok(User::from_data_full(
                     row.get("id"),
                     row.get("username"),
                     row.get("email"),
@@ -652,9 +655,9 @@ impl UserRepository for UserPgRepository {
                     row.get("preferred_locale"),
                     row.get("notify_on_share"),
                     row.get::<serde_json::Value, _>("ui_preferences"),
-                )
+                ))
             })
-            .collect();
+            .collect::<UserRepositoryResult<Vec<_>>>()?;
 
         Ok(users)
     }
@@ -695,16 +698,11 @@ impl UserRepository for UserPgRepository {
         .await
         .map_err(Self::map_sqlx_error)?;
 
-        Ok(rows
-            .into_iter()
+        rows.into_iter()
             .map(|row| {
-                let role_str: Option<String> = row.try_get("role_text").unwrap_or(None);
-                let role = match role_str.as_deref() {
-                    Some("admin") => UserRole::Admin,
-                    _ => UserRole::User,
-                };
+                let role = Self::role_from_row(&row)?;
 
-                User::from_data_full(
+                Ok(User::from_data_full(
                     row.get("id"),
                     row.get("username"),
                     row.get("email"),
@@ -729,9 +727,9 @@ impl UserRepository for UserPgRepository {
                     row.get("preferred_locale"),
                     row.get("notify_on_share"),
                     serde_json::Value::Null, // ui_preferences — not projected
-                )
+                ))
             })
-            .collect())
+            .collect()
     }
 
     /// Updates an existing user using a transaction
@@ -887,14 +885,9 @@ impl UserRepository for UserPgRepository {
         let users = rows
             .into_iter()
             .map(|row| {
-                // Convert role string to UserRole enum for each row
-                let role_str: Option<String> = row.try_get("role_text").unwrap_or(None);
-                let role = match role_str.as_deref() {
-                    Some("admin") => UserRole::Admin,
-                    _ => UserRole::User,
-                };
+                let role = Self::role_from_row(&row)?;
 
-                User::from_data_full(
+                Ok(User::from_data_full(
                     row.get("id"),
                     row.get("username"),
                     row.get("email"),
@@ -919,9 +912,9 @@ impl UserRepository for UserPgRepository {
                     row.get("preferred_locale"),
                     row.get("notify_on_share"),
                     row.get::<serde_json::Value, _>("ui_preferences"),
-                )
+                ))
             })
-            .collect();
+            .collect::<UserRepositoryResult<Vec<_>>>()?;
 
         Ok(users)
     }
@@ -985,14 +978,9 @@ impl UserRepository for UserPgRepository {
         // `password_hash` column selected above (the tuple destructure
         // in `list_user_summaries` uses a shorter projection so it
         // could reuse the raw `has_password` alias; here we keep both).
-        Ok(rows
-            .into_iter()
+        rows.into_iter()
             .map(|row| {
-                let role_str: Option<String> = row.try_get("role_text").unwrap_or(None);
-                let role = match role_str.as_deref() {
-                    Some("admin") => UserRole::Admin,
-                    _ => UserRole::User,
-                };
+                let role = Self::role_from_row(&row)?;
                 let user = User::from_data_full(
                     row.get("id"),
                     row.get("username"),
@@ -1025,9 +1013,9 @@ impl UserRepository for UserPgRepository {
                     opaque_migrated: row.get("opaque_migrated"),
                     is_online: row.get("is_online"),
                 };
-                (user, flags)
+                Ok((user, flags))
             })
-            .collect())
+            .collect()
     }
 
     async fn search_users(
@@ -1063,13 +1051,9 @@ impl UserRepository for UserPgRepository {
         let users = rows
             .into_iter()
             .map(|row| {
-                let role_str: Option<String> = row.try_get("role_text").unwrap_or(None);
-                let role = match role_str.as_deref() {
-                    Some("admin") => UserRole::Admin,
-                    _ => UserRole::User,
-                };
+                let role = Self::role_from_row(&row)?;
 
-                User::from_data_full(
+                Ok(User::from_data_full(
                     row.get("id"),
                     row.get("username"),
                     row.get("email"),
@@ -1094,9 +1078,9 @@ impl UserRepository for UserPgRepository {
                     row.get("preferred_locale"),
                     row.get("notify_on_share"),
                     row.get::<serde_json::Value, _>("ui_preferences"),
-                )
+                ))
             })
-            .collect();
+            .collect::<UserRepositoryResult<Vec<_>>>()?;
 
         Ok(users)
     }
@@ -1150,6 +1134,68 @@ impl UserRepository for UserPgRepository {
     }
 
     /// Changes a user's role
+    /// Move ownership from one user to another atomically.
+    ///
+    /// **Demote first, then promote.** `idx_users_single_owner` permits one
+    /// owner row, and a constraint is checked per statement — promoting
+    /// first would momentarily hold two owners and fail. The reverse order
+    /// passes through a legal intermediate state (zero owners) instead.
+    ///
+    /// Both statements share one transaction so that intermediate state is
+    /// never observable and a failure cannot strand the instance ownerless.
+    async fn transfer_ownership(
+        &self,
+        from_user_id: Uuid,
+        to_user_id: Uuid,
+    ) -> UserRepositoryResult<()> {
+        with_transaction(&self.pool, "transfer_ownership", |tx| {
+            Box::pin(async move {
+                let demoted = sqlx::query(
+                    r#"
+                    UPDATE auth.users
+                    SET role = 'admin'::auth.userrole, updated_at = NOW()
+                    WHERE id = $1 AND role = 'owner'::auth.userrole
+                    "#,
+                )
+                .bind(from_user_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(Self::map_sqlx_error)?;
+
+                // Zero rows means the caller was not the owner by the time
+                // the write ran — a concurrent transfer beat us. Abort
+                // rather than promote, which would otherwise create a
+                // second owner or hand ownership away on a stale premise.
+                if demoted.rows_affected() != 1 {
+                    return Err(UserRepositoryError::OperationNotAllowed(
+                        "Ownership changed concurrently; transfer aborted".to_string(),
+                    ));
+                }
+
+                let promoted = sqlx::query(
+                    r#"
+                    UPDATE auth.users
+                    SET role = 'owner'::auth.userrole, updated_at = NOW()
+                    WHERE id = $1
+                    "#,
+                )
+                .bind(to_user_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(Self::map_sqlx_error)?;
+
+                if promoted.rows_affected() != 1 {
+                    return Err(UserRepositoryError::NotFound(
+                        "Target user no longer exists".to_string(),
+                    ));
+                }
+
+                Ok(())
+            })
+        })
+        .await
+    }
+
     async fn change_role(&self, user_id: Uuid, role: UserRole) -> UserRepositoryResult<()> {
         // Convert the role to string for the binding
         let role_str = role.to_string();
@@ -1172,10 +1218,14 @@ impl UserRepository for UserPgRepository {
         Ok(())
     }
 
-    /// Counts users by role with a scalar `COUNT(*)` — no row hydration.
-    async fn count_users_by_role(&self, role: &str) -> UserRepositoryResult<i64> {
-        sqlx::query_scalar("SELECT COUNT(*) FROM auth.users WHERE role::text = $1")
-            .bind(role)
+    /// Counts administrators with a scalar `COUNT(*)` — no row hydration.
+    ///
+    /// `<> 'user'` rather than a list of privileged roles, matching
+    /// `UserRole::is_privileged()` and the `users_external_not_privileged`
+    /// CHECK: `role` is `NOT NULL` and enum-typed, so "not a plain user" is
+    /// total and stays correct as the roster grows.
+    async fn count_privileged_users(&self) -> UserRepositoryResult<i64> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM auth.users WHERE role <> 'user'")
             .fetch_one(&*self.pool)
             .await
             .map_err(Self::map_sqlx_error)
@@ -1205,14 +1255,9 @@ impl UserRepository for UserPgRepository {
         let users = rows
             .into_iter()
             .map(|row| {
-                // Convert role string to UserRole enum for each row
-                let role_str: Option<String> = row.try_get("role_text").unwrap_or(None);
-                let role = match role_str.as_deref() {
-                    Some("admin") => UserRole::Admin,
-                    _ => UserRole::User,
-                };
+                let role = Self::role_from_row(&row)?;
 
-                User::from_data_full(
+                Ok(User::from_data_full(
                     row.get("id"),
                     row.get("username"),
                     row.get("email"),
@@ -1237,9 +1282,9 @@ impl UserRepository for UserPgRepository {
                     row.get("preferred_locale"),
                     row.get("notify_on_share"),
                     row.get::<serde_json::Value, _>("ui_preferences"),
-                )
+                ))
             })
-            .collect();
+            .collect::<UserRepositoryResult<Vec<_>>>()?;
 
         Ok(users)
     }
@@ -1285,11 +1330,7 @@ impl UserRepository for UserPgRepository {
         .await
         .map_err(Self::map_sqlx_error)?;
 
-        let role_str: Option<String> = row.try_get("role_text").unwrap_or(None);
-        let role = match role_str.as_deref() {
-            Some("admin") => UserRole::Admin,
-            _ => UserRole::User,
-        };
+        let role = Self::role_from_row(&row)?;
 
         Ok(User::from_data_full(
             row.get("id"),
@@ -1702,8 +1743,18 @@ impl UserStoragePort for UserPgRepository {
             .map_err(DomainError::from)
     }
 
-    async fn count_users_by_role(&self, role: &str) -> Result<i64, DomainError> {
-        UserRepository::count_users_by_role(self, role)
+    async fn transfer_ownership(
+        &self,
+        from_user_id: Uuid,
+        to_user_id: Uuid,
+    ) -> Result<(), DomainError> {
+        UserRepository::transfer_ownership(self, from_user_id, to_user_id)
+            .await
+            .map_err(DomainError::from)
+    }
+
+    async fn count_privileged_users(&self) -> Result<i64, DomainError> {
+        UserRepository::count_privileged_users(self)
             .await
             .map_err(DomainError::from)
     }
@@ -1736,11 +1787,15 @@ impl UserStoragePort for UserPgRepository {
             .map_err(DomainError::from)
     }
 
+    /// Port adapter over the typed [`UserRepository::change_role`].
+    ///
+    /// Rejects an unknown role instead of coercing it. The previous
+    /// `_ => UserRole::User` made this a silent rewrite: asking for any
+    /// role this binary does not know wrote `'user'` and reported
+    /// success, so a promotion could no-op while looking like it worked.
     async fn change_role(&self, user_id: Uuid, role: &str) -> Result<(), DomainError> {
-        let user_role = match role {
-            "admin" => UserRole::Admin,
-            _ => UserRole::User,
-        };
+        let user_role = UserRole::from_stored(role)
+            .ok_or_else(|| DomainError::validation_error(format!("Unknown role: {role:?}")))?;
         UserRepository::change_role(self, user_id, user_role)
             .await
             .map_err(DomainError::from)

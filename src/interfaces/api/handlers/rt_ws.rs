@@ -52,6 +52,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::domain::entities::user::UserRole;
+
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -712,7 +714,7 @@ async fn handle_subscribe(
             // was snapshotted at session start (see `handle_session`),
             // so no per-subscribe DB hit. A demotion mid-session
             // takes effect on the caller's next reconnect.
-            if caller_role != "admin" {
+            if !UserRole::str_at_least(caller_role, UserRole::Admin) {
                 audit_denied(caller_id, &topic_str, "role_denied");
                 return error_response(
                     id,

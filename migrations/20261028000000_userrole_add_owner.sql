@@ -1,0 +1,26 @@
+-- Widen auth.userrole with 'owner', ranked above 'admin'.
+--
+-- ALONE IN THIS FILE ON PURPOSE. sqlx wraps every migration in a
+-- transaction, and PostgreSQL permits `ALTER TYPE … ADD VALUE` inside one
+-- only while nothing in the same transaction USES the new value. The
+-- partial unique index that enforces "at most one owner" names 'owner' in
+-- its predicate, so it lives in the next migration. Do not merge these.
+--
+-- BEFORE 'admin' places the ordinal, not just the name. Declaration order
+-- is sort order for a PG enum, and this roster is strongest-first already
+-- ('admin' before 'user'), so the anchor keeps `ORDER BY role` meaning
+-- "most privileged first" — the same convention storage.grant_role uses
+-- (see 20260801000000_role_grants_enum.sql).
+--
+-- Nothing reads the ordinal today: every user query projects `role::text`
+-- and parses in Rust. The anchor is still worth one keyword now, because
+-- it cannot be corrected later — PostgreSQL supports ADD VALUE and RENAME
+-- VALUE, but never a reorder or a drop.
+--
+-- Ownership is a ROLE rather than a flag or a settings row so that
+-- multiple owners stay reachable: "exactly one owner" is enforced by the
+-- index in the next migration, which is policy and can be dropped, rather
+-- than by a structure that would have to be re-modelled. See
+-- docs/plan/role-hierarchy-owner.md.
+
+ALTER TYPE auth.userrole ADD VALUE IF NOT EXISTS 'owner' BEFORE 'admin';

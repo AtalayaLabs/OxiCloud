@@ -695,9 +695,10 @@ impl AuthApplicationService {
     /// Returns the default quota for the given role, capped to the available
     /// disk space on the filesystem that hosts the storage directory.
     fn capped_quota(&self, role: &UserRole) -> i64 {
-        let base_quota = match role {
-            UserRole::Admin => DEFAULT_ADMIN_QUOTA,
-            _ => DEFAULT_USER_QUOTA,
+        let base_quota = if role.at_least(UserRole::Admin) {
+            DEFAULT_ADMIN_QUOTA
+        } else {
+            DEFAULT_USER_QUOTA
         };
 
         match Self::available_disk_space(&self.storage_path) {
@@ -707,11 +708,7 @@ impl AuthApplicationService {
                     tracing::info!(
                         "Available disk space ({} bytes) is less than default {} quota ({} bytes) — capping quota",
                         avail_i64,
-                        if *role == UserRole::Admin {
-                            "admin"
-                        } else {
-                            "user"
-                        },
+                        role.as_str(),
                         base_quota,
                     );
                     avail_i64
@@ -911,14 +908,31 @@ impl AuthApplicationService {
         ))))
     }
 
-    /// Create the first admin user during initial system setup.
+    /// Create the first user during initial system setup — the server
+    /// **owner**.
     ///
     /// This is called by the `/api/setup` endpoint after verifying the setup
-    /// token. It unconditionally creates an admin user. The caller (handler)
-    /// is responsible for:
+    /// token. The caller (handler) is responsible for:
     ///   1. Verifying the setup token
     ///   2. Checking that the system is not already initialized
     ///   3. Marking the system as initialized after this call succeeds
+    ///
+    /// Owner rather than Admin because a fresh install has exactly one
+    /// candidate and no history to be wrong about: whoever runs setup is by
+    /// definition the person standing the instance up. The caller's
+    /// once-only guard (`is_system_initialized` plus the atomic
+    /// `try_claim_initialization`) means no second request can arrive to
+    /// claim ownership instead.
+    ///
+    /// The *upgrade* path is deliberately different — there, ops name the
+    /// owner explicitly via `oxicloud user promote-to-owner`, because the
+    /// earliest admin of a long-lived install may not be the current
+    /// maintainer. That guess would be wrong often enough to matter; here
+    /// there is nothing to guess.
+    ///
+    /// Without this, every new install would start with no owner and refuse
+    /// admin-of-admin operations until someone ran a command they had no
+    /// reason to know existed. See `docs/plan/role-hierarchy-owner.md` § 4.
     pub async fn setup_create_admin(
         &self,
         username: String,
@@ -960,7 +974,7 @@ impl AuthApplicationService {
         // Validate password
         self.require_password_length(&password)?;
 
-        let role = UserRole::Admin;
+        let role = UserRole::Owner;
         let quota = self.capped_quota(&role);
         let password_hash = self.password_hasher.hash_password(&password).await?;
 
@@ -1192,7 +1206,7 @@ impl AuthApplicationService {
         // orchestrates the side effect. Keeps this method side-effect-
         // free on the audit path.
         if self.require_verified_email
-            && !matches!(user.role(), UserRole::Admin)
+            && !user.role().at_least(UserRole::Admin)
             && !user.is_email_verified()
         {
             tracing::info!(
@@ -2254,6 +2268,8 @@ impl AuthApplicationService {
         admin_id: Uuid,
         target_id: Uuid,
     ) -> Result<PublicUserDto, DomainError> {
+        self.require_can_modify(admin_id, target_id).await?;
+
         let mut user = self.user_storage.get_user_by_id(target_id).await?;
 
         if !user.is_external() {
@@ -3157,8 +3173,8 @@ impl AuthApplicationService {
             return Ok(PublicUserDto::new(target, target_flags.is_online));
         }
 
-        // (5) Admin caller: always visible.
-        if caller.role() == UserRole::Admin {
+        // (5) Admin caller (or higher): always visible.
+        if caller.role().at_least(UserRole::Admin) {
             return Ok(PublicUserDto::new(target, target_flags.is_online));
         }
 
@@ -3244,14 +3260,20 @@ impl AuthApplicationService {
         Ok(PublicUserDto::new(user, false))
     }
 
-    // Method to count how many admin users exist in the system
-    // Used to determine if we have multiple admins or just the default one
+    /// How many users can administer this instance.
+    ///
+    /// Drives `/api/auth/status`, whose `initialized` and
+    /// `registration_allowed` both fall back to "does any administrator
+    /// exist". That must count the **owner** too: setup creates the first
+    /// user as `Owner`, so a literal `role = 'admin'` count reports zero
+    /// administrators for a freshly-installed instance that has one — and
+    /// the endpoint would then answer "not initialized, registration open".
     pub async fn count_admin_users(&self) -> Result<i64, DomainError> {
         // Scalar COUNT(*) — the old form fetched every admin's FULL row (incl.
         // the up-to-512 KiB avatar `image` + `ui_preferences` JSONB) only to
         // call `.len()`, on a status/init endpoint that is polled at bootstrap
         // (benches/ROUND29.md §G).
-        self.user_storage.count_users_by_role("admin").await
+        self.user_storage.count_privileged_users().await
     }
 
     /// Lists internal users only. External (grant-only) users are filtered
@@ -3298,6 +3320,174 @@ impl AuthApplicationService {
             .into_iter()
             .map(|(user, flags)| FullUserDto::build(user, flags))
             .collect())
+    }
+
+    /// The hierarchy gate: may `caller` administer `target`?
+    ///
+    /// Every administrative mutation of another account goes through here.
+    /// The rule is a strict rank comparison — `caller.outranks(target)` —
+    /// which yields the three properties issue #690 asks for:
+    ///
+    /// - An admin may act on regular users.
+    /// - An admin may NOT act on another admin. Peers cannot demote,
+    ///   deactivate, delete or reset each other, so one rogue or
+    ///   compromised admin account cannot lock the others out.
+    /// - Nobody may act on the owner, because nothing outranks them.
+    ///
+    /// **Self is allowed through**, deliberately. The hierarchy answers
+    /// "may I act on someone else?"; it has nothing to say about your own
+    /// account, and a caller never outranks themselves, so folding self
+    /// into the rank comparison would silently forbid every self-directed
+    /// admin action at once.
+    ///
+    /// That is exactly what an earlier version of this did, and it broke a
+    /// legitimate flow: an admin tightening their OWN quota (which the
+    /// NextCloud chunked-upload test does, to exercise the 507 path)
+    /// started returning 400. Setting your own quota is harmless, and
+    /// there was never a guard against it.
+    ///
+    /// The self-directed actions that ARE refused — changing your own
+    /// role, deleting your own account, deactivating yourself — are
+    /// refused individually by the methods that own them, because each is
+    /// its own rule with its own reason (escalation confusion, an
+    /// irreversible footgun, locking yourself out). Those three are the
+    /// set that existed before this hierarchy landed, and the set that
+    /// still exists after it.
+    ///
+    /// Both lookups hit the single-flight, image-free flags cache, so the
+    /// gate costs two cache reads and no profile hydration.
+    async fn require_can_modify(
+        &self,
+        caller_id: Uuid,
+        target_id: Uuid,
+    ) -> Result<(), DomainError> {
+        if caller_id == target_id {
+            return Ok(());
+        }
+
+        let caller = self.get_user_flags(caller_id).await?;
+        let target = self.get_user_flags(target_id).await?;
+
+        if !caller.role.outranks(target.role) {
+            tracing::info!(
+                target: "audit",
+                event = "user.admin_mutation_rejected",
+                reason = "does_not_outrank",
+                caller_id = %caller_id,
+                caller_role = %caller.role,
+                target_id = %target_id,
+                target_role = %target.role,
+                "👮🏻‍♂️ admin mutation refused: {} does not outrank {}",
+                caller.role,
+                target.role,
+            );
+            return Err(DomainError::new(
+                ErrorKind::AccessDenied,
+                "User",
+                format!(
+                    "Insufficient privileges: a {} cannot perform administrative \
+                     actions on a {}.",
+                    caller.role, target.role
+                ),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Hand the instance to another user. **Only the current owner may do
+    /// this**, and it is the only way the owner's own role ever changes.
+    ///
+    /// The target must be an account that can actually receive it: internal
+    /// (an external, IdP-provisioned identity may not hold a privileged
+    /// role), active, and able to log in. Handing ownership to an account
+    /// nobody can sign into would strand the instance with an unreachable
+    /// owner and no way back short of the CLI.
+    ///
+    /// Deliberately NOT gated by `require_can_modify`: that asks "do you
+    /// outrank them?", and the answer here is yes for every valid target,
+    /// which is not the question. The question is "are you the owner?".
+    pub async fn transfer_ownership(
+        &self,
+        caller_id: Uuid,
+        new_owner_id: Uuid,
+    ) -> Result<(), DomainError> {
+        let caller = self.get_user_flags(caller_id).await?;
+        if caller.role != UserRole::Owner {
+            tracing::info!(
+                target: "audit",
+                event = "server_owner.transfer_rejected",
+                reason = "caller_not_owner",
+                caller_id = %caller_id,
+                caller_role = %caller.role,
+                target_id = %new_owner_id,
+                "👮🏻‍♂️ ownership transfer refused: caller is not the owner",
+            );
+            return Err(DomainError::new(
+                ErrorKind::AccessDenied,
+                "User",
+                "Only the server owner can transfer ownership.",
+            ));
+        }
+
+        if caller_id == new_owner_id {
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "User",
+                "You already own this instance.",
+            ));
+        }
+
+        let target = self.user_storage.get_user_by_id(new_owner_id).await?;
+
+        // Each of these would leave ownership held by an account that
+        // cannot exercise it. Refuse with a reason rather than let the
+        // transfer succeed into a dead end.
+        let refusal = if target.is_external() {
+            Some(("target_external", "an external account"))
+        } else if !target.is_active() {
+            Some(("target_inactive", "a deactivated account"))
+        } else if target.username().is_none() {
+            Some(("target_no_username", "an account with no username"))
+        } else {
+            None
+        };
+
+        if let Some((reason, described)) = refusal {
+            tracing::info!(
+                target: "audit",
+                event = "server_owner.transfer_rejected",
+                reason = reason,
+                caller_id = %caller_id,
+                target_id = %new_owner_id,
+                "👮🏻‍♂️ ownership transfer refused: target is {described}",
+            );
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "User",
+                format!("Ownership cannot be transferred to {described}."),
+            ));
+        }
+
+        self.user_storage
+            .transfer_ownership(caller_id, new_owner_id)
+            .await?;
+
+        // Both rows changed rank, and the flags cache is what every
+        // authorization check reads. Leaving it stale would let the former
+        // owner keep owner powers for up to the TTL.
+        self.user_flags_cache.invalidate(&caller_id).await;
+        self.user_flags_cache.invalidate(&new_owner_id).await;
+
+        tracing::info!(
+            target: "audit",
+            event = "server_owner.transferred",
+            from_user_id = %caller_id,
+            to_user_id = %new_owner_id,
+            "👑 server ownership transferred",
+        );
+
+        Ok(())
     }
 
     /// Service-layer gate for administrator-scoped user-directory operations.
@@ -3434,6 +3624,7 @@ impl AuthApplicationService {
     /// Admin-only: create a user bypassing registration guards.
     pub async fn admin_create_user(
         &self,
+        caller_id: Uuid,
         dto: crate::application::dtos::settings_dto::AdminCreateUserDto,
     ) -> Result<FullUserDto, DomainError> {
         // Normalise the username up-front — trim + lowercase — and use
@@ -3480,11 +3671,46 @@ impl AuthApplicationService {
         // Validate password
         self.require_password_length(&dto.password)?;
 
-        // Determine role
+        // Determine role. Omitting `role` means "regular user" — that is
+        // the documented default and stays. But an unrecognised value is
+        // REJECTED rather than coerced: `_ => UserRole::User` answered a
+        // request for a role this binary does not know with a 201 and a
+        // plain user, so the caller was told their request succeeded when
+        // it had in fact been silently rewritten.
         let role = match dto.role.as_deref() {
-            Some("admin") => UserRole::Admin,
-            _ => UserRole::User,
+            None => UserRole::User,
+            Some(raw) => UserRole::from_stored(raw).ok_or_else(|| {
+                DomainError::new(
+                    ErrorKind::InvalidInput,
+                    "User",
+                    format!("Unknown role: {raw:?}"),
+                )
+            })?,
         };
+
+        // You may only create an account you could subsequently administer.
+        // Without this an admin could mint a peer admin — an account they
+        // are then forbidden to demote, deactivate or delete — which is a
+        // way around the hierarchy rather than an exception to it. Creating
+        // an owner is refused for every caller: ownership moves only
+        // through transfer.
+        let caller_role = self.get_user_flags(caller_id).await?.role;
+        if !caller_role.outranks(role) {
+            tracing::info!(
+                target: "audit",
+                event = "user.admin_create_rejected",
+                reason = "does_not_outrank_requested_role",
+                caller_id = %caller_id,
+                caller_role = %caller_role,
+                requested_role = %role,
+                "👮🏻‍♂️ user creation refused: {caller_role} cannot create a {role}",
+            );
+            return Err(DomainError::new(
+                ErrorKind::AccessDenied,
+                "User",
+                format!("Insufficient privileges: a {caller_role} cannot create a {role}."),
+            ));
+        }
 
         let is_external = dto.is_external.unwrap_or(false);
 
@@ -3494,14 +3720,15 @@ impl AuthApplicationService {
         // constraint violation. See the CHECK definition in
         // migrations/20260612000002_auth_users_is_external.sql for the
         // rationale.
-        if is_external && matches!(role, UserRole::Admin) {
+        if is_external && role.is_privileged() {
             return Err(DomainError::new(
                 ErrorKind::InvalidInput,
                 "User",
-                "External users cannot be admins. To promote an external user to admin, \
-                 first convert them to internal (set is_external = false), then update \
-                 the role separately."
-                    .to_string(),
+                format!(
+                    "External users cannot hold the {role} role. To grant an external \
+                     user a privileged role, first convert them to internal (set \
+                     is_external = false), then update the role separately."
+                ),
             ));
         }
 
@@ -3605,9 +3832,12 @@ impl AuthApplicationService {
     /// Admin-only: reset a user's password.
     pub async fn admin_reset_password(
         &self,
+        caller_id: Uuid,
         user_id: Uuid,
         new_password: &str,
     ) -> Result<(), DomainError> {
+        self.require_can_modify(caller_id, user_id).await?;
+
         // Block password reset for OIDC-provisioned users
         let user = self.user_storage.get_user_by_id(user_id).await?;
         if user.is_oidc_user() {
@@ -3713,7 +3943,28 @@ impl AuthApplicationService {
     /// `PersonalDriveLifecycleHook` for future trash policy, …) can do
     /// their work atomically with the user DELETE. If any hook returns
     /// `Err`, the transaction rolls back and the user remains intact.
-    pub async fn delete_user_admin(&self, user_id: Uuid) -> Result<(), DomainError> {
+    pub async fn delete_user_admin(
+        &self,
+        caller_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<(), DomainError> {
+        // Irreversible and self-inflicted: refuse regardless of rank.
+        if caller_id == user_id {
+            tracing::info!(
+                target: "audit",
+                event = "user.delete_rejected",
+                reason = "self_target",
+                caller_id = %caller_id,
+                "👮🏻‍♂️ delete refused: callers cannot delete their own account",
+            );
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "User",
+                "You cannot delete your own account.",
+            ));
+        }
+        self.require_can_modify(caller_id, user_id).await?;
+
         let user = self.user_storage.get_user_by_id(user_id).await?;
         tracing::info!(
             "Admin deleting user: {} ({})",
@@ -3773,7 +4024,32 @@ impl AuthApplicationService {
     /// See `docs/plan/username-lowercase.md § Design decision 7`.
     /// Without this, un-soft-deleting the only pre-migration
     /// mixed-case survivor would refuse-to-boot on the next restart.
-    pub async fn set_user_active(&self, user_id: Uuid, active: bool) -> Result<(), DomainError> {
+    pub async fn set_user_active(
+        &self,
+        caller_id: Uuid,
+        user_id: Uuid,
+        active: bool,
+    ) -> Result<(), DomainError> {
+        // Asymmetric on purpose, preserving the guard this replaced:
+        // deactivating yourself locks you out, while activating an
+        // account you are already authenticated on is a no-op worth
+        // nobody's error message.
+        if caller_id == user_id && !active {
+            tracing::info!(
+                target: "audit",
+                event = "user.deactivate_rejected",
+                reason = "self_target",
+                caller_id = %caller_id,
+                "👮🏻‍♂️ deactivate refused: callers cannot deactivate themselves",
+            );
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "User",
+                "You cannot deactivate your own account.",
+            ));
+        }
+        self.require_can_modify(caller_id, user_id).await?;
+
         // Only the activate direction needs the collision-resolution
         // dance — deactivation just flips a bit.
         if active {
@@ -3875,36 +4151,89 @@ impl AuthApplicationService {
 
     /// Change user role (admin only).
     ///
-    /// Refuses `role = "admin"` when the target is external (grant-only).
-    /// The DB CHECK `users_external_not_admin` would also refuse this at
-    /// COMMIT, but surfacing it here yields a clean `InvalidInput` error
+    /// Assignable roles are `"admin"` and `"user"` — **`"owner"` is not
+    /// assignable here.** Ownership moves only through the dedicated
+    /// transfer flow, which swaps both rows in one transaction; conferring
+    /// it through this endpoint would create a second owner and trip
+    /// `idx_users_single_owner` with an opaque constraint error.
+    ///
+    /// The current owner is equally not a valid *target*: demoting them
+    /// would leave the instance ownerless, and the demoted owner could not
+    /// reach `/api/admin` to undo it. Recovery would need the CLI.
+    ///
+    /// Refuses a privileged role when the target is external (grant-only).
+    /// The DB CHECK `users_external_not_privileged` would also refuse this
+    /// at COMMIT, but surfacing it here yields a clean `InvalidInput` error
     /// with an audit line naming the reason, instead of a bare
     /// constraint-violation stringified out of Postgres.
-    pub async fn change_user_role(&self, user_id: Uuid, role: &str) -> Result<(), DomainError> {
-        if role != "admin" && role != "user" {
+    pub async fn change_user_role(
+        &self,
+        caller_id: Uuid,
+        user_id: Uuid,
+        role: &str,
+    ) -> Result<(), DomainError> {
+        // Your own role is not yours to set, at any rank. Kept separate
+        // from the hierarchy check because it is a self rule, not a
+        // ranking one — an owner is equally forbidden from demoting
+        // themselves here (that is what transfer-ownership is for).
+        if caller_id == user_id {
+            tracing::info!(
+                target: "audit",
+                event = "user.role_change_rejected",
+                reason = "self_target",
+                caller_id = %caller_id,
+                "👮🏻‍♂️ role change refused: callers cannot change their own role",
+            );
             return Err(DomainError::new(
                 ErrorKind::InvalidInput,
                 "User",
-                format!("Invalid role: {}. Must be 'admin' or 'user'", role),
+                "You cannot change your own role.",
             ));
         }
+        self.require_can_modify(caller_id, user_id).await?;
 
-        if role == "admin" {
-            let target = self.user_storage.get_user_by_id(user_id).await?;
-            if target.is_external() {
-                tracing::info!(
-                    target: "audit",
-                    event = "user.role_change_rejected",
-                    reason = "external_cannot_be_admin",
-                    target_id = %user_id,
-                    "👮🏻‍♂️ role change refused: external users cannot hold the admin role",
-                );
+        let requested = match UserRole::from_stored(role) {
+            Some(r @ (UserRole::Admin | UserRole::User)) => r,
+            _ => {
                 return Err(DomainError::new(
                     ErrorKind::InvalidInput,
                     "User",
-                    "External accounts cannot hold the admin role. Promote the user to internal first.",
+                    format!("Invalid role: {}. Must be 'admin' or 'user'", role),
                 ));
             }
+        };
+
+        let target = self.user_storage.get_user_by_id(user_id).await?;
+
+        if target.role() == UserRole::Owner {
+            tracing::info!(
+                target: "audit",
+                event = "user.role_change_rejected",
+                reason = "target_is_owner",
+                target_id = %user_id,
+                "👮🏻‍♂️ role change refused: the server owner cannot be demoted here",
+            );
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "User",
+                "The server owner's role cannot be changed here. Transfer ownership instead.",
+            ));
+        }
+
+        if requested.is_privileged() && target.is_external() {
+            tracing::info!(
+                target: "audit",
+                event = "user.role_change_rejected",
+                reason = "external_cannot_be_privileged",
+                target_id = %user_id,
+                requested_role = %requested,
+                "👮🏻‍♂️ role change refused: external users cannot hold a privileged role",
+            );
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "User",
+                "External accounts cannot hold a privileged role. Promote the user to internal first.",
+            ));
         }
 
         self.user_storage.change_role(user_id, role).await?;
@@ -3915,9 +4244,12 @@ impl AuthApplicationService {
     /// Update user's storage quota (admin only)
     pub async fn update_user_quota(
         &self,
+        caller_id: Uuid,
         user_id: Uuid,
         quota_bytes: i64,
     ) -> Result<(), DomainError> {
+        self.require_can_modify(caller_id, user_id).await?;
+
         if quota_bytes < 0 {
             return Err(DomainError::new(
                 ErrorKind::InvalidInput,
@@ -4992,7 +5324,14 @@ impl AuthApplicationService {
         Ok(pending.auth_response)
     }
 
-    /// Map OIDC groups to internal role
+    /// Map OIDC groups to internal role.
+    ///
+    /// Tops out at [`UserRole::Admin`] on purpose: **ownership is never
+    /// conferred by an identity provider.** Group membership is
+    /// administered outside this instance, so an `owner_groups` setting
+    /// would hand whoever controls the IdP the one role no local admin can
+    /// act on. Ownership is claimed at setup or assigned by the CLI — both
+    /// require access to the instance itself.
     fn map_oidc_role(&self, groups: &[String], config: &OidcConfig) -> UserRole {
         if config.admin_groups.is_empty() {
             return UserRole::User;
@@ -5229,5 +5568,176 @@ mod phase4_gate_integration_tests {
         )
         .await
         .expect("legacy login must succeed again after admin clear_registration");
+    }
+
+    /// Seed a user at an explicit role. Separate from
+    /// [`seed_user_with_password`] (which hard-codes `'user'`) because
+    /// the ownership tests need admins and owners without paying Argon2.
+    async fn seed_user_with_role(pool: &sqlx::PgPool, email: &str, role: &str) -> uuid::Uuid {
+        let id = uuid::Uuid::new_v4();
+        sqlx::query(
+            r#"
+            INSERT INTO auth.users (
+                id, username, email, password_hash, role,
+                storage_quota_bytes, storage_used_bytes,
+                created_at, updated_at, active, email_verified_at
+            ) VALUES (
+                $1, NULL, $2, NULL, $3::auth.userrole,
+                0, 0, NOW(), NOW(), TRUE, NOW()
+            )
+            "#,
+        )
+        .bind(id)
+        .bind(email)
+        .bind(role)
+        .execute(pool)
+        .await
+        .expect("seed test user at role");
+        id
+    }
+
+    async fn role_of(pool: &sqlx::PgPool, id: uuid::Uuid) -> String {
+        sqlx::query_scalar::<_, String>("SELECT role::text FROM auth.users WHERE id = $1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .expect("read back role")
+    }
+
+    /// **The single-owner invariant is enforced by the DATABASE, and
+    /// this is the only place that can prove it.**
+    ///
+    /// The API cannot: every route that could confer ownership either
+    /// refuses outright (`admin_create_user` and `change_user_role` both
+    /// reject `'owner'`) or *moves* it (`transfer_ownership` demotes and
+    /// promotes in one transaction). So an API-level test would be
+    /// asserting the absence of a path rather than the presence of a
+    /// guard, and would still pass if `idx_users_single_owner` were
+    /// dropped tomorrow.
+    ///
+    /// That matters because the API is not the only writer. `oxicloud
+    /// user promote-to-owner` issues `UPDATE auth.users SET role =
+    /// 'owner'` from a separate process, and its "is there already an
+    /// owner?" check is a read followed by a write — two operators
+    /// running it concurrently race. The index is what actually makes a
+    /// second owner unrepresentable rather than merely unlikely.
+    ///
+    /// **One test, two parts, and it must stay that way.** Ownership is
+    /// a global singleton, so any two tests that each need to be the
+    /// only owner cannot run concurrently — and cargo runs tests in
+    /// parallel against this shared database. Split across two
+    /// `#[tokio::test]`s, they fail at *seeding* with the very
+    /// constraint they exist to verify, which reads like a broken
+    /// invariant rather than a broken test. Keep new ownership
+    /// assertions inside this function.
+    #[tokio::test]
+    async fn the_database_permits_exactly_one_owner() {
+        let (_svc, _opaque, pool, _hasher) = build_service().await;
+        let tag = uuid::Uuid::new_v4();
+
+        let first =
+            seed_user_with_role(&pool, &format!("owner-a-{tag}@example.invalid"), "owner").await;
+
+        // Direct INSERT — the shape a second writer (CLI, SQL console,
+        // a future code path) would take.
+        let second_id = uuid::Uuid::new_v4();
+        let insert = sqlx::query(
+            r#"
+            INSERT INTO auth.users (
+                id, username, email, password_hash, role,
+                storage_quota_bytes, storage_used_bytes,
+                created_at, updated_at, active
+            ) VALUES ($1, NULL, $2, NULL, 'owner'::auth.userrole, 0, 0, NOW(), NOW(), TRUE)
+            "#,
+        )
+        .bind(second_id)
+        .bind(format!("owner-b-{tag}@example.invalid"))
+        .execute(&*pool)
+        .await;
+
+        let err = insert.expect_err("a second owner row must be rejected");
+        assert!(
+            err.to_string().contains("idx_users_single_owner"),
+            "expected the single-owner index to reject this, got: {err}"
+        );
+
+        // Promoting an existing admin is the same violation by another
+        // route — this is the one the CLI's TOCTOU window would hit.
+        let admin =
+            seed_user_with_role(&pool, &format!("admin-{tag}@example.invalid"), "admin").await;
+        let promote =
+            sqlx::query("UPDATE auth.users SET role = 'owner'::auth.userrole WHERE id = $1")
+                .bind(admin)
+                .execute(&*pool)
+                .await;
+        assert!(
+            promote.is_err(),
+            "promoting a second owner must be rejected while an owner exists"
+        );
+
+        // The existing owner is untouched by both failures.
+        assert_eq!(role_of(&pool, first).await, "owner");
+        assert_eq!(role_of(&pool, admin).await, "admin");
+
+        sqlx::query("DELETE FROM auth.users WHERE id = ANY($1)")
+            .bind(vec![first, admin])
+            .execute(&*pool)
+            .await
+            .expect("clean up");
+
+        // ── Part 2: why transfer demotes BEFORE it promotes ──────────
+        //
+        // The index is checked per statement, not per transaction, so
+        // the intuitive order — promote the heir, then demote the
+        // outgoing owner — briefly holds two owners and fails. The
+        // reverse passes through zero owners, which is legal and never
+        // observable outside the transaction.
+        //
+        // Pinned because the working order looks arbitrary at the
+        // callsite and would be an easy "tidy-up" for someone to swap.
+        let owner =
+            seed_user_with_role(&pool, &format!("xfer-owner-{tag}@example.invalid"), "owner").await;
+        let heir =
+            seed_user_with_role(&pool, &format!("xfer-heir-{tag}@example.invalid"), "admin").await;
+
+        // Wrong order: promote first.
+        let mut tx = pool.begin().await.expect("begin");
+        let promote_first =
+            sqlx::query("UPDATE auth.users SET role = 'owner'::auth.userrole WHERE id = $1")
+                .bind(heir)
+                .execute(&mut *tx)
+                .await;
+        assert!(
+            promote_first.is_err(),
+            "promoting before demoting must trip the single-owner index"
+        );
+        tx.rollback().await.expect("rollback");
+
+        // Nothing moved.
+        assert_eq!(role_of(&pool, owner).await, "owner");
+        assert_eq!(role_of(&pool, heir).await, "admin");
+
+        // Right order: demote, then promote — the repository's order.
+        let mut tx = pool.begin().await.expect("begin");
+        sqlx::query("UPDATE auth.users SET role = 'admin'::auth.userrole WHERE id = $1")
+            .bind(owner)
+            .execute(&mut *tx)
+            .await
+            .expect("demote outgoing owner");
+        sqlx::query("UPDATE auth.users SET role = 'owner'::auth.userrole WHERE id = $1")
+            .bind(heir)
+            .execute(&mut *tx)
+            .await
+            .expect("promote heir");
+        tx.commit().await.expect("commit transfer");
+
+        assert_eq!(role_of(&pool, owner).await, "admin");
+        assert_eq!(role_of(&pool, heir).await, "owner");
+
+        sqlx::query("DELETE FROM auth.users WHERE id = ANY($1)")
+            .bind(vec![owner, heir])
+            .execute(&*pool)
+            .await
+            .expect("clean up");
     }
 }

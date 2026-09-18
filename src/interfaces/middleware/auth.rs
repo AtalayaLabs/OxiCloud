@@ -641,7 +641,7 @@ fn dav_basic_auth_challenge(message: &'static str) -> Response {
 /// here within the flags-cache TTL.
 ///
 /// Denial shapes distinguish authn from authz:
-///   - `CurrentUser` present, role != "admin" → 403 Forbidden.
+///   - `CurrentUser` present, role below admin → 403 Forbidden.
 ///   - `CurrentUser` absent → 401 Unauthorized. Should not happen in
 ///     practice (auth_middleware guards against it), but the
 ///     defensive fallback returns the honest shape: "we don't know
@@ -649,7 +649,9 @@ fn dav_basic_auth_challenge(message: &'static str) -> Response {
 pub async fn require_admin(request: Request, next: Next) -> Response {
     // Get the CurrentUser inserted by auth_middleware
     if let Some(current_user) = request.extensions().get::<Arc<CurrentUser>>() {
-        if current_user.role == "admin" {
+        // `at_least`, not `== "admin"`: the owner outranks admin and must
+        // reach every admin route. Comparing the spelling denied them.
+        if current_user.role_enum().at_least(UserRole::Admin) {
             tracing::debug!("Admin access granted for user: {}", current_user.username);
             return next.run(request).await;
         }

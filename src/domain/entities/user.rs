@@ -7,6 +7,15 @@ pub use super::entity_errors::{UserError, UserResult};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 // We'll handle conversion manually for now until the type is properly set up in the database
 pub enum UserRole {
+    /// The server owner: an administrator that other administrators cannot
+    /// act on. Outranks [`Self::Admin`], so it satisfies every admin gate
+    /// without those gates naming it.
+    ///
+    /// At most one row may hold it today (`idx_users_single_owner`), but
+    /// that is policy rather than something this type assumes — nothing
+    /// here would need to change to allow several. See
+    /// `docs/plan/role-hierarchy-owner.md`.
+    Owner,
     Admin,
     User,
     /// A public-share visitor. **Never stored in `auth.users`** — it exists
@@ -20,6 +29,7 @@ impl UserRole {
     /// and every hot-path role render go through (no format machinery).
     pub fn as_str(self) -> &'static str {
         match self {
+            UserRole::Owner => "owner",
             UserRole::Admin => "admin",
             UserRole::User => "user",
             UserRole::Anonymous => "anonymous",
@@ -34,6 +44,7 @@ impl UserRole {
     /// silently became a real user. Use this instead and decide explicitly.
     pub fn from_stored(raw: &str) -> Option<Self> {
         match raw {
+            "owner" => Some(UserRole::Owner),
             "admin" => Some(UserRole::Admin),
             "user" => Some(UserRole::User),
             _ => None,
@@ -50,16 +61,21 @@ impl UserRole {
         }
     }
 
-    /// Privilege order: `Anonymous` < `User` < `Admin`.
+    /// Privilege order: `Anonymous` < `User` < `Admin` < `Owner`.
     ///
     /// Deliberately an explicit rank rather than a derived `Ord` — a derive
     /// follows declaration order, so reordering the variants would silently
     /// invert every comparison.
+    ///
+    /// Contiguous on purpose. Gaps "reserved for future roles" buy nothing:
+    /// adding a variant means revisiting every `match` on this enum anyway,
+    /// and the integers appear in no wire format.
     pub fn rank(self) -> u8 {
         match self {
             UserRole::Anonymous => 0,
             UserRole::User => 1,
             UserRole::Admin => 2,
+            UserRole::Owner => 3,
         }
     }
 
@@ -69,9 +85,56 @@ impl UserRole {
         self.rank() >= min.rank()
     }
 
+    /// True when `self` may act on a user holding `target`.
+    ///
+    /// **Strict**, where [`Self::at_least`] is inclusive — that difference
+    /// is the whole hierarchy. An admin meets an admin-level requirement
+    /// (`at_least`) but may not act upon another admin (`outranks`), which
+    /// is what stops one rogue admin from locking out the rest.
+    ///
+    /// Self-directed actions do not go through here: changing your own
+    /// password is a `/me` operation, not an administrative one.
+    pub fn outranks(self, target: UserRole) -> bool {
+        self.rank() > target.rank()
+    }
+
     /// True for a principal with no `auth.users` row behind it.
     pub fn is_anonymous(self) -> bool {
         matches!(self, UserRole::Anonymous)
+    }
+
+    /// Does this **stringly-typed** role meet `min`?
+    ///
+    /// The role crosses several boundaries as a plain `String` — the JWT
+    /// claim, `CurrentUser.role`, `PublicUserDto.role`, the live-role
+    /// string — and before the Owner role existed, six sites compared
+    /// those strings to `"admin"` literally. Every one silently denied the
+    /// owner, who outranks admin: the admin API, the admin middleware, the
+    /// NextCloud OCS group list, group management, dedup ref-counts, and
+    /// shared-drive creation. The API test suite caught it as
+    /// `authz.admin_denied … role=owner`.
+    ///
+    /// Compare ranks, never spellings. An unparseable role is refused:
+    /// this is a gate, so the unknown answer is "no".
+    pub fn str_at_least(raw: &str, min: UserRole) -> bool {
+        UserRole::from_session(raw).is_some_and(|role| role.at_least(min))
+    }
+
+    /// True for any role carrying more authority than a regular user.
+    ///
+    /// The external-identity guards ask this question — "may an
+    /// IdP-provisioned account hold this role?" — and they MUST ask it
+    /// this way rather than comparing against `Admin`. `Admin` was
+    /// historically the only privileged role, so the guards were written
+    /// as `role == Admin`; a role added *above* Admin would then walk
+    /// straight through them, letting a federated identity hold the most
+    /// privileged account on the instance.
+    ///
+    /// Phrased as a negative ("more than a plain user") this stays correct
+    /// for roles that do not exist yet. Do not respell it as a list.
+    /// See `docs/plan/role-hierarchy-owner.md`.
+    pub fn is_privileged(self) -> bool {
+        self.rank() > UserRole::User.rank()
     }
 }
 
@@ -393,10 +456,10 @@ impl User {
         }
         // Schema-level CHECKs are mirrored at the entity layer so callers
         // get a typed error instead of an opaque DB rejection.
-        if is_external && matches!(role, UserRole::Admin) {
-            return Err(UserError::ValidationError(
-                "External users cannot hold the admin role".to_string(),
-            ));
+        if is_external && role.is_privileged() {
+            return Err(UserError::ValidationError(format!(
+                "External users cannot hold the {role} role"
+            )));
         }
         if is_external && storage_quota_bytes != 0 {
             return Err(UserError::ValidationError(
@@ -1045,9 +1108,17 @@ mod role_tests {
     /// The privilege order `require_role` depends on. Written out rather
     /// than derived, so a variant reorder cannot silently invert it.
     #[test]
-    fn anonymous_is_below_user_is_below_admin() {
+    fn anonymous_is_below_user_is_below_admin_is_below_owner() {
         assert!(UserRole::Anonymous.rank() < UserRole::User.rank());
         assert!(UserRole::User.rank() < UserRole::Admin.rank());
+        assert!(UserRole::Admin.rank() < UserRole::Owner.rank());
+
+        // The owner satisfies every admin gate without those gates naming
+        // them — the property that let `Owner` be added without touching
+        // `require_system_admin`, the admin middleware, or the admin
+        // service methods.
+        assert!(UserRole::Owner.at_least(UserRole::Admin));
+        assert!(UserRole::Owner.at_least(UserRole::User));
 
         // An admin satisfies a "user or better" requirement…
         assert!(UserRole::Admin.at_least(UserRole::User));
@@ -1057,6 +1128,81 @@ mod role_tests {
         assert!(!UserRole::Anonymous.at_least(UserRole::Admin));
         // The one that matters most: anonymous is never admin.
         assert!(!UserRole::Anonymous.at_least(UserRole::Admin));
+    }
+
+    /// The external-identity guards ask `is_privileged`, and they must
+    /// keep meaning "more than a plain user" as the roster grows — a role
+    /// added above `Admin` has to be caught by the same test that catches
+    /// `Admin` today, without anyone remembering to update it.
+    ///
+    /// Stated as the property rather than as cases: everything ranked
+    /// above `User` is privileged, everything at or below is not. A new
+    /// variant is covered the moment it has a rank.
+    /// `outranks` is STRICT where `at_least` is inclusive, and that
+    /// difference is the hierarchy: an admin meets an admin requirement but
+    /// may not act on a peer. Without it, one rogue admin can demote every
+    /// other admin — the situation issue #690 exists to end.
+    #[test]
+    fn outranking_is_strict_so_peers_cannot_act_on_each_other() {
+        assert!(!UserRole::Admin.outranks(UserRole::Admin));
+        assert!(!UserRole::User.outranks(UserRole::User));
+        assert!(!UserRole::Owner.outranks(UserRole::Owner));
+
+        assert!(UserRole::Owner.outranks(UserRole::Admin));
+        assert!(UserRole::Admin.outranks(UserRole::User));
+
+        // Nothing reaches the owner from below. Stated for every role
+        // rather than just admin, because this is the protection the whole
+        // feature exists to provide.
+        for role in [UserRole::Anonymous, UserRole::User, UserRole::Admin] {
+            assert!(
+                !role.outranks(UserRole::Owner),
+                "{role} must not be able to act on the owner",
+            );
+        }
+    }
+
+    /// The roster grew, so the round-trip has to cover `'owner'` in both
+    /// directions. A stored role read back as anything else is the silent
+    /// failure Step 0 removed: a privileged account quietly becoming a
+    /// plain user, with no error anywhere.
+    #[test]
+    fn owner_round_trips_through_both_parsers() {
+        assert_eq!(UserRole::Owner.as_str(), "owner");
+        assert_eq!(UserRole::from_stored("owner"), Some(UserRole::Owner));
+        // Inherited by the session parser, so an owner's own JWT does not
+        // downgrade them on every request.
+        assert_eq!(UserRole::from_session("owner"), Some(UserRole::Owner));
+
+        for role in [UserRole::Owner, UserRole::Admin, UserRole::User] {
+            assert_eq!(
+                UserRole::from_stored(role.as_str()),
+                Some(role),
+                "{role} must survive a store/load round-trip",
+            );
+        }
+    }
+
+    #[test]
+    fn privileged_means_outranks_a_plain_user() {
+        for role in [
+            UserRole::Anonymous,
+            UserRole::User,
+            UserRole::Admin,
+            UserRole::Owner,
+        ] {
+            assert_eq!(
+                role.is_privileged(),
+                role.rank() > UserRole::User.rank(),
+                "{role} disagrees with its own rank about being privileged",
+            );
+        }
+
+        // Spelled out too, because these are the answers the SQL CHECK
+        // `NOT (is_external AND role <> 'user')` has to agree with.
+        assert!(UserRole::Admin.is_privileged());
+        assert!(!UserRole::User.is_privileged());
+        assert!(!UserRole::Anonymous.is_privileged());
     }
 
     /// `anonymous` has no `auth.users` row, so it must be unparseable from

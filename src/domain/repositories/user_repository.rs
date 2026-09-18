@@ -182,9 +182,25 @@ pub trait UserRepository: Send + Sync + 'static {
     /// Lists users by role (admin or user)
     async fn list_users_by_role(&self, role: &str) -> UserRepositoryResult<Vec<User>>;
 
-    /// Counts users with a given role via a scalar `COUNT(*)` — no row
-    /// hydration (benches/ROUND29.md §G).
-    async fn count_users_by_role(&self, role: &str) -> UserRepositoryResult<i64>;
+    /// Move ownership between two users in one transaction, demoting the
+    /// current owner to admin. Demote-then-promote: the single-owner index
+    /// is checked per statement, so the reverse order trips it.
+    async fn transfer_ownership(
+        &self,
+        from_user_id: Uuid,
+        to_user_id: Uuid,
+    ) -> UserRepositoryResult<()>;
+
+    /// Counts users who can administer the instance — anything ranked above
+    /// a plain user — via a scalar `COUNT(*)`, no row hydration
+    /// (benches/ROUND29.md §G).
+    ///
+    /// Replaced a `count_users_by_role("admin")` whose single caller wanted
+    /// exactly this. Naming one role stopped being the same question the
+    /// moment `owner` existed: a fresh install's first user is the owner, so
+    /// counting `'admin'` returned zero administrators for an instance that
+    /// had one.
+    async fn count_privileged_users(&self) -> UserRepositoryResult<i64>;
 
     /// Deletes a user
     async fn delete_user(&self, user_id: Uuid) -> UserRepositoryResult<()>;

@@ -8,6 +8,7 @@
 	import { t } from '$lib/i18n/index.svelte';
 	import { confirmDialog } from '$lib/stores/dialogs.svelte';
 	import { session } from '$lib/stores/session.svelte';
+	import { isAtLeastAdmin } from '$lib/utils/roles';
 	import { theme } from '$lib/stores/theme.svelte';
 
 	interface Command {
@@ -135,7 +136,7 @@
 				run: nav('/profile')
 			}
 		];
-		if (session.user?.role === 'admin') {
+		if (isAtLeastAdmin(session.user?.role)) {
 			cmds.push({
 				id: 'admin',
 				label: t('user_menu.admin_panel', 'Admin'),

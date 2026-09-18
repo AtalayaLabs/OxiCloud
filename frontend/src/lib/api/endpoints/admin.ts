@@ -349,6 +349,18 @@ export function setUserRole(userId: string, role: string): Promise<void> {
 	return mutate(`/api/admin/users/${userId}/role`, 'PUT', { role });
 }
 
+/**
+ * Hand the instance to another user. The caller — who must be the current
+ * owner — is demoted to admin in the same transaction.
+ *
+ * Deliberately not `setUserRole(id, 'owner')`: that endpoint refuses
+ * 'owner', because conferring it there would create a second owner rather
+ * than move the one that exists.
+ */
+export function transferOwnership(newOwnerId: string): Promise<void> {
+	return mutate('/api/admin/transfer-ownership', 'POST', { new_owner_id: newOwnerId });
+}
+
 export function setUserActive(userId: string, active: boolean): Promise<void> {
 	return mutate(`/api/admin/users/${userId}/active`, 'PUT', { active });
 }

@@ -134,7 +134,7 @@ pub async fn require_admin_user(
         .await
         .map_err(AppError::from)?;
 
-    if flags.role != UserRole::Admin {
+    if !flags.role.at_least(UserRole::Admin) {
         return Err(AppError::new(
             StatusCode::FORBIDDEN,
             "Admin access required",

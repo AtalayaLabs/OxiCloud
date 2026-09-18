@@ -790,6 +790,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/dashboard — full dashboard statistics",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "get_dashboard_stats",
         "responses": {
           "200": {
@@ -806,7 +807,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/dedup/recalculate": {
@@ -814,6 +816,7 @@
         "tags": [
           "admin"
         ],
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "recalculate_stats",
         "responses": {
           "200": {
@@ -840,7 +843,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/dedup/stats": {
@@ -848,6 +852,7 @@
         "tags": [
           "admin"
         ],
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "get_stats",
         "responses": {
           "200": {
@@ -871,7 +876,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/drives": {
@@ -880,7 +886,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/drives — list every drive on the system, admin-only.",
-        "description": "Distinct from `GET /api/drives`, which is the caller's own listing\nfiltered through `role_grants`. An admin who creates a shared drive\nfor someone else has no grant on it — but the admin panel still\nneeds to see the drive (to audit, to manage, to delete). The admin\nguard at the handler edge is the access control; no role filtering\nhappens in the repo (see `drive_repository::list_all`).\n\nReturns rows ordered by display name. `caller_role` is omitted —\nthe admin is not necessarily a drive member, so the field would be\nmisleading here.",
+        "description": "Distinct from `GET /api/drives`, which is the caller's own listing\nfiltered through `role_grants`. An admin who creates a shared drive\nfor someone else has no grant on it — but the admin panel still\nneeds to see the drive (to audit, to manage, to delete). The admin\nguard at the handler edge is the access control; no role filtering\nhappens in the repo (see `drive_repository::list_all`).\n\nReturns rows ordered by display name. `caller_role` is omitted —\nthe admin is not necessarily a drive member, so the field would be\nmisleading here.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "list_all_drives",
         "responses": {
           "200": {
@@ -907,7 +913,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/drives/{id}": {
@@ -916,7 +923,7 @@
           "admin"
         ],
         "summary": "`DELETE /api/admin/drives/{id}` — admin-only drive delete (D3b).",
-        "description": "Same shape as the user-facing `DELETE /api/drives/{id}`, but\nbypasses the per-drive `Manage` check (the admin guard at the\nroute edge is the access control). The remaining invariants —\ndefault Personal drive is undeletable, drive must be empty — still\napply: an admin can't accidentally wipe a populated drive or the\ndefault home folder of any user. Audit emits\n`drive.deleted_via_admin` on success.",
+        "description": "Same shape as the user-facing `DELETE /api/drives/{id}`, but\nbypasses the per-drive `Manage` check (the admin guard at the\nroute edge is the access control). The remaining invariants —\ndefault Personal drive is undeletable, drive must be empty — still\napply: an admin can't accidentally wipe a populated drive or the\ndefault home folder of any user. Audit emits\n`drive.deleted_via_admin` on success.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "delete_drive_admin",
         "parameters": [
           {
@@ -951,7 +958,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/drives/{id}/members": {
@@ -960,7 +968,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/drives/{id}/members — list every role grant on a drive,\nadmin-only.",
-        "description": "Distinct from `GET /api/drives/{id}/members` which goes through\n`DriveManagementService::list_members` and requires `Permission::Read`\non the drive. The admin who created the drive for someone else has\nno role on it, so the user-facing endpoint would 404 for them.\n\nThis endpoint reuses the engine's `list_grants_on_resource` directly\n— same query, same shape, just gated by the admin middleware instead\nof by `authz.require`. Returns the same `Vec<GrantDto>` so the\nfrontend renders it through the existing grant types.",
+        "description": "Distinct from `GET /api/drives/{id}/members` which goes through\n`DriveManagementService::list_members` and requires `Permission::Read`\non the drive. The admin who created the drive for someone else has\nno role on it, so the user-facing endpoint would 404 for them.\n\nThis endpoint reuses the engine's `list_grants_on_resource` directly\n— same query, same shape, just gated by the admin middleware instead\nof by `authz.require`. Returns the same `Vec<GrantDto>` so the\nfrontend renders it through the existing grant types.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "list_drive_members_admin",
         "parameters": [
           {
@@ -999,13 +1007,15 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       },
       "post": {
         "tags": [
           "admin"
         ],
         "summary": "POST /api/admin/drives/{id}/members — add or refresh a member's role\nwithout holding `Manage` on the drive. Admin-only; bypasses the\nper-drive authz check via the `caller_is_admin = true` argument on\n`DriveManagementService::set_member_role`. Personal-drive guard and\nlast-owner protection still apply.",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "add_drive_member_admin",
         "parameters": [
           {
@@ -1057,7 +1067,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/drives/{id}/members/{kind}/{sid}": {
@@ -1066,6 +1077,7 @@
           "admin"
         ],
         "summary": "DELETE /api/admin/drives/{id}/members/{kind}/{sid} — remove a\nmember as an admin. Bypasses `Manage`; keeps last-owner protection.",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "remove_drive_member_admin",
         "parameters": [
           {
@@ -1119,13 +1131,15 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       },
       "patch": {
         "tags": [
           "admin"
         ],
         "summary": "PATCH /api/admin/drives/{id}/members/{kind}/{sid} — change a member's\nrole / expiry as an admin. Same admin-bypass shape as\n`add_drive_member_admin`.",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "update_drive_member_admin",
         "parameters": [
           {
@@ -1196,7 +1210,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/jobs": {
@@ -1204,6 +1219,7 @@
         "tags": [
           "admin"
         ],
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "list_jobs",
         "responses": {
           "200": {
@@ -1220,7 +1236,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/jobs/runs/purge": {
@@ -1229,6 +1246,7 @@
           "admin"
         ],
         "summary": "`POST /api/admin/jobs/runs/purge?days=N` — operator-triggered\ncleanup of old terminal runs + their findings. Not periodic;\nadmins fire this when they want to reclaim `jobs.*` history\nspace. Delegates entirely to\n`JobStoreProvider::purge_terminal_runs` — no SQL in the handler\n(see `AGENTS.md` § handler thinness).",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "purge_job_runs",
         "parameters": [
           {
@@ -1260,7 +1278,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/jobs/{name}/cancel": {
@@ -1269,7 +1288,7 @@
           "admin"
         ],
         "summary": "`POST /api/admin/jobs/{name}/cancel` — cooperative cancel of the\ncurrently-running recoverable run for `{name}`.",
-        "description": "Flips the row's `status` from `Running` → `CancelRequested`. The\nhandler is responsible for polling `store.status()` between batches\nand returning `RunOutcome::Paused` at the next safe boundary; if it\ndoesn't, the cancel is a no-op until the run completes naturally.\n\nReturns 200 with the run_id when a Running row was flipped, 200 with\n`cancelled: false` when nothing was running (either no runs exist,\nor the latest is Paused / Completed / Failed / already CancelRequested).\nNever 404 on \"no active run\" — the job name is registered and the\nendpoint just reports the truth.",
+        "description": "Flips the row's `status` from `Running` → `CancelRequested`. The\nhandler is responsible for polling `store.status()` between batches\nand returning `RunOutcome::Paused` at the next safe boundary; if it\ndoesn't, the cancel is a no-op until the run completes naturally.\n\nReturns 200 with the run_id when a Running row was flipped, 200 with\n`cancelled: false` when nothing was running (either no runs exist,\nor the latest is Paused / Completed / Failed / already CancelRequested).\nNever 404 on \"no active run\" — the job name is registered and the\nendpoint just reports the truth.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "cancel_job",
         "parameters": [
           {
@@ -1300,7 +1319,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/jobs/{name}/pause": {
@@ -1309,7 +1329,7 @@
           "admin"
         ],
         "summary": "`POST /api/admin/jobs/{name}/pause` — cooperative PAUSE of the\ncurrently-running recoverable run for `{name}`.",
-        "description": "Same DB mechanism as the old cancel (Running → CancelRequested,\nhandler yields to Paused), but no `cancel_intent` stamp so the\nengine writes `Paused`. Use this to interrupt a long-running\njob and resume it later; use `/cancel` to abandon it terminally.\n\nIdempotent: if the row is already Paused, returns 200 with\n`paused: false, reason: \"already_paused\"`.",
+        "description": "Same DB mechanism as the old cancel (Running → CancelRequested,\nhandler yields to Paused), but no `cancel_intent` stamp so the\nengine writes `Paused`. Use this to interrupt a long-running\njob and resume it later; use `/cancel` to abandon it terminally.\n\nIdempotent: if the row is already Paused, returns 200 with\n`paused: false, reason: \"already_paused\"`.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "pause_job",
         "parameters": [
           {
@@ -1340,7 +1360,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/jobs/{name}/runs": {
@@ -1349,7 +1370,7 @@
           "admin"
         ],
         "summary": "`GET /api/admin/jobs/{name}/runs?limit=N` — history of recoverable\nruns for a registered job, newest first. Includes terminal +\nnon-terminal rows.",
-        "description": "Read-only, no audit line — standard admin-middleware auth is enough.",
+        "description": "Read-only, no audit line — standard admin-middleware auth is enough.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "list_job_runs",
         "parameters": [
           {
@@ -1391,7 +1412,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/jobs/{name}/runs/{id}": {
@@ -1400,7 +1422,7 @@
           "admin"
         ],
         "summary": "`GET /api/admin/jobs/{name}/runs/{id}` — single-run detail.",
-        "description": "Returns 404 when the id doesn't exist. `{name}` is not validated\nagainst the run's `job_name` — the id is globally unique — but\nkeeping the name in the URL path lets operators build stable\nper-job history links without knowing individual run ids upfront.",
+        "description": "Returns 404 when the id doesn't exist. `{name}` is not validated\nagainst the run's `job_name` — the id is globally unique — but\nkeeping the name in the URL path lets operators build stable\nper-job history links without knowing individual run ids upfront.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "get_job_run",
         "parameters": [
           {
@@ -1443,7 +1465,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/jobs/{name}/runs/{id}/findings": {
@@ -1452,7 +1475,7 @@
           "admin"
         ],
         "summary": "`GET /api/admin/jobs/{name}/runs/{id}/findings?limit=N&offset=M` —\npaginated findings emitted by a specific run of a recoverable job.",
-        "description": "404 when the run id doesn't exist (anti-enum: caller knew the id\nsomehow; we don't leak whether it was pruned vs never-existed).\nRead-only, no audit — standard admin-middleware auth is enough.\n\n`{name}` is not validated against the run's `job_name` (the id is\nglobally unique) but keeps the URL path consistent with the other\nper-run endpoints for stable per-job history links.",
+        "description": "404 when the run id doesn't exist (anti-enum: caller knew the id\nsomehow; we don't leak whether it was pruned vs never-existed).\nRead-only, no audit — standard admin-middleware auth is enough.\n\n`{name}` is not validated against the run's `job_name` (the id is\nglobally unique) but keeps the URL path consistent with the other\nper-run endpoints for stable per-job history links.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "list_job_run_findings",
         "parameters": [
           {
@@ -1517,7 +1540,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/jobs/{name}/trigger": {
@@ -1526,7 +1550,7 @@
           "admin"
         ],
         "summary": "`POST /api/admin/jobs/{name}/trigger` — dispatch one run off-schedule.",
-        "description": "Returns the job's `JobOutcome` inline. Idempotent under exclusivity:\nif the previous run is still in flight, the handler returns\n`Ok { count: 0, extra: { \"skipped\": \"already_running\" } }` rather\nthan spawning a parallel dispatch.\n\nEmits an audit line before dispatch — bulk-mutation side effects on\noperator command belong on the audit stream.",
+        "description": "Returns the job's `JobOutcome` inline. Idempotent under exclusivity:\nif the previous run is still in flight, the handler returns\n`Ok { count: 0, extra: { \"skipped\": \"already_running\" } }` rather\nthan spawning a parallel dispatch.\n\nEmits an audit line before dispatch — bulk-mutation side effects on\noperator command belong on the audit stream.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "trigger_job",
         "parameters": [
           {
@@ -1557,7 +1581,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/search/cache": {
@@ -1565,6 +1590,7 @@
         "tags": [
           "admin"
         ],
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "clear_search_cache",
         "responses": {
           "200": {
@@ -1584,7 +1610,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/sessions": {
@@ -1593,7 +1620,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/sessions?user_id=&include_revoked=&limit=&offset= — list sessions",
-        "description": "Global cross-user listing by default. `user_id` narrows to one\nuser; omit for cross-user. `include_revoked=true` opts into\nshowing revoked / expired rows for forensics (default hides).\nResponse is `{sessions, limit, offset}` — no total count (would\nrequire a second scan; the panel paginates on presence of\nexactly `limit` rows returned).",
+        "description": "Global cross-user listing by default. `user_id` narrows to one\nuser; omit for cross-user. `include_revoked=true` opts into\nshowing revoked / expired rows for forensics (default hides).\nResponse is `{sessions, limit, offset}` — no total count (would\nrequire a second scan; the panel paginates on presence of\nexactly `limit` rows returned).\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "list_sessions",
         "parameters": [
           {
@@ -1650,7 +1677,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/sessions/{id}": {
@@ -1659,6 +1687,7 @@
           "admin"
         ],
         "summary": "DELETE /api/admin/sessions/:id — revoke a session",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "revoke_session",
         "parameters": [
           {
@@ -1692,7 +1721,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/settings/oidc": {
@@ -1701,6 +1731,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/settings/oidc — get OIDC settings for the admin panel",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "get_oidc_settings",
         "responses": {
           "200": {
@@ -1717,13 +1748,15 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       },
       "put": {
         "tags": [
           "admin"
         ],
         "summary": "PUT /api/admin/settings/oidc — save OIDC settings + hot-reload",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "save_oidc_settings",
         "requestBody": {
           "content": {
@@ -1750,7 +1783,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/settings/registration": {
@@ -1759,6 +1793,7 @@
           "admin"
         ],
         "summary": "PUT /api/admin/settings/registration — enable/disable public registration",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "set_registration_setting",
         "requestBody": {
           "content": {
@@ -1786,7 +1821,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/settings/storage": {
@@ -1795,6 +1831,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/settings/storage — get storage backend settings",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "get_storage_settings",
         "responses": {
           "200": {
@@ -1811,13 +1848,15 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       },
       "put": {
         "tags": [
           "admin"
         ],
         "summary": "PUT /api/admin/settings/storage — save storage backend settings",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "save_storage_settings",
         "requestBody": {
           "content": {
@@ -1844,7 +1883,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/settings/storage/generate-key": {
@@ -1853,6 +1893,7 @@
           "admin"
         ],
         "summary": "POST /api/admin/settings/storage/generate-key — generate a random AES-256 key.",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "generate_encryption_key",
         "responses": {
           "200": {
@@ -1869,7 +1910,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/smtp/info": {
@@ -1878,6 +1920,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/smtp/info — read-only view of the running SMTP config.",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "get_smtp_info",
         "responses": {
           "200": {
@@ -1901,7 +1944,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/smtp/test": {
@@ -1910,7 +1954,7 @@
           "admin"
         ],
         "summary": "POST /api/admin/smtp/test — send a diagnostic email to `dto.to`.",
-        "description": "Returns 200 regardless of SMTP outcome; the body's `success` flag\n+ `code`/`message` (or `error`) tell the frontend what to render.\nThis keeps SMTP-level failures (4xx/5xx replies, connection\ntimeouts) as ordinary diagnostic data rather than HTTP errors.",
+        "description": "Returns 200 regardless of SMTP outcome; the body's `success` flag\n+ `code`/`message` (or `error`) tell the frontend what to render.\nThis keeps SMTP-level failures (4xx/5xx replies, connection\ntimeouts) as ordinary diagnostic data rather than HTTP errors.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "send_smtp_test",
         "requestBody": {
           "content": {
@@ -1947,7 +1991,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/storage/entries/{name}/rotate": {
@@ -1956,7 +2001,7 @@
           "admin"
         ],
         "summary": "POST /api/admin/storage/entries/{name}/rotate — trigger the\n`backend_rotate` recoverable job on a specific entry.",
-        "description": "Normalises every blob on `<name>` to the entry's head-pair\nformat: legacy → v1, plaintext ↔ encrypted, old-key → new-key.\nSee `docs/plan/storage-key-rotation.md` §\"The rotation job\".\n\nUnlike migration, rotation does NOT engage read-only mode —\nrewrites happen in place under normal traffic. Concurrent user\nwrites coexist safely.\n\nThe handler validates the entry name synchronously (400 on\nunknown entry); the actual walk detaches into a\n`tokio::spawn` so the HTTP call returns immediately.",
+        "description": "Normalises every blob on `<name>` to the entry's head-pair\nformat: legacy → v1, plaintext ↔ encrypted, old-key → new-key.\nSee `docs/plan/storage-key-rotation.md` §\"The rotation job\".\n\nUnlike migration, rotation does NOT engage read-only mode —\nrewrites happen in place under normal traffic. Concurrent user\nwrites coexist safely.\n\nThe handler validates the entry name synchronously (400 on\nunknown entry); the actual walk detaches into a\n`tokio::spawn` so the HTTP call returns immediately.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "trigger_backend_rotate",
         "parameters": [
           {
@@ -1987,7 +2032,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/storage/migration": {
@@ -1996,7 +2042,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/storage/migration — current migration progress.",
-        "description": "Shim over the recoverable-run engine: reads the latest\n`backend_migration` run from `jobs.recoverable_runs` (via the\n`JobStoreProvider`) and projects it into the legacy\n`MigrationStateDto` shape the admin storage tab expects. When no\nrun has ever been triggered the response is an empty \"idle\" DTO —\nsame behaviour the old in-memory `MigrationState::default()`\nproduced.",
+        "description": "Shim over the recoverable-run engine: reads the latest\n`backend_migration` run from `jobs.recoverable_runs` (via the\n`JobStoreProvider`) and projects it into the legacy\n`MigrationStateDto` shape the admin storage tab expects. When no\nrun has ever been triggered the response is an empty \"idle\" DTO —\nsame behaviour the old in-memory `MigrationState::default()`\nproduced.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "get_migration_status",
         "responses": {
           "200": {
@@ -2013,7 +2059,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/storage/migration/pause": {
@@ -2022,7 +2069,7 @@
           "admin"
         ],
         "summary": "POST /api/admin/storage/migration/pause — pause a running migration.",
-        "description": "Shim over cooperative cancel: flips the run row's status to\n`CancelRequested`; the recoverable handler polls between batches\nand returns `Paused` at the next boundary. If nothing is running,\nreturns 200 with `paused: false` — matches the \"no-op is fine\"\ncontract of `/api/admin/jobs/{name}/cancel`.",
+        "description": "Shim over cooperative cancel: flips the run row's status to\n`CancelRequested`; the recoverable handler polls between batches\nand returns `Paused` at the next boundary. If nothing is running,\nreturns 200 with `paused: false` — matches the \"no-op is fine\"\ncontract of `/api/admin/jobs/{name}/cancel`.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "pause_migration",
         "responses": {
           "200": {
@@ -2039,7 +2086,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/storage/migration/resume": {
@@ -2048,7 +2096,7 @@
           "admin"
         ],
         "summary": "POST /api/admin/storage/migration/resume — resume a paused migration.",
-        "description": "Same underlying trigger as `/start`: `run_or_resume` inspects the\nlatest row and picks Fresh / Resume / AlreadyActive at dispatch\ntime. Kept as a distinct endpoint for wire-compat.",
+        "description": "Same underlying trigger as `/start`: `run_or_resume` inspects the\nlatest row and picks Fresh / Resume / AlreadyActive at dispatch\ntime. Kept as a distinct endpoint for wire-compat.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "resume_migration",
         "responses": {
           "200": {
@@ -2065,7 +2113,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/storage/migration/start": {
@@ -2074,7 +2123,7 @@
           "admin"
         ],
         "summary": "POST /api/admin/storage/migration/start — begin background migration.",
-        "description": "Shim that forwards to `JobRegistry::trigger(\"backend_migration\",\n...)`. `run_or_resume` (the RecoverableAdapter's inner dispatch)\nresumes a Paused run or starts a fresh one — one endpoint covers\nboth. Exclusivity is enforced at the DB layer (the partial unique\nindex on `jobs.recoverable_runs`), so a second concurrent trigger\nis a no-op that returns the existing run.\n\n`StartMigrationDto.concurrency` is currently ignored — the\nrecoverable copy loop runs sequentially. Kept in the DTO for\nwire-compat with the admin UI; will be honoured if a concurrency\nknob is added later.",
+        "description": "Shim that forwards to `JobRegistry::trigger(\"backend_migration\",\n...)`. `run_or_resume` (the RecoverableAdapter's inner dispatch)\nresumes a Paused run or starts a fresh one — one endpoint covers\nboth. Exclusivity is enforced at the DB layer (the partial unique\nindex on `jobs.recoverable_runs`), so a second concurrent trigger\nis a no-op that returns the existing run.\n\n`StartMigrationDto.concurrency` is currently ignored — the\nrecoverable copy loop runs sequentially. Kept in the DTO for\nwire-compat with the admin UI; will be honoured if a concurrency\nknob is added later.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "start_migration",
         "requestBody": {
           "content": {
@@ -2101,7 +2150,51 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
+      }
+    },
+    "/api/admin/transfer-ownership": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "POST /api/admin/transfer-ownership — hand the instance to another user.",
+        "description": "Owner-only, and the only way the owner's own role ever changes: the\ngeneric role endpoint refuses `\"owner\"` in both directions. The swap is\none transaction, so the instance is never briefly ownerless or briefly\ndouble-owned.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "operationId": "transfer_ownership",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransferOwnershipDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Ownership transferred"
+          },
+          "400": {
+            "description": "Target cannot hold ownership, or is already the owner"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Only the current owner may transfer ownership"
+          },
+          "404": {
+            "description": "Target user not found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/users": {
@@ -2110,7 +2203,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/users?limit=50&offset=0 — list all users",
-        "description": "Always returns `Vec<FullUserDto>` — the shape one row of the\n`/me` response's embedded `full` block carries. The former\n`?summary` toggle (flat `PublicUserDto` vs nested `FullUserDto`)\nhas been retired: admin listing is low-volume and the FE always\nasked for the nested shape anyway, so the two-shape split served\nno caller and only invited jq-path bugs. See\n`docs/plan/userdto-refactor.md`.",
+        "description": "Always returns `Vec<FullUserDto>` — the shape one row of the\n`/me` response's embedded `full` block carries. The former\n`?summary` toggle (flat `PublicUserDto` vs nested `FullUserDto`)\nhas been retired: admin listing is low-volume and the FE always\nasked for the nested shape anyway, so the two-shape split served\nno caller and only invited jq-path bugs. See\n`docs/plan/userdto-refactor.md`.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "list_users",
         "parameters": [
           {
@@ -2149,13 +2242,15 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       },
       "post": {
         "tags": [
           "admin"
         ],
         "summary": "POST /api/admin/users — create a new user (admin only)",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "create_user",
         "requestBody": {
           "content": {
@@ -2178,14 +2273,15 @@
             "description": "Unauthorized"
           },
           "403": {
-            "description": "Admin required"
+            "description": "Admin required, and cannot create a role the caller does not outrank"
           }
         },
         "security": [
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/users/{id}": {
@@ -2194,6 +2290,7 @@
           "admin"
         ],
         "summary": "GET /api/admin/users/:id — get single user",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "get_user",
         "parameters": [
           {
@@ -2224,13 +2321,15 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       },
       "delete": {
         "tags": [
           "admin"
         ],
         "summary": "DELETE /api/admin/users/:id — delete a user",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "delete_user",
         "parameters": [
           {
@@ -2261,7 +2360,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/users/{id}/active": {
@@ -2270,6 +2370,7 @@
           "admin"
         ],
         "summary": "PUT /api/admin/users/:id/active — activate/deactivate user",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "update_user_active",
         "parameters": [
           {
@@ -2310,7 +2411,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/users/{id}/password": {
@@ -2319,6 +2421,7 @@
           "admin"
         ],
         "summary": "PUT /api/admin/users/:id/password — reset a user's password (admin only)",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "reset_user_password",
         "parameters": [
           {
@@ -2352,14 +2455,15 @@
             "description": "Unauthorized"
           },
           "403": {
-            "description": "Admin required"
+            "description": "Admin required, and must outrank the target"
           }
         },
         "security": [
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/users/{id}/promote-to-internal": {
@@ -2368,6 +2472,7 @@
           "admin"
         ],
         "summary": "POST /api/admin/users/{id}/promote-to-internal — flip an external\n(grant-only) account into a normal internal account, provisioning\nits personal drive on the way. The deployment MUST have magic-link\nlogin enabled (the admin doesn't set the user's password on their\nbehalf, so the promoted user needs some way to log in). Refuses\nOIDC-linked users and users who are already internal.",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "admin_promote_external_to_internal",
         "parameters": [
           {
@@ -2411,7 +2516,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/users/{id}/quota": {
@@ -2420,6 +2526,7 @@
           "admin"
         ],
         "summary": "PUT /api/admin/users/:id/quota — update user storage quota",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "update_user_quota",
         "parameters": [
           {
@@ -2450,14 +2557,15 @@
             "description": "Unauthorized"
           },
           "403": {
-            "description": "Admin required"
+            "description": "Admin required, and must outrank the target"
           }
         },
         "security": [
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/admin/users/{id}/role": {
@@ -2466,6 +2574,7 @@
           "admin"
         ],
         "summary": "PUT /api/admin/users/:id/role — change user role",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
         "operationId": "update_user_role",
         "parameters": [
           {
@@ -2493,7 +2602,7 @@
             "description": "Role updated"
           },
           "400": {
-            "description": "Cannot change own role"
+            "description": "Cannot change own role, or the target is the server owner"
           },
           "401": {
             "description": "Unauthorized"
@@ -2506,7 +2615,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "role:admin"
       }
     },
     "/api/auth/change-password": {
@@ -3397,13 +3507,22 @@
             "description": "ZIP archive stream"
           },
           "400": {
-            "description": "Bad request"
+            "description": "Malformed request, or every item failed for DIFFERENT reasons"
           },
           "401": {
             "description": "Unauthorized"
           },
+          "403": {
+            "description": "Every item was denied and the caller can see the resources"
+          },
+          "404": {
+            "description": "Every item was denied and the caller cannot see the resources"
+          },
           "500": {
             "description": "ZIP creation failed"
+          },
+          "507": {
+            "description": "Every item exceeded the destination drive's quota"
           }
         },
         "security": [
@@ -3434,13 +3553,22 @@
             "description": "ZIP archive stream"
           },
           "400": {
-            "description": "Bad request"
+            "description": "Malformed request, or every item failed for DIFFERENT reasons"
           },
           "401": {
             "description": "Unauthorized"
           },
+          "403": {
+            "description": "Every item was denied and the caller can see the resources"
+          },
+          "404": {
+            "description": "Every item was denied and the caller cannot see the resources"
+          },
           "500": {
             "description": "ZIP creation failed"
+          },
+          "507": {
+            "description": "Every item exceeded the destination drive's quota"
           }
         },
         "security": [
@@ -3475,10 +3603,19 @@
             "description": "Partial success"
           },
           "400": {
-            "description": "Bad request"
+            "description": "Malformed request, or every item failed for DIFFERENT reasons"
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Every item was denied and the caller can see the resources"
+          },
+          "404": {
+            "description": "Every item was denied and the caller cannot see the resources"
+          },
+          "507": {
+            "description": "Every item exceeded the destination drive's quota"
           }
         },
         "security": [
@@ -3513,10 +3650,19 @@
             "description": "Partial success"
           },
           "400": {
-            "description": "Bad request"
+            "description": "Malformed request, or every item failed for DIFFERENT reasons"
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Every item was denied and the caller can see the resources"
+          },
+          "404": {
+            "description": "Every item was denied and the caller cannot see the resources"
+          },
+          "507": {
+            "description": "Every item exceeded the destination drive's quota"
           }
         },
         "security": [
@@ -3551,10 +3697,19 @@
             "description": "Partial success"
           },
           "400": {
-            "description": "Bad request"
+            "description": "Malformed request, or every item failed for DIFFERENT reasons"
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Every item was denied and the caller can see the resources"
+          },
+          "404": {
+            "description": "Every item was denied and the caller cannot see the resources"
+          },
+          "507": {
+            "description": "Every item exceeded the destination drive's quota"
           }
         },
         "security": [
@@ -3589,10 +3744,19 @@
             "description": "Partial success"
           },
           "400": {
-            "description": "Bad request"
+            "description": "Malformed request, or every item failed for DIFFERENT reasons"
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Every item was denied and the caller can see the resources"
+          },
+          "404": {
+            "description": "Every item was denied and the caller cannot see the resources"
+          },
+          "507": {
+            "description": "Every item exceeded the destination drive's quota"
           }
         },
         "security": [
@@ -3627,10 +3791,19 @@
             "description": "Partial success"
           },
           "400": {
-            "description": "Bad request"
+            "description": "Malformed request, or every item failed for DIFFERENT reasons"
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Every item was denied and the caller can see the resources"
+          },
+          "404": {
+            "description": "Every item was denied and the caller cannot see the resources"
+          },
+          "507": {
+            "description": "Every item exceeded the destination drive's quota"
           }
         },
         "security": [
@@ -3665,10 +3838,19 @@
             "description": "Partial success"
           },
           "400": {
-            "description": "Bad request"
+            "description": "Malformed request, or every item failed for DIFFERENT reasons"
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Every item was denied and the caller can see the resources"
+          },
+          "404": {
+            "description": "Every item was denied and the caller cannot see the resources"
+          },
+          "507": {
+            "description": "Every item exceeded the destination drive's quota"
           }
         },
         "security": [
@@ -3703,10 +3885,19 @@
             "description": "Partial success"
           },
           "400": {
-            "description": "Bad request"
+            "description": "Malformed request, or every item failed for DIFFERENT reasons"
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Every item was denied and the caller can see the resources"
+          },
+          "404": {
+            "description": "Every item was denied and the caller cannot see the resources"
+          },
+          "507": {
+            "description": "Every item exceeded the destination drive's quota"
           }
         },
         "security": [
@@ -3741,10 +3932,19 @@
             "description": "Partial success"
           },
           "400": {
-            "description": "Bad request"
+            "description": "Malformed request, or every item failed for DIFFERENT reasons"
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Every item was denied and the caller can see the resources"
+          },
+          "404": {
+            "description": "Every item was denied and the caller cannot see the resources"
+          },
+          "507": {
+            "description": "Every item exceeded the destination drive's quota"
           }
         },
         "security": [
@@ -3779,10 +3979,19 @@
             "description": "Partial success"
           },
           "400": {
-            "description": "Bad request"
+            "description": "Malformed request, or every item failed for DIFFERENT reasons"
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Every item was denied and the caller can see the resources"
+          },
+          "404": {
+            "description": "Every item was denied and the caller cannot see the resources"
+          },
+          "507": {
+            "description": "Every item exceeded the destination drive's quota"
           }
         },
         "security": [
@@ -3817,10 +4026,19 @@
             "description": "Partial success"
           },
           "400": {
-            "description": "Bad request"
+            "description": "Malformed request, or every item failed for DIFFERENT reasons"
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Every item was denied and the caller can see the resources"
+          },
+          "404": {
+            "description": "Every item was denied and the caller cannot see the resources"
+          },
+          "507": {
+            "description": "Every item exceeded the destination drive's quota"
           }
         },
         "security": [
@@ -4888,6 +5106,7 @@
         "tags": [
           "files"
         ],
+        "description": "Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.",
         "operationId": "download_file",
         "parameters": [
           {
@@ -4945,7 +5164,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "share:read"
       },
       "delete": {
         "tags": [
@@ -5028,6 +5248,7 @@
         "tags": [
           "files"
         ],
+        "description": "Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.",
         "operationId": "get_file_metadata",
         "parameters": [
           {
@@ -5052,7 +5273,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "share:read"
       }
     },
     "/api/files/{id}/move": {
@@ -5155,6 +5377,7 @@
         "tags": [
           "files"
         ],
+        "description": "Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.",
         "operationId": "get_thumbnail",
         "parameters": [
           {
@@ -5194,7 +5417,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "share:read"
       },
       "put": {
         "tags": [
@@ -5315,6 +5539,7 @@
         "tags": [
           "folders"
         ],
+        "description": "Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.",
         "operationId": "get_folder",
         "parameters": [
           {
@@ -5346,7 +5571,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "share:read"
       },
       "delete": {
         "tags": [
@@ -5384,6 +5610,7 @@
         "tags": [
           "folders"
         ],
+        "description": "Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.",
         "operationId": "get_folder_ancestors",
         "parameters": [
           {
@@ -5415,7 +5642,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "share:read"
       }
     },
     "/api/folders/{id}/download": {
@@ -5423,6 +5651,7 @@
         "tags": [
           "folders"
         ],
+        "description": "Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.",
         "operationId": "download_folder_zip",
         "parameters": [
           {
@@ -5450,7 +5679,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "share:read"
       }
     },
     "/api/folders/{id}/move": {
@@ -5558,6 +5788,7 @@
         "tags": [
           "folders"
         ],
+        "description": "Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.",
         "operationId": "list_folder_resources",
         "parameters": [
           {
@@ -5645,7 +5876,8 @@
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-oxicloud-scope": "share:read"
       }
     },
     "/api/grants": {
@@ -7969,141 +8201,6 @@
         }
       }
     },
-    "/api/s/{token}/contents": {
-      "get": {
-        "tags": [
-          "shares"
-        ],
-        "operationId": "list_share_contents_root",
-        "parameters": [
-          {
-            "name": "token",
-            "in": "path",
-            "description": "Share token",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Folder contents (sub-folders + files)"
-          },
-          "400": {
-            "description": "Share is not a folder share"
-          },
-          "401": {
-            "description": "Password required"
-          },
-          "410": {
-            "description": "Share expired"
-          },
-          "503": {
-            "description": "Sharing disabled"
-          }
-        }
-      }
-    },
-    "/api/s/{token}/contents/{folder_id}": {
-      "get": {
-        "tags": [
-          "shares"
-        ],
-        "operationId": "list_share_contents_subfolder",
-        "parameters": [
-          {
-            "name": "token",
-            "in": "path",
-            "description": "Share token",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "folder_id",
-            "in": "path",
-            "description": "Subfolder ID (must be inside the share)",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Subfolder contents"
-          },
-          "400": {
-            "description": "Share is not a folder share"
-          },
-          "401": {
-            "description": "Password required"
-          },
-          "404": {
-            "description": "Subfolder not found or not in share scope"
-          },
-          "410": {
-            "description": "Share expired"
-          },
-          "503": {
-            "description": "Sharing disabled"
-          }
-        }
-      }
-    },
-    "/api/s/{token}/file/{file_id}": {
-      "get": {
-        "tags": [
-          "shares"
-        ],
-        "operationId": "download_share_file_in_folder",
-        "parameters": [
-          {
-            "name": "token",
-            "in": "path",
-            "description": "Share token",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "file_id",
-            "in": "path",
-            "description": "File ID (must be inside the share)",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "File content (or 206 for Range request)"
-          },
-          "206": {
-            "description": "Partial Content"
-          },
-          "304": {
-            "description": "Not Modified"
-          },
-          "401": {
-            "description": "Password required"
-          },
-          "404": {
-            "description": "File not found or not in share scope"
-          },
-          "410": {
-            "description": "Share expired"
-          },
-          "416": {
-            "description": "Range not satisfiable"
-          }
-        }
-      }
-    },
     "/api/s/{token}/verify": {
       "post": {
         "tags": [
@@ -8141,87 +8238,6 @@
           },
           "410": {
             "description": "Share expired"
-          }
-        }
-      }
-    },
-    "/api/s/{token}/zip": {
-      "get": {
-        "tags": [
-          "shares"
-        ],
-        "operationId": "download_share_zip_root",
-        "parameters": [
-          {
-            "name": "token",
-            "in": "path",
-            "description": "Share token",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "ZIP archive of the shared folder"
-          },
-          "400": {
-            "description": "Share is not a folder share"
-          },
-          "401": {
-            "description": "Password required"
-          },
-          "410": {
-            "description": "Share expired"
-          },
-          "503": {
-            "description": "Sharing or ZIP service disabled"
-          }
-        }
-      }
-    },
-    "/api/s/{token}/zip/{folder_id}": {
-      "get": {
-        "tags": [
-          "shares"
-        ],
-        "operationId": "download_share_zip_subfolder",
-        "parameters": [
-          {
-            "name": "token",
-            "in": "path",
-            "description": "Share token",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "folder_id",
-            "in": "path",
-            "description": "Subfolder ID (must be inside the share)",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "ZIP archive of the subfolder"
-          },
-          "401": {
-            "description": "Password required"
-          },
-          "404": {
-            "description": "Subfolder not found or not in share scope"
-          },
-          "410": {
-            "description": "Share expired"
-          },
-          "503": {
-            "description": "Sharing or ZIP service disabled"
           }
         }
       }
@@ -9263,44 +9279,6 @@
           }
         ]
       }
-    },
-    "/s/{token}/download": {
-      "get": {
-        "tags": [
-          "shares"
-        ],
-        "summary": "Download the actual file content for a shared file via its token.",
-        "description": "Validates the share token, checks it refers to a file (not folder),\nthen streams the file content to the caller.",
-        "operationId": "download_shared_file",
-        "parameters": [
-          {
-            "name": "token",
-            "in": "path",
-            "description": "Share token",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "File content stream"
-          },
-          "401": {
-            "description": "Password required"
-          },
-          "404": {
-            "description": "Share not found"
-          },
-          "410": {
-            "description": "Share expired"
-          },
-          "503": {
-            "description": "Sharing disabled"
-          }
-        }
-      }
     }
   },
   "components": {
@@ -9680,6 +9658,26 @@
           },
           "role": {
             "$ref": "#/components/schemas/RoleDto"
+          }
+        }
+      },
+      "AuthDto": {
+        "type": "object",
+        "description": "Auth block within [`ServerConfigDto`]. Non-privacy-implicating\ntunables the SPA needs at boot so form validation matches server\nenforcement.",
+        "required": [
+          "min_password_length",
+          "opaque_mode"
+        ],
+        "properties": {
+          "min_password_length": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Minimum password length (UTF-8 bytes). Mirrors\n`AuthConfig::min_password_length`, which every server-side\npassword-bearing endpoint uses. The SPA gates submit on the\nsame value so users see the failure instantly instead of\nafter a round-trip. See AtalayaLabs/OxiCloud#677.",
+            "minimum": 0
+          },
+          "opaque_mode": {
+            "type": "string",
+            "description": "OPAQUE deployment mode — one of `\"off\"`, `\"migrate\"`,\n`\"opaque_only\"`. Mirrors `AuthConfig::opaque.mode` (env\n`OXICLOUD_AUTH_OPAQUE_MODE`). Login already discovers this\nper-user via `POST /api/auth/opaque/login/lookup`; exposing\nthe server-wide mode here is for future consumers (admin\npanel status indicators, OPAQUE-native setup / register\nflows). Login callers should NOT branch on this value —\nkeep using the per-user lookup so mixed populations during\nmigration stay honest."
           }
         }
       },
@@ -13533,9 +13531,14 @@
         "required": [
           "version",
           "features",
+          "auth",
           "server_status"
         ],
         "properties": {
+          "auth": {
+            "$ref": "#/components/schemas/AuthDto",
+            "description": "Auth-related tunables the SPA needs to gate submit locally.\nComposes with `/api/auth/oidc/providers` — that endpoint lists\nfederation options; this one carries the numeric thresholds\n(password length today, more later) that the form has to check\nbefore firing the request."
+          },
           "features": {
             "$ref": "#/components/schemas/FeaturesDto",
             "description": "Feature flags — which subsystems the server has enabled.\nClients gate optional UI on these (e.g. hide the notification\nbell if `features.message_bus` is false, since the bell would\nhave no delivery channel)."
@@ -14117,6 +14120,19 @@
           "registration_allowed": {
             "type": "boolean",
             "description": "Whether self-registration is allowed."
+          }
+        }
+      },
+      "TransferOwnershipDto": {
+        "type": "object",
+        "description": "Request body for transferring server ownership.\n\nSeparate from [`UpdateUserRoleDto`] on purpose: ownership is not an\nassignable role. The generic role endpoint refuses `\"owner\"`, because\nconferring it there would create a second owner rather than move the\none that exists.",
+        "required": [
+          "new_owner_id"
+        ],
+        "properties": {
+          "new_owner_id": {
+            "type": "string",
+            "description": "The user who becomes the new owner. The caller — who must be the\ncurrent owner — is demoted to admin in the same transaction."
           }
         }
       },
