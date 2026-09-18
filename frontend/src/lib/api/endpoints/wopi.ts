@@ -46,6 +46,27 @@ export async function getSupportedExtensions(): Promise<string[]> {
 	return cachedExts;
 }
 
+/**
+ * What the configured editor actually advertises, or `null` when discovery
+ * answers with nothing — no WOPI client configured, or one that is down.
+ *
+ * `getSupportedExtensions()` hides that case behind [`FALLBACK_EXTS`], which is
+ * the right default for *opening* a file the user already has: offering the
+ * action and failing loudly beats hiding it because one probe timed out.
+ * Creating a document is the opposite call — there is no point offering to make
+ * a file nothing can open — so that path asks here instead.
+ */
+export async function advertisedExtensions(): Promise<string[] | null> {
+	try {
+		const res = await fetch(withBase('/wopi/supported-extensions'));
+		if (!res.ok) return null;
+		const exts = (await res.json()) as string[];
+		return Array.isArray(exts) && exts.length > 0 ? exts : null;
+	} catch {
+		return null;
+	}
+}
+
 export async function canEditWithWopi(filename: string): Promise<boolean> {
 	const ext = filename.split('.').pop()?.toLowerCase() ?? '';
 	return (await getSupportedExtensions()).includes(ext);

@@ -35,7 +35,11 @@ vi.mock('$lib/api/endpoints/deltaUpload', () => ({
 	tryDeltaUpload: vi.fn()
 }));
 vi.mock('$lib/api/endpoints/favorites', () => ({ addFavorite: vi.fn(), removeFavorite: vi.fn() }));
+const { wopi } = vi.hoisted(() => ({
+	wopi: { advertised: ['odt', 'ods', 'odp'] as string[] | null }
+}));
 vi.mock('$lib/api/endpoints/wopi', () => ({
+	advertisedExtensions: async () => wopi.advertised,
 	canEditWithWopi: () => false,
 	getEditorUrlWithFallback: vi.fn()
 }));
@@ -219,6 +223,28 @@ it('creates a new folder in the current directory', async () => {
 	await fireEvent.click(await screen.findByTestId('files-add-btn'));
 	await fireEvent.click(await screen.findByTestId('files-new-folder-btn'));
 	await waitFor(() => expect(createFolder).toHaveBeenCalledWith('Reports', 'home'));
+});
+
+it('offers only the document kinds the editor advertises', async () => {
+	withListing();
+	wopi.advertised = ['odt'];
+	render(FilesPage);
+	await fireEvent.click(await screen.findByTestId('files-add-btn'));
+	await screen.findByTestId('files-newdoc-odt-item');
+	expect(screen.queryByTestId('files-newdoc-ods-item')).toBeNull();
+	wopi.advertised = ['odt', 'ods', 'odp'];
+});
+
+// No WOPI client configured: creating a file nothing can open is worse than
+// not offering it. Folders and uploads stay.
+it('hides the document kinds when no editor is configured', async () => {
+	withListing();
+	wopi.advertised = null;
+	render(FilesPage);
+	await fireEvent.click(await screen.findByTestId('files-add-btn'));
+	await screen.findByTestId('files-new-folder-btn');
+	expect(screen.queryByTestId('files-newdoc-odt-item')).toBeNull();
+	wopi.advertised = ['odt', 'ods', 'odp'];
 });
 
 it('creates a new text document from the bundled blank template', async () => {
