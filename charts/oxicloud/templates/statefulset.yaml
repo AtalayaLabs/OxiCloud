@@ -37,13 +37,18 @@ spec:
           volumeMounts:
             - name: storage-data
               mountPath: {{ .Values.persistence.mountPath | default "/app/storage" }}
-      {{- if not .Values.persistence.enabled }}
+      {{- if and .Values.persistence.enabled .Values.persistence.existingClaim }}
+      volumes:
+        - name: storage-data
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim }}
+      {{- else if not .Values.persistence.enabled }}
       volumes:
         - name: storage-data
           emptyDir: {}
       {{- end }}
 
-  {{- if .Values.persistence.enabled }}
+  {{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
   volumeClaimTemplates:
     - metadata:
         name: storage-data
