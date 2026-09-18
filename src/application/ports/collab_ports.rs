@@ -92,11 +92,7 @@ pub trait DocSessionRepository: Send + Sync + 'static {
     /// Stamp `last_flushed_content_hash` + `last_flushed_at` after a
     /// successful blob write. Elides on the flush path when the CRDT
     /// text hash matches the stamped value (no-op flush).
-    async fn record_flush(
-        &self,
-        file_id: Uuid,
-        content_hash: &str,
-    ) -> Result<(), DomainError>;
+    async fn record_flush(&self, file_id: Uuid, content_hash: &str) -> Result<(), DomainError>;
 
     /// Remove the row for `file_id`. Called by idle-GC after a final
     /// flush, and by the file-delete cascade path (though the FK's
@@ -119,11 +115,7 @@ pub trait DocSessionRepository: Send + Sync + 'static {
 #[cfg_attr(feature = "test_utils", mockall::automock)]
 #[async_trait]
 pub trait DocContentReader: Send + Sync + 'static {
-    async fn read_content(
-        &self,
-        caller_id: Uuid,
-        file_id: Uuid,
-    ) -> Result<Vec<u8>, DomainError>;
+    async fn read_content(&self, caller_id: Uuid, file_id: Uuid) -> Result<Vec<u8>, DomainError>;
 }
 
 /// Writes the current CRDT text back to the file blob on debounced
