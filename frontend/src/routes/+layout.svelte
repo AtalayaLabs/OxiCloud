@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { appPath } from '$lib/utils/appPath';
 	import { goto } from '$app/navigation';
-	import { base, resolve } from '$app/paths';
+	import { resolve } from '$app/paths';
 	import type { Pathname } from '$app/types';
 	import { page, updated } from '$app/state';
 	import { onMount } from 'svelte';
@@ -117,18 +117,9 @@
 		// `.ready` resolves in ~1ms — the wait is a one-shot cost per
 		// browser profile.
 		if ('serviceWorker' in navigator) {
-			// `scope: base || '/'` — the app's home URL is the BARE base
-			// (`/oxicloud`, no trailing slash), which falls OUTSIDE the
-			// default scope derived from the script URL (`/oxicloud/`).
-			// An out-of-scope document never matches the registration, so
-			// `navigator.serviceWorker.ready` below would never settle
-			// and the boot splash would spin forever. The server sends
-			// `Service-Worker-Allowed: {base}` on the script response to
-			// authorize the widened scope (no-op at the root, where the
-			// scope is '/' either way).
-			void navigator.serviceWorker
-				.register(`${base}/service-worker.js`, { type: 'module', scope: base || '/' })
-				.catch((err) => console.debug('DPoP service worker registration failed', err));
+			// Registration itself happens in `hooks.client.ts`, before the
+			// first route renders — see the note there on why the timing
+			// matters for the reload below.
 			try {
 				await navigator.serviceWorker.ready;
 			} catch {

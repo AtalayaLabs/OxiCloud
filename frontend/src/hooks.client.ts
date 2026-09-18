@@ -72,6 +72,22 @@ declare global {
 
 export async function init(): Promise<void> {
 	if (typeof window !== 'undefined') {
+		// Register the DPoP service worker as the very first thing the client
+		// does. The root layout waits for `navigator.serviceWorker.ready` and
+		// reloads once when the page landed uncontrolled — register any later
+		// (from `onMount`, say) and that reload arrives after the login form is
+		// already usable, wiping whatever the user has typed.
+		//
+		// `scope: base || '/'`: the app's home URL is the BARE base path
+		// (`/oxicloud`, no trailing slash), which falls outside the scope
+		// derived from the script URL (`/oxicloud/`). The server authorizes the
+		// widened scope with `Service-Worker-Allowed` on the script response.
+		if ('serviceWorker' in navigator) {
+			void navigator.serviceWorker
+				.register(`${base}/service-worker.js`, { type: 'module', scope: base || '/' })
+				.catch((err) => log.debug('DPoP service worker registration failed', err));
+		}
+
 		const helpers = {
 			log,
 			// Return a confirmation string so the DevTools echo is a
