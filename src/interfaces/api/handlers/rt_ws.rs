@@ -678,6 +678,7 @@ async fn handle_subscribe(
         AuthzCheck::ResourceRead { resource } => {
             let domain_resource = match resource {
                 BusResource::Folder(uuid) => Resource::Folder(uuid),
+                BusResource::File(uuid) => Resource::File(uuid),
             };
             if state
                 .authorization
