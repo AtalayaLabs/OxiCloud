@@ -142,7 +142,9 @@ impl DocSessionRepository for CollabDocSessionPgRepository {
             .bind(file_id)
             .execute(self.pool())
             .await
-            .map_err(|e| DomainError::internal_error("CollabDocSessionPg", format!("delete: {e}")))?;
+            .map_err(|e| {
+                DomainError::internal_error("CollabDocSessionPg", format!("delete: {e}"))
+            })?;
 
         Ok(())
     }

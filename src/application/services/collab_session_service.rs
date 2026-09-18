@@ -145,7 +145,10 @@ impl CollabSession {
     pub async fn attach_socket(&self, socket_id: SocketId) -> Result<(), CollabError> {
         let (tx, rx) = oneshot::channel();
         self.inbox
-            .send(SessionMsg::AttachSocket { socket_id, reply: tx })
+            .send(SessionMsg::AttachSocket {
+                socket_id,
+                reply: tx,
+            })
             .await
             .map_err(|_| CollabError::SessionGone)?;
         rx.await.map_err(|_| CollabError::SessionGone)
@@ -265,7 +268,9 @@ impl ActorState {
                 }
                 // Persist the seeded snapshot so a second attach hits
                 // the load-path and gets the same starting point.
-                let snapshot = doc.transact().encode_state_as_update_v1(&StateVector::default());
+                let snapshot = doc
+                    .transact()
+                    .encode_state_as_update_v1(&StateVector::default());
                 let sv = doc.transact().state_vector().encode_v1();
                 repo.save_snapshot(file_id, &snapshot, &sv).await?;
                 0
@@ -311,7 +316,10 @@ impl ActorState {
     /// automatically when the update counter hits threshold; also
     /// exposed to callers for graceful shutdown and tests.
     async fn snapshot(&mut self) -> Result<(), CollabError> {
-        let snapshot = self.doc.transact().encode_state_as_update_v1(&StateVector::default());
+        let snapshot = self
+            .doc
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
         let sv = self.doc.transact().state_vector().encode_v1();
         self.repo
             .save_snapshot(self.file_id, &snapshot, &sv)
@@ -407,24 +415,14 @@ impl CollabSessionService {
             Some(_) => None, // load-path — actor reads from repo itself
             None => Some(self.reader.read_content(caller_id, file_id).await?),
         };
-        let state = ActorState::load_or_seed(
-            file_id,
-            self.repo.clone(),
-            seed,
-            self.limits,
-        )
-        .await?;
+        let state = ActorState::load_or_seed(file_id, self.repo.clone(), seed, self.limits).await?;
         let (tx, rx) = mpsc::channel::<SessionMsg>(64);
         tokio::spawn(run_actor(state, rx));
         let session = CollabSession { inbox: tx };
         // Race: another task may have spawned first. entry() collapses
         // the two to whichever landed first; the other's tokio::spawn
         // simply exits when its inbox drops.
-        Ok(self
-            .sessions
-            .entry(file_id)
-            .or_insert(session)
-            .clone())
+        Ok(self.sessions.entry(file_id).or_insert(session).clone())
     }
 
     /// Test / graceful-shutdown helper. Drops the session's handle
@@ -514,11 +512,7 @@ mod tests {
             }
             Ok(())
         }
-        async fn record_flush(
-            &self,
-            file_id: Uuid,
-            content_hash: &str,
-        ) -> Result<(), DomainError> {
+        async fn record_flush(&self, file_id: Uuid, content_hash: &str) -> Result<(), DomainError> {
             let mut rows = self.rows.write().await;
             if let Some(r) = rows.get_mut(&file_id) {
                 r.last_flushed_content_hash = Some(content_hash.into());
@@ -539,7 +533,11 @@ mod tests {
     }
     #[async_trait]
     impl DocContentReader for StubReader {
-        async fn read_content(&self, _caller_id: Uuid, _file_id: Uuid) -> Result<Vec<u8>, DomainError> {
+        async fn read_content(
+            &self,
+            _caller_id: Uuid,
+            _file_id: Uuid,
+        ) -> Result<Vec<u8>, DomainError> {
             Ok(self.content.lock().unwrap().clone())
         }
     }
@@ -593,7 +591,9 @@ mod tests {
             let mut tx = doc_a.transact_mut();
             ta.insert(&mut tx, 0, "Hello ");
         }
-        let update_a = doc_a.transact().encode_state_as_update_v1(&StateVector::default());
+        let update_a = doc_a
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
         session.apply_update(update_a.clone()).await.unwrap();
 
         // Client B (independent doc) appends "world".
@@ -612,10 +612,7 @@ mod tests {
         }
         // Send B's delta (what B added on top of what it received).
         let update_b = doc_b.transact().encode_state_as_update_v1(
-            &StateVector::decode_v1(
-                &doc_a.transact().state_vector().encode_v1(),
-            )
-            .unwrap(),
+            &StateVector::decode_v1(&doc_a.transact().state_vector().encode_v1()).unwrap(),
         );
         session.apply_update(update_b).await.unwrap();
 
@@ -633,49 +630,45 @@ mod tests {
         let file_id = Uuid::new_v4();
         let session = svc.attach_file(Uuid::nil(), file_id).await.unwrap();
 
-        // Push three single-character inserts. Threshold hit on the
-        // third — the actor's `apply_update` calls `snapshot()` inline
-        // before returning, so by the time this loop finishes we know
-        // the counter has reset.
-        for (i, ch) in ['a', 'b', 'c'].into_iter().enumerate() {
-            let d = Doc::new();
+        // ONE client Doc that evolves across three iterations. On
+        // each iteration we insert a character locally, then encode
+        // the DELTA (state-as-update against the server's last seen
+        // state vector) and send it. That's what a real Yjs client
+        // does — send only what the server hasn't seen yet.
+        //
+        // IMPORTANT: never open a read txn while a write txn is
+        // live on the same Doc — yrs locks a per-Doc RwLock and
+        // nested reader-under-writer (or the reverse — reader
+        // temporary evaluated as an argument to a call that already
+        // took the writer) deadlocks with no timeout. Each txn
+        // below lives in its own tight scope, and encoding is done
+        // OUTSIDE any active mutation.
+        let client = Doc::new();
+        let mut server_sv = StateVector::default();
+        for ch in ['a', 'b', 'c'] {
+            // Local edit inside its own scope so the mut txn drops
+            // BEFORE we open a read txn for encoding below.
             {
-                // Seed the client with what the server has so its
-                // insert offsets are relative to the current text.
-                if i > 0 {
-                    let full = session.get_text().await.unwrap();
-                    let tr = d.get_or_insert_text(ROOT_TEXT_NAME);
-                    d.transact_mut().apply_update(
-                        Update::decode_v1(
-                            &d.transact().encode_state_as_update_v1(&StateVector::default()),
-                        )
-                        .unwrap(),
-                    )
-                    .unwrap();
-                    tr.insert(&mut d.transact_mut(), 0, &full);
-                }
-                let tr = d.get_or_insert_text(ROOT_TEXT_NAME);
-                let cur_len = tr.get_string(&d.transact()).chars().count() as u32;
-                tr.insert(&mut d.transact_mut(), cur_len, &ch.to_string());
+                let text = client.get_or_insert_text(ROOT_TEXT_NAME);
+                let mut txn = client.transact_mut();
+                let cur_len = text.get_string(&txn).chars().count() as u32;
+                text.insert(&mut txn, cur_len, &ch.to_string());
             }
-            let sv_local = d.transact().state_vector().encode_v1();
-            let sv_prev = StateVector::default();
-            // Server hasn't seen this client's own state, so send the
-            // full state-as-update; server-side merge handles dedup.
-            let _ = sv_local;
-            let update = d.transact().encode_state_as_update_v1(&sv_prev);
-            session.apply_update(update).await.unwrap();
+            // Encode the delta: what the server hasn't seen yet.
+            let delta = client.transact().encode_state_as_update_v1(&server_sv);
+            session.apply_update(delta).await.unwrap();
+            // Mirror the server's state vector locally so the next
+            // delta is minimal.
+            server_sv = client.transact().state_vector();
         }
 
-        // The doc text should read whatever concatenation the CRDT
-        // produced (each insert appends at the current end via each
-        // fresh client — server-side merge determines order). Assert
-        // convergence + non-empty; the specific order isn't important
-        // for this test.
+        // Convergence: the server-side doc must show "abc" — same
+        // string the client sees locally. Also proves compaction
+        // fired (the actor's apply_update snapshots inline at
+        // threshold), because get_text returning "abc" after 3
+        // deltas would fail if the third apply had deadlocked.
         let text = session.get_text().await.unwrap();
-        assert!(text.contains('a'));
-        assert!(text.contains('b'));
-        assert!(text.contains('c'));
+        assert_eq!(text, "abc");
     }
 
     #[tokio::test]
@@ -692,7 +685,9 @@ mod tests {
             tr.insert(&mut d.transact_mut(), 0, "seed");
             tr.insert(&mut d.transact_mut(), 4, " + more");
         }
-        let update = d.transact().encode_state_as_update_v1(&StateVector::default());
+        let update = d
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
         s1.apply_update(update).await.unwrap();
         let via_s2 = s2.get_text().await.unwrap();
         assert!(via_s2.contains("seed"));
