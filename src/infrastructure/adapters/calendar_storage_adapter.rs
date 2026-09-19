@@ -1,7 +1,8 @@
 //! Calendar Storage Adapter
 //!
 //! This adapter implements the `CalendarStoragePort` application port using
-//! the `CalendarRepository` and `CalendarEventRepository` domain repositories.
+//! the `CalendarRepository`, `CalendarEventRepository` and
+//! `CalendarTodoRepository` domain repositories.
 //! It bridges the gap between the application layer and the infrastructure layer.
 
 use chrono::{DateTime, Utc};
@@ -10,22 +11,26 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::application::dtos::calendar_dto::{
-    CalendarDto, CalendarEventDto, CreateCalendarDto, CreateEventDto, CreateEventICalDto,
-    UpdateCalendarDto, UpdateEventDto,
+    CalendarDto, CalendarEventDto, CalendarTodoDto, CreateCalendarDto, CreateEventDto,
+    CreateEventICalDto, UpdateCalendarDto, UpdateEventDto,
 };
-use crate::application::ports::calendar_ports::{CalendarStoragePort, UpsertEventsResult};
+use crate::application::ports::calendar_ports::{CalendarStoragePort, UpsertObjectsResult};
 use crate::common::errors::{DomainError, ErrorKind};
 use crate::domain::entities::calendar::Calendar;
 use crate::domain::entities::calendar_event::CalendarEvent;
+use crate::domain::entities::calendar_todo::CalendarTodo;
 use crate::domain::repositories::calendar_event_repository::CalendarEventRepository;
 use crate::domain::repositories::calendar_repository::CalendarRepository;
+use crate::domain::repositories::calendar_todo_repository::CalendarTodoRepository;
 use crate::infrastructure::repositories::pg::CalendarEventPgRepository;
 use crate::infrastructure::repositories::pg::CalendarPgRepository;
+use crate::infrastructure::repositories::pg::CalendarTodoPgRepository;
 
 /// Adapter that implements CalendarStoragePort using domain repositories
 pub struct CalendarStorageAdapter {
     calendar_repository: Arc<CalendarPgRepository>,
     event_repository: Arc<CalendarEventPgRepository>,
+    todo_repository: Arc<CalendarTodoPgRepository>,
 }
 
 impl CalendarStorageAdapter {
@@ -33,10 +38,12 @@ impl CalendarStorageAdapter {
     pub fn new(
         calendar_repository: Arc<CalendarPgRepository>,
         event_repository: Arc<CalendarEventPgRepository>,
+        todo_repository: Arc<CalendarTodoPgRepository>,
     ) -> Self {
         Self {
             calendar_repository,
             event_repository,
+            todo_repository,
         }
     }
 
@@ -101,9 +108,13 @@ impl CalendarStoragePort for CalendarStorageAdapter {
             )
         })?;
 
-        // First delete all events in the calendar
+        // First delete all events and todos in the calendar (the FK
+        // cascade on `caldav.calendars` is the backstop).
         self.event_repository
             .delete_all_events_in_calendar(&uuid)
+            .await?;
+        self.todo_repository
+            .delete_all_todos_in_calendar(&uuid)
             .await?;
 
         // Then delete the calendar itself
@@ -275,10 +286,10 @@ impl CalendarStoragePort for CalendarStorageAdapter {
         Ok(CalendarEventDto::from(created))
     }
 
-    async fn upsert_ical_events(
+    async fn upsert_ical_objects(
         &self,
         dto: CreateEventICalDto,
-    ) -> Result<UpsertEventsResult, DomainError> {
+    ) -> Result<UpsertObjectsResult, DomainError> {
         let calendar_id = Uuid::parse_str(&dto.calendar_id).map_err(|_| {
             DomainError::new(
                 ErrorKind::InvalidInput,
@@ -287,21 +298,41 @@ impl CalendarStoragePort for CalendarStorageAdapter {
             )
         })?;
 
-        // Verify calendar exists before touching the events table.
+        // Verify calendar exists before touching the object tables.
         let _calendar = self
             .calendar_repository
             .find_calendar_by_id(&calendar_id)
             .await?;
 
-        // Split the body into one CalendarEvent per VEVENT. A body
-        // with zero VEVENTs (or only VTODOs / VJOURNALs) returns
-        // InvalidInput here — which the handler layer maps to 400.
-        let parsed = CalendarEvent::parse_all_events(calendar_id, &dto.ical_data)?;
+        // ONE raw-text split for the whole body: VTIMEZONEs ride
+        // along into every stored row's shell (#689), VEVENTs and
+        // VTODOs route to their own tables (#754). A body carrying
+        // neither (or only VJOURNAL/VFREEBUSY) is a 400.
+        let components = CalendarEvent::split_components(&dto.ical_data);
+        if components.vevents.is_empty() && components.vtodos.is_empty() {
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "CalendarObject",
+                "No VEVENT or VTODO components found in iCalendar body",
+            ));
+        }
 
-        let mut out = Vec::with_capacity(parsed.len());
+        let parsed_events = if components.vevents.is_empty() {
+            Vec::new()
+        } else {
+            CalendarEvent::parse_events_from_components(calendar_id, &components)?
+        };
+        let parsed_todos = if components.vtodos.is_empty() {
+            Vec::new()
+        } else {
+            CalendarTodo::parse_from_components(calendar_id, &components)?
+        };
+
+        let mut events = Vec::with_capacity(parsed_events.len());
+        let mut todos = Vec::with_capacity(parsed_todos.len());
         let mut any_inserted = false;
 
-        for event in parsed {
+        for event in parsed_events {
             let ical_uid = event.ical_uid().to_string();
 
             // Existing row lookup routes on the master/exception split.
@@ -333,11 +364,40 @@ impl CalendarStoragePort for CalendarStorageAdapter {
             }
 
             let created = self.event_repository.create_event(event).await?;
-            out.push(CalendarEventDto::from(created));
+            events.push(CalendarEventDto::from(created));
         }
 
-        Ok(UpsertEventsResult {
-            events: out,
+        for todo in parsed_todos {
+            let ical_uid = todo.ical_uid().to_string();
+
+            // Same master/exception routing as events — recurring
+            // tasks override single occurrences via RECURRENCE-ID.
+            let existing = match todo.recurrence_id().copied() {
+                Some(rid) => {
+                    self.todo_repository
+                        .find_todo_by_ical_uid_and_recurrence_id(&calendar_id, &ical_uid, &rid)
+                        .await?
+                }
+                None => {
+                    self.todo_repository
+                        .find_todo_by_ical_uid(&calendar_id, &ical_uid)
+                        .await?
+                }
+            };
+
+            if let Some(existing_todo) = existing {
+                self.todo_repository.delete_todo(existing_todo.id()).await?;
+            } else {
+                any_inserted = true;
+            }
+
+            let created = self.todo_repository.create_todo(todo).await?;
+            todos.push(CalendarTodoDto::from(created));
+        }
+
+        Ok(UpsertObjectsResult {
+            events,
+            todos,
             any_inserted,
         })
     }
@@ -531,6 +591,113 @@ impl CalendarStoragePort for CalendarStorageAdapter {
             .get_events_in_time_range(&uuid, start, end)
             .await?;
         Ok(events.into_iter().map(CalendarEventDto::from).collect())
+    }
+
+    // ─── Todo (VTODO) operations — #754 ──────────────────────────
+
+    async fn find_todo_by_ical_uid(
+        &self,
+        calendar_id: &str,
+        ical_uid: &str,
+    ) -> Result<Option<CalendarTodoDto>, DomainError> {
+        let uuid = Uuid::parse_str(calendar_id).map_err(|_| {
+            DomainError::new(
+                ErrorKind::InvalidInput,
+                "Calendar",
+                "Invalid calendar ID format",
+            )
+        })?;
+
+        let todo = self
+            .todo_repository
+            .find_todo_by_ical_uid(&uuid, ical_uid)
+            .await?;
+        Ok(todo.map(CalendarTodoDto::from))
+    }
+
+    async fn find_todos_by_ical_uids(
+        &self,
+        calendar_id: &str,
+        ical_uids: &[String],
+    ) -> Result<Vec<CalendarTodoDto>, DomainError> {
+        let uuid = Uuid::parse_str(calendar_id).map_err(|_| {
+            DomainError::new(
+                ErrorKind::InvalidInput,
+                "Calendar",
+                "Invalid calendar ID format",
+            )
+        })?;
+
+        let todos = self
+            .todo_repository
+            .find_todos_by_ical_uids(&uuid, ical_uids)
+            .await?;
+        Ok(todos.into_iter().map(CalendarTodoDto::from).collect())
+    }
+
+    async fn get_todos_in_time_range(
+        &self,
+        calendar_id: &str,
+        start: &DateTime<Utc>,
+        end: &DateTime<Utc>,
+    ) -> Result<Vec<CalendarTodoDto>, DomainError> {
+        let uuid = Uuid::parse_str(calendar_id).map_err(|_| {
+            DomainError::new(
+                ErrorKind::InvalidInput,
+                "Calendar",
+                "Invalid calendar ID format",
+            )
+        })?;
+
+        let todos = self
+            .todo_repository
+            .get_todos_in_time_range(&uuid, start, end)
+            .await?;
+        Ok(todos.into_iter().map(CalendarTodoDto::from).collect())
+    }
+
+    fn stream_todos_uid_order(
+        &self,
+        calendar_id: &str,
+    ) -> futures::stream::BoxStream<'static, Result<CalendarTodoDto, DomainError>> {
+        use futures::StreamExt;
+        let uuid = match Uuid::parse_str(calendar_id) {
+            Ok(u) => u,
+            Err(_) => {
+                return Box::pin(futures::stream::once(async {
+                    Err(DomainError::new(
+                        ErrorKind::InvalidInput,
+                        "Calendar",
+                        "Invalid calendar ID format",
+                    ))
+                }));
+            }
+        };
+        Box::pin(
+            self.todo_repository
+                .stream_todos_uid_order(uuid)
+                .map(|r| r.map(CalendarTodoDto::from)),
+        )
+    }
+
+    async fn delete_todo(&self, todo_id: &str) -> Result<(), DomainError> {
+        let uuid = Uuid::parse_str(todo_id).map_err(|_| {
+            DomainError::new(ErrorKind::InvalidInput, "Todo", "Invalid todo ID format")
+        })?;
+
+        self.todo_repository.delete_todo(&uuid).await
+    }
+
+    async fn calendar_id_for_todo(&self, todo_id: &str) -> Result<String, DomainError> {
+        let uuid = Uuid::parse_str(todo_id).map_err(|_| {
+            DomainError::new(ErrorKind::InvalidInput, "Todo", "Invalid todo ID format")
+        })?;
+
+        let calendar_id = self
+            .todo_repository
+            .find_calendar_id_by_todo_id(&uuid)
+            .await?;
+        Ok(calendar_id.to_string())
     }
 }
 

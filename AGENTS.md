@@ -136,7 +136,7 @@ Hexagonal / Clean Architecture with four layers. Dependencies point inward only.
 
 ### Layer structure (`src/`)
 
-- **`domain/`** — Core business entities (`entities/`) and repository trait definitions (`repositories/`). Pure Rust, no framework dependencies. Entity types: `File`, `Folder`, `User`, `Calendar`, `CalendarEvent`, `Contact`, `Share`, `TrashedItem`, `Session`, `DeviceCode`, `AppPassword`.
+- **`domain/`** — Core business entities (`entities/`) and repository trait definitions (`repositories/`). Pure Rust, no framework dependencies. Entity types: `File`, `Folder`, `User`, `Calendar`, `CalendarEvent`, `CalendarTodo`, `Contact`, `Share`, `TrashedItem`, `Session`, `DeviceCode`, `AppPassword`.
 
 - **`application/`** — Use cases and orchestration.
   - `ports/` — Trait definitions (inbound/outbound) for storage, auth, caching, compression, dedup, thumbnails, chunked uploads, CalDAV/CardDAV, etc. This is the hexagonal "ports" layer.
@@ -179,7 +179,7 @@ Hexagonal / Clean Architecture with four layers. Dependencies point inward only.
 
 - `auth` schema: `users`, `sessions`, `app_passwords`, `device_codes`, `admin_settings`
 - `storage` schema: `folders`, `file_metadata`, `file_blobs`, `trash`, `shares`, `favorites`, `recent_items`, `nextcloud_object_ids`
-- `caldav` schema: `calendars`, `calendar_events`
+- `caldav` schema: `calendars`, `calendar_events` (VEVENT), `calendar_todos` (VTODO — both object kinds share the calendar collection; `ical_data` blob is authoritative, columns are the filter index)
 - `carddav` schema: `address_books`, `contacts`, `contact_groups`, `contact_group_members`
 
 Schema definition: `migrations/` (sqlx migrations, applied on startup)

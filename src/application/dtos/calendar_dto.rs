@@ -1,5 +1,6 @@
 use crate::domain::entities::calendar::Calendar;
 use crate::domain::entities::calendar_event::CalendarEvent;
+use crate::domain::entities::calendar_todo::CalendarTodo;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -165,6 +166,72 @@ impl From<CalendarEvent> for CalendarEventDto {
 pub struct CreateEventICalDto {
     pub calendar_id: String,
     pub ical_data: String,
+}
+
+/// DTO for calendar todo (VTODO) data transfer (#754).
+///
+/// Structured fields mirror the `caldav.calendar_todos` columns — the
+/// server-side filter index. `ical_data` is authoritative and served
+/// verbatim by the CalDAV emitters, so every VTODO property
+/// (CATEGORIES, CLASS, RELATED-TO, X-*, VALARM, …) round-trips
+/// byte-exact whether or not it has a field here.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CalendarTodoDto {
+    pub id: String,
+    pub calendar_id: String,
+    /// OPTIONAL on a VTODO (RFC 5545 §3.6.2) — unlike events.
+    pub summary: Option<String>,
+    pub description: Option<String>,
+    pub location: Option<String>,
+    /// NEEDS-ACTION / IN-PROCESS / COMPLETED / CANCELLED / extension
+    pub status: Option<String>,
+    /// 0..100
+    pub percent_complete: Option<i16>,
+    /// 0..9
+    pub priority: Option<i16>,
+    pub start_time: Option<DateTime<Utc>>,
+    pub due_time: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub all_day: bool,
+    pub rrule: Option<String>,
+    pub ical_uid: String,
+    /// RFC 5545 §3.8.4.4 RECURRENCE-ID — same master/exception model
+    /// as events.
+    pub recurrence_id: Option<DateTime<Utc>>,
+    /// Full stored iCalendar body for this row — one VCALENDAR with
+    /// exactly one VTODO (+ embedded VTIMEZONEs, #689). Served
+    /// verbatim; never regenerated from the other fields.
+    pub ical_data: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<CalendarTodo> for CalendarTodoDto {
+    fn from(todo: CalendarTodo) -> Self {
+        // Move every owned field out of the consumed entity — same
+        // `into_parts` pattern as CalendarEventDto.
+        let parts = todo.into_parts();
+        Self {
+            id: parts.id.to_string(),
+            calendar_id: parts.calendar_id.to_string(),
+            summary: parts.summary,
+            description: parts.description,
+            location: parts.location,
+            status: parts.status,
+            percent_complete: parts.percent_complete,
+            priority: parts.priority,
+            start_time: parts.start_time,
+            due_time: parts.due_time,
+            completed_at: parts.completed_at,
+            all_day: parts.all_day,
+            rrule: parts.rrule,
+            ical_uid: parts.ical_uid,
+            recurrence_id: parts.recurrence_id,
+            ical_data: parts.ical_data,
+            created_at: parts.created_at,
+            updated_at: parts.updated_at,
+        }
+    }
 }
 
 /// DTO for calendar event creation with structured data
