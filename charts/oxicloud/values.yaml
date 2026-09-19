@@ -36,6 +36,12 @@ persistence:
   # or use existing pvc
   # existingClaim: claim-name
 
+secrets:
+  # If you don't set `wopi.collabora.admin.password`, you may want to store the wopi admin password in this secret in OXICLOUD_JWT_SECRET key.
+  existingSecret: ""
+  # Set jwt for the instance.
+  jwtSecret: ""
+
 wopi:
   enabled: true
   collabora:
@@ -48,6 +54,7 @@ wopi:
       port: 9980
     admin:
       username: admin
+      #password: "StrongPassword"
     # In production behind an ingress, you'd likely enable SSL termination.
     extraParams: "--o:ssl.enable=false --o:ssl.termination=false --o:net.frame_ancestors=http://* https://*"
 
