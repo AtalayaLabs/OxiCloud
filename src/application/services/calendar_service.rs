@@ -4,12 +4,12 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::application::dtos::calendar_dto::{
-    CalendarDto, CalendarEventDto, CreateCalendarDto, CreateEventDto, CreateEventICalDto,
-    UpdateCalendarDto, UpdateEventDto,
+    CalendarDto, CalendarEventDto, CalendarTodoDto, CreateCalendarDto, CreateEventDto,
+    CreateEventICalDto, UpdateCalendarDto, UpdateEventDto,
 };
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::calendar_ports::{
-    CalendarStoragePort, CalendarUseCase, UpsertEventsResult,
+    CalendarStoragePort, CalendarUseCase, UpsertObjectsResult,
 };
 use crate::common::errors::{DomainError, ErrorKind};
 use crate::domain::services::authorization::{Permission, Resource, Role, Subject};
@@ -232,19 +232,19 @@ impl CalendarUseCase for CalendarService {
         self.calendar_storage.create_event_from_ical(event).await
     }
 
-    async fn upsert_ical_events(
+    async fn upsert_ical_objects(
         &self,
         event: CreateEventICalDto,
         user_id: Uuid,
-    ) -> Result<UpsertEventsResult, DomainError> {
+    ) -> Result<UpsertObjectsResult, DomainError> {
         // Same gate as create_event_from_ical — a PUT to the collection
         // is a write. `Permission::Create` matches the single-event
-        // path; per-instance exception updates ride on the same
-        // permission because from the ACL's perspective it's still
-        // a write to the calendar.
+        // path; per-instance exception updates and VTODO fan-out (#754)
+        // ride on the same permission because from the ACL's
+        // perspective it's still a write to the calendar.
         self.require_calendar_perm(&event.calendar_id, user_id, Permission::Create)
             .await?;
-        self.calendar_storage.upsert_ical_events(event).await
+        self.calendar_storage.upsert_ical_objects(event).await
     }
 
     async fn update_event(
@@ -404,6 +404,100 @@ impl CalendarUseCase for CalendarService {
         self.calendar_storage
             .get_events_in_time_range(calendar_id, &start, &end)
             .await
+    }
+
+    // ─── Todo (VTODO) operations — #754 ──────────────────────────
+    // Same authz patterns as the event methods: public-calendar bypass
+    // or `Permission::Read` on reads, `Permission::Delete` on deletes.
+
+    async fn get_todo_by_ical_uid(
+        &self,
+        calendar_id: &str,
+        ical_uid: &str,
+        user_id: Uuid,
+    ) -> Result<Option<CalendarTodoDto>, DomainError> {
+        let calendar = self.calendar_storage.get_calendar(calendar_id).await?;
+        let allowed = calendar.is_public
+            || self
+                .has_calendar_perm(calendar_id, user_id, Permission::Read)
+                .await?;
+        if !allowed {
+            return Err(DomainError::not_found("Calendar", calendar_id));
+        }
+        self.calendar_storage
+            .find_todo_by_ical_uid(calendar_id, ical_uid)
+            .await
+    }
+
+    async fn get_todos_by_ical_uids(
+        &self,
+        calendar_id: &str,
+        ical_uids: &[String],
+        user_id: Uuid,
+    ) -> Result<Vec<CalendarTodoDto>, DomainError> {
+        let calendar = self.calendar_storage.get_calendar(calendar_id).await?;
+        let allowed = calendar.is_public
+            || self
+                .has_calendar_perm(calendar_id, user_id, Permission::Read)
+                .await?;
+        if !allowed {
+            return Err(DomainError::not_found("Calendar", calendar_id));
+        }
+        if ical_uids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.calendar_storage
+            .find_todos_by_ical_uids(calendar_id, ical_uids)
+            .await
+    }
+
+    async fn get_todos_in_range(
+        &self,
+        calendar_id: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        user_id: Uuid,
+    ) -> Result<Vec<CalendarTodoDto>, DomainError> {
+        let calendar = self.calendar_storage.get_calendar(calendar_id).await?;
+        let allowed = calendar.is_public
+            || self
+                .has_calendar_perm(calendar_id, user_id, Permission::Read)
+                .await?;
+        if !allowed {
+            return Err(DomainError::not_found("Calendar", calendar_id));
+        }
+        self.calendar_storage
+            .get_todos_in_time_range(calendar_id, &start, &end)
+            .await
+    }
+
+    async fn stream_todos_uid_order(
+        &self,
+        calendar_id: &str,
+        user_id: Uuid,
+    ) -> Result<
+        futures::stream::BoxStream<'static, Result<CalendarTodoDto, DomainError>>,
+        DomainError,
+    > {
+        // Same Read gate as `get_todos_in_range`, checked ONCE before
+        // the cursor opens — the stream itself carries no further
+        // authz (single request, same caller, same resource).
+        let calendar = self.calendar_storage.get_calendar(calendar_id).await?;
+        let allowed = calendar.is_public
+            || self
+                .has_calendar_perm(calendar_id, user_id, Permission::Read)
+                .await?;
+        if !allowed {
+            return Err(DomainError::not_found("Calendar", calendar_id));
+        }
+        Ok(self.calendar_storage.stream_todos_uid_order(calendar_id))
+    }
+
+    async fn delete_todo(&self, todo_id: &str, user_id: Uuid) -> Result<(), DomainError> {
+        let calendar_id = self.calendar_storage.calendar_id_for_todo(todo_id).await?;
+        self.require_calendar_perm(&calendar_id, user_id, Permission::Delete)
+            .await?;
+        self.calendar_storage.delete_todo(todo_id).await
     }
 }
 

@@ -96,7 +96,7 @@ mod before {
             "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//OxiCloud//NONSGML Calendar//EN\r\nX-WR-CALNAME:{}\r\n",
             calendar_name
         );
-        for group in caldav_bench::group_events_by_uid(events) {
+        for group in caldav_bench::group_objects_by_uid(events) {
             for event in group {
                 if let Some(chunk) = caldav_bench::extract_vevent_chunk(&event.ical_data) {
                     buf.push_str(chunk);
@@ -212,6 +212,7 @@ fn report_shape() -> CalDavReportType {
     CalDavReportType::CalendarQuery {
         props: vec![],
         time_range: None,
+        comp: None,
     }
 }
 
@@ -501,7 +502,7 @@ async fn main() {
     for events in &ics_pages {
         let events = &events[..];
         let mut chunk = String::with_capacity(events.len() * 384);
-        for group in caldav_bench::group_events_by_uid(events) {
+        for group in caldav_bench::group_objects_by_uid(events) {
             for event in group {
                 if let Some(vevent) = caldav_bench::extract_vevent_chunk(&event.ical_data) {
                     chunk.push_str(vevent);

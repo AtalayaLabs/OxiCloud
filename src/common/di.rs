@@ -64,8 +64,8 @@ use crate::infrastructure::repositories::AppPasswordPgRepository;
 use crate::infrastructure::repositories::DeviceCodePgRepository;
 use crate::infrastructure::repositories::pg::{
     AddressBookPgRepository, AudioMetadataPgRepository, CalendarEventPgRepository,
-    CalendarPgRepository, ContactGroupPgRepository, ContactPgRepository, PlaylistItemPgRepository,
-    PlaylistPgRepository, SessionPgRepository, UserPgRepository,
+    CalendarPgRepository, CalendarTodoPgRepository, ContactGroupPgRepository, ContactPgRepository,
+    PlaylistItemPgRepository, PlaylistPgRepository, SessionPgRepository, UserPgRepository,
 };
 use crate::infrastructure::services::audio_metadata_service::AudioMetadataService;
 use crate::infrastructure::services::chunked_upload_service::ChunkedUploadService;
@@ -1991,10 +1991,18 @@ impl AppServiceFactory {
                     pool.clone(),
                 ),
             );
+            let todo_repo_for_hook: Arc<
+                crate::infrastructure::repositories::pg::CalendarTodoPgRepository,
+            > = Arc::new(
+                crate::infrastructure::repositories::pg::CalendarTodoPgRepository::new(
+                    pool.clone(),
+                ),
+            );
             let calendar_storage_for_hook = Arc::new(
                 crate::infrastructure::adapters::calendar_storage_adapter::CalendarStorageAdapter::new(
                     calendar_repo_for_hook.clone(),
                     event_repo_for_hook.clone(),
+                    todo_repo_for_hook.clone(),
                 )
             );
             let address_book_repo_for_hook: Arc<AddressBookPgRepository> = Arc::new(
@@ -2731,10 +2739,16 @@ impl AppServiceFactory {
                     pool.clone(),
                 ),
             );
+            let todo_repo: Arc<CalendarTodoPgRepository> = Arc::new(
+                crate::infrastructure::repositories::pg::CalendarTodoPgRepository::new(
+                    pool.clone(),
+                ),
+            );
             let calendar_storage = Arc::new(
                 crate::infrastructure::adapters::calendar_storage_adapter::CalendarStorageAdapter::new(
                     calendar_repo,
                     event_repo,
+                    todo_repo,
                 )
             );
             let calendar_service = Arc::new(

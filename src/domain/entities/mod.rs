@@ -1,6 +1,7 @@
 pub mod app_password;
 pub mod calendar;
 pub mod calendar_event;
+pub mod calendar_todo;
 pub mod contact;
 pub mod device_code;
 pub mod drive;

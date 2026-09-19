@@ -41,6 +41,88 @@ pub struct CalendarEventParts {
     pub updated_at: DateTime<Utc>,
 }
 
+/// The raw top-level components of an iCalendar body that OxiCloud
+/// cares about, as extracted by
+/// [`CalendarEvent::split_components`]. Each block is the verbatim,
+/// CRLF-terminated `BEGIN:X` … `END:X` slice of the source body —
+/// line folding and every nested sub-component (VALARM inside
+/// VEVENT/VTODO, STANDARD/DAYLIGHT inside VTIMEZONE, RRULEs
+/// everywhere) survive byte-exact.
+#[derive(Debug, Default)]
+pub(crate) struct CalendarComponents {
+    /// `BEGIN:VTIMEZONE` … `END:VTIMEZONE` blocks. Embedded into each
+    /// stored row's VCALENDAR shell so every stored body is
+    /// self-contained (#689); DST evaluation stays client-side.
+    pub vtimezones: Vec<String>,
+    /// `BEGIN:VEVENT` … `END:VEVENT` blocks.
+    pub vevents: Vec<String>,
+    /// `BEGIN:VTODO` … `END:VTODO` blocks. The events surface rejects
+    /// these today; the VTODO upsert path (AtalayaLabs/OxiCloud#754)
+    /// consumes them from the same single-pass split.
+    pub vtodos: Vec<String>,
+}
+
+/// Read a property's trimmed value from a raw iCalendar property
+/// slice. Shared by the VEVENT entity ([`CalendarEvent`]) and the
+/// VTODO entity (`CalendarTodo` — #754): both component types carry
+/// their properties in the same `Vec<Property>` shape, so the lookup
+/// lives here exactly once.
+///
+/// Returns `None` when the property is missing or its value is
+/// empty after trimming.
+pub(crate) fn ical_prop_value(
+    props: &[ical::property::Property],
+    property_name: &str,
+) -> Option<String> {
+    let prop = props
+        .iter()
+        .find(|p| p.name.eq_ignore_ascii_case(property_name))?;
+    let trimmed = prop.value.as_deref()?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+/// Read a property's trimmed value plus its two datetime-relevant
+/// parameters over a raw property slice — the shared core of
+/// `VALUE=DATE` (all-day) detection and `TZID` extraction (#689) for
+/// VEVENT and VTODO alike.
+///
+/// `.rev().find(...)` preserves last-insert-wins semantics for the
+/// (pathological) duplicate-parameter case.
+pub(crate) fn ical_prop_value_date_tzid(
+    props: &[ical::property::Property],
+    property_name: &str,
+) -> Option<(String, bool, Option<String>)> {
+    let prop = props
+        .iter()
+        .find(|p| p.name.eq_ignore_ascii_case(property_name))?;
+    let trimmed = prop.value.as_deref()?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let params = prop.params.as_ref();
+    let is_date = params
+        .and_then(|list| {
+            list.iter()
+                .rev()
+                .find(|(n, _)| n.eq_ignore_ascii_case("VALUE"))
+        })
+        .map(|(_, vs)| vs.iter().any(|v| v.eq_ignore_ascii_case("DATE")))
+        .unwrap_or(false);
+    let tzid = params
+        .and_then(|list| {
+            list.iter()
+                .rev()
+                .find(|(n, _)| n.eq_ignore_ascii_case("TZID"))
+        })
+        .and_then(|(_, vs)| vs.first())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    Some((trimmed.to_string(), is_date, tzid))
+}
+
 #[derive(Debug, Clone)]
 pub struct CalendarEvent {
     /// Unique identifier for the event
@@ -301,8 +383,8 @@ impl CalendarEvent {
         // parameter (RFC 5545 §3.3.4) means date-only. Strict — only "DATE"
         // (case-insensitive) counts; "DATE-TIME" and anything else is timed.
         // The flag drives both the DTSTART and the DTEND datetime parse below.
-        let (dtstart_value, all_day) =
-            Self::prop_value_and_is_date(&event, "DTSTART").ok_or_else(|| {
+        let (dtstart_value, all_day, dtstart_tzid) = Self::prop_value_date_tzid(&event, "DTSTART")
+            .ok_or_else(|| {
                 DomainError::new(
                     ErrorKind::InvalidInput,
                     "CalendarEvent",
@@ -310,30 +392,38 @@ impl CalendarEvent {
                 )
             })?;
 
-        // DTEND needs only its value (the all-day flag comes from DTSTART).
-        let dtend_value = Self::prop_value(&event, "DTEND").ok_or_else(|| {
-            DomainError::new(
-                ErrorKind::InvalidInput,
-                "CalendarEvent",
-                "Missing DTEND in iCalendar data",
-            )
-        })?;
+        // DTEND: the all-day flag comes from DTSTART, but the TZID is
+        // read from DTEND itself — RFC 5545 allows the two to anchor
+        // to different zones (e.g. a flight departing Europe/Paris,
+        // arriving America/New_York).
+        let (dtend_value, _dtend_is_date, dtend_tzid) = Self::prop_value_date_tzid(&event, "DTEND")
+            .ok_or_else(|| {
+                DomainError::new(
+                    ErrorKind::InvalidInput,
+                    "CalendarEvent",
+                    "Missing DTEND in iCalendar data",
+                )
+            })?;
 
-        let start_time = Self::parse_ical_datetime(&dtstart_value, all_day).map_err(|e| {
-            DomainError::new(
-                ErrorKind::InvalidInput,
-                "CalendarEvent",
-                format!("Invalid DTSTART: {}", e),
-            )
-        })?;
+        let start_time =
+            Self::parse_ical_datetime(&dtstart_value, all_day, dtstart_tzid.as_deref()).map_err(
+                |e| {
+                    DomainError::new(
+                        ErrorKind::InvalidInput,
+                        "CalendarEvent",
+                        format!("Invalid DTSTART: {}", e),
+                    )
+                },
+            )?;
 
-        let end_time = Self::parse_ical_datetime(&dtend_value, all_day).map_err(|e| {
-            DomainError::new(
-                ErrorKind::InvalidInput,
-                "CalendarEvent",
-                format!("Invalid DTEND: {}", e),
-            )
-        })?;
+        let end_time = Self::parse_ical_datetime(&dtend_value, all_day, dtend_tzid.as_deref())
+            .map_err(|e| {
+                DomainError::new(
+                    ErrorKind::InvalidInput,
+                    "CalendarEvent",
+                    format!("Invalid DTEND: {}", e),
+                )
+            })?;
 
         // Extract optional fields
         let description = Self::prop_value(&event, "DESCRIPTION");
@@ -352,8 +442,10 @@ impl CalendarEvent {
         // gets stored, just as a plain event (worst case a client sync
         // treats it as a new master, which the DB uniqueness will
         // refuse; better a persistence error than a silent split).
-        let recurrence_id = match Self::prop_value_and_is_date(&event, "RECURRENCE-ID") {
-            Some((value, is_date)) => Self::parse_ical_datetime(&value, is_date).ok(),
+        let recurrence_id = match Self::prop_value_date_tzid(&event, "RECURRENCE-ID") {
+            Some((value, is_date, rid_tzid)) => {
+                Self::parse_ical_datetime(&value, is_date, rid_tzid.as_deref()).ok()
+            }
             None => None,
         };
 
@@ -719,23 +811,25 @@ impl CalendarEvent {
         // Extract DTSTART with parameters — needed for the all-day
         // detection below AND for the DTSTART/DTEND datetime parsers
         // (they need to know whether the value is a date or a datetime).
-        let dtstart_pair = event
+        let dtstart_triple = event
             .as_ref()
-            .and_then(|e| Self::prop_value_and_is_date(e, "DTSTART"));
-        let all_day = dtstart_pair
+            .and_then(|e| Self::prop_value_date_tzid(e, "DTSTART"));
+        let all_day = dtstart_triple
             .as_ref()
-            .map(|(_v, is_date)| *is_date)
+            .map(|(_v, is_date, _tzid)| *is_date)
             .unwrap_or(false);
         self.all_day = all_day;
 
-        if let Some((value, _is_date)) = &dtstart_pair
-            && let Ok(start_time) = Self::parse_ical_datetime(value, all_day)
+        if let Some((value, _is_date, tzid)) = &dtstart_triple
+            && let Ok(start_time) = Self::parse_ical_datetime(value, all_day, tzid.as_deref())
         {
             self.start_time = start_time;
         }
 
-        if let Some(value) = event.as_ref().and_then(|e| Self::prop_value(e, "DTEND"))
-            && let Ok(end_time) = Self::parse_ical_datetime(&value, all_day)
+        if let Some((value, _is_date, tzid)) = event
+            .as_ref()
+            .and_then(|e| Self::prop_value_date_tzid(e, "DTEND"))
+            && let Ok(end_time) = Self::parse_ical_datetime(&value, all_day, tzid.as_deref())
         {
             self.end_time = end_time;
         }
@@ -798,7 +892,9 @@ impl CalendarEvent {
                 // date-only. Everything else is treated as datetime and
                 // parsed accordingly.
                 let is_date_only = until_str.len() == 8;
-                if let Ok(until_date) = Self::parse_ical_datetime(until_str, is_date_only) {
+                // UNTIL never carries a TZID parameter (RFC 5545 §3.3.10
+                // mandates UTC or DATE form), hence `None` here.
+                if let Ok(until_date) = Self::parse_ical_datetime(until_str, is_date_only, None) {
                     return until_date >= *start;
                 }
             } else {
@@ -857,8 +953,8 @@ impl CalendarEvent {
     /// Read a property's trimmed value from an already-parsed VEVENT.
     ///
     /// Value-only lookups skip the parameter-map build entirely; use
-    /// [`Self::prop_with_params`] for DTSTART / DTEND / RECURRENCE-ID
-    /// which need `VALUE=DATE` detection.
+    /// [`Self::prop_value_date_tzid`] for DTSTART / DTEND / RECURRENCE-ID
+    /// which need `VALUE=DATE` detection and `TZID` extraction.
     ///
     /// Returns `None` when the property is missing or its value is
     /// empty after trimming — the same rules the old per-property
@@ -867,50 +963,21 @@ impl CalendarEvent {
         event: &ical::parser::ical::component::IcalEvent,
         property_name: &str,
     ) -> Option<String> {
-        let prop = event
-            .properties
-            .iter()
-            .find(|p| p.name.eq_ignore_ascii_case(property_name))?;
-        let trimmed = prop.value.as_deref()?.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        Some(trimmed.to_string())
+        ical_prop_value(&event.properties, property_name)
     }
 
-    /// Read a property's trimmed value plus whether it carries a
-    /// case-insensitive `VALUE=DATE` parameter (the all-day / date-only
-    /// marker) — the ONLY thing `from_ical` / `update_ical_data` ever asked the
-    /// parameter map for. Scans `prop.params` directly, so DTSTART / DTEND /
-    /// RECURRENCE-ID no longer build a throwaway
-    /// `HashMap<String, Vec<String>>` (uppercased keys + cloned value Vecs) per
-    /// event on every CalDAV PUT / iCal import (benches/ROUND20.md §A1).
-    ///
-    /// `.rev().find(...)` preserves the old map's last-insert-wins semantics for
-    /// the (pathological) duplicate-`VALUE` case, so the flag is byte-identical.
-    fn prop_value_and_is_date(
+    /// Read a property's trimmed value plus its two datetime-relevant
+    /// parameters: whether it carries a case-insensitive `VALUE=DATE`
+    /// parameter (the all-day / date-only marker) and the `TZID`
+    /// parameter when present (`DTSTART;TZID=Europe/Paris:...` — #689).
+    /// Thin delegate over [`ical_prop_value_date_tzid`] — the shared
+    /// implementation lives there so `CalendarTodo` (#754) parses its
+    /// DTSTART / DUE / COMPLETED through the exact same code path.
+    fn prop_value_date_tzid(
         event: &ical::parser::ical::component::IcalEvent,
         property_name: &str,
-    ) -> Option<(String, bool)> {
-        let prop = event
-            .properties
-            .iter()
-            .find(|p| p.name.eq_ignore_ascii_case(property_name))?;
-        let trimmed = prop.value.as_deref()?.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        let is_date = prop
-            .params
-            .as_ref()
-            .and_then(|list| {
-                list.iter()
-                    .rev()
-                    .find(|(n, _)| n.eq_ignore_ascii_case("VALUE"))
-            })
-            .map(|(_, vs)| vs.iter().any(|v| v.eq_ignore_ascii_case("DATE")))
-            .unwrap_or(false);
-        Some((trimmed.to_string(), is_date))
+    ) -> Option<(String, bool, Option<String>)> {
+        ical_prop_value_date_tzid(&event.properties, property_name)
     }
 
     /// Read a property's trimmed value AND parameter map from an
@@ -959,16 +1026,30 @@ impl CalendarEvent {
     /// because we forward every line as-is inside the extracted block;
     /// the ical-crate parser inside `from_ical` unfolds when reading.
     ///
-    /// Nested VALARM / VTODO sub-components inside a VEVENT are
-    /// carried through unchanged — the scanner only splits on
-    /// `BEGIN:VEVENT` / `END:VEVENT` at the outer level.
+    /// Every VTIMEZONE block in the source body is embedded ahead of
+    /// each VEVENT in the stored shell (#689): the row then stays a
+    /// self-contained VCALENDAR whose TZID references resolve on any
+    /// client, RRULEs and all. We never evaluate those RRULEs
+    /// server-side — DST handling is the client's job; ours is to
+    /// store and return the definition byte-exact.
     ///
     /// Returns `InvalidInput` if the body contains zero VEVENTs — a
-    /// PUT with no events isn't a state we accept on the CalDAV surface.
+    /// PUT with no events isn't a state we accept on the CalDAV events
+    /// surface (VTODO bodies route to their own upsert path — #754).
     pub fn parse_all_events(calendar_id: Uuid, ical_data: &str) -> Result<Vec<Self>> {
-        let blocks = Self::split_vevents(ical_data);
+        let components = Self::split_components(ical_data);
+        Self::parse_events_from_components(calendar_id, &components)
+    }
 
-        if blocks.is_empty() {
+    /// The [`CalendarComponents`]-based core of
+    /// [`Self::parse_all_events`] — the PUT fan-out
+    /// (`upsert_ical_objects`, #754) splits the body ONCE for events
+    /// and todos alike, then hands each kind its slice.
+    pub(crate) fn parse_events_from_components(
+        calendar_id: Uuid,
+        components: &CalendarComponents,
+    ) -> Result<Vec<Self>> {
+        if components.vevents.is_empty() {
             return Err(DomainError::new(
                 ErrorKind::InvalidInput,
                 "CalendarEvent",
@@ -976,29 +1057,41 @@ impl CalendarEvent {
             ));
         }
 
-        let mut out = Vec::with_capacity(blocks.len());
-        for block in blocks {
+        let vtimezones = components.vtimezones.concat();
+
+        let mut out = Vec::with_capacity(components.vevents.len());
+        for block in &components.vevents {
             // Wrap each VEVENT in a fresh VCALENDAR shell so the
             // stored `ical_data` per row is self-describing (RFC 5545
             // §3.4 mandates VERSION + PRODID on any exported body).
             let wrapped = format!(
-                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//OxiCloud//NONSGML Calendar//EN\r\n{}END:VCALENDAR\r\n",
-                block,
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//OxiCloud//NONSGML Calendar//EN\r\n{vtimezones}{block}END:VCALENDAR\r\n",
             );
             out.push(Self::from_ical(calendar_id, wrapped)?);
         }
         Ok(out)
     }
 
-    /// Extract each `BEGIN:VEVENT` … `END:VEVENT` block from the raw
-    /// body as its own String (CRLF-terminated). Component tags are
-    /// matched case-insensitively per RFC 5545 §3.1. Anything outside
-    /// a VEVENT (VTIMEZONE / VTODO / VJOURNAL / calendar-level
-    /// properties) is discarded — those aren't ours to persist.
-    fn split_vevents(ical_data: &str) -> Vec<String> {
-        let mut blocks = Vec::new();
-        let mut in_event = false;
-        let mut current = String::new();
+    /// Extract each top-level `BEGIN:VTIMEZONE` / `BEGIN:VEVENT` /
+    /// `BEGIN:VTODO` … matching-`END` block from the raw body as its
+    /// own String (CRLF-terminated). Component tags are matched
+    /// case-insensitively per RFC 5545 §3.1. Calendar-level properties
+    /// (`X-WR-CALNAME`, …) and component kinds we don't track
+    /// (VJOURNAL, VFREEBUSY) fall between blocks and are discarded —
+    /// they aren't ours to persist.
+    ///
+    /// Nested sub-components (VALARM inside VEVENT/VTODO,
+    /// STANDARD/DAYLIGHT inside VTIMEZONE) never confuse the scan:
+    /// once inside a component, only ITS OWN `END` tag closes the
+    /// block, and the inner `BEGIN:` tags don't match the three
+    /// tracked kinds anyway.
+    pub(crate) fn split_components(ical_data: &str) -> CalendarComponents {
+        #[derive(Clone, Copy, PartialEq)]
+        enum Kind {
+            TimeZone,
+            Event,
+            Todo,
+        }
 
         // Allocation-free case-insensitive prefix test. `to_ascii_uppercase`
         // maps ASCII bytes in place and leaves multi-byte chars untouched,
@@ -1012,32 +1105,64 @@ impl CalendarEvent {
                 .is_some_and(|p| p.eq_ignore_ascii_case(tag))
         }
 
+        fn begin_kind(tag_area: &str) -> Option<Kind> {
+            if starts_with_ci(tag_area, "BEGIN:VTIMEZONE") {
+                Some(Kind::TimeZone)
+            } else if starts_with_ci(tag_area, "BEGIN:VEVENT") {
+                Some(Kind::Event)
+            } else if starts_with_ci(tag_area, "BEGIN:VTODO") {
+                Some(Kind::Todo)
+            } else {
+                None
+            }
+        }
+
+        fn end_tag(kind: Kind) -> &'static str {
+            match kind {
+                Kind::TimeZone => "END:VTIMEZONE",
+                Kind::Event => "END:VEVENT",
+                Kind::Todo => "END:VTODO",
+            }
+        }
+
+        let mut out = CalendarComponents::default();
+        let mut current_kind: Option<Kind> = None;
+        let mut current = String::new();
+
         for raw_line in ical_data.split('\n') {
             let line = raw_line.trim_end_matches('\r');
             // Match the tag ignoring case, allowing surrounding
             // whitespace (some clients emit a leading space on folded
             // continuations — the raw-line scan sees those but they
             // won't start with BEGIN/END so they slot through as
-            // in-event content, which is correct).
+            // in-component content, which is correct).
             let tag_area = line.trim_start();
 
-            if starts_with_ci(tag_area, "BEGIN:VEVENT") {
-                in_event = true;
-                current.clear();
+            // A new block only opens between components — a stray
+            // `BEGIN:VEVENT` inside an open component (malformed
+            // input) is kept as content rather than clobbering the
+            // block being accumulated.
+            if current_kind.is_none() {
+                current_kind = begin_kind(tag_area);
             }
 
-            if in_event {
-                current.push_str(line);
-                current.push_str("\r\n");
-            }
+            let Some(kind) = current_kind else { continue };
 
-            if in_event && starts_with_ci(tag_area, "END:VEVENT") {
-                blocks.push(std::mem::take(&mut current));
-                in_event = false;
+            current.push_str(line);
+            current.push_str("\r\n");
+
+            if starts_with_ci(tag_area, end_tag(kind)) {
+                let block = std::mem::take(&mut current);
+                current_kind = None;
+                match kind {
+                    Kind::TimeZone => out.vtimezones.push(block),
+                    Kind::Event => out.vevents.push(block),
+                    Kind::Todo => out.vtodos.push(block),
+                }
             }
         }
 
-        blocks
+        out
     }
 
     /// Parse the raw iCalendar body and return the first VEVENT
@@ -1068,11 +1193,23 @@ impl CalendarEvent {
      * @param is_date_only True when the source line carried
      *                     `VALUE=DATE` (all-day event) — caller derives
      *                     this from `extract_ical_property_with_params`.
+     * @param tzid The `TZID` parameter of the source property, when
+     *             present (`DTSTART;TZID=Europe/Paris:...` —
+     *             AtalayaLabs/OxiCloud#689). Only IANA names resolve
+     *             (via `chrono-tz`); unknown / client-custom TZIDs
+     *             fall back to the floating-time behaviour below —
+     *             never a 400, since rejecting would break the whole
+     *             sync. The raw body (including any VTIMEZONE defining
+     *             a custom zone, RRULEs and all) is preserved verbatim
+     *             in `ical_data`, so clients still render such events
+     *             correctly; only the server-side indexed columns are
+     *             approximate for non-IANA zones.
      * @return Result containing the parsed DateTime or an error
      */
-    fn parse_ical_datetime(
+    pub(crate) fn parse_ical_datetime(
         value: &str,
         is_date_only: bool,
+        tzid: Option<&str>,
     ) -> std::result::Result<DateTime<Utc>, String> {
         // All-day form — YYYYMMDD, 8 chars, no time component. Caller
         // signalled this via the `VALUE=DATE` parameter on the source
@@ -1108,9 +1245,8 @@ impl CalendarEvent {
         // Floating-time (no 'Z', RFC 5545 §3.3.5) is what calendar apps emit
         // for events without a timezone — DAVx5 sends it from Fossify
         // Calendar, and rejecting it failed the whole event sync with a 400
-        // (#682). Accept it and interpret the wall-clock time as UTC.
-        // TZID-anchored forms remain unsupported — future work when we
-        // tackle VTIMEZONE properly.
+        // (#682). Floating wall-clock is interpreted as UTC unless a `TZID`
+        // parameter anchors it (see below).
         let has_utc_suffix = value.len() == 16 && value.ends_with('Z');
         let is_floating = value.len() == 15;
         if !has_utc_suffix && !is_floating {
@@ -1140,12 +1276,77 @@ impl CalendarEvent {
             .parse::<u32>()
             .map_err(|_| "Invalid second".to_string())?;
 
-        match chrono::NaiveDate::from_ymd_opt(year, month, day) {
+        let naive = match chrono::NaiveDate::from_ymd_opt(year, month, day) {
             Some(date) => match date.and_hms_opt(hour, minute, second) {
-                Some(datetime) => Ok(Utc.from_utc_datetime(&datetime)),
-                None => Err("Invalid time components".to_string()),
+                Some(datetime) => datetime,
+                None => return Err("Invalid time components".to_string()),
             },
-            None => Err("Invalid date components".to_string()),
+            None => return Err("Invalid date components".to_string()),
+        };
+
+        // Explicit UTC form wins outright. RFC 5545 §3.3.5 forbids
+        // combining the 'Z' suffix with a TZID parameter; when a
+        // (buggy) client sends both, the 'Z' is authoritative.
+        if has_utc_suffix {
+            return Ok(Utc.from_utc_datetime(&naive));
+        }
+
+        // TZID-anchored local time (#689): resolve the IANA zone and
+        // convert the wall-clock time to its UTC instant so the
+        // indexed columns (`start_time` / `end_time` / `recurrence_id`)
+        // line up with the UTC-based time-range SQL. The stored
+        // `ical_data` keeps the original TZID form, so the wall time
+        // round-trips byte-exact to clients.
+        if let Some(tzid) = tzid.filter(|t| !t.is_empty()) {
+            return Ok(Self::resolve_tzid(&naive, tzid));
+        }
+
+        // Plain floating time — interpret the wall clock as UTC (#682).
+        Ok(Utc.from_utc_datetime(&naive))
+    }
+
+    /// Convert a naive wall-clock time in the IANA zone `tzid` to its
+    /// UTC instant.
+    ///
+    /// DST edge conventions (documented, never an error — a 400 here
+    /// would fail the whole sync):
+    ///
+    ///   * Ambiguous wall clock (autumn fall-back, e.g. 02:30 on the
+    ///     last Sunday of October in Europe/Paris): the EARLIEST of the
+    ///     two candidate instants, matching chrono's `LocalResult`
+    ///     convention and what most CalDAV servers do.
+    ///   * Non-existent wall clock (spring-forward gap): treated as
+    ///     UTC — degenerate input from a client that computed a local
+    ///     time that never occurred; a `warn!` is emitted.
+    ///   * Unknown / non-IANA TZID (Windows names, client-custom
+    ///     VTIMEZONE definitions): treated as UTC with a `warn!`. The
+    ///     VTIMEZONE definition (RRULEs included) round-trips in the
+    ///     stored body, so clients render the event correctly; only
+    ///     server-side time-range filtering is offset for such events.
+    fn resolve_tzid(naive: &chrono::NaiveDateTime, tzid: &str) -> DateTime<Utc> {
+        use chrono::offset::LocalResult;
+
+        let tz = match tzid.parse::<chrono_tz::Tz>() {
+            Ok(tz) => tz,
+            Err(_) => {
+                tracing::warn!(
+                    tzid,
+                    "CalDAV: unknown TZID — indexing wall clock as UTC (body preserved verbatim)"
+                );
+                return Utc.from_utc_datetime(naive);
+            }
+        };
+
+        match tz.from_local_datetime(naive) {
+            LocalResult::Single(dt) => dt.with_timezone(&Utc),
+            LocalResult::Ambiguous(dt, _later) => dt.with_timezone(&Utc),
+            LocalResult::None => {
+                tracing::warn!(
+                    tzid,
+                    "CalDAV: wall clock falls in a DST gap — indexing as UTC"
+                );
+                Utc.from_utc_datetime(naive)
+            }
         }
     }
 
@@ -1718,8 +1919,11 @@ END:VCALENDAR\r
 
     #[test]
     fn parse_all_events_vtodo_is_ignored() {
-        // A body carrying only VTODOs (no VEVENTs) is treated as
-        // "zero events" — we don't persist tasks in the events table.
+        // A body carrying only VTODOs (no VEVENTs) is "zero events"
+        // for the EVENTS-only parse path. On the CalDAV PUT surface
+        // such a body no longer 400s — `upsert_ical_objects` routes
+        // the VTODOs to `caldav.calendar_todos` (#754); this guard
+        // only keeps the events-only helper's contract honest.
         let body = "\
 BEGIN:VCALENDAR\r
 VERSION:2.0\r
@@ -1731,7 +1935,7 @@ END:VTODO\r
 END:VCALENDAR\r
 ";
         let err = CalendarEvent::parse_all_events(Uuid::new_v4(), body)
-            .expect_err("VTODO-only body must be rejected");
+            .expect_err("VTODO-only body must be rejected by the events-only parser");
         assert_eq!(err.kind, ErrorKind::InvalidInput);
     }
 
@@ -1788,5 +1992,218 @@ END:VCALENDAR\r
 
         ev.set_recurrence_id(None);
         assert!(ev.recurrence_id().is_none());
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // #689 — TZID support & VTIMEZONE preservation
+    // ─────────────────────────────────────────────────────────────
+
+    /// The exact shape from AtalayaLabs/OxiCloud#689: DAVx5 uploads
+    /// Europe/Paris-anchored wall times. Pre-fix this either 400'd
+    /// (≤0.8.7) or silently indexed the wall clock as UTC; the indexed
+    /// columns must now carry the correct UTC instant (Paris is
+    /// CEST = UTC+2 in August).
+    const TZID_PARIS_EVENT: &str = "\
+BEGIN:VCALENDAR\r
+VERSION:2.0\r
+PRODID:-//TZID test//EN\r
+BEGIN:VEVENT\r
+UID:tz-min-test-001\r
+DTSTAMP:20260824T094500Z\r
+DTSTART;TZID=Europe/Paris:20260824T120000\r
+DTEND;TZID=Europe/Paris:20260824T130000\r
+SUMMARY:TZID test\r
+END:VEVENT\r
+END:VCALENDAR\r
+";
+
+    /// VTIMEZONE definition for Pacific/Auckland — the real-world
+    /// shape clients upload (RFC 5545 §3.6.5 layout): STANDARD +
+    /// DAYLIGHT observances with yearly RRULEs. The server must
+    /// preserve the block byte-exact; DST evaluation itself is
+    /// client-side.
+    const AUCKLAND_VTIMEZONE: &str = "\
+BEGIN:VTIMEZONE\r
+TZID:Pacific/Auckland\r
+BEGIN:DAYLIGHT\r
+TZNAME:NZDT\r
+TZOFFSETFROM:+1200\r
+TZOFFSETTO:+1300\r
+DTSTART:19700927T020000\r
+RRULE:FREQ=YEARLY;BYMONTH=9;BYDAY=-1SU\r
+END:DAYLIGHT\r
+BEGIN:STANDARD\r
+TZNAME:NZST\r
+TZOFFSETFROM:+1300\r
+TZOFFSETTO:+1200\r
+DTSTART:19700405T030000\r
+RRULE:FREQ=YEARLY;BYMONTH=4;BYDAY=1SU\r
+END:STANDARD\r
+END:VTIMEZONE\r
+";
+
+    #[test]
+    fn tzid_europe_paris_converts_to_correct_utc_instant() {
+        let ev = parse_ok(TZID_PARIS_EVENT);
+        assert_eq!(
+            ev.start_time().to_rfc3339(),
+            "2026-08-24T10:00:00+00:00",
+            "Paris CEST (UTC+2) wall clock must land on the right UTC instant"
+        );
+        assert_eq!(ev.end_time().to_rfc3339(), "2026-08-24T11:00:00+00:00");
+        // The original TZID form round-trips in the stored body.
+        assert!(
+            ev.ical_data()
+                .contains("DTSTART;TZID=Europe/Paris:20260824T120000")
+        );
+    }
+
+    #[test]
+    fn tzid_unknown_zone_falls_back_to_wall_clock_as_utc() {
+        // Non-IANA / client-custom TZIDs must never 400 (that would
+        // break the whole sync): the wall clock is indexed as UTC and
+        // a warn! is emitted. The zone's VTIMEZONE definition still
+        // round-trips in the blob, so clients render the event
+        // correctly — only server-side time-range filtering is
+        // approximate for such zones.
+        let body = "\
+BEGIN:VCALENDAR\r
+VERSION:2.0\r
+PRODID:-//test//EN\r
+BEGIN:VEVENT\r
+UID:tz-custom@x\r
+DTSTAMP:20260824T094500Z\r
+DTSTART;TZID=Custom/Zone:20260824T120000\r
+DTEND;TZID=Custom/Zone:20260824T130000\r
+SUMMARY:Custom zone\r
+END:VEVENT\r
+END:VCALENDAR\r
+";
+        let ev = parse_ok(body);
+        assert_eq!(ev.start_time().to_rfc3339(), "2026-08-24T12:00:00+00:00");
+        assert_eq!(ev.end_time().to_rfc3339(), "2026-08-24T13:00:00+00:00");
+    }
+
+    #[test]
+    fn tzid_dst_fall_back_ambiguity_picks_earliest_instant() {
+        // Europe/Paris 2026-10-25 02:30 occurs TWICE (CEST → CET at
+        // 03:00). Convention: the earliest candidate instant —
+        // 00:30 UTC (CEST, UTC+2) rather than 01:30 UTC (CET, UTC+1).
+        let body = "\
+BEGIN:VCALENDAR\r
+VERSION:2.0\r
+PRODID:-//test//EN\r
+BEGIN:VEVENT\r
+UID:tz-ambiguous@x\r
+DTSTAMP:20261001T094500Z\r
+DTSTART;TZID=Europe/Paris:20261025T023000\r
+DTEND;TZID=Europe/Paris:20261025T033000\r
+SUMMARY:Ambiguous\r
+END:VEVENT\r
+END:VCALENDAR\r
+";
+        let ev = parse_ok(body);
+        assert_eq!(ev.start_time().to_rfc3339(), "2026-10-25T00:30:00+00:00");
+    }
+
+    #[test]
+    fn tzid_recurrence_id_converts_like_dtstart() {
+        // Paris in January is CET = UTC+1 → 09:00 local = 08:00 UTC.
+        let body = "\
+BEGIN:VCALENDAR\r
+VERSION:2.0\r
+PRODID:-//test//EN\r
+BEGIN:VEVENT\r
+UID:daily-1@oxicloud.test\r
+DTSTAMP:20260101T100000Z\r
+DTSTART;TZID=Europe/Paris:20260103T110000\r
+DTEND;TZID=Europe/Paris:20260103T120000\r
+SUMMARY:Standup — rescheduled\r
+RECURRENCE-ID;TZID=Europe/Paris:20260103T090000\r
+END:VEVENT\r
+END:VCALENDAR\r
+";
+        let ev = parse_ok(body);
+        assert_eq!(
+            ev.recurrence_id().expect("recurrence-id set").to_rfc3339(),
+            "2026-01-03T08:00:00+00:00"
+        );
+        assert_eq!(ev.start_time().to_rfc3339(), "2026-01-03T10:00:00+00:00");
+    }
+
+    #[test]
+    fn utc_suffix_wins_over_tzid_parameter() {
+        // RFC 5545 §3.3.5 forbids combining TZID with the 'Z' suffix;
+        // when a buggy client sends both, 'Z' is authoritative.
+        let body = "\
+BEGIN:VCALENDAR\r
+VERSION:2.0\r
+PRODID:-//test//EN\r
+BEGIN:VEVENT\r
+UID:tz-both@x\r
+DTSTAMP:20260101T100000Z\r
+DTSTART;TZID=Europe/Paris:20260101T090000Z\r
+DTEND;TZID=Europe/Paris:20260101T100000Z\r
+SUMMARY:Conflicting client\r
+END:VEVENT\r
+END:VCALENDAR\r
+";
+        let ev = parse_ok(body);
+        assert_eq!(ev.start_time().to_rfc3339(), "2026-01-01T09:00:00+00:00");
+    }
+
+    #[test]
+    fn split_components_separates_vtimezone_vevent_vtodo() {
+        let body = format!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n{}BEGIN:VEVENT\r\nUID:e1\r\nEND:VEVENT\r\nBEGIN:VTODO\r\nUID:t1\r\nEND:VTODO\r\nEND:VCALENDAR\r\n",
+            AUCKLAND_VTIMEZONE
+        );
+        let c = CalendarEvent::split_components(&body);
+        assert_eq!(c.vtimezones.len(), 1);
+        assert!(
+            c.vtimezones[0].contains("RRULE:FREQ=YEARLY;BYMONTH=9;BYDAY=-1SU"),
+            "VTIMEZONE RRULE must survive the split byte-exact"
+        );
+        assert!(
+            c.vtimezones[0].contains("BEGIN:STANDARD"),
+            "nested observances ride along inside the VTIMEZONE block"
+        );
+        assert_eq!(c.vevents.len(), 1);
+        assert_eq!(c.vtodos.len(), 1);
+    }
+
+    #[test]
+    fn parse_all_events_embeds_vtimezone_blocks_in_stored_shell() {
+        // Auckland-anchored event PUT with its zone definition: the
+        // stored row must be a self-contained VCALENDAR — VTIMEZONE
+        // (RRULEs byte-exact) ahead of the VEVENT — and the indexed
+        // start_time must be the correct UTC instant. Auckland in
+        // January is NZDT = UTC+13 → 12:00 local = 23:00 UTC the day
+        // before.
+        let body = format!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\n{}BEGIN:VEVENT\r\nUID:akl-1@x\r\nDTSTAMP:20260101T100000Z\r\nDTSTART;TZID=Pacific/Auckland:20260115T120000\r\nDTEND;TZID=Pacific/Auckland:20260115T130000\r\nSUMMARY:Auckland meeting\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+            AUCKLAND_VTIMEZONE
+        );
+        let events = CalendarEvent::parse_all_events(Uuid::new_v4(), &body)
+            .expect("TZID event with VTIMEZONE must parse");
+        assert_eq!(events.len(), 1);
+        let stored = events[0].ical_data();
+        assert!(stored.contains("BEGIN:VTIMEZONE"));
+        assert!(stored.contains("TZID:Pacific/Auckland"));
+        assert!(stored.contains("RRULE:FREQ=YEARLY;BYMONTH=9;BYDAY=-1SU"));
+        assert!(stored.contains("RRULE:FREQ=YEARLY;BYMONTH=4;BYDAY=1SU"));
+        // VTIMEZONE sits ahead of the VEVENT in the shell.
+        assert!(
+            stored.find("BEGIN:VTIMEZONE").unwrap() < stored.find("BEGIN:VEVENT").unwrap(),
+            "VTIMEZONE must precede the VEVENT in the stored shell"
+        );
+        assert_eq!(
+            events[0].start_time().to_rfc3339(),
+            "2026-01-14T23:00:00+00:00"
+        );
+        assert_eq!(
+            events[0].end_time().to_rfc3339(),
+            "2026-01-15T00:00:00+00:00"
+        );
     }
 }
