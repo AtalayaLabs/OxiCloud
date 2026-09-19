@@ -40,7 +40,7 @@ secrets:
   # If you don't set `wopi.collabora.admin.password`, you may want to store the wopi admin password in this secret in OXICLOUD_JWT_SECRET key.
   existingSecret: ""
   # Set jwt for the instance.
-  jwtSecret: ""
+  #jwtSecret: ""
 
 wopi:
   enabled: true
