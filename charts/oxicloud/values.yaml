@@ -4,7 +4,7 @@ replicaCount: 1
 image:
   repository: diocrafts/oxicloud
   pullPolicy: IfNotPresent
-  tag: "0.9.0"
+  tag: "0.9.1"
 
 # cf : https://github.com/AtalayaLabs/OxiCloud/blob/main/example.env
 envs:
