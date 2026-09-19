@@ -2357,6 +2357,37 @@ pub struct FeaturesConfig {
     /// Env: `OXICLOUD_MESSAGEBUS_ENABLE` (default `true`).
     pub enable_message_bus: bool,
 
+    /// Collaborative markdown / text editor (Yjs over the message bus).
+    /// When `true` and `enable_message_bus` is also `true`, the WS
+    /// handler routes binary Yjs frames to
+    /// `CollabSessionService` and per-file actors host `yrs::Doc`
+    /// state. When `false`, binary frames are silently dropped —
+    /// clients that speak the collab protocol will time out their
+    /// sync attempts and can fall back to read-only. Requires
+    /// `enable_message_bus`: without it the WS endpoint doesn't exist
+    /// and there's no transport for CRDT ops (boot refuses this
+    /// combination — see the cross-flag check in `from_env`).
+    ///
+    /// TODO(collab-default-on): flip the default to `true` once BOTH
+    /// prerequisites ship:
+    ///   1. C7 — real `DocContentWriter` bridge to `FileManagementService`
+    ///      (replaces the current `NoopWriter` stub in `common/di.rs`),
+    ///      so collaborative edits actually reach the file's blob and
+    ///      `GET /api/files/{id}` / WebDAV / search see CRDT-current
+    ///      text instead of the pre-collab original.
+    ///   2. Write-side `Edit` AuthZ gate on `0x01` UPDATE frames in
+    ///      `CollabSessionService::handle_binary_frame` — currently
+    ///      only the subscribe-time `Read` gate exists, so a viewer
+    ///      who could open the doc could also write to it. Cache the
+    ///      Edit answer per session at attach-file time; invalidate
+    ///      it on `MessageBusEvent::GrantRevoked` to enforce a live
+    ///      Editor→Viewer downgrade.
+    /// Off by default until then — the feature is currently
+    /// dev/staging-only.
+    ///
+    /// Env: `OXICLOUD_ENABLE_MARKDOWN_COLLAB` (default `false`).
+    pub enable_markdown_collab: bool,
+
     /// Background purge of expired `storage.role_grants` rows.
     ///
     /// The AuthZ engine already filters expired grants out of every
@@ -2567,6 +2598,10 @@ impl Default for FeaturesConfig {
             // reachable at `/webdav/@drive/`.
             webdav_drive_listing_prefix: "@drive".to_string(),
             enable_message_bus: true, // Message bus (WS + ticket) on by default
+            // Off by default — the collab wire is under development
+            // and only ops who explicitly opt in should see live Yjs
+            // routing. Requires enable_message_bus to be true.
+            enable_markdown_collab: false,
             grant_cleanup: GrantCleanupConfig::default(),
             notifications_retention_days: 30, // 30 days is the plan's default
         }
@@ -3611,6 +3646,30 @@ impl AppConfig {
             && let Ok(val) = enable_message_bus
         {
             config.features.enable_message_bus = val;
+        }
+
+        // Collaborative markdown (Yjs binary frames over the bus).
+        // Off by default; requires the message bus to be on because
+        // the CRDT data plane rides `/api/rt/ws` — without the bus,
+        // that route isn't registered and Yjs frames have nowhere to
+        // land. Refuse to boot on the contradictory combination so an
+        // operator who set the flag without the bus sees the mistake
+        // named at startup, not as "the feature is on but does
+        // nothing" once users complain.
+        if let Ok(enable_markdown_collab) =
+            env::var("OXICLOUD_ENABLE_MARKDOWN_COLLAB").map(|v| v.parse::<bool>())
+            && let Ok(val) = enable_markdown_collab
+        {
+            config.features.enable_markdown_collab = val;
+        }
+        if config.features.enable_markdown_collab && !config.features.enable_message_bus {
+            panic!(
+                "FATAL: OXICLOUD_ENABLE_MARKDOWN_COLLAB=true requires \
+                 OXICLOUD_MESSAGEBUS_ENABLE=true. The collab data plane rides the \
+                 message-bus WebSocket (/api/rt/ws); without it there is no \
+                 socket to route Yjs frames on. Either enable the message bus \
+                 or disable markdown collab."
+            );
         }
 
         // Slice E — notification retention. Read as u32 so a

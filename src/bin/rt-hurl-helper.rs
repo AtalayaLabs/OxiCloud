@@ -3,9 +3,11 @@
 //! Hurl is HTTP-only — it can't do a WS upgrade, let alone read frames
 //! for later assertion. This binary is the WS half of the smoke test:
 //! opens `/api/rt/ws`, speaks JSON-RPC 2.0, and either collects events
-//! into a JSON file for shell assertions (`subscribe-and-collect`) or
+//! into a JSON file for shell assertions (`subscribe-and-collect`),
 //! validates that an authz-denied subscribe returns the expected wire
-//! error code (`expect-denied`).
+//! error code (`expect-denied`), or exercises the collab binary-frame
+//! path (`collab-sync-probe`) by sending a Yjs sync-step-1 request and
+//! asserting on the sync-step-2 reply header.
 //!
 //! Invocation (from `tests/api/rt_bus_check.sh`):
 //!
@@ -24,6 +26,12 @@
 //!   --subscribe folder:$FOLDER_A \
 //!   --reason no_read \
 //!   --timeout 2s
+//!
+//! rt-hurl-helper collab-sync-probe \
+//!   --url ws://127.0.0.1:$PORT/api/rt/ws \
+//!   --token $USER_JWT \
+//!   --file $FILE_UUID \
+//!   --timeout 3s
 //! ```
 //!
 //! Exit codes:
@@ -78,6 +86,11 @@ struct Args {
     /// in time" race that occasionally dropped events on slow /
     /// cold-cache runs. Off by default; only used by the smoke test.
     ready_file: Option<String>,
+    /// `--file <uuid>` — the target file for `collab-sync-probe`.
+    /// Parsed to 16 raw bytes so the helper can emit the wire header
+    /// (`[1 byte kind][16 bytes file_id]…`) without pulling in the
+    /// uuid crate.
+    file_id: Option<[u8; 16]>,
 }
 
 /// How the helper authenticates the WS upgrade. Mirrors the two paths
@@ -90,6 +103,23 @@ enum WsAuth {
 enum Mode {
     SubscribeAndCollect,
     ExpectDenied,
+    CollabSyncProbe,
+}
+
+/// Parse a canonical dashed UUID (e.g. `f47ac10b-58cc-4372-a567-0e02b2c3d479`)
+/// into its 16 raw bytes. Kept dependency-free — pulling in the `uuid`
+/// crate for one hex-decode would be overkill.
+fn parse_uuid_bytes(s: &str) -> Result<[u8; 16], String> {
+    let hex: String = s.chars().filter(|c| *c != '-').collect();
+    if hex.len() != 32 {
+        return Err(format!("bad uuid (want 32 hex chars, got {}): {s}", hex.len()));
+    }
+    let mut out = [0u8; 16];
+    for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
+        let s = std::str::from_utf8(chunk).map_err(|_| format!("bad uuid: {s}"))?;
+        out[i] = u8::from_str_radix(s, 16).map_err(|_| format!("bad uuid hex: {s}"))?;
+    }
+    Ok(out)
 }
 
 fn parse_duration(s: &str) -> Result<Duration, String> {
@@ -116,6 +146,7 @@ fn parse_args() -> Result<Args, String> {
     let mode = match it.next().as_deref() {
         Some("subscribe-and-collect") => Mode::SubscribeAndCollect,
         Some("expect-denied") => Mode::ExpectDenied,
+        Some("collab-sync-probe") => Mode::CollabSyncProbe,
         Some(other) => return Err(format!("unknown mode: {other}")),
         None => return Err("mode is required".into()),
     };
@@ -129,6 +160,7 @@ fn parse_args() -> Result<Args, String> {
     let mut timeout = Duration::from_secs(3);
     let mut output = None;
     let mut ready_file = None;
+    let mut file_id = None;
 
     while let Some(flag) = it.next() {
         let value = it
@@ -150,6 +182,7 @@ fn parse_args() -> Result<Args, String> {
             "--timeout" => timeout = parse_duration(&value)?,
             "--output" => output = Some(value),
             "--ready-file" => ready_file = Some(value),
+            "--file" => file_id = Some(parse_uuid_bytes(&value)?),
             other => return Err(format!("unknown flag: {other}")),
         }
     }
@@ -174,6 +207,7 @@ fn parse_args() -> Result<Args, String> {
         timeout,
         output,
         ready_file,
+        file_id,
     })
 }
 
@@ -194,6 +228,7 @@ async fn main() -> ExitCode {
     let result = match args.mode {
         Mode::SubscribeAndCollect => subscribe_and_collect(args).await,
         Mode::ExpectDenied => expect_denied(args).await,
+        Mode::CollabSyncProbe => collab_sync_probe(args).await,
     };
 
     match result {
@@ -515,6 +550,129 @@ async fn expect_denied(args: Args) -> Result<(), HelperError> {
                 "expected reason `{want}`, got `{message}` (full error: {err})"
             )));
         }
+        return Ok(());
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Mode: collab-sync-probe
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Sends one Yjs sync-step-1 request as a binary frame and asserts the server
+// answers with a well-formed sync-step-2 reply on the same file. Exercises
+// the full C2 path in one probe: parse the wire header, spawn the actor,
+// seed content via the reader, encode `state_as_update_v1(&sv)`, wrap the
+// payload back in a 0x03 frame, and ship it to the socket.
+//
+// Wire format is `collab_wire.rs`:
+//   [1 byte kind = 0x03 SYNC][16 bytes file_id BE][payload = state vector]
+// The reply carries the same header (kind 0x03, same file_id) and a
+// non-empty payload — even for an empty doc, `encode_state_as_update_v1`
+// emits the 2-byte "empty update" marker, so a zero-length payload is a
+// regression (missing route wiring or the reader failed silently).
+
+async fn collab_sync_probe(args: Args) -> Result<(), HelperError> {
+    let file_id = args.file_id.ok_or_else(|| {
+        HelperError::Protocol("--file <uuid> required for collab-sync-probe".into())
+    })?;
+
+    let mut ws = connect_ws(&args.url, &args.auth).await?;
+
+    // Build sync-step-1: [0x03][file_id 16 bytes][state vector = 0x00].
+    //
+    // "I know nothing yet" is NOT a zero-length payload — Yjs's
+    // `StateVector::encode_v1` starts with a varint count of clients,
+    // and an empty state vector encodes to exactly one byte, `0x00`.
+    // A zero-length payload here fails `StateVector::decode_v1` with
+    // "unexpected end of buffer" and the server tears the socket down
+    // (see `collab.protocol_violation` audit event). This one byte is
+    // the wire equivalent of the client's "fresh doc, send me
+    // everything you have".
+    let mut req = Vec::with_capacity(18);
+    req.push(0x03); // kind::SYNC — the collab_wire.rs constant, inlined
+    req.extend_from_slice(&file_id);
+    req.push(0x00); // StateVector::default().encode_v1() == [0x00]
+    ws.send(Message::Binary(req.into())).await?;
+
+    // Await the first binary frame within the deadline. Text frames are
+    // legal on the same socket (server-initiated `rt.event` or
+    // `rt.revoked` notifications, keepalive Pings), so drain them
+    // without asserting until a Binary arrives or the timer trips.
+    let deadline = tokio::time::Instant::now() + args.timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(HelperError::Expectation(
+                "timeout without a binary reply on the collab file".into(),
+            ));
+        }
+
+        let msg = match timeout(remaining, ws.next()).await {
+            Ok(Some(Ok(m))) => m,
+            Ok(Some(Err(e))) => return Err(HelperError::Protocol(format!("ws error: {e}"))),
+            // A close mid-probe is a real regression — the server rejected
+            // the frame and tore the socket down. Report as expectation
+            // failure so the shell test surfaces the audit line, not as a
+            // protocol error (which reads as infra breakage).
+            Ok(None) => {
+                return Err(HelperError::Expectation(
+                    "connection closed before a binary reply arrived".into(),
+                ));
+            }
+            Err(_) => {
+                return Err(HelperError::Expectation(
+                    "timeout without a binary reply on the collab file".into(),
+                ));
+            }
+        };
+
+        let bytes = match msg {
+            Message::Binary(b) => b,
+            // Text / Ping / Pong / Close(before-drain) — ignore and keep
+            // reading. This tolerates the auto-sub notifications the WS
+            // installs at open time and any server keepalive.
+            _ => continue,
+        };
+
+        // Frame layout: kind(1) + file_id(16) + payload(≥1).
+        if bytes.len() < 17 {
+            return Err(HelperError::Expectation(format!(
+                "reply frame too short: {} bytes (want header + payload)",
+                bytes.len()
+            )));
+        }
+        let reply_kind = bytes[0];
+        if reply_kind != 0x03 {
+            return Err(HelperError::Expectation(format!(
+                "reply kind 0x{reply_kind:02x}, want 0x03 (SYNC)"
+            )));
+        }
+        let mut reply_file_id = [0u8; 16];
+        reply_file_id.copy_from_slice(&bytes[1..17]);
+        if reply_file_id != file_id {
+            return Err(HelperError::Expectation(
+                "reply file_id does not match request".into(),
+            ));
+        }
+        let payload_len = bytes.len() - 17;
+        if payload_len == 0 {
+            return Err(HelperError::Expectation(
+                "reply payload is empty — sync-step-2 should carry the encoded diff (even the \
+                 empty-update marker is 2 bytes)"
+                    .into(),
+            ));
+        }
+
+        if let Some(path) = args.output.as_ref() {
+            let summary = json!({
+                "kind": reply_kind,
+                "file_id_matches": true,
+                "payload_len": payload_len,
+            });
+            std::fs::write(path, serde_json::to_vec_pretty(&summary).unwrap())
+                .map_err(|e| HelperError::Protocol(format!("write output: {e}")))?;
+        }
+
         return Ok(());
     }
 }

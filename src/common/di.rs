@@ -2409,6 +2409,13 @@ impl AppServiceFactory {
             magic_link_invite_service: None,      // populated below
             recipient_notification_service: None, // populated below alongside magic_link_invite_service
             notification_service: None,           // populated below (Slice E)
+            // Collab session pool — WS binary-frame path keys off
+            // `Some(_)` to enable the Yjs routing. Wiring the concrete
+            // service (with reader/writer bridges to FileManagementService)
+            // is a C7 deliverable; for now the field exists so the WS
+            // handler and any admin surfaces can compile against
+            // `AppState.collab_session_service`.
+            collab_session_service: None,
             // Per-caller limits, configurable since the hardcoded ceilings
             // had no escape hatch for deployments where several actors share
             // one identity — a CI suite running as a single `admin` shares
@@ -2565,6 +2572,51 @@ impl AppServiceFactory {
         )
         .register(&app_state.core.job_registry)
         .await;
+        }
+
+        // 9a-collab. Collab-doc session pool (Yjs over the bus).
+        // Feature-gated by `OXICLOUD_ENABLE_MARKDOWN_COLLAB` AND
+        // `OXICLOUD_MESSAGEBUS_ENABLE` — collab bytes ride the bus WS
+        // and would have no transport without it.
+        //
+        // Reader / writer are STUBS today — the concrete bridges to
+        // FileManagementService land in C7 (see
+        // `docs/plan/markdown-collab.md § Backend`). Stubs let the
+        // sync-step-1/2 path (read-only on server state) work
+        // end-to-end for smoke tests; UPDATE frames apply to the
+        // in-memory `yrs::Doc` but flush-to-blob is a no-op until
+        // the writer bridge lands. NOT for production use in this
+        // state — that's why the flag defaults off.
+        if app_state.core.config.features.enable_markdown_collab
+            && app_state.core.config.features.enable_message_bus
+        {
+            let repo: Arc<
+                dyn crate::application::ports::collab_ports::DocSessionRepository,
+            > = Arc::new(
+                crate::infrastructure::repositories::pg::CollabDocSessionPgRepository::new(
+                    pool.clone(),
+                ),
+            );
+            let reader: Arc<
+                dyn crate::application::ports::collab_ports::DocContentReader,
+            > = Arc::new(EmptySeedReader);
+            let writer: Arc<
+                dyn crate::application::ports::collab_ports::DocContentWriter,
+            > = Arc::new(NoopWriter);
+            let collab = Arc::new(
+                crate::application::services::collab_session_service::CollabSessionService::new(
+                    repo,
+                    reader,
+                    writer,
+                    crate::application::services::collab_session_service::CollabLimits::default(),
+                ),
+            );
+            app_state.collab_session_service = Some(collab);
+            tracing::info!(
+                target: "audit",
+                event = "collab.service_enabled",
+                "🧵 markdown-collab session service wired (stub reader/writer, real bridge in C7)"
+            );
         }
 
         // 9b. Wire admin settings service when auth is available
@@ -3485,6 +3537,17 @@ pub struct AppState {
     pub notification_service: Option<
         Arc<crate::application::services::notification_application_service::NotificationApplicationService>,
     >,
+    /// Collab-doc session registry — the actor pool that hosts one
+    /// `yrs::Doc` per open collaborative file (`.md` / `.txt`). Only
+    /// populated when the collab feature is enabled in the DI factory;
+    /// the WS handler's binary-frame branch keys off `is_some()` to
+    /// decide whether to parse and route Yjs frames or leave them
+    /// inert. See `docs/plan/markdown-collab.md § Backend` and
+    /// `docs/architecture/message-bus-and-notifications.md` for the
+    /// wire and AuthZ story.
+    pub collab_session_service: Option<
+        Arc<crate::application::services::collab_session_service::CollabSessionService>,
+    >,
     /// Per-caller sliding-window limiter for `GET /api/users/{id}`. The
     /// endpoint's primary defense is the visibility check, but a stale
     /// JWT could in theory iterate UUIDs against the related-by-grant
@@ -3679,5 +3742,59 @@ fn build_email_sender(cfg: &crate::common::config::SmtpConfig) -> EmailSenderBun
                 mock: None,
             }
         }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Collab reader / writer stubs — transitional, replaced in C7
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Kept inline here rather than in `application/services/` so their
+// transitional nature is obvious — the moment `FileManagementService`
+// grows a public `read_content`/`write_content` surface that the
+// collab flow can call (C7 in `docs/plan/markdown-collab.md`), these
+// stubs go away and the real bridge lands in a proper adapter file.
+//
+// **Stub semantics:**
+// - `EmptySeedReader` returns an empty `Vec<u8>` on every read. Effect
+//   on `CollabSessionService::attach_file`: when no `collab.doc_sessions`
+//   row exists yet, the actor seeds an EMPTY yrs::Doc rather than one
+//   populated with the file's current text. Concretely — a user
+//   opening a `.md` file for the first time with collab enabled sees a
+//   blank editor even if the file has content. Fine for the smoke
+//   test path (sync-step-1/2 doesn't care about actual content); not
+//   fine for real users, which is why the feature flag defaults off.
+// - `NoopWriter` errors on any write. `CollabSessionService` doesn't
+//   currently call this — flush-to-blob wiring is also C7 — so in
+//   practice the error path never fires today, but the type has to
+//   be implemented for DI.
+
+struct EmptySeedReader;
+
+#[async_trait::async_trait]
+impl crate::application::ports::collab_ports::DocContentReader for EmptySeedReader {
+    async fn read_content(
+        &self,
+        _caller_id: uuid::Uuid,
+        _file_id: uuid::Uuid,
+    ) -> Result<Vec<u8>, crate::common::errors::DomainError> {
+        Ok(Vec::new())
+    }
+}
+
+struct NoopWriter;
+
+#[async_trait::async_trait]
+impl crate::application::ports::collab_ports::DocContentWriter for NoopWriter {
+    async fn write_content(
+        &self,
+        _caller_id: uuid::Uuid,
+        _file_id: uuid::Uuid,
+        _content: Vec<u8>,
+    ) -> Result<String, crate::common::errors::DomainError> {
+        Err(crate::common::errors::DomainError::internal_error(
+            "CollabDocContentWriter",
+            "flush-to-blob wiring not present yet (C7 in docs/plan/markdown-collab.md)",
+        ))
     }
 }

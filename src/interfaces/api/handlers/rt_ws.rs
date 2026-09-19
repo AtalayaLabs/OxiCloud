@@ -540,11 +540,80 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
                                 break;
                             }
                     }
-                    Some(Ok(Message::Binary(_))) => {
-                        // Reserved for Yjs sync protocol frames (collab
-                        // editor, Phase A follow-up). Silently ignored in
-                        // MVP so a future client that speaks binary
-                        // frames on the same connection isn't rejected.
+                    Some(Ok(Message::Binary(bytes))) => {
+                        // Yjs sync-protocol frames for the collab editor.
+                        // Format: `[1 byte kind][16 bytes file_id][payload…]`.
+                        // Parsed by `collab_wire::parse_binary_frame`,
+                        // dispatched by `CollabSessionService::handle_binary_frame`.
+                        //
+                        // When the collab feature isn't wired (no
+                        // `collab_session_service` in AppState), silently
+                        // drop the frame — the client will time out its
+                        // own sync attempt and fall back gracefully.
+                        // When it IS wired but the parse fails, close
+                        // the socket with a protocol-violation reason;
+                        // audit line captures the truth.
+                        let Some(collab) = state.collab_session_service.as_ref() else {
+                            continue;
+                        };
+                        use crate::application::services::collab_wire::{
+                            parse_binary_frame, encode_binary_frame, kind, FrameParseErr,
+                        };
+                        let frame = match parse_binary_frame(&bytes) {
+                            Ok(f) => f,
+                            Err(e) => {
+                                tracing::info!(
+                                    target: "audit",
+                                    event = "collab.protocol_violation",
+                                    reason = match &e {
+                                        FrameParseErr::TooShort { .. } => "too_short",
+                                        FrameParseErr::UnknownKind { .. } => "unknown_kind",
+                                    },
+                                    caller_id = %caller_id,
+                                    "👮🏻‍♂️ collab binary frame rejected: {e}",
+                                );
+                                break;
+                            }
+                        };
+                        // Preserve kind + file_id BEFORE moving frame
+                        // into the async call — the encode-back path
+                        // needs both to build the reply header, and a
+                        // parsed frame is one-shot-consumed by the
+                        // router.
+                        let reply_kind = frame.kind;
+                        let reply_file_id = frame.file_id;
+                        match collab.handle_binary_frame(caller_id, frame).await {
+                            Ok(None) => {
+                                // UPDATE + AWARENESS have no per-socket
+                                // reply. Fan-out to other subscribers on
+                                // the topic is a bus-side concern wired
+                                // in a follow-up.
+                            }
+                            Ok(Some(reply_payload)) => {
+                                // SYNC replies come back as the sync-step-2
+                                // payload — re-wrap in a 0x03 binary frame
+                                // (same kind as the incoming sync-step-1
+                                // request per the Yjs protocol) and send.
+                                let out = encode_binary_frame(
+                                    if reply_kind == kind::SYNC { kind::SYNC } else { reply_kind },
+                                    reply_file_id,
+                                    &reply_payload,
+                                );
+                                if socket.send(Message::Binary(out.into())).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                tracing::info!(
+                                    target: "audit",
+                                    event = "collab.protocol_violation",
+                                    reason = "apply_failed",
+                                    caller_id = %caller_id,
+                                    "👮🏻‍♂️ collab frame apply failed: {e}",
+                                );
+                                break;
+                            }
+                        }
                     }
                     Some(Ok(Message::Ping(_) | Message::Pong(_))) => {
                         // Client Ping → axum auto-Pongs. Client Pong is

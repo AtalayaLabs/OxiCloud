@@ -131,6 +131,16 @@ enum SessionMsg {
     Snapshot {
         reply: oneshot::Sender<Result<(), CollabError>>,
     },
+    /// Yjs sync-step-1: the client sends its state vector; the server
+    /// replies with the diff (sync-step-2) that brings the client up
+    /// to date. Called on every attach and on reconnect. The reply
+    /// payload is the raw bytes clients pass to `Y.applyUpdate` — no
+    /// additional framing here (the WS handler wraps it in a `0x03`
+    /// binary frame per the wire spec).
+    SyncStep1 {
+        client_state_vector: Vec<u8>,
+        reply: oneshot::Sender<Result<Vec<u8>, CollabError>>,
+    },
     Shutdown,
 }
 
@@ -190,6 +200,26 @@ impl CollabSession {
         let (tx, rx) = oneshot::channel();
         self.inbox
             .send(SessionMsg::Snapshot { reply: tx })
+            .await
+            .map_err(|_| CollabError::SessionGone)?;
+        rx.await.map_err(|_| CollabError::SessionGone)?
+    }
+
+    /// Handle a client's sync-step-1 (state vector) by returning the
+    /// sync-step-2 diff bytes the client needs to catch up. The WS
+    /// handler wraps the reply in a `0x03` binary frame per the wire
+    /// spec.
+    ///
+    /// If the client's state vector fails to decode, returns
+    /// [`CollabError::BadUpdate`] — the caller closes the socket with
+    /// a protocol-violation reason (WS 1002).
+    pub async fn sync_step_1(&self, client_state_vector: Vec<u8>) -> Result<Vec<u8>, CollabError> {
+        let (tx, rx) = oneshot::channel();
+        self.inbox
+            .send(SessionMsg::SyncStep1 {
+                client_state_vector,
+                reply: tx,
+            })
             .await
             .map_err(|_| CollabError::SessionGone)?;
         rx.await.map_err(|_| CollabError::SessionGone)?
@@ -327,6 +357,15 @@ impl ActorState {
         self.updates_since_snapshot = 0;
         Ok(())
     }
+
+    /// Yjs sync-step-1 handler: given the client's state vector, encode
+    /// the diff that brings the client up to date. Read-only on the
+    /// server doc — no persistence side-effects.
+    fn sync_step_1(&self, client_sv_bytes: &[u8]) -> Result<Vec<u8>, CollabError> {
+        let sv = StateVector::decode_v1(client_sv_bytes)
+            .map_err(|e| CollabError::BadUpdate(format!("state-vector decode: {e}")))?;
+        Ok(self.doc.transact().encode_state_as_update_v1(&sv))
+    }
 }
 
 /// Run one session actor's message loop until every sender drops OR
@@ -356,6 +395,12 @@ async fn run_actor(mut state: ActorState, mut inbox: mpsc::Receiver<SessionMsg>)
             }
             SessionMsg::Snapshot { reply } => {
                 let _ = reply.send(state.snapshot().await);
+            }
+            SessionMsg::SyncStep1 {
+                client_state_vector,
+                reply,
+            } => {
+                let _ = reply.send(state.sync_step_1(&client_state_vector));
             }
             SessionMsg::Shutdown => break,
         }
@@ -437,6 +482,61 @@ impl CollabSessionService {
     /// Number of live actors. Test/introspection only.
     pub fn live_session_count(&self) -> usize {
         self.sessions.len()
+    }
+
+    /// Route an incoming binary frame from the WS handler to the right
+    /// per-file actor. The caller must have already passed the
+    /// subscribe-time `Read` gate on `Topic::Collab(file_id)`; this
+    /// method assumes that check succeeded.
+    ///
+    /// Return value:
+    /// - `Ok(Some(reply_frame))` — a frame the caller must send back
+    ///   on this socket (sync-step-2 reply to a client's sync-step-1).
+    /// - `Ok(None)` — accepted, nothing to reply on this socket. Any
+    ///   fan-out to OTHER sockets happens via the message bus (C2
+    ///   follow-up wiring).
+    /// - `Err(CollabError)` — protocol violation or CRDT-apply error;
+    ///   the caller closes the socket with a `collab.protocol_violation`
+    ///   audit line + WS close 1002.
+    ///
+    /// **Not yet wired:**
+    /// - The write-side `Edit` AuthZ check on `0x01` frames — a plan-
+    ///   deliverable (see `docs/plan/markdown-collab.md § AuthZ`). The
+    ///   integration test that lands with the WS handler slice will
+    ///   plug the check in via `authz.require(caller, file, Edit)`
+    ///   cached per session.
+    /// - Bus fan-out of applied updates to OTHER sockets subscribed to
+    ///   `Topic::Collab(file_id)`. Separate concern that touches the
+    ///   `MessageBus` port.
+    pub async fn handle_binary_frame(
+        &self,
+        caller_id: Uuid,
+        frame: crate::application::services::collab_wire::BinaryFrame,
+    ) -> Result<Option<Vec<u8>>, CollabError> {
+        use crate::application::services::collab_wire::kind;
+        let session = self.attach_file(caller_id, frame.file_id).await?;
+        match frame.kind {
+            kind::UPDATE => {
+                session.apply_update(frame.payload).await?;
+                Ok(None)
+            }
+            kind::AWARENESS => {
+                // Presence-only; not persisted, not applied to the CRDT.
+                // Fan-out to other sockets on the same topic is a bus
+                // concern wired in a follow-up.
+                Ok(None)
+            }
+            kind::SYNC => {
+                // Client → server: sync-step-1 (state vector). Reply
+                // with sync-step-2 (diff) bytes; the WS handler wraps
+                // them in another 0x03 binary frame.
+                let reply_payload = session.sync_step_1(frame.payload).await?;
+                Ok(Some(reply_payload))
+            }
+            other => Err(CollabError::BadUpdate(format!(
+                "unknown frame kind 0x{other:02x} (routed past parser?)"
+            ))),
+        }
     }
 }
 
@@ -703,5 +803,161 @@ mod tests {
         assert_eq!(svc.live_session_count(), 1);
         svc.shutdown(file_id).await;
         assert_eq!(svc.live_session_count(), 0);
+    }
+
+    // ── Binary-frame router (C2 slice 2) ──────────────────────────────
+
+    use crate::application::services::collab_wire::{kind, BinaryFrame};
+
+    #[tokio::test]
+    async fn handle_binary_frame_update_applies_to_the_actor() {
+        let svc = service_with_seed("", CollabLimits::default());
+        let file_id = Uuid::new_v4();
+
+        // Build a valid Yjs update on a client-side Doc.
+        let client = Doc::new();
+        {
+            let text = client.get_or_insert_text(ROOT_TEXT_NAME);
+            let mut txn = client.transact_mut();
+            text.insert(&mut txn, 0, "hello");
+        }
+        let update_bytes = client
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+
+        // Route as a 0x01 frame — router should apply + return None.
+        let frame = BinaryFrame {
+            kind: kind::UPDATE,
+            file_id,
+            payload: update_bytes,
+        };
+        let reply = svc.handle_binary_frame(Uuid::nil(), frame).await.unwrap();
+        assert_eq!(reply, None, "update frames don't reply on this socket");
+
+        // Server-side actor now reflects the client's edit.
+        let session = svc.attach_file(Uuid::nil(), file_id).await.unwrap();
+        assert_eq!(session.get_text().await.unwrap(), "hello");
+    }
+
+    #[tokio::test]
+    async fn handle_binary_frame_awareness_is_a_no_op_on_server_state() {
+        let svc = service_with_seed("seed", CollabLimits::default());
+        let file_id = Uuid::new_v4();
+
+        // 0x02 payload is opaque presence bytes; we don't decode.
+        let frame = BinaryFrame {
+            kind: kind::AWARENESS,
+            file_id,
+            payload: vec![0xAA, 0xBB, 0xCC],
+        };
+        let reply = svc.handle_binary_frame(Uuid::nil(), frame).await.unwrap();
+        assert_eq!(reply, None);
+
+        // Doc text unchanged — awareness is presence, not content.
+        let session = svc.attach_file(Uuid::nil(), file_id).await.unwrap();
+        assert_eq!(session.get_text().await.unwrap(), "seed");
+    }
+
+    #[tokio::test]
+    async fn handle_binary_frame_sync_replies_with_diff_that_catches_client_up() {
+        let svc = service_with_seed("hello world", CollabLimits::default());
+        let file_id = Uuid::new_v4();
+
+        // Client's state vector is empty — it wants everything.
+        let empty_sv = StateVector::default().encode_v1();
+        let frame = BinaryFrame {
+            kind: kind::SYNC,
+            file_id,
+            payload: empty_sv,
+        };
+        let reply = svc
+            .handle_binary_frame(Uuid::nil(), frame)
+            .await
+            .unwrap()
+            .expect("SYNC frames reply with sync-step-2 bytes");
+
+        // Applying the reply on a fresh client Doc reproduces the
+        // server text — the whole point of sync-step-2.
+        let client = Doc::new();
+        {
+            let update = Update::decode_v1(&reply).unwrap();
+            client.transact_mut().apply_update(update).unwrap();
+        }
+        let text_on_client = {
+            let text = client.get_or_insert_text(ROOT_TEXT_NAME);
+            text.get_string(&client.transact())
+        };
+        assert_eq!(text_on_client, "hello world");
+    }
+
+    #[tokio::test]
+    async fn handle_binary_frame_sync_with_current_state_vector_returns_empty_diff() {
+        // Regression guard: a client whose state vector already
+        // matches the server MUST get an empty(-ish) sync-step-2, not
+        // a resend of the full doc. Yjs handles this internally by
+        // returning a minimal update; the encoded bytes may be a
+        // handful (framing only, no ops).
+        let svc = service_with_seed("hello", CollabLimits::default());
+        let file_id = Uuid::new_v4();
+
+        // Seed a client, get it in sync, then re-issue sync-step-1.
+        let client = Doc::new();
+        // Client learns about the server's content first.
+        let empty_sv = StateVector::default().encode_v1();
+        let first_reply = svc
+            .handle_binary_frame(
+                Uuid::nil(),
+                BinaryFrame {
+                    kind: kind::SYNC,
+                    file_id,
+                    payload: empty_sv,
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        {
+            let update = Update::decode_v1(&first_reply).unwrap();
+            client.transact_mut().apply_update(update).unwrap();
+        }
+        // Now client's SV should match the server's.
+        let client_sv_now = client.transact().state_vector().encode_v1();
+        let second_reply = svc
+            .handle_binary_frame(
+                Uuid::nil(),
+                BinaryFrame {
+                    kind: kind::SYNC,
+                    file_id,
+                    payload: client_sv_now,
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        // The diff must NOT include the original insert — Yjs encodes
+        // "no work" as a very small blob. Reasonable heuristic:
+        // considerably smaller than the first (which contained the
+        // full content) is enough proof.
+        assert!(
+            second_reply.len() < first_reply.len(),
+            "in-sync client's diff ({} B) must be smaller than the initial catch-up ({} B)",
+            second_reply.len(),
+            first_reply.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_binary_frame_malformed_update_bytes_error() {
+        let svc = service_with_seed("", CollabLimits::default());
+        let file_id = Uuid::new_v4();
+        let frame = BinaryFrame {
+            kind: kind::UPDATE,
+            file_id,
+            payload: vec![0xFF, 0xFF, 0xFF],
+        };
+        match svc.handle_binary_frame(Uuid::nil(), frame).await {
+            Err(CollabError::BadUpdate(_)) => {} // expected
+            other => panic!("expected BadUpdate, got {:?}", other),
+        }
     }
 }

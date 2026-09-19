@@ -116,6 +116,24 @@
 #                                       dedup because rows would come
 #                                       in both via WS push and via
 #                                       the delta fetch).
+#   S17 Collab binary frame     — upload a .md file, send one Yjs
+#                                 sync-step-1 request on the WS as a
+#                                 binary frame keyed on file_id, and
+#                                 assert the server replies with a
+#                                 well-formed sync-step-2 frame
+#                                 (kind=0x03, matching file_id,
+#                                 non-empty payload). Guards the C2
+#                                 wire path end-to-end: parse the
+#                                 wire header, spawn the actor,
+#                                 encode `state_as_update_v1(&sv)`,
+#                                 wrap in a 0x03 frame, ship it.
+#                                 Depends on
+#                                 `OXICLOUD_ENABLE_MARKDOWN_COLLAB=true`
+#                                 in server.env; without it the WS
+#                                 branch silently drops the frame
+#                                 and the probe times out — which
+#                                 is exactly what this scenario
+#                                 catches for a mis-configured build.
 #
 # Exit non-zero on any failure — run.sh treats that as a suite failure.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -929,4 +947,61 @@ count_after_t1=$(printf '%s' "$notifs_after_t1" | jq -r '.items | length')
   || { printf '%s\n' "$notifs_after_t1" >&2; die "S16: expected 0 rows after T1 (strict '>' bound), got $count_after_t1"; }
 log "S16 OK"
 
-log "All sixteen message-bus scenarios passed."
+# ── Scenario 17 — Collab binary sync-step round-trip (Phase A C2) ───────────
+# Upload a .md file into folder A, then open a WS and send one Yjs
+# sync-step-1 request as a binary frame keyed on the file's UUID.
+# The server must route through `CollabSessionService::handle_binary_frame`,
+# spawn (or reuse) the actor, and reply with a sync-step-2 binary
+# frame carrying the same header (kind 0x03, matching file_id) and
+# a non-empty payload — even an untouched doc yields the 2-byte
+# empty-update marker from `encode_state_as_update_v1`.
+#
+# The scenario is intentionally minimal: no assertions on payload
+# semantics beyond "non-empty" — Yjs update parsing lives in the
+# Rust unit tests. This is the end-to-end wire probe, and it fails
+# for exactly the regressions that unit tests can't see:
+#   * `collab_session_service` not wired in AppState (silent drop on the WS)
+#   * `OXICLOUD_ENABLE_MARKDOWN_COLLAB` missing from the test env
+#   * binary-frame branch replaced with an ignore
+#   * kind or file_id serialization off by one
+log "S17: upload .md and probe Yjs sync-step round-trip."
+tmp_md="$(mktemp -t rtbus_s17_body.XXXXXX)"
+printf '# hello collab\n\nsync-probe smoke\n' > "$tmp_md"
+upload_resp="$(mktemp -t rtbus_s17_resp.XXXXXX)"
+status=$(curl -sS -o "$upload_resp" -w "%{http_code}" -X POST \
+  -H "Authorization: Bearer $user1_token" \
+  -F "folder_id=$folder_a" \
+  -F "file=@$tmp_md;filename=s17.md" \
+  "$base_url/api/files/upload")
+rm -f "$tmp_md"
+if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
+  cat "$upload_resp" >&2
+  rm -f "$upload_resp"
+  die "S17: .md upload failed with HTTP $status"
+fi
+s17_file_id=$(jq -r '.id' "$upload_resp")
+rm -f "$upload_resp"
+[[ -n "$s17_file_id" && "$s17_file_id" != "null" ]] \
+  || die "S17: could not extract file id from upload response"
+
+out_s17="$(mktemp -t rtbus_s17.XXXXXX)"
+if ! "$HELPER_BIN" collab-sync-probe \
+     --url "$ws_url" \
+     --token "$user1_token" \
+     --file "$s17_file_id" \
+     --timeout 5s \
+     --output "$out_s17"; then
+  cat "$out_s17" >&2 || true
+  die "S17: sync-step probe failed — collab wire regression?"
+fi
+# Sanity on the helper's summary — belt-and-braces so a helper regression
+# that returns 0 without probing is caught.
+[[ "$(jq -r '.kind' "$out_s17")" == "3" ]] \
+  || { cat "$out_s17"; die "S17: reply kind not 3"; }
+[[ "$(jq -r '.file_id_matches' "$out_s17")" == "true" ]] \
+  || { cat "$out_s17"; die "S17: reply file_id did not match request"; }
+[[ "$(jq -r '.payload_len' "$out_s17")" -ge 1 ]] \
+  || { cat "$out_s17"; die "S17: reply payload empty"; }
+log "S17 OK"
+
+log "All seventeen message-bus scenarios passed."
