@@ -450,7 +450,7 @@ fn main() {
         .collect();
     let t_grp_before = time_passes(passes, || black_box(before::group_events_by_uid(&dtos)));
     let t_grp_after = time_passes(passes, || {
-        black_box(caldav_bench::group_events_by_uid(&dtos))
+        black_box(caldav_bench::group_objects_by_uid(&dtos))
     });
     println!("[4] group_events_by_uid µs/{group_n} events (String keys vs borrowed)");
     println!("    BEFORE            {t_grp_before:8.1}");
@@ -546,7 +546,7 @@ fn main() {
 
     // Gate D: grouping identity — same UID order, same per-bucket rows.
     let g_before = before::group_events_by_uid(&dtos);
-    let g_after = caldav_bench::group_events_by_uid(&dtos);
+    let g_after = caldav_bench::group_objects_by_uid(&dtos);
     let shape = |g: &Vec<Vec<&CalendarEventDto>>| -> Vec<Vec<(String, bool)>> {
         g.iter()
             .map(|bucket| {

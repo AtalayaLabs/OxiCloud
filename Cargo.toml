@@ -43,6 +43,12 @@ flate2 = "1.1.9"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 chrono = { version = "0.4.45", features = ["serde"] }
+# IANA timezone database for CalDAV TZID resolution
+# (`DTSTART;TZID=Europe/Paris:...` → correct UTC instant in the indexed
+# columns — AtalayaLabs/OxiCloud#689). MIT/Apache, pure-Rust tzdata.
+# DST transition evaluation stays client-side: VTIMEZONE blocks (with
+# their RRULEs) are preserved and served verbatim, never evaluated here.
+chrono-tz = "0.10"
 # CLI argument parser for the operator toolbox (`oxicloud-cli`). `derive`
 # for the subcommand tree; the runtime dep is small (< 300 KiB compiled)
 # and shared with any future subcommand additions.

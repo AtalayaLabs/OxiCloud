@@ -133,7 +133,9 @@ mod tests {
         assert!(result.is_ok(), "Failed to parse report: {:?}", result.err());
 
         match result.unwrap() {
-            CalDavReportType::CalendarQuery { time_range, props } => {
+            CalDavReportType::CalendarQuery {
+                time_range, props, ..
+            } => {
                 assert!(time_range.is_some(), "Time range should be parsed");
                 let (start, end) = time_range.unwrap();
                 assert_eq!(start, Utc.with_ymd_and_hms(2025, 6, 1, 0, 0, 0).unwrap());
@@ -338,6 +340,7 @@ mod tests {
         let events = vec![sample_event()];
         let report = CalDavReportType::CalendarQuery {
             time_range: None,
+            comp: None,
             props: vec![
                 QualifiedName {
                     namespace: "DAV:".to_string(),
@@ -386,6 +389,7 @@ mod tests {
         let events: Vec<CalendarEventDto> = vec![];
         let report = CalDavReportType::CalendarQuery {
             time_range: None,
+            comp: None,
             props: vec![],
         };
 

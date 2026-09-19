@@ -28,13 +28,13 @@ use std::fmt::Write;
 use std::sync::Arc;
 
 use crate::application::adapters::caldav_adapter::{
-    CalDavAdapter, CalDavReportType, bundle_to_calendar_body, extract_vevent_chunk,
-    group_events_by_uid,
+    CalDavAdapter, CalDavReportType, CalendarObjectRow, bundle_to_calendar_body,
+    extract_object_chunk, extract_vtimezone_chunks, group_objects_by_uid, vtimezone_tzid,
 };
 use crate::application::adapters::uid_from_multiget_href;
 use crate::application::adapters::webdav_adapter::{PropFindRequest, PropFindType};
 use crate::application::dtos::calendar_dto::{
-    CalendarEventDto, CreateCalendarDto, CreateEventICalDto, UpdateCalendarDto,
+    CalendarEventDto, CalendarTodoDto, CreateCalendarDto, CreateEventICalDto, UpdateCalendarDto,
 };
 use crate::application::ports::calendar_ports::CalendarUseCase;
 use crate::application::services::calendar_service::CalendarService;
@@ -55,18 +55,96 @@ const MAX_CALDAV_BODY: usize = 1_048_576;
 /// whole calendar twice.
 const CALDAV_STREAM_PAGE_EVENTS: usize = 500;
 
+/// Which stored calendar-object kinds a REPORT targets, derived from
+/// the parsed `comp-filter` (#754).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CompTarget {
+    /// `<C:comp-filter name="VEVENT">` (or an unknown/unsupported
+    /// component name — the pre-comp-filter-awareness behaviour).
+    EventsOnly,
+    /// `<C:comp-filter name="VTODO">`.
+    TodosOnly,
+    /// No component-level filter — RFC 4791 §9.7: match every stored
+    /// kind. Multiget and sync-collection always take this branch
+    /// (hrefs address objects of either kind).
+    All,
+}
+
+fn comp_target(comp: Option<&str>) -> CompTarget {
+    match comp {
+        Some("VTODO") => CompTarget::TodosOnly,
+        Some("VEVENT") => CompTarget::EventsOnly,
+        None => CompTarget::All,
+        // Unknown component kinds (VJOURNAL, VFREEBUSY — not stored)
+        // fall back to the events surface.
+        Some(_) => CompTarget::EventsOnly,
+    }
+}
+
+/// Generic UID-boundary pager: drains `rows` into pages cut at UID
+/// boundaries (the cursor delivers same-UID rows adjacent, so a
+/// master + its exception overrides always land in one chunk),
+/// renders each page with `render`, and yields the chunks. Shared by
+/// the streaming REPORT / collection-PROPFIND / whole-calendar-ICS
+/// builders so events and tasks flow through identical plumbing
+/// (#754); peak memory stays one page of DTOs + its rendered chunk.
+fn paged_uid_chunks<T, S, F>(
+    rows: S,
+    mut render: F,
+) -> impl futures::Stream<Item = Result<Bytes, std::io::Error>>
+where
+    S: futures::Stream<Item = Result<T, crate::common::errors::DomainError>> + Unpin,
+    F: FnMut(&[T]) -> Result<Vec<u8>, std::io::Error>,
+    T: CalendarObjectRow,
+{
+    async_stream::try_stream! {
+        let mut rows = rows;
+        let mut page: Vec<T> = Vec::with_capacity(CALDAV_STREAM_PAGE_EVENTS + 32);
+        loop {
+            use futures::TryStreamExt;
+            let next = rows
+                .try_next()
+                .await
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            let flush = match &next {
+                Some(obj) => {
+                    page.len() >= CALDAV_STREAM_PAGE_EVENTS
+                        && page
+                            .last()
+                            .is_some_and(|p| p.row_ical_uid() != obj.row_ical_uid())
+                }
+                None => !page.is_empty(),
+            };
+            if flush {
+                let chunk = render(&page)?;
+                page.clear();
+                yield Bytes::from(chunk);
+            }
+            match next {
+                Some(obj) => page.push(obj),
+                None => break,
+            }
+        }
+    }
+}
+
 /// Streamed multistatus REPORT: header chunk, one chunk per hydrated
 /// UID page, footer chunk. Byte-compatible with the buffered
 /// `generate_calendar_events_response` output (same bundle order:
 /// `(MIN(start_time), uid)` = first appearance in the start_time
 /// listing). TTFB becomes the first page instead of the full
 /// generation; the whole-calendar DTO Vec is never materialised.
+///
+/// `target` decides which stored kinds stream (#754): events, tasks,
+/// or both (events first, then tasks — multistatus member order is
+/// not significant).
 fn build_streaming_report_response(
     calendar_service: Arc<CalendarService>,
     calendar_id: String,
     report: CalDavReportType,
     base_href: String,
     user_id: uuid::Uuid,
+    target: CompTarget,
 ) -> Response<Body> {
     let stream = async_stream::try_stream! {
         let mut buf = Vec::with_capacity(256);
@@ -77,43 +155,52 @@ fn build_streaming_report_response(
         }
         yield Bytes::from(buf);
 
+        use futures::TryStreamExt;
+
         // ONE server-side scan+sort in bundle order streamed through a
-        // cursor — the same aggregate work the buffered path paid, but
-        // only a page of rows resident. Pages cut at UID boundaries.
-        {
-            use futures::TryStreamExt;
-            let mut rows = calendar_service
+        // cursor per kind — the same aggregate work the buffered path
+        // paid, but only a page of rows resident. The render closures
+        // own their clones of `report` / `base_href` so the pager
+        // streams are self-contained ('static).
+        if target != CompTarget::TodosOnly {
+            let rows = calendar_service
                 .stream_events_uid_order(&calendar_id, user_id)
                 .await
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
-            let mut page: Vec<CalendarEventDto> =
-                Vec::with_capacity(CALDAV_STREAM_PAGE_EVENTS + 32);
-            loop {
-                let next = rows
-                    .try_next()
-                    .await
-                    .map_err(|e| std::io::Error::other(e.to_string()))?;
-                let flush = match &next {
-                    Some(ev) => {
-                        page.len() >= CALDAV_STREAM_PAGE_EVENTS
-                            && page.last().is_some_and(|p| p.ical_uid != ev.ical_uid)
-                    }
-                    None => !page.is_empty(),
-                };
-                if flush {
+            let mut chunks = Box::pin(paged_uid_chunks(rows, {
+                let report = report.clone();
+                let base_href = base_href.clone();
+                move |page: &[CalendarEventDto]| {
                     let mut chunk = Vec::with_capacity(page.len() * 1024 + 128);
-                    {
-                        let mut w = Writer::new(&mut chunk);
-                        CalDavAdapter::write_report_page(&mut w, &page, &report, &base_href)
-                            .map_err(|e| std::io::Error::other(e.to_string()))?;
-                    }
-                    page.clear();
-                    yield Bytes::from(chunk);
+                    let mut w = Writer::new(&mut chunk);
+                    CalDavAdapter::write_report_page(&mut w, page, &report, &base_href)
+                        .map_err(|e| std::io::Error::other(e.to_string()))?;
+                    Ok(chunk)
                 }
-                match next {
-                    Some(ev) => page.push(ev),
-                    None => break,
+            }));
+            while let Some(chunk) = chunks.try_next().await? {
+                yield chunk;
+            }
+        }
+
+        if target != CompTarget::EventsOnly {
+            let rows = calendar_service
+                .stream_todos_uid_order(&calendar_id, user_id)
+                .await
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            let mut chunks = Box::pin(paged_uid_chunks(rows, {
+                let report = report.clone();
+                let base_href = base_href.clone();
+                move |page: &[CalendarTodoDto]| {
+                    let mut chunk = Vec::with_capacity(page.len() * 1024 + 128);
+                    let mut w = Writer::new(&mut chunk);
+                    CalDavAdapter::write_report_page(&mut w, page, &report, &base_href)
+                        .map_err(|e| std::io::Error::other(e.to_string()))?;
+                    Ok(chunk)
                 }
+            }));
+            while let Some(chunk) = chunks.try_next().await? {
+                yield chunk;
             }
         }
 
@@ -158,40 +245,47 @@ fn build_streaming_collection_propfind(
         }
         yield Bytes::from(buf);
 
+        // Member resources — events first, then tasks (#754). Both
+        // kinds must appear here: DAVx⁵ discovers sync candidates via
+        // depth-1 PROPFIND getetag, and a task missing from the
+        // listing would never sync.
         {
             use futures::TryStreamExt;
-            let mut rows = calendar_service
+
+            let event_rows = calendar_service
                 .stream_events_uid_order(&calendar_id, user_id)
                 .await
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
-            let mut page: Vec<CalendarEventDto> =
-                Vec::with_capacity(CALDAV_STREAM_PAGE_EVENTS + 32);
-            loop {
-                let next = rows
-                    .try_next()
-                    .await
-                    .map_err(|e| std::io::Error::other(e.to_string()))?;
-                let flush = match &next {
-                    Some(ev) => {
-                        page.len() >= CALDAV_STREAM_PAGE_EVENTS
-                            && page.last().is_some_and(|p| p.ical_uid != ev.ical_uid)
-                    }
-                    None => !page.is_empty(),
-                };
-                if flush {
+            let mut event_chunks = Box::pin(paged_uid_chunks(event_rows, {
+                let base_href = base_href.clone();
+                move |page: &[CalendarEventDto]| {
                     let mut chunk = Vec::with_capacity(page.len() * 512 + 128);
-                    {
-                        let mut w = Writer::new(&mut chunk);
-                        CalDavAdapter::write_collection_event_page(&mut w, &page, &base_href)
-                            .map_err(|e| std::io::Error::other(e.to_string()))?;
-                    }
-                    page.clear();
-                    yield Bytes::from(chunk);
+                    let mut w = Writer::new(&mut chunk);
+                    CalDavAdapter::write_collection_event_page(&mut w, page, &base_href)
+                        .map_err(|e| std::io::Error::other(e.to_string()))?;
+                    Ok(chunk)
                 }
-                match next {
-                    Some(ev) => page.push(ev),
-                    None => break,
+            }));
+            while let Some(chunk) = event_chunks.try_next().await? {
+                yield chunk;
+            }
+
+            let todo_rows = calendar_service
+                .stream_todos_uid_order(&calendar_id, user_id)
+                .await
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            let mut todo_chunks = Box::pin(paged_uid_chunks(todo_rows, {
+                let base_href = base_href.clone();
+                move |page: &[CalendarTodoDto]| {
+                    let mut chunk = Vec::with_capacity(page.len() * 512 + 128);
+                    let mut w = Writer::new(&mut chunk);
+                    CalDavAdapter::write_collection_event_page(&mut w, page, &base_href)
+                        .map_err(|e| std::io::Error::other(e.to_string()))?;
+                    Ok(chunk)
                 }
+            }));
+            while let Some(chunk) = todo_chunks.try_next().await? {
+                yield chunk;
             }
         }
 
@@ -215,9 +309,48 @@ fn build_streaming_collection_propfind(
         .unwrap()
 }
 
+/// Render one UID page of the whole-calendar `.ics` stream: each
+/// row's stored component chunk verbatim, with VTIMEZONE blocks
+/// deduped through the stream-wide `seen_tzids` set (#689). Shared by
+/// the event and task sections (#754).
+fn render_ics_page<T: CalendarObjectRow>(
+    page: &[T],
+    seen_tzids: &std::sync::Mutex<std::collections::HashSet<String>>,
+) -> Vec<u8> {
+    let mut chunk = String::with_capacity(page.len() * 384);
+    for group in group_objects_by_uid(page) {
+        for row in group {
+            for vtz in extract_vtimezone_chunks(row.row_ical_data()) {
+                let key = vtimezone_tzid(vtz).unwrap_or(vtz);
+                // The lock is per-page and uncontended — a poisoned
+                // mutex can't occur here (no panics while held).
+                if let Ok(mut seen) = seen_tzids.lock()
+                    && seen.insert(key.to_string())
+                {
+                    chunk.push_str(vtz);
+                    if !chunk.ends_with('\n') {
+                        chunk.push_str("\r\n");
+                    }
+                }
+            }
+            if let Some(comp) = extract_object_chunk(row) {
+                chunk.push_str(comp);
+                if !chunk.ends_with('\n') {
+                    chunk.push_str("\r\n");
+                }
+            }
+        }
+    }
+    chunk.into_bytes()
+}
+
 /// Streamed whole-calendar `.ics` GET: VCALENDAR header, one chunk per
-/// hydrated UID page (each row's stored VEVENT chunk served verbatim),
-/// `END:VCALENDAR` footer.
+/// hydrated UID page (each row's stored component chunk served
+/// verbatim — events first, then tasks, #754), `END:VCALENDAR`
+/// footer. VTIMEZONE blocks embedded in the rows' shells are re-emitted
+/// ONCE per TZID across the WHOLE stream (both kinds share one dedupe
+/// set, so a zone referenced by an event and a task alike still
+/// appears exactly once).
 fn build_streaming_calendar_ics(
     calendar_service: Arc<CalendarService>,
     calendar_id: String,
@@ -234,45 +367,43 @@ fn build_streaming_calendar_ics(
         );
         yield Bytes::from(head);
 
+        // VTIMEZONE dedupe across the whole stream (#689): rows
+        // written after the fix each embed the PUT body's zone
+        // definitions in their shell; emit each TZID once, the
+        // first time it shows up. Blocks may appear AFTER earlier
+        // pages' components — component order inside a VCALENDAR is
+        // not significant (RFC 5545 §3.4) and every real client
+        // parser (ical4j, libical, vobject) accepts that. Shared
+        // across the event and task sections via Arc<Mutex>.
+        let seen_tzids = std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashSet::<String>::new(),
+        ));
+
         {
             use futures::TryStreamExt;
-            let mut rows = calendar_service
+
+            let event_rows = calendar_service
                 .stream_events_uid_order(&calendar_id, user_id)
                 .await
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
-            let mut page: Vec<CalendarEventDto> =
-                Vec::with_capacity(CALDAV_STREAM_PAGE_EVENTS + 32);
-            loop {
-                let next = rows
-                    .try_next()
-                    .await
-                    .map_err(|e| std::io::Error::other(e.to_string()))?;
-                let flush = match &next {
-                    Some(ev) => {
-                        page.len() >= CALDAV_STREAM_PAGE_EVENTS
-                            && page.last().is_some_and(|p| p.ical_uid != ev.ical_uid)
-                    }
-                    None => !page.is_empty(),
-                };
-                if flush {
-                    let mut chunk = String::with_capacity(page.len() * 384);
-                    for group in group_events_by_uid(&page) {
-                        for event in group {
-                            if let Some(vevent) = extract_vevent_chunk(&event.ical_data) {
-                                chunk.push_str(vevent);
-                                if !chunk.ends_with('\n') {
-                                    chunk.push_str("\r\n");
-                                }
-                            }
-                        }
-                    }
-                    page.clear();
-                    yield Bytes::from(chunk);
-                }
-                match next {
-                    Some(ev) => page.push(ev),
-                    None => break,
-                }
+            let mut event_chunks = Box::pin(paged_uid_chunks(event_rows, {
+                let seen_tzids = seen_tzids.clone();
+                move |page: &[CalendarEventDto]| Ok(render_ics_page(page, &seen_tzids))
+            }));
+            while let Some(chunk) = event_chunks.try_next().await? {
+                yield chunk;
+            }
+
+            let todo_rows = calendar_service
+                .stream_todos_uid_order(&calendar_id, user_id)
+                .await
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            let mut todo_chunks = Box::pin(paged_uid_chunks(todo_rows, {
+                let seen_tzids = seen_tzids.clone();
+                move |page: &[CalendarTodoDto]| Ok(render_ics_page(page, &seen_tzids))
+            }));
+            while let Some(chunk) = todo_chunks.try_next().await? {
+                yield chunk;
             }
         }
 
@@ -724,14 +855,15 @@ async fn handle_propfind(
                 }
             };
 
-            // Individual event .ics — indexed lookup by iCalendar UID.
+            // Individual object .ics — indexed lookup by iCalendar UID.
+            // Events first, then tasks (#754) — an .ics object may be
+            // either kind.
             let ical_uid = event_path.trim_end_matches(".ics");
 
             let event = calendar_service
                 .get_event_by_ical_uid(calendar_id, ical_uid, user.id)
                 .await
-                .map_err(AppError::from)?
-                .ok_or_else(|| AppError::not_found(format!("Event not found: {}", ical_uid)))?;
+                .map_err(AppError::from)?;
 
             let base_href = &format!(
                 "{}/caldav/{}/",
@@ -744,13 +876,30 @@ async fn handle_propfind(
             };
 
             let mut response_body = Vec::new();
-            CalDavAdapter::generate_calendar_events_response(
-                &mut response_body,
-                std::slice::from_ref(&event),
-                &report_type,
-                base_href,
-            )
-            .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
+            if let Some(event) = event {
+                CalDavAdapter::generate_calendar_events_response(
+                    &mut response_body,
+                    std::slice::from_ref(&event),
+                    &report_type,
+                    base_href,
+                )
+                .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
+            } else {
+                let todo = calendar_service
+                    .get_todo_by_ical_uid(calendar_id, ical_uid, user.id)
+                    .await
+                    .map_err(AppError::from)?
+                    .ok_or_else(|| {
+                        AppError::not_found(format!("Calendar object not found: {}", ical_uid))
+                    })?;
+                CalDavAdapter::generate_calendar_events_response(
+                    &mut response_body,
+                    std::slice::from_ref(&todo),
+                    &report_type,
+                    base_href,
+                )
+                .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
+            }
 
             Ok(Response::builder()
                 .status(StatusCode::MULTI_STATUS)
@@ -790,6 +939,13 @@ async fn handle_report(
     // of materialising every DTO AND the full multistatus in RAM with
     // TTFB = complete generation. Bounded shapes (time-range query,
     // multiget) keep the buffered path.
+    let target = match &report {
+        CalDavReportType::CalendarQuery { comp, .. } => comp_target(comp.as_deref()),
+        // Multiget addresses objects by href and sync-collection covers
+        // the whole collection — both kinds always (#754).
+        _ => CompTarget::All,
+    };
+
     if matches!(
         &report,
         CalDavReportType::CalendarQuery {
@@ -813,33 +969,50 @@ async fn handle_report(
             report,
             base_href,
             user.id,
+            target,
         ));
     }
 
-    let events = match &report {
+    let mut events: Vec<CalendarEventDto> = Vec::new();
+    let mut todos: Vec<CalendarTodoDto> = Vec::new();
+    match &report {
         CalDavReportType::CalendarQuery { time_range, .. } => {
             if let Some((start, end)) = time_range {
-                calendar_service
-                    .get_events_in_range(calendar_id, *start, *end, user.id)
-                    .await
-                    .map_err(AppError::from)?
+                if target != CompTarget::TodosOnly {
+                    events = calendar_service
+                        .get_events_in_range(calendar_id, *start, *end, user.id)
+                        .await
+                        .map_err(AppError::from)?;
+                }
+                if target != CompTarget::EventsOnly {
+                    todos = calendar_service
+                        .get_todos_in_range(calendar_id, *start, *end, user.id)
+                        .await
+                        .map_err(AppError::from)?;
+                }
             } else {
                 unreachable!("no-range calendar-query streams above")
             }
         }
         CalDavReportType::CalendarMultiget { hrefs, .. } => {
-            // Indexed batch lookup (`ical_uid = ANY(...)`) — a multiget for
-            // a handful of events must not pay for listing the whole
-            // calendar and filtering client-side.
+            // Indexed batch lookup (`ical_uid = ANY(...)`) on BOTH
+            // object tables — an .ics href may address an event or a
+            // task (#754); a multiget for a handful of objects must
+            // not pay for listing the whole calendar and filtering
+            // client-side.
             let uids: Vec<String> = hrefs
                 .iter()
                 .filter_map(|href| uid_from_multiget_href(href, ".ics"))
                 .collect();
 
-            calendar_service
+            events = calendar_service
                 .get_events_by_ical_uids(calendar_id, &uids, user.id)
                 .await
-                .map_err(AppError::from)?
+                .map_err(AppError::from)?;
+            todos = calendar_service
+                .get_todos_by_ical_uids(calendar_id, &uids, user.id)
+                .await
+                .map_err(AppError::from)?;
         }
         CalDavReportType::SyncCollection { .. } => {
             unreachable!("sync-collection streams above")
@@ -851,14 +1024,21 @@ async fn handle_report(
         crate::common::config::server_base_path(),
         calendar_id
     );
+    // One multistatus carrying both kinds: events first, then tasks.
+    // `write_report_page` over an empty slice emits nothing, so the
+    // kinds not targeted above cost no bytes.
     let mut response_body = Vec::new();
-    CalDavAdapter::generate_calendar_events_response(
-        &mut response_body,
-        &events,
-        &report,
-        base_href,
-    )
-    .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
+    {
+        let mut xml_writer = Writer::new(&mut response_body);
+        CalDavAdapter::write_caldav_multistatus_start(&mut xml_writer)
+            .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
+        CalDavAdapter::write_report_page(&mut xml_writer, &events, &report, base_href)
+            .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
+        CalDavAdapter::write_report_page(&mut xml_writer, &todos, &report, base_href)
+            .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
+        CalDavAdapter::write_caldav_multistatus_end(&mut xml_writer)
+            .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
+    }
 
     Ok(Response::builder()
         .status(StatusCode::MULTI_STATUS)
@@ -940,11 +1120,12 @@ async fn handle_put(
     let ical_data = String::from_utf8(body_bytes.to_vec())
         .map_err(|e| AppError::bad_request(format!("Invalid UTF-8 in iCalendar data: {}", e)))?;
 
-    // Route the PUT through `upsert_ical_events` so a body carrying a
+    // Route the PUT through `upsert_ical_objects` so a body carrying a
     // master + N per-instance overrides (RFC 5545 §3.8.4.4 — the
     // Thunderbird / Apple Calendar / DAVx⁵ "modify one occurrence"
-    // shape) persists each VEVENT to its own row instead of the last
-    // one clobbering the master. See AtalayaLabs/OxiCloud#528.
+    // shape) persists each component to its own row instead of the last
+    // one clobbering the master — VEVENTs to the events table, VTODOs
+    // to the tasks table (#754). See AtalayaLabs/OxiCloud#528.
     //
     // Kind-aware error mapping (`AppError::from(DomainError)`):
     //   * `InvalidInput` → 400 (malformed iCal / missing DTSTART)
@@ -957,13 +1138,14 @@ async fn handle_put(
     };
 
     let result = calendar_service
-        .upsert_ical_events(create_dto, user.id)
+        .upsert_ical_objects(create_dto, user.id)
         .await
         .map_err(AppError::from)?;
 
-    // The event surface still exposes a single object resource per
-    // UID, so we return an ETag anchored on the master row when
-    // present, otherwise the first exception's id. This matches the
+    // The object surface still exposes a single resource per UID, so
+    // we return an ETag anchored on the master row when present,
+    // otherwise the first exception's id — events first, then todos
+    // (#754); a mixed body keys off the event side, matching the
     // pre-#528 header contract for clients that only understand a
     // single ETag per PUT.
     let etag_source = result
@@ -972,6 +1154,14 @@ async fn handle_put(
         .find(|e| e.recurrence_id.is_none())
         .or_else(|| result.events.first())
         .map(|e| e.id.to_string())
+        .or_else(|| {
+            result
+                .todos
+                .iter()
+                .find(|t| t.recurrence_id.is_none())
+                .or_else(|| result.todos.first())
+                .map(|t| t.id.to_string())
+        })
         .unwrap_or_default();
 
     let status = if result.any_inserted {
@@ -1024,13 +1214,14 @@ async fn handle_get(
             user.id,
         ))
     } else {
-        // GET on individual event resource — fetch ALL rows for
+        // GET on individual object resource — fetch ALL rows for
         // this UID (master + any exception overrides) and emit
-        // ONE calendar-object-resource containing every VEVENT.
+        // ONE calendar-object-resource containing every component.
         // This is the phase-4 fix: `get_event_by_ical_uid` is
         // master-only; using it here made exceptions invisible
         // to clients and their next-PUT would silently drop the
-        // stored exception rows.
+        // stored exception rows. Events are tried first, then
+        // tasks (#754) — an .ics object may be either kind.
         let event_file = parts[1];
         let ical_uid = event_file.trim_end_matches(".ics");
 
@@ -1039,9 +1230,18 @@ async fn handle_get(
             .await
             .map_err(AppError::from)?;
 
-        if bundle.is_empty() {
+        let todos = if bundle.is_empty() {
+            calendar_service
+                .get_todos_by_ical_uids(calendar_id, &[ical_uid.to_string()], user.id)
+                .await
+                .map_err(AppError::from)?
+        } else {
+            Vec::new()
+        };
+
+        if bundle.is_empty() && todos.is_empty() {
             return Err(AppError::not_found(format!(
-                "Event not found: {}",
+                "Calendar object not found: {}",
                 ical_uid
             )));
         }
@@ -1049,13 +1249,28 @@ async fn handle_get(
         // Group so the master (recurrence_id None) sits first,
         // then flatten for the bundle emitter. ETag anchors on
         // the first row of the first group — that's the master
-        // for a recurring event, or the sole row for a
+        // for a recurring object, or the sole row for a
         // non-recurring one. Stable across bundle contents so
         // If-Match on subsequent PUTs keys off the master's id.
-        let grouped = group_events_by_uid(&bundle);
-        let flat: Vec<&_> = grouped.into_iter().flatten().collect();
-        let etag_source = flat.first().map(|e| e.id.clone()).unwrap_or_default();
-        let ical = bundle_to_calendar_body(&flat);
+        let (etag_source, ical) = if !bundle.is_empty() {
+            let grouped = group_objects_by_uid(&bundle);
+            let flat: Vec<&_> = grouped.into_iter().flatten().collect();
+            (
+                flat.first()
+                    .map(|e| e.row_id().to_string())
+                    .unwrap_or_default(),
+                bundle_to_calendar_body(&flat),
+            )
+        } else {
+            let grouped = group_objects_by_uid(&todos);
+            let flat: Vec<&_> = grouped.into_iter().flatten().collect();
+            (
+                flat.first()
+                    .map(|t| t.row_id().to_string())
+                    .unwrap_or_default(),
+                bundle_to_calendar_body(&flat),
+            )
+        };
 
         Ok(Response::builder()
             .status(StatusCode::OK)
@@ -1102,16 +1317,31 @@ async fn handle_delete(
         let ical_uid = event_file.trim_end_matches(".ics");
 
         // Indexed lookup by iCalendar UID instead of listing the calendar.
+        // Events first, then tasks (#754) — an .ics object may be either kind.
         let event = calendar_service
             .get_event_by_ical_uid(calendar_id, ical_uid, user.id)
             .await
-            .map_err(AppError::from)?
-            .ok_or_else(|| AppError::not_found(format!("Event not found: {}", ical_uid)))?;
-
-        calendar_service
-            .delete_event(&event.id, user.id)
-            .await
             .map_err(AppError::from)?;
+
+        if let Some(event) = event {
+            calendar_service
+                .delete_event(&event.id, user.id)
+                .await
+                .map_err(AppError::from)?;
+        } else {
+            let todo = calendar_service
+                .get_todo_by_ical_uid(calendar_id, ical_uid, user.id)
+                .await
+                .map_err(AppError::from)?
+                .ok_or_else(|| {
+                    AppError::not_found(format!("Calendar object not found: {}", ical_uid))
+                })?;
+
+            calendar_service
+                .delete_todo(&todo.id, user.id)
+                .await
+                .map_err(AppError::from)?;
+        }
     }
 
     Ok(Response::builder()
