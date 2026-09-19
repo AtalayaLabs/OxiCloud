@@ -116,6 +116,23 @@
 #                                       dedup because rows would come
 #                                       in both via WS push and via
 #                                       the delta fetch).
+#   S20 Collab seed-from-blob   — upload a .md whose bytes are NOT
+#                                 empty, then open a collab session
+#                                 for the first time (no prior
+#                                 `collab.doc_sessions` row). The
+#                                 actor MUST seed from the file's
+#                                 blob text via the FileBlobDocContentReader
+#                                 adapter, not from an empty
+#                                 doc. Assertion is on
+#                                 the sync-step-2 reply size: an
+#                                 empty-seed doc replies with the
+#                                 2-byte empty-update marker; a
+#                                 blob-seeded doc replies with a
+#                                 payload roughly proportional to
+#                                 the file's byte count. Guards the
+#                                 C7 read-side bridge (was
+#                                 EmptySeedReader stub; now
+#                                 FileBlobDocContentReader).
 #   S19 Collab per-frame AuthZ  — user2 gets a Viewer grant on
 #                                 folder A (Read but not Update on
 #                                 files inside). User2 subscribes to
@@ -1219,4 +1236,71 @@ if [[ "$payload_len" -gt 20 ]]; then
 fi
 log "S19 OK (server-side doc unchanged, payload_len=$payload_len)"
 
-log "All nineteen message-bus scenarios passed."
+# ── Scenario 20 — Collab seed-from-blob on first attach (C7 read side) ──────
+# Regression test for the reader adapter. Uploads a .md whose bytes
+# are non-trivial (~400 bytes of prose), opens a fresh collab session
+# on it, and asserts the sync-step-2 payload is proportional to the
+# file's byte count — proof that `FileBlobDocContentReader` streamed
+# the blob and seeded the actor's `yrs::Doc`.
+#
+# Numbers: an empty seed produces a 2-byte reply (the "empty update"
+# marker). A CRDT holding N UTF-8 bytes of text produces a reply
+# encoding at least those N bytes plus a small per-client-id header
+# (typically ~15 B). With ~400 B of text, the reply lands in the
+# 400-500 B range; with an empty seed it would be 2 B. The threshold
+# is set generously enough to survive Yjs encoding overhead swings
+# but tight enough that the EmptySeedReader stub would fail loudly.
+log "S20: upload non-empty .md and open a fresh collab session — sync-step-2 must carry the seed."
+
+# ~400 bytes of markdown — well above the "empty-update marker" size
+# but small enough that the whole thing round-trips comfortably
+# inside a single WS frame.
+tmp_md="$(mktemp -t rtbus_s20_body.XXXXXX)"
+cat > "$tmp_md" <<'EOF'
+# Collab seed-from-blob test
+
+This markdown file is the source-of-truth content for the first
+attach on the file. When a client opens the collab session for the
+first time, the server MUST hand these bytes to `yrs::Doc` as the
+initial `Y.Text` content — anyone joining later sees this text via
+sync-step-2, without touching the blob store again.
+EOF
+upload_resp="$(mktemp -t rtbus_s20_resp.XXXXXX)"
+status=$(curl -sS -o "$upload_resp" -w "%{http_code}" -X POST \
+  -H "Authorization: Bearer $user1_token" \
+  -F "folder_id=$folder_a" \
+  -F "file=@$tmp_md;filename=s20.md" \
+  "$base_url/api/files/upload")
+seed_bytes=$(wc -c < "$tmp_md")
+rm -f "$tmp_md"
+if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
+  cat "$upload_resp" >&2
+  rm -f "$upload_resp"
+  die "S20: .md upload failed with HTTP $status"
+fi
+s20_file_id=$(jq -r '.id' "$upload_resp")
+rm -f "$upload_resp"
+[[ -n "$s20_file_id" && "$s20_file_id" != "null" ]] \
+  || die "S20: could not extract file id"
+
+out_s20="$(mktemp -t rtbus_s20.XXXXXX)"
+if ! "$HELPER_BIN" collab-sync-probe \
+     --url "$ws_url" \
+     --token "$user1_token" \
+     --file "$s20_file_id" \
+     --timeout 5s \
+     --output "$out_s20"; then
+  cat "$out_s20" >&2 || true
+  die "S20: sync-step probe failed — reader adapter broken?"
+fi
+payload_len=$(jq -r '.payload_len' "$out_s20")
+# Guard: on a ~400 B seed, the reply lands well above the empty-update
+# marker (2 B) and well below the seed size + generous encoding
+# overhead. A regression to `EmptySeedReader` would return exactly 2.
+if [[ "$payload_len" -lt 100 ]]; then
+  cat "$out_s20"
+  die "S20: sync-step-2 payload_len=$payload_len — the actor seeded EMPTY, not from the blob (seed_bytes=$seed_bytes). Reader adapter regressed?"
+fi
+log "S20 OK (seed_bytes=$seed_bytes, sync-step-2 payload_len=$payload_len)"
+
+log "All twenty message-bus scenarios passed."

@@ -146,7 +146,10 @@ enum Mode {
 fn parse_uuid_bytes(s: &str) -> Result<[u8; 16], String> {
     let hex: String = s.chars().filter(|c| *c != '-').collect();
     if hex.len() != 32 {
-        return Err(format!("bad uuid (want 32 hex chars, got {}): {s}", hex.len()));
+        return Err(format!(
+            "bad uuid (want 32 hex chars, got {}): {s}",
+            hex.len()
+        ));
     }
     let mut out = [0u8; 16];
     for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
@@ -755,8 +758,7 @@ async fn subscribe_topic(
     // Drain non-ack frames (server-initiated notifications, pings,
     // binary events) until we see the ack keyed on `id`.
     loop {
-        let remaining =
-            request_deadline.saturating_duration_since(tokio::time::Instant::now());
+        let remaining = request_deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             return Err(HelperError::Expectation(format!(
                 "timeout waiting for subscribe ack on {topic}"
@@ -782,9 +784,7 @@ async fn subscribe_topic(
             continue;
         }
         if let Some(err) = value.get("error") {
-            return Err(HelperError::Expectation(format!(
-                "subscribe denied: {err}"
-            )));
+            return Err(HelperError::Expectation(format!("subscribe denied: {err}")));
         }
         return Ok(());
     }
@@ -871,9 +871,8 @@ async fn collab_fanout_listen(args: Args) -> Result<(), HelperError> {
         let doc = Doc::new();
         {
             let mut txn = doc.transact_mut();
-            txn.apply_update(update).map_err(|e| {
-                HelperError::Expectation(format!("apply_update failed: {e}"))
-            })?;
+            txn.apply_update(update)
+                .map_err(|e| HelperError::Expectation(format!("apply_update failed: {e}")))?;
         }
         let text_ref = doc.get_or_insert_text("content");
         let got = text_ref.get_string(&doc.transact());

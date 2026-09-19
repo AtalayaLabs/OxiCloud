@@ -113,7 +113,10 @@ pub enum CollabError {
     /// shape as protocol-violation, since a client that legitimately
     /// only has Read shouldn't be sending UPDATE frames at all.
     #[error("authz denied: {permission} on file {file_id}")]
-    AuthzDenied { permission: &'static str, file_id: Uuid },
+    AuthzDenied {
+        permission: &'static str,
+        file_id: Uuid,
+    },
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -999,7 +1002,7 @@ mod tests {
 
     // ── Binary-frame router (C2 slice 2) ──────────────────────────────
 
-    use crate::application::services::collab_wire::{kind, BinaryFrame};
+    use crate::application::services::collab_wire::{BinaryFrame, kind};
 
     #[tokio::test]
     async fn handle_binary_frame_update_applies_to_the_actor() {
@@ -1289,9 +1292,9 @@ mod tests {
                 permission: "update",
                 file_id: fid,
             }) if fid == file_id => {}
-            other => panic!(
-                "expected AuthzDenied{{permission:\"update\", file_id}}, got {other:?}"
-            ),
+            other => {
+                panic!("expected AuthzDenied{{permission:\"update\", file_id}}, got {other:?}")
+            }
         }
 
         // Doc must be untouched — an authorized caller reading via SYNC
@@ -1306,7 +1309,11 @@ mod tests {
         // socket but no Read grant must NOT be able to pull doc content
         // via SYNC (defense-in-depth: subscribe-time Read gate is the
         // primary check, this closes the "binary bypass" gap).
-        let svc = service_with_seed_and_gate("secret content", CollabLimits::default(), Arc::new(DenyAll));
+        let svc = service_with_seed_and_gate(
+            "secret content",
+            CollabLimits::default(),
+            Arc::new(DenyAll),
+        );
         let file_id = Uuid::new_v4();
 
         let empty_sv = StateVector::default().encode_v1();
@@ -1320,9 +1327,7 @@ mod tests {
                 permission: "read",
                 file_id: fid,
             }) if fid == file_id => {}
-            other => panic!(
-                "expected AuthzDenied{{permission:\"read\", file_id}}, got {other:?}"
-            ),
+            other => panic!("expected AuthzDenied{{permission:\"read\", file_id}}, got {other:?}"),
         }
     }
 

@@ -1014,8 +1014,7 @@ fn spawn_collab_forwarder(
         loop {
             match rx.recv().await {
                 Ok(update_bytes) => {
-                    let frame =
-                        encode_binary_frame(kind::UPDATE, file_id, &update_bytes);
+                    let frame = encode_binary_frame(kind::UPDATE, file_id, &update_bytes);
                     if out_tx.send(SessionOut::Binary(frame)).await.is_err() {
                         // Session dead; unwind the forwarder.
                         return;

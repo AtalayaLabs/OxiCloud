@@ -2368,19 +2368,24 @@ pub struct FeaturesConfig {
     /// and there's no transport for CRDT ops (boot refuses this
     /// combination — see the cross-flag check in `from_env`).
     ///
-    /// TODO(collab-default-on): flip the default to `true` once C7
-    /// lands the real `DocContentWriter` bridge to
-    /// `FileManagementService` (replaces the current `NoopWriter`
-    /// stub in `common/di.rs`), so collaborative edits actually reach
-    /// the file's blob and `GET /api/files/{id}` / WebDAV / search
-    /// see CRDT-current text instead of the pre-collab original.
+    /// TODO(collab-default-on): flip the default to `true` once the
+    /// C7 writer bridge lands. Current state:
     ///
-    /// Per-frame AuthZ (read on SYNC, write on UPDATE) is already
-    /// enforced by `CollabSessionService::handle_binary_frame` via
-    /// the `CollabAuthzGate` port — see the api-test S19 scenario.
+    ///   * Read-side bridge — SHIPPED. `FileBlobDocContentReader`
+    ///     seeds a fresh CRDT doc from the file's current blob text
+    ///     on first attach.
+    ///   * Write-side bridge — STILL A STUB (`NoopWriter` in
+    ///     `common/di.rs`). Debounced flush-to-blob isn't wired, so
+    ///     collaborative edits accumulate in `collab.doc_sessions`
+    ///     but do NOT reach the file's blob until this lands.
+    ///     `GET /api/files/{id}` / WebDAV / search still see the
+    ///     pre-collab original.
+    ///   * Per-frame AuthZ (read on SYNC, write on UPDATE) — SHIPPED
+    ///     in `CollabSessionService::handle_binary_frame` via the
+    ///     `CollabAuthzGate` port; see api-test S19.
     ///
-    /// Off by default until C7 — the feature is currently
-    /// dev/staging-only.
+    /// Off by default until the writer bridge — the feature is
+    /// currently dev/staging-only.
     ///
     /// Env: `OXICLOUD_ENABLE_MARKDOWN_COLLAB` (default `false`).
     pub enable_markdown_collab: bool,

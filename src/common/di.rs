@@ -2590,19 +2590,18 @@ impl AppServiceFactory {
         if app_state.core.config.features.enable_markdown_collab
             && app_state.core.config.features.enable_message_bus
         {
-            let repo: Arc<
-                dyn crate::application::ports::collab_ports::DocSessionRepository,
-            > = Arc::new(
-                crate::infrastructure::repositories::pg::CollabDocSessionPgRepository::new(
-                    pool.clone(),
-                ),
-            );
-            let reader: Arc<
-                dyn crate::application::ports::collab_ports::DocContentReader,
-            > = Arc::new(EmptySeedReader);
-            let writer: Arc<
-                dyn crate::application::ports::collab_ports::DocContentWriter,
-            > = Arc::new(NoopWriter);
+            let repo: Arc<dyn crate::application::ports::collab_ports::DocSessionRepository> =
+                Arc::new(
+                    crate::infrastructure::repositories::pg::CollabDocSessionPgRepository::new(
+                        pool.clone(),
+                    ),
+                );
+            let reader: Arc<dyn crate::application::ports::collab_ports::DocContentReader> =
+                Arc::new(FileBlobDocContentReader {
+                    file_read: app_state.repositories.file_read_repository.clone(),
+                });
+            let writer: Arc<dyn crate::application::ports::collab_ports::DocContentWriter> =
+                Arc::new(NoopWriter);
             // Adapter clone: `PgAclEngine` implements the narrow
             // `CollabAuthzGate` trait in `pg_acl_engine.rs`. The
             // engine's decision cache is reused — one hit per keystroke
@@ -3753,39 +3752,81 @@ fn build_email_sender(cfg: &crate::common::config::SmtpConfig) -> EmailSenderBun
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Collab reader / writer stubs — transitional, replaced in C7
+// Collab reader / writer bridges
 // ════════════════════════════════════════════════════════════════════════════
 //
-// Kept inline here rather than in `application/services/` so their
-// transitional nature is obvious — the moment `FileManagementService`
-// grows a public `read_content`/`write_content` surface that the
-// collab flow can call (C7 in `docs/plan/markdown-collab.md`), these
-// stubs go away and the real bridge lands in a proper adapter file.
+// **Reader — `FileBlobDocContentReader` — shipped.** Streams the file's
+// current blob via `FileBlobReadRepository::get_file_stream` and hands
+// the bytes to `CollabSessionService::attach_file` for the first-attach
+// UTF-8 seed. Kept inline here (rather than in `application/services/`)
+// because the collab feature is currently the only consumer; if a
+// second consumer wants "read file content as bytes with an already-
+// gated AuthZ" this graduates to a proper adapter file.
 //
-// **Stub semantics:**
-// - `EmptySeedReader` returns an empty `Vec<u8>` on every read. Effect
-//   on `CollabSessionService::attach_file`: when no `collab.doc_sessions`
-//   row exists yet, the actor seeds an EMPTY yrs::Doc rather than one
-//   populated with the file's current text. Concretely — a user
-//   opening a `.md` file for the first time with collab enabled sees a
-//   blank editor even if the file has content. Fine for the smoke
-//   test path (sync-step-1/2 doesn't care about actual content); not
-//   fine for real users, which is why the feature flag defaults off.
-// - `NoopWriter` errors on any write. `CollabSessionService` doesn't
-//   currently call this — flush-to-blob wiring is also C7 — so in
-//   practice the error path never fires today, but the type has to
-//   be implemented for DI.
+// **Writer — `NoopWriter` — still stubbed.** Flush-to-blob wiring is
+// the remaining C7 work (see `docs/plan/markdown-collab.md § Backend
+// step 4 — Debounced flush-to-blob`). The full pipeline needs:
+//   1. Compute BLAKE3 hash of the CRDT text.
+//   2. Ingest into the content-addressable chunk store (dedup).
+//   3. Call `FileBlobWriteRepository::update_file_content_with_blob`
+//      to swap the file's blob reference atomically.
+//   4. Fire the FileLifecycleHook so thumbnails / search index /
+//      content_cache invalidate.
+// `CollabSessionService` doesn't call `write_content` on the current
+// hot path — the debounced flush task that would call it hasn't been
+// wired either — so this stub's error path never fires today. When
+// the flush cadence lands, the real writer replaces this and the
+// error message becomes a canary for an unwired branch.
 
-struct EmptySeedReader;
+/// C7 slice 1: seed a fresh CRDT doc from the file's current blob
+/// content on first attach. Streams the blob via
+/// `FileBlobReadRepository::get_file_stream` (the standard 64 KB
+/// chunked read path used by downloads), collects into memory, and
+/// hands the bytes to the actor's `load_or_seed` — which parses them
+/// as UTF-8 for the initial `Y.Text` insert.
+///
+/// **AuthZ is intentionally not repeated here.** The caller has
+/// already cleared the subscribe-time `Read` gate on
+/// `Topic::Collab(file_id)` AND, if the trigger was a SYNC or UPDATE
+/// binary frame, the per-frame gate too — see
+/// `CollabSessionService::handle_binary_frame`. Double-checking here
+/// would re-hit the AuthorizationEngine on a code path the collab
+/// service has already gated.
+///
+/// **Size not gated here** either. The plan's `max_doc_bytes` guard
+/// (default 1 MiB, refuse-to-open beyond) is enforced at
+/// `attach_file` — this reader is a pure byte source. If the file
+/// is not UTF-8, the actor's `load_or_seed` surfaces
+/// `DomainError::InvalidInput`, which the WS handler maps to a
+/// `collab.protocol_violation` audit line + close.
+struct FileBlobDocContentReader {
+    file_read: Arc<
+        crate::infrastructure::repositories::pg::file_blob_read_repository::FileBlobReadRepository,
+    >,
+}
 
 #[async_trait::async_trait]
-impl crate::application::ports::collab_ports::DocContentReader for EmptySeedReader {
+impl crate::application::ports::collab_ports::DocContentReader for FileBlobDocContentReader {
     async fn read_content(
         &self,
         _caller_id: uuid::Uuid,
-        _file_id: uuid::Uuid,
+        file_id: uuid::Uuid,
     ) -> Result<Vec<u8>, crate::common::errors::DomainError> {
-        Ok(Vec::new())
+        use crate::application::ports::storage_ports::FileReadPort;
+        use futures::StreamExt;
+        let stream = self.file_read.get_file_stream(&file_id.to_string()).await?;
+        let mut stream = Box::into_pin(stream);
+        let mut out: Vec<u8> = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let bytes = chunk.map_err(|e| {
+                crate::common::errors::DomainError::internal_error(
+                    "CollabDocContentReader",
+                    format!("stream read failed: {e}"),
+                )
+            })?;
+            out.extend_from_slice(&bytes);
+        }
+        Ok(out)
     }
 }
 
