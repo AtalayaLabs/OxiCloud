@@ -36,7 +36,7 @@ use crate::application::adapters::webdav_adapter::{PropFindRequest, PropFindType
 use crate::application::dtos::calendar_dto::{
     CalendarEventDto, CalendarTodoDto, CreateCalendarDto, CreateEventICalDto, UpdateCalendarDto,
 };
-use crate::application::ports::calendar_ports::CalendarUseCase;
+use crate::application::ports::calendar_ports::{CalendarObject, CalendarUseCase};
 use crate::application::services::calendar_service::CalendarService;
 use crate::common::di::AppState;
 use crate::interfaces::errors::AppError;
@@ -856,14 +856,17 @@ async fn handle_propfind(
             };
 
             // Individual object .ics — indexed lookup by iCalendar UID.
-            // Events first, then tasks (#754) — an .ics object may be
-            // either kind.
+            // An .ics may hold either component kind; the service
+            // resolves which, behind a single Read gate.
             let ical_uid = event_path.trim_end_matches(".ics");
 
-            let event = calendar_service
-                .get_event_by_ical_uid(calendar_id, ical_uid, user.id)
+            let object = calendar_service
+                .get_object_by_ical_uid(calendar_id, ical_uid, user.id)
                 .await
-                .map_err(AppError::from)?;
+                .map_err(AppError::from)?
+                .ok_or_else(|| {
+                    AppError::not_found(format!("Calendar object not found: {}", ical_uid))
+                })?;
 
             let base_href = &format!(
                 "{}/caldav/{}/",
@@ -875,31 +878,25 @@ async fn handle_propfind(
                 props: vec![],
             };
 
+            // Both variants implement `CalendarObjectRow`, so the
+            // serializer is already generic over the kind — the match
+            // exists only to pick the concrete slice type.
             let mut response_body = Vec::new();
-            if let Some(event) = event {
-                CalDavAdapter::generate_calendar_events_response(
+            let xml = match &object {
+                CalendarObject::Event(event) => CalDavAdapter::generate_calendar_events_response(
                     &mut response_body,
-                    std::slice::from_ref(&event),
+                    std::slice::from_ref(event),
                     &report_type,
                     base_href,
-                )
-                .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
-            } else {
-                let todo = calendar_service
-                    .get_todo_by_ical_uid(calendar_id, ical_uid, user.id)
-                    .await
-                    .map_err(AppError::from)?
-                    .ok_or_else(|| {
-                        AppError::not_found(format!("Calendar object not found: {}", ical_uid))
-                    })?;
-                CalDavAdapter::generate_calendar_events_response(
+                ),
+                CalendarObject::Todo(todo) => CalDavAdapter::generate_calendar_events_response(
                     &mut response_body,
-                    std::slice::from_ref(&todo),
+                    std::slice::from_ref(todo),
                     &report_type,
                     base_href,
-                )
-                .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
-            }
+                ),
+            };
+            xml.map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
 
             Ok(Response::builder()
                 .status(StatusCode::MULTI_STATUS)
@@ -1317,31 +1314,20 @@ async fn handle_delete(
         let ical_uid = event_file.trim_end_matches(".ics");
 
         // Indexed lookup by iCalendar UID instead of listing the calendar.
-        // Events first, then tasks (#754) — an .ics object may be either kind.
-        let event = calendar_service
-            .get_event_by_ical_uid(calendar_id, ical_uid, user.id)
+        // The service resolves which component kind the .ics holds, so
+        // this path no longer repeats the try-event-then-todo dance.
+        let object = calendar_service
+            .get_object_by_ical_uid(calendar_id, ical_uid, user.id)
+            .await
+            .map_err(AppError::from)?
+            .ok_or_else(|| {
+                AppError::not_found(format!("Calendar object not found: {}", ical_uid))
+            })?;
+
+        calendar_service
+            .delete_object(&object, user.id)
             .await
             .map_err(AppError::from)?;
-
-        if let Some(event) = event {
-            calendar_service
-                .delete_event(&event.id, user.id)
-                .await
-                .map_err(AppError::from)?;
-        } else {
-            let todo = calendar_service
-                .get_todo_by_ical_uid(calendar_id, ical_uid, user.id)
-                .await
-                .map_err(AppError::from)?
-                .ok_or_else(|| {
-                    AppError::not_found(format!("Calendar object not found: {}", ical_uid))
-                })?;
-
-            calendar_service
-                .delete_todo(&todo.id, user.id)
-                .await
-                .map_err(AppError::from)?;
-        }
     }
 
     Ok(Response::builder()

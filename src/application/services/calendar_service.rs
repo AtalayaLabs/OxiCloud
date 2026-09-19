@@ -9,7 +9,7 @@ use crate::application::dtos::calendar_dto::{
 };
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::calendar_ports::{
-    CalendarStoragePort, CalendarUseCase, UpsertObjectsResult,
+    CalendarObject, CalendarStoragePort, CalendarUseCase, UpsertObjectsResult,
 };
 use crate::common::errors::{DomainError, ErrorKind};
 use crate::domain::services::authorization::{Permission, Resource, Role, Subject};
@@ -498,6 +498,61 @@ impl CalendarUseCase for CalendarService {
         self.require_calendar_perm(&calendar_id, user_id, Permission::Delete)
             .await?;
         self.calendar_storage.delete_todo(todo_id).await
+    }
+
+    async fn get_object_by_ical_uid(
+        &self,
+        calendar_id: &str,
+        ical_uid: &str,
+        user_id: Uuid,
+    ) -> Result<Option<CalendarObject>, DomainError> {
+        // The Read gate runs ONCE here, then both lookups reuse it.
+        // Calling `get_event_by_ical_uid` and then `get_todo_by_ical_uid`
+        // — what the handlers did — fetched the calendar and evaluated
+        // the permission twice for a single resource, and left two
+        // copies of the rule to keep in agreement.
+        let calendar = self.calendar_storage.get_calendar(calendar_id).await?;
+        let allowed = calendar.is_public
+            || self
+                .has_calendar_perm(calendar_id, user_id, Permission::Read)
+                .await?;
+        if !allowed {
+            // NotFound, not AccessDenied: a caller must not learn that a
+            // calendar exists by the shape of the refusal.
+            return Err(DomainError::not_found("Calendar", calendar_id));
+        }
+
+        // Events first, then tasks. A UID is unique per calendar across
+        // both kinds, so the order is a cost choice, not a semantic one:
+        // events are the overwhelmingly common case.
+        if let Some(event) = self
+            .calendar_storage
+            .find_event_by_ical_uid(calendar_id, ical_uid)
+            .await?
+        {
+            return Ok(Some(CalendarObject::Event(event)));
+        }
+        Ok(self
+            .calendar_storage
+            .find_todo_by_ical_uid(calendar_id, ical_uid)
+            .await?
+            .map(CalendarObject::Todo))
+    }
+
+    async fn delete_object(
+        &self,
+        object: &CalendarObject,
+        user_id: Uuid,
+    ) -> Result<(), DomainError> {
+        // Delegates rather than inlining: each arm re-derives the owning
+        // calendar from the row id and re-checks Delete. That second gate
+        // is deliberate defence in depth — the resolve above proved Read
+        // on the calendar named in the URL, not Delete on the calendar
+        // the object actually belongs to.
+        match object {
+            CalendarObject::Event(event) => self.delete_event(&event.id, user_id).await,
+            CalendarObject::Todo(todo) => self.delete_todo(&todo.id, user_id).await,
+        }
     }
 }
 
