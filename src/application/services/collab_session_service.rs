@@ -48,7 +48,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dashmap::DashMap;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use uuid::Uuid;
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
@@ -74,12 +74,21 @@ pub struct CollabLimits {
     /// top of the persisted `state`. Higher = cheaper writes, more
     /// expensive reconnect catch-up. Plan default: 200.
     pub snapshot_after_updates: i32,
+    /// Capacity of the per-actor broadcast channel that fans updates
+    /// out to attached sockets. A slow subscriber that falls this many
+    /// updates behind is dropped by the broadcast layer (with a
+    /// `RecvError::Lagged` on the receiver side, which the WS
+    /// forwarder handles by terminating the socket — clean recovery
+    /// via reconnect + sync-step-1 catches the client up). Sized for
+    /// bursts a few hundred keystrokes deep; defaults to 256.
+    pub broadcast_capacity: usize,
 }
 
 impl Default for CollabLimits {
     fn default() -> Self {
         Self {
             snapshot_after_updates: 200,
+            broadcast_capacity: 256,
         }
     }
 }
@@ -140,6 +149,18 @@ enum SessionMsg {
     SyncStep1 {
         client_state_vector: Vec<u8>,
         reply: oneshot::Sender<Result<Vec<u8>, CollabError>>,
+    },
+    /// Return a fresh `broadcast::Receiver` on the actor's update
+    /// outbox. Every subsequent `ApplyUpdate` re-broadcasts its raw
+    /// bytes to every live receiver; the WS handler forwards those
+    /// bytes as `0x01` binary frames to the socket it forwards for.
+    /// Yjs semantics are idempotent — a sender that receives its own
+    /// update back applies it with no visible effect — so the fan-out
+    /// deliberately does NOT filter by origin. Simpler wire, one
+    /// fewer piece of per-socket state, and matches the y-websocket
+    /// reference server's behaviour.
+    SubscribeUpdates {
+        reply: oneshot::Sender<broadcast::Receiver<Vec<u8>>>,
     },
     Shutdown,
 }
@@ -229,6 +250,23 @@ impl CollabSession {
         // Best-effort — the actor may already be gone.
         let _ = self.inbox.send(SessionMsg::Shutdown).await;
     }
+
+    /// Subscribe to this session's update stream. Each `apply_update`
+    /// re-broadcasts its raw bytes to every live receiver; the WS
+    /// handler wraps each broadcast in a `0x01` binary frame and
+    /// forwards it to its socket. Callers must poll the receiver
+    /// continuously — a receiver that falls `broadcast_capacity`
+    /// updates behind starts returning `RecvError::Lagged`; the
+    /// forwarder recovers by tearing down the socket, and the client
+    /// reconnects and catches up via sync-step-1.
+    pub async fn subscribe_updates(&self) -> Result<broadcast::Receiver<Vec<u8>>, CollabError> {
+        let (tx, rx) = oneshot::channel();
+        self.inbox
+            .send(SessionMsg::SubscribeUpdates { reply: tx })
+            .await
+            .map_err(|_| CollabError::SessionGone)?;
+        rx.await.map_err(|_| CollabError::SessionGone)
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -247,6 +285,15 @@ struct ActorState {
     updates_since_snapshot: i32,
     limits: CollabLimits,
     repo: Arc<dyn DocSessionRepository>,
+    /// Fan-out channel for applied updates. Kept alive by the actor for
+    /// the actor's lifetime; each successful `apply_update` publishes
+    /// the raw update bytes here. `SubscribeUpdates` messages hand out
+    /// fresh receivers on demand. Publishing to a channel with zero
+    /// live receivers is not an error (`broadcast::Sender::send` just
+    /// returns `Err(SendError)` which we silently drop) — the CRDT
+    /// state stays authoritative on the server regardless of whether
+    /// anyone is listening.
+    outbox: broadcast::Sender<Vec<u8>>,
 }
 
 impl ActorState {
@@ -306,6 +353,7 @@ impl ActorState {
                 0
             }
         };
+        let (outbox, _) = broadcast::channel(limits.broadcast_capacity);
         Ok(Self {
             file_id,
             doc,
@@ -313,6 +361,7 @@ impl ActorState {
             updates_since_snapshot,
             limits,
             repo,
+            outbox,
         })
     }
 
@@ -324,7 +373,12 @@ impl ActorState {
 
     /// Apply an incoming Yjs update. Errors on malformed bytes; a
     /// successful apply bumps the update counter and MAY trigger a
-    /// snapshot compaction.
+    /// snapshot compaction. After a successful apply, the raw update
+    /// bytes are broadcast on `outbox` so every subscribed WS forwarder
+    /// can push them to its socket — this is the fan-out path.
+    /// `send` errors when no receivers are live; that's expected on a
+    /// solo session and silently dropped, since the authoritative
+    /// state is already on the actor's `Doc`.
     async fn apply_update(&mut self, bytes: Vec<u8>) -> Result<(), CollabError> {
         let update = Update::decode_v1(&bytes)
             .map_err(|e| CollabError::BadUpdate(format!("decode: {e}")))?;
@@ -338,6 +392,7 @@ impl ActorState {
         if self.updates_since_snapshot >= self.limits.snapshot_after_updates {
             self.snapshot().await?;
         }
+        let _ = self.outbox.send(bytes);
         Ok(())
     }
 
@@ -401,6 +456,14 @@ async fn run_actor(mut state: ActorState, mut inbox: mpsc::Receiver<SessionMsg>)
                 reply,
             } => {
                 let _ = reply.send(state.sync_step_1(&client_state_vector));
+            }
+            SessionMsg::SubscribeUpdates { reply } => {
+                // Hand out a fresh receiver on the actor's outbox.
+                // `broadcast::Sender::subscribe` produces a NEW receiver
+                // that only sees updates from this point forward —
+                // catch-up is Yjs's problem, not the broadcast
+                // channel's (clients issue sync-step-1 on attach).
+                let _ = reply.send(state.outbox.subscribe());
             }
             SessionMsg::Shutdown => break,
         }
@@ -492,9 +555,11 @@ impl CollabSessionService {
     /// Return value:
     /// - `Ok(Some(reply_frame))` — a frame the caller must send back
     ///   on this socket (sync-step-2 reply to a client's sync-step-1).
-    /// - `Ok(None)` — accepted, nothing to reply on this socket. Any
-    ///   fan-out to OTHER sockets happens via the message bus (C2
-    ///   follow-up wiring).
+    /// - `Ok(None)` — accepted, nothing to reply on this socket.
+    ///   For a `0x01` UPDATE the bytes are ALSO broadcast on the
+    ///   actor's outbox; every WS forwarder subscribed via
+    ///   [`CollabSession::subscribe_updates`] will push the same
+    ///   bytes to its socket as a `0x01` frame.
     /// - `Err(CollabError)` — protocol violation or CRDT-apply error;
     ///   the caller closes the socket with a `collab.protocol_violation`
     ///   audit line + WS close 1002.
@@ -505,9 +570,6 @@ impl CollabSessionService {
     ///   integration test that lands with the WS handler slice will
     ///   plug the check in via `authz.require(caller, file, Edit)`
     ///   cached per session.
-    /// - Bus fan-out of applied updates to OTHER sockets subscribed to
-    ///   `Topic::Collab(file_id)`. Separate concern that touches the
-    ///   `MessageBus` port.
     pub async fn handle_binary_frame(
         &self,
         caller_id: Uuid,
@@ -725,6 +787,7 @@ mod tests {
         // Threshold 3 so we don't have to fire 200 updates in a test.
         let limits = CollabLimits {
             snapshot_after_updates: 3,
+            ..CollabLimits::default()
         };
         let svc = service_with_seed("", limits);
         let file_id = Uuid::new_v4();
@@ -958,6 +1021,106 @@ mod tests {
         match svc.handle_binary_frame(Uuid::nil(), frame).await {
             Err(CollabError::BadUpdate(_)) => {} // expected
             other => panic!("expected BadUpdate, got {:?}", other),
+        }
+    }
+
+    // ── Fan-out via broadcast outbox (C2 slice 3) ──────────────────────
+    //
+    // These tests exercise the actor-side of fan-out — the WS handler's
+    // forwarder task lives in `rt_ws.rs` and is covered by the api-test
+    // scenario S18. Here we assert on the service surface:
+    //   * `subscribe_updates` hands out a receiver, and a subsequent
+    //     `apply_update` reaches it verbatim (same bytes).
+    //   * Multiple concurrent subscribers each see the same update
+    //     — the fan-out is a broadcast, not a queue.
+    //   * A receiver taken BEFORE an update sees it; a receiver taken
+    //     AFTER an update does NOT see the past one (broadcast::Sender
+    //     semantics — the receiver's stream starts at "now").
+
+    #[tokio::test]
+    async fn subscribe_updates_receives_bytes_from_a_subsequent_apply() {
+        let svc = service_with_seed("", CollabLimits::default());
+        let file_id = Uuid::new_v4();
+        let session = svc.attach_file(Uuid::nil(), file_id).await.unwrap();
+        let mut rx = session.subscribe_updates().await.unwrap();
+
+        // Build a valid Yjs update on a client-side Doc.
+        let client = Doc::new();
+        {
+            let text = client.get_or_insert_text(ROOT_TEXT_NAME);
+            let mut txn = client.transact_mut();
+            text.insert(&mut txn, 0, "fan-out");
+        }
+        let update_bytes = client
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+
+        session.apply_update(update_bytes.clone()).await.unwrap();
+
+        // The receiver sees the same bytes we applied.
+        let received = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("broadcast delivery within 1s")
+            .expect("no lag / no close");
+        assert_eq!(received, update_bytes);
+    }
+
+    #[tokio::test]
+    async fn subscribe_updates_broadcasts_to_every_live_receiver() {
+        let svc = service_with_seed("", CollabLimits::default());
+        let file_id = Uuid::new_v4();
+        let session = svc.attach_file(Uuid::nil(), file_id).await.unwrap();
+
+        let mut rx1 = session.subscribe_updates().await.unwrap();
+        let mut rx2 = session.subscribe_updates().await.unwrap();
+        let mut rx3 = session.subscribe_updates().await.unwrap();
+
+        let client = Doc::new();
+        {
+            let text = client.get_or_insert_text(ROOT_TEXT_NAME);
+            let mut txn = client.transact_mut();
+            text.insert(&mut txn, 0, "hi");
+        }
+        let update_bytes = client
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+        session.apply_update(update_bytes.clone()).await.unwrap();
+
+        for rx in [&mut rx1, &mut rx2, &mut rx3] {
+            let received = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .expect("broadcast delivery within 1s")
+                .expect("no lag / no close");
+            assert_eq!(received, update_bytes);
+        }
+    }
+
+    #[tokio::test]
+    async fn subscribe_updates_does_not_replay_past_updates() {
+        // Newcomer subscribes AFTER an update was applied — must NOT
+        // see it. Yjs sync-step-1 is how a late joiner catches up on
+        // history, NOT the broadcast channel; keeping these disjoint
+        // avoids double-application on reconnect.
+        let svc = service_with_seed("", CollabLimits::default());
+        let file_id = Uuid::new_v4();
+        let session = svc.attach_file(Uuid::nil(), file_id).await.unwrap();
+
+        let client = Doc::new();
+        {
+            let text = client.get_or_insert_text(ROOT_TEXT_NAME);
+            let mut txn = client.transact_mut();
+            text.insert(&mut txn, 0, "before");
+        }
+        let past_bytes = client
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+        session.apply_update(past_bytes).await.unwrap();
+
+        // NOW subscribe. Should time out on the past update.
+        let mut rx = session.subscribe_updates().await.unwrap();
+        match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
+            Err(_elapsed) => {} // expected: no replay
+            Ok(other) => panic!("expected timeout, got {other:?}"),
         }
     }
 }

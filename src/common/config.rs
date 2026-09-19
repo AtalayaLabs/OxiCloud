@@ -2382,6 +2382,7 @@ pub struct FeaturesConfig {
     ///      Edit answer per session at attach-file time; invalidate
     ///      it on `MessageBusEvent::GrantRevoked` to enforce a live
     ///      Editor→Viewer downgrade.
+    ///
     /// Off by default until then — the feature is currently
     /// dev/staging-only.
     ///

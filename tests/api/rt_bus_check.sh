@@ -116,6 +116,16 @@
 #                                       dedup because rows would come
 #                                       in both via WS push and via
 #                                       the delta fetch).
+#   S18 Collab fan-out          — two sockets on the same .md file:
+#                                 socket A sends a 0x01 UPDATE frame
+#                                 that inserts "hello from A"; socket
+#                                 B, subscribed to `collab:{file}`,
+#                                 receives the SAME UPDATE via the
+#                                 actor's broadcast outbox → WS
+#                                 forwarder path. Guards C2's fan-out
+#                                 end-to-end: without it, collab is a
+#                                 single-user editor with a fancy
+#                                 persistence layer.
 #   S17 Collab binary frame     — upload a .md file, send one Yjs
 #                                 sync-step-1 request on the WS as a
 #                                 binary frame keyed on file_id, and
@@ -1004,4 +1014,84 @@ fi
   || { cat "$out_s17"; die "S17: reply payload empty"; }
 log "S17 OK"
 
-log "All seventeen message-bus scenarios passed."
+# ── Scenario 18 — Collab actor-side fan-out (Phase A C2) ────────────────────
+# Two sockets, one user, one .md file. Socket B subscribes to
+# `collab:<file_id>` and touches a ready-file the moment the server
+# ack's it. Socket A then subscribes AND fires a `0x01` UPDATE frame
+# whose payload is a Yjs update that inserts "fanout smoke test S18"
+# at position 0. The server's `CollabSessionService::apply_update`
+# broadcasts the raw update bytes on its per-actor outbox, and the
+# WS forwarder task installed for socket B's subscription pipes them
+# to socket B as a `0x01` binary frame. Socket B decodes the frame's
+# payload as a Yjs update, applies it to a fresh Doc, and asserts the
+# resulting text matches — the strongest wire-level assertion we can
+# make without pulling the CRDT semantics into the shell.
+#
+# Guards against:
+#   * `SessionOut::Binary` handler missing / miswired in the WS out loop
+#   * `spawn_collab_forwarder` failing silently and leaving a dead sub
+#   * `apply_update` no longer publishing on `outbox` after apply
+#   * broadcast channel capacity too small (would `Lagged` and the
+#     resubscribe path would rescue silently, but the test would
+#     still pass because Yjs would replay via sync-step-1 next time)
+log "S18: two sockets on one .md — sender's UPDATE fans out to the listener."
+
+# Fresh .md file so the actor starts empty. Reusing S17's file would
+# work too, but a clean actor gives an unambiguous "the fan-out
+# delivered what the sender sent, and nothing else" assertion.
+tmp_md="$(mktemp -t rtbus_s18_body.XXXXXX)"
+printf '# S18 seed\n\n' > "$tmp_md"
+upload_resp="$(mktemp -t rtbus_s18_resp.XXXXXX)"
+status=$(curl -sS -o "$upload_resp" -w "%{http_code}" -X POST \
+  -H "Authorization: Bearer $user1_token" \
+  -F "folder_id=$folder_a" \
+  -F "file=@$tmp_md;filename=s18.md" \
+  "$base_url/api/files/upload")
+rm -f "$tmp_md"
+if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
+  cat "$upload_resp" >&2
+  rm -f "$upload_resp"
+  die "S18: .md upload failed with HTTP $status"
+fi
+s18_file_id=$(jq -r '.id' "$upload_resp")
+rm -f "$upload_resp"
+[[ -n "$s18_file_id" && "$s18_file_id" != "null" ]] \
+  || die "S18: could not extract file id from upload response"
+
+s18_content="fanout smoke test S18"
+ready_s18="$(mktemp -t rtbus_s18_ready.XXXXXX)"; rm -f "$ready_s18"
+
+# Socket B — listener. Blocks on inbound 0x01 with matching file_id.
+# Started FIRST + waits on --ready-file so the writer only fires
+# after B's subscribe is ack'd (same race-close pattern as S1).
+"$HELPER_BIN" collab-fanout-listen \
+  --url "$ws_url" \
+  --token "$user1_token" \
+  --file "$s18_file_id" \
+  --expect-content "$s18_content" \
+  --ready-file "$ready_s18" \
+  --timeout 8s &
+listener_pid=$!
+wait_ready "$ready_s18"
+
+# Socket A — writer. Subscribes (clears Read gate the frontend will
+# also clear), sends the 0x01 UPDATE, exits.
+if ! "$HELPER_BIN" collab-fanout-write \
+     --url "$ws_url" \
+     --token "$user1_token" \
+     --file "$s18_file_id" \
+     --content "$s18_content" \
+     --timeout 5s; then
+  # Kill the listener so `wait` below returns; otherwise it hangs
+  # until its own timeout expires and drowns the writer error.
+  kill "$listener_pid" 2>/dev/null || true
+  wait "$listener_pid" 2>/dev/null || true
+  die "S18: writer helper failed to send the 0x01 UPDATE"
+fi
+
+if ! wait "$listener_pid"; then
+  die "S18: listener did not observe the fan-out (content mismatch or timeout)"
+fi
+log "S18 OK"
+
+log "All eighteen message-bus scenarios passed."

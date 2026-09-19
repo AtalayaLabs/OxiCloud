@@ -32,6 +32,21 @@
 //!   --token $USER_JWT \
 //!   --file $FILE_UUID \
 //!   --timeout 3s
+//!
+//! rt-hurl-helper collab-fanout-listen \
+//!   --url ws://127.0.0.1:$PORT/api/rt/ws \
+//!   --token $USER_JWT \
+//!   --file $FILE_UUID \
+//!   --expect-content "hello from A" \
+//!   --ready-file /tmp/ready.b \
+//!   --timeout 5s
+//!
+//! rt-hurl-helper collab-fanout-write \
+//!   --url ws://127.0.0.1:$PORT/api/rt/ws \
+//!   --token $USER_JWT \
+//!   --file $FILE_UUID \
+//!   --content "hello from A" \
+//!   --timeout 5s
 //! ```
 //!
 //! Exit codes:
@@ -62,6 +77,8 @@ use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
+use yrs::updates::decoder::Decode;
+use yrs::{Doc, GetString, ReadTxn, StateVector, Text, Transact, Update};
 
 // ════════════════════════════════════════════════════════════════════════════
 // CLI parsing (minimal, dependency-free)
@@ -86,11 +103,18 @@ struct Args {
     /// in time" race that occasionally dropped events on slow /
     /// cold-cache runs. Off by default; only used by the smoke test.
     ready_file: Option<String>,
-    /// `--file <uuid>` — the target file for `collab-sync-probe`.
-    /// Parsed to 16 raw bytes so the helper can emit the wire header
+    /// `--file <uuid>` — the target file for `collab-sync-probe`,
+    /// `collab-fanout-listen` and `collab-fanout-write`. Parsed to
+    /// 16 raw bytes so the helper can emit the wire header
     /// (`[1 byte kind][16 bytes file_id]…`) without pulling in the
     /// uuid crate.
     file_id: Option<[u8; 16]>,
+    /// `--content <string>` — text the write-side helper inserts into
+    /// a fresh Yjs Doc before broadcasting the resulting UPDATE.
+    /// `--expect-content <string>` — text the listen-side asserts on
+    /// after decoding the incoming UPDATE.
+    content: Option<String>,
+    expect_content: Option<String>,
 }
 
 /// How the helper authenticates the WS upgrade. Mirrors the two paths
@@ -104,6 +128,16 @@ enum Mode {
     SubscribeAndCollect,
     ExpectDenied,
     CollabSyncProbe,
+    /// Subscribe to `collab:<file_id>`, wait for one `0x01` UPDATE
+    /// frame to arrive, decode it, assert its text content matches
+    /// `--expect-content`. Used with a paired `collab-fanout-write`
+    /// helper on a second socket to prove the actor's outbox fans out
+    /// to every subscriber.
+    CollabFanoutListen,
+    /// Subscribe to `collab:<file_id>`, build a Yjs UPDATE that
+    /// inserts `--content` into an otherwise-empty doc, send it as a
+    /// `0x01` binary frame, and exit. Companion to `collab-fanout-listen`.
+    CollabFanoutWrite,
 }
 
 /// Parse a canonical dashed UUID (e.g. `f47ac10b-58cc-4372-a567-0e02b2c3d479`)
@@ -147,6 +181,8 @@ fn parse_args() -> Result<Args, String> {
         Some("subscribe-and-collect") => Mode::SubscribeAndCollect,
         Some("expect-denied") => Mode::ExpectDenied,
         Some("collab-sync-probe") => Mode::CollabSyncProbe,
+        Some("collab-fanout-listen") => Mode::CollabFanoutListen,
+        Some("collab-fanout-write") => Mode::CollabFanoutWrite,
         Some(other) => return Err(format!("unknown mode: {other}")),
         None => return Err("mode is required".into()),
     };
@@ -161,6 +197,8 @@ fn parse_args() -> Result<Args, String> {
     let mut output = None;
     let mut ready_file = None;
     let mut file_id = None;
+    let mut content = None;
+    let mut expect_content = None;
 
     while let Some(flag) = it.next() {
         let value = it
@@ -183,6 +221,8 @@ fn parse_args() -> Result<Args, String> {
             "--output" => output = Some(value),
             "--ready-file" => ready_file = Some(value),
             "--file" => file_id = Some(parse_uuid_bytes(&value)?),
+            "--content" => content = Some(value),
+            "--expect-content" => expect_content = Some(value),
             other => return Err(format!("unknown flag: {other}")),
         }
     }
@@ -208,6 +248,8 @@ fn parse_args() -> Result<Args, String> {
         output,
         ready_file,
         file_id,
+        content,
+        expect_content,
     })
 }
 
@@ -229,6 +271,8 @@ async fn main() -> ExitCode {
         Mode::SubscribeAndCollect => subscribe_and_collect(args).await,
         Mode::ExpectDenied => expect_denied(args).await,
         Mode::CollabSyncProbe => collab_sync_probe(args).await,
+        Mode::CollabFanoutListen => collab_fanout_listen(args).await,
+        Mode::CollabFanoutWrite => collab_fanout_write(args).await,
     };
 
     match result {
@@ -675,4 +719,231 @@ async fn collab_sync_probe(args: Args) -> Result<(), HelperError> {
 
         return Ok(());
     }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Mode: collab-fanout-listen / collab-fanout-write
+// ════════════════════════════════════════════════════════════════════════════
+//
+// These two paired modes exercise the actor's fan-out path: an UPDATE
+// applied on one socket must reach every other socket subscribed to
+// the same `Topic::Collab(file_id)`. Both first speak JSON-RPC to
+// clear the subscribe-time `Read` AuthZ gate — the server's forwarder
+// task is what wires the broadcast receiver to the WS out queue, so
+// unless you're subscribed you don't receive.
+
+/// JSON-RPC subscribe to a single topic and wait for the id-matched
+/// ack. Returns cleanly on `result`, errors on `error`. Shared by
+/// both fanout modes so the wire-level handshake is captured in one
+/// place.
+async fn subscribe_topic(
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    topic: &str,
+    request_deadline: tokio::time::Instant,
+) -> Result<(), HelperError> {
+    let req_id: u64 = 1;
+    let frame = json!({
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "method": "rt.subscribe",
+        "params": { "topic": topic },
+    });
+    ws.send(Message::Text(frame.to_string().into())).await?;
+
+    // Drain non-ack frames (server-initiated notifications, pings,
+    // binary events) until we see the ack keyed on `id`.
+    loop {
+        let remaining =
+            request_deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(HelperError::Expectation(format!(
+                "timeout waiting for subscribe ack on {topic}"
+            )));
+        }
+        let msg = match timeout(remaining, ws.next()).await {
+            Ok(Some(Ok(m))) => m,
+            Ok(Some(Err(e))) => return Err(HelperError::Protocol(format!("ws error: {e}"))),
+            Ok(None) => return Err(HelperError::Protocol("connection closed by peer".into())),
+            Err(_) => {
+                return Err(HelperError::Expectation(format!(
+                    "timeout waiting for subscribe ack on {topic}"
+                )));
+            }
+        };
+        let Message::Text(text) = msg else { continue };
+        let value: Value = serde_json::from_str(&text)
+            .map_err(|e| HelperError::Protocol(format!("bad frame: {e}: {text}")))?;
+        let Some(id_num) = value.get("id").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        if id_num != req_id {
+            continue;
+        }
+        if let Some(err) = value.get("error") {
+            return Err(HelperError::Expectation(format!(
+                "subscribe denied: {err}"
+            )));
+        }
+        return Ok(());
+    }
+}
+
+async fn collab_fanout_listen(args: Args) -> Result<(), HelperError> {
+    let file_id = args.file_id.ok_or_else(|| {
+        HelperError::Protocol("--file <uuid> required for collab-fanout-listen".into())
+    })?;
+    let expected = args.expect_content.clone().ok_or_else(|| {
+        HelperError::Protocol("--expect-content <string> required for collab-fanout-listen".into())
+    })?;
+
+    let mut ws = connect_ws(&args.url, &args.auth).await?;
+    let deadline = tokio::time::Instant::now() + args.timeout;
+
+    // 1. Clear the subscribe-time AuthZ gate. Without this, no
+    //    forwarder is installed on the server side and the broadcast
+    //    never reaches this socket.
+    let topic = format!("collab:{}", uuid_bytes_to_dashed(&file_id));
+    subscribe_topic(&mut ws, &topic, deadline).await?;
+
+    // 2. Touch the ready-file so the orchestrator knows to fire the
+    //    paired writer. Same convention as `subscribe-and-collect`.
+    if let Some(path) = args.ready_file.as_deref()
+        && let Err(e) = std::fs::write(path, b"")
+    {
+        eprintln!("rt-hurl-helper: could not touch --ready-file {path}: {e}");
+    }
+
+    // 3. Wait for a binary `0x01` UPDATE frame keyed on our file_id.
+    //    Text frames on this socket during this window would be
+    //    unrelated notifications; drain and ignore.
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(HelperError::Expectation(format!(
+                "timeout waiting for a 0x01 fan-out frame on collab:{}",
+                uuid_bytes_to_dashed(&file_id)
+            )));
+        }
+        let msg = match timeout(remaining, ws.next()).await {
+            Ok(Some(Ok(m))) => m,
+            Ok(Some(Err(e))) => return Err(HelperError::Protocol(format!("ws error: {e}"))),
+            Ok(None) => {
+                return Err(HelperError::Expectation(
+                    "connection closed before a fan-out frame arrived".into(),
+                ));
+            }
+            Err(_) => {
+                return Err(HelperError::Expectation(
+                    "timeout waiting for a 0x01 fan-out frame".into(),
+                ));
+            }
+        };
+        let bytes = match msg {
+            Message::Binary(b) => b,
+            _ => continue,
+        };
+        if bytes.len() < 17 {
+            return Err(HelperError::Expectation(format!(
+                "fan-out frame too short: {} bytes",
+                bytes.len()
+            )));
+        }
+        if bytes[0] != 0x01 {
+            // Not an UPDATE — could be a SYNC reply from an unrelated
+            // in-flight request; ignore and keep waiting.
+            continue;
+        }
+        let mut reply_file_id = [0u8; 16];
+        reply_file_id.copy_from_slice(&bytes[1..17]);
+        if reply_file_id != file_id {
+            continue;
+        }
+        // Decode the payload as a Yjs update and apply to a fresh Doc
+        // to extract the resulting text. This is the strongest
+        // assertion we can make at the wire level — a lax "payload
+        // non-empty" check would miss a fan-out that broadcasts the
+        // wrong bytes.
+        let update = Update::decode_v1(&bytes[17..]).map_err(|e| {
+            HelperError::Expectation(format!("payload is not a valid Yjs update: {e}"))
+        })?;
+        let doc = Doc::new();
+        {
+            let mut txn = doc.transact_mut();
+            txn.apply_update(update).map_err(|e| {
+                HelperError::Expectation(format!("apply_update failed: {e}"))
+            })?;
+        }
+        let text_ref = doc.get_or_insert_text("content");
+        let got = text_ref.get_string(&doc.transact());
+        if got != expected {
+            return Err(HelperError::Expectation(format!(
+                "fan-out content mismatch: got {got:?}, want {expected:?}"
+            )));
+        }
+        return Ok(());
+    }
+}
+
+async fn collab_fanout_write(args: Args) -> Result<(), HelperError> {
+    let file_id = args.file_id.ok_or_else(|| {
+        HelperError::Protocol("--file <uuid> required for collab-fanout-write".into())
+    })?;
+    let content = args.content.clone().ok_or_else(|| {
+        HelperError::Protocol("--content <string> required for collab-fanout-write".into())
+    })?;
+
+    let mut ws = connect_ws(&args.url, &args.auth).await?;
+    let deadline = tokio::time::Instant::now() + args.timeout;
+
+    // 1. Subscribe: clears the Read gate. Without this the server
+    //    accepts the binary frame (the router doesn't require a
+    //    subscribe) but the write-side integration keeps the two
+    //    handshakes together — it's what the frontend will do.
+    let topic = format!("collab:{}", uuid_bytes_to_dashed(&file_id));
+    subscribe_topic(&mut ws, &topic, deadline).await?;
+
+    // 2. Build a Yjs UPDATE that inserts `content` at position 0 of
+    //    an otherwise-empty Doc. The client Doc is local to this
+    //    process; the server's actor has its own Doc and will apply
+    //    the incoming update against it. Origin skip is intentionally
+    //    not filtered — this sender will also see the update come
+    //    back through its own broadcast subscription (idempotent).
+    let client_doc = Doc::new();
+    {
+        let text_ref = client_doc.get_or_insert_text("content");
+        let mut txn = client_doc.transact_mut();
+        text_ref.insert(&mut txn, 0, &content);
+    }
+    let update_bytes = client_doc
+        .transact()
+        .encode_state_as_update_v1(&StateVector::default());
+
+    // 3. Wrap in the collab wire header: [0x01][file_id][update].
+    let mut frame = Vec::with_capacity(17 + update_bytes.len());
+    frame.push(0x01);
+    frame.extend_from_slice(&file_id);
+    frame.extend_from_slice(&update_bytes);
+    ws.send(Message::Binary(frame.into())).await?;
+
+    // 4. Best-effort clean close so the server's forwarder tears
+    //    down promptly, not on TCP timeout.
+    let _ = ws.close(None).await;
+    Ok(())
+}
+
+/// Format 16 raw UUID bytes as canonical dashed hex — inverse of
+/// `parse_uuid_bytes`. Used to build the JSON-RPC topic string from
+/// the same file_id bytes the binary frame carries. Dependency-free
+/// like its inverse.
+fn uuid_bytes_to_dashed(b: &[u8; 16]) -> String {
+    let mut out = String::with_capacity(36);
+    for (i, byte) in b.iter().enumerate() {
+        if matches!(i, 4 | 6 | 8 | 10) {
+            out.push('-');
+        }
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
 }

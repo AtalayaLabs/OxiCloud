@@ -323,11 +323,16 @@ impl Drop for Sub {
 }
 
 /// Messages the per-topic reader tasks send to the session's main
-/// loop. Two shapes:
+/// loop. Three shapes:
 ///
 /// - `Frame` — a client-bound text frame (`rt.event` notification,
 ///   `rt.revoked` notification, whatever). Main loop writes it to
-///   the socket.
+///   the socket as a WS Text frame.
+/// - `Binary` — a client-bound binary frame, pre-encoded to the
+///   collab wire format (`[1 byte kind][16 bytes file_id][payload]`).
+///   The forwarder task for a `Topic::Collab(file_id)` subscription
+///   pushes these when the per-file actor broadcasts an update. Main
+///   loop writes them to the socket as a WS Binary frame.
 /// - `EvictFolders` — internal control signal. The reader for the
 ///   session's auto-subscribed `user:{caller}:authz` topic translates
 ///   inbound [`MessageBusEvent::AuthzChanged`] events into this rather
@@ -336,6 +341,7 @@ impl Drop for Sub {
 ///   per evicted topic.
 enum SessionOut {
     Frame(String),
+    Binary(Vec<u8>),
     EvictFolders(Vec<Uuid>),
 }
 
@@ -490,6 +496,14 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
                 match outbound {
                     Some(SessionOut::Frame(text)) => {
                         if socket.send(Message::Text(text.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(SessionOut::Binary(bytes)) => {
+                        // Pre-encoded collab wire frame from a
+                        // `Topic::Collab(file_id)` forwarder task.
+                        // Ship it verbatim.
+                        if socket.send(Message::Binary(bytes.into())).await.is_err() {
                             break;
                         }
                     }
@@ -850,6 +864,23 @@ fn install_subscription(
     state: &Arc<AppState>,
 ) {
     let topic_wire = topic.to_wire_key();
+
+    // `Topic::Collab(file_id)` doesn't ride the JSON bus — its data
+    // plane is a per-file broadcast channel owned by the collab actor.
+    // Spawn a forwarder task that receives raw update bytes and
+    // pre-encodes them into `0x01` binary frames for the socket.
+    // If the collab service isn't wired (feature off), the subscribe
+    // still succeeds — we just install a no-op sub — matching the
+    // `Read`-gate-passed shape of any other topic. Silent-drop is
+    // acceptable here because the feature-off state is a boot-time
+    // decision, not a runtime one; the operator sees it in the
+    // `collab.service_enabled` audit line (or its absence).
+    if let Topic::Collab(file_id) = topic {
+        let reader = spawn_collab_forwarder(file_id, out_tx.clone(), state);
+        subs.insert(topic_wire, Sub { reader });
+        return;
+    }
+
     let mut stream = MessageBus::subscribe(state.bus.as_ref(), &topic);
     let out_tx_task = out_tx.clone();
     let translate_authz = matches!(topic, Topic::UserAuthz(_));
@@ -879,6 +910,111 @@ fn install_subscription(
         }
     });
     subs.insert(topic_wire, Sub { reader });
+}
+
+/// Spawn a forwarder task for a `Topic::Collab(file_id)` subscription.
+///
+/// The task attaches the caller's session to the per-file actor,
+/// obtains a `broadcast::Receiver` on its update outbox, and pipes
+/// every applied update as a `0x01` binary frame to `out_tx`. The
+/// task terminates when:
+///
+/// - the session's `out_tx` is dropped (WS closed), OR
+/// - the actor's outbox drops all senders (actor shut down / idle-GC'd), OR
+/// - the receiver falls `broadcast_capacity` updates behind
+///   (`RecvError::Lagged`) — logged and terminated; the client's WS
+///   reconnect + sync-step-1 catches up cleanly.
+///
+/// A missing `collab_session_service` (feature off) or an attach
+/// error (repo blip) collapses to "no-op forwarder": the task exits
+/// immediately with an audit line so the operator sees why the
+/// subscribe ack'd but delivered nothing.
+fn spawn_collab_forwarder(
+    file_id: Uuid,
+    out_tx: mpsc::Sender<SessionOut>,
+    state: &Arc<AppState>,
+) -> JoinHandle<()> {
+    let collab = state.collab_session_service.clone();
+    tokio::spawn(async move {
+        let Some(collab) = collab else {
+            tracing::debug!(
+                target: "oxicloud::collab",
+                file_id = %file_id,
+                "collab subscribe with feature off — no-op forwarder",
+            );
+            return;
+        };
+        // Attach the file (spawns or reuses the actor) and take a
+        // broadcast receiver on its update outbox. The caller_id used
+        // for the reader is the session's — attach_file uses it only
+        // when seeding a fresh doc from the blob.
+        //
+        // Attach can fail (repo error, stale FK). Log + exit; the
+        // subscribe was already ack'd so the client sees a healthy
+        // topic that just never delivers — the same shape as the
+        // "feature off" case, and the audit line explains which.
+        let session = match collab.attach_file(Uuid::nil(), file_id).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    target: "oxicloud::collab",
+                    file_id = %file_id,
+                    error = %e,
+                    "collab forwarder: attach_file failed",
+                );
+                return;
+            }
+        };
+        let mut rx = match session.subscribe_updates().await {
+            Ok(rx) => rx,
+            Err(e) => {
+                tracing::warn!(
+                    target: "oxicloud::collab",
+                    file_id = %file_id,
+                    error = %e,
+                    "collab forwarder: subscribe_updates failed",
+                );
+                return;
+            }
+        };
+        use crate::application::services::collab_wire::{encode_binary_frame, kind};
+        loop {
+            match rx.recv().await {
+                Ok(update_bytes) => {
+                    let frame =
+                        encode_binary_frame(kind::UPDATE, file_id, &update_bytes);
+                    if out_tx.send(SessionOut::Binary(frame)).await.is_err() {
+                        // Session dead; unwind the forwarder.
+                        return;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    // Slow consumer: the actor sent updates faster than
+                    // this forwarder drained them for
+                    // `broadcast_capacity` frames. `rx` is still valid
+                    // and would keep returning `Lagged` until it catches
+                    // up, so grab a fresh receiver instead — that
+                    // discards the backlog cleanly. The client's next
+                    // sync-step-1 (issued on reconnect or explicitly)
+                    // reconciles anything missed; Yjs's idempotent
+                    // apply guarantees no double-application.
+                    tracing::info!(
+                        target: "audit",
+                        event = "collab.forwarder_lagged",
+                        file_id = %file_id,
+                        dropped = n,
+                        "👮🏻‍♂️ collab forwarder fell behind; \
+                         resubscribing on a fresh receiver",
+                    );
+                    match session.subscribe_updates().await {
+                        Ok(fresh) => rx = fresh,
+                        Err(_) => return, // actor gone — unwind
+                    }
+                }
+            }
+        }
+    })
 }
 
 // ════════════════════════════════════════════════════════════════════════════
