@@ -33,6 +33,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::common::errors::DomainError;
+use crate::domain::services::authorization::Permission;
 
 /// One `collab.doc_sessions` row. Reconstituted by the service on
 /// attach to seed the in-memory `yrs::Doc` actor.
@@ -134,4 +135,33 @@ pub trait DocContentWriter: Send + Sync + 'static {
         file_id: Uuid,
         content: Vec<u8>,
     ) -> Result<String, DomainError>;
+}
+
+/// Narrow AuthZ port for the collab service.
+///
+/// The full [`crate::application::ports::authorization_ports::AuthorizationEngine`]
+/// trait isn't dyn-compatible (async default methods, generic in some
+/// helper positions), so `AppState.authorization` holds the concrete
+/// `Arc<PgAclEngine>`. `CollabSessionService` needs to check one
+/// permission per binary frame and needs to stay unit-testable
+/// without a live database, so we take a narrow dyn-compatible port
+/// here instead of the concrete engine.
+///
+/// The infra crate provides a blanket impl for `PgAclEngine` that
+/// delegates to `AuthorizationEngine::require` — so the engine's own
+/// `authz.denied` audit line still fires, and no denial goes
+/// unrecorded on either side of the adapter.
+///
+/// Semantics match `AuthorizationEngine::require`: `Ok(())` = granted;
+/// `Err(_)` = denied for any reason (missing role, DB blip, hidden
+/// resource — the same anti-enumeration collapse).
+#[cfg_attr(feature = "test_utils", mockall::automock)]
+#[async_trait]
+pub trait CollabAuthzGate: Send + Sync + 'static {
+    async fn require(
+        &self,
+        caller_id: Uuid,
+        file_id: Uuid,
+        permission: Permission,
+    ) -> Result<(), DomainError>;
 }

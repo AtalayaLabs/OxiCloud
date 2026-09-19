@@ -116,6 +116,23 @@
 #                                       dedup because rows would come
 #                                       in both via WS push and via
 #                                       the delta fetch).
+#   S19 Collab per-frame AuthZ  — user2 gets a Viewer grant on
+#                                 folder A (Read but not Update on
+#                                 files inside). User2 subscribes to
+#                                 `collab:<file_id>` (Read gate: OK),
+#                                 then sends a 0x01 UPDATE frame.
+#                                 Server must deny at the service-level
+#                                 `Update` gate → close socket with a
+#                                 `collab.write_denied` audit line.
+#                                 The write-side helper's normal exit
+#                                 is 0 after `ws.send`; a denial shows
+#                                 up as an immediate close so the
+#                                 scenario reads the exit code AND
+#                                 verifies the doc's text was NOT
+#                                 modified on the server. Guards the
+#                                 Class-1 Write gate — without it, a
+#                                 viewer could mutate every doc they
+#                                 could see.
 #   S18 Collab fan-out          — two sockets on the same .md file:
 #                                 socket A sends a 0x01 UPDATE frame
 #                                 that inserts "hello from A"; socket
@@ -1094,4 +1111,112 @@ if ! wait "$listener_pid"; then
 fi
 log "S18 OK"
 
-log "All eighteen message-bus scenarios passed."
+# ── Scenario 19 — Collab per-frame AuthZ (Phase A C2, Write gate) ───────────
+# The frontend flow: user1 shares a folder with user2 as a Viewer.
+# User2 opens a .md inside it and starts editing in the browser. On
+# the wire that's exactly what this scenario does: user2 subscribes
+# to `collab:<file_id>` (Read passes — the Viewer role includes it),
+# and sends a 0x01 UPDATE frame. The server must deny at the per-
+# frame Update gate — Viewer doesn't hold Update, so the write path
+# is refused even though the read/subscribe path is fine.
+#
+# What we assert:
+#   1. The socket closes on the writer's side (helper exit != 0 OR
+#      the ws.close() completes without an ACK). Depending on
+#      timing, tungstenite reads the server's close as `ws error`
+#      (exit code 2, HelperError::Protocol) — we accept either
+#      non-zero exit as a denial signal, since a permitted write
+#      would exit 0.
+#   2. The doc content on the server is unchanged: user1 opens a
+#      separate socket and pulls sync-step-2 → the sync-step-2
+#      payload IS the empty-update marker (2 bytes, the shape of a
+#      never-touched actor). If user2's UPDATE had leaked through,
+#      the payload would carry the "unauthorized text" bytes.
+#
+# Prerequisite grant: user1 already registered user2 as a Viewer on
+# folder A in S3 wait — no, S3 tests unauthorised subscribe on folder
+# A and user2 has no grant at that point. We grant fresh here on a
+# new folder E so the state is unambiguous, and skip the folder-share
+# side effects on the S8 grant.
+log "S19: user2 (Viewer on folder E) tries to UPDATE a .md — write gate must deny."
+
+folder_e=$(c_post "$base_url/api/folders" "$user1_token" \
+  "$(printf '{"name":"rt_bus_E_%s","parent_id":"%s"}' "$suffix" "$root_id")" | jq -r '.id')
+[[ -n "$folder_e" && "$folder_e" != "null" ]] || die "S19: folder E creation failed"
+
+# Upload the .md as user1 (owner).
+tmp_md="$(mktemp -t rtbus_s19_body.XXXXXX)"
+printf '# S19 seed\n' > "$tmp_md"
+upload_resp="$(mktemp -t rtbus_s19_resp.XXXXXX)"
+status=$(curl -sS -o "$upload_resp" -w "%{http_code}" -X POST \
+  -H "Authorization: Bearer $user1_token" \
+  -F "folder_id=$folder_e" \
+  -F "file=@$tmp_md;filename=s19.md" \
+  "$base_url/api/files/upload")
+rm -f "$tmp_md"
+if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
+  cat "$upload_resp" >&2
+  rm -f "$upload_resp"
+  die "S19: .md upload failed with HTTP $status"
+fi
+s19_file_id=$(jq -r '.id' "$upload_resp")
+rm -f "$upload_resp"
+[[ -n "$s19_file_id" && "$s19_file_id" != "null" ]] \
+  || die "S19: could not extract file id"
+
+# Grant user2 as Viewer on folder E — Read cascades to files in it,
+# Update does not (only Editor+ carry Update).
+grant_e=$(c_post "$base_url/api/grants" "$user1_token" \
+  "$(printf '{"subject":{"type":"user","id":"%s"},"resource":{"type":"folder","id":"%s"},"role":"viewer"}' \
+       "$user2_id" "$folder_e")")
+grant_e_id=$(printf '%s' "$grant_e" | jq -r '.grants[0].id')
+[[ -n "$grant_e_id" && "$grant_e_id" != "null" ]] \
+  || die "S19: viewer grant on folder E failed: $grant_e"
+
+# User2 tries to WRITE. Anything non-zero counts as a denial —
+# either an "expectation failed" (server closed after our frame) or
+# a "protocol error" (`ws error: ... Connection reset`).
+set +e
+"$HELPER_BIN" collab-fanout-write \
+  --url "$ws_url" \
+  --token "$user2_token" \
+  --file "$s19_file_id" \
+  --content "unauthorized write from viewer" \
+  --timeout 5s > /dev/null 2>&1
+write_exit=$?
+set -e
+# NB: today the write-side helper does `ws.send(...)` then `close(None)`
+# and returns 0. The server closes the socket in response to the frame,
+# but the write may already have flushed. So we don't strictly assert
+# exit != 0 — that's a timing-sensitive assertion. What we DO assert
+# is the AUTHORITATIVE thing: the actor's Doc must not carry the
+# unauthorized bytes. User1 syncs and reads back.
+log "S19: (writer exit=$write_exit — not asserted; the doc-state check below is authoritative)"
+
+# User1 pulls the current actor state via sync-step-1 and asserts the
+# reply payload is the small "empty update" marker, NOT a payload
+# carrying the unauthorized text. The probe already asserts kind /
+# file_id / non-empty; the size discriminator is what tells "empty
+# doc" apart from "has content". `encode_state_as_update_v1` on an
+# empty doc is exactly 2 bytes; a doc with 30 bytes of text produces
+# a much larger update.
+out_s19="$(mktemp -t rtbus_s19.XXXXXX)"
+if ! "$HELPER_BIN" collab-sync-probe \
+     --url "$ws_url" \
+     --token "$user1_token" \
+     --file "$s19_file_id" \
+     --timeout 5s \
+     --output "$out_s19"; then
+  cat "$out_s19" >&2 || true
+  die "S19: sync-step probe failed — cannot verify doc state"
+fi
+payload_len=$(jq -r '.payload_len' "$out_s19")
+# Empty-doc reply is 2 bytes; a leaked-through update carrying 30
+# UTF-8 bytes would push this well past 20. Threshold set generously.
+if [[ "$payload_len" -gt 20 ]]; then
+  cat "$out_s19"
+  die "S19: server-side doc content grew (payload_len=$payload_len) — write gate leaked!"
+fi
+log "S19 OK (server-side doc unchanged, payload_len=$payload_len)"
+
+log "All nineteen message-bus scenarios passed."

@@ -2603,11 +2603,18 @@ impl AppServiceFactory {
             let writer: Arc<
                 dyn crate::application::ports::collab_ports::DocContentWriter,
             > = Arc::new(NoopWriter);
+            // Adapter clone: `PgAclEngine` implements the narrow
+            // `CollabAuthzGate` trait in `pg_acl_engine.rs`. The
+            // engine's decision cache is reused — one hit per keystroke
+            // after warm-up — so no per-service cache is needed here.
+            let authz: Arc<dyn crate::application::ports::collab_ports::CollabAuthzGate> =
+                app_state.authorization.clone();
             let collab = Arc::new(
                 crate::application::services::collab_session_service::CollabSessionService::new(
                     repo,
                     reader,
                     writer,
+                    authz,
                     crate::application::services::collab_session_service::CollabLimits::default(),
                 ),
             );

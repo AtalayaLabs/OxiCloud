@@ -2368,22 +2368,18 @@ pub struct FeaturesConfig {
     /// and there's no transport for CRDT ops (boot refuses this
     /// combination — see the cross-flag check in `from_env`).
     ///
-    /// TODO(collab-default-on): flip the default to `true` once BOTH
-    /// prerequisites ship:
-    ///   1. C7 — real `DocContentWriter` bridge to `FileManagementService`
-    ///      (replaces the current `NoopWriter` stub in `common/di.rs`),
-    ///      so collaborative edits actually reach the file's blob and
-    ///      `GET /api/files/{id}` / WebDAV / search see CRDT-current
-    ///      text instead of the pre-collab original.
-    ///   2. Write-side `Edit` AuthZ gate on `0x01` UPDATE frames in
-    ///      `CollabSessionService::handle_binary_frame` — currently
-    ///      only the subscribe-time `Read` gate exists, so a viewer
-    ///      who could open the doc could also write to it. Cache the
-    ///      Edit answer per session at attach-file time; invalidate
-    ///      it on `MessageBusEvent::GrantRevoked` to enforce a live
-    ///      Editor→Viewer downgrade.
+    /// TODO(collab-default-on): flip the default to `true` once C7
+    /// lands the real `DocContentWriter` bridge to
+    /// `FileManagementService` (replaces the current `NoopWriter`
+    /// stub in `common/di.rs`), so collaborative edits actually reach
+    /// the file's blob and `GET /api/files/{id}` / WebDAV / search
+    /// see CRDT-current text instead of the pre-collab original.
     ///
-    /// Off by default until then — the feature is currently
+    /// Per-frame AuthZ (read on SYNC, write on UPDATE) is already
+    /// enforced by `CollabSessionService::handle_binary_frame` via
+    /// the `CollabAuthzGate` port — see the api-test S19 scenario.
+    ///
+    /// Off by default until C7 — the feature is currently
     /// dev/staging-only.
     ///
     /// Env: `OXICLOUD_ENABLE_MARKDOWN_COLLAB` (default `false`).

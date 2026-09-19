@@ -55,9 +55,10 @@ use yrs::updates::encoder::Encode;
 use yrs::{Doc, GetString, ReadTxn, StateVector, Text, Transact, Update};
 
 use crate::application::ports::collab_ports::{
-    DocContentReader, DocContentWriter, DocSessionRepository, StoredDocSession,
+    CollabAuthzGate, DocContentReader, DocContentWriter, DocSessionRepository, StoredDocSession,
 };
 use crate::common::errors::{DomainError, ErrorKind};
+use crate::domain::services::authorization::Permission;
 
 /// Opaque socket identifier — matches the WS handler's per-connection
 /// id. C1 doesn't use it beyond ref-counting (`HashSet<SocketId>`);
@@ -105,6 +106,14 @@ pub enum CollabError {
     BadUpdate(String),
     #[error("storage error: {0}")]
     Storage(#[from] DomainError),
+    /// The caller passed the socket-level auth but lacks the required
+    /// permission on the file for this specific frame class (write
+    /// vs read). The WS handler closes the socket with a
+    /// `collab.write_denied` / `collab.read_denied` audit line — same
+    /// shape as protocol-violation, since a client that legitimately
+    /// only has Read shouldn't be sending UPDATE frames at all.
+    #[error("authz denied: {permission} on file {file_id}")]
+    AuthzDenied { permission: &'static str, file_id: Uuid },
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -484,6 +493,13 @@ pub struct CollabSessionService {
     reader: Arc<dyn DocContentReader>,
     #[allow(dead_code)] // C7 wires flush-to-blob
     writer: Arc<dyn DocContentWriter>,
+    /// Per-frame AuthZ gate — `handle_binary_frame` calls
+    /// `authz.require(caller, file_id, <perm>)` before applying
+    /// UPDATE frames (Update permission) or replying to SYNC frames
+    /// (Read permission). The concrete engine has its own decision
+    /// cache, so this stays O(1) per keystroke after the first check
+    /// per (caller, file) pair; no per-service cache needed.
+    authz: Arc<dyn CollabAuthzGate>,
     limits: CollabLimits,
 }
 
@@ -492,6 +508,7 @@ impl CollabSessionService {
         repo: Arc<dyn DocSessionRepository>,
         reader: Arc<dyn DocContentReader>,
         writer: Arc<dyn DocContentWriter>,
+        authz: Arc<dyn CollabAuthzGate>,
         limits: CollabLimits,
     ) -> Self {
         Self {
@@ -499,6 +516,7 @@ impl CollabSessionService {
             repo,
             reader,
             writer,
+            authz,
             limits,
         }
     }
@@ -564,31 +582,47 @@ impl CollabSessionService {
     ///   the caller closes the socket with a `collab.protocol_violation`
     ///   audit line + WS close 1002.
     ///
-    /// **Not yet wired:**
-    /// - The write-side `Edit` AuthZ check on `0x01` frames — a plan-
-    ///   deliverable (see `docs/plan/markdown-collab.md § AuthZ`). The
-    ///   integration test that lands with the WS handler slice will
-    ///   plug the check in via `authz.require(caller, file, Edit)`
-    ///   cached per session.
+    /// **Per-frame AuthZ:**
+    /// - `0x01 UPDATE`  → `Permission::Update` (mutates the doc)
+    /// - `0x03 SYNC`    → `Permission::Read`   (reveals doc content)
+    /// - `0x02 AWARENESS` → NOT gated (presence-only: cursor position,
+    ///   user handle, colour — does not leak doc content and does not
+    ///   mutate state, so a viewer who cleared the subscribe-time
+    ///   Read gate is allowed to show their cursor).
+    ///
+    /// Read is defensively re-checked on SYNC even though it was
+    /// already gated at subscribe time: the WS handler accepts binary
+    /// frames without requiring a prior subscribe, so a caller with a
+    /// valid JWT but no Read grant could otherwise send SYNC and
+    /// receive doc content.
     pub async fn handle_binary_frame(
         &self,
         caller_id: Uuid,
         frame: crate::application::services::collab_wire::BinaryFrame,
     ) -> Result<Option<Vec<u8>>, CollabError> {
         use crate::application::services::collab_wire::kind;
-        let session = self.attach_file(caller_id, frame.file_id).await?;
+        let file_id = frame.file_id;
         match frame.kind {
             kind::UPDATE => {
+                self.require_perm(caller_id, file_id, Permission::Update, "update")
+                    .await?;
+                let session = self.attach_file(caller_id, file_id).await?;
                 session.apply_update(frame.payload).await?;
                 Ok(None)
             }
             kind::AWARENESS => {
-                // Presence-only; not persisted, not applied to the CRDT.
-                // Fan-out to other sockets on the same topic is a bus
-                // concern wired in a follow-up.
+                // Presence-only; not persisted, not applied to the CRDT,
+                // and does not leak doc bytes. Subscribe-time Read
+                // gate is sufficient. Fan-out to other sockets on the
+                // same topic is a bus concern wired in a follow-up.
+                let session = self.attach_file(caller_id, file_id).await?;
+                let _ = session; // AWARENESS is a no-op on server state
                 Ok(None)
             }
             kind::SYNC => {
+                self.require_perm(caller_id, file_id, Permission::Read, "read")
+                    .await?;
+                let session = self.attach_file(caller_id, file_id).await?;
                 // Client → server: sync-step-1 (state vector). Reply
                 // with sync-step-2 (diff) bytes; the WS handler wraps
                 // them in another 0x03 binary frame.
@@ -598,6 +632,31 @@ impl CollabSessionService {
             other => Err(CollabError::BadUpdate(format!(
                 "unknown frame kind 0x{other:02x} (routed past parser?)"
             ))),
+        }
+    }
+
+    /// Internal AuthZ helper for `handle_binary_frame`. Wraps
+    /// `AuthorizationEngine::require` so a denial surfaces as
+    /// [`CollabError::AuthzDenied`] rather than the engine's raw
+    /// `DomainError`, which the WS handler would otherwise have to
+    /// pattern-match on. The engine's own `authz.denied` audit line
+    /// fires from inside `require`; the collab-side audit line
+    /// (`collab.write_denied` / `collab.read_denied`) fires from the
+    /// WS handler on `AuthzDenied`, so both sides of the denial trail
+    /// are captured without duplication.
+    async fn require_perm(
+        &self,
+        caller_id: Uuid,
+        file_id: Uuid,
+        permission: Permission,
+        label: &'static str,
+    ) -> Result<(), CollabError> {
+        match self.authz.require(caller_id, file_id, permission).await {
+            Ok(()) => Ok(()),
+            Err(_) => Err(CollabError::AuthzDenied {
+                permission: label,
+                file_id,
+            }),
         }
     }
 }
@@ -717,13 +776,83 @@ mod tests {
         }
     }
 
+    // ── Stub authz gate ──────────────────────────────────────────
+    //
+    // Three shapes used by the tests:
+    //   * `AllowAll`  — every check permitted; used by legacy tests
+    //     that pre-date the gate and don't care about AuthZ.
+    //   * `DenyAll`   — every check denied; used to prove the gate is
+    //     actually consulted.
+    //   * `ReadOnly`  — Read allowed, everything else denied; models
+    //     a Viewer role for the mixed permission tests.
+
+    struct AllowAll;
+    #[async_trait]
+    impl CollabAuthzGate for AllowAll {
+        async fn require(
+            &self,
+            _caller_id: Uuid,
+            _file_id: Uuid,
+            _permission: Permission,
+        ) -> Result<(), DomainError> {
+            Ok(())
+        }
+    }
+
+    struct DenyAll;
+    #[async_trait]
+    impl CollabAuthzGate for DenyAll {
+        async fn require(
+            &self,
+            _caller_id: Uuid,
+            _file_id: Uuid,
+            _permission: Permission,
+        ) -> Result<(), DomainError> {
+            Err(DomainError::new(
+                ErrorKind::AccessDenied,
+                "collab-test",
+                "deny-all gate".to_string(),
+            ))
+        }
+    }
+
+    struct ReadOnly;
+    #[async_trait]
+    impl CollabAuthzGate for ReadOnly {
+        async fn require(
+            &self,
+            _caller_id: Uuid,
+            _file_id: Uuid,
+            permission: Permission,
+        ) -> Result<(), DomainError> {
+            if permission == Permission::Read {
+                Ok(())
+            } else {
+                Err(DomainError::new(
+                    ErrorKind::AccessDenied,
+                    "collab-test",
+                    format!("read-only gate: {permission:?}"),
+                ))
+            }
+        }
+    }
+
     fn service_with_seed(seed: &str, limits: CollabLimits) -> Arc<CollabSessionService> {
+        service_with_seed_and_gate(seed, limits, Arc::new(AllowAll))
+    }
+
+    fn service_with_seed_and_gate(
+        seed: &str,
+        limits: CollabLimits,
+        authz: Arc<dyn CollabAuthzGate>,
+    ) -> Arc<CollabSessionService> {
         Arc::new(CollabSessionService::new(
             Arc::new(MemRepo::new()),
             Arc::new(StubReader {
                 content: Mutex::new(seed.as_bytes().to_vec()),
             }),
             Arc::new(StubWriter),
+            authz,
             limits,
         ))
     }
@@ -1122,5 +1251,96 @@ mod tests {
             Err(_elapsed) => {} // expected: no replay
             Ok(other) => panic!("expected timeout, got {other:?}"),
         }
+    }
+
+    // ── Per-frame AuthZ gate (C2 slice 4) ──────────────────────────────
+    //
+    // These tests assert on `handle_binary_frame`'s behaviour with a
+    // stub gate that permits/denies per Permission. Real end-to-end
+    // enforcement (across the WS wire) lives in the api-test S19; the
+    // service-level tests here guard the dispatch and error shape.
+
+    #[tokio::test]
+    async fn update_frame_denied_when_gate_rejects_update() {
+        // ReadOnly gate ⇒ Permission::Update is refused → UPDATE frame
+        // must return AuthzDenied and NOT reach the actor's Doc.
+        let svc = service_with_seed_and_gate("", CollabLimits::default(), Arc::new(ReadOnly));
+        let file_id = Uuid::new_v4();
+
+        // Build a legit Yjs update — the point is that the gate rejects
+        // BEFORE decode/apply, so even a well-formed update is refused.
+        let client = Doc::new();
+        {
+            let text = client.get_or_insert_text(ROOT_TEXT_NAME);
+            let mut txn = client.transact_mut();
+            text.insert(&mut txn, 0, "unauthorized write");
+        }
+        let update_bytes = client
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+
+        let frame = BinaryFrame {
+            kind: kind::UPDATE,
+            file_id,
+            payload: update_bytes,
+        };
+        match svc.handle_binary_frame(Uuid::nil(), frame).await {
+            Err(CollabError::AuthzDenied {
+                permission: "update",
+                file_id: fid,
+            }) if fid == file_id => {}
+            other => panic!(
+                "expected AuthzDenied{{permission:\"update\", file_id}}, got {other:?}"
+            ),
+        }
+
+        // Doc must be untouched — an authorized caller reading via SYNC
+        // sees the seed (empty) text, not "unauthorized write".
+        let session = svc.attach_file(Uuid::nil(), file_id).await.unwrap();
+        assert_eq!(session.get_text().await.unwrap(), "");
+    }
+
+    #[tokio::test]
+    async fn sync_frame_denied_when_gate_rejects_read() {
+        // DenyAll gate ⇒ even Read is refused. A caller with a valid
+        // socket but no Read grant must NOT be able to pull doc content
+        // via SYNC (defense-in-depth: subscribe-time Read gate is the
+        // primary check, this closes the "binary bypass" gap).
+        let svc = service_with_seed_and_gate("secret content", CollabLimits::default(), Arc::new(DenyAll));
+        let file_id = Uuid::new_v4();
+
+        let empty_sv = StateVector::default().encode_v1();
+        let frame = BinaryFrame {
+            kind: kind::SYNC,
+            file_id,
+            payload: empty_sv,
+        };
+        match svc.handle_binary_frame(Uuid::nil(), frame).await {
+            Err(CollabError::AuthzDenied {
+                permission: "read",
+                file_id: fid,
+            }) if fid == file_id => {}
+            other => panic!(
+                "expected AuthzDenied{{permission:\"read\", file_id}}, got {other:?}"
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn awareness_frame_bypasses_the_gate() {
+        // AWARENESS is presence-only (cursor position, user handle);
+        // it neither mutates state nor leaks content. Subscribe-time
+        // Read is sufficient — deny-all here proves the per-frame gate
+        // isn't consulted on 0x02.
+        let svc = service_with_seed_and_gate("", CollabLimits::default(), Arc::new(DenyAll));
+        let file_id = Uuid::new_v4();
+
+        let frame = BinaryFrame {
+            kind: kind::AWARENESS,
+            file_id,
+            payload: vec![0xAA, 0xBB, 0xCC],
+        };
+        let reply = svc.handle_binary_frame(Uuid::nil(), frame).await.unwrap();
+        assert_eq!(reply, None, "awareness has no per-socket reply");
     }
 }

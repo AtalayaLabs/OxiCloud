@@ -617,6 +617,39 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
                                     break;
                                 }
                             }
+                            Err(crate::application::services::collab_session_service::CollabError::AuthzDenied {
+                                permission,
+                                file_id,
+                            }) => {
+                                // Per-frame AuthZ denial. Anti-enumeration:
+                                // same "close socket, no wire reason" shape
+                                // as a bad-update. The AuthorizationEngine's
+                                // own `authz.denied` line already recorded
+                                // the deep reason; this event captures the
+                                // frame-class context (read vs write) that
+                                // the engine can't infer.
+                                //
+                                // Naming: `write_denied` for UPDATE
+                                // (Permission::Update), `read_denied` for
+                                // SYNC (Permission::Read). Distinct events
+                                // so operators can filter "someone tried
+                                // to write while only having read" from
+                                // "someone tried to read without a grant".
+                                let event_name = match permission {
+                                    "update" => "collab.write_denied",
+                                    "read" => "collab.read_denied",
+                                    _ => "collab.authz_denied",
+                                };
+                                tracing::info!(
+                                    target: "audit",
+                                    event = event_name,
+                                    reason = permission,
+                                    caller_id = %caller_id,
+                                    file_id = %file_id,
+                                    "👮🏻‍♂️ collab frame denied: {permission} on file",
+                                );
+                                break;
+                            }
                             Err(e) => {
                                 tracing::info!(
                                     target: "audit",

@@ -40,6 +40,7 @@ use sqlx::PgPool;
 use tokio::sync::oneshot;
 
 use crate::application::ports::authorization_ports::AuthorizationEngine;
+use crate::application::ports::collab_ports::CollabAuthzGate;
 use crate::common::errors::DomainError;
 use crate::domain::entities::drive::DrivePolicies;
 use crate::domain::entities::subject_group::INTERNAL_GROUP_ID;
@@ -3116,5 +3117,37 @@ impl UserLifecycleHook for AuthzCacheLifecycleHook {
             .invalidate_drive_role_cache_for_subject(Subject::User(user.id()))
             .await;
         Ok(())
+    }
+}
+
+/// Adapter: expose the concrete `PgAclEngine` through the narrow
+/// dyn-compatible [`CollabAuthzGate`] port that `CollabSessionService`
+/// takes. The full [`AuthorizationEngine`] trait isn't dyn-compatible
+/// (async default methods), and the collab service doesn't need the
+/// wider surface — one `require` call per binary frame is the whole
+/// dependency.
+///
+/// Delegates straight to `AuthorizationEngine::require`, so:
+///   * the engine's decision cache still applies (per-frame overhead
+///     is one cache hit after warm-up),
+///   * the engine's own `authz.denied` audit line still fires on the
+///     denial path — the collab service's `AuthzDenied` error and the
+///     WS handler's `collab.write_denied` / `collab.read_denied` line
+///     are additive context, not a substitute.
+#[async_trait::async_trait]
+impl CollabAuthzGate for PgAclEngine {
+    async fn require(
+        &self,
+        caller_id: Uuid,
+        file_id: Uuid,
+        permission: Permission,
+    ) -> Result<(), DomainError> {
+        AuthorizationEngine::require(
+            self,
+            Subject::User(caller_id),
+            permission,
+            Resource::File(file_id),
+        )
+        .await
     }
 }
