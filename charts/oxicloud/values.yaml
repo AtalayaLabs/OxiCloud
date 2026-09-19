@@ -37,7 +37,7 @@ persistence:
   # existingClaim: claim-name
 
 secrets:
-  # If you don't set `wopi.collabora.admin.password`, you may want to store the wopi admin password in this secret in OXICLOUD_JWT_SECRET key.
+  # If you don't set `wopi.collabora.admin.password`, you may want to store the wopi admin password in this secret in WOPI_ADMIN_PASSWORD key.
   existingSecret: ""
   # Set jwt for the instance.
   #jwtSecret: ""
