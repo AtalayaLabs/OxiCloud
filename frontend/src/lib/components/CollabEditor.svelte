@@ -23,6 +23,7 @@
 	import { onDestroy } from 'svelte';
 
 	import { CollabDoc, type SyncState } from '$lib/collab/collabDoc';
+	import { messageBus } from '$lib/message-bus/client.svelte';
 
 	interface Props {
 		/** Dashed UUID of the file to edit. */
@@ -32,6 +33,14 @@
 
 	let syncState = $state<SyncState>('idle');
 	let container: HTMLDivElement | undefined = $state();
+
+	/** Effective state shown to the user. The bus's circuit-tripped
+	 *  `unavailable` outranks any per-doc state — no point telling
+	 *  the user "syncing…" when the underlying transport has given
+	 *  up. Denied stays terminal (that's already a permanent state). */
+	const displayState = $derived<SyncState>(
+		messageBus.state === 'unavailable' && syncState !== 'denied' ? 'unavailable' : syncState
+	);
 
 	let collab: CollabDoc | undefined;
 	let view: EditorView | undefined;
@@ -91,25 +100,47 @@
 </script>
 
 <div class="collab-editor">
-	<div class="collab-editor__status">
-		<span class="collab-editor__status-pill collab-editor__status-pill--{syncState}">
-			{#if syncState === 'idle'}
-				Ready
-			{:else if syncState === 'syncing'}
-				Syncing…
-			{:else if syncState === 'synced'}
-				Synced
-			{:else if syncState === 'disconnected'}
-				Disconnected
-			{/if}
-		</span>
-	</div>
-	<div
-		bind:this={container}
-		class="collab-editor__pane"
-		role="textbox"
-		aria-label="Collaborative markdown editor"
-	></div>
+	{#if displayState === 'denied'}
+		<!-- Terminal state — no editor. Anti-enum: message covers
+		     "no Read grant" AND "unknown file" without leaking which. -->
+		<div class="collab-editor__denied">
+			<div class="collab-editor__denied-icon" aria-hidden="true">🔒</div>
+			<h2>Can't open this file</h2>
+			<p>You don't have access to it, or it doesn't exist.</p>
+		</div>
+	{:else if displayState === 'unavailable'}
+		<!-- Circuit breaker tripped — server is unreachable. The bus
+		     client stopped auto-retrying; only a user action can
+		     re-arm it. Refreshing the page is the simplest way. -->
+		<div class="collab-editor__denied">
+			<div class="collab-editor__denied-icon" aria-hidden="true">🌩️</div>
+			<h2>Server unreachable</h2>
+			<p>The live-updates connection can't reach the server. Refresh the page to try again.</p>
+			<button type="button" class="collab-editor__retry" onclick={() => location.reload()}>
+				Refresh
+			</button>
+		</div>
+	{:else}
+		<div class="collab-editor__status">
+			<span class="collab-editor__status-pill collab-editor__status-pill--{displayState}">
+				{#if displayState === 'idle'}
+					Ready
+				{:else if displayState === 'syncing'}
+					Syncing…
+				{:else if displayState === 'synced'}
+					Synced
+				{:else if displayState === 'disconnected'}
+					Disconnected
+				{/if}
+			</span>
+		</div>
+		<div
+			bind:this={container}
+			class="collab-editor__pane"
+			role="textbox"
+			aria-label="Collaborative markdown editor"
+		></div>
+	{/if}
 </div>
 
 <style>
@@ -163,5 +194,48 @@
 	.collab-editor__pane :global(.cm-scroller) {
 		font-family: var(--font-mono);
 		font-size: 0.9rem;
+	}
+
+	.collab-editor__denied {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 0.5rem;
+		padding: 2rem;
+		text-align: center;
+		color: var(--text-muted);
+	}
+
+	.collab-editor__denied-icon {
+		font-size: 3rem;
+		line-height: 1;
+	}
+
+	.collab-editor__denied h2 {
+		margin: 0;
+		font-size: 1.15rem;
+		color: var(--text-primary);
+	}
+
+	.collab-editor__denied p {
+		margin: 0;
+		max-width: 28rem;
+	}
+
+	.collab-editor__retry {
+		margin-top: 0.5rem;
+		padding: 0.45rem 1rem;
+		border: 1px solid var(--border-subtle);
+		border-radius: 0.35rem;
+		background: var(--surface-2);
+		color: var(--text-primary);
+		cursor: pointer;
+		font: inherit;
+	}
+
+	.collab-editor__retry:hover {
+		background: var(--surface-3);
 	}
 </style>

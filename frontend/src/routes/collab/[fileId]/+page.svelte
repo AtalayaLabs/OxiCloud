@@ -17,7 +17,13 @@
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 
 	const fileId = $derived(page.params.fileId ?? '');
-	const enabled = $derived(serverConfig.features.markdown_collab === true);
+	// Wait for the boot-time `/api/config` fetch to resolve before
+	// deciding on/off. Reading `features.markdown_collab` before
+	// `loaded` returns the store's pre-load default (false), which
+	// would flash "Markdown collab is off" for the ~ms window between
+	// route mount and config load.
+	const enabled = $derived(serverConfig.loaded && serverConfig.features.markdown_collab === true);
+	const stillLoading = $derived(!serverConfig.loaded);
 </script>
 
 <svelte:head>
@@ -25,7 +31,16 @@
 </svelte:head>
 
 <div class="collab-page">
-	{#if !enabled}
+	{#if stillLoading}
+		<!-- Config not yet fetched — don't decide on/off yet. The
+		     pre-load defaults have `markdown_collab: false`, and
+		     rendering the "off" notice here would flash it for anyone
+		     who refreshes while `/api/config` is in flight (or the
+		     server is still starting up). -->
+		<div class="collab-page__notice">
+			<p>Loading…</p>
+		</div>
+	{:else if !enabled}
 		<div class="collab-page__notice">
 			<h1>Markdown collab is off</h1>
 			<p>

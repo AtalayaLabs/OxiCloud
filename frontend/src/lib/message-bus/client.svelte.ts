@@ -55,8 +55,10 @@ const busLog = log.getLogger('oxi:message-bus');
 /** Reactive connection state. `idle` before the first `subscribe`;
  *  `connecting` while the handshake is in flight; `connected` once
  *  the server has accepted the upgrade; `disconnected` after any
- *  close (reconnect fires from the client). */
-export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'disconnected';
+ *  close (reconnect fires from the client); `unavailable` after the
+ *  reconnect circuit breaker trips — the client has stopped
+ *  auto-retrying, and the UI should invite the user to refresh. */
+export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'disconnected' | 'unavailable';
 
 /** Callback invoked for every `rt.event` notification on a topic. */
 export type EventHandler = (params: RtEventParams) => void;
@@ -102,14 +104,23 @@ const RECONNECT_MAX_MS = 30_000;
 
 /** Circuit breaker — after N consecutive failed attempts (either a
  *  ticket-exchange rejection or a WS close before `onopen` fires),
- *  give up and stay `disconnected` until the caller explicitly asks
- *  to `reconnect()`. Prevents an unrecoverable auth state (revoked
- *  session, wrong CSRF cookie, missing DPoP nonce) from flooding
- *  logs. Twenty attempts × exponential-backoff-with-jitter caps
- *  around 5 minutes of retrying — comfortably covers a cargo-release
- *  server restart on a hot machine while still short-circuiting a
- *  genuine permanent failure before it becomes noise. */
-const MAX_CONSECUTIVE_FAILURES = 20;
+ *  give up and flip state to `unavailable`. The UI is expected to
+ *  render a "please refresh" invite; `reconnect()` from an explicit
+ *  user action zeroes the counters and re-arms. Prevents an
+ *  unrecoverable auth state (revoked session, wrong CSRF cookie,
+ *  missing DPoP nonce), OR a stopped server, from flooding both the
+ *  server (once it comes back) and the client's own log. */
+const MAX_CONSECUTIVE_FAILURES = 10;
+
+/** How long the socket must stay open after `onopen` before we
+ *  consider the connection "stable" and reset the backoff /
+ *  circuit-breaker counters. A server mid-shutdown can accept a
+ *  TCP connection and close it milliseconds later; resetting on
+ *  the momentary open would let the client hammer the server
+ *  forever (and reset the circuit breaker every cycle). 3 s
+ *  covers "server dying mid-handshake" without being noticeable
+ *  on a healthy reconnect. */
+const MIN_STABLE_MS = 3_000;
 
 /** How long a tab must stay hidden before the client proactively
  *  closes its WebSocket. Balances two costs:
@@ -181,6 +192,12 @@ export class MessageBusClient {
 	 *  `null` when the tab is visible OR the timer already fired. See
 	 *  `HIDDEN_GRACE_MS` for the design tradeoff. */
 	#hiddenTimer: ReturnType<typeof setTimeout> | null = null;
+	/** setTimeout handle for the "connection has been stable for
+	 *  `MIN_STABLE_MS`" callback. Fires from `#onOpen` and, on
+	 *  fire, clears the backoff / consecutiveFailures counters.
+	 *  Cancelled on close so a socket that dies before the
+	 *  threshold doesn't get credit for a stable open. */
+	#stableTimer: ReturnType<typeof setTimeout> | null = null;
 	/** Bound `visibilitychange` listener kept so `close()` can
 	 *  detach it. Not attached in SSR (`typeof document ===
 	 *  "undefined"`); the client is lazy so this is just belt-and-
@@ -274,12 +291,18 @@ export class MessageBusClient {
 
 			// Kick the connection if nothing is holding it yet, otherwise
 			// send `rt.subscribe` if this is the first ref on this topic.
+			// `unavailable` intentionally does NOT kick — the circuit
+			// breaker has tripped and the user needs to `reconnect()`
+			// or refresh the page. A new subscribe from that state is
+			// registered in `#subs` (so it replays if reconnect happens)
+			// but no wire attempt fires.
 			if (this.state === 'idle' || this.state === 'disconnected') {
 				this.#connect();
 			} else if (entry.count === 1 && this.state === 'connected') {
-				this.#sendSubscribe(topic).catch((err) =>
-					busLog.warn('subscribe failed', { topic, error: err })
-				);
+				this.#sendSubscribe(topic).catch((err) => {
+					busLog.warn('subscribe failed', { topic, error: err });
+					this.#failSubscribe(topic, err);
+				});
 			}
 
 			let released = false;
@@ -326,11 +349,16 @@ export class MessageBusClient {
 	/** Force a fresh reconnect — for a live-updates toggle or a manual
 	 *  "reconnect" button. Rare; not part of the normal flow. Also the
 	 *  escape hatch after the circuit breaker trips: zeroes the
-	 *  consecutive-failure counter so the next attempt actually fires. */
+	 *  consecutive-failure counter, clears `unavailable` state, and
+	 *  schedules an immediate attempt. */
 	reconnect(): void {
 		if (this.#ws) this.#ws.close();
 		this.#backoffMs = RECONNECT_MIN_MS;
 		this.#consecutiveFailures = 0;
+		// Explicitly clear the circuit-tripped state; without this,
+		// `#connect`'s early-return on `unavailable` would swallow
+		// the reconnect attempt.
+		if (this.state === 'unavailable') this.state = 'disconnected';
 		this.#scheduleReconnect(0);
 	}
 
@@ -344,6 +372,10 @@ export class MessageBusClient {
 		if (this.#hiddenTimer !== null) {
 			clearTimeout(this.#hiddenTimer);
 			this.#hiddenTimer = null;
+		}
+		if (this.#stableTimer !== null) {
+			clearTimeout(this.#stableTimer);
+			this.#stableTimer = null;
 		}
 		if (this.#onVisibilityChange && typeof document !== 'undefined') {
 			document.removeEventListener('visibilitychange', this.#onVisibilityChange);
@@ -441,7 +473,9 @@ export class MessageBusClient {
 	// ─────────────────────── connection lifecycle ────────────────────
 
 	#connect(): void {
-		if (this.state === 'connecting' || this.state === 'connected') return;
+		if (this.state === 'connecting' || this.state === 'connected' || this.state === 'unavailable') {
+			return;
+		}
 		this.state = 'connecting';
 		busLog.debug('connecting', { url: this.#url });
 		// Ticket exchange runs off a Promise; the connection is
@@ -510,8 +544,24 @@ export class MessageBusClient {
 	#onOpen(): void {
 		busLog.debug('connected');
 		this.state = 'connected';
-		this.#backoffMs = RECONNECT_MIN_MS;
-		this.#consecutiveFailures = 0;
+		// DO NOT reset backoff / consecutiveFailures here. A server
+		// mid-shutdown can accept a TCP connection and close it
+		// milliseconds later — if we reset on the momentary `open`,
+		// the counter never climbs and the circuit breaker never
+		// trips. Instead, arm a "stable connection" timer: only
+		// reset if the socket stays open for MIN_STABLE_MS. If it
+		// dies before that, the counter keeps its value from the
+		// pre-open increment and the exponential backoff keeps
+		// growing on the way to the circuit breaker.
+		if (this.#stableTimer !== null) clearTimeout(this.#stableTimer);
+		this.#stableTimer = setTimeout(() => {
+			this.#stableTimer = null;
+			if (this.state === 'connected') {
+				this.#backoffMs = RECONNECT_MIN_MS;
+				this.#consecutiveFailures = 0;
+				busLog.debug('stable connection — reconnect counters reset');
+			}
+		}, MIN_STABLE_MS);
 		// Snapshot whether this is a reconnect BEFORE we flip the
 		// `hasConnectedBefore` bit, so handlers only fire on 2nd+ open.
 		const isReconnect = this.#hasConnectedBefore;
@@ -521,9 +571,10 @@ export class MessageBusClient {
 		// prior subscriptions.
 		for (const [topic, entry] of this.#subs) {
 			entry.acked = false;
-			this.#sendSubscribe(topic).catch((err) =>
-				busLog.warn('resubscribe failed', { topic, error: err })
-			);
+			this.#sendSubscribe(topic).catch((err) => {
+				busLog.warn('resubscribe failed', { topic, error: err });
+				this.#failSubscribe(topic, err);
+			});
 		}
 		// Fire reconnect handlers AFTER sub replay is kicked (the
 		// `rt.subscribe` frames are on the socket; ack may be
@@ -730,6 +781,14 @@ export class MessageBusClient {
 	#onClose(ev: CloseEvent): void {
 		busLog.debug('close', { code: ev.code, reason: ev.reason });
 		this.#ws = null;
+		// Cancel any pending "connection stable" callback — if the
+		// socket died before MIN_STABLE_MS, the reconnect counter
+		// MUST NOT be reset. This is what prevents a server dying
+		// mid-shutdown (open → close within ms) from flooding.
+		if (this.#stableTimer !== null) {
+			clearTimeout(this.#stableTimer);
+			this.#stableTimer = null;
+		}
 		this.state = 'disconnected';
 		// Reject every pending call — the caller sees a synthetic
 		// error rather than hanging. Reconnect will re-issue the
@@ -759,23 +818,32 @@ export class MessageBusClient {
 		if (this.#reconnectTimer !== null) return;
 		this.#consecutiveFailures += 1;
 		// Circuit breaker: after too many failures in a row, stop
-		// retrying and require an explicit `reconnect()` call from
-		// the caller. Prevents a bad auth state (session revoked,
-		// CSRF cookie stripped, DPoP nonce mismatch) from flooding
-		// server logs with the same 401/403 forever. `reconnect()`
-		// zeroes the counter and re-arms.
+		// retrying and flip to `unavailable`. UI is expected to
+		// invite the user to refresh; `reconnect()` from an explicit
+		// action re-arms. Prevents a bad auth state (session revoked,
+		// CSRF cookie stripped, DPoP nonce mismatch) OR a stopped
+		// server from flooding both the server (once it comes back)
+		// AND the client's own log.
 		if (this.#consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
 			busLog.error('circuit breaker tripped — reconnect suspended after too many failures', {
 				consecutiveFailures: this.#consecutiveFailures,
 				max: MAX_CONSECUTIVE_FAILURES,
 				remedy: 'call messageBus.reconnect() to retry, or refresh the page'
 			});
+			this.state = 'unavailable';
 			return;
 		}
 		const delay = overrideMs ?? this.#backoffMs;
-		// Full jitter — random in [0, backoff]. Prevents thundering
-		// herd if the server was momentarily overloaded.
-		const jittered = Math.floor(Math.random() * (delay + 1));
+		// Half-jitter — sleep is at least `delay / 2`, at most `delay`.
+		// Full jitter (`0..delay`) allowed rapid-fire retries during a
+		// server outage: three attempts could land within a single
+		// backoff window on unlucky RNG. Half-jitter keeps the "no
+		// faster than delay/2" invariant while still spreading the
+		// thundering-herd load. AWS Architecture Blog "Exponential
+		// backoff and jitter" writeup calls this out — decorrelated
+		// or half is safer than full for a server-side flood.
+		const halfDelay = Math.floor(delay / 2);
+		const jittered = halfDelay + Math.floor(Math.random() * (halfDelay + 1));
 		busLog.warn('reconnect scheduled', {
 			attemptBackoffMs: delay,
 			jitteredMs: jittered,
@@ -853,6 +921,62 @@ export class MessageBusClient {
 				// Server drops idempotently; nothing to do if it errors.
 			});
 		}
+	}
+
+	/**
+	 * Permanently mark a topic as unusable when `rt.subscribe` comes
+	 * back with a server-side denial (JSON-RPC `error`) — the caller
+	 * lacks Read, or the topic is unknown (collapsed to the same wire
+	 * code for anti-enumeration), etc. A real denial is NOT retryable
+	 * — it won't spontaneously succeed on the next reconnect, and
+	 * leaving the entry in `#subs` guarantees an infinite retry loop
+	 * as `#onOpen` replays every stored sub after every reconnect.
+	 *
+	 * **Transient transport errors are NOT denials.** The
+	 * `#call`/`#onClose` paths reject pending calls with a synthetic
+	 * `{code: INTERNAL_ERROR, message: 'ws_closed' | 'not_connected'
+	 * | 'send_failed'}` when the WS drops mid-subscribe (typical
+	 * during a DPoP nonce refresh + WS teardown / reopen). Treating
+	 * those as denials would spuriously flip consumers to `denied`
+	 * for a transport hiccup — the caller actually still has Read;
+	 * the server just didn't get to answer. Leave the sub in `#subs`
+	 * so `#onOpen`'s replay retries after reconnect.
+	 *
+	 * On real denial, fires the sub's `revokedHandlers` with a
+	 * synthetic `subscribe_denied` reason so consumers can tear down
+	 * UI the same way they do for a server-initiated eviction.
+	 */
+	#failSubscribe(topic: string, err: MessageBusError): void {
+		// Transient transport errors → don't permanently kill the
+		// sub. `message` is the discriminator because they all
+		// share `code: INTERNAL_ERROR` (see the `#call` / `#onClose`
+		// synthesis sites).
+		if (
+			err.message === 'ws_closed' ||
+			err.message === 'not_connected' ||
+			err.message === 'send_failed'
+		) {
+			busLog.debug('subscribe interrupted by transport — will replay on reconnect', {
+				topic,
+				error: err
+			});
+			return;
+		}
+		const entry = this.#subs.get(topic);
+		if (!entry) return;
+		this.#subs.delete(topic);
+		const handlers = [...entry.revokedHandlers];
+		for (const h of handlers) {
+			try {
+				h({ topic, reason: 'subscribe_denied' } as unknown as RtRevokedParams);
+			} catch (handlerErr) {
+				busLog.warn('subscribe-denied handler threw', { topic, error: handlerErr });
+			}
+		}
+		busLog.warn('subscribe permanently failed — sub dropped, no retry', {
+			topic,
+			error: err
+		});
 	}
 }
 

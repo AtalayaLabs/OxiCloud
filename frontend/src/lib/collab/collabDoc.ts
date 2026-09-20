@@ -40,7 +40,25 @@ const collabLog = log.getLogger('oxi:collab');
  *  `src/application/services/collab_session_service.rs`. */
 export const ROOT_TEXT_NAME = 'content';
 
-export type SyncState = 'idle' | 'syncing' | 'synced' | 'disconnected';
+/** UI-visible lifecycle state of a `CollabDoc`.
+ *
+ *   * `idle`          — constructed, not connected yet.
+ *   * `syncing`       — subscribe in flight OR sync-step-2 pending.
+ *   * `synced`        — at least one incoming update was applied
+ *                       (or an empty sync-step-2 came back).
+ *   * `disconnected`  — was working, lost the connection. Reconnect
+ *                       machinery in the bus client tries to recover.
+ *   * `denied`        — subscribe was refused by the server. Terminal
+ *                       for this file id: no retry will succeed
+ *                       spontaneously. Covers "no Read grant" AND
+ *                       "unknown file" both — the server collapses the
+ *                       two to the same `no_read` wire code for
+ *                       anti-enumeration, and so does this state.
+ *   * `unavailable`   — bus-level circuit breaker tripped. The server
+ *                       is unreachable, an explicit user action
+ *                       (refresh) is required to retry.
+ */
+export type SyncState = 'idle' | 'syncing' | 'synced' | 'disconnected' | 'denied' | 'unavailable';
 
 export interface CollabDocOpts {
 	fileId: string;
@@ -98,12 +116,29 @@ export class CollabDoc {
 				collabLog.debug('unexpected text event on collab topic', { fileId: this.fileId });
 			},
 			(revoked) => {
-				// Server evicted us — grant revoked, file deleted, etc.
+				// Server evicted us. Two sub-cases:
+				//   * `subscribe_denied` — synthetic reason the bus
+				//     client emits when the INITIAL subscribe was
+				//     refused (no Read grant or unknown file — the
+				//     server collapses the two for anti-enum). This
+				//     is terminal for this fileId; UI should render
+				//     a "no access" state, not a "reconnecting" one.
+				//   * Anything else — mid-session eviction (grant
+				//     revoked, file deleted, admin kicked, session
+				//     migrated). UI signals "disconnected" and the
+				//     bus's reconnect machinery gives up after the
+				//     server refuses subsequent attempts.
 				collabLog.warn('collab subscription revoked', {
 					fileId: this.fileId,
 					reason: revoked.reason
 				});
-				this.#setSyncState('disconnected');
+				// `subscribe_denied` is a client-synthetic reason emitted
+				// by `MessageBusClient.#failSubscribe` — outside the
+				// server-owned `RtRevokedReason` enum, so widen to
+				// `string` for the compare. Consumers should always
+				// treat unknown reasons defensively anyway.
+				const reason: string = revoked.reason;
+				this.#setSyncState(reason === 'subscribe_denied' ? 'denied' : 'disconnected');
 			}
 		);
 
