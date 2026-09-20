@@ -47,6 +47,7 @@
 	import { apiFetch, withBase } from '$lib/api/client';
 	import { getCsrfHeaders } from '$lib/api/csrf';
 	import { countHidden, filterDotfiles } from '$lib/utils/dotfileFilter';
+	import { TEXTY_EXT_RE } from '$lib/utils/textyExt';
 	import { preferences } from '$lib/stores/preferences.svelte';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import type { FileItem, FolderItem, ItemType } from '$lib/api/types';
@@ -1967,7 +1968,13 @@
 						(k) => NEW_DOC_KINDS[k].handler === 'wopi' && exts.includes(k)
 					)
 				: [];
-			const collabKinds: (keyof typeof NEW_DOC_KINDS)[] = collabAvailable ? ['md', 'txt'] : [];
+			// One collab entry: "New text file". User names it — the
+			// extension in the filename decides the CodeMirror language
+			// binding via `TEXTY_EXT_RE`. Split entries per extension
+			// (md, txt, rs, …) would balloon the menu; a single entry
+			// with a filename prompt matches how desktop file managers
+			// do it and lets the user pick any text-shaped extension.
+			const collabKinds: (keyof typeof NEW_DOC_KINDS)[] = collabAvailable ? ['text'] : [];
 			newDocKinds = [...wopiKinds, ...collabKinds];
 		});
 	});
@@ -2000,17 +2007,18 @@
 			fallback: 'New presentation',
 			handler: 'wopi'
 		},
-		md: {
-			mime: 'text/markdown',
-			icon: 'file-lines',
-			label: 'actions.new_document_markdown',
-			fallback: 'New markdown',
-			handler: 'collab'
-		},
-		txt: {
+		// `text` is a virtual kind — not tied to one extension. The
+		// user picks the extension in the filename prompt (`.md`,
+		// `.txt`, `.rs`, …); anything on the shared TEXTY_EXT_RE
+		// allowlist opens cleanly in the collab editor with the
+		// matching language grammar. Extensions off the allowlist
+		// prompt a "this doesn't look like a text file" confirm
+		// before creating, so `test.jpg` doesn't silently produce a
+		// broken opened-in-CodeMirror binary.
+		text: {
 			mime: 'text/plain',
-			icon: 'file-lines',
-			label: 'actions.new_document_txt',
+			icon: 'file-circle-plus',
+			label: 'actions.new_text_file',
 			fallback: 'New text file',
 			handler: 'collab'
 		}
@@ -2028,15 +2036,67 @@
 	 */
 	async function onNewDocument(kind: keyof typeof NEW_DOC_KINDS) {
 		addMenuOpen = false;
+		const handler = NEW_DOC_KINDS[kind].handler;
+		const isVirtualText = kind === 'text';
+
+		// Prompt copy varies: WOPI kinds prefill a document-shaped
+		// name (no extension — we append the kind's ext). The virtual
+		// "text" kind asks for a full filename including the
+		// extension, so the user can pick `.md` / `.rs` / `.py` /
+		// etc.
 		const name = await promptDialog({
-			title: t('files.new_document', 'New document'),
-			placeholder: t('files.new_document_prompt', 'Document name'),
+			title: isVirtualText
+				? t('files.new_text_file', 'New text file')
+				: t('files.new_document', 'New document'),
+			// The virtual "text" kind lets the user pick any text
+			// extension (`.md`, `.txt`, `.c`, `.py`, `.rs`, …), so
+			// the prompt spells out that the extension is part of
+			// the filename. WOPI kinds append their fixed ext, so no
+			// hint is needed there.
+			message: isVirtualText
+				? t(
+						'files.new_text_file_hint',
+						'Include the extension in the filename (e.g. .md, .txt, .c, .py, .rs).'
+					)
+				: undefined,
+			placeholder: isVirtualText
+				? t('files.new_text_file_prompt', 'Filename (e.g. notes.md)')
+				: t('files.new_document_prompt', 'Document name'),
 			confirmText: t('common.create', 'Create')
 		});
 		if (!name) return;
-		const fname = name.toLowerCase().endsWith(`.${kind}`) ? name : `${name}.${kind}`;
+
+		// Build the final filename. WOPI kinds append the kind's ext
+		// unless the user already typed it. Text kind uses the user's
+		// input verbatim.
+		let fname: string;
+		if (isVirtualText) {
+			fname = name;
+		} else {
+			fname = name.toLowerCase().endsWith(`.${kind}`) ? name : `${name}.${kind}`;
+		}
+
+		// Warn if the text kind's filename doesn't look text-shaped —
+		// e.g. `test.jpg` would open an editable-looking editor over
+		// binary bytes. TEXTY_EXT_RE mirrors the FileViewer's own
+		// gate so what the user sees is what they'll be able to
+		// open. Names without ANY extension pass through — a
+		// filename like `README` is legitimate text.
+		if (isVirtualText && /\.[^./\\]+$/.test(fname) && !TEXTY_EXT_RE.test(fname)) {
+			const proceed = await confirmDialog({
+				title: t('files.new_text_file_binary_ext_title', 'Non-text extension'),
+				message: t(
+					'files.new_text_file_binary_ext_message',
+					{ name: fname },
+					'"{{name}}" doesn\'t look like a text file. The editor will open it as text — that usually breaks binary formats. Continue anyway?'
+				),
+				confirmText: t('common.create', 'Create'),
+				danger: true
+			});
+			if (!proceed) return;
+		}
+
 		try {
-			const handler = NEW_DOC_KINDS[kind].handler;
 			let file: File;
 			if (handler === 'wopi') {
 				const res = await fetch(`${base}/templates/blank.${kind}`);

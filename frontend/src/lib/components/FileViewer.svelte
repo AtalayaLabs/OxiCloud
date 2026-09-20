@@ -8,6 +8,7 @@
 	import CollabEditor from '$lib/components/CollabEditor.svelte';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { t } from '$lib/i18n/index.svelte';
+	import { TEXTY_EXT_RE } from '$lib/utils/textyExt';
 
 	interface Props {
 		open: boolean;
@@ -100,16 +101,10 @@
 	 *      those files land in the video / other branches and either
 	 *      the media player tries to play them or WOPI probes them.
 	 *
-	 *  The extension list mirrors `display_helpers.rs::icon_special_class_with_ext`'s
-	 *  "code / script / prose" families — anything the server-side
-	 *  file-icon classifier considers text-shaped is text-shaped here
-	 *  too. Editing quality still varies (no per-language syntax
-	 *  highlighting beyond markdown yet — follow-up slice); the
-	 *  editor is at worst a plain-text CodeMirror with collab, which
-	 *  is strictly better than the video / octet-stream fallback.
+	 *  The extension allowlist lives in `$lib/utils/textyExt.ts` — shared
+	 *  with the "New file" action in the files route so both gates agree
+	 *  on what qualifies as text-shaped.
 	 */
-	const TEXTY_EXT_RE =
-		/\.(md|markdown|rst|txt|log|js|jsx|mjs|cjs|ts|tsx|py|pyw|rs|go|java|kt|kts|scala|c|h|cpp|hpp|cc|cxx|cs|rb|php|swift|r|lua|pl|pm|html|htm|css|scss|sass|less|json|xml|yaml|yml|toml|ini|cfg|conf|sql|graphql|proto|vue|svelte|sh|bash|zsh|fish|ps1|bat|cmd)$/i;
 	const collabForFile = $derived(
 		!!file &&
 			serverConfig.loaded &&
