@@ -159,6 +159,103 @@
 				return (await import('@codemirror/lang-xml')).xml();
 			case 'sql':
 				return (await import('@codemirror/lang-sql')).sql();
+			// Legacy CodeMirror modes for languages without a
+			// first-party `@codemirror/lang-*` package. Each is a
+			// StreamLanguage tokenizer — coarser than a Lezer grammar
+			// but plenty for keyword / string / comment coloring. All
+			// live in one npm package (`@codemirror/legacy-modes`),
+			// so Rollup should ideally split each mode into its own
+			// chunk; dynamic-import per-language keeps that a
+			// possibility even if it hasn't materialised today.
+			case 'sh':
+			case 'bash':
+			case 'zsh':
+			case 'fish': {
+				const { StreamLanguage } = await import('@codemirror/language');
+				const { shell } = await import('@codemirror/legacy-modes/mode/shell');
+				return StreamLanguage.define(shell);
+			}
+			case 'go': {
+				const { StreamLanguage } = await import('@codemirror/language');
+				const { go } = await import('@codemirror/legacy-modes/mode/go');
+				return StreamLanguage.define(go);
+			}
+			case 'java': {
+				const { StreamLanguage } = await import('@codemirror/language');
+				const { java } = await import('@codemirror/legacy-modes/mode/clike');
+				return StreamLanguage.define(java);
+			}
+			case 'kt':
+			case 'kts': {
+				const { StreamLanguage } = await import('@codemirror/language');
+				const { kotlin } = await import('@codemirror/legacy-modes/mode/clike');
+				return StreamLanguage.define(kotlin);
+			}
+			case 'scala': {
+				const { StreamLanguage } = await import('@codemirror/language');
+				const { scala } = await import('@codemirror/legacy-modes/mode/clike');
+				return StreamLanguage.define(scala);
+			}
+			case 'c':
+			case 'h': {
+				const { StreamLanguage } = await import('@codemirror/language');
+				const { c } = await import('@codemirror/legacy-modes/mode/clike');
+				return StreamLanguage.define(c);
+			}
+			case 'cpp':
+			case 'hpp':
+			case 'cc':
+			case 'cxx': {
+				const { StreamLanguage } = await import('@codemirror/language');
+				const { cpp } = await import('@codemirror/legacy-modes/mode/clike');
+				return StreamLanguage.define(cpp);
+			}
+			case 'cs': {
+				const { StreamLanguage } = await import('@codemirror/language');
+				const { csharp } = await import('@codemirror/legacy-modes/mode/clike');
+				return StreamLanguage.define(csharp);
+			}
+			case 'rb': {
+				const { StreamLanguage } = await import('@codemirror/language');
+				const { ruby } = await import('@codemirror/legacy-modes/mode/ruby');
+				return StreamLanguage.define(ruby);
+			}
+			case 'swift': {
+				const { StreamLanguage } = await import('@codemirror/language');
+				const { swift } = await import('@codemirror/legacy-modes/mode/swift');
+				return StreamLanguage.define(swift);
+			}
+			case 'r': {
+				const { StreamLanguage } = await import('@codemirror/language');
+				const { r } = await import('@codemirror/legacy-modes/mode/r');
+				return StreamLanguage.define(r);
+			}
+			case 'lua': {
+				const { StreamLanguage } = await import('@codemirror/language');
+				const { lua } = await import('@codemirror/legacy-modes/mode/lua');
+				return StreamLanguage.define(lua);
+			}
+			case 'pl':
+			case 'pm': {
+				const { StreamLanguage } = await import('@codemirror/language');
+				const { perl } = await import('@codemirror/legacy-modes/mode/perl');
+				return StreamLanguage.define(perl);
+			}
+			case 'toml': {
+				const { StreamLanguage } = await import('@codemirror/language');
+				const { toml } = await import('@codemirror/legacy-modes/mode/toml');
+				return StreamLanguage.define(toml);
+			}
+			case 'ini':
+			case 'cfg':
+			case 'conf': {
+				// No dedicated INI grammar; reuse `properties` — java
+				// properties is a `key = value` grammar close enough
+				// for INI / most config files.
+				const { StreamLanguage } = await import('@codemirror/language');
+				const { properties } = await import('@codemirror/legacy-modes/mode/properties');
+				return StreamLanguage.define(properties);
+			}
 			default:
 				return (await import('@codemirror/lang-markdown')).markdown();
 		}
@@ -204,8 +301,15 @@
 	interface Props {
 		/** Dashed UUID of the file to edit. */
 		fileId: string;
+		/** Filename with extension — drives the CodeMirror language
+		 *  binding (`languageFor` matches on the trailing extension).
+		 *  Optional so the standalone `/collab/[fileId]` test route,
+		 *  which doesn't have the filename in hand, can mount too; a
+		 *  missing filename falls back to markdown highlighting (a
+		 *  safe superset for prose, does no harm on code). */
+		filename?: string;
 	}
-	let { fileId }: Props = $props();
+	let { fileId, filename }: Props = $props();
 
 	let syncState = $state<SyncState>('idle');
 	let container: HTMLDivElement | undefined = $state();
@@ -258,6 +362,7 @@
 	$effect(() => {
 		if (!container) return;
 		const currentFileId = fileId;
+		const currentFilename = filename;
 		const currentContainer = container;
 		let cancelled = false;
 
@@ -320,7 +425,12 @@
 				import('@codemirror/commands'),
 				import('@codemirror/language'),
 				import('y-codemirror.next'),
-				languageFor(currentFileId)
+				// `languageFor` matches on the trailing extension in the
+				// FILENAME — the UUID has none, which used to make every
+				// file fall through to markdown. Prefer the passed
+				// `filename`; the fileId is only a fallback for the
+				// standalone test route.
+				languageFor(currentFilename ?? currentFileId)
 			]);
 			if (cancelled) return;
 

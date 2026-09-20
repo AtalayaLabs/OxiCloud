@@ -298,7 +298,7 @@
 					     lands in `kind === 'other'` and would otherwise
 					     miss the text branch. -->
 					<div class="fv__collab">
-						<CollabEditor fileId={file.id} />
+						<CollabEditor fileId={file.id} filename={file.name} />
 					</div>
 				{:else if kind === 'image'}
 					<img
