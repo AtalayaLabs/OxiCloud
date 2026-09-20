@@ -325,6 +325,15 @@ admin_kick}`.
 
 Slice status (2026-09-20):
 
+- ✅ **Read-only editor for Viewers** — the `collab:<file_id>` subscribe
+  ack now carries `capabilities.can_write` (from a second AuthZ pass
+  on `Permission::Update`). The FE's `CollabDoc` reads it, suppresses
+  outbound UPDATE frames when false, and the `CollabEditor` mounts
+  CodeMirror through a live `EditorState.readOnly` compartment that
+  starts read-only (fail-closed) and flips on the ack. A "Read only"
+  status pill renders alongside the sync pill. Guarded by hurl S25
+  (Owner sees `can_write: true`, Viewer sees `can_write: false` with
+  a successful subscribe).
 - ✅ **`resource_deleted`** — `FileManagementService::delete_and_cleanup_with_perms`
   calls `CollabSessionService::evict_sessions_for_file` before the
   trash / permanent-delete branches. Actor publishes

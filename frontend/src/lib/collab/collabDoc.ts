@@ -34,6 +34,16 @@ import { messageBus } from '$lib/message-bus/client.svelte';
 import type { UnsubscribeHandle } from '$lib/message-bus/client.svelte';
 import { KIND_AWARENESS, KIND_SYNC, KIND_UPDATE, decodeFrame, encodeFrame } from './wireCodec';
 
+/** Caller's effective capabilities on this file, resolved by the
+ *  server on the `rt.subscribe collab:<id>` ack. `canWrite` reflects
+ *  `Permission::Update` at subscribe time; a mid-session grant
+ *  demotion doesn't refresh this until the client reconnects (the
+ *  matching server-side eviction is a follow-up slice — see
+ *  memory `project_collab_authz_eviction_pending`). */
+export interface CollabCapabilities {
+	canWrite: boolean;
+}
+
 const collabLog = log.getLogger('oxi:collab');
 
 /** The Y.Doc root-type name the server uses for the file's text.
@@ -67,6 +77,14 @@ export interface CollabDocOpts {
 	 *  status pill without wiring a Svelte store from inside a plain
 	 *  TS class. */
 	onSyncStateChange?: (state: SyncState) => void;
+	/** Called when the server ack'd the collab subscribe and returned
+	 *  the caller's per-file capabilities. Fires once per subscribe
+	 *  cycle (initial + every reconnect replay). Consumers gate the
+	 *  editor on `canWrite`: `false` means the caller has Read but
+	 *  not Update — CodeMirror MUST mount read-only, and outbound
+	 *  UPDATE frames MUST be suppressed (server would reject them
+	 *  and, today, drop the WS). */
+	onCapabilities?: (caps: CollabCapabilities) => void;
 }
 
 export class CollabDoc {
@@ -81,6 +99,16 @@ export class CollabDoc {
 
 	#syncState: SyncState = 'idle';
 	#onSyncStateChange?: (state: SyncState) => void;
+	#onCapabilities?: (caps: CollabCapabilities) => void;
+	/** Effective write capability. Suppresses outbound UPDATE frames
+	 *  when false — the local Y.Doc still mutates freely (the editor
+	 *  handles gating), but nothing goes on the wire so the server
+	 *  never has to enforce `no_edit` on this session. Server truth
+	 *  wins: `false` is set from the subscribe ack, and stays false
+	 *  until a reconnect that returns `can_write: true` (or a fresh
+	 *  attach). Defaults to `false` — a fail-closed default matches
+	 *  the server-side gate. */
+	#canWrite = false;
 	#unsubscribeTopic: UnsubscribeHandle | null = null;
 	#unregisterHandler: (() => void) | null = null;
 	#docUpdateHandler: ((update: Uint8Array, origin: unknown) => void) | null = null;
@@ -95,8 +123,17 @@ export class CollabDoc {
 	constructor(opts: CollabDocOpts) {
 		this.fileId = opts.fileId;
 		this.#onSyncStateChange = opts.onSyncStateChange;
+		this.#onCapabilities = opts.onCapabilities;
 		this.doc = new Y.Doc();
 		this.awareness = new awarenessProtocol.Awareness(this.doc);
+	}
+
+	/** Whether the caller has Update on this file, per the last
+	 *  server-side ack. Consumers gate outbound edits on this — the
+	 *  local doc still mutates freely (rendering-only), but frames
+	 *  won't hit the wire. */
+	get canWrite(): boolean {
+		return this.#canWrite;
 	}
 
 	/** Kick off the connection. Safe to call once per instance; a
@@ -153,13 +190,36 @@ export class CollabDoc {
 				// treat unknown reasons defensively anyway.
 				const reason: string = revoked.reason;
 				this.#setSyncState(reason === 'subscribe_denied' ? 'denied' : 'disconnected');
+			},
+			(ack) => {
+				// The subscribe ack carries per-file capabilities for
+				// collab topics — see `RtSubscribeAck.capabilities`.
+				// Missing / malformed capabilities fall back to
+				// `canWrite: false` (fail-closed): if the server didn't
+				// advertise a write capability, we don't offer edit UX.
+				// Fires once per subscribe cycle including reconnect
+				// replays, so an admin that toggles the caller's Update
+				// grant between socket drops sees the new capability
+				// take effect on the next reconnect.
+				const canWrite = ack.capabilities?.can_write === true;
+				this.#canWrite = canWrite;
+				this.#onCapabilities?.({ canWrite });
 			}
 		);
 
 		// Local updates → wire. Filter by origin so the update we
 		// apply from a peer (origin === this) doesn't echo back.
+		//
+		// Also gate on `canWrite`: a Viewer's local Y.Doc still applies
+		// (the editor mounts read-only so this is mostly moot, but
+		// programmatic mutations elsewhere in the class — e.g. seeding
+		// — must not leak upward). Without this gate, sending a Viewer's
+		// UPDATE gets the WS closed by the server's `no_edit` handler
+		// (a hard close, not a graceful denial — the graceful path is
+		// a separate follow-up slice).
 		this.#docUpdateHandler = (update, origin) => {
 			if (origin === this) return; // remote-applied, don't reflect
+			if (!this.#canWrite) return; // read-only: swallow local edits
 			const frame = encodeFrame(KIND_UPDATE, this.fileId, update);
 			messageBus.sendBinary(frame);
 		};

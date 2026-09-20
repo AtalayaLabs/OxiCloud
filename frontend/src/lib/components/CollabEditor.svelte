@@ -9,15 +9,23 @@
 	// registry — each user's caret gets their `username` label and a
 	// deterministic colour derived from their id.
 	//
+	// Read-only viewers: the subscribe ack for `collab:{fileId}` carries
+	// the caller's `Permission::Update` as `capabilities.can_write`.
+	// When false, CodeMirror is mounted with `EditorState.readOnly.of(true)`
+	// via a live-reconfigurable `Compartment` (so a hypothetical mid-
+	// session capability upgrade could flip it without a full remount).
+	// The compartment defaults to read-only until the ack lands —
+	// fail-closed, matching the server's own gate.
+	//
 	// Still ahead:
 	//   * Explicit rt.collab_flush on unmount — the debouncer already
 	//     bounds staleness to 60s; wiring `beforeunload` is a polish
 	//     slice.
-	//   * Read-only mode when Update permission is missing — the
-	//     server's per-frame gate refuses the 0x01 UPDATE anyway;
-	//     surfacing this in the UI is a follow-up.
+	//   * Grant-drop mid-session eviction — today a demoted Editor
+	//     keeps their local capability cache until reconnect. See
+	//     `project_collab_authz_eviction_pending`.
 
-	import { EditorState, type Extension } from '@codemirror/state';
+	import { Compartment, EditorState, type Extension } from '@codemirror/state';
 	import { EditorView, keymap, lineNumbers } from '@codemirror/view';
 	import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 	import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
@@ -189,6 +197,11 @@
 
 	let syncState = $state<SyncState>('idle');
 	let container: HTMLDivElement | undefined = $state();
+	/** Reactive read-only state. Fail-closed default: until the
+	 *  subscribe ack arrives with `can_write: true`, the editor is
+	 *  read-only. Flips only when the server explicitly grants
+	 *  Update. See `readOnlyCompartment` for the live wire-up. */
+	let readOnly = $state(true);
 
 	/** Effective state shown to the user. The bus's circuit-tripped
 	 *  `unavailable` outranks any per-doc state — no point telling
@@ -200,6 +213,12 @@
 
 	let collab: CollabDoc | undefined;
 	let view: EditorView | undefined;
+	/** CodeMirror `Compartment` that wraps the `EditorState.readOnly`
+	 *  extension so the editor can flip between edit and read-only
+	 *  modes without a full state rebuild — `view.dispatch({effects:
+	 *  compartment.reconfigure(...)})`. Rebuilt per mount because a
+	 *  `Compartment` is bound to one `EditorState`. */
+	let readOnlyCompartment: Compartment | undefined;
 
 	// Mount effect: attach CodeMirror + CollabDoc when `container`
 	// becomes available. Runs once per `fileId` change; the cleanup
@@ -223,10 +242,28 @@
 		// language grammar to start syncing, and the WS subscribe
 		// benefits from firing as early as possible so the sync-step-2
 		// diff arrives while we're still loading the grammar chunk.
+		// Reset readonly to the fail-closed default on every mount —
+		// a leftover `false` from a previous file would let a viewer
+		// type into a new file for the sub-second window between
+		// mount and the fresh subscribe ack.
+		readOnly = true;
+
 		collab = new CollabDoc({
 			fileId: currentFileId,
 			onSyncStateChange: (s) => {
 				syncState = s;
+			},
+			onCapabilities: (caps) => {
+				readOnly = !caps.canWrite;
+				// If the editor is already mounted, reconfigure the
+				// live compartment so the caller sees the mode switch
+				// immediately — otherwise the mount below picks up the
+				// current `readOnly` value on its first render.
+				if (view && readOnlyCompartment) {
+					view.dispatch({
+						effects: readOnlyCompartment.reconfigure(EditorState.readOnly.of(readOnly))
+					});
+				}
 			}
 		});
 		collab.connect();
@@ -253,6 +290,14 @@
 			const langExt = await languageFor(currentFileId);
 			if (cancelled) return;
 
+			// Fresh compartment per mount — it's bound to this
+			// EditorState. Initial value tracks `readOnly` at this
+			// instant; the `onCapabilities` callback reconfigures the
+			// same compartment later when the ack arrives (if the mount
+			// won the race with the ack) or immediately (if the ack
+			// came first).
+			readOnlyCompartment = new Compartment();
+
 			const state = EditorState.create({
 				doc: '', // initial content comes from the CRDT after sync-step-2
 				extensions: [
@@ -260,6 +305,7 @@
 					history(),
 					keymap.of([...defaultKeymap, ...historyKeymap]),
 					langExt,
+					readOnlyCompartment.of(EditorState.readOnly.of(readOnly)),
 					// The language extension only produces a syntax
 					// tree; `syntaxHighlighting` paints colours from
 					// it. `collabHighlight` (see the definition above)
@@ -288,6 +334,7 @@
 			view = undefined;
 			collab?.destroy();
 			collab = undefined;
+			readOnlyCompartment = undefined;
 		};
 	});
 
@@ -334,6 +381,19 @@
 					Disconnected
 				{/if}
 			</span>
+			{#if readOnly && displayState !== 'idle' && displayState !== 'syncing'}
+				<!-- Only surface read-only AFTER the server's capabilities
+				     ack has landed (syncState transitions past `syncing`).
+				     Otherwise the fail-closed default would flash a
+				     "Read only" pill during every mount, even for
+				     Editors — surprising and wrong. -->
+				<span
+					class="collab-editor__status-pill collab-editor__status-pill--readonly"
+					title="You don't have permission to edit this file"
+				>
+					Read only
+				</span>
+			{/if}
 		</div>
 		<div
 			bind:this={container}
@@ -381,6 +441,12 @@
 	.collab-editor__status-pill--disconnected {
 		background: var(--status-error-bg);
 		color: var(--status-error-fg);
+	}
+
+	.collab-editor__status-pill--readonly {
+		margin-left: 0.5rem;
+		background: var(--status-warning-bg, var(--surface-3));
+		color: var(--status-warning-fg, var(--text-muted));
 	}
 
 	.collab-editor__pane {

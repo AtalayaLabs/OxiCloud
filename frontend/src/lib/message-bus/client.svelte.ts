@@ -63,6 +63,30 @@ export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'disconnecte
 /** Callback invoked for every `rt.event` notification on a topic. */
 export type EventHandler = (params: RtEventParams) => void;
 
+/** Shape of the `result` object in a successful `rt.subscribe` reply.
+ *  `subscribed` echoes the topic wire form; `capabilities` is present
+ *  today only on `collab:{fileId}` topics and carries the caller's
+ *  per-file editing capabilities (see `RtCollabCapabilities`). Absent
+ *  on every other topic. */
+export interface RtSubscribeAck {
+	subscribed: string;
+	capabilities?: RtCollabCapabilities;
+}
+
+/** Per-file editing capabilities the server surfaces on a
+ *  `collab:{fileId}` subscribe ack. `can_write` reflects the caller's
+ *  `Permission::Update` on the file at subscribe time — the FE gates
+ *  CodeMirror between edit and read-only modes on this flag. */
+export interface RtCollabCapabilities {
+	can_write: boolean;
+}
+
+/** Called with the `rt.subscribe` reply's `result` when the server
+ *  acks the topic. Fired once per full subscribe cycle — the initial
+ *  ack AND every replay after reconnect. Consumers that only care
+ *  about the initial ack should self-latch after the first fire. */
+export type SubscribeAckHandler = (result: RtSubscribeAck) => void;
+
 /** Callback invoked when the server sends `rt.revoked` for a topic —
  *  the subscription is already gone server-side by the time the frame
  *  arrives; the client removes it from the local refcount map and
@@ -147,6 +171,11 @@ interface SubEntry {
 	count: number;
 	handlers: Set<EventHandler>;
 	revokedHandlers: Set<RevokedHandler>;
+	/** Ack callbacks — fired with the server's `rt.subscribe` reply
+	 *  every time the subscribe succeeds (initial + every reconnect
+	 *  replay). Consumers that only care about the initial ack
+	 *  self-latch inside the handler. */
+	ackedHandlers: Set<SubscribeAckHandler>;
 	/** True once the server has ack'd `rt.subscribe`. Used by
 	 *  reconnect: on wire-up we re-send every already-ack'd topic. */
 	acked: boolean;
@@ -268,7 +297,12 @@ export class MessageBusClient {
 	 * (2026-09-11). `subscribe` is a mutation entry point; its reads
 	 * of internal state MUST NOT contaminate reactive callers.
 	 */
-	subscribe(topic: string, onEvent: EventHandler, onRevoked?: RevokedHandler): UnsubscribeHandle {
+	subscribe(
+		topic: string,
+		onEvent: EventHandler,
+		onRevoked?: RevokedHandler,
+		onAcked?: SubscribeAckHandler
+	): UnsubscribeHandle {
 		return untrack(() => {
 			let entry = this.#subs.get(topic);
 			if (!entry) {
@@ -281,6 +315,8 @@ export class MessageBusClient {
 					handlers: new Set(),
 					// eslint-disable-next-line svelte/prefer-svelte-reactivity
 					revokedHandlers: new Set(),
+					// eslint-disable-next-line svelte/prefer-svelte-reactivity
+					ackedHandlers: new Set(),
 					acked: false
 				};
 				this.#subs.set(topic, entry);
@@ -288,6 +324,7 @@ export class MessageBusClient {
 			entry.count += 1;
 			entry.handlers.add(onEvent);
 			if (onRevoked) entry.revokedHandlers.add(onRevoked);
+			if (onAcked) entry.ackedHandlers.add(onAcked);
 
 			// Kick the connection if nothing is holding it yet, otherwise
 			// send `rt.subscribe` if this is the first ref on this topic.
@@ -312,7 +349,7 @@ export class MessageBusClient {
 				// Cleanup path — Svelte `$effect` cleanup doesn't track
 				// anyway, but stay defensive: untrack around the
 				// internal state reads inside #releaseOne.
-				untrack(() => this.#releaseOne(topic, onEvent, onRevoked));
+				untrack(() => this.#releaseOne(topic, onEvent, onRevoked, onAcked));
 			};
 		});
 	}
@@ -861,7 +898,24 @@ export class MessageBusClient {
 	#sendSubscribe(topic: string): Promise<void> {
 		return this.#call((id) => subscribeFrame(id, topic)).then((result) => {
 			const entry = this.#subs.get(topic);
-			if (entry) entry.acked = true;
+			if (entry) {
+				entry.acked = true;
+				// Fan-out the ack payload to every registered ack
+				// handler. Cast is defensive: the server's contract for
+				// `rt.subscribe` returns an object with `subscribed`
+				// echoing the topic (see `handle_subscribe` in
+				// `rt_ws.rs`); if the wire drifts, handlers see the
+				// object as-is and are free to narrow / ignore fields
+				// they didn't expect.
+				const ack = result as RtSubscribeAck;
+				for (const handler of entry.ackedHandlers) {
+					try {
+						handler(ack);
+					} catch (err) {
+						busLog.warn('subscribe ack handler threw', { topic, error: err });
+					}
+				}
+			}
 			busLog.debug('subscribed', { topic, result });
 		});
 	}
@@ -908,11 +962,17 @@ export class MessageBusClient {
 
 	// ─────────────────────── refcount teardown ────────────────────────
 
-	#releaseOne(topic: string, onEvent: EventHandler, onRevoked?: RevokedHandler): void {
+	#releaseOne(
+		topic: string,
+		onEvent: EventHandler,
+		onRevoked?: RevokedHandler,
+		onAcked?: SubscribeAckHandler
+	): void {
 		const entry = this.#subs.get(topic);
 		if (!entry) return;
 		entry.handlers.delete(onEvent);
 		if (onRevoked) entry.revokedHandlers.delete(onRevoked);
+		if (onAcked) entry.ackedHandlers.delete(onAcked);
 		entry.count -= 1;
 		if (entry.count > 0) return;
 		this.#subs.delete(topic);

@@ -905,6 +905,12 @@ async fn handle_subscribe(
         }
     };
 
+    // For a `Topic::Collab` subscribe ack, we surface the caller's
+    // Update capability alongside the Read gate below — the FE gates
+    // CodeMirror between edit and read-only mode on this flag. Any
+    // other topic leaves this `None`, and the ack shape stays flat.
+    let mut collab_capabilities: Option<serde_json::Value> = None;
+
     // AuthZ dispatch — one match arm per gate class. Adding a new topic
     // variant with a new gate shape is a compile error here.
     match topic.required_perm() {
@@ -928,6 +934,26 @@ async fn handle_subscribe(
                     "no_read",
                     Some(serde_json::json!({ "topic": topic_str })),
                 );
+            }
+            // Second pass for collab topics only: check Update on the
+            // same resource so the ack can carry `can_write`. The
+            // authorization engine's decision cache turns this into a
+            // no-op after warm-up. Failure here is NOT a denial —
+            // Viewers legitimately get `can_write: false` alongside
+            // a successful Read-gated subscribe.
+            if matches!(topic, Topic::Collab(_))
+                && let BusResource::File(file_uuid) = resource
+            {
+                let can_write = state
+                    .authorization
+                    .require(
+                        Subject::User(caller_id),
+                        Permission::Update,
+                        Resource::File(file_uuid),
+                    )
+                    .await
+                    .is_ok();
+                collab_capabilities = Some(serde_json::json!({ "can_write": can_write }));
             }
         }
         AuthzCheck::IdentityMatch { user_id } => {
@@ -963,7 +989,17 @@ async fn handle_subscribe(
     // notifications.
     install_subscription(topic, subs, out_tx, state);
 
-    success_response(id, serde_json::json!({ "subscribed": topic_str }))
+    // Collab subscribes carry an extra `capabilities` object so the FE
+    // can render read-only affordances without a second round trip.
+    // Other topics keep the flat `{ subscribed: <topic> }` shape.
+    let result = match collab_capabilities {
+        Some(caps) => serde_json::json!({
+            "subscribed":   topic_str,
+            "capabilities": caps,
+        }),
+        None => serde_json::json!({ "subscribed": topic_str }),
+    };
+    success_response(id, result)
 }
 
 fn handle_unsubscribe(id: Value, params: Value, subs: &mut HashMap<String, Sub>) -> String {

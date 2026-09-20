@@ -396,7 +396,9 @@ impl CollabSession {
     /// updates behind starts returning `RecvError::Lagged`; the
     /// forwarder recovers by tearing down the socket, and the client
     /// reconnects and catches up via sync-step-1.
-    pub async fn subscribe_updates(&self) -> Result<broadcast::Receiver<CollabBroadcast>, CollabError> {
+    pub async fn subscribe_updates(
+        &self,
+    ) -> Result<broadcast::Receiver<CollabBroadcast>, CollabError> {
         let (tx, rx) = oneshot::channel();
         self.inbox
             .send(SessionMsg::SubscribeUpdates { reply: tx })
@@ -570,9 +572,10 @@ impl ActorState {
         if self.updates_since_snapshot >= self.limits.snapshot_after_updates {
             self.snapshot().await?;
         }
-        let _ = self
-            .outbox
-            .send((crate::application::services::collab_wire::kind::UPDATE, bytes));
+        let _ = self.outbox.send((
+            crate::application::services::collab_wire::kind::UPDATE,
+            bytes,
+        ));
         // Debouncer bookkeeping. `first_dirty_at` sticks on the FIRST
         // update after a clean state; `last_dirty_at` advances on
         // every update. Together they drive the tick-branch decision.
@@ -594,9 +597,10 @@ impl ActorState {
     /// silently dropped) — solo sessions never see their own
     /// awareness back, which is fine.
     fn broadcast_awareness(&self, bytes: Vec<u8>) {
-        let _ = self
-            .outbox
-            .send((crate::application::services::collab_wire::kind::AWARENESS, bytes));
+        let _ = self.outbox.send((
+            crate::application::services::collab_wire::kind::AWARENESS,
+            bytes,
+        ));
     }
 
     /// Serialise the current doc as one update-blob + state-vector and
@@ -1725,7 +1729,10 @@ mod tests {
             .await
             .expect("broadcast delivery within 1s")
             .expect("no lag / no close");
-        assert_eq!(received.0, crate::application::services::collab_wire::kind::UPDATE);
+        assert_eq!(
+            received.0,
+            crate::application::services::collab_wire::kind::UPDATE
+        );
         assert_eq!(received.1, update_bytes);
     }
 
@@ -1758,7 +1765,10 @@ mod tests {
                 .await
                 .expect("broadcast delivery within 1s")
                 .expect("no lag / no close");
-            assert_eq!(received.0, crate::application::services::collab_wire::kind::UPDATE);
+            assert_eq!(
+                received.0,
+                crate::application::services::collab_wire::kind::UPDATE
+            );
             assert_eq!(received.1, update_bytes);
         }
     }
@@ -2064,7 +2074,10 @@ mod tests {
             .await
             .expect("broadcast delivery within 1s")
             .expect("no lag / no close");
-        assert_eq!(received.0, crate::application::services::collab_wire::kind::AWARENESS);
+        assert_eq!(
+            received.0,
+            crate::application::services::collab_wire::kind::AWARENESS
+        );
         assert_eq!(received.1, presence);
 
         // Doc text unchanged — awareness is presence, not content.
@@ -2084,8 +2097,7 @@ mod tests {
         // DenyAll gate proves that awareness is NOT gated on Update
         // (only subscribe-time Read is, and we don't exercise it here
         // because the actor is already attached).
-        let svc =
-            service_with_seed_and_gate("", CollabLimits::default(), Arc::new(DenyAll));
+        let svc = service_with_seed_and_gate("", CollabLimits::default(), Arc::new(DenyAll));
         let file_id = Uuid::new_v4();
         let session = svc.attach_file(Uuid::nil(), file_id).await.unwrap();
         let mut rx = session.subscribe_updates().await.unwrap();
@@ -2103,7 +2115,10 @@ mod tests {
             .await
             .expect("broadcast delivery within 1s")
             .expect("no lag / no close");
-        assert_eq!(received.0, crate::application::services::collab_wire::kind::AWARENESS);
+        assert_eq!(
+            received.0,
+            crate::application::services::collab_wire::kind::AWARENESS
+        );
         assert_eq!(received.1, presence);
     }
 

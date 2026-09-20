@@ -61,12 +61,15 @@
 //!
 //! ```jsonc
 //! {
-//!   "subscribed": ["folder:..."],
-//!   "events":     [ { "topic": "folder:...", "event": "file_created",
-//!                     "data": { ... } } ],
-//!   "revoked":    [ { "topic": "collab:...", "reason": "resource_deleted" } ],
+//!   "subscribed":     ["folder:..."],
+//!   "subscribe_acks": [ { "topic": "collab:...",
+//!                         "result": { "subscribed": "collab:...",
+//!                                     "capabilities": { "can_write": true } } } ],
+//!   "events":         [ { "topic": "folder:...", "event": "file_created",
+//!                         "data":  { ... } } ],
+//!   "revoked":        [ { "topic": "collab:...", "reason": "resource_deleted" } ],
 //!   "pings_received": 0,
-//!   "timed_out":  false
+//!   "timed_out":      false
 //! }
 //! ```
 
@@ -420,6 +423,14 @@ async fn subscribe_and_collect(args: Args) -> Result<(), HelperError> {
         pending_subs.insert(req_id, topic.clone());
     }
 
+    // Successful subscribe acks with their full `result` object.
+    // Kept parallel to `subscribed` (which stores just the topic
+    // strings) so existing scenarios that only look at topic names
+    // don't break, while new scenarios can assert on the ack payload
+    // — capabilities for collab topics, custom fields for future
+    // topic classes. One entry per topic, in subscribe order.
+    let mut subscribe_acks: Vec<Value> = Vec::new();
+
     let mut events: Vec<Value> = Vec::new();
     // Server-initiated eviction notifications (`rt.revoked`) — captured
     // separately from `rt.event` so scenarios can assert on eviction
@@ -492,7 +503,18 @@ async fn subscribe_and_collect(args: Args) -> Result<(), HelperError> {
                 )));
             }
             if let Some(topic) = topic {
-                subscribed.push(topic);
+                subscribed.push(topic.clone());
+                // Capture the ack payload for scenarios that assert
+                // on `capabilities` (S25 read-only) or other future
+                // per-topic ack fields. `null` on missing result is
+                // defensive — the server always populates it today
+                // but leaving the wire flexibility in the trace
+                // shows up loudly if it ever regresses.
+                let result = value.get("result").cloned().unwrap_or(Value::Null);
+                subscribe_acks.push(serde_json::json!({
+                    "topic":  topic,
+                    "result": result,
+                }));
             }
             // Every requested subscribe is now ack'd — signal the
             // orchestrator that publishes targeted at these topics
@@ -542,6 +564,7 @@ async fn subscribe_and_collect(args: Args) -> Result<(), HelperError> {
     if let Some(path) = args.output.as_ref() {
         let summary = json!({
             "subscribed": subscribed,
+            "subscribe_acks": subscribe_acks,
             "events": events,
             "revoked": revoked,
             "pings_received": pings_received,

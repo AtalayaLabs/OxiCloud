@@ -116,6 +116,19 @@
 #                                       dedup because rows would come
 #                                       in both via WS push and via
 #                                       the delta fetch).
+#   S25 Collab capabilities in subscribe ack
+#                             — the `collab:<file_id>` subscribe ack
+#                                carries the caller's `can_write`
+#                                capability inline. Owner sees
+#                                `capabilities.can_write: true`;
+#                                Viewer sees `capabilities.can_write:
+#                                false` while still passing the Read
+#                                gate (the sub itself acks). The FE
+#                                gates CodeMirror between edit and
+#                                read-only on this — without it,
+#                                Viewers type into an editable-looking
+#                                editor and the server drops the WS
+#                                on the first UPDATE frame.
 #   S24 Collab eviction on delete
 #                             — subscribe to `collab:<file_id>` (the
 #                                subscribe alone attaches the actor;
@@ -1717,4 +1730,66 @@ ev_len=$(jq -r '.events | length' "$out_s24")
 rm -f "$out_s24"
 log "S24 OK (collab session evicted with reason=resource_deleted on file delete)"
 
-log "All twenty-four message-bus scenarios passed."
+# ── Scenario 25 — Collab capabilities in subscribe ack ─────────────────────
+# The `collab:<file_id>` subscribe ack carries `capabilities.can_write`
+# so the FE can gate CodeMirror between edit and read-only without a
+# probe round-trip. Two subs on the same file:
+#
+#   * user1 owns folder E and file s19 → `can_write: true`.
+#   * user2 has Viewer on folder E (granted back in S19)         →
+#     `can_write: false`. The subscribe still ACKS (Read passes),
+#     only the capabilities differ.
+#
+# Guards a real regression: without the ack payload, an editable-
+# looking editor on a Viewer's screen would drop the WS on the first
+# UPDATE — Viewers would see "Disconnected" flashing on every
+# keystroke.
+log "S25: collab subscribe ack carries can_write; Owner=true, Viewer=false."
+
+out_s25_owner="$(mktemp -t rtbus_s25_owner.XXXXXX)"
+ready_s25_owner="$(mktemp -t rtbus_s25_owner_ready.XXXXXX)"; rm -f "$ready_s25_owner"
+# expect_events=0 + expect_revoked=0 → helper exits as soon as the ack
+# lands (all pending subs cleared). 3s timeout is 15× headroom on the
+# ~200 ms subscribe RTT observed locally.
+"$HELPER_BIN" subscribe-and-collect \
+  --url "$ws_url" \
+  --token "$user1_token" \
+  --subscribe "collab:$s19_file_id" \
+  --expect-events 0 \
+  --timeout 3s \
+  --ready-file "$ready_s25_owner" \
+  --output "$out_s25_owner"
+wait_ready "$ready_s25_owner"
+
+owner_can_write=$(jq -r '.subscribe_acks[0].result.capabilities.can_write' "$out_s25_owner")
+[[ "$owner_can_write" == "true" ]] \
+  || { cat "$out_s25_owner"; die "S25: owner expected can_write=true, got $owner_can_write"; }
+rm -f "$out_s25_owner"
+log "S25a OK (owner sees can_write=true)"
+
+out_s25_viewer="$(mktemp -t rtbus_s25_viewer.XXXXXX)"
+ready_s25_viewer="$(mktemp -t rtbus_s25_viewer_ready.XXXXXX)"; rm -f "$ready_s25_viewer"
+"$HELPER_BIN" subscribe-and-collect \
+  --url "$ws_url" \
+  --token "$user2_token" \
+  --subscribe "collab:$s19_file_id" \
+  --expect-events 0 \
+  --timeout 3s \
+  --ready-file "$ready_s25_viewer" \
+  --output "$out_s25_viewer"
+wait_ready "$ready_s25_viewer"
+
+viewer_can_write=$(jq -r '.subscribe_acks[0].result.capabilities.can_write' "$out_s25_viewer")
+[[ "$viewer_can_write" == "false" ]] \
+  || { cat "$out_s25_viewer"; die "S25: viewer expected can_write=false, got $viewer_can_write"; }
+# Viewer's subscribe still SUCCEEDS — anti-enum + read is enough for
+# the topic. A missing entry here would mean the ack turned into a
+# denial, which is a regression on the Read gate.
+viewer_subscribed=$(jq -r '.subscribed | length' "$out_s25_viewer")
+[[ "$viewer_subscribed" == "1" ]] \
+  || { cat "$out_s25_viewer"; die "S25: viewer's subscribe did not ack (subscribed len=$viewer_subscribed)"; }
+rm -f "$out_s25_viewer"
+log "S25b OK (viewer sees can_write=false with a successful subscribe)"
+log "S25 OK"
+
+log "All twenty-five message-bus scenarios passed."
