@@ -210,6 +210,20 @@ export class CollabDoc {
 				// treat unknown reasons defensively anyway.
 				const reason: string = revoked.reason;
 				this.#setSyncState(reason === 'subscribe_denied' ? 'denied' : 'disconnected');
+
+				// A revocation always means "you no longer have Update on
+				// this file, at minimum" — flip write mode off proactively
+				// so the editor drops into read-only on the SAME event
+				// loop tick, before the user's next keystroke can leak an
+				// UPDATE that the server would have to bounce with
+				// rt.write_denied. Covers `grant_revoked`, `resource_deleted`,
+				// and any future eviction reason the server might add
+				// (fail-closed is the right default). No-op if canWrite
+				// was already false (e.g. Viewer subscribe_denied path).
+				if (this.#canWrite) {
+					this.#canWrite = false;
+					this.#onCapabilities?.({ canWrite: false });
+				}
 			},
 			(ack) => {
 				// The subscribe ack carries per-file capabilities for

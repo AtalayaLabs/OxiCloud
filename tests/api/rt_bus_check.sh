@@ -116,6 +116,17 @@
 #                                       dedup because rows would come
 #                                       in both via WS push and via
 #                                       the delta fetch).
+#   S27 Collab grant-revoke eviction
+#                             — user2 has a file-level Viewer grant
+#                                and subscribes to `collab:<file_id>`.
+#                                user1 revokes the grant. user2's
+#                                socket MUST receive `rt.revoked` on
+#                                the collab topic with reason
+#                                "grant_revoked" — the FE's read-only
+#                                slice cached `can_write` at subscribe
+#                                time and would otherwise stay stale
+#                                until the next reconnect. Guards the
+#                                `AuthzChanged.affected_files` cascade.
 #   S26 Collab graceful write-denial
 #                             — a Viewer sends a `0x01` UPDATE frame
 #                                on a subscribed collab topic. The
@@ -1835,4 +1846,93 @@ set -e
   || die "S26: expected graceful rt.write_denied + socket alive, helper exit=$denied_exit"
 log "S26 OK (rt.write_denied fired; socket survived; ping ack'd)"
 
-log "All twenty-six message-bus scenarios passed."
+# ── Scenario 27 — Collab grant-revoke eviction ─────────────────────────────
+# user1 owns a .md file in folder A and grants user2 a FILE-scoped
+# Viewer role on it — so revoking the grant should fire an
+# `AuthzChanged { affected_files: [<file_id>] }` on
+# `user:{user2}:authz`. The WS handler translates that into an
+# `rt.revoked` on `collab:<file_id>` for user2's socket with reason
+# `grant_revoked`. Without this the FE's cached `can_write` (or
+# read gate) stays stale until reconnect — a security regression.
+#
+# Steps:
+#   1. Upload a .md file in folder A as user1.
+#   2. Grant user2 Viewer on the FILE (not the folder — file-level
+#      grants are what emit affected_files).
+#   3. user2 subscribes to `collab:<file_id>` in a background helper
+#      that expects one revoked notification.
+#   4. user1 revokes the grant.
+#   5. Assert revoked[0].topic and .reason.
+log "S27: revoke a file-scoped grant → user2's collab sub is evicted with reason=grant_revoked."
+
+tmp_md_s27="$(mktemp -t rtbus_s27_body.XXXXXX)"; : > "$tmp_md_s27"
+upload_resp_s27="$(mktemp -t rtbus_s27_resp.XXXXXX)"
+status=$(curl -sS -o "$upload_resp_s27" -w "%{http_code}" -X POST \
+  -H "Authorization: Bearer $user1_token" \
+  -F "folder_id=$folder_a" \
+  -F "file=@$tmp_md_s27;filename=s27.md" \
+  "$base_url/api/files/upload")
+rm -f "$tmp_md_s27"
+if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
+  cat "$upload_resp_s27" >&2; rm -f "$upload_resp_s27"
+  die "S27: .md upload failed with HTTP $status"
+fi
+s27_file_id=$(jq -r '.id' "$upload_resp_s27")
+rm -f "$upload_resp_s27"
+[[ -n "$s27_file_id" && "$s27_file_id" != "null" ]] || die "S27: could not extract file id"
+
+# File-level grant. Note `resource.type = "file"` — the folder-scoped
+# path was covered by S8; this scenario locks in the sibling code
+# path for file resources.
+grant_s27=$(c_post "$base_url/api/grants" "$user1_token" \
+  "$(printf '{"subject":{"type":"user","id":"%s"},"resource":{"type":"file","id":"%s"},"role":"viewer"}' \
+       "$user2_id" "$s27_file_id")")
+grant_s27_id=$(printf '%s' "$grant_s27" | jq -r '.grants[0].id')
+[[ -n "$grant_s27_id" && "$grant_s27_id" != "null" ]] \
+  || die "S27: file grant failed: $grant_s27"
+
+out_s27="$(mktemp -t rtbus_s27.XXXXXX)"
+ready_s27="$(mktemp -t rtbus_s27_ready.XXXXXX)"; rm -f "$ready_s27"
+"$HELPER_BIN" subscribe-and-collect \
+  --url "$ws_url" \
+  --token "$user2_token" \
+  --subscribe "collab:$s27_file_id" \
+  --expect-events 0 \
+  --expect-revoked 1 \
+  --timeout 5s \
+  --ready-file "$ready_s27" \
+  --output "$out_s27" &
+helper_pid=$!
+wait_ready "$ready_s27"
+
+# Revoke — publishes AuthzChanged { affected_files } on user:{user2}:authz.
+curl -sS -X DELETE \
+  -H "Authorization: Bearer $user1_token" \
+  "$base_url/api/grants/$grant_s27_id" > /dev/null
+
+if ! wait "$helper_pid"; then
+  cat "$out_s27" >&2 || true
+  die "S27: helper did not observe the grant-revoke eviction"
+fi
+
+rev_len_s27=$(jq -r '.revoked | length' "$out_s27")
+[[ "$rev_len_s27" == "1" ]] \
+  || { cat "$out_s27"; die "S27: expected 1 revoked, got $rev_len_s27"; }
+rev_topic_s27=$(jq -r '.revoked[0].topic' "$out_s27")
+[[ "$rev_topic_s27" == "collab:$s27_file_id" ]] \
+  || { cat "$out_s27"; die "S27: wrong topic: $rev_topic_s27"; }
+rev_reason_s27=$(jq -r '.revoked[0].reason' "$out_s27")
+[[ "$rev_reason_s27" == "grant_revoked" ]] \
+  || { cat "$out_s27"; die "S27: wrong reason: $rev_reason_s27"; }
+
+# Sanity: the subscribe SHOULD have succeeded before revoke — user2
+# had Viewer on the file. `capabilities.can_write` must have been
+# false at that moment (no Update, only Read) but the sub itself is
+# ack'd.
+initial_can_write=$(jq -r '.subscribe_acks[0].result.capabilities.can_write' "$out_s27")
+[[ "$initial_can_write" == "false" ]] \
+  || { cat "$out_s27"; die "S27: pre-revoke expected can_write=false, got $initial_can_write"; }
+rm -f "$out_s27"
+log "S27 OK (file grant revoked → collab:<id> evicted with grant_revoked)"
+
+log "All twenty-seven message-bus scenarios passed."

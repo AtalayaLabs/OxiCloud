@@ -337,14 +337,35 @@ pub enum MessageBusEvent {
     /// [`Topic::UserAuthz`]. The WS handler auto-subscribes each
     /// session to its own `user:{caller}:authz` topic; on receipt it
     /// walks the session's active subscriptions and evicts any whose
-    /// resource is in `affected_folders`, emitting a `rt.revoked`
-    /// notification per evicted topic.
+    /// resource is named in `affected_folders` or `affected_files`,
+    /// emitting a `rt.revoked` notification per evicted topic.
     ///
-    /// MVP carries folder UUIDs only (the only resource-scoped topic
-    /// that ships in Phase A). When file/drive/calendar topics land,
-    /// the payload extends with additional resource classes — see the
-    /// plan's Phase-B roadmap.
-    AuthzChanged { affected_folders: Vec<Uuid> },
+    /// Two fields, one event:
+    ///
+    ///   * **`affected_folders`** — resource-scoped folder topics
+    ///     (`folder:{id}`), the original Phase-A subject. Emitted on
+    ///     folder-level grant create/revoke.
+    ///   * **`affected_files`** — collab topics (`collab:{id}`),
+    ///     added for the read-only slice's grant-drop eviction. A
+    ///     Viewer whose Editor grant was revoked mid-session must
+    ///     lose their `collab:<id>` sub with reason `grant_revoked`
+    ///     so their editor drops out of write mode without waiting
+    ///     for a reconnect. File-level grant revoke fills this list.
+    ///     Folder-level revokes that cascade to descendant files are
+    ///     a Phase-B enhancement (would require the producer to
+    ///     enumerate the affected subtree).
+    ///
+    /// Both fields default to empty; a well-formed producer sets at
+    /// least one. Per-field `serde(default)` keeps the wire shape
+    /// backwards-compatible with the pre-existing folder-only
+    /// producer (an older event with just `affected_folders` still
+    /// deserializes; `affected_files` defaults to empty).
+    AuthzChanged {
+        #[serde(default)]
+        affected_folders: Vec<Uuid>,
+        #[serde(default)]
+        affected_files: Vec<Uuid>,
+    },
 
     /// A new notification was created for the caller — publishes on
     /// [`Topic::UserNotifications`]. **Pure cache-invalidation
@@ -772,6 +793,7 @@ mod tests {
             (
                 MessageBusEvent::AuthzChanged {
                     affected_folders: vec![Uuid::nil()],
+                    affected_files: vec![],
                 },
                 "authz_changed",
             ),

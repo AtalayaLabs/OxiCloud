@@ -353,16 +353,25 @@ Slice status (2026-09-21):
   outbox; the WS forwarder translates that to an `rt.revoked
   { topic: "collab:<id>", reason: "resource_deleted" }` text frame
   and unwinds. Guarded by hurl S24 in `tests/api/rt_bus_check.sh`.
-- ⬜ **`grant_revoked` / `group_membership_lost`** — the
-  file-scoped `AuthzChanged` variant that carries `affected_files`
-  isn't wired yet. Today's `AuthzChanged { affected_folders }` only
-  covers folder-topic eviction; a Viewer who was Editor mid-session
-  keeps their live actor and their local edits diverge silently
-  (server rejects UPDATEs with `no_edit`; the FE editor doesn't yet
-  render read-only). Follow-up slice: extend either the event
-  payload or add a sibling `AuthzChanged { affected_files }`, then
-  consume it in the delete-adjacent hook and evict with reason
-  `grant_revoked`.
+- ✅ **`grant_revoked` (file-scoped)** — `AuthzChanged` now carries
+  `affected_files: Vec<Uuid>` alongside `affected_folders`. The
+  grant-handler revoke path publishes `affected_files` when the
+  resource is a `Resource::File`; the WS reader translates that
+  into `SessionOut::EvictCollab`, and the main loop emits
+  `rt.revoked { reason: "grant_revoked" }` on the affected
+  `collab:<file_id>` topics — symmetric to the pre-existing
+  folder-topic eviction cascade. Guarded by hurl S27 (user2 has
+  a file-scoped Viewer grant, subscribes to collab, grant revoked
+  → revoked entry appears with grant_revoked reason). Folder-level
+  revokes that cascade to collab sessions on descendant files
+  remain Phase-B — would require enumerating the folder subtree
+  at revoke time.
+- ⬜ **`group_membership_lost`** — same wire path as
+  `grant_revoked`, different producer. When a user is removed from
+  a group that has a file grant, the group-membership service
+  needs to publish `AuthzChanged { affected_files }` on
+  `user:{removed_user}:authz`. Not wired yet; the plumbing
+  through the WS handler is now in place.
 - ⬜ **`external_write`** — the collab writer bridge already owns
   the atomic blob swap on flush, so out-of-band WebDAV / WOPI /
   REST writes that don't route through the CRDT are the missing

@@ -343,6 +343,13 @@ enum SessionOut {
     Frame(String),
     Binary(Vec<u8>),
     EvictFolders(Vec<Uuid>),
+    /// Sibling of [`EvictFolders`] for `collab:{file_id}` topics.
+    /// Same shape (list of resource ids), different topic class, same
+    /// wire outcome (`rt.revoked` per topic that was in the sub set).
+    /// Reason on the wire is `grant_revoked` — an inline UPDATE would
+    /// have used `no_edit` via `rt.write_denied`, but a full grant drop
+    /// tears down the subscribe.
+    EvictCollab(Vec<Uuid>),
 }
 
 /// RAII guard that decrements the live-session counter on ANY exit
@@ -516,6 +523,37 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
                         // already-gone topic is a no-op.
                         for folder_uuid in folders {
                             let wire = Topic::Folder(folder_uuid).to_wire_key();
+                            if subs.remove(&wire).is_some() {
+                                let frame = revoked_notification(
+                                    &wire,
+                                    "grant_revoked",
+                                );
+                                if socket
+                                    .send(Message::Text(frame.into()))
+                                    .await
+                                    .is_err()
+                                {
+                                    return; // session dead
+                                }
+                                audit_evicted(caller_id, &wire, "grant_revoked");
+                            }
+                        }
+                    }
+                    Some(SessionOut::EvictCollab(files)) => {
+                        // File-scoped grant-revocation cascade for
+                        // collab topics. Symmetric to `EvictFolders`
+                        // but keyed on `Topic::Collab(file_id)`.
+                        // Removing the sub entry drops the forwarder
+                        // task handle; the actor keeps running for
+                        // other attached sockets (their grants may
+                        // still be valid). `rt.revoked` with reason
+                        // `grant_revoked` tells the client's CollabDoc
+                        // to transition to `disconnected` — read-only
+                        // is stronger than needed here (the caller
+                        // isn't merely dropped to Viewer, they've
+                        // lost Read entirely).
+                        for file_uuid in files {
+                            let wire = Topic::Collab(file_uuid).to_wire_key();
                             if subs.remove(&wire).is_some() {
                                 let frame = revoked_notification(
                                     &wire,
@@ -1106,10 +1144,34 @@ fn install_subscription(
 
     let reader = tokio::spawn(async move {
         while let Some(event) = stream.next().await {
-            let message = if translate_authz {
+            if translate_authz {
+                // AuthzChanged fans out into up to TWO SessionOut
+                // messages — one per non-empty resource class. Sending
+                // both in sequence keeps the main loop's handling
+                // symmetric (each class has its own SessionOut
+                // variant + its own rt.revoked reason). A well-formed
+                // producer sets at least one; both-empty is a no-op.
                 match event {
-                    MessageBusEvent::AuthzChanged { affected_folders } => {
-                        SessionOut::EvictFolders(affected_folders)
+                    MessageBusEvent::AuthzChanged {
+                        affected_folders,
+                        affected_files,
+                    } => {
+                        if !affected_folders.is_empty()
+                            && out_tx_task
+                                .send(SessionOut::EvictFolders(affected_folders))
+                                .await
+                                .is_err()
+                        {
+                            break;
+                        }
+                        if !affected_files.is_empty()
+                            && out_tx_task
+                                .send(SessionOut::EvictCollab(affected_files))
+                                .await
+                                .is_err()
+                        {
+                            break;
+                        }
                     }
                     // The authz topic only carries AuthzChanged in
                     // MVP; other variants would be a producer bug —
@@ -1117,10 +1179,14 @@ fn install_subscription(
                     // doesn't spam the client.
                     _ => continue,
                 }
-            } else {
-                SessionOut::Frame(event_notification(&topic_wire_reader, &event))
-            };
-            if out_tx_task.send(message).await.is_err() {
+            } else if out_tx_task
+                .send(SessionOut::Frame(event_notification(
+                    &topic_wire_reader,
+                    &event,
+                )))
+                .await
+                .is_err()
+            {
                 // Session's outbound channel closed — receiver dropped.
                 break;
             }

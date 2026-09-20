@@ -1024,7 +1024,9 @@ async fn collab_fanout_write(args: Args) -> Result<(), HelperError> {
 /// on UPDATE denial and closed the WS; this drain wouldn't complete
 /// under that shape and the test fails loudly.
 async fn await_write_denied_then_ping(
-    ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
     expected_file_id: &str,
     expected_reason: &str,
     deadline: tokio::time::Instant,
@@ -1041,8 +1043,16 @@ async fn await_write_denied_then_ping(
         let msg = match timeout(remaining, ws.next()).await {
             Ok(Some(Ok(m))) => m,
             Ok(Some(Err(e))) => return Err(HelperError::Protocol(format!("ws error: {e}"))),
-            Ok(None) => return Err(HelperError::Protocol("socket closed before rt.write_denied".into())),
-            Err(_) => return Err(HelperError::Expectation("timeout waiting for rt.write_denied".into())),
+            Ok(None) => {
+                return Err(HelperError::Protocol(
+                    "socket closed before rt.write_denied".into(),
+                ));
+            }
+            Err(_) => {
+                return Err(HelperError::Expectation(
+                    "timeout waiting for rt.write_denied".into(),
+                ));
+            }
         };
         let text = match msg {
             Message::Text(t) => t,
@@ -1052,9 +1062,9 @@ async fn await_write_denied_then_ping(
         let v: Value = serde_json::from_str(&text)
             .map_err(|e| HelperError::Protocol(format!("bad frame: {e}: {text}")))?;
         if v.get("method").and_then(Value::as_str) == Some("rt.write_denied") {
-            let params = v.get("params").ok_or_else(|| {
-                HelperError::Expectation("rt.write_denied missing params".into())
-            })?;
+            let params = v
+                .get("params")
+                .ok_or_else(|| HelperError::Expectation("rt.write_denied missing params".into()))?;
             let got_file_id = params.get("file_id").and_then(Value::as_str).unwrap_or("");
             let got_reason = params.get("reason").and_then(Value::as_str).unwrap_or("");
             if got_file_id != expected_file_id {
@@ -1089,8 +1099,16 @@ async fn await_write_denied_then_ping(
         let msg = match timeout(remaining, ws.next()).await {
             Ok(Some(Ok(m))) => m,
             Ok(Some(Err(e))) => return Err(HelperError::Protocol(format!("ws error: {e}"))),
-            Ok(None) => return Err(HelperError::Protocol("socket closed after rt.write_denied".into())),
-            Err(_) => return Err(HelperError::Expectation("timeout waiting for ping ack".into())),
+            Ok(None) => {
+                return Err(HelperError::Protocol(
+                    "socket closed after rt.write_denied".into(),
+                ));
+            }
+            Err(_) => {
+                return Err(HelperError::Expectation(
+                    "timeout waiting for ping ack".into(),
+                ));
+            }
         };
         let text = match msg {
             Message::Text(t) => t,
