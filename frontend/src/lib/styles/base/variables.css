@@ -666,6 +666,28 @@
     --file-kind-text: light-dark(#475569, #94a3b8);
     --file-kind-generic: light-dark(#64748b, #94a3b8);
 
+    /* Syntax-highlighting palette — consumed by `CollabEditor.svelte`'s
+     * CodeMirror `HighlightStyle`. Every token uses `light-dark(...)`
+     * so the editor's colours flip with the surrounding
+     * `color-scheme` without needing a compartment/reconfigure hop.
+     * Palette bucketed to `@lezer/highlight` token families — see
+     * the HighlightStyle definition for which family each drives.
+     * Light values roughly GitHub-Light; dark values roughly
+     * GitHub-Dark. */
+    --syntax-keyword: light-dark(#7c3aed, #c4b5fd);
+    --syntax-string: light-dark(#047857, #6ee7b7);
+    --syntax-regexp: light-dark(#be123c, #fca5a5);
+    --syntax-comment: light-dark(#64748b, #94a3b8);
+    --syntax-number: light-dark(#c2410c, #fdba74);
+    --syntax-function: light-dark(#2563eb, #93c5fd);
+    --syntax-type: light-dark(#be123c, #fca5a5);
+    --syntax-property: light-dark(#0891b2, #67e8f9);
+    --syntax-heading: light-dark(#1e40af, #93c5fd);
+    --syntax-link: light-dark(#2563eb, #93c5fd);
+    --syntax-meta: light-dark(#6b7280, #9ca3af);
+    --syntax-operator: light-dark(#0f766e, #5eead4);
+    --syntax-escape: light-dark(#c026d3, #f0abfc);
+
     /* (Removed: the legacy dark-mode badge tokens that lived here had zero
      * consumers — the light-dark() badge tokens above are the single source.) */
 

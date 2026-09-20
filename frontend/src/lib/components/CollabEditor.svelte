@@ -17,31 +17,168 @@
 	//     server's per-frame gate refuses the 0x01 UPDATE anyway;
 	//     surfacing this in the UI is a follow-up.
 
-	import { EditorState } from '@codemirror/state';
+	import { EditorState, type Extension } from '@codemirror/state';
 	import { EditorView, keymap, lineNumbers } from '@codemirror/view';
 	import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
-	import { markdown } from '@codemirror/lang-markdown';
+	import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
+	import { tags as t } from '@lezer/highlight';
 	import { yCollab } from 'y-codemirror.next';
+
+	/** Theme-aware syntax highlight style.
+	 *
+	 *  Every `color` reads from OxiCloud's design-system tokens
+	 *  defined in `lib/styles/base/variables.css` (`--syntax-*`).
+	 *  Those tokens are `light-dark(...)` values, so the editor's
+	 *  colours flip automatically with the surrounding
+	 *  `color-scheme` — no compartment / reconfigure plumbing. The
+	 *  central palette also means theme designers change syntax
+	 *  colours in one place, not inside a Svelte component. */
+	const collabHighlight = HighlightStyle.define([
+		// Keywords: `if`, `return`, `let`, `fn`, `import`, etc.
+		{ tag: t.keyword, color: 'var(--syntax-keyword)' },
+		{ tag: t.controlKeyword, color: 'var(--syntax-keyword)' },
+		{ tag: t.moduleKeyword, color: 'var(--syntax-keyword)' },
+		// Strings + character literals.
+		{ tag: t.string, color: 'var(--syntax-string)' },
+		{ tag: t.special(t.string), color: 'var(--syntax-string)' },
+		{ tag: t.character, color: 'var(--syntax-string)' },
+		{ tag: t.regexp, color: 'var(--syntax-regexp)' },
+		// Comments — italic + muted.
+		{ tag: t.comment, color: 'var(--syntax-comment)', fontStyle: 'italic' },
+		{ tag: t.lineComment, color: 'var(--syntax-comment)', fontStyle: 'italic' },
+		{ tag: t.blockComment, color: 'var(--syntax-comment)', fontStyle: 'italic' },
+		{ tag: t.docComment, color: 'var(--syntax-comment)', fontStyle: 'italic' },
+		// Numbers, booleans, null.
+		{ tag: t.number, color: 'var(--syntax-number)' },
+		{ tag: t.bool, color: 'var(--syntax-number)' },
+		{ tag: t.null, color: 'var(--syntax-number)' },
+		// Function definitions + calls.
+		{ tag: t.function(t.variableName), color: 'var(--syntax-function)' },
+		{ tag: t.function(t.propertyName), color: 'var(--syntax-function)' },
+		{ tag: t.definition(t.function(t.variableName)), color: 'var(--syntax-function)' },
+		// Types, classes, tags.
+		{ tag: t.typeName, color: 'var(--syntax-type)' },
+		{ tag: t.className, color: 'var(--syntax-type)' },
+		{ tag: t.tagName, color: 'var(--syntax-type)' },
+		// Property names + attributes.
+		{ tag: t.propertyName, color: 'var(--syntax-property)' },
+		{ tag: t.attributeName, color: 'var(--syntax-property)' },
+		// Markdown headings + emphasis + link text.
+		{ tag: t.heading, color: 'var(--syntax-heading)', fontWeight: '600' },
+		{ tag: t.strong, fontWeight: '600' },
+		{ tag: t.emphasis, fontStyle: 'italic' },
+		{ tag: t.link, color: 'var(--syntax-link)', textDecoration: 'underline' },
+		{ tag: t.url, color: 'var(--syntax-link)' },
+		// Muted structural bits.
+		{ tag: t.meta, color: 'var(--syntax-meta)' },
+		{ tag: t.punctuation, color: 'var(--syntax-meta)' },
+		{ tag: t.operator, color: 'var(--syntax-operator)' },
+		{ tag: t.escape, color: 'var(--syntax-escape)' },
+		// Constants (SCREAMING_SNAKE style, or true/false/null in some grammars).
+		{ tag: t.constant(t.variableName), color: 'var(--syntax-number)' },
+		{ tag: t.standard(t.variableName), color: 'var(--syntax-keyword)' }
+	]);
 	import { onDestroy } from 'svelte';
 
 	import { CollabDoc, type SyncState } from '$lib/collab/collabDoc';
 	import { messageBus } from '$lib/message-bus/client.svelte';
 	import { session } from '$lib/stores/session.svelte';
 
-	/** Deterministic peer-cursor colour derived from a user id.
+	/** Dynamically resolve a CodeMirror language extension from the
+	 *  file's extension. Each `import()` call is code-split by Vite
+	 *  into its own chunk — opening a `.md` fetches only the markdown
+	 *  grammar; opening a `.rs` fetches only the rust grammar. The
+	 *  editor mount `await`s this before creating the EditorState.
 	 *
-	 *  Rule: same user id → same colour across sessions and machines,
-	 *  so peers recognise each other visually. Using a small hue-only
-	 *  palette (12 slots, evenly-spaced across the wheel) at fixed
-	 *  saturation / lightness keeps every colour readable on both
-	 *  light and dark backgrounds without needing per-scheme
-	 *  overrides. Hash → hue index is `sum-of-char-codes mod 12` —
-	 *  crude but stable, no external hash lib needed. */
-	function userColor(userId: string): string {
+	 *  Anchor rule from feedback: "at least markdown". Files without
+	 *  a known language extension fall through to `markdown()` — a
+	 *  reasonable superset for prose, does no harm on unknown text
+	 *  (the alternative is zero highlighting, which reads as "editor
+	 *  is broken").
+	 *
+	 *  Coverage tracks the FE's `TEXTY_EXT_RE` gate in FileViewer.
+	 *  Adding an extension to the gate should add a case here too. */
+	async function languageFor(filename: string): Promise<Extension> {
+		const m = filename.toLowerCase().match(/\.([a-z0-9]+)$/);
+		const ext = m?.[1] ?? '';
+		switch (ext) {
+			case 'md':
+			case 'markdown':
+				return (await import('@codemirror/lang-markdown')).markdown();
+			case 'js':
+			case 'jsx':
+			case 'mjs':
+			case 'cjs':
+			case 'ts':
+			case 'tsx':
+				return (await import('@codemirror/lang-javascript')).javascript({
+					jsx: ext.includes('x'),
+					typescript: ext.startsWith('t')
+				});
+			case 'py':
+			case 'pyw':
+				return (await import('@codemirror/lang-python')).python();
+			case 'rs':
+				return (await import('@codemirror/lang-rust')).rust();
+			case 'html':
+			case 'htm':
+			case 'svelte':
+			case 'vue':
+				return (await import('@codemirror/lang-html')).html();
+			case 'css':
+			case 'scss':
+			case 'sass':
+			case 'less':
+				return (await import('@codemirror/lang-css')).css();
+			case 'json':
+				return (await import('@codemirror/lang-json')).json();
+			case 'yaml':
+			case 'yml':
+				return (await import('@codemirror/lang-yaml')).yaml();
+			case 'xml':
+				return (await import('@codemirror/lang-xml')).xml();
+			case 'sql':
+				return (await import('@codemirror/lang-sql')).sql();
+			default:
+				return (await import('@codemirror/lang-markdown')).markdown();
+		}
+	}
+
+	/** 12-slot hex palette for peer cursors. Chosen to stay readable on
+	 *  both light and dark backgrounds — saturation and lightness are
+	 *  balanced across the wheel. Hex strings are required by
+	 *  `y-codemirror.next`, which appends `33` (20% alpha) to build the
+	 *  selection background — HSL strings break that concatenation and
+	 *  the selection paints nothing. */
+	const CURSOR_PALETTE = [
+		'#e11d48', // rose
+		'#f97316', // orange
+		'#eab308', // amber
+		'#22c55e', // green
+		'#14b8a6', // teal
+		'#06b6d4', // cyan
+		'#3b82f6', // blue
+		'#6366f1', // indigo
+		'#8b5cf6', // violet
+		'#a855f7', // purple
+		'#ec4899', // pink
+		'#84cc16' //  lime
+	] as const;
+
+	/** Deterministic peer-cursor colour derived from a user id.
+	 *  Returns `{ color, colorLight }` — the two fields
+	 *  `y-codemirror.next` reads from `awareness.user.*`. Same user id
+	 *  → same colour across sessions and machines, so peers recognise
+	 *  each other visually. */
+	function userColor(userId: string): { color: string; colorLight: string } {
 		let sum = 0;
 		for (let i = 0; i < userId.length; i++) sum = (sum + userId.charCodeAt(i)) & 0xffff;
-		const hueSlot = sum % 12;
-		return `hsl(${hueSlot * 30} 70% 50%)`;
+		const color = CURSOR_PALETTE[sum % CURSOR_PALETTE.length];
+		// Selection background: same hex + `33` = 20% alpha. Matches
+		// what y-codemirror.next's own fallback would compute; we set
+		// it explicitly so a library update that changes the fallback
+		// doesn't silently drift.
+		return { color, colorLight: `${color}33` };
 	}
 
 	interface Props {
@@ -68,10 +205,24 @@
 	// becomes available. Runs once per `fileId` change; the cleanup
 	// tears down and $effect re-runs for a new file. This is the
 	// canonical Svelte 5 pattern for imperative library integration.
+	//
+	// The mount work is async because the language grammar is fetched
+	// via `import()` per file type — the wrapper IIFE runs it while
+	// the effect's cleanup stays synchronous. A `cancelled` flag
+	// guards against the rare case where the effect re-runs (fileId
+	// prop changed) before the awaited import resolves — the stale
+	// mount aborts without touching a container that now belongs to
+	// a new fileId's mount.
 	$effect(() => {
 		if (!container) return;
 		const currentFileId = fileId;
+		const currentContainer = container;
+		let cancelled = false;
 
+		// Kick the CollabDoc synchronously — it doesn't need the
+		// language grammar to start syncing, and the WS subscribe
+		// benefits from firing as early as possible so the sync-step-2
+		// diff arrives while we're still loading the grammar chunk.
 		collab = new CollabDoc({
 			fileId: currentFileId,
 			onSyncStateChange: (s) => {
@@ -86,31 +237,53 @@
 		// during boot) we still publish a placeholder rather than
 		// leaving the peer view unlabelled.
 		const localUser = session.user;
+		const palette = userColor(localUser?.id ?? currentFileId);
 		collab.awareness.setLocalStateField('user', {
 			name: localUser?.username ?? 'Anonymous',
-			color: userColor(localUser?.id ?? currentFileId)
+			color: palette.color,
+			colorLight: palette.colorLight
 		});
 
-		const state = EditorState.create({
-			doc: '', // initial content comes from the CRDT after sync-step-2
-			extensions: [
-				lineNumbers(),
-				history(),
-				keymap.of([...defaultKeymap, ...historyKeymap]),
-				markdown(),
-				// Pass the awareness registry so `y-codemirror.next`
-				// renders peer cursors + selections with the `user`
-				// field we just published (name + colour).
-				yCollab(collab.yText(), collab.awareness)
-			]
-		});
+		// Await the language grammar chunk, then create the editor.
+		// Grammar chunks are ~50-200 KB each; on a fast connection the
+		// wait is invisible, on a slow one the status pill shows
+		// "Syncing…" during the load — fine UX.
+		const collabRef = collab;
+		void (async () => {
+			const langExt = await languageFor(currentFileId);
+			if (cancelled) return;
 
-		view = new EditorView({
-			state,
-			parent: container
-		});
+			const state = EditorState.create({
+				doc: '', // initial content comes from the CRDT after sync-step-2
+				extensions: [
+					lineNumbers(),
+					history(),
+					keymap.of([...defaultKeymap, ...historyKeymap]),
+					langExt,
+					// The language extension only produces a syntax
+					// tree; `syntaxHighlighting` paints colours from
+					// it. `collabHighlight` (see the definition above)
+					// uses `light-dark(...)` for every colour so both
+					// `data-color-scheme` states read cleanly from one
+					// extension — no compartment / reconfigure
+					// plumbing needed. `fallback: true` widens coverage
+					// to language nodes the palette doesn't name.
+					syntaxHighlighting(collabHighlight, { fallback: true }),
+					// Pass the awareness registry so `y-codemirror.next`
+					// renders peer cursors + selections with the `user`
+					// field we just published (name + colour).
+					yCollab(collabRef.yText(), collabRef.awareness)
+				]
+			});
+
+			view = new EditorView({
+				state,
+				parent: currentContainer
+			});
+		})();
 
 		return () => {
+			cancelled = true;
 			view?.destroy();
 			view = undefined;
 			collab?.destroy();
