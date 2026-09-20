@@ -25,12 +25,24 @@
 	//     keeps their local capability cache until reconnect. See
 	//     `project_collab_authz_eviction_pending`.
 
-	import { Compartment, EditorState, type Extension } from '@codemirror/state';
-	import { EditorView, keymap, lineNumbers } from '@codemirror/view';
-	import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
-	import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
+	// CodeMirror runtime lives entirely inside the mount effect —
+	// dynamic-imported below alongside the language grammar. Only
+	// TYPES are pulled in at module scope: type imports are erased
+	// by the compiler, so the SSR bundle stays free of runtime
+	// references (which its Rollup pass would otherwise flag as
+	// unused since `$effect` bodies are stripped from SSR output).
+	// Keeping the types top-level lets the module-scope `let view`
+	// / `let readOnlyCompartment` declarations name their instance
+	// types without a widening `unknown`.
+	import type { Compartment, Extension } from '@codemirror/state';
+	import type { EditorView } from '@codemirror/view';
+	// `HighlightStyle` + `tags` are used at MODULE TOP LEVEL below
+	// (see `collabHighlight`) and therefore must stay static. They're
+	// also tiny compared to `@codemirror/view` + `y-codemirror.next`;
+	// pulling them synchronously costs a handful of KB and keeps the
+	// syntax palette declaration inline where the theme rules live.
+	import { HighlightStyle } from '@codemirror/language';
 	import { tags as t } from '@lezer/highlight';
-	import { yCollab } from 'y-codemirror.next';
 
 	/** Theme-aware syntax highlight style.
 	 *
@@ -219,6 +231,17 @@
 	 *  compartment.reconfigure(...)})`. Rebuilt per mount because a
 	 *  `Compartment` is bound to one `EditorState`. */
 	let readOnlyCompartment: Compartment | undefined;
+	/** Live reconfigure hook set by the mount effect's async IIFE once
+	 *  the CodeMirror runtime has been dynamic-imported. Called by
+	 *  `onCapabilities` when a subscribe ack arrives AFTER the editor
+	 *  mounted — flips the readOnly compartment without needing
+	 *  `EditorState` in scope outside the IIFE (keeping the SSR bundle
+	 *  free of CodeMirror runtime references). `undefined` before the
+	 *  runtime loads: the ack's `readOnly` value is already stored on
+	 *  the reactive `readOnly` state, so the initial compartment
+	 *  value picks it up by construction when the IIFE finally builds
+	 *  the EditorState. */
+	let reconfigureReadOnly: ((v: boolean) => void) | undefined;
 
 	// Mount effect: attach CodeMirror + CollabDoc when `container`
 	// becomes available. Runs once per `fileId` change; the cleanup
@@ -257,13 +280,14 @@
 				readOnly = !caps.canWrite;
 				// If the editor is already mounted, reconfigure the
 				// live compartment so the caller sees the mode switch
-				// immediately — otherwise the mount below picks up the
-				// current `readOnly` value on its first render.
-				if (view && readOnlyCompartment) {
-					view.dispatch({
-						effects: readOnlyCompartment.reconfigure(EditorState.readOnly.of(readOnly))
-					});
-				}
+				// immediately. Delegated via `reconfigureReadOnly`
+				// (set by the async IIFE once the CodeMirror runtime
+				// loads) so this callback stays runtime-free — a plain
+				// closure with no `EditorState` reference, which keeps
+				// the SSR bundle from pulling CodeMirror. Before the
+				// hook is set, `readOnly` alone is authoritative and
+				// the initial state build reads its current value.
+				reconfigureReadOnly?.(readOnly);
 			}
 		});
 		collab.connect();
@@ -281,14 +305,30 @@
 			colorLight: palette.colorLight
 		});
 
-		// Await the language grammar chunk, then create the editor.
-		// Grammar chunks are ~50-200 KB each; on a fast connection the
-		// wait is invisible, on a slow one the status pill shows
-		// "Syncing…" during the load — fine UX.
+		// Dynamic-import the CodeMirror runtime alongside the language
+		// grammar. Everything the editor needs is a code-split chunk,
+		// so a user who never opens a collab-editable file ships zero
+		// CodeMirror bytes. Requested in parallel — the network fans
+		// out but nothing awaits any one chunk before firing the next.
+		// The status pill shows "Syncing…" during the load (fine UX
+		// on cold cache; invisible on warm).
 		const collabRef = collab;
 		void (async () => {
-			const langExt = await languageFor(currentFileId);
+			const [stateMod, viewMod, cmdsMod, langMod, yCollabMod, langExt] = await Promise.all([
+				import('@codemirror/state'),
+				import('@codemirror/view'),
+				import('@codemirror/commands'),
+				import('@codemirror/language'),
+				import('y-codemirror.next'),
+				languageFor(currentFileId)
+			]);
 			if (cancelled) return;
+
+			const { Compartment: CompartmentCtor, EditorState } = stateMod;
+			const { EditorView: EditorViewCtor, keymap, lineNumbers } = viewMod;
+			const { defaultKeymap, history, historyKeymap } = cmdsMod;
+			const { syntaxHighlighting } = langMod;
+			const { yCollab } = yCollabMod;
 
 			// Fresh compartment per mount — it's bound to this
 			// EditorState. Initial value tracks `readOnly` at this
@@ -296,7 +336,7 @@
 			// same compartment later when the ack arrives (if the mount
 			// won the race with the ack) or immediately (if the ack
 			// came first).
-			readOnlyCompartment = new Compartment();
+			readOnlyCompartment = new CompartmentCtor();
 
 			const state = EditorState.create({
 				doc: '', // initial content comes from the CRDT after sync-step-2
@@ -322,10 +362,27 @@
 				]
 			});
 
-			view = new EditorView({
+			view = new EditorViewCtor({
 				state,
 				parent: currentContainer
 			});
+
+			// Now that the runtime + `view` + `readOnlyCompartment`
+			// are all in scope, wire the reconfigure hook that
+			// `onCapabilities` calls on late-arriving acks. Closes
+			// over `EditorState` from the just-loaded `stateMod`; a
+			// no-op after cleanup thanks to the `view` null-check.
+			reconfigureReadOnly = (v: boolean) => {
+				if (!view || !readOnlyCompartment) return;
+				view.dispatch({
+					effects: readOnlyCompartment.reconfigure(EditorState.readOnly.of(v))
+				});
+			};
+			// The ack MAY have landed while we were awaiting the
+			// runtime chunks. Fire once now with the current
+			// `readOnly` value so the freshly-built state doesn't
+			// visibly disagree with what the ack said.
+			reconfigureReadOnly(readOnly);
 		})();
 
 		return () => {
@@ -335,6 +392,7 @@
 			collab?.destroy();
 			collab = undefined;
 			readOnlyCompartment = undefined;
+			reconfigureReadOnly = undefined;
 		};
 	});
 
