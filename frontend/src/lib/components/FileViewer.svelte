@@ -5,6 +5,8 @@
 	import type { FileItem } from '$lib/api/types';
 	import Icon from '$lib/icons/Icon.svelte';
 	import WopiEditor from '$lib/components/WopiEditor.svelte';
+	import CollabEditor from '$lib/components/CollabEditor.svelte';
+	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 
 	interface Props {
@@ -84,6 +86,37 @@
 
 	const kind = $derived(file ? kindOf(file) : 'other');
 
+	/** `true` when this file should open in the collab editor.
+	 *  Two-branch acceptance to catch both well-typed and MIME-hostile
+	 *  files:
+	 *    * MIME says text (`text/*`, `application/json`, etc.) — matches
+	 *      what `kindOf` already resolves to `'text'`.
+	 *    * File name ends in a known-text-or-code extension — required
+	 *      because `mime_guess` mis-classifies several common code
+	 *      types. `.ts` returns `video/mp2t` (TypeScript vs MPEG
+	 *      Transport Stream — same extension, different worlds); `.rs`
+	 *      has no entry at all and falls back to
+	 *      `application/octet-stream`. Without the extension branch,
+	 *      those files land in the video / other branches and either
+	 *      the media player tries to play them or WOPI probes them.
+	 *
+	 *  The extension list mirrors `display_helpers.rs::icon_special_class_with_ext`'s
+	 *  "code / script / prose" families — anything the server-side
+	 *  file-icon classifier considers text-shaped is text-shaped here
+	 *  too. Editing quality still varies (no per-language syntax
+	 *  highlighting beyond markdown yet — follow-up slice); the
+	 *  editor is at worst a plain-text CodeMirror with collab, which
+	 *  is strictly better than the video / octet-stream fallback.
+	 */
+	const TEXTY_EXT_RE =
+		/\.(md|markdown|rst|txt|log|js|jsx|mjs|cjs|ts|tsx|py|pyw|rs|go|java|kt|kts|scala|c|h|cpp|hpp|cc|cxx|cs|rb|php|swift|r|lua|pl|pm|html|htm|css|scss|sass|less|json|xml|yaml|yml|toml|ini|cfg|conf|sql|graphql|proto|vue|svelte|sh|bash|zsh|fish|ps1|bat|cmd)$/i;
+	const collabForFile = $derived(
+		!!file &&
+			serverConfig.loaded &&
+			serverConfig.features.markdown_collab === true &&
+			(kindOf(file) === 'text' || TEXTY_EXT_RE.test(file.name))
+	);
+
 	function close() {
 		open = false;
 		textContent = '';
@@ -112,6 +145,18 @@
 		zoom = 1;
 		const k = kindOf(f);
 
+		// Collab wins over WOPI when both could claim the file. A
+		// `.txt` uploaded as `application/octet-stream` classifies as
+		// `kind === 'other'` and would otherwise be auto-hijacked by
+		// the WOPI editor below. `collabForFile` catches it via the
+		// extension branch, and we short-circuit the entire canEdit
+		// probe so no "Edit in WOPI" button offers a second-path
+		// contradicting the primary editor.
+		if (collabForFile) {
+			canEdit = false;
+			return;
+		}
+
 		// Office docs (WOPI-editable, non-image) open straight in the editor
 		// rather than showing "No preview available" with an extra Edit click.
 		// Images never route through WOPI even if an editor claims the ext.
@@ -124,7 +169,12 @@
 			void canEditWithWopi(f.name).then((v) => (canEdit = v));
 		}
 
-		if (k === 'text') {
+		if (k === 'text' && !collabForFile) {
+			// Skip the inline-body fetch when collab is going to mount:
+			// the CRDT seeds from the blob server-side and the editor
+			// gets the content via sync-step-2, so fetching + rendering
+			// a static `<pre>` first would flash stale content and
+			// waste a request.
 			textLoading = true;
 			textContent = '';
 			apiFetch(fileInlineUrl(f.id), { credentials: 'same-origin' })
@@ -246,7 +296,16 @@
 			</header>
 
 			<div class="fv__body">
-				{#if kind === 'image'}
+				{#if collabForFile}
+					<!-- Collab-eligible file (`.md`, `.txt`, anything MIME
+					     `text/*` that could be edited as UTF-8). Checked
+					     BEFORE `kind` because a `.txt` with a lost MIME
+					     lands in `kind === 'other'` and would otherwise
+					     miss the text branch. -->
+					<div class="fv__collab">
+						<CollabEditor fileId={file.id} />
+					</div>
+				{:else if kind === 'image'}
 					<img
 						class="fv__media fv__image"
 						src={fileInlineUrl(file.id)}
@@ -416,6 +475,14 @@
 		font-family: var(--font-mono, monospace);
 		font-size: var(--text-sm);
 		color: var(--color-text);
+		background: var(--color-bg-surface);
+	}
+
+	.fv__collab {
+		width: 100%;
+		height: 100%;
+		display: flex;
+		flex-direction: column;
 		background: var(--color-bg-surface);
 	}
 

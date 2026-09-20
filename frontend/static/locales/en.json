@@ -255,7 +255,9 @@
     "remove": "Remove",
     "new_document_text": "New text document",
     "new_document_spreadsheet": "New spreadsheet",
-    "new_document_presentation": "New presentation"
+    "new_document_presentation": "New presentation",
+    "new_document_markdown": "New markdown",
+    "new_document_txt": "New text file"
   },
   "user_menu": {
     "appearance": "Appearance",

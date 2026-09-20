@@ -187,13 +187,48 @@
 		overflow: auto;
 	}
 
+	/* Theme-aware CodeMirror surface. CodeMirror 6's default styling
+	 * hardcodes light-mode colours (black caret, light gutter background),
+	 * which vanish on `<html data-color-scheme="dark">`. Bind every visible
+	 * surface to the app's `--color-*` tokens so both schemes look native
+	 * without importing a whole CM theme. */
 	.collab-editor__pane :global(.cm-editor) {
 		height: 100%;
+		background: var(--color-bg-surface);
+		color: var(--color-text);
 	}
 
 	.collab-editor__pane :global(.cm-scroller) {
 		font-family: var(--font-mono);
 		font-size: 0.9rem;
+	}
+
+	.collab-editor__pane :global(.cm-content) {
+		caret-color: var(--color-text);
+	}
+
+	/* Custom cursor element CM renders when `drawSelection()` is on
+	 * (default for `defaultKeymap`). Native `caret-color` above covers
+	 * the plain textarea path; this rule covers the drawn one. */
+	.collab-editor__pane :global(.cm-cursor),
+	.collab-editor__pane :global(.cm-cursor-primary) {
+		border-left-color: var(--color-text);
+	}
+
+	.collab-editor__pane :global(.cm-gutters) {
+		background: var(--color-bg-page, var(--color-bg-surface));
+		color: var(--color-text-muted);
+		border-right: 1px solid var(--color-border, transparent);
+	}
+
+	.collab-editor__pane :global(.cm-activeLine),
+	.collab-editor__pane :global(.cm-activeLineGutter) {
+		background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+	}
+
+	.collab-editor__pane :global(.cm-selectionBackground),
+	.collab-editor__pane :global(.cm-content ::selection) {
+		background: color-mix(in srgb, var(--color-accent) 30%, transparent);
 	}
 
 	.collab-editor__denied {

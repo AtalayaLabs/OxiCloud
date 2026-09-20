@@ -48,6 +48,7 @@
 	import { getCsrfHeaders } from '$lib/api/csrf';
 	import { countHidden, filterDotfiles } from '$lib/utils/dotfileFilter';
 	import { preferences } from '$lib/stores/preferences.svelte';
+	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import type { FileItem, FolderItem, ItemType } from '$lib/api/types';
 	import ReadOnlyBanner from '$lib/components/ReadOnlyBanner.svelte';
 	import FolderBreadcrumb from '$lib/components/FolderBreadcrumb.svelte';
@@ -1949,46 +1950,81 @@
 		return () => window.removeEventListener('pointerdown', onDown);
 	});
 
-	// Document kinds the configured editor advertises. Empty until discovery
-	// answers, and empty for good when no editor is configured — creating a
-	// file nothing can open helps nobody.
+	// Document kinds available in the "+ New" menu.
+	//
+	// Two sources of availability:
+	//   * ODF office types (odt/ods/odp) — gated on whether WOPI
+	//     discovery advertises the extension. Creating a `.odt` when
+	//     nothing can open it helps nobody, so the entry disappears.
+	//   * Markdown — gated on `serverConfig.features.markdown_collab`.
+	//     Independent from WOPI (uses the collab editor, not WOPI).
 	let newDocKinds = $state<(keyof typeof NEW_DOC_KINDS)[]>([]);
 	$effect(() => {
+		const collabAvailable = serverConfig.loaded && serverConfig.features.markdown_collab === true;
 		void advertisedExtensions().then((exts) => {
-			newDocKinds = exts
-				? (Object.keys(NEW_DOC_KINDS) as (keyof typeof NEW_DOC_KINDS)[]).filter((k) =>
-						exts.includes(k)
+			const wopiKinds = exts
+				? (Object.keys(NEW_DOC_KINDS) as (keyof typeof NEW_DOC_KINDS)[]).filter(
+						(k) => NEW_DOC_KINDS[k].handler === 'wopi' && exts.includes(k)
 					)
 				: [];
+			const collabKinds: (keyof typeof NEW_DOC_KINDS)[] = collabAvailable ? ['md', 'txt'] : [];
+			newDocKinds = [...wopiKinds, ...collabKinds];
 		});
 	});
 
+	// `handler` picks which opener to invoke after upload:
+	//   * `wopi` — Office-style edit round-trip via the WOPI iframe.
+	//   * `collab` — mount the collab editor via the file-preview
+	//     path (`openFile` sets `?file=<id>`; FileViewer detects `.md`
+	//     + the feature flag and mounts CollabEditor in place of the
+	//     plain text preview).
 	const NEW_DOC_KINDS = {
 		odt: {
 			mime: 'application/vnd.oasis.opendocument.text',
 			icon: 'file-word',
 			label: 'actions.new_document_text',
-			fallback: 'New text document'
+			fallback: 'New text document',
+			handler: 'wopi'
 		},
 		ods: {
 			mime: 'application/vnd.oasis.opendocument.spreadsheet',
 			icon: 'file-excel',
 			label: 'actions.new_document_spreadsheet',
-			fallback: 'New spreadsheet'
+			fallback: 'New spreadsheet',
+			handler: 'wopi'
 		},
 		odp: {
 			mime: 'application/vnd.oasis.opendocument.presentation',
 			icon: 'file-powerpoint',
 			label: 'actions.new_document_presentation',
-			fallback: 'New presentation'
+			fallback: 'New presentation',
+			handler: 'wopi'
+		},
+		md: {
+			mime: 'text/markdown',
+			icon: 'file-lines',
+			label: 'actions.new_document_markdown',
+			fallback: 'New markdown',
+			handler: 'collab'
+		},
+		txt: {
+			mime: 'text/plain',
+			icon: 'file-lines',
+			label: 'actions.new_document_txt',
+			fallback: 'New text file',
+			handler: 'collab'
 		}
 	} as const;
 
 	/**
-	 * Create a new empty office document in the current folder and open it
-	 * in the WOPI editor. Client-side only: a bundled blank ODF template
-	 * (static/templates/) is uploaded under the chosen name through the
-	 * regular upload endpoint, so the server needs no template support.
+	 * Create a new empty document in the current folder and open it in
+	 * the appropriate editor.
+	 *
+	 *   * ODF types — fetch a bundled blank template, upload, open in
+	 *     the WOPI editor.
+	 *   * Markdown — upload a zero-byte file, open in the collab
+	 *     editor via the file-preview path. No template fetch; the
+	 *     CRDT seeds from the (empty) blob on first attach.
 	 */
 	async function onNewDocument(kind: keyof typeof NEW_DOC_KINDS) {
 		addMenuOpen = false;
@@ -2000,14 +2036,24 @@
 		if (!name) return;
 		const fname = name.toLowerCase().endsWith(`.${kind}`) ? name : `${name}.${kind}`;
 		try {
-			const res = await fetch(`${base}/templates/blank.${kind}`);
-			if (!res.ok) throw new Error(`template fetch failed: ${res.status}`);
-			const blob = await res.blob();
-			const file = new File([blob], fname, { type: NEW_DOC_KINDS[kind].mime });
+			const handler = NEW_DOC_KINDS[kind].handler;
+			let file: File;
+			if (handler === 'wopi') {
+				const res = await fetch(`${base}/templates/blank.${kind}`);
+				if (!res.ok) throw new Error(`template fetch failed: ${res.status}`);
+				const blob = await res.blob();
+				file = new File([blob], fname, { type: NEW_DOC_KINDS[kind].mime });
+			} else {
+				// Empty-content file — collab editor seeds fresh.
+				file = new File([], fname, { type: NEW_DOC_KINDS[kind].mime });
+			}
 			await uploadFileWithProgress(currentId, file, () => {});
 			await reloadAndTrackNew();
 			const created = listing.files.find((f) => f.name === fname);
-			if (created) openWopi(created.id, created.name, 'edit');
+			if (created) {
+				if (handler === 'wopi') openWopi(created.id, created.name, 'edit');
+				else openFile(created);
+			}
 		} catch (e) {
 			errorToast(e);
 		}
