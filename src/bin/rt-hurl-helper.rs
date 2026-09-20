@@ -128,6 +128,15 @@ struct Args {
     /// after decoding the incoming UPDATE.
     content: Option<String>,
     expect_content: Option<String>,
+    /** `--expect-write-denied <reason>` — after `collab-fanout-write`
+     *  sends its UPDATE, stay connected and wait for an
+     *  `rt.write_denied` notification with the given `reason`. On
+     *  match, issue `rt.ping` and require a successful ack — proves
+     *  the socket survived the denial (defence-in-depth on B: the
+     *  server MUST NOT close the WS just because one UPDATE was
+     *  refused). Skipping this flag keeps the historic "send + close"
+     *  shape untouched. */
+    expect_write_denied: Option<String>,
 }
 
 /// How the helper authenticates the WS upgrade. Mirrors the two paths
@@ -223,6 +232,7 @@ fn parse_args() -> Result<Args, String> {
     let mut file_id = None;
     let mut content = None;
     let mut expect_content = None;
+    let mut expect_write_denied = None;
 
     while let Some(flag) = it.next() {
         let value = it
@@ -254,6 +264,7 @@ fn parse_args() -> Result<Args, String> {
             "--file" => file_id = Some(parse_uuid_bytes(&value)?),
             "--content" => content = Some(value),
             "--expect-content" => expect_content = Some(value),
+            "--expect-write-denied" => expect_write_denied = Some(value),
             other => return Err(format!("unknown flag: {other}")),
         }
     }
@@ -282,6 +293,7 @@ fn parse_args() -> Result<Args, String> {
         file_id,
         content,
         expect_content,
+        expect_write_denied,
     })
 }
 
@@ -987,10 +999,115 @@ async fn collab_fanout_write(args: Args) -> Result<(), HelperError> {
     frame.extend_from_slice(&update_bytes);
     ws.send(Message::Binary(frame.into())).await?;
 
+    // 4a. Optional: wait for an `rt.write_denied` notification and
+    //     prove the socket survives. Guarded by
+    //     `--expect-write-denied <reason>` — S26 uses this to lock
+    //     the graceful-denial invariant (server refuses one UPDATE,
+    //     keeps the socket alive). Without the flag the historic
+    //     "send and close" shape is preserved for the other
+    //     scenarios (S19 etc.).
+    if let Some(expected_reason) = args.expect_write_denied.as_deref() {
+        let file_id_str = uuid_bytes_to_dashed(&file_id);
+        await_write_denied_then_ping(&mut ws, &file_id_str, expected_reason, deadline).await?;
+    }
+
     // 4. Best-effort clean close so the server's forwarder tears
     //    down promptly, not on TCP timeout.
     let _ = ws.close(None).await;
     Ok(())
+}
+
+/// Drain the socket until an `rt.write_denied` notification arrives
+/// with the given `file_id` + `reason`. Then send `rt.ping` and
+/// require a successful ack — that's the "socket survived the
+/// denial" invariant. A prior server implementation broke the loop
+/// on UPDATE denial and closed the WS; this drain wouldn't complete
+/// under that shape and the test fails loudly.
+async fn await_write_denied_then_ping(
+    ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    expected_file_id: &str,
+    expected_reason: &str,
+    deadline: tokio::time::Instant,
+) -> Result<(), HelperError> {
+    // 1. Wait for the rt.write_denied notification.
+    let mut saw_denied = false;
+    while !saw_denied {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(HelperError::Expectation(
+                "timeout waiting for rt.write_denied".into(),
+            ));
+        }
+        let msg = match timeout(remaining, ws.next()).await {
+            Ok(Some(Ok(m))) => m,
+            Ok(Some(Err(e))) => return Err(HelperError::Protocol(format!("ws error: {e}"))),
+            Ok(None) => return Err(HelperError::Protocol("socket closed before rt.write_denied".into())),
+            Err(_) => return Err(HelperError::Expectation("timeout waiting for rt.write_denied".into())),
+        };
+        let text = match msg {
+            Message::Text(t) => t,
+            Message::Binary(_) | Message::Ping(_) | Message::Pong(_) => continue,
+            _ => continue,
+        };
+        let v: Value = serde_json::from_str(&text)
+            .map_err(|e| HelperError::Protocol(format!("bad frame: {e}: {text}")))?;
+        if v.get("method").and_then(Value::as_str) == Some("rt.write_denied") {
+            let params = v.get("params").ok_or_else(|| {
+                HelperError::Expectation("rt.write_denied missing params".into())
+            })?;
+            let got_file_id = params.get("file_id").and_then(Value::as_str).unwrap_or("");
+            let got_reason = params.get("reason").and_then(Value::as_str).unwrap_or("");
+            if got_file_id != expected_file_id {
+                return Err(HelperError::Expectation(format!(
+                    "rt.write_denied file_id mismatch: got {got_file_id}, want {expected_file_id}",
+                )));
+            }
+            if got_reason != expected_reason {
+                return Err(HelperError::Expectation(format!(
+                    "rt.write_denied reason mismatch: got {got_reason}, want {expected_reason}",
+                )));
+            }
+            saw_denied = true;
+        }
+    }
+
+    // 2. Prove the socket is still alive: rt.ping / ack.
+    let ping_id: u64 = 42;
+    let ping = json!({
+        "jsonrpc": "2.0",
+        "id":      ping_id,
+        "method":  "rt.ping",
+    });
+    ws.send(Message::Text(ping.to_string().into())).await?;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(HelperError::Expectation(
+                "timeout waiting for rt.ping ack after rt.write_denied".into(),
+            ));
+        }
+        let msg = match timeout(remaining, ws.next()).await {
+            Ok(Some(Ok(m))) => m,
+            Ok(Some(Err(e))) => return Err(HelperError::Protocol(format!("ws error: {e}"))),
+            Ok(None) => return Err(HelperError::Protocol("socket closed after rt.write_denied".into())),
+            Err(_) => return Err(HelperError::Expectation("timeout waiting for ping ack".into())),
+        };
+        let text = match msg {
+            Message::Text(t) => t,
+            _ => continue,
+        };
+        let v: Value = serde_json::from_str(&text)
+            .map_err(|e| HelperError::Protocol(format!("bad frame: {e}: {text}")))?;
+        if v.get("id").and_then(Value::as_u64) == Some(ping_id) {
+            if v.get("error").is_some() {
+                return Err(HelperError::Expectation(format!(
+                    "rt.ping failed after rt.write_denied: {}",
+                    v.get("error").unwrap()
+                )));
+            }
+            return Ok(());
+        }
+    }
 }
 
 /// Format 16 raw UUID bytes as canonical dashed hex — inverse of

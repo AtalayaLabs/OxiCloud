@@ -29,9 +29,21 @@ import type RtErrorObject from '$lib/generated/message-bus/RtErrorObject';
 export type IncomingFrame =
 	| { kind: 'event'; params: RtEventParams }
 	| { kind: 'revoked'; params: RtRevokedParams }
+	| { kind: 'write_denied'; params: RtWriteDeniedParams }
 	| { kind: 'success'; id: number; result: unknown }
 	| { kind: 'error'; id: number | null; error: RtErrorObject }
 	| { kind: 'ignore'; reason: string; raw: unknown };
+
+/** `rt.write_denied` notification — the server received a collab
+ *  UPDATE frame the caller lacks Update for. Emitted per-frame, so a
+ *  Viewer's local edit path can drop into read-only without the
+ *  socket flapping (the sub itself stays valid — only the individual
+ *  UPDATE is refused). `file_id` scopes to one collab session;
+ *  `reason` is the stable machine key (today: `"no_edit"`). */
+export interface RtWriteDeniedParams {
+	file_id: string;
+	reason: string;
+}
 
 /** JSON-RPC subscribe request. `id` correlates the eventual success/error. */
 export function subscribeFrame(id: number, topic: string): RtSubscribeRequestBody {
@@ -87,6 +99,20 @@ export function parseIncoming(raw: string): IncomingFrame {
 		}
 		if (parsed.method === 'rt.revoked' && isJsonObject(parsed.params)) {
 			return { kind: 'revoked', params: parsed.params as unknown as RtRevokedParams };
+		}
+		if (parsed.method === 'rt.write_denied' && isJsonObject(parsed.params)) {
+			// Shape guard: keep parse strict — a missing file_id would
+			// crash the dispatch. Type-narrowing before the cast.
+			if (typeof parsed.params.file_id === 'string' && typeof parsed.params.reason === 'string') {
+				return {
+					kind: 'write_denied',
+					params: {
+						file_id: parsed.params.file_id,
+						reason: parsed.params.reason
+					}
+				};
+			}
+			return { kind: 'ignore', reason: 'write_denied_bad_params', raw };
 		}
 		return { kind: 'ignore', reason: `unknown_method:${parsed.method}`, raw };
 	}

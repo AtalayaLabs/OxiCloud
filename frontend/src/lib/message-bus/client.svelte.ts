@@ -29,7 +29,8 @@ import {
 	pingFrame,
 	subscribeFrame,
 	unsubscribeFrame,
-	type IncomingFrame
+	type IncomingFrame,
+	type RtWriteDeniedParams
 } from './frames';
 import type RtEventParams from '$lib/generated/message-bus/RtEventParams';
 import type RtRevokedParams from '$lib/generated/message-bus/RtRevokedParams';
@@ -253,6 +254,15 @@ export class MessageBusClient {
 	 *  same reason as `#subs` (internal plumbing, not reactive). */
 	// eslint-disable-next-line svelte/prefer-svelte-reactivity
 	#binaryHandlers = new Map<string, (bytes: Uint8Array) => void>();
+
+	/** `rt.write_denied` handlers keyed by `file_id` — parallel to
+	 *  `#binaryHandlers`. Fires when the server refused a collab
+	 *  UPDATE frame (Read granted, Update not). The collab layer
+	 *  uses this to flip its cached `canWrite` to false and
+	 *  reconfigure the editor to read-only without waiting for a
+	 *  reconnect. Same one-handler-per-file constraint. */
+	// eslint-disable-next-line svelte/prefer-svelte-reactivity
+	#writeDeniedHandlers = new Map<string, (params: RtWriteDeniedParams) => void>();
 
 	/** URL for the WebSocket. Injectable so tests can point at a mock. */
 	#url: string;
@@ -714,6 +724,34 @@ export class MessageBusClient {
 		});
 	}
 
+	/** Register a handler for `rt.write_denied` notifications targeting
+	 *  the given file. Mirrors `registerBinaryHandler`: one handler
+	 *  per file_id, second `register` replaces the first, dispose fn
+	 *  is a no-op after the first call.
+	 *
+	 *  Fires only when the server observed a collab UPDATE it wasn't
+	 *  willing to apply — an actual attempt-to-write, not a routine
+	 *  subscribe. The collab layer flips its cached `canWrite` to
+	 *  false on receipt so subsequent Y.Doc mutations stop hitting
+	 *  the wire. */
+	registerWriteDeniedHandler(
+		fileId: string,
+		handler: (params: RtWriteDeniedParams) => void
+	): () => void {
+		return untrack(() => {
+			this.#writeDeniedHandlers.set(fileId, handler);
+			let released = false;
+			return () => {
+				if (released) return;
+				released = true;
+				untrack(() => {
+					const current = this.#writeDeniedHandlers.get(fileId);
+					if (current === handler) this.#writeDeniedHandlers.delete(fileId);
+				});
+			};
+		});
+	}
+
 	/** Send a binary frame on the WS. Fire-and-forget — errors log
 	 *  but don't reject a promise (there's no id-correlated ack for
 	 *  binary frames; the app-level protocol handles retries via
@@ -765,6 +803,36 @@ export class MessageBusClient {
 					} catch (err) {
 						busLog.warn('event handler threw', { topic: frame.params.topic, error: err });
 					}
+				}
+				break;
+			}
+			case 'write_denied': {
+				// Per-file JSON notification, NOT tied to a topic-sub
+				// entry — write_denied fires only when the server saw
+				// an UPDATE frame it can't apply, which is out-of-band
+				// relative to subscribe. Route to the file's registered
+				// handler (registered by `CollabDoc.connect`) if any,
+				// otherwise log a debug — unknown file id would be a
+				// producer bug or a stale registration.
+				const handler = this.#writeDeniedHandlers.get(frame.params.file_id);
+				if (!handler) {
+					busLog.debug('write_denied for unknown file', {
+						fileId: frame.params.file_id,
+						reason: frame.params.reason
+					});
+					return;
+				}
+				busLog.warn('write denied', {
+					fileId: frame.params.file_id,
+					reason: frame.params.reason
+				});
+				try {
+					handler(frame.params);
+				} catch (err) {
+					busLog.warn('write_denied handler threw', {
+						fileId: frame.params.file_id,
+						error: err
+					});
 				}
 				break;
 			}

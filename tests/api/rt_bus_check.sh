@@ -116,6 +116,18 @@
 #                                       dedup because rows would come
 #                                       in both via WS push and via
 #                                       the delta fetch).
+#   S26 Collab graceful write-denial
+#                             — a Viewer sends a `0x01` UPDATE frame
+#                                on a subscribed collab topic. The
+#                                server MUST respond with an
+#                                `rt.write_denied { file_id, reason:
+#                                "no_edit" }` notification AND keep
+#                                the socket open. Prior behaviour
+#                                closed the WS on every denied UPDATE
+#                                — a Viewer typing into an editable-
+#                                looking editor would flap the
+#                                connection on every keystroke.
+#                                Guards the graceful-denial invariant.
 #   S25 Collab capabilities in subscribe ack
 #                             — the `collab:<file_id>` subscribe ack
 #                                carries the caller's `can_write`
@@ -1792,4 +1804,35 @@ rm -f "$out_s25_viewer"
 log "S25b OK (viewer sees can_write=false with a successful subscribe)"
 log "S25 OK"
 
-log "All twenty-five message-bus scenarios passed."
+# ── Scenario 26 — Collab graceful write-denial ─────────────────────────────
+# Viewer sends an UPDATE frame on a collab topic; server MUST respond
+# with rt.write_denied AND keep the socket open. Prior behaviour closed
+# the WS on every denied UPDATE, which caused Viewer editors to flap
+# the connection on every keystroke.
+#
+# Reuses `s19_file_id` (folder E) + user2 (Viewer on folder E). The
+# `--expect-write-denied "no_edit"` flag on `collab-fanout-write` does
+# three things:
+#   1. Subscribe + send the UPDATE (existing helper behaviour).
+#   2. Wait for `rt.write_denied { file_id: <s19>, reason: "no_edit" }`
+#      and assert both fields match.
+#   3. Send `rt.ping` and require a successful ack — proving the socket
+#      survived the denial. A prior implementation broke the WS loop
+#      on denial; that shape would fail step 3.
+log "S26: server sends rt.write_denied on Viewer UPDATE and keeps the socket alive."
+
+set +e
+"$HELPER_BIN" collab-fanout-write \
+  --url "$ws_url" \
+  --token "$user2_token" \
+  --file "$s19_file_id" \
+  --content "graceful denial probe" \
+  --expect-write-denied "no_edit" \
+  --timeout 5s > /dev/null 2>&1
+denied_exit=$?
+set -e
+[[ "$denied_exit" == "0" ]] \
+  || die "S26: expected graceful rt.write_denied + socket alive, helper exit=$denied_exit"
+log "S26 OK (rt.write_denied fired; socket survived; ping ack'd)"
+
+log "All twenty-six message-bus scenarios passed."

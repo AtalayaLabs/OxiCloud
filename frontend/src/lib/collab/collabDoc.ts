@@ -100,6 +100,9 @@ export class CollabDoc {
 	#syncState: SyncState = 'idle';
 	#onSyncStateChange?: (state: SyncState) => void;
 	#onCapabilities?: (caps: CollabCapabilities) => void;
+	/** Dispose fn returned by `messageBus.registerWriteDeniedHandler`,
+	 *  cleared in `destroy()`. */
+	#unregisterWriteDenied: (() => void) | null = null;
 	/** Effective write capability. Suppresses outbound UPDATE frames
 	 *  when false — the local Y.Doc still mutates freely (the editor
 	 *  handles gating), but nothing goes on the wire so the server
@@ -150,6 +153,23 @@ export class CollabDoc {
 		this.#unregisterHandler = messageBus.registerBinaryHandler(this.fileId, (bytes) =>
 			this.#onBinary(bytes)
 		);
+
+		// Register the write-denied handler so an out-of-band grant
+		// change (or a legacy client that ignored the FE gate) triggers
+		// the same read-only UX the subscribe-ack path uses. Flipping
+		// `#canWrite` here means the local Y.Doc origin gate stops
+		// firing UPDATE frames, and the caller's `onCapabilities`
+		// callback flips the editor into read-only.
+		this.#unregisterWriteDenied = messageBus.registerWriteDeniedHandler(this.fileId, (params) => {
+			collabLog.warn('server refused write — dropping to read-only', {
+				fileId: this.fileId,
+				reason: params.reason
+			});
+			if (this.#canWrite) {
+				this.#canWrite = false;
+				this.#onCapabilities?.({ canWrite: false });
+			}
+		});
 
 		// Subscribe — the message-bus client handles the reconnect
 		// replay, so a socket drop + reopen re-does this without our
@@ -268,6 +288,10 @@ export class CollabDoc {
 		if (this.#unregisterHandler) {
 			this.#unregisterHandler();
 			this.#unregisterHandler = null;
+		}
+		if (this.#unregisterWriteDenied) {
+			this.#unregisterWriteDenied();
+			this.#unregisterWriteDenied = null;
 		}
 		if (this.#unsubscribeTopic) {
 			this.#unsubscribeTopic();

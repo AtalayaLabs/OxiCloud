@@ -323,8 +323,20 @@ flush + row cleanup. Audit `event = "message_bus.subscription_evicted"`
 with `reason ∈ {grant_revoked, resource_deleted, group_membership_lost,
 admin_kick}`.
 
-Slice status (2026-09-20):
+Slice status (2026-09-21):
 
+- ✅ **Graceful `rt.write_denied` on UPDATE denial** — the collab
+  binary-frame router in `rt_ws.rs` no longer closes the WS on
+  `CollabError::AuthzDenied { permission: "update" }`. Instead it
+  emits an `rt.write_denied { file_id, reason: "no_edit" }` JSON-RPC
+  notification and continues the session loop. FE `MessageBus` gains
+  a per-file `registerWriteDeniedHandler(fileId)` (parallel to
+  `registerBinaryHandler`); `CollabDoc.connect` registers one and
+  flips `#canWrite` to false + fires `onCapabilities` — the editor
+  drops into read-only immediately. Read-side denial (SYNC) still
+  closes the socket — that's an eviction condition, not a per-frame
+  refusal. Guarded by hurl S26 (Viewer sends UPDATE → rt.write_denied
+  fires → rt.ping still succeeds).
 - ✅ **Read-only editor for Viewers** — the `collab:<file_id>` subscribe
   ack now carries `capabilities.can_write` (from a second AuthZ pass
   on `Permission::Update`). The FE's `CollabDoc` reads it, suppresses

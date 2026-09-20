@@ -621,20 +621,31 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
                                 permission,
                                 file_id,
                             }) => {
-                                // Per-frame AuthZ denial. Anti-enumeration:
-                                // same "close socket, no wire reason" shape
-                                // as a bad-update. The AuthorizationEngine's
-                                // own `authz.denied` line already recorded
-                                // the deep reason; this event captures the
-                                // frame-class context (read vs write) that
-                                // the engine can't infer.
+                                // Per-frame AuthZ denial. Two behaviours,
+                                // split by which permission was missing:
                                 //
-                                // Naming: `write_denied` for UPDATE
-                                // (Permission::Update), `read_denied` for
-                                // SYNC (Permission::Read). Distinct events
-                                // so operators can filter "someone tried
-                                // to write while only having read" from
-                                // "someone tried to read without a grant".
+                                //   * `update` — the caller has Read but not
+                                //     Update (Viewer sent an UPDATE frame).
+                                //     Send an `rt.write_denied` notification
+                                //     and keep the socket open: the sub is
+                                //     still valid, the client just can't
+                                //     write. Closing on every Viewer
+                                //     keystroke would flap the connection
+                                //     and defeat the FE's read-only editor
+                                //     UX (the FE gates outbound UPDATEs
+                                //     itself; this path is the defence-in-
+                                //     depth for a malicious / legacy
+                                //     client that ignores the gate).
+                                //
+                                //   * anything else (currently `read` on a
+                                //     SYNC frame — the caller lost Read
+                                //     after subscribe) — close the socket.
+                                //     Anti-enum matches the "bad frame"
+                                //     shape; the caller's next attach
+                                //     re-runs the subscribe gate cleanly.
+                                //
+                                // Both paths still emit an audit line so
+                                // operators can filter denials by class.
                                 let event_name = match permission {
                                     "update" => "collab.write_denied",
                                     "read" => "collab.read_denied",
@@ -648,6 +659,18 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
                                     file_id = %file_id,
                                     "👮🏻‍♂️ collab frame denied: {permission} on file",
                                 );
+                                if permission == "update" {
+                                    let frame = write_denied_notification(file_id, "no_edit");
+                                    if socket
+                                        .send(Message::Text(frame.into()))
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                    // Session keeps running — do NOT break.
+                                    continue;
+                                }
                                 break;
                             }
                             Err(e) => {
@@ -1309,6 +1332,31 @@ fn revoked_notification(topic_wire: &str, reason: &str) -> String {
         params: serde_json::json!({
             "topic": topic_wire,
             "reason": reason,
+        }),
+    })
+    .expect("RpcNotification always serializes")
+}
+
+/// Build the server-initiated `rt.write_denied` JSON-RPC notification.
+/// Emitted when a collab UPDATE frame arrives from a caller that has
+/// Read on the file but not Update (typical Viewer with a share
+/// grant); the socket stays open — only the individual frame is
+/// dropped — so a legitimate Reader keeps receiving fan-out on the
+/// same subscription.
+///
+/// Parity with `rt.revoked`: `reason` carries the stable machine key
+/// (`no_edit` today, room for `frozen`, `admin_lock`, etc.). The
+/// numeric wire code (`error_code::NO_EDIT = -32007`) is documented
+/// on the constant itself; the notification keeps a string reason for
+/// consistency with the rest of `rt.*` — clients that need to map to
+/// codes can do so client-side, but the wire remains readable.
+fn write_denied_notification(file_id: Uuid, reason: &'static str) -> String {
+    serde_json::to_string(&RpcNotification {
+        jsonrpc: JSONRPC_V2,
+        method: "rt.write_denied",
+        params: serde_json::json!({
+            "file_id": file_id,
+            "reason":  reason,
         }),
     })
     .expect("RpcNotification always serializes")
