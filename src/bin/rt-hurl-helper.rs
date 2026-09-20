@@ -138,6 +138,12 @@ enum Mode {
     /// inserts `--content` into an otherwise-empty doc, send it as a
     /// `0x01` binary frame, and exit. Companion to `collab-fanout-listen`.
     CollabFanoutWrite,
+    /// Send one `rt.collab_flush { file_id }` JSON-RPC request and
+    /// await the ack. Reply carries `{ flushed: bool }` — true if a
+    /// blob write happened, false if the actor short-circuited on
+    /// unchanged content. Used by S22 to prove the WS-level flush
+    /// trigger works without waiting on the debouncer.
+    CollabFlush,
 }
 
 /// Parse a canonical dashed UUID (e.g. `f47ac10b-58cc-4372-a567-0e02b2c3d479`)
@@ -186,6 +192,7 @@ fn parse_args() -> Result<Args, String> {
         Some("collab-sync-probe") => Mode::CollabSyncProbe,
         Some("collab-fanout-listen") => Mode::CollabFanoutListen,
         Some("collab-fanout-write") => Mode::CollabFanoutWrite,
+        Some("collab-flush") => Mode::CollabFlush,
         Some(other) => return Err(format!("unknown mode: {other}")),
         None => return Err("mode is required".into()),
     };
@@ -276,6 +283,7 @@ async fn main() -> ExitCode {
         Mode::CollabSyncProbe => collab_sync_probe(args).await,
         Mode::CollabFanoutListen => collab_fanout_listen(args).await,
         Mode::CollabFanoutWrite => collab_fanout_write(args).await,
+        Mode::CollabFlush => collab_flush(args).await,
     };
 
     match result {
@@ -945,4 +953,74 @@ fn uuid_bytes_to_dashed(b: &[u8; 16]) -> String {
         out.push_str(&format!("{byte:02x}"));
     }
     out
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Mode: collab-flush
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Send `rt.collab_flush { file_id }` and assert on the id-matched
+// reply. Success reply carries `{ flushed: bool }`; error reply
+// carries a JSON-RPC `error` object.
+
+async fn collab_flush(args: Args) -> Result<(), HelperError> {
+    let file_id = args
+        .file_id
+        .ok_or_else(|| HelperError::Protocol("--file <uuid> required for collab-flush".into()))?;
+
+    let mut ws = connect_ws(&args.url, &args.auth).await?;
+    let deadline = tokio::time::Instant::now() + args.timeout;
+
+    let req_id: u64 = 1;
+    let file_id_str = uuid_bytes_to_dashed(&file_id);
+    let frame = json!({
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "method": "rt.collab_flush",
+        "params": { "file_id": file_id_str },
+    });
+    ws.send(Message::Text(frame.to_string().into())).await?;
+
+    // Drain until the id-matched ack. Text notifications are legal
+    // on the same socket (auto-sub identity topics push events);
+    // ignore anything that isn't our correlated reply.
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(HelperError::Expectation(
+                "timeout waiting for rt.collab_flush ack".into(),
+            ));
+        }
+        let msg = match timeout(remaining, ws.next()).await {
+            Ok(Some(Ok(m))) => m,
+            Ok(Some(Err(e))) => return Err(HelperError::Protocol(format!("ws error: {e}"))),
+            Ok(None) => return Err(HelperError::Protocol("connection closed by peer".into())),
+            Err(_) => {
+                return Err(HelperError::Expectation(
+                    "timeout waiting for rt.collab_flush ack".into(),
+                ));
+            }
+        };
+        let Message::Text(text) = msg else { continue };
+        let value: Value = serde_json::from_str(&text)
+            .map_err(|e| HelperError::Protocol(format!("bad frame: {e}: {text}")))?;
+        let Some(id_num) = value.get("id").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        if id_num != req_id {
+            continue;
+        }
+        if let Some(err) = value.get("error") {
+            return Err(HelperError::Expectation(format!(
+                "rt.collab_flush denied: {err}"
+            )));
+        }
+        // Success path — reply mirrors on --output for shell assertions.
+        if let Some(path) = args.output.as_ref() {
+            let result = value.get("result").cloned().unwrap_or(Value::Null);
+            std::fs::write(path, serde_json::to_vec_pretty(&result).unwrap())
+                .map_err(|e| HelperError::Protocol(format!("write output: {e}")))?;
+        }
+        return Ok(());
+    }
 }

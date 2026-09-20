@@ -2601,27 +2601,56 @@ impl AppServiceFactory {
                     file_read: app_state.repositories.file_read_repository.clone(),
                 });
             let writer: Arc<dyn crate::application::ports::collab_ports::DocContentWriter> =
-                Arc::new(NoopWriter);
+                Arc::new(FileBlobDocContentWriter {
+                    dedup: app_state.core.dedup_service.clone(),
+                    file_write: app_state.repositories.file_write_repository.clone(),
+                    file_read: app_state.repositories.file_read_repository.clone(),
+                    content_cache: app_state.core.file_content_cache.clone(),
+                    lifecycle: app_state.core.file_lifecycle.clone(),
+                });
             // Adapter clone: `PgAclEngine` implements the narrow
             // `CollabAuthzGate` trait in `pg_acl_engine.rs`. The
             // engine's decision cache is reused — one hit per keystroke
             // after warm-up — so no per-service cache is needed here.
             let authz: Arc<dyn crate::application::ports::collab_ports::CollabAuthzGate> =
                 app_state.authorization.clone();
+            // Debouncer knobs: production defaults 15 s idle / 60 s
+            // max / 1 s tick. Override via env for the test suite
+            // (S21 shrinks these to sub-second scales so api-test
+            // doesn't spend a wall-minute per flush assertion). Not
+            // fully first-class in AppConfig / KNOWN yet — the flag
+            // set is intentionally minimal until the collab feature
+            // graduates from dev-only; production operators don't
+            // need these knobs today.
+            let mut limits =
+                crate::application::services::collab_session_service::CollabLimits::default();
+            if let Ok(raw) = std::env::var("OXICLOUD_COLLAB_DEBOUNCE_IDLE_MS")
+                && let Ok(ms) = raw.parse::<u64>()
+            {
+                limits.debounce_idle = std::time::Duration::from_millis(ms);
+            }
+            if let Ok(raw) = std::env::var("OXICLOUD_COLLAB_DEBOUNCE_MAX_MS")
+                && let Ok(ms) = raw.parse::<u64>()
+            {
+                limits.debounce_max = std::time::Duration::from_millis(ms);
+            }
+            if let Ok(raw) = std::env::var("OXICLOUD_COLLAB_DEBOUNCE_TICK_MS")
+                && let Ok(ms) = raw.parse::<u64>()
+            {
+                limits.debounce_tick = std::time::Duration::from_millis(ms);
+            }
             let collab = Arc::new(
                 crate::application::services::collab_session_service::CollabSessionService::new(
-                    repo,
-                    reader,
-                    writer,
-                    authz,
-                    crate::application::services::collab_session_service::CollabLimits::default(),
+                    repo, reader, writer, authz, limits,
                 ),
             );
             app_state.collab_session_service = Some(collab);
             tracing::info!(
                 target: "audit",
                 event = "collab.service_enabled",
-                "🧵 markdown-collab session service wired (stub reader/writer, real bridge in C7)"
+                debounce_idle_ms = limits.debounce_idle.as_millis() as u64,
+                debounce_max_ms = limits.debounce_max.as_millis() as u64,
+                "🧵 markdown-collab session service wired (reader: blob-seed, writer: dedup-swap)"
             );
         }
 
@@ -3830,19 +3859,105 @@ impl crate::application::ports::collab_ports::DocContentReader for FileBlobDocCo
     }
 }
 
-struct NoopWriter;
+/// C7 slice 2: flush the CRDT text back to the file's blob. The
+/// collab session actor calls this via the debouncer (15 s idle /
+/// 60 s max age) with the last human writer's `caller_id` — that
+/// stamps §14 provenance on the resulting `update_file_content_with_blob`
+/// call.
+///
+/// **AuthZ is intentionally not repeated here.** The frame-level
+/// `Permission::Update` gate in `CollabSessionService::handle_binary_frame`
+/// already refused any UPDATE from a caller without the right; if we
+/// reached the flush path, every applied update passed that gate.
+/// Re-checking here would either re-litigate (needless engine hop)
+/// or introduce a race with grant revocation (the last writer might
+/// have lost Update between the write and the flush — but the update
+/// already went into the CRDT with authorization at write time).
+///
+/// **Pipeline** (same shape the upload path uses):
+///   1. `DedupService::store_from_stream(bytes)` → blob hash + size
+///      (dedup ref-counted; identical content is a no-op on disk).
+///   2. `FileBlobWriteRepository::update_file_content_with_blob(
+///        file_id, hash, size, None, caller_id, None)` → atomic swap;
+///      the file's blob reference moves to the new hash, the old
+///      blob's ref_count decrements (GC by the normal blob trigger).
+///   3. `FileContentCache::invalidate(file_id)` — kill any cached
+///      response body so subsequent downloads see the new content.
+///   4. `FileLifecycleHook::on_file_updated(...)` — thumbnails,
+///      search index, everything else that reacts to blob changes.
+struct FileBlobDocContentWriter {
+    dedup: Arc<crate::infrastructure::services::dedup_service::DedupService>,
+    file_write: Arc<
+        crate::infrastructure::repositories::pg::file_blob_write_repository::FileBlobWriteRepository,
+    >,
+    file_read: Arc<
+        crate::infrastructure::repositories::pg::file_blob_read_repository::FileBlobReadRepository,
+    >,
+    content_cache: Arc<crate::infrastructure::services::file_content_cache::FileContentCache>,
+    lifecycle: Arc<crate::application::services::file_lifecycle_service::FileLifecycleService>,
+}
 
 #[async_trait::async_trait]
-impl crate::application::ports::collab_ports::DocContentWriter for NoopWriter {
+impl crate::application::ports::collab_ports::DocContentWriter for FileBlobDocContentWriter {
     async fn write_content(
         &self,
-        _caller_id: uuid::Uuid,
-        _file_id: uuid::Uuid,
-        _content: Vec<u8>,
+        caller_id: uuid::Uuid,
+        file_id: uuid::Uuid,
+        content: Vec<u8>,
     ) -> Result<String, crate::common::errors::DomainError> {
-        Err(crate::common::errors::DomainError::internal_error(
-            "CollabDocContentWriter",
-            "flush-to-blob wiring not present yet (C7 in docs/plan/markdown-collab.md)",
-        ))
+        use crate::application::ports::file_lifecycle::FileLifecycleHook;
+        use crate::application::ports::storage_ports::{FileReadPort, FileWritePort};
+        use axum::body::Bytes;
+
+        let size = content.len() as u64;
+        let file_id_str = file_id.to_string();
+
+        // 1. Ingest bytes into the chunk store. Single-chunk stream
+        //    since the CRDT text is already in memory (bounded by
+        //    max_doc_bytes, default 1 MiB). Text/markdown content
+        //    type — the file's actual MIME lives on `storage.files`
+        //    and doesn't change on content swap.
+        let source = futures::stream::once(async move {
+            Ok::<_, std::io::Error>(Bytes::from(content))
+        });
+        let dedup_result = self
+            .dedup
+            .store_from_stream(source, Some("text/markdown".to_string()))
+            .await?;
+        let blob_hash = dedup_result.hash().to_string();
+
+        // 2. Swap the file's blob reference. `None` for `modified_at`
+        //    lets the repo stamp `NOW()`; `None` for `expected_hash`
+        //    disables optimistic-concurrency (collab is the ONLY
+        //    writer while the session is active — an external write
+        //    would evict the session via the AuthzChanged path per
+        //    the plan's "external write conflict" edge case).
+        let (new_hash, _updated_at) = self
+            .file_write
+            .update_file_content_with_blob(
+                &file_id_str,
+                &blob_hash,
+                size,
+                None,
+                caller_id,
+                None,
+            )
+            .await?;
+
+        // 3. Blow the download cache so a subsequent GET doesn't
+        //    serve the previous blob's cached body.
+        self.content_cache.invalidate(&file_id_str).await;
+
+        // 4. Fire the lifecycle hook so thumbnails / search /
+        //    everything reactive sees the update. Pull the MIME
+        //    from the file row — the hook needs it to route (a
+        //    `.md` file skips thumbnail regeneration; a media
+        //    file wouldn't).
+        if let Ok(file) = self.file_read.get_file(&file_id_str).await {
+            let mime = file.into_parts().mime_type;
+            self.lifecycle.on_file_updated(&file_id_str, &new_hash, &mime);
+        }
+
+        Ok(new_hash)
     }
 }

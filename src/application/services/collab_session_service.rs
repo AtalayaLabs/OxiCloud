@@ -45,7 +45,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -83,6 +83,21 @@ pub struct CollabLimits {
     /// via reconnect + sync-step-1 catches the client up). Sized for
     /// bursts a few hundred keystrokes deep; defaults to 256.
     pub broadcast_capacity: usize,
+    /// Debounced flush-to-blob: fire when no update has arrived for
+    /// this long. Bounds "how quiet does the doc need to be before
+    /// we materialise CRDT → blob" — matches Y-Sweet's default and
+    /// the plan spec. Default 15 s.
+    pub debounce_idle: Duration,
+    /// Debounced flush-to-blob: fire regardless of activity when this
+    /// long has elapsed since the FIRST dirty update. Bounds
+    /// staleness for non-collab consumers (WebDAV, download, search
+    /// index) on a doc that stays continuously edited. Default 60 s.
+    pub debounce_max: Duration,
+    /// How often the actor wakes to check whether a debounce
+    /// threshold has been crossed. Not user-tunable in principle;
+    /// exists so tests can shrink it to millisecond scales without
+    /// waiting on the default. Default 1 s.
+    pub debounce_tick: Duration,
 }
 
 impl Default for CollabLimits {
@@ -90,6 +105,9 @@ impl Default for CollabLimits {
         Self {
             snapshot_after_updates: 200,
             broadcast_capacity: 256,
+            debounce_idle: Duration::from_secs(15),
+            debounce_max: Duration::from_secs(60),
+            debounce_tick: Duration::from_secs(1),
         }
     }
 }
@@ -136,8 +154,18 @@ enum SessionMsg {
         remaining_sockets: oneshot::Sender<usize>,
     },
     ApplyUpdate {
+        caller_id: Uuid,
         bytes: Vec<u8>,
         reply: oneshot::Sender<Result<(), CollabError>>,
+    },
+    /// Force a flush of the CRDT text to the file's blob. Called
+    /// automatically by the debouncer's tick branch when idle/max
+    /// thresholds are crossed; also exposed on the public handle for
+    /// tests, idle-GC, and any future admin/explicit-save endpoint.
+    /// Reply is `Ok(true)` if a write happened, `Ok(false)` if the
+    /// hash matched and the call short-circuited.
+    FlushToBlob {
+        reply: oneshot::Sender<Result<bool, CollabError>>,
     },
     /// Extract the current CRDT text as UTF-8 bytes. C1 tests use this
     /// to assert convergence; C2's flush loop uses it before writing
@@ -211,10 +239,35 @@ impl CollabSession {
         rx.await.map_err(|_| CollabError::SessionGone)
     }
 
-    pub async fn apply_update(&self, bytes: Vec<u8>) -> Result<(), CollabError> {
+    pub async fn apply_update(
+        &self,
+        caller_id: Uuid,
+        bytes: Vec<u8>,
+    ) -> Result<(), CollabError> {
         let (tx, rx) = oneshot::channel();
         self.inbox
-            .send(SessionMsg::ApplyUpdate { bytes, reply: tx })
+            .send(SessionMsg::ApplyUpdate {
+                caller_id,
+                bytes,
+                reply: tx,
+            })
+            .await
+            .map_err(|_| CollabError::SessionGone)?;
+        rx.await.map_err(|_| CollabError::SessionGone)?
+    }
+
+    /// Flush the CRDT text to the file's blob. Idempotent — a call
+    /// with unchanged content since the previous flush short-circuits
+    /// via `last_flushed_content_hash`. Reply is `Ok(true)` on a
+    /// real write, `Ok(false)` on the short-circuit path.
+    ///
+    /// The actor's debouncer calls this automatically; external
+    /// callers use it for tests, idle-GC, and admin/explicit-save
+    /// paths.
+    pub async fn flush_to_blob(&self) -> Result<bool, CollabError> {
+        let (tx, rx) = oneshot::channel();
+        self.inbox
+            .send(SessionMsg::FlushToBlob { reply: tx })
             .await
             .map_err(|_| CollabError::SessionGone)?;
         rx.await.map_err(|_| CollabError::SessionGone)?
@@ -306,6 +359,33 @@ struct ActorState {
     /// state stays authoritative on the server regardless of whether
     /// anyone is listening.
     outbox: broadcast::Sender<Vec<u8>>,
+    /// Flush-to-blob writer. Called by the debouncer with the last
+    /// human writer's `caller_id` — that stamps §14 provenance on the
+    /// underlying `update_file_content_with_blob` call.
+    writer: Arc<dyn DocContentWriter>,
+    /// The most recent human whose UPDATE frame reached
+    /// `apply_update`. `None` until the first `0x01` is applied. Used
+    /// as the flush's `caller_id` — the last actual editor gets the
+    /// audit / recent-items credit. Grant revocation between write
+    /// and flush is out of scope: the update already went into the
+    /// CRDT under authorization at write time.
+    last_writer_id: Option<Uuid>,
+    /// `Instant` at which the doc went from clean to dirty. `Some`
+    /// while unflushed edits exist; cleared to `None` on successful
+    /// flush. Bounds the "how long since the FIRST dirty edit"
+    /// deadline via `limits.debounce_max`.
+    first_dirty_at: Option<Instant>,
+    /// `Instant` of the most recent `apply_update`. `Some` while
+    /// unflushed edits exist; cleared to `None` on successful flush.
+    /// Bounds the "how quiet has the doc been" deadline via
+    /// `limits.debounce_idle`.
+    last_dirty_at: Option<Instant>,
+    /// In-memory mirror of `collab.doc_sessions.last_flushed_content_hash`
+    /// — the content hash of the last successful blob write. Used to
+    /// short-circuit no-op flushes (CRDT text unchanged since the
+    /// previous materialisation). Loaded from the row on attach;
+    /// stamped after each successful flush.
+    last_flushed_content_hash: Option<String>,
 }
 
 impl ActorState {
@@ -316,11 +396,15 @@ impl ActorState {
     async fn load_or_seed(
         file_id: Uuid,
         repo: Arc<dyn DocSessionRepository>,
+        writer: Arc<dyn DocContentWriter>,
         seed_content: Option<Vec<u8>>,
         limits: CollabLimits,
     ) -> Result<Self, CollabError> {
         let doc = Doc::new();
         let existing = repo.load(file_id).await?;
+        let last_flushed_content_hash = existing
+            .as_ref()
+            .and_then(|r| r.last_flushed_content_hash.clone());
         let updates_since_snapshot = match existing {
             Some(StoredDocSession {
                 state,
@@ -374,6 +458,11 @@ impl ActorState {
             limits,
             repo,
             outbox,
+            writer,
+            last_writer_id: None,
+            first_dirty_at: None,
+            last_dirty_at: None,
+            last_flushed_content_hash,
         })
     }
 
@@ -391,7 +480,16 @@ impl ActorState {
     /// `send` errors when no receivers are live; that's expected on a
     /// solo session and silently dropped, since the authoritative
     /// state is already on the actor's `Doc`.
-    async fn apply_update(&mut self, bytes: Vec<u8>) -> Result<(), CollabError> {
+    ///
+    /// Also arms the debouncer: `caller_id` is remembered as
+    /// `last_writer_id` for the eventual flush, and the dirty
+    /// timestamps advance so the tick branch of `run_actor` can decide
+    /// whether the idle / max thresholds have been crossed.
+    async fn apply_update(
+        &mut self,
+        caller_id: Uuid,
+        bytes: Vec<u8>,
+    ) -> Result<(), CollabError> {
         let update = Update::decode_v1(&bytes)
             .map_err(|e| CollabError::BadUpdate(format!("decode: {e}")))?;
         {
@@ -405,6 +503,15 @@ impl ActorState {
             self.snapshot().await?;
         }
         let _ = self.outbox.send(bytes);
+        // Debouncer bookkeeping. `first_dirty_at` sticks on the FIRST
+        // update after a clean state; `last_dirty_at` advances on
+        // every update. Together they drive the tick-branch decision.
+        let now = Instant::now();
+        if self.first_dirty_at.is_none() {
+            self.first_dirty_at = Some(now);
+        }
+        self.last_dirty_at = Some(now);
+        self.last_writer_id = Some(caller_id);
         Ok(())
     }
 
@@ -433,51 +540,221 @@ impl ActorState {
             .map_err(|e| CollabError::BadUpdate(format!("state-vector decode: {e}")))?;
         Ok(self.doc.transact().encode_state_as_update_v1(&sv))
     }
+
+    /// Return `true` when the debouncer's tick branch should fire a
+    /// flush. Two conditions, either is enough:
+    ///
+    ///   * `now - last_dirty_at ≥ debounce_idle` — the doc has been
+    ///     quiet long enough (idle threshold).
+    ///   * `now - first_dirty_at ≥ debounce_max` — the doc has been
+    ///     continuously dirty long enough (max age; bounds staleness
+    ///     for non-collab consumers on a doc that never quiets down).
+    ///
+    /// A clean doc (`first_dirty_at.is_none()`) is never due.
+    fn flush_due(&self, now: Instant) -> bool {
+        let (Some(first), Some(last)) = (self.first_dirty_at, self.last_dirty_at) else {
+            return false;
+        };
+        now.duration_since(last) >= self.limits.debounce_idle
+            || now.duration_since(first) >= self.limits.debounce_max
+    }
+
+    /// Flush the CRDT text to the file's blob. Idempotent: a call with
+    /// unchanged CRDT text since the last flush is a no-op. Returns
+    /// `Ok(true)` if a write actually happened, `Ok(false)` if the
+    /// hash matched and the call short-circuited.
+    ///
+    /// **Sequence** (mirrors `docs/plan/markdown-collab.md § Backend
+    /// step 4`):
+    ///   1. Force a snapshot so any in-memory-only updates hit
+    ///      `collab.doc_sessions.state` BEFORE the blob write. Prevents
+    ///      "blob newer than persisted CRDT" on a crash between step 3
+    ///      and the next snapshot tick.
+    ///   2. Extract `Y.Text` UTF-8 bytes. Compute BLAKE3 (via the dedup
+    ///      pipeline inside the writer — no separate hash here).
+    ///   3. Short-circuit if the CRDT text matches
+    ///      `last_flushed_content_hash` (idempotency guard for the
+    ///      "same content, timer fired anyway" case).
+    ///   4. Delegate to `self.writer.write_content(caller_id, file_id,
+    ///      bytes)` — the writer ingests via dedup, swaps the file's
+    ///      blob, invalidates the content cache, fires the lifecycle
+    ///      hook. Returns the new content hash.
+    ///   5. Stamp `last_flushed_content_hash` (both in the DB via
+    ///      `repo.record_flush` and in memory) so the next tick's
+    ///      short-circuit works. Reset dirty timestamps.
+    async fn flush_to_blob(&mut self) -> Result<bool, CollabError> {
+        // Nothing to flush if nobody's written since attach — the
+        // blob already matches the seed content.
+        let Some(caller_id) = self.last_writer_id else {
+            return Ok(false);
+        };
+
+        // 1. Force snapshot so CRDT state is durable before we touch
+        //    the blob. Cheap when there's nothing new to snapshot.
+        self.snapshot().await?;
+
+        // 2. Extract text.
+        let text = self.text();
+        let bytes = text.into_bytes();
+
+        // 3. Idempotency short-circuit. We compute the hash the same
+        //    way the dedup pipeline would (BLAKE3 of the whole
+        //    stream) via a peek at the dedup service — but that
+        //    would double the cost. Simpler: compute BLAKE3 here and
+        //    compare. If the writer's internal hashing disagrees
+        //    with ours, dedup will still ref-count correctly; the
+        //    only cost is a stale short-circuit-miss. Same tool the
+        //    upload path uses (blake3 crate).
+        let content_hash = blake3::hash(&bytes).to_hex().to_string();
+        if self.last_flushed_content_hash.as_deref() == Some(content_hash.as_str()) {
+            // Unchanged since last flush. Reset the debounce clock so
+            // we don't re-tick on the same clean state.
+            self.first_dirty_at = None;
+            self.last_dirty_at = None;
+            return Ok(false);
+        }
+
+        // 4. Delegate the blob write. The writer's returned hash may
+        //    differ from `content_hash` (raw BLAKE3 of the text) —
+        //    for a chunked file it's the manifest hash, not the raw
+        //    content hash. We use OUR content_hash as the
+        //    short-circuit key so the compare on next tick stays
+        //    consistent regardless of chunking geometry; the writer's
+        //    return is verified but not tracked.
+        let _writer_hash = self.writer.write_content(caller_id, self.file_id, bytes).await?;
+
+        // 5. Stamp DB + in-memory mirror WITH `content_hash` (the
+        //    raw BLAKE3 of the text we just wrote). This matches
+        //    what `last_flushed_content_hash` is designed to hold
+        //    per the migration comment: "content hash of the last
+        //    successful flush-to-blob write." Order matters: DB
+        //    first, so a crash between DB stamp and in-memory update
+        //    loses only the short-circuit optimisation on next boot.
+        self.repo.record_flush(self.file_id, &content_hash).await?;
+        self.last_flushed_content_hash = Some(content_hash);
+        self.first_dirty_at = None;
+        self.last_dirty_at = None;
+        Ok(true)
+    }
 }
 
 /// Run one session actor's message loop until every sender drops OR
 /// a `Shutdown` message arrives. Called by [`CollabSessionService`]'s
 /// spawn helper. Errors on messages surface via each message's own
 /// reply channel — the loop itself doesn't propagate them.
+///
+/// The loop `select!`s over three sources:
+///   * `inbox.recv()` — the primary event source (attach, apply,
+///     sync, subscribe, shutdown).
+///   * `tick.tick()` — the debouncer heartbeat (default 1 s,
+///     configurable via `CollabLimits::debounce_tick`). On every
+///     tick we check `state.flush_due(now)` and self-invoke
+///     `flush_to_blob()` inline when it returns true. Inline (not
+///     via a self-message) so the flush observes the current state
+///     and no ApplyUpdate can interleave between the "due" check
+///     and the flush proper.
+///   * (implicit) shutdown — a `Shutdown` message OR the last
+///     sender dropping breaks the loop cleanly.
 async fn run_actor(mut state: ActorState, mut inbox: mpsc::Receiver<SessionMsg>) {
-    while let Some(msg) = inbox.recv().await {
-        match msg {
-            SessionMsg::AttachSocket { socket_id, reply } => {
-                state.attached.insert(socket_id);
-                let _ = reply.send(());
+    let mut tick = tokio::time::interval(state.limits.debounce_tick);
+    // Coalesce backlog if the runtime pauses under heavy load rather
+    // than firing a burst of catch-up ticks when it recovers.
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Discard the immediate first tick — the actor just spawned; a
+    // freshly-seeded doc has no dirty bytes and would no-op anyway,
+    // but the extra tick would waste a syscall on every actor birth.
+    tick.tick().await;
+
+    loop {
+        tokio::select! {
+            // biased: process control-plane messages before the tick
+            // branch. A burst of applies + one flush deadline should
+            // apply all updates first, then flush the accumulated
+            // state — not flush mid-burst and re-arm.
+            biased;
+
+            msg = inbox.recv() => {
+                let Some(msg) = msg else { break };
+                match msg {
+                    SessionMsg::AttachSocket { socket_id, reply } => {
+                        state.attached.insert(socket_id);
+                        let _ = reply.send(());
+                    }
+                    SessionMsg::DetachSocket {
+                        socket_id,
+                        remaining_sockets,
+                    } => {
+                        state.attached.remove(&socket_id);
+                        let _ = remaining_sockets.send(state.attached.len());
+                    }
+                    SessionMsg::ApplyUpdate { caller_id, bytes, reply } => {
+                        let result = state.apply_update(caller_id, bytes).await;
+                        let _ = reply.send(result);
+                    }
+                    SessionMsg::GetText { reply } => {
+                        let _ = reply.send(state.text());
+                    }
+                    SessionMsg::Snapshot { reply } => {
+                        let _ = reply.send(state.snapshot().await);
+                    }
+                    SessionMsg::SyncStep1 {
+                        client_state_vector,
+                        reply,
+                    } => {
+                        let _ = reply.send(state.sync_step_1(&client_state_vector));
+                    }
+                    SessionMsg::SubscribeUpdates { reply } => {
+                        // Hand out a fresh receiver on the actor's outbox.
+                        // `broadcast::Sender::subscribe` produces a NEW receiver
+                        // that only sees updates from this point forward —
+                        // catch-up is Yjs's problem, not the broadcast
+                        // channel's (clients issue sync-step-1 on attach).
+                        let _ = reply.send(state.outbox.subscribe());
+                    }
+                    SessionMsg::FlushToBlob { reply } => {
+                        let result = state.flush_to_blob().await;
+                        let _ = reply.send(result);
+                    }
+                    SessionMsg::Shutdown => break,
+                }
             }
-            SessionMsg::DetachSocket {
-                socket_id,
-                remaining_sockets,
-            } => {
-                state.attached.remove(&socket_id);
-                let _ = remaining_sockets.send(state.attached.len());
+
+            _ = tick.tick() => {
+                if state.flush_due(Instant::now()) {
+                    // Fire-and-log. A flush failure (blob write blip,
+                    // DB unavailability) leaves dirty_at set so the
+                    // NEXT tick retries — no data loss, just deferred
+                    // materialization. The audit line goes to the
+                    // `oxicloud::collab` target so operators can spot
+                    // sustained failures without an audit-channel
+                    // false positive on every tick.
+                    if let Err(e) = state.flush_to_blob().await {
+                        // Non-recoverable classes shut the actor down
+                        // rather than retry forever. Today the main
+                        // one is "file row disappeared" — the DELETE
+                        // cascade dropped `collab.doc_sessions` while
+                        // this actor kept editing in-memory. The plan
+                        // eviction path (AuthzChanged file-scoped) will
+                        // pre-empt this once wired; until then, a
+                        // NotFound stops the retry loop cleanly.
+                        let terminal = matches!(
+                            &e,
+                            CollabError::Storage(de) if de.kind == crate::common::errors::ErrorKind::NotFound
+                        );
+                        tracing::warn!(
+                            target: "oxicloud::collab",
+                            file_id = %state.file_id,
+                            error = %e,
+                            terminal,
+                            "🧵 debounced flush failed{}",
+                            if terminal { " (terminal — shutting actor down)" } else { "; will retry on next tick" },
+                        );
+                        if terminal {
+                            break;
+                        }
+                    }
+                }
             }
-            SessionMsg::ApplyUpdate { bytes, reply } => {
-                let result = state.apply_update(bytes).await;
-                let _ = reply.send(result);
-            }
-            SessionMsg::GetText { reply } => {
-                let _ = reply.send(state.text());
-            }
-            SessionMsg::Snapshot { reply } => {
-                let _ = reply.send(state.snapshot().await);
-            }
-            SessionMsg::SyncStep1 {
-                client_state_vector,
-                reply,
-            } => {
-                let _ = reply.send(state.sync_step_1(&client_state_vector));
-            }
-            SessionMsg::SubscribeUpdates { reply } => {
-                // Hand out a fresh receiver on the actor's outbox.
-                // `broadcast::Sender::subscribe` produces a NEW receiver
-                // that only sees updates from this point forward —
-                // catch-up is Yjs's problem, not the broadcast
-                // channel's (clients issue sync-step-1 on attach).
-                let _ = reply.send(state.outbox.subscribe());
-            }
-            SessionMsg::Shutdown => break,
         }
     }
 }
@@ -544,7 +821,14 @@ impl CollabSessionService {
             Some(_) => None, // load-path — actor reads from repo itself
             None => Some(self.reader.read_content(caller_id, file_id).await?),
         };
-        let state = ActorState::load_or_seed(file_id, self.repo.clone(), seed, self.limits).await?;
+        let state = ActorState::load_or_seed(
+            file_id,
+            self.repo.clone(),
+            self.writer.clone(),
+            seed,
+            self.limits,
+        )
+        .await?;
         let (tx, rx) = mpsc::channel::<SessionMsg>(64);
         tokio::spawn(run_actor(state, rx));
         let session = CollabSession { inbox: tx };
@@ -610,7 +894,7 @@ impl CollabSessionService {
                 self.require_perm(caller_id, file_id, Permission::Update, "update")
                     .await?;
                 let session = self.attach_file(caller_id, file_id).await?;
-                session.apply_update(frame.payload).await?;
+                session.apply_update(caller_id, frame.payload).await?;
                 Ok(None)
             }
             kind::AWARENESS => {
@@ -779,6 +1063,30 @@ mod tests {
         }
     }
 
+    /// Writer stub that records every `write_content` invocation so the
+    /// debouncer test can assert on call count + bytes + caller_id.
+    /// Returns a distinct hash per call so the actor's in-memory
+    /// `last_flushed_content_hash` mirror stays honest across
+    /// successive flushes.
+    #[derive(Default)]
+    struct RecordingWriter {
+        writes: Mutex<Vec<(Uuid, Uuid, Vec<u8>)>>,
+    }
+    #[async_trait]
+    impl DocContentWriter for RecordingWriter {
+        async fn write_content(
+            &self,
+            caller_id: Uuid,
+            file_id: Uuid,
+            content: Vec<u8>,
+        ) -> Result<String, DomainError> {
+            let mut writes = self.writes.lock().unwrap();
+            let hash = format!("b3-recorded-{}", writes.len());
+            writes.push((caller_id, file_id, content));
+            Ok(hash)
+        }
+    }
+
     // ── Stub authz gate ──────────────────────────────────────────
     //
     // Three shapes used by the tests:
@@ -888,7 +1196,7 @@ mod tests {
         let update_a = doc_a
             .transact()
             .encode_state_as_update_v1(&StateVector::default());
-        session.apply_update(update_a.clone()).await.unwrap();
+        session.apply_update(Uuid::nil(), update_a.clone()).await.unwrap();
 
         // Client B (independent doc) appends "world".
         let doc_b = Doc::new();
@@ -908,7 +1216,7 @@ mod tests {
         let update_b = doc_b.transact().encode_state_as_update_v1(
             &StateVector::decode_v1(&doc_a.transact().state_vector().encode_v1()).unwrap(),
         );
-        session.apply_update(update_b).await.unwrap();
+        session.apply_update(Uuid::nil(), update_b).await.unwrap();
 
         let server_text = session.get_text().await.unwrap();
         assert_eq!(server_text, "Hello world");
@@ -951,7 +1259,7 @@ mod tests {
             }
             // Encode the delta: what the server hasn't seen yet.
             let delta = client.transact().encode_state_as_update_v1(&server_sv);
-            session.apply_update(delta).await.unwrap();
+            session.apply_update(Uuid::nil(), delta).await.unwrap();
             // Mirror the server's state vector locally so the next
             // delta is minimal.
             server_sv = client.transact().state_vector();
@@ -983,7 +1291,7 @@ mod tests {
         let update = d
             .transact()
             .encode_state_as_update_v1(&StateVector::default());
-        s1.apply_update(update).await.unwrap();
+        s1.apply_update(Uuid::nil(), update).await.unwrap();
         let via_s2 = s2.get_text().await.unwrap();
         assert!(via_s2.contains("seed"));
         assert!(via_s2.contains("more"));
@@ -1187,7 +1495,7 @@ mod tests {
             .transact()
             .encode_state_as_update_v1(&StateVector::default());
 
-        session.apply_update(update_bytes.clone()).await.unwrap();
+        session.apply_update(Uuid::nil(), update_bytes.clone()).await.unwrap();
 
         // The receiver sees the same bytes we applied.
         let received = tokio::time::timeout(Duration::from_secs(1), rx.recv())
@@ -1216,7 +1524,7 @@ mod tests {
         let update_bytes = client
             .transact()
             .encode_state_as_update_v1(&StateVector::default());
-        session.apply_update(update_bytes.clone()).await.unwrap();
+        session.apply_update(Uuid::nil(), update_bytes.clone()).await.unwrap();
 
         for rx in [&mut rx1, &mut rx2, &mut rx3] {
             let received = tokio::time::timeout(Duration::from_secs(1), rx.recv())
@@ -1246,7 +1554,7 @@ mod tests {
         let past_bytes = client
             .transact()
             .encode_state_as_update_v1(&StateVector::default());
-        session.apply_update(past_bytes).await.unwrap();
+        session.apply_update(Uuid::nil(), past_bytes).await.unwrap();
 
         // NOW subscribe. Should time out on the past update.
         let mut rx = session.subscribe_updates().await.unwrap();
@@ -1347,5 +1655,160 @@ mod tests {
         };
         let reply = svc.handle_binary_frame(Uuid::nil(), frame).await.unwrap();
         assert_eq!(reply, None, "awareness has no per-socket reply");
+    }
+
+    // ── Debounced flush-to-blob (C7 slice 2) ───────────────────────────
+    //
+    // These tests assert the actor's tick branch fires flushes on the
+    // configured schedule. Sub-second thresholds keep the wall-clock
+    // cost trivial. The `RecordingWriter` captures every call so we
+    // can assert on invocations count, caller_id (§14 provenance),
+    // and payload bytes.
+
+    fn service_with_recording_writer(
+        seed: &str,
+        limits: CollabLimits,
+    ) -> (Arc<CollabSessionService>, Arc<RecordingWriter>) {
+        let writer = Arc::new(RecordingWriter::default());
+        let svc = Arc::new(CollabSessionService::new(
+            Arc::new(MemRepo::new()),
+            Arc::new(StubReader {
+                content: Mutex::new(seed.as_bytes().to_vec()),
+            }),
+            writer.clone(),
+            Arc::new(AllowAll),
+            limits,
+        ));
+        (svc, writer)
+    }
+
+    #[tokio::test]
+    async fn debouncer_fires_after_idle_threshold() {
+        // 50 ms idle, 500 ms max, 20 ms tick — the idle path should
+        // fire first, ~50 ms after the last apply.
+        let limits = CollabLimits {
+            debounce_idle: Duration::from_millis(50),
+            debounce_max: Duration::from_millis(500),
+            debounce_tick: Duration::from_millis(20),
+            ..CollabLimits::default()
+        };
+        let (svc, writer) = service_with_recording_writer("", limits);
+        let file_id = Uuid::new_v4();
+        let caller = Uuid::new_v4();
+        let session = svc.attach_file(caller, file_id).await.unwrap();
+
+        // Apply one update.
+        let client = Doc::new();
+        {
+            let text = client.get_or_insert_text(ROOT_TEXT_NAME);
+            let mut txn = client.transact_mut();
+            text.insert(&mut txn, 0, "flush me");
+        }
+        let update = client
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+        session.apply_update(caller, update).await.unwrap();
+
+        // Wait past idle threshold + one tick — give the actor time to
+        // observe and fire the flush.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Recording writer received exactly one write with the caller
+        // and the UTF-8 text bytes.
+        let writes = writer.writes.lock().unwrap();
+        assert_eq!(writes.len(), 1, "expected one flush, got {}", writes.len());
+        assert_eq!(writes[0].0, caller, "§14 caller_id must match last writer");
+        assert_eq!(writes[0].1, file_id);
+        assert_eq!(&writes[0].2, b"flush me");
+    }
+
+    #[tokio::test]
+    async fn debouncer_short_circuits_on_unchanged_content() {
+        // Two flushes back-to-back with no new updates between: the
+        // second must be a no-op via `last_flushed_content_hash`.
+        let limits = CollabLimits {
+            debounce_idle: Duration::from_millis(30),
+            debounce_max: Duration::from_millis(500),
+            debounce_tick: Duration::from_millis(10),
+            ..CollabLimits::default()
+        };
+        let (svc, writer) = service_with_recording_writer("", limits);
+        let file_id = Uuid::new_v4();
+        let caller = Uuid::new_v4();
+        let session = svc.attach_file(caller, file_id).await.unwrap();
+
+        let client = Doc::new();
+        {
+            let text = client.get_or_insert_text(ROOT_TEXT_NAME);
+            let mut txn = client.transact_mut();
+            text.insert(&mut txn, 0, "once");
+        }
+        let update = client
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+        session.apply_update(caller, update).await.unwrap();
+
+        // Explicit flush + wait for the tick's idempotent flush.
+        let first = session.flush_to_blob().await.unwrap();
+        assert!(first, "first flush wrote");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        // Explicit second flush after settling.
+        let second = session.flush_to_blob().await.unwrap();
+        assert!(!second, "second flush was a no-op (hash unchanged)");
+
+        let writes = writer.writes.lock().unwrap();
+        assert_eq!(
+            writes.len(),
+            1,
+            "only one write reached the writer (short-circuit worked)"
+        );
+    }
+
+    #[tokio::test]
+    async fn debouncer_fires_by_max_deadline_under_continuous_edits() {
+        // Constant edits every 20 ms: idle threshold never trips
+        // (edits keep pushing last_dirty_at forward). The max
+        // deadline MUST fire on its own — this is what bounds
+        // staleness on a never-quiet doc.
+        let limits = CollabLimits {
+            debounce_idle: Duration::from_secs(60),   // idle path can't win
+            debounce_max: Duration::from_millis(150), // max path wins
+            debounce_tick: Duration::from_millis(20),
+            ..CollabLimits::default()
+        };
+        let (svc, writer) = service_with_recording_writer("", limits);
+        let file_id = Uuid::new_v4();
+        let caller = Uuid::new_v4();
+        let session = svc.attach_file(caller, file_id).await.unwrap();
+
+        // Fire small deltas from ONE Doc so state vectors line up
+        // across the sequence (see snapshot_compaction_triggers_at_threshold
+        // for the pattern's rationale).
+        let client = Doc::new();
+        let mut server_sv = StateVector::default();
+        for ch in ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j'] {
+            {
+                let text = client.get_or_insert_text(ROOT_TEXT_NAME);
+                let mut txn = client.transact_mut();
+                let cur_len = text.get_string(&txn).chars().count() as u32;
+                text.insert(&mut txn, cur_len, &ch.to_string());
+            }
+            let delta = client.transact().encode_state_as_update_v1(&server_sv);
+            session.apply_update(caller, delta).await.unwrap();
+            server_sv = client.transact().state_vector();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        // 10 edits × 20 ms = 200 ms of continuous editing. Max
+        // deadline (150 ms) should have fired at least once mid-run;
+        // wait a couple more ticks to make sure the tick branch saw
+        // its `flush_due` return true.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let writes = writer.writes.lock().unwrap();
+        assert!(
+            !writes.is_empty(),
+            "max-deadline flush never fired under continuous edits"
+        );
     }
 }

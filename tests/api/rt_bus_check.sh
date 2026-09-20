@@ -116,6 +116,27 @@
 #                                       dedup because rows would come
 #                                       in both via WS push and via
 #                                       the delta fetch).
+#   S22 Collab explicit flush  — call `rt.collab_flush {file_id}` on
+#                                the WS after a write, then GET the
+#                                file BEFORE the debouncer would
+#                                have fired. Guards the FE's
+#                                "on tab close, save now" path — a
+#                                blob update within a few ms of the
+#                                explicit trigger, not bounded by
+#                                the ambient debounce cadence.
+#                                Also guards `no_edit` denial when
+#                                the caller lacks Update.
+#   S21 Collab flush-to-blob   — write via collab, wait past the
+#                                debouncer's idle threshold, then
+#                                GET /api/files/{id} and assert the
+#                                downloaded content reflects the
+#                                CRDT text. Guards the C7 write side
+#                                end-to-end: dedup ingest, atomic
+#                                blob swap, cache invalidation.
+#                                Depends on OXICLOUD_COLLAB_DEBOUNCE_*
+#                                being shrunk in server.env — a
+#                                default-tuned server would need
+#                                60 s of wall-clock for this to fire.
 #   S20 Collab seed-from-blob   — upload a .md whose bytes are NOT
 #                                 empty, then open a collab session
 #                                 for the first time (no prior
@@ -1052,7 +1073,7 @@ log "S17 OK"
 # Two sockets, one user, one .md file. Socket B subscribes to
 # `collab:<file_id>` and touches a ready-file the moment the server
 # ack's it. Socket A then subscribes AND fires a `0x01` UPDATE frame
-# whose payload is a Yjs update that inserts "fanout smoke test S18"
+# whose payload is a Yjs update that inserts "Hello OxiCloud from S18"
 # at position 0. The server's `CollabSessionService::apply_update`
 # broadcasts the raw update bytes on its per-actor outbox, and the
 # WS forwarder task installed for socket B's subscription pipes them
@@ -1092,7 +1113,7 @@ rm -f "$upload_resp"
 [[ -n "$s18_file_id" && "$s18_file_id" != "null" ]] \
   || die "S18: could not extract file id from upload response"
 
-s18_content="fanout smoke test S18"
+s18_content="Hello OxiCloud from S18"
 ready_s18="$(mktemp -t rtbus_s18_ready.XXXXXX)"; rm -f "$ready_s18"
 
 # Socket B — listener. Blocks on inbound 0x01 with matching file_id.
@@ -1190,6 +1211,23 @@ grant_e_id=$(printf '%s' "$grant_e" | jq -r '.grants[0].id')
 [[ -n "$grant_e_id" && "$grant_e_id" != "null" ]] \
   || die "S19: viewer grant on folder E failed: $grant_e"
 
+# BEFORE the unauthorized write: probe the actor to record the
+# baseline sync-step-2 payload size. Post-C7 the actor seeds from
+# the file's blob text, so this is NOT zero — it's a Yjs-encoded
+# snapshot of "# S19 seed\n". User1 has Update on their own file so
+# this probe passes the AuthZ gate.
+out_s19_before="$(mktemp -t rtbus_s19_before.XXXXXX)"
+if ! "$HELPER_BIN" collab-sync-probe \
+     --url "$ws_url" \
+     --token "$user1_token" \
+     --file "$s19_file_id" \
+     --timeout 5s \
+     --output "$out_s19_before"; then
+  cat "$out_s19_before" >&2 || true
+  die "S19: baseline sync-step probe failed"
+fi
+payload_len_before=$(jq -r '.payload_len' "$out_s19_before")
+
 # User2 tries to WRITE. Anything non-zero counts as a denial —
 # either an "expectation failed" (server closed after our frame) or
 # a "protocol error" (`ws error: ... Connection reset`).
@@ -1210,31 +1248,27 @@ set -e
 # unauthorized bytes. User1 syncs and reads back.
 log "S19: (writer exit=$write_exit — not asserted; the doc-state check below is authoritative)"
 
-# User1 pulls the current actor state via sync-step-1 and asserts the
-# reply payload is the small "empty update" marker, NOT a payload
-# carrying the unauthorized text. The probe already asserts kind /
-# file_id / non-empty; the size discriminator is what tells "empty
-# doc" apart from "has content". `encode_state_as_update_v1` on an
-# empty doc is exactly 2 bytes; a doc with 30 bytes of text produces
-# a much larger update.
-out_s19="$(mktemp -t rtbus_s19.XXXXXX)"
+# AFTER the unauthorized write: probe again. Same session, so the
+# actor's state is unchanged UNLESS the write gate leaked. A leak
+# would grow the CRDT by ~30 bytes of "unauthorized write from
+# viewer" plus Yjs framing → payload_len_after >> payload_len_before.
+# Byte-exact equality is the tight assertion.
+out_s19_after="$(mktemp -t rtbus_s19_after.XXXXXX)"
 if ! "$HELPER_BIN" collab-sync-probe \
      --url "$ws_url" \
      --token "$user1_token" \
      --file "$s19_file_id" \
      --timeout 5s \
-     --output "$out_s19"; then
-  cat "$out_s19" >&2 || true
-  die "S19: sync-step probe failed — cannot verify doc state"
+     --output "$out_s19_after"; then
+  cat "$out_s19_after" >&2 || true
+  die "S19: post-write sync-step probe failed"
 fi
-payload_len=$(jq -r '.payload_len' "$out_s19")
-# Empty-doc reply is 2 bytes; a leaked-through update carrying 30
-# UTF-8 bytes would push this well past 20. Threshold set generously.
-if [[ "$payload_len" -gt 20 ]]; then
-  cat "$out_s19"
-  die "S19: server-side doc content grew (payload_len=$payload_len) — write gate leaked!"
+payload_len_after=$(jq -r '.payload_len' "$out_s19_after")
+if [[ "$payload_len_after" -ne "$payload_len_before" ]]; then
+  cat "$out_s19_after"
+  die "S19: server-side doc changed (before=$payload_len_before, after=$payload_len_after) — write gate leaked!"
 fi
-log "S19 OK (server-side doc unchanged, payload_len=$payload_len)"
+log "S19 OK (payload_len unchanged: $payload_len_before)"
 
 # ── Scenario 20 — Collab seed-from-blob on first attach (C7 read side) ──────
 # Regression test for the reader adapter. Uploads a .md whose bytes
@@ -1303,4 +1337,158 @@ if [[ "$payload_len" -lt 100 ]]; then
 fi
 log "S20 OK (seed_bytes=$seed_bytes, sync-step-2 payload_len=$payload_len)"
 
-log "All twenty message-bus scenarios passed."
+# ── Scenario 21 — Debounced flush-to-blob (C7 write side) ───────────────────
+# End-to-end proof that the writer bridge is wired:
+#   1. Upload a .md whose blob content is known ("seed").
+#   2. Open a collab session and write "Hello OxiCloud from S21" via the
+#      fanout-write helper — this fires the actor's apply_update
+#      which arms the debouncer.
+#   3. Wait past the idle threshold (200 ms from server.env → give
+#      it 800 ms of comfort so a slow CI runner doesn't flake).
+#   4. GET /api/files/{id} directly. If the writer is wired, the
+#      body is the CRDT text; if it isn't, the body is still the
+#      original "seed" upload.
+#
+# Why we don't just check "any change" — a bug that swapped the
+# blob to arbitrary bytes would look like success under a weaker
+# assertion. Byte-exact match makes the wire test load-bearing.
+log "S21: write via collab, wait for debouncer, verify GET returns CRDT text."
+
+# Empty seed — Yjs is a CRDT that INSERTS, not overwrites. If we seed
+# with pre-existing bytes, the client's `text.insert(0, ...)` would
+# prepend the new content instead of replacing it, and the resulting
+# blob would be new+seed (correct Yjs semantics; wrong for a "does
+# the flush work" byte-exact test). An empty seed avoids that trap
+# without weakening the assertion — a leak would still show up as a
+# blob change.
+tmp_md="$(mktemp -t rtbus_s21_body.XXXXXX)"
+: > "$tmp_md"   # empty file
+upload_resp="$(mktemp -t rtbus_s21_resp.XXXXXX)"
+status=$(curl -sS -o "$upload_resp" -w "%{http_code}" -X POST \
+  -H "Authorization: Bearer $user1_token" \
+  -F "folder_id=$folder_a" \
+  -F "file=@$tmp_md;filename=s21.md" \
+  "$base_url/api/files/upload")
+rm -f "$tmp_md"
+if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
+  cat "$upload_resp" >&2
+  rm -f "$upload_resp"
+  die "S21: .md upload failed with HTTP $status"
+fi
+s21_file_id=$(jq -r '.id' "$upload_resp")
+rm -f "$upload_resp"
+[[ -n "$s21_file_id" && "$s21_file_id" != "null" ]] \
+  || die "S21: could not extract file id"
+
+s21_content="Hello OxiCloud from S21"
+if ! "$HELPER_BIN" collab-fanout-write \
+     --url "$ws_url" \
+     --token "$user1_token" \
+     --file "$s21_file_id" \
+     --content "$s21_content" \
+     --timeout 5s > /dev/null 2>&1; then
+  die "S21: helper failed to send the 0x01 UPDATE"
+fi
+
+# Sleep past the idle threshold — server.env sets it to 200 ms so
+# 800 ms is 4× headroom. Not a polling loop because the debouncer's
+# fire time is bounded and deterministic; a poll would either race
+# the download cache or mask a stuck debouncer.
+sleep 0.8
+
+# Download the file body verbatim. Content-Disposition and MIME
+# shouldn't matter — we're comparing bytes.
+downloaded=$(curl -sS -H "Authorization: Bearer $user1_token" \
+  "$base_url/api/files/$s21_file_id")
+if [[ "$downloaded" != "$s21_content" ]]; then
+  printf 'expected: %s\ngot     : %s\n' "$s21_content" "$downloaded" >&2
+  die "S21: downloaded body does not match CRDT text — debouncer/writer regression?"
+fi
+log "S21 OK (blob updated to CRDT text within 800 ms)"
+
+# ── Scenario 22 — Explicit flush via WS `rt.collab_flush` ───────────────────
+# The FE editor's "on tab close" path: the client knows better than
+# the debouncer when a flush is actually wanted. This scenario
+# exercises the WS-level trigger without waiting on the ambient
+# 200 ms idle deadline. Two assertions in one scenario:
+#
+#   (a) rt.collab_flush { file_id } fires a flush → GET returns the
+#       CRDT text within ~100 ms (below the idle threshold, so ONLY
+#       the explicit path could have made this happen).
+#   (b) A caller with only Read (Viewer role) gets `no_edit` back
+#       — same gate as UPDATE frames, no admin bypass.
+log "S22: rt.collab_flush triggers an immediate flush; Viewer is denied."
+
+tmp_md="$(mktemp -t rtbus_s22_body.XXXXXX)"
+: > "$tmp_md"   # empty seed for byte-exact assertion (see S21 rationale)
+upload_resp="$(mktemp -t rtbus_s22_resp.XXXXXX)"
+status=$(curl -sS -o "$upload_resp" -w "%{http_code}" -X POST \
+  -H "Authorization: Bearer $user1_token" \
+  -F "folder_id=$folder_a" \
+  -F "file=@$tmp_md;filename=s22.md" \
+  "$base_url/api/files/upload")
+rm -f "$tmp_md"
+if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
+  cat "$upload_resp" >&2; rm -f "$upload_resp"; die "S22: .md upload failed with HTTP $status"
+fi
+s22_file_id=$(jq -r '.id' "$upload_resp")
+rm -f "$upload_resp"
+[[ -n "$s22_file_id" && "$s22_file_id" != "null" ]] || die "S22: could not extract file id"
+
+s22_content="Hello OxiCloud from S22"
+if ! "$HELPER_BIN" collab-fanout-write \
+     --url "$ws_url" --token "$user1_token" \
+     --file "$s22_file_id" --content "$s22_content" \
+     --timeout 5s > /dev/null 2>&1; then
+  die "S22: fanout-write helper failed"
+fi
+
+# Explicit flush trigger. No sleep first — this is the entire point:
+# the FE wants a flush RIGHT NOW, not on the debouncer's schedule.
+out_s22="$(mktemp -t rtbus_s22_flush.XXXXXX)"
+if ! "$HELPER_BIN" collab-flush \
+     --url "$ws_url" --token "$user1_token" \
+     --file "$s22_file_id" \
+     --timeout 3s \
+     --output "$out_s22"; then
+  cat "$out_s22" >&2 || true
+  die "S22: rt.collab_flush call failed"
+fi
+flushed=$(jq -r '.flushed' "$out_s22")
+[[ "$flushed" == "true" ]] \
+  || { cat "$out_s22"; die "S22: expected {flushed:true}, got flushed=$flushed"; }
+
+# GET now — the flush was synchronous, so no wall-clock wait.
+downloaded=$(curl -sS -H "Authorization: Bearer $user1_token" \
+  "$base_url/api/files/$s22_file_id")
+if [[ "$downloaded" != "$s22_content" ]]; then
+  printf 'expected: %s\ngot     : %s\n' "$s22_content" "$downloaded" >&2
+  die "S22: downloaded body does not match after rt.collab_flush"
+fi
+log "S22a OK (rt.collab_flush wrote synchronously)"
+
+# (b) Viewer denial. Grant user2 Viewer on folder A so they can read
+# the file (Read passes) but Update is refused. Their rt.collab_flush
+# must come back with `no_edit`.
+grant_a_viewer=$(c_post "$base_url/api/grants" "$user1_token" \
+  "$(printf '{"subject":{"type":"user","id":"%s"},"resource":{"type":"folder","id":"%s"},"role":"viewer"}' \
+       "$user2_id" "$folder_a")")
+[[ "$(printf '%s' "$grant_a_viewer" | jq -r '.grants[0].id')" != "null" ]] \
+  || die "S22: viewer grant on folder A failed: $grant_a_viewer"
+
+# The collab-flush helper returns exit 1 on a JSON-RPC error object —
+# that's the expected denial shape here.
+set +e
+"$HELPER_BIN" collab-flush \
+  --url "$ws_url" --token "$user2_token" \
+  --file "$s22_file_id" \
+  --timeout 3s > /dev/null 2>&1
+denied_exit=$?
+set -e
+[[ "$denied_exit" -eq 1 ]] \
+  || die "S22: Viewer's rt.collab_flush was NOT denied (helper exit=$denied_exit, expected 1)"
+
+log "S22b OK (Viewer denied on rt.collab_flush)"
+log "S22 OK"
+
+log "All twenty-two message-bus scenarios passed."

@@ -2368,24 +2368,32 @@ pub struct FeaturesConfig {
     /// and there's no transport for CRDT ops (boot refuses this
     /// combination — see the cross-flag check in `from_env`).
     ///
-    /// TODO(collab-default-on): flip the default to `true` once the
-    /// C7 writer bridge lands. Current state:
+    /// TODO(collab-default-on): all C2/C7 backend pieces are shipped.
+    /// Remaining before flipping the default:
     ///
-    ///   * Read-side bridge — SHIPPED. `FileBlobDocContentReader`
-    ///     seeds a fresh CRDT doc from the file's current blob text
-    ///     on first attach.
-    ///   * Write-side bridge — STILL A STUB (`NoopWriter` in
-    ///     `common/di.rs`). Debounced flush-to-blob isn't wired, so
-    ///     collaborative edits accumulate in `collab.doc_sessions`
-    ///     but do NOT reach the file's blob until this lands.
-    ///     `GET /api/files/{id}` / WebDAV / search still see the
-    ///     pre-collab original.
-    ///   * Per-frame AuthZ (read on SYNC, write on UPDATE) — SHIPPED
-    ///     in `CollabSessionService::handle_binary_frame` via the
-    ///     `CollabAuthzGate` port; see api-test S19.
+    ///   * C5 — frontend editor (CodeMirror 6 + collab extensions).
+    ///     Without a client, the backend serves the wire correctly
+    ///     but no user can actually collab-edit through the UI. The
+    ///     feature can be exercised end-to-end today only via the
+    ///     api-test helpers (rt-hurl-helper collab-*).
+    ///   * Idle-GC job (plan § Backend step 5) — background scan of
+    ///     `collab.doc_sessions` for rows past `idle_ttl` (default
+    ///     30 min) with no attached sockets. Without it, quiet
+    ///     sessions accumulate ~1 MiB each indefinitely; workable
+    ///     for a small dev instance, not right for default-on.
     ///
-    /// Off by default until the writer bridge — the feature is
-    /// currently dev/staging-only.
+    /// Shipped:
+    ///   * Read-side bridge — `FileBlobDocContentReader` seeds fresh
+    ///     CRDTs from blob text.
+    ///   * Write-side bridge — `FileBlobDocContentWriter` +
+    ///     debouncer (15 s idle / 60 s max) flushes CRDT text back
+    ///     to the file's blob through the normal dedup / lifecycle
+    ///     pipeline.
+    ///   * Per-frame AuthZ (Read on SYNC, Update on UPDATE) via the
+    ///     `CollabAuthzGate` port.
+    ///
+    /// Off by default until C5 + idle-GC — the feature is currently
+    /// dev/staging-only from an operator's perspective.
     ///
     /// Env: `OXICLOUD_ENABLE_MARKDOWN_COLLAB` (default `false`).
     pub enable_markdown_collab: bool,

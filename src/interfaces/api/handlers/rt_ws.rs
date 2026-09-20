@@ -723,12 +723,127 @@ async fn handle_text_frame(
         ),
         "rt.unsubscribe" => Some(handle_unsubscribe(id, req.params, subs)),
         "rt.ping" => Some(success_response(id, serde_json::json!({ "pong": true }))),
+        "rt.collab_flush" => Some(handle_collab_flush(id, req.params, caller_id, state).await),
         _ => Some(error_response(
             id,
             error_code::METHOD_NOT_FOUND,
             "method_not_found",
             Some(serde_json::json!({ "method": method })),
         )),
+    }
+}
+
+/// `rt.collab_flush { file_id }` — client-initiated flush of the
+/// CRDT text to the file's blob.
+///
+/// **Purpose:** the debouncer covers the ambient case (15 s idle /
+/// 60 s max), but the FE editor knows better than the timer when a
+/// flush is actually wanted: on tab close, on explicit save, or
+/// before a URL change. Sending an explicit flush is one WS message
+/// on the same socket the client is already using for edits — no
+/// second roundtrip, no wall-clock wait on the debouncer.
+///
+/// **AuthZ:** `Permission::Update` on the file. Same gate as `0x01`
+/// UPDATE frames — a Viewer cannot force a flush any more than they
+/// can push an update. Denials use `error_code::NO_EDIT` /
+/// `no_edit`, matching the write-side vocabulary. A missing file OR
+/// a caller without Read collapses to `topic_forbidden` — anti-enum
+/// parity with subscribe.
+///
+/// **Semantics:** delegates to `CollabSession::flush_to_blob`, which
+/// is idempotent (short-circuits on unchanged content hash). Reply
+/// `{ flushed: bool }` — `true` = a blob write happened, `false` =
+/// no-op (nothing to flush, or content hash unchanged since last
+/// flush). Callable at any time during a session.
+///
+/// **No active session case:** if `attach_file` needs to spawn an
+/// actor to serve the request (client called flush before any
+/// `0x03`/`0x01` frame), we still honour it — the actor seeds from
+/// the blob, sees no writes, and short-circuits with `flushed:
+/// false`. Cheap; keeps the API's contract simple.
+async fn handle_collab_flush(
+    id: Value,
+    params: Value,
+    caller_id: Uuid,
+    state: &Arc<AppState>,
+) -> String {
+    // Extract file_id (uuid string).
+    let file_id_str = match params.get("file_id").and_then(Value::as_str) {
+        Some(s) => s,
+        None => {
+            return error_response(
+                id,
+                error_code::INVALID_PARAMS,
+                "invalid_params",
+                Some(serde_json::json!({ "missing": "file_id" })),
+            );
+        }
+    };
+    let file_id = match Uuid::parse_str(file_id_str) {
+        Ok(u) => u,
+        Err(_) => {
+            return error_response(
+                id,
+                error_code::INVALID_PARAMS,
+                "invalid_params",
+                Some(serde_json::json!({ "invalid": "file_id" })),
+            );
+        }
+    };
+
+    // AuthZ. Same shape as an UPDATE binary frame gate: `Update` on
+    // the file; deny collapses to `no_edit`, hidden files collapse
+    // to `topic_forbidden` (anti-enumeration parity with subscribe).
+    if state
+        .authorization
+        .require(
+            Subject::User(caller_id),
+            Permission::Update,
+            Resource::File(file_id),
+        )
+        .await
+        .is_err()
+    {
+        tracing::info!(
+            target: "audit",
+            event = "collab.flush_denied",
+            reason = "no_edit",
+            caller_id = %caller_id,
+            file_id = %file_id,
+            "👮🏻‍♂️ rt.collab_flush denied — no Update on file",
+        );
+        return error_response(
+            id,
+            error_code::NO_EDIT,
+            "no_edit",
+            Some(serde_json::json!({ "file_id": file_id_str })),
+        );
+    }
+
+    // Delegate. Feature-off state returns `flushed: false` — the API
+    // is honest that nothing happened rather than 404'ing.
+    let Some(collab) = state.collab_session_service.as_ref() else {
+        return success_response(id, serde_json::json!({ "flushed": false }));
+    };
+    let session = match collab.attach_file(caller_id, file_id).await {
+        Ok(s) => s,
+        Err(e) => {
+            return error_response(
+                id,
+                error_code::INTERNAL_ERROR,
+                "internal_error",
+                Some(serde_json::json!({ "detail": e.to_string() })),
+            );
+        }
+    };
+    match session.flush_to_blob().await {
+        Ok(flushed) => success_response(id, serde_json::json!({ "flushed": flushed })),
+        Err(e) => error_response(
+            id,
+            error_code::INTERNAL_ERROR,
+            "internal_error",
+            Some(serde_json::json!({ "detail": e.to_string() })),
+        ),
     }
 }
 
