@@ -40,7 +40,8 @@ const DEFAULT_FEATURES: ServerFeatures = {
 	places: true,
 	faces: false,
 	video_thumbnails: true,
-	external_mounts: false
+	external_mounts: false,
+	markdown_collab: false
 };
 
 const DEFAULT_STATUS: ServerStatus = {

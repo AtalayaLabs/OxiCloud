@@ -130,6 +130,11 @@ pub struct FeaturesDto {
     /// Admin-configured external filesystem mounts. See
     /// `FeaturesConfig::enable_external_mounts`.
     pub external_mounts: bool,
+    /// Collaborative `.md` editing over the message-bus WebSocket
+    /// (Yjs CRDT). When `false`, the FE hides the "New markdown"
+    /// menu entry and falls back to the plain `.md` viewer when
+    /// opening one. See `FeaturesConfig::enable_markdown_collab`.
+    pub markdown_collab: bool,
 }
 
 /// `GET /api/config` — return the public server-configuration
@@ -159,6 +164,7 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<ServerConfig
             faces: f.enable_faces,
             video_thumbnails: f.enable_video_thumbnails,
             external_mounts: f.enable_external_mounts,
+            markdown_collab: f.enable_markdown_collab,
         },
         auth: AuthDto {
             min_password_length: state.core.config.auth.min_password_length,

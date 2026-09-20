@@ -201,6 +201,13 @@ export class MessageBusClient {
 	#pending = new Map<number, PendingCall>();
 	#nextId = 1;
 
+	/** Binary-frame handlers keyed by `file_id` (dashed UUID). One
+	 *  handler per file — the collab layer owns a doc singleton per
+	 *  file, so multiple handlers would be a bug. Plain Map for the
+	 *  same reason as `#subs` (internal plumbing, not reactive). */
+	// eslint-disable-next-line svelte/prefer-svelte-reactivity
+	#binaryHandlers = new Map<string, (bytes: Uint8Array) => void>();
+
 	/** URL for the WebSocket. Injectable so tests can point at a mock. */
 	#url: string;
 	/** WebSocket constructor. Injectable for the same reason. */
@@ -478,6 +485,12 @@ export class MessageBusClient {
 			return;
 		}
 		this.#ws = ws;
+		// Binary frames (collab wire) arrive on the same socket as
+		// JSON-RPC text frames — `arraybuffer` is easier to work with
+		// than `Blob` (sync `Uint8Array` access, no async read step
+		// in `#dispatchBinary`). Default is `Blob`; the switch has no
+		// cost when nobody's sending binary.
+		ws.binaryType = 'arraybuffer';
 		ws.onopen = () => this.#onOpen();
 		ws.onmessage = (ev) => this.#onMessage(ev);
 		ws.onerror = (ev) => busLog.debug('ws error event', { ev });
@@ -534,14 +547,110 @@ export class MessageBusClient {
 
 	#onMessage(ev: MessageEvent): void {
 		if (typeof ev.data !== 'string') {
-			// Binary frames are the Yjs sync protocol (Phase G) — not in
-			// scope yet. Silently drop; a future collab store will
-			// receive them via a separate handler.
-			busLog.debug('binary frame dropped (Phase G)');
+			// Binary frame — Yjs collab wire (`[kind][file_id][payload]`).
+			// The full codec lives in `$lib/collab/wireCodec.ts`; here we
+			// only peel the first 17 bytes to route to the right handler,
+			// so this file doesn't take a hard dep on the collab module
+			// (message-bus is used by consumers who don't care about
+			// collab). Handler is per-file, keyed by the dashed UUID.
+			this.#dispatchBinary(ev.data as ArrayBuffer | Blob);
 			return;
 		}
 		const frame = parseIncoming(ev.data);
 		this.#dispatch(frame);
+	}
+
+	#dispatchBinary(data: ArrayBuffer | Blob): void {
+		// `data` is `ArrayBuffer` when `binaryType='arraybuffer'` (default
+		// for our client — see the connect path); we defensively handle
+		// `Blob` too since some transports downgrade under load.
+		const emit = (bytes: Uint8Array) => {
+			if (bytes.length < 17) {
+				busLog.warn('binary frame too short', { len: bytes.length });
+				return;
+			}
+			const fileId = this.#formatUuidFromBytes(bytes.subarray(1, 17));
+			const handler = this.#binaryHandlers.get(fileId);
+			if (!handler) {
+				busLog.debug('binary frame for unknown file_id', { fileId, kind: bytes[0] });
+				return;
+			}
+			try {
+				handler(bytes);
+			} catch (err) {
+				busLog.warn('binary handler threw', { fileId, error: err });
+			}
+		};
+		if (data instanceof ArrayBuffer) {
+			emit(new Uint8Array(data));
+		} else {
+			// Blob path — async read. Rare but supported.
+			data.arrayBuffer().then((buf) => emit(new Uint8Array(buf)));
+		}
+	}
+
+	/** Inline dashed-UUID formatter — same shape as
+	 *  `$lib/collab/wireCodec.bytesToUuid`, duplicated here so the
+	 *  message-bus module stays dep-free of the collab module. Keep
+	 *  in sync if the codec changes format. */
+	#formatUuidFromBytes(b: Uint8Array): string {
+		let out = '';
+		for (let i = 0; i < 16; i++) {
+			if (i === 4 || i === 6 || i === 8 || i === 10) out += '-';
+			out += b[i].toString(16).padStart(2, '0');
+		}
+		return out;
+	}
+
+	/** Register a handler for binary frames whose header carries the
+	 *  given dashed-UUID `fileId`. Returns a dispose fn. Only ONE
+	 *  handler per file_id at a time — a second `register` for the
+	 *  same id replaces the first (the collab layer owns the doc
+	 *  singleton per file, so multiple handlers would be a bug).
+	 *
+	 *  Untracked for the same reason `subscribe` is: consumers call
+	 *  this from Svelte reactive scopes and internal state reads must
+	 *  not leak deps. */
+	registerBinaryHandler(fileId: string, handler: (bytes: Uint8Array) => void): () => void {
+		return untrack(() => {
+			this.#binaryHandlers.set(fileId, handler);
+			let released = false;
+			return () => {
+				if (released) return;
+				released = true;
+				untrack(() => {
+					const current = this.#binaryHandlers.get(fileId);
+					if (current === handler) this.#binaryHandlers.delete(fileId);
+				});
+			};
+		});
+	}
+
+	/** Send a binary frame on the WS. Fire-and-forget — errors log
+	 *  but don't reject a promise (there's no id-correlated ack for
+	 *  binary frames; the app-level protocol handles retries via
+	 *  Yjs's sync-step-1 on reconnect). Returns `false` when the
+	 *  socket isn't open so callers can decide whether to buffer. */
+	sendBinary(bytes: Uint8Array): boolean {
+		if (this.state !== 'connected' || !this.#ws) {
+			busLog.debug('sendBinary while not connected — drop', { len: bytes.length });
+			return false;
+		}
+		try {
+			// `WebSocket.send` accepts `BufferSource`; TS post-4.9
+			// narrows `Uint8Array<ArrayBufferLike>` in a way that
+			// doesn't slot in cleanly (the underlying buffer could
+			// theoretically be shared). Materialise a fresh, non-
+			// shared `ArrayBuffer` copy — one small copy per outbound
+			// frame is a fine cost for a keystroke-scale write path.
+			const buf = new ArrayBuffer(bytes.byteLength);
+			new Uint8Array(buf).set(bytes);
+			this.#ws.send(buf);
+			return true;
+		} catch (err) {
+			busLog.warn('sendBinary failed', { error: err });
+			return false;
+		}
 	}
 
 	#dispatch(frame: IncomingFrame): void {
