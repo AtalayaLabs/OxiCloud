@@ -2645,6 +2645,16 @@ impl AppServiceFactory {
                 ),
             );
             app_state.collab_session_service = Some(collab.clone());
+            // Cross-service hookup: FileManagementService's delete path
+            // fires eviction into the collab service so attached editors
+            // see `rt.revoked { reason: "resource_deleted" }` before the
+            // storage row goes away. The collab service is built AFTER
+            // FileManagementService — the late-bound OnceLock closes
+            // that ordering gap without reshuffling the DI graph.
+            app_state
+                .applications
+                .file_management_service
+                .set_collab_session_service(collab.clone());
             tracing::info!(
                 target: "audit",
                 event = "collab.service_enabled",

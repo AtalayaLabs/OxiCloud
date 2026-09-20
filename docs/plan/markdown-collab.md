@@ -323,6 +323,32 @@ flush + row cleanup. Audit `event = "message_bus.subscription_evicted"`
 with `reason ∈ {grant_revoked, resource_deleted, group_membership_lost,
 admin_kick}`.
 
+Slice status (2026-09-20):
+
+- ✅ **`resource_deleted`** — `FileManagementService::delete_and_cleanup_with_perms`
+  calls `CollabSessionService::evict_sessions_for_file` before the
+  trash / permanent-delete branches. Actor publishes
+  `INTERNAL_KIND_EVICTED` (server-only wire kind `0xFE`) on the
+  outbox; the WS forwarder translates that to an `rt.revoked
+  { topic: "collab:<id>", reason: "resource_deleted" }` text frame
+  and unwinds. Guarded by hurl S24 in `tests/api/rt_bus_check.sh`.
+- ⬜ **`grant_revoked` / `group_membership_lost`** — the
+  file-scoped `AuthzChanged` variant that carries `affected_files`
+  isn't wired yet. Today's `AuthzChanged { affected_folders }` only
+  covers folder-topic eviction; a Viewer who was Editor mid-session
+  keeps their live actor and their local edits diverge silently
+  (server rejects UPDATEs with `no_edit`; the FE editor doesn't yet
+  render read-only). Follow-up slice: extend either the event
+  payload or add a sibling `AuthzChanged { affected_files }`, then
+  consume it in the delete-adjacent hook and evict with reason
+  `grant_revoked`.
+- ⬜ **`external_write`** — the collab writer bridge already owns
+  the atomic blob swap on flush, so out-of-band WebDAV / WOPI /
+  REST writes that don't route through the CRDT are the missing
+  invalidation source. Same wire path, different producer: any
+  file-content-write path outside `CollabSessionService::flush_to_blob`
+  must call `evict_sessions_for_file(file_id, "external_write")`.
+
 ### Edge cases (design decisions, not TODOs)
 
 - **File deleted while editing:** delete path publishes

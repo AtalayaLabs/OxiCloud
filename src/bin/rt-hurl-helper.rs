@@ -64,6 +64,8 @@
 //!   "subscribed": ["folder:..."],
 //!   "events":     [ { "topic": "folder:...", "event": "file_created",
 //!                     "data": { ... } } ],
+//!   "revoked":    [ { "topic": "collab:...", "reason": "resource_deleted" } ],
+//!   "pings_received": 0,
 //!   "timed_out":  false
 //! }
 //! ```
@@ -93,6 +95,14 @@ struct Args {
     auth: WsAuth,
     subscribe: Vec<String>,
     expect_events: Option<usize>,
+    /// `--expect-revoked <n>` — minimum count of server-initiated
+    /// `rt.revoked` notifications the helper must observe before
+    /// exiting the collect loop. Composes with `--expect-events`:
+    /// the exit predicate ANDs both counters plus "all subscribes
+    /// ack'd". Default 0 keeps existing scenarios untouched. Used
+    /// by S24 to wait for a delete-triggered eviction without
+    /// racing the timeout.
+    expect_revoked: Option<usize>,
     reason: Option<String>,
     timeout: Duration,
     output: Option<String>,
@@ -202,6 +212,7 @@ fn parse_args() -> Result<Args, String> {
     let mut ticket = None;
     let mut subscribe = Vec::new();
     let mut expect_events = None;
+    let mut expect_revoked = None;
     let mut reason = None;
     let mut timeout = Duration::from_secs(3);
     let mut output = None;
@@ -224,6 +235,13 @@ fn parse_args() -> Result<Args, String> {
                     value
                         .parse::<usize>()
                         .map_err(|_| format!("--expect-events not a number: {value}"))?,
+                );
+            }
+            "--expect-revoked" => {
+                expect_revoked = Some(
+                    value
+                        .parse::<usize>()
+                        .map_err(|_| format!("--expect-revoked not a number: {value}"))?,
                 );
             }
             "--reason" => reason = Some(value),
@@ -253,6 +271,7 @@ fn parse_args() -> Result<Args, String> {
         auth,
         subscribe,
         expect_events,
+        expect_revoked,
         reason,
         timeout,
         output,
@@ -380,6 +399,7 @@ async fn subscribe_and_collect(args: Args) -> Result<(), HelperError> {
         ));
     }
     let expect_events = args.expect_events.unwrap_or(0);
+    let expect_revoked = args.expect_revoked.unwrap_or(0);
 
     let mut ws = connect_ws(&args.url, &args.auth).await?;
 
@@ -421,8 +441,15 @@ async fn subscribe_and_collect(args: Args) -> Result<(), HelperError> {
             timed_out = true;
             break;
         }
-        // Exit early: all acks received AND enough events collected.
-        if pending_subs.is_empty() && events.len() >= expect_events {
+        // Exit early: all acks received AND enough events AND enough
+        // revocations collected. `expect_revoked` defaults to 0 so
+        // scenarios that only care about events keep their original
+        // shape; S24 (delete-triggered eviction) opts in with
+        // `--expect-revoked 1`.
+        if pending_subs.is_empty()
+            && events.len() >= expect_events
+            && revoked.len() >= expect_revoked
+        {
             break;
         }
 
@@ -507,8 +534,9 @@ async fn subscribe_and_collect(args: Args) -> Result<(), HelperError> {
         }
     }
 
-    // Assertion: at least `expect_events` collected before timeout.
-    let met = events.len() >= expect_events;
+    // Assertion: at least `expect_events` events AND `expect_revoked`
+    // revocations collected before timeout.
+    let met = events.len() >= expect_events && revoked.len() >= expect_revoked;
 
     // Always write output (even on failure) so the shell can diff.
     if let Some(path) = args.output.as_ref() {
@@ -525,9 +553,11 @@ async fn subscribe_and_collect(args: Args) -> Result<(), HelperError> {
 
     if !met {
         return Err(HelperError::Expectation(format!(
-            "expected {} events, got {} ({}timeout)",
+            "expected {} events / {} revoked, got {} / {} ({}timeout)",
             expect_events,
+            expect_revoked,
             events.len(),
+            revoked.len(),
             if timed_out { "with " } else { "no " }
         )));
     }

@@ -67,8 +67,8 @@ use crate::domain::services::authorization::Permission;
 pub type SocketId = u64;
 
 /// One fan-out item on a session's outbox — a wire-kind byte plus the
-/// payload bytes ready for `encode_binary_frame`. Two kinds ride the
-/// same channel today:
+/// payload bytes ready for `encode_binary_frame`. Three kinds ride
+/// the channel:
 ///
 ///   * `kind::UPDATE` (0x01) — Yjs update blob; server-authoritative
 ///     CRDT apply already happened, this fires the broadcast for
@@ -76,11 +76,24 @@ pub type SocketId = u64;
 ///   * `kind::AWARENESS` (0x02) — presence bytes (cursor position,
 ///     user handle, colour). NOT persisted; not applied to the CRDT.
 ///     Fan-out only.
+///   * [`INTERNAL_KIND_EVICTED`] (0xFE) — server-only control signal
+///     for "this session is going away". Payload is a UTF-8 reason
+///     string (`resource_deleted`, `external_write`, …). The WS
+///     forwarder catches this kind BEFORE `encode_binary_frame` —
+///     it never reaches the wire as binary; instead the forwarder
+///     synthesizes an `rt.revoked` text frame and unwinds.
 ///
 /// Sharing one channel keeps ordering natural — a peer's UPDATE and
 /// the AWARENESS bump that reflects the caret motion arrive on the
 /// receiver in the same order the actor accepted them.
 pub type CollabBroadcast = (u8, Vec<u8>);
+
+/// Server-only kind marker for "session evicted" control messages
+/// on the outbox. Deliberately outside the [`kind::*`] wire vocabulary
+/// so a stray publish can never reach a client as a valid binary
+/// frame — the WS forwarder catches this value and turns it into a
+/// JSON `rt.revoked` notification instead.
+pub const INTERNAL_KIND_EVICTED: u8 = 0xFE;
 
 /// Configuration knobs. Defaults track the plan doc's § Limits &
 /// guardrails table. Wired from `AppConfig::collab` in the DI layer
@@ -227,6 +240,19 @@ enum SessionMsg {
     SubscribeUpdates {
         reply: oneshot::Sender<broadcast::Receiver<CollabBroadcast>>,
     },
+    /// Publish an [`INTERNAL_KIND_EVICTED`] control message on the
+    /// outbox, then break the actor loop. Ordering matters: the
+    /// eviction bytes hit the broadcast channel BEFORE `RecvError::Closed`
+    /// fires on any forwarder, so every attached socket sees the
+    /// `rt.revoked` signal before its channel drops. Emitted from
+    /// [`CollabSessionService::evict_sessions_for_file`] on external
+    /// invalidation events (file deleted, out-of-band write, admin
+    /// forced-eject) — the actor's own idle-GC shutdown path uses
+    /// plain [`SessionMsg::Shutdown`] without an eviction signal,
+    /// because idle sockets don't need a UI banner.
+    Evict {
+        reason: &'static str,
+    },
     Shutdown,
 }
 
@@ -348,6 +374,18 @@ impl CollabSession {
     pub async fn shutdown(&self) {
         // Best-effort — the actor may already be gone.
         let _ = self.inbox.send(SessionMsg::Shutdown).await;
+    }
+
+    /// Publish an eviction control signal on the outbox and terminate
+    /// the actor. Every attached forwarder receives the signal via
+    /// its `subscribe_updates` channel before the channel closes, so
+    /// downstream sockets can synthesize a distinct `rt.revoked` frame
+    /// (see [`INTERNAL_KIND_EVICTED`]). Best-effort — a lost actor is
+    /// already gone as far as the client is concerned; the next
+    /// subscribe attempt gets a fresh session with fresh seeding, or
+    /// a denial if the underlying file no longer exists.
+    pub async fn evict(&self, reason: &'static str) {
+        let _ = self.inbox.send(SessionMsg::Evict { reason }).await;
     }
 
     /// Subscribe to this session's update stream. Each `apply_update`
@@ -768,6 +806,20 @@ async fn run_actor(mut state: ActorState, mut inbox: mpsc::Receiver<SessionMsg>)
                         let result = state.flush_to_blob().await;
                         let _ = reply.send(result);
                     }
+                    SessionMsg::Evict { reason } => {
+                        // Best-effort broadcast — solo sessions (no
+                        // live receivers) return `Err(SendError)` which
+                        // is fine: nobody to notify. The kind byte is
+                        // deliberately server-only ([`INTERNAL_KIND_EVICTED`]);
+                        // the WS forwarder catches it and synthesizes
+                        // an `rt.revoked` text frame rather than
+                        // forwarding a bogus binary kind to clients.
+                        let _ = state.outbox.send((
+                            INTERNAL_KIND_EVICTED,
+                            reason.as_bytes().to_vec(),
+                        ));
+                        break;
+                    }
                     SessionMsg::Shutdown => break,
                 }
             }
@@ -903,6 +955,41 @@ impl CollabSessionService {
     /// Number of live actors. Test/introspection only.
     pub fn live_session_count(&self) -> usize {
         self.sessions.len()
+    }
+
+    /// Evict the live collaborative session (if any) attached to
+    /// `file_id`, notifying every attached socket via a control
+    /// message on the actor's outbox. The WS forwarder translates
+    /// that message into an `rt.revoked` JSON frame — the client
+    /// sees a distinct terminal state (`SyncState::disconnected`
+    /// with the given reason).
+    ///
+    /// Called from the file-mutation paths that invalidate an
+    /// in-memory CRDT view:
+    ///
+    ///   * **`resource_deleted`** — file is being trashed / permanently
+    ///     deleted. Continuing to edit would be pointless, and the
+    ///     `collab.doc_sessions` row is about to cascade-delete via
+    ///     the FK (see migration `20261029000001`).
+    ///   * **`external_write`** — an out-of-band write (WebDAV PUT,
+    ///     WOPI overwrite, REST upload replacing the file contents)
+    ///     replaced the file's blob under the CRDT's feet; the actor's
+    ///     doc is now stale relative to the on-disk truth. Re-attach
+    ///     forces a fresh seed. (Wired on a follow-up slice.)
+    ///
+    /// Safe to call speculatively — a no-op if no session is live.
+    /// Idempotent — repeat calls with the same reason drop cleanly.
+    pub async fn evict_sessions_for_file(&self, file_id: Uuid, reason: &'static str) {
+        if let Some((_, session)) = self.sessions.remove(&file_id) {
+            session.evict(reason).await;
+            tracing::info!(
+                target: "audit",
+                event = "collab.session_evicted",
+                reason = reason,
+                file_id = %file_id,
+                "🚫 collab session evicted",
+            );
+        }
     }
 
     /// Idle-GC sweep: reap `collab.doc_sessions` rows whose
@@ -2018,5 +2105,60 @@ mod tests {
             .expect("no lag / no close");
         assert_eq!(received.0, crate::application::services::collab_wire::kind::AWARENESS);
         assert_eq!(received.1, presence);
+    }
+
+    // Eviction control message: `evict_sessions_for_file` puts one
+    // `(INTERNAL_KIND_EVICTED, reason_bytes)` tuple on the outbox
+    // BEFORE the actor drops (and the channel closes with
+    // `RecvError::Closed`). This wire ordering is what the WS forwarder
+    // depends on to translate the eviction into an `rt.revoked` text
+    // frame — a broken order would look silent to the client.
+    #[tokio::test]
+    async fn evict_sessions_for_file_broadcasts_control_then_closes() {
+        let (svc, _writer) = service_with_recording_writer("", CollabLimits::default());
+        let file_id = Uuid::new_v4();
+        let session = svc.attach_file(Uuid::nil(), file_id).await.unwrap();
+        let mut rx = session.subscribe_updates().await.unwrap();
+
+        svc.evict_sessions_for_file(file_id, "resource_deleted")
+            .await;
+
+        // First recv: the eviction control tuple.
+        let received = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("eviction delivery within 1s")
+            .expect("no lag / no close");
+        assert_eq!(received.0, INTERNAL_KIND_EVICTED);
+        assert_eq!(&received.1[..], b"resource_deleted");
+
+        // Second recv: the channel closes as the actor drops.
+        // `RecvError::Closed` is the wire signal for "actor gone".
+        let closed = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await;
+        assert!(
+            matches!(
+                closed,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed))
+            ),
+            "expected RecvError::Closed after eviction, got {closed:?}",
+        );
+
+        // Registry no longer knows about this file — a fresh attach
+        // spawns a new actor with a fresh outbox, i.e. clients that
+        // re-subscribe post-eviction see the current on-disk state
+        // (or a denial, if the file was concurrently deleted).
+        assert_eq!(svc.live_session_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn evict_sessions_for_file_is_a_no_op_when_no_session_attached() {
+        // A speculative evict on a file with no live actor must be
+        // safe — the delete path calls it unconditionally rather than
+        // pre-checking, so this covers the common "delete of a file
+        // no one had open" case.
+        let (svc, _writer) = service_with_recording_writer("", CollabLimits::default());
+        let file_id = Uuid::new_v4();
+        svc.evict_sessions_for_file(file_id, "resource_deleted")
+            .await;
+        assert_eq!(svc.live_session_count(), 0);
     }
 }

@@ -116,6 +116,25 @@
 #                                       dedup because rows would come
 #                                       in both via WS push and via
 #                                       the delta fetch).
+#   S24 Collab eviction on delete
+#                             — subscribe to `collab:<file_id>` (the
+#                                subscribe alone attaches the actor;
+#                                no write needed), then `DELETE
+#                                /api/files/{id}`. The delete path
+#                                (`FileManagementService::
+#                                delete_and_cleanup_with_perms`) MUST
+#                                fire an eviction on the collab
+#                                service BEFORE the trash / permanent
+#                                delete lands, translating into an
+#                                `rt.revoked` frame on the WS with
+#                                `reason: "resource_deleted"` on the
+#                                collab topic. Guards the file-scoped
+#                                eviction slice: without it, the FE
+#                                editor keeps rendering a doc whose
+#                                storage row is about to vanish, and
+#                                the actor becomes an orphan (the
+#                                cascade drops its `doc_sessions` row
+#                                only on hard delete, not on trash).
 #   S23 Collab idle-GC sweep  — write via collab, explicit-flush so
 #                                the blob has the CRDT text, wait
 #                                past the (shrunk) idle TTL, then
@@ -1607,4 +1626,95 @@ swept2=$(printf '%s' "$gc_resp2" | jq -r '.outcome.count // 0')
 log "S23b OK (post-GC probe re-seeded; second trigger returned swept=$swept2)"
 log "S23 OK"
 
-log "All twenty-three message-bus scenarios passed."
+# ── Scenario 24 — Collab eviction on delete ────────────────────────────────
+# End-to-end proof that `FileManagementService::delete_and_cleanup_with_perms`
+# fires the collab eviction hook BEFORE the row is trashed / dropped:
+#
+#   1. Upload an empty .md — subscribing to `collab:<file_id>` alone
+#      attaches the per-file actor (the WS handler's collab forwarder
+#      calls `attach_file` on install), so no write is needed to
+#      make the eviction observable.
+#   2. Subscribe to `collab:<file_id>` in a background helper and
+#      wait for `--ready-file` to close the "publish before subscribe"
+#      race.
+#   3. `DELETE /api/files/{file_id}`. The service publishes an
+#      `INTERNAL_KIND_EVICTED` control on the actor's outbox with
+#      reason "resource_deleted"; the WS forwarder translates that
+#      into an `rt.revoked` text frame on `collab:<file_id>` and
+#      unwinds.
+#   4. Helper's `revoked[]` must carry exactly one entry with
+#      topic == `collab:<file_id>` and reason == "resource_deleted".
+#
+# Broken paths this guards against:
+#   * eviction skipped on trash-first branch → 0 revoked entries.
+#   * eviction fired on the wrong topic       → topic mismatch.
+#   * reason field truncated / mis-encoded    → reason mismatch.
+log "S24: file delete evicts every attached collab session with reason=resource_deleted."
+
+tmp_md_s24="$(mktemp -t rtbus_s24_body.XXXXXX)"; : > "$tmp_md_s24"
+upload_resp_s24="$(mktemp -t rtbus_s24_resp.XXXXXX)"
+status=$(curl -sS -o "$upload_resp_s24" -w "%{http_code}" -X POST \
+  -H "Authorization: Bearer $user1_token" \
+  -F "folder_id=$folder_a" \
+  -F "file=@$tmp_md_s24;filename=s24.md" \
+  "$base_url/api/files/upload")
+rm -f "$tmp_md_s24"
+if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
+  cat "$upload_resp_s24" >&2; rm -f "$upload_resp_s24"
+  die "S24: .md upload failed with HTTP $status"
+fi
+s24_file_id=$(jq -r '.id' "$upload_resp_s24")
+rm -f "$upload_resp_s24"
+[[ -n "$s24_file_id" && "$s24_file_id" != "null" ]] || die "S24: could not extract file id"
+
+out_s24="$(mktemp -t rtbus_s24.XXXXXX)"
+ready_s24="$(mktemp -t rtbus_s24_ready.XXXXXX)"; rm -f "$ready_s24"
+"$HELPER_BIN" subscribe-and-collect \
+  --url "$ws_url" \
+  --token "$user1_token" \
+  --subscribe "collab:$s24_file_id" \
+  --expect-events 0 \
+  --expect-revoked 1 \
+  --timeout 5s \
+  --ready-file "$ready_s24" \
+  --output "$out_s24" &
+helper_pid=$!
+wait_ready "$ready_s24"
+
+# `DELETE /api/files/{id}` — routes through delete_and_cleanup_with_perms,
+# which calls `collab.evict_sessions_for_file(...)` BEFORE the trash
+# or permanent-delete branch, so the assertion holds on either code
+# path.
+curl -sS -X DELETE \
+  -H "Authorization: Bearer $user1_token" \
+  "$base_url/api/files/$s24_file_id" > /dev/null
+
+if ! wait "$helper_pid"; then
+  cat "$out_s24" >&2 || true
+  die "S24: helper did not observe the collab eviction"
+fi
+
+# Shape asserts: exactly one revoked entry on our topic, with the
+# stable "resource_deleted" reason. Extra revoked entries would be
+# a producer bug (double-eviction); a missing reason field would
+# be an rt_ws.rs regression.
+rev_len=$(jq -r '.revoked | length' "$out_s24")
+[[ "$rev_len" == "1" ]] \
+  || { cat "$out_s24"; die "S24: expected 1 revoked, got $rev_len"; }
+rev_topic=$(jq -r '.revoked[0].topic' "$out_s24")
+[[ "$rev_topic" == "collab:$s24_file_id" ]] \
+  || { cat "$out_s24"; die "S24: wrong topic: $rev_topic"; }
+rev_reason=$(jq -r '.revoked[0].reason' "$out_s24")
+[[ "$rev_reason" == "resource_deleted" ]] \
+  || { cat "$out_s24"; die "S24: wrong reason: $rev_reason"; }
+
+# A collab-events channel is BINARY only — `rt.event` on this topic
+# is a producer bug. Assert none leaked.
+ev_len=$(jq -r '.events | length' "$out_s24")
+[[ "$ev_len" == "0" ]] \
+  || { cat "$out_s24"; die "S24: unexpected rt.event on collab topic (got $ev_len)"; }
+
+rm -f "$out_s24"
+log "S24 OK (collab session evicted with reason=resource_deleted on file delete)"
+
+log "All twenty-four message-bus scenarios passed."

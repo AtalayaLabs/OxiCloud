@@ -1125,10 +1125,26 @@ fn spawn_collab_forwarder(
                 return;
             }
         };
+        use crate::application::services::collab_session_service::INTERNAL_KIND_EVICTED;
         use crate::application::services::collab_wire::encode_binary_frame;
+        let topic_wire = Topic::Collab(file_id).to_wire_key();
         loop {
             match rx.recv().await {
                 Ok((frame_kind, payload)) => {
+                    if frame_kind == INTERNAL_KIND_EVICTED {
+                        // Server-only control message from
+                        // `CollabSessionService::evict_sessions_for_file`.
+                        // Never a valid wire kind — translate into an
+                        // `rt.revoked` text frame so the SPA transitions
+                        // its collab UI, then unwind. Reason is
+                        // UTF-8-decoded from the payload; a corrupt
+                        // producer defaults to a generic marker so we
+                        // still ship SOME signal to the client.
+                        let reason = std::str::from_utf8(&payload).unwrap_or("evicted");
+                        let frame = revoked_notification(&topic_wire, reason);
+                        let _ = out_tx.send(SessionOut::Frame(frame)).await;
+                        return;
+                    }
                     // Broadcast carries `(kind, bytes)` so UPDATE and
                     // AWARENESS share the same channel without a
                     // second forwarder. Encode with the kind the actor
@@ -1240,7 +1256,7 @@ fn split_event_discriminator(mut event_json: Value) -> (String, Value) {
 /// Emitted when a subscription is evicted mid-session (grant revoked,
 /// resource deleted, etc.). Not tied to a request id — client sees
 /// this as a signal to stop rendering the topic.
-fn revoked_notification(topic_wire: &str, reason: &'static str) -> String {
+fn revoked_notification(topic_wire: &str, reason: &str) -> String {
     serde_json::to_string(&RpcNotification {
         jsonrpc: JSONRPC_V2,
         method: "rt.revoked",
