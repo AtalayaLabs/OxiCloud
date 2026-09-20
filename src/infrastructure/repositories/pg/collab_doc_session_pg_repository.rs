@@ -148,4 +148,33 @@ impl DocSessionRepository for CollabDocSessionPgRepository {
 
         Ok(())
     }
+
+    async fn list_stale(
+        &self,
+        older_than: chrono::DateTime<chrono::Utc>,
+        limit: i64,
+    ) -> Result<Vec<Uuid>, DomainError> {
+        // The migration's `idx_collab_doc_sessions_stale` on
+        // last_activity_at makes this cheap even with a large table
+        // — the query walks the index in ASC order, stops at the
+        // cutoff, and returns up to `limit` file_ids.
+        let rows = sqlx::query(
+            r#"
+            SELECT file_id
+              FROM collab.doc_sessions
+             WHERE last_activity_at < $1
+             ORDER BY last_activity_at ASC
+             LIMIT $2
+            "#,
+        )
+        .bind(older_than)
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await
+        .map_err(|e| {
+            DomainError::internal_error("CollabDocSessionPg", format!("list_stale: {e}"))
+        })?;
+
+        Ok(rows.iter().map(|r| r.get::<Uuid, _>("file_id")).collect())
+    }
 }

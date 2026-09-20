@@ -100,6 +100,21 @@ pub trait DocSessionRepository: Send + Sync + 'static {
     /// `ON DELETE CASCADE` already handles the latter — this method
     /// exists for the GC and for tests).
     async fn delete(&self, file_id: Uuid) -> Result<(), DomainError>;
+
+    /// Enumerate `file_id`s whose `last_activity_at` is older than the
+    /// given cutoff. Used by the idle-GC scheduled job to find rows
+    /// eligible for a final flush + drop. Bounded by `limit` so a
+    /// backlog doesn't blow up the scan; the job re-fires per tick,
+    /// so a partial sweep this run finishes next run.
+    ///
+    /// Ordering is `last_activity_at ASC` (oldest first) so a
+    /// truncated sweep still evicts the coldest rows on this pass —
+    /// the migration's index on `last_activity_at` makes this cheap.
+    async fn list_stale(
+        &self,
+        older_than: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<Vec<Uuid>, DomainError>;
 }
 
 /// Reads the current file blob text. Used ONLY on the first-ever

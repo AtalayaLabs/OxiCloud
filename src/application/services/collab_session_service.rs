@@ -239,11 +239,7 @@ impl CollabSession {
         rx.await.map_err(|_| CollabError::SessionGone)
     }
 
-    pub async fn apply_update(
-        &self,
-        caller_id: Uuid,
-        bytes: Vec<u8>,
-    ) -> Result<(), CollabError> {
+    pub async fn apply_update(&self, caller_id: Uuid, bytes: Vec<u8>) -> Result<(), CollabError> {
         let (tx, rx) = oneshot::channel();
         self.inbox
             .send(SessionMsg::ApplyUpdate {
@@ -485,11 +481,7 @@ impl ActorState {
     /// `last_writer_id` for the eventual flush, and the dirty
     /// timestamps advance so the tick branch of `run_actor` can decide
     /// whether the idle / max thresholds have been crossed.
-    async fn apply_update(
-        &mut self,
-        caller_id: Uuid,
-        bytes: Vec<u8>,
-    ) -> Result<(), CollabError> {
+    async fn apply_update(&mut self, caller_id: Uuid, bytes: Vec<u8>) -> Result<(), CollabError> {
         let update = Update::decode_v1(&bytes)
             .map_err(|e| CollabError::BadUpdate(format!("decode: {e}")))?;
         {
@@ -621,7 +613,10 @@ impl ActorState {
         //    short-circuit key so the compare on next tick stays
         //    consistent regardless of chunking geometry; the writer's
         //    return is verified but not tracked.
-        let _writer_hash = self.writer.write_content(caller_id, self.file_id, bytes).await?;
+        let _writer_hash = self
+            .writer
+            .write_content(caller_id, self.file_id, bytes)
+            .await?;
 
         // 5. Stamp DB + in-memory mirror WITH `content_hash` (the
         //    raw BLAKE3 of the text we just wrote). This matches
@@ -852,6 +847,63 @@ impl CollabSessionService {
         self.sessions.len()
     }
 
+    /// Idle-GC sweep: reap `collab.doc_sessions` rows whose
+    /// `last_activity_at` is older than `older_than`, and drop the
+    /// live actor (if any) for each. Called on a schedule by the
+    /// `collab_idle_gc` job (see `docs/plan/markdown-collab.md
+    /// § Backend step 5`). Returns the number of rows swept.
+    ///
+    /// For each stale file_id, the sequence is:
+    ///
+    ///   1. If a live actor exists in the registry, ask it to
+    ///      `flush_to_blob` — belt-and-braces vs the periodic flush,
+    ///      so nothing dirty escapes the GC. Idempotent (short-circuits
+    ///      on unchanged content hash).
+    ///   2. Ask the actor to `shutdown` — the run loop breaks after
+    ///      any in-flight message finishes.
+    ///   3. Remove the row from `collab.doc_sessions` so a subsequent
+    ///      attach re-seeds fresh from the (now flushed) blob.
+    ///
+    /// A failure at any step logs and moves on to the next row — the
+    /// sweep is best-effort. The next tick retries whatever this
+    /// tick missed.
+    pub async fn gc_stale(
+        &self,
+        older_than: chrono::DateTime<chrono::Utc>,
+        limit: i64,
+    ) -> Result<usize, CollabError> {
+        let stale = self.repo.list_stale(older_than, limit).await?;
+        let count = stale.len();
+        for file_id in stale {
+            // Step 1: final flush if we have a live actor.
+            if let Some(session_entry) = self.sessions.get(&file_id) {
+                let session = session_entry.clone();
+                drop(session_entry); // release DashMap read guard before await
+                if let Err(e) = session.flush_to_blob().await {
+                    tracing::warn!(
+                        target: "oxicloud::collab",
+                        file_id = %file_id,
+                        error = %e,
+                        "🧹 idle-GC: final flush failed; deleting anyway",
+                    );
+                }
+            }
+            // Step 2: drop the actor (best-effort).
+            self.shutdown(file_id).await;
+            // Step 3: remove the DB row so the next attach re-seeds
+            //         fresh from the blob (which now carries the CRDT text).
+            if let Err(e) = self.repo.delete(file_id).await {
+                tracing::warn!(
+                    target: "oxicloud::collab",
+                    file_id = %file_id,
+                    error = %e,
+                    "🧹 idle-GC: delete failed; will retry on next tick",
+                );
+            }
+        }
+        Ok(count)
+    }
+
     /// Route an incoming binary frame from the WS handler to the right
     /// per-file actor. The caller must have already passed the
     /// subscribe-time `Read` gate on `Topic::Collab(file_id)`; this
@@ -1032,6 +1084,24 @@ mod tests {
             self.rows.write().await.remove(&file_id);
             Ok(())
         }
+        async fn list_stale(
+            &self,
+            older_than: chrono::DateTime<chrono::Utc>,
+            limit: i64,
+        ) -> Result<Vec<Uuid>, DomainError> {
+            let rows = self.rows.read().await;
+            let mut stale: Vec<(chrono::DateTime<chrono::Utc>, Uuid)> = rows
+                .iter()
+                .filter(|(_, r)| r.last_activity_at < older_than)
+                .map(|(id, r)| (r.last_activity_at, *id))
+                .collect();
+            stale.sort_by_key(|(t, _)| *t);
+            Ok(stale
+                .into_iter()
+                .take(limit as usize)
+                .map(|(_, id)| id)
+                .collect())
+        }
     }
 
     // ── Stub reader / writer ──────────────────────────────────────────
@@ -1196,7 +1266,10 @@ mod tests {
         let update_a = doc_a
             .transact()
             .encode_state_as_update_v1(&StateVector::default());
-        session.apply_update(Uuid::nil(), update_a.clone()).await.unwrap();
+        session
+            .apply_update(Uuid::nil(), update_a.clone())
+            .await
+            .unwrap();
 
         // Client B (independent doc) appends "world".
         let doc_b = Doc::new();
@@ -1495,7 +1568,10 @@ mod tests {
             .transact()
             .encode_state_as_update_v1(&StateVector::default());
 
-        session.apply_update(Uuid::nil(), update_bytes.clone()).await.unwrap();
+        session
+            .apply_update(Uuid::nil(), update_bytes.clone())
+            .await
+            .unwrap();
 
         // The receiver sees the same bytes we applied.
         let received = tokio::time::timeout(Duration::from_secs(1), rx.recv())
@@ -1524,7 +1600,10 @@ mod tests {
         let update_bytes = client
             .transact()
             .encode_state_as_update_v1(&StateVector::default());
-        session.apply_update(Uuid::nil(), update_bytes.clone()).await.unwrap();
+        session
+            .apply_update(Uuid::nil(), update_bytes.clone())
+            .await
+            .unwrap();
 
         for rx in [&mut rx1, &mut rx2, &mut rx3] {
             let received = tokio::time::timeout(Duration::from_secs(1), rx.recv())
@@ -1771,7 +1850,7 @@ mod tests {
         // deadline MUST fire on its own — this is what bounds
         // staleness on a never-quiet doc.
         let limits = CollabLimits {
-            debounce_idle: Duration::from_secs(60),   // idle path can't win
+            debounce_idle: Duration::from_secs(60), // idle path can't win
             debounce_max: Duration::from_millis(150), // max path wins
             debounce_tick: Duration::from_millis(20),
             ..CollabLimits::default()

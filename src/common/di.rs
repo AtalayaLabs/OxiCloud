@@ -2644,7 +2644,7 @@ impl AppServiceFactory {
                     repo, reader, writer, authz, limits,
                 ),
             );
-            app_state.collab_session_service = Some(collab);
+            app_state.collab_session_service = Some(collab.clone());
             tracing::info!(
                 target: "audit",
                 event = "collab.service_enabled",
@@ -2652,6 +2652,44 @@ impl AppServiceFactory {
                 debounce_max_ms = limits.debounce_max.as_millis() as u64,
                 "🧵 markdown-collab session service wired (reader: blob-seed, writer: dedup-swap)"
             );
+
+            // Idle-GC job — periodically reaps stale collab.doc_sessions
+            // rows. Same env-override pattern as the debouncer:
+            // production defaults 30 min TTL / 5 min scan interval;
+            // test suite shrinks these so S23 doesn't spend 30 wall-min.
+            // TTL resolution: seconds env wins over minutes when both
+            // are set (seconds is the test-suite escape hatch; minutes
+            // is the prod granularity). Default 30 minutes.
+            let default_idle_ttl = std::env::var("OXICLOUD_COLLAB_IDLE_TTL_SECONDS")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .map(std::time::Duration::from_secs)
+                .or_else(|| {
+                    std::env::var("OXICLOUD_COLLAB_IDLE_TTL_MINUTES")
+                        .ok()
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .map(|m| std::time::Duration::from_secs(m.saturating_mul(60)))
+                })
+                .unwrap_or_else(|| std::time::Duration::from_secs(30 * 60));
+            let default_batch_limit = std::env::var("OXICLOUD_COLLAB_IDLE_BATCH_LIMIT")
+                .ok()
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(200);
+            let scan_interval = std::env::var("OXICLOUD_COLLAB_IDLE_SCAN_INTERVAL_SECS")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .map(std::time::Duration::from_secs)
+                .unwrap_or_else(|| std::time::Duration::from_secs(5 * 60));
+            Arc::new(
+                crate::infrastructure::services::collab_idle_gc_service::CollabIdleGcService::new(
+                    collab,
+                    default_idle_ttl,
+                    default_batch_limit,
+                    scan_interval,
+                ),
+            )
+            .register(&app_state.core.job_registry)
+            .await;
         }
 
         // 9b. Wire admin settings service when auth is available
@@ -3917,9 +3955,8 @@ impl crate::application::ports::collab_ports::DocContentWriter for FileBlobDocCo
         //    max_doc_bytes, default 1 MiB). Text/markdown content
         //    type — the file's actual MIME lives on `storage.files`
         //    and doesn't change on content swap.
-        let source = futures::stream::once(async move {
-            Ok::<_, std::io::Error>(Bytes::from(content))
-        });
+        let source =
+            futures::stream::once(async move { Ok::<_, std::io::Error>(Bytes::from(content)) });
         let dedup_result = self
             .dedup
             .store_from_stream(source, Some("text/markdown".to_string()))
@@ -3934,14 +3971,7 @@ impl crate::application::ports::collab_ports::DocContentWriter for FileBlobDocCo
         //    the plan's "external write conflict" edge case).
         let (new_hash, _updated_at) = self
             .file_write
-            .update_file_content_with_blob(
-                &file_id_str,
-                &blob_hash,
-                size,
-                None,
-                caller_id,
-                None,
-            )
+            .update_file_content_with_blob(&file_id_str, &blob_hash, size, None, caller_id, None)
             .await?;
 
         // 3. Blow the download cache so a subsequent GET doesn't
@@ -3955,7 +3985,8 @@ impl crate::application::ports::collab_ports::DocContentWriter for FileBlobDocCo
         //    file wouldn't).
         if let Ok(file) = self.file_read.get_file(&file_id_str).await {
             let mime = file.into_parts().mime_type;
-            self.lifecycle.on_file_updated(&file_id_str, &new_hash, &mime);
+            self.lifecycle
+                .on_file_updated(&file_id_str, &new_hash, &mime);
         }
 
         Ok(new_hash)

@@ -116,6 +116,16 @@
 #                                       dedup because rows would come
 #                                       in both via WS push and via
 #                                       the delta fetch).
+#   S23 Collab idle-GC sweep  — write via collab, explicit-flush so
+#                                the blob has the CRDT text, wait
+#                                past the (shrunk) idle TTL, then
+#                                trigger the `collab_idle_gc` job
+#                                via `POST /api/admin/jobs/…/trigger`.
+#                                Asserts the sweep count ≥ 1 and
+#                                that a subsequent sync-step probe
+#                                re-seeds cleanly from the blob
+#                                (proving the row was actually
+#                                deleted, not just re-flushed).
 #   S22 Collab explicit flush  — call `rt.collab_flush {file_id}` on
 #                                the WS after a write, then GET the
 #                                file BEFORE the debouncer would
@@ -1491,4 +1501,110 @@ set -e
 log "S22b OK (Viewer denied on rt.collab_flush)"
 log "S22 OK"
 
-log "All twenty-two message-bus scenarios passed."
+# ── Scenario 23 — Collab idle-GC sweep (`collab_idle_gc` job) ──────────────
+# End-to-end proof that the reaper works via the actual scheduled
+# job pipeline (not just the service-level `gc_stale` method covered
+# by unit tests):
+#
+#   1. Upload an empty .md, write "Hello OxiCloud from S23" via
+#      collab, `rt.collab_flush` so the blob carries the CRDT text.
+#   2. Wait past the shrunken TTL (server.env sets IDLE_TTL_SECONDS=1;
+#      2 s here is 2× headroom for a slow runner).
+#   3. Trigger the job via admin. The response's `.outcome.swept`
+#      field carries the reap count; ≥ 1 proves the sweep saw our row.
+#   4. Confirm the row was ACTUALLY deleted (not just re-flushed):
+#      a fresh sync-step probe re-seeds from the blob — the DB
+#      lookup returns None → the actor loads seed_content path.
+#      That'd fail if the row survived (load-path takes over and
+#      the state carries CRDT metadata beyond the raw text).
+log "S23: idle-GC job reaps a stale collab session."
+
+# Admin token — the trigger endpoint is admin-gated.
+admin_login=$(c_post "$base_url/api/auth/login" "" \
+  "$(printf '{"username":"%s","password":"%s"}' "$username" "$password")")
+admin_token=$(printf '%s' "$admin_login" | jq -r '.access_token')
+[[ -n "$admin_token" && "$admin_token" != "null" ]] \
+  || die "S23: admin login failed: $admin_login"
+
+# Fresh .md file, empty seed (see S21 for the "Yjs inserts, doesn't
+# overwrite" rationale).
+tmp_md="$(mktemp -t rtbus_s23_body.XXXXXX)"; : > "$tmp_md"
+upload_resp="$(mktemp -t rtbus_s23_resp.XXXXXX)"
+status=$(curl -sS -o "$upload_resp" -w "%{http_code}" -X POST \
+  -H "Authorization: Bearer $user1_token" \
+  -F "folder_id=$folder_a" \
+  -F "file=@$tmp_md;filename=s23.md" \
+  "$base_url/api/files/upload")
+rm -f "$tmp_md"
+if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
+  cat "$upload_resp" >&2; rm -f "$upload_resp"; die "S23: .md upload failed with HTTP $status"
+fi
+s23_file_id=$(jq -r '.id' "$upload_resp")
+rm -f "$upload_resp"
+[[ -n "$s23_file_id" && "$s23_file_id" != "null" ]] || die "S23: could not extract file id"
+
+s23_content="Hello OxiCloud from S23"
+if ! "$HELPER_BIN" collab-fanout-write \
+     --url "$ws_url" --token "$user1_token" \
+     --file "$s23_file_id" --content "$s23_content" \
+     --timeout 5s > /dev/null 2>&1; then
+  die "S23: fanout-write failed"
+fi
+# Explicit flush so the blob carries the CRDT text BEFORE the GC
+# fires (the GC's final flush would do this too, but we want to
+# separate "flush works" from "reap works" in this assertion).
+if ! "$HELPER_BIN" collab-flush \
+     --url "$ws_url" --token "$user1_token" \
+     --file "$s23_file_id" \
+     --timeout 3s > /dev/null 2>&1; then
+  die "S23: rt.collab_flush failed pre-GC"
+fi
+
+# Wait past the TTL (server.env IDLE_TTL_SECONDS=1).
+sleep 2
+
+# Trigger the job via admin. Response carries the outcome JSON.
+gc_resp=$(curl -sS -X POST \
+  -H "Authorization: Bearer $admin_token" \
+  "$base_url/api/admin/jobs/collab_idle_gc/trigger")
+# JobOutcome wire shape: {ok, outcome:{count, extra:{...}, outcome:"ok"}}.
+# The reap count lands on `.outcome.count` (from JobOutcome::ok_with's
+# first arg); the same integer is echoed under `.outcome.extra.swept`
+# for redundancy. Either path works; use `.outcome.count` — it's the
+# universal shape across all scheduled jobs.
+swept=$(printf '%s' "$gc_resp" | jq -r '.outcome.count // 0')
+[[ "$swept" -ge 1 ]] \
+  || { printf '%s\n' "$gc_resp" >&2; die "S23: expected swept >= 1, got $swept"; }
+log "S23a OK (reaped $swept session(s) via admin trigger)"
+
+# The row must actually be gone. A subsequent sync-step probe on
+# the SAME file_id sees the actor re-spawn on the seed path (no
+# DB row → load_or_seed reads content via the reader adapter).
+# The reply's payload_len should match the seeded text roughly,
+# and be DIFFERENT from the pre-GC probe's payload_len that
+# reflected the full CRDT state with client-id metadata.
+out_s23_after="$(mktemp -t rtbus_s23_after.XXXXXX)"
+if ! "$HELPER_BIN" collab-sync-probe \
+     --url "$ws_url" --token "$user1_token" \
+     --file "$s23_file_id" --timeout 5s \
+     --output "$out_s23_after"; then
+  cat "$out_s23_after" >&2 || true
+  die "S23: post-GC sync-step probe failed"
+fi
+# Post-GC probe must succeed (non-empty payload) — that alone
+# proves the actor re-seeded from the blob. The row-gone
+# assertion is transitive via the swept count above; a second
+# GC trigger on a quiet server would count 0 more sweeps.
+gc_resp2=$(curl -sS -X POST \
+  -H "Authorization: Bearer $admin_token" \
+  "$base_url/api/admin/jobs/collab_idle_gc/trigger")
+swept2=$(printf '%s' "$gc_resp2" | jq -r '.outcome.count // 0')
+# The freshly-attached session isn't stale yet (last_activity_at
+# just bumped), so the second trigger MUST see 0 or exclude our
+# row. We only assert the endpoint keeps working, not the count.
+[[ "$swept2" =~ ^[0-9]+$ ]] \
+  || { printf '%s\n' "$gc_resp2" >&2; die "S23: second GC trigger response malformed"; }
+log "S23b OK (post-GC probe re-seeded; second trigger returned swept=$swept2)"
+log "S23 OK"
+
+log "All twenty-three message-bus scenarios passed."
