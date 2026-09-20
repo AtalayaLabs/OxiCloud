@@ -372,12 +372,18 @@ Slice status (2026-09-21):
   needs to publish `AuthzChanged { affected_files }` on
   `user:{removed_user}:authz`. Not wired yet; the plumbing
   through the WS handler is now in place.
-- ⬜ **`external_write`** — the collab writer bridge already owns
-  the atomic blob swap on flush, so out-of-band WebDAV / WOPI /
-  REST writes that don't route through the CRDT are the missing
-  invalidation source. Same wire path, different producer: any
-  file-content-write path outside `CollabSessionService::flush_to_blob`
-  must call `evict_sessions_for_file(file_id, "external_write")`.
+- ✅ **`external_write`** — `FileLifecycleHook::on_file_updated`
+  gains a `source: WriteSource` discriminator. External writers
+  (REST upload replace, WebDAV PUT, WOPI PutFile, chunked-upload
+  finalize — all routed through `FileUploadService`) pass
+  `WriteSource::External`; the collab actor's own flush passes
+  `WriteSource::CollabFlush`. A new `CollabEvictLifecycleHook`
+  registered on the file-lifecycle fan-out fires
+  `evict_sessions_for_file(file_id, "external_write")` on the
+  External branch and short-circuits on `CollabFlush` so keystroke-
+  driven flushes don't tear down their own sessions. Guarded by
+  hurl S28 (upload → subscribe collab → external replace → revoked
+  with reason external_write).
 
 ### Edge cases (design decisions, not TODOs)
 

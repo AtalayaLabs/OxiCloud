@@ -2655,6 +2655,20 @@ impl AppServiceFactory {
                 .applications
                 .file_management_service
                 .set_collab_session_service(collab.clone());
+            // Register the external-write eviction hook — an
+            // out-of-band write (WebDAV PUT, WOPI PutFile, REST
+            // upload replace, chunked-upload finalize) fires
+            // `on_file_updated` with `WriteSource::External`; the
+            // hook translates that into
+            // `evict_sessions_for_file(file_id, "external_write")`.
+            // `WriteSource::CollabFlush` short-circuits inside the
+            // hook so the flusher's own writes don't tear down the
+            // very session that just wrote.
+            app_state.core.file_lifecycle.set_collab_evict_hook(Arc::new(
+                crate::application::adapters::collab_evict_lifecycle_hook::CollabEvictLifecycleHook::new(
+                    collab.clone(),
+                ),
+            ));
             tracing::info!(
                 target: "audit",
                 event = "collab.service_enabled",
@@ -3995,8 +4009,17 @@ impl crate::application::ports::collab_ports::DocContentWriter for FileBlobDocCo
         //    file wouldn't).
         if let Ok(file) = self.file_read.get_file(&file_id_str).await {
             let mime = file.into_parts().mime_type;
-            self.lifecycle
-                .on_file_updated(&file_id_str, &new_hash, &mime);
+            self.lifecycle.on_file_updated(
+                &file_id_str,
+                &new_hash,
+                &mime,
+                // The collab flusher IS this write's origin — any
+                // hook that reacts to external writes (notably the
+                // eviction hook wired in when collab is enabled)
+                // must skip this path, otherwise every keystroke's
+                // debounced flush would tear down its own session.
+                crate::application::ports::file_lifecycle::WriteSource::CollabFlush,
+            );
         }
 
         Ok(new_hash)

@@ -600,7 +600,13 @@ impl FileLifecycleHook for MediaMetadataService {
         );
     }
 
-    fn on_file_updated(&self, file_id: &str, blob_hash: &str, content_type: &str) {
+    fn on_file_updated(
+        &self,
+        file_id: &str,
+        blob_hash: &str,
+        content_type: &str,
+        _source: crate::application::ports::file_lifecycle::WriteSource,
+    ) {
         if !Self::handles(content_type) {
             return;
         }

@@ -2537,7 +2537,14 @@ mod cascade_hook_integration_tests {
             _source_file_id: &str,
         ) {
         }
-        fn on_file_updated(&self, _file_id: &str, _blob_hash: &str, _content_type: &str) {}
+        fn on_file_updated(
+            &self,
+            _file_id: &str,
+            _blob_hash: &str,
+            _content_type: &str,
+            _source: crate::application::ports::file_lifecycle::WriteSource,
+        ) {
+        }
         fn on_file_deleted(&self, file_id: &str) {
             self.deleted.lock().unwrap().push(file_id.to_string());
         }

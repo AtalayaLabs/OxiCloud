@@ -87,7 +87,13 @@ impl FileLifecycleHook for PluginLifecycleHook {
         self.dispatch_upload(file_id);
     }
 
-    fn on_file_updated(&self, file_id: &str, _blob_hash: &str, _content_type: &str) {
+    fn on_file_updated(
+        &self,
+        file_id: &str,
+        _blob_hash: &str,
+        _content_type: &str,
+        _source: crate::application::ports::file_lifecycle::WriteSource,
+    ) {
         self.dispatch_upload(file_id);
     }
 

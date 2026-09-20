@@ -429,7 +429,13 @@ impl FileLifecycleHook for AudioMetadataService {
         Self::clone_from_source_background(service, uuid, source_uuid, blob_hash.to_string());
     }
 
-    fn on_file_updated(&self, file_id: &str, blob_hash: &str, content_type: &str) {
+    fn on_file_updated(
+        &self,
+        file_id: &str,
+        blob_hash: &str,
+        content_type: &str,
+        _source: crate::application::ports::file_lifecycle::WriteSource,
+    ) {
         if !Self::is_audio_file(content_type) {
             return;
         }

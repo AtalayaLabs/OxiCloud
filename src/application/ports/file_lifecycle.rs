@@ -1,3 +1,24 @@
+/// Origin of an `on_file_updated` event.
+///
+/// External writers (REST upload replace, WebDAV PUT, WOPI PutFile,
+/// Nextcloud chunked upload finalization) supply
+/// [`WriteSource::External`]. The collab actor's flush-to-blob writer
+/// supplies [`WriteSource::CollabFlush`] — that's the ONE write path
+/// that's already going THROUGH the CRDT session, so hooks that fire
+/// eviction on external writes must ignore this variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteSource {
+    /// A non-collab actor replaced the file's blob. The in-memory
+    /// CRDT (if any) is now stale relative to the on-disk truth —
+    /// the collab-eviction hook uses this to invalidate live
+    /// sessions with `reason: "external_write"`.
+    External,
+    /// The collab session's own flush wrote its accumulated Y.Doc
+    /// state to the blob. Not stale by definition; the eviction
+    /// hook MUST NOT fire.
+    CollabFlush,
+}
+
 /// Observer notified by file services when a file record is created, copied,
 /// updated, or permanently deleted.
 ///
@@ -52,12 +73,27 @@ pub trait FileLifecycleHook: Send + Sync {
     );
 
     /// Called after an existing file's blob has been replaced (WebDAV PUT
-    /// overwrite, WOPI PutFile, Nextcloud chunked upload finalization).
+    /// overwrite, WOPI PutFile, Nextcloud chunked upload finalization,
+    /// or the collab actor's flush-to-blob).
     ///
     /// `file_id` — opaque file UUID string.
     /// `blob_hash` — BLAKE3 hex of the **new** blob.
     /// `content_type` — MIME type of the new content.
-    fn on_file_updated(&self, file_id: &str, blob_hash: &str, content_type: &str);
+    /// `source` — who caused the write. External writers pass
+    ///   [`WriteSource::External`]; the collab flusher passes
+    ///   [`WriteSource::CollabFlush`]. Hooks that need to distinguish
+    ///   "user or another protocol wrote this" from "collab bailed
+    ///   its own CRDT to disk" branch on this value — notably the
+    ///   collab-eviction hook, which must NOT evict on its own
+    ///   flush (that would tear down every session on every
+    ///   keystroke's debounced write).
+    fn on_file_updated(
+        &self,
+        file_id: &str,
+        blob_hash: &str,
+        content_type: &str,
+        source: WriteSource,
+    );
 
     /// Called after a file record has been permanently removed (direct delete
     /// or emptied from trash).
