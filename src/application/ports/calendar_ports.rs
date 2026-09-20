@@ -328,4 +328,57 @@ pub trait CalendarUseCase: Send + Sync + 'static {
         DomainError,
     >;
     async fn delete_todo(&self, todo_id: &str, user_id: Uuid) -> Result<(), DomainError>;
+
+    /// Resolve one calendar object by its iCalendar UID, whichever
+    /// component kind it turns out to be.
+    ///
+    /// A CalDAV object resource (`/caldav/{cal}/{uid}.ics`) does not say
+    /// whether it holds a VEVENT or a VTODO — the caller has to try one
+    /// and fall back to the other. Doing that at the callsite means every
+    /// verb that addresses a single `.ics` repeats the same try-event-
+    /// then-todo dance, each copy applying its own authorization. Two
+    /// gates that must agree, with nothing keeping them in step.
+    ///
+    /// This resolves it once. Add a component kind (VJOURNAL) and the
+    /// new arm lands here rather than in every handler branch.
+    async fn get_object_by_ical_uid(
+        &self,
+        calendar_id: &str,
+        ical_uid: &str,
+        user_id: Uuid,
+    ) -> Result<Option<CalendarObject>, DomainError>;
+
+    /// Delete a resolved calendar object, dispatching on its kind.
+    ///
+    /// Takes the resolved object rather than an id so the kind is already
+    /// known — the caller cannot pass an id and guess wrong.
+    async fn delete_object(
+        &self,
+        object: &CalendarObject,
+        user_id: Uuid,
+    ) -> Result<(), DomainError>;
+}
+
+/// One CalDAV object resource, of either component kind.
+///
+/// Exists because a `.ics` URL is kind-agnostic: the path identifies a
+/// resource, not a VEVENT or a VTODO. Callers that only need the shared
+/// projection (id, UID, ical body, component name) should go through
+/// [`CalendarObjectRow`](crate::application::adapters::caldav_adapter::CalendarObjectRow),
+/// which both variants implement; this enum is for the paths that must
+/// dispatch on the kind, such as deletion.
+#[derive(Debug, Clone)]
+pub enum CalendarObject {
+    Event(CalendarEventDto),
+    Todo(CalendarTodoDto),
+}
+
+impl CalendarObject {
+    /// The row id, for the paths that still address objects by id.
+    pub fn id(&self) -> &str {
+        match self {
+            CalendarObject::Event(e) => &e.id,
+            CalendarObject::Todo(t) => &t.id,
+        }
+    }
 }
