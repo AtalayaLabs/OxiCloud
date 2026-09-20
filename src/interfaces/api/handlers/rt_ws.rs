@@ -935,24 +935,34 @@ async fn handle_subscribe(
                     Some(serde_json::json!({ "topic": topic_str })),
                 );
             }
-            // Second pass for collab topics only: check Update on the
+            // Second pass for collab topics only: probe Update on the
             // same resource so the ack can carry `can_write`. The
             // authorization engine's decision cache turns this into a
-            // no-op after warm-up. Failure here is NOT a denial —
-            // Viewers legitimately get `can_write: false` alongside
-            // a successful Read-gated subscribe.
+            // no-op after warm-up.
+            //
+            // Use `check` (returns bool) rather than `require` (audits
+            // on failure): a Viewer legitimately answers `false` here
+            // and that MUST NOT flood the `authz.denied` audit stream
+            // — the subscribe itself succeeded via Read, and the
+            // capability answer is informational, not a gate. Reserving
+            // `require` for enforcement paths keeps the audit signal
+            // meaningful; a spurious "authz.denied" per Viewer opening
+            // a file drowns out real denials.
+            //
+            // Infra errors (DB blip) collapse to `can_write: false` —
+            // fail-closed matches the FE's own fail-closed default.
             if matches!(topic, Topic::Collab(_))
                 && let BusResource::File(file_uuid) = resource
             {
                 let can_write = state
                     .authorization
-                    .require(
+                    .check(
                         Subject::User(caller_id),
                         Permission::Update,
                         Resource::File(file_uuid),
                     )
                     .await
-                    .is_ok();
+                    .unwrap_or(false);
                 collab_capabilities = Some(serde_json::json!({ "can_write": can_write }));
             }
         }
