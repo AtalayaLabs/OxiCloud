@@ -28,10 +28,11 @@
 
 import log from 'loglevel';
 import * as Y from 'yjs';
+import * as awarenessProtocol from 'y-protocols/awareness';
 
 import { messageBus } from '$lib/message-bus/client.svelte';
 import type { UnsubscribeHandle } from '$lib/message-bus/client.svelte';
-import { KIND_SYNC, KIND_UPDATE, decodeFrame, encodeFrame } from './wireCodec';
+import { KIND_AWARENESS, KIND_SYNC, KIND_UPDATE, decodeFrame, encodeFrame } from './wireCodec';
 
 const collabLog = log.getLogger('oxi:collab');
 
@@ -71,18 +72,31 @@ export interface CollabDocOpts {
 export class CollabDoc {
 	readonly fileId: string;
 	readonly doc: Y.Doc;
+	/** Presence / awareness registry — cursor position, user handle,
+	 *  colour. Passed to `yCollab(yText, awareness)` in the editor so
+	 *  `y-codemirror.next` renders peer cursors with names. Emits
+	 *  binary `0x02 AWARENESS` frames on local changes; applies
+	 *  incoming `0x02` frames from the wire. */
+	readonly awareness: awarenessProtocol.Awareness;
 
 	#syncState: SyncState = 'idle';
 	#onSyncStateChange?: (state: SyncState) => void;
 	#unsubscribeTopic: UnsubscribeHandle | null = null;
 	#unregisterHandler: (() => void) | null = null;
 	#docUpdateHandler: ((update: Uint8Array, origin: unknown) => void) | null = null;
+	#awarenessUpdateHandler:
+		| ((
+				changes: { added: number[]; updated: number[]; removed: number[] },
+				origin: unknown
+		  ) => void)
+		| null = null;
 	#destroyed = false;
 
 	constructor(opts: CollabDocOpts) {
 		this.fileId = opts.fileId;
 		this.#onSyncStateChange = opts.onSyncStateChange;
 		this.doc = new Y.Doc();
+		this.awareness = new awarenessProtocol.Awareness(this.doc);
 	}
 
 	/** Kick off the connection. Safe to call once per instance; a
@@ -151,6 +165,21 @@ export class CollabDoc {
 		};
 		this.doc.on('update', this.#docUpdateHandler);
 
+		// Awareness → wire. Same origin-guard as CRDT updates: an
+		// incoming peer awareness we've just applied would otherwise
+		// echo back to the server. `y-protocols/awareness`'s change
+		// signal names the client IDs whose state changed; encoding
+		// against just those clients produces the minimal wire diff.
+		this.#awarenessUpdateHandler = (changes, origin) => {
+			if (origin === this) return;
+			const changedIds = [...changes.added, ...changes.updated, ...changes.removed];
+			if (changedIds.length === 0) return;
+			const update = awarenessProtocol.encodeAwarenessUpdate(this.awareness, changedIds);
+			const frame = encodeFrame(KIND_AWARENESS, this.fileId, update);
+			messageBus.sendBinary(frame);
+		};
+		this.awareness.on('update', this.#awarenessUpdateHandler);
+
 		// Sync-step-1: send our state vector, server replies with the
 		// missing updates. Send immediately — the WS is already
 		// connected (subscribe kicked it) OR will be shortly, and the
@@ -172,6 +201,10 @@ export class CollabDoc {
 			this.doc.off('update', this.#docUpdateHandler);
 			this.#docUpdateHandler = null;
 		}
+		if (this.#awarenessUpdateHandler) {
+			this.awareness.off('update', this.#awarenessUpdateHandler);
+			this.#awarenessUpdateHandler = null;
+		}
 		if (this.#unregisterHandler) {
 			this.#unregisterHandler();
 			this.#unregisterHandler = null;
@@ -180,6 +213,11 @@ export class CollabDoc {
 			this.#unsubscribeTopic();
 			this.#unsubscribeTopic = null;
 		}
+		// `Awareness.destroy` emits one final "remove this client" tick
+		// that peers use to render the cursor going away. Do it BEFORE
+		// tearing down the Y.Doc — Awareness is bound to the doc's
+		// clientID and needs the doc alive to encode the removal.
+		this.awareness.destroy();
 		this.doc.destroy();
 	}
 
@@ -221,7 +259,20 @@ export class CollabDoc {
 				}
 				break;
 			}
-			// AWARENESS not handled in the simple version.
+			case KIND_AWARENESS: {
+				// Peer presence — apply into our local awareness
+				// registry. Same origin-guard as CRDT updates so the
+				// applied change doesn't echo back to the server.
+				try {
+					awarenessProtocol.applyAwarenessUpdate(this.awareness, frame.payload, this);
+				} catch (err) {
+					collabLog.warn('applyAwarenessUpdate failed', {
+						fileId: this.fileId,
+						error: err
+					});
+				}
+				break;
+			}
 		}
 	}
 }

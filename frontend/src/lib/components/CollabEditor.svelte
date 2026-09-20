@@ -1,15 +1,17 @@
 <script lang="ts">
-	// Collaborative markdown editor — the simple version.
+	// Collaborative markdown editor.
 	//
 	// Mounts CodeMirror 6 with markdown syntax + the `y-codemirror.next`
-	// binding to a `Y.Text` sourced from a `CollabDoc`. One editor per
-	// file id; wraps its own lifecycle so callers just render
-	// `<CollabEditor fileId={id} />` and unmount to teardown.
+	// binding to a `Y.Text` + `Awareness` sourced from a `CollabDoc`.
+	// One editor per file id; wraps its own lifecycle so callers just
+	// render `<CollabEditor fileId={id} />` and unmount to teardown.
+	// Peer cursors + selections render natively via the awareness
+	// registry — each user's caret gets their `username` label and a
+	// deterministic colour derived from their id.
 	//
-	// Out of scope for the simple version:
-	//   * Awareness / presence cursors — C6.
+	// Still ahead:
 	//   * Explicit rt.collab_flush on unmount — the debouncer already
-	//     bounds staleness to 60s; we'll wire beforeunload in a polish
+	//     bounds staleness to 60s; wiring `beforeunload` is a polish
 	//     slice.
 	//   * Read-only mode when Update permission is missing — the
 	//     server's per-frame gate refuses the 0x01 UPDATE anyway;
@@ -24,6 +26,23 @@
 
 	import { CollabDoc, type SyncState } from '$lib/collab/collabDoc';
 	import { messageBus } from '$lib/message-bus/client.svelte';
+	import { session } from '$lib/stores/session.svelte';
+
+	/** Deterministic peer-cursor colour derived from a user id.
+	 *
+	 *  Rule: same user id → same colour across sessions and machines,
+	 *  so peers recognise each other visually. Using a small hue-only
+	 *  palette (12 slots, evenly-spaced across the wheel) at fixed
+	 *  saturation / lightness keeps every colour readable on both
+	 *  light and dark backgrounds without needing per-scheme
+	 *  overrides. Hash → hue index is `sum-of-char-codes mod 12` —
+	 *  crude but stable, no external hash lib needed. */
+	function userColor(userId: string): string {
+		let sum = 0;
+		for (let i = 0; i < userId.length; i++) sum = (sum + userId.charCodeAt(i)) & 0xffff;
+		const hueSlot = sum % 12;
+		return `hsl(${hueSlot * 30} 70% 50%)`;
+	}
 
 	interface Props {
 		/** Dashed UUID of the file to edit. */
@@ -61,6 +80,17 @@
 		});
 		collab.connect();
 
+		// Publish local user info into the awareness registry so peers
+		// can render this caret with a name + colour. Read the session
+		// snapshot at mount time — if it's not loaded yet (edge case
+		// during boot) we still publish a placeholder rather than
+		// leaving the peer view unlabelled.
+		const localUser = session.user;
+		collab.awareness.setLocalStateField('user', {
+			name: localUser?.username ?? 'Anonymous',
+			color: userColor(localUser?.id ?? currentFileId)
+		});
+
 		const state = EditorState.create({
 			doc: '', // initial content comes from the CRDT after sync-step-2
 			extensions: [
@@ -68,12 +98,10 @@
 				history(),
 				keymap.of([...defaultKeymap, ...historyKeymap]),
 				markdown(),
-				// `undefined` = no awareness for the simple version.
-				// The binding still consumes updates on the yText and
-				// emits local edits back through Y.Doc.update, which our
-				// `CollabDoc.#docUpdateHandler` translates to 0x01
-				// UPDATE frames on the wire.
-				yCollab(collab.yText(), undefined)
+				// Pass the awareness registry so `y-codemirror.next`
+				// renders peer cursors + selections with the `user`
+				// field we just published (name + colour).
+				yCollab(collab.yText(), collab.awareness)
 			]
 		});
 
@@ -229,6 +257,42 @@
 	.collab-editor__pane :global(.cm-selectionBackground),
 	.collab-editor__pane :global(.cm-content ::selection) {
 		background: color-mix(in srgb, var(--color-accent) 30%, transparent);
+	}
+
+	/* Peer cursor labels rendered by `y-codemirror.next`. The library's
+	 * default styling gives the floating name a ~10 px font that's hard
+	 * to read at normal viewing distance; bump it, add breathing room,
+	 * and make sure it sits above the editor's own overlays.
+	 *
+	 * `.cm-ySelectionInfo` is the name pill above the caret.
+	 * `.cm-ySelectionCaret` is the vertical caret line.
+	 * `.cm-ySelectionCaretDot` is the small triangle at the top —
+	 * the anchor for the pill. */
+	.collab-editor__pane :global(.cm-ySelectionInfo) {
+		font-size: 0.75rem;
+		font-family: var(--font-sans, system-ui);
+		font-weight: 500;
+		padding: 0.15rem 0.4rem;
+		border-radius: 0.25rem;
+		/* Sit high enough to clear the top of the line and stay
+		 * visible when the caret is on the first line. */
+		top: -1.4em;
+		line-height: 1.2;
+		white-space: nowrap;
+		/* Above line-decorations but below CodeMirror tooltips. */
+		z-index: 20;
+		/* Deliberately no `opacity` rule — `y-codemirror.next`'s
+		 * default is hover-only reveal (opacity 0 → 1 on caret
+		 * hover). Overriding it here would keep every peer name
+		 * pinned to the screen and cover the text. Sizing only. */
+	}
+
+	.collab-editor__pane :global(.cm-ySelectionCaret) {
+		/* Slightly wider than the default 1 px so peer carets are
+		 * findable at a glance without being confused with the local
+		 * caret (which the browser draws natively). */
+		border-left-width: 2px;
+		margin-left: -1px;
 	}
 
 	.collab-editor__denied {

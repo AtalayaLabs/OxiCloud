@@ -1125,11 +1125,15 @@ fn spawn_collab_forwarder(
                 return;
             }
         };
-        use crate::application::services::collab_wire::{encode_binary_frame, kind};
+        use crate::application::services::collab_wire::encode_binary_frame;
         loop {
             match rx.recv().await {
-                Ok(update_bytes) => {
-                    let frame = encode_binary_frame(kind::UPDATE, file_id, &update_bytes);
+                Ok((frame_kind, payload)) => {
+                    // Broadcast carries `(kind, bytes)` so UPDATE and
+                    // AWARENESS share the same channel without a
+                    // second forwarder. Encode with the kind the actor
+                    // stamped; wire layout is otherwise identical.
+                    let frame = encode_binary_frame(frame_kind, file_id, &payload);
                     if out_tx.send(SessionOut::Binary(frame)).await.is_err() {
                         // Session dead; unwind the forwarder.
                         return;

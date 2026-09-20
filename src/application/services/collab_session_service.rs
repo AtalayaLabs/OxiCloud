@@ -66,6 +66,22 @@ use crate::domain::services::authorization::Permission;
 /// broadcasting an update.
 pub type SocketId = u64;
 
+/// One fan-out item on a session's outbox — a wire-kind byte plus the
+/// payload bytes ready for `encode_binary_frame`. Two kinds ride the
+/// same channel today:
+///
+///   * `kind::UPDATE` (0x01) — Yjs update blob; server-authoritative
+///     CRDT apply already happened, this fires the broadcast for
+///     other sockets to catch up.
+///   * `kind::AWARENESS` (0x02) — presence bytes (cursor position,
+///     user handle, colour). NOT persisted; not applied to the CRDT.
+///     Fan-out only.
+///
+/// Sharing one channel keeps ordering natural — a peer's UPDATE and
+/// the AWARENESS bump that reflects the caret motion arrive on the
+/// receiver in the same order the actor accepted them.
+pub type CollabBroadcast = (u8, Vec<u8>);
+
 /// Configuration knobs. Defaults track the plan doc's § Limits &
 /// guardrails table. Wired from `AppConfig::collab` in the DI layer
 /// (not yet — C1 lands with defaults only).
@@ -158,6 +174,15 @@ enum SessionMsg {
         bytes: Vec<u8>,
         reply: oneshot::Sender<Result<(), CollabError>>,
     },
+    /// Broadcast an awareness (presence) blob to other subscribers.
+    /// No CRDT apply, no debouncer arm — just a fan-out. Reply is
+    /// `()`: awareness has no failure mode beyond "actor is gone",
+    /// which surfaces via the reply-drop path like every other
+    /// message here.
+    ApplyAwareness {
+        bytes: Vec<u8>,
+        reply: oneshot::Sender<()>,
+    },
     /// Force a flush of the CRDT text to the file's blob. Called
     /// automatically by the debouncer's tick branch when idle/max
     /// thresholds are crossed; also exposed on the public handle for
@@ -200,7 +225,7 @@ enum SessionMsg {
     /// fewer piece of per-socket state, and matches the y-websocket
     /// reference server's behaviour.
     SubscribeUpdates {
-        reply: oneshot::Sender<broadcast::Receiver<Vec<u8>>>,
+        reply: oneshot::Sender<broadcast::Receiver<CollabBroadcast>>,
     },
     Shutdown,
 }
@@ -237,6 +262,19 @@ impl CollabSession {
             .await
             .map_err(|_| CollabError::SessionGone)?;
         rx.await.map_err(|_| CollabError::SessionGone)
+    }
+
+    /// Broadcast an awareness (presence) blob. Fire-and-await the
+    /// actor's confirmation that it enqueued the fan-out. Doesn't
+    /// touch the CRDT.
+    pub async fn apply_awareness(&self, bytes: Vec<u8>) -> Result<(), CollabError> {
+        let (tx, rx) = oneshot::channel();
+        self.inbox
+            .send(SessionMsg::ApplyAwareness { bytes, reply: tx })
+            .await
+            .map_err(|_| CollabError::SessionGone)?;
+        rx.await.map_err(|_| CollabError::SessionGone)?;
+        Ok(())
     }
 
     pub async fn apply_update(&self, caller_id: Uuid, bytes: Vec<u8>) -> Result<(), CollabError> {
@@ -320,7 +358,7 @@ impl CollabSession {
     /// updates behind starts returning `RecvError::Lagged`; the
     /// forwarder recovers by tearing down the socket, and the client
     /// reconnects and catches up via sync-step-1.
-    pub async fn subscribe_updates(&self) -> Result<broadcast::Receiver<Vec<u8>>, CollabError> {
+    pub async fn subscribe_updates(&self) -> Result<broadcast::Receiver<CollabBroadcast>, CollabError> {
         let (tx, rx) = oneshot::channel();
         self.inbox
             .send(SessionMsg::SubscribeUpdates { reply: tx })
@@ -354,7 +392,7 @@ struct ActorState {
     /// returns `Err(SendError)` which we silently drop) — the CRDT
     /// state stays authoritative on the server regardless of whether
     /// anyone is listening.
-    outbox: broadcast::Sender<Vec<u8>>,
+    outbox: broadcast::Sender<CollabBroadcast>,
     /// Flush-to-blob writer. Called by the debouncer with the last
     /// human writer's `caller_id` — that stamps §14 provenance on the
     /// underlying `update_file_content_with_blob` call.
@@ -494,7 +532,9 @@ impl ActorState {
         if self.updates_since_snapshot >= self.limits.snapshot_after_updates {
             self.snapshot().await?;
         }
-        let _ = self.outbox.send(bytes);
+        let _ = self
+            .outbox
+            .send((crate::application::services::collab_wire::kind::UPDATE, bytes));
         // Debouncer bookkeeping. `first_dirty_at` sticks on the FIRST
         // update after a clean state; `last_dirty_at` advances on
         // every update. Together they drive the tick-branch decision.
@@ -505,6 +545,20 @@ impl ActorState {
         self.last_dirty_at = Some(now);
         self.last_writer_id = Some(caller_id);
         Ok(())
+    }
+
+    /// Fan out an awareness (presence) blob to other subscribers.
+    /// Unlike [`Self::apply_update`], the actor's `Doc` is untouched
+    /// — awareness is transient state (cursor position, user handle,
+    /// colour). The debouncer isn't armed either; a cursor bump
+    /// shouldn't extend the flush deadline. Publishing to a channel
+    /// with zero live receivers is not an error (`Err(SendError)`
+    /// silently dropped) — solo sessions never see their own
+    /// awareness back, which is fine.
+    fn broadcast_awareness(&self, bytes: Vec<u8>) {
+        let _ = self
+            .outbox
+            .send((crate::application::services::collab_wire::kind::AWARENESS, bytes));
     }
 
     /// Serialise the current doc as one update-blob + state-vector and
@@ -685,6 +739,10 @@ async fn run_actor(mut state: ActorState, mut inbox: mpsc::Receiver<SessionMsg>)
                     SessionMsg::ApplyUpdate { caller_id, bytes, reply } => {
                         let result = state.apply_update(caller_id, bytes).await;
                         let _ = reply.send(result);
+                    }
+                    SessionMsg::ApplyAwareness { bytes, reply } => {
+                        state.broadcast_awareness(bytes);
+                        let _ = reply.send(());
                     }
                     SessionMsg::GetText { reply } => {
                         let _ = reply.send(state.text());
@@ -950,12 +1008,13 @@ impl CollabSessionService {
                 Ok(None)
             }
             kind::AWARENESS => {
-                // Presence-only; not persisted, not applied to the CRDT,
-                // and does not leak doc bytes. Subscribe-time Read
-                // gate is sufficient. Fan-out to other sockets on the
-                // same topic is a bus concern wired in a follow-up.
+                // Presence-only; not persisted, not applied to the
+                // CRDT, and does not leak doc bytes. Subscribe-time
+                // Read gate is sufficient — a viewer's cursor is
+                // legitimate. Fan out to every other subscribed
+                // socket so peers render each other's cursors.
                 let session = self.attach_file(caller_id, file_id).await?;
-                let _ = session; // AWARENESS is a no-op on server state
+                session.apply_awareness(frame.payload).await?;
                 Ok(None)
             }
             kind::SYNC => {
@@ -1573,12 +1632,14 @@ mod tests {
             .await
             .unwrap();
 
-        // The receiver sees the same bytes we applied.
+        // The receiver sees the same bytes we applied, tagged as an
+        // UPDATE frame (0x01) on the shared (kind, bytes) channel.
         let received = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await
             .expect("broadcast delivery within 1s")
             .expect("no lag / no close");
-        assert_eq!(received, update_bytes);
+        assert_eq!(received.0, crate::application::services::collab_wire::kind::UPDATE);
+        assert_eq!(received.1, update_bytes);
     }
 
     #[tokio::test]
@@ -1610,7 +1671,8 @@ mod tests {
                 .await
                 .expect("broadcast delivery within 1s")
                 .expect("no lag / no close");
-            assert_eq!(received, update_bytes);
+            assert_eq!(received.0, crate::application::services::collab_wire::kind::UPDATE);
+            assert_eq!(received.1, update_bytes);
         }
     }
 
@@ -1889,5 +1951,72 @@ mod tests {
             !writes.is_empty(),
             "max-deadline flush never fired under continuous edits"
         );
+    }
+
+    // ── Awareness fan-out (C6) ─────────────────────────────────────────
+    //
+    // AWARENESS frames must ride the shared broadcast channel so peer
+    // WS forwarders push them to their sockets. They must NOT touch
+    // the CRDT (`get_text()` unchanged), must NOT arm the debouncer
+    // (writer stays quiet), and must NOT require Update permission
+    // (subscribe-time Read is sufficient for presence).
+
+    #[tokio::test]
+    async fn awareness_broadcasts_to_subscribers_without_touching_the_doc() {
+        let (svc, writer) = service_with_recording_writer("", CollabLimits::default());
+        let file_id = Uuid::new_v4();
+        let session = svc.attach_file(Uuid::nil(), file_id).await.unwrap();
+        let mut rx = session.subscribe_updates().await.unwrap();
+
+        // Opaque presence bytes — the actor doesn't decode.
+        let presence = vec![0xAA, 0xBB, 0xCC, 0xDD];
+        session.apply_awareness(presence.clone()).await.unwrap();
+
+        // Receiver sees the same bytes, tagged as AWARENESS (0x02).
+        let received = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("broadcast delivery within 1s")
+            .expect("no lag / no close");
+        assert_eq!(received.0, crate::application::services::collab_wire::kind::AWARENESS);
+        assert_eq!(received.1, presence);
+
+        // Doc text unchanged — awareness is presence, not content.
+        assert_eq!(session.get_text().await.unwrap(), "");
+
+        // No flush fired — awareness must not arm the debouncer.
+        // (No wait here; the debouncer's tick interval is 1s by
+        // default and the test doesn't sleep past it.)
+        assert!(writer.writes.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn awareness_frame_via_binary_router_broadcasts() {
+        // End-to-end through `handle_binary_frame` — the WS handler's
+        // real entry point — so we assert the AWARENESS branch calls
+        // `apply_awareness` and the broadcast lands on peer receivers.
+        // DenyAll gate proves that awareness is NOT gated on Update
+        // (only subscribe-time Read is, and we don't exercise it here
+        // because the actor is already attached).
+        let svc =
+            service_with_seed_and_gate("", CollabLimits::default(), Arc::new(DenyAll));
+        let file_id = Uuid::new_v4();
+        let session = svc.attach_file(Uuid::nil(), file_id).await.unwrap();
+        let mut rx = session.subscribe_updates().await.unwrap();
+
+        let presence = vec![0x11, 0x22, 0x33];
+        let frame = BinaryFrame {
+            kind: kind::AWARENESS,
+            file_id,
+            payload: presence.clone(),
+        };
+        let reply = svc.handle_binary_frame(Uuid::nil(), frame).await.unwrap();
+        assert_eq!(reply, None, "awareness has no per-socket reply");
+
+        let received = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("broadcast delivery within 1s")
+            .expect("no lag / no close");
+        assert_eq!(received.0, crate::application::services::collab_wire::kind::AWARENESS);
+        assert_eq!(received.1, presence);
     }
 }
