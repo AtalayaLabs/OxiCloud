@@ -22,6 +22,36 @@
 # to `/carddav/{book}/{uid}.vcf`. Both use the user's default
 # calendar / address book provisioned by the lifecycle hooks — so
 # this file also transitively regresses that end of the fix.
+#
+# IT IS ALSO THE CROSS-USER AUTHORIZATION COVERAGE FOR DAV.
+# Steps 9-19 have a second user attack the admin's calendar and
+# address book across PROPPATCH / DELETE / GET / REPORT / PUT, for
+# both VEVENT and VTODO. That is stated here because the file name
+# does not say so, and the `caldav_*.hurl` files are single-user by
+# design — someone grepping those for a denial test concludes, wrongly,
+# that none exists. If you add a DAV verb, its denial belongs here.
+#
+# Two conventions worth keeping when extending:
+#   * assert the EXACT status on a denial — `404`, not `4xx`. A caller
+#     holding no permission at all must get the anti-enumeration shape;
+#     a `403` would confirm the calendar exists, and a range assertion
+#     accepts it silently. (Steps 3-13 predate this and use ranges:
+#     their job was "never 5xx" for the #545 regression, a weaker and
+#     different property. New denials should be exact.)
+#   * for anything that returns a body, assert the owner's data is
+#     ABSENT as well as the status: a 207 multistatus can be
+#     "successful" and still leak the objects it should have hidden,
+#     and an empty 207 still confirms the collection exists.
+#
+# One fixture rule that bites silently: an object's UID must EQUAL its
+# resource name minus `.ics`. GET and DELETE derive the UID from the URL
+# (`filename.trim_end_matches(".ics")`) and look it up by that, so a
+# fixture PUT as `foo.ics` carrying `UID:foo@example.test` stores fine
+# and then 404s on every read. Worse for a denial test: the 404 you
+# asserted arrives because the object is unfindable, not because the
+# caller was refused — the assertion passes while testing nothing.
+# The fixtures here originally had that mismatch; it was invisible until
+# a step tried to read one back.
 # =============================================================
 
 
@@ -115,7 +145,7 @@ BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//OxiCloud test//EN
 BEGIN:VEVENT
-UID:dav-error-test-ok@oxicloud.test
+UID:dav-error-test-ok
 DTSTAMP:20260101T120000Z
 DTSTART:20260101T120000Z
 DTEND:20260101T130000Z
@@ -354,7 +384,174 @@ status < 500
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 14 — Sanity: admin's own PROPPATCH still succeeds. Guards
+# Step 14 — Admin stores a VTODO.
+#
+# Steps 9-13 all target VEVENTs and calendar/address-book
+# collections. Tasks (#755) are a PARALLEL implementation, not a
+# shared one: `get_todo_by_ical_uid` / `delete_todo` /
+# `calendar_id_for_todo` mirror their event twins line for line.
+# Copy-paste is where two gates drift apart unnoticed, so the
+# task path needs its own pin rather than inheriting the event's.
+# ─────────────────────────────────────────────────────────────
+PUT {{base_url}}/caldav/{{default_calendar_id}}/dav-error-test-todo.ics
+Authorization: Bearer {{admin_token}}
+Content-Type: text/calendar
+```
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//OxiCloud test//EN
+BEGIN:VTODO
+UID:dav-error-test-todo
+DTSTAMP:20260101T120000Z
+SUMMARY:Regression sanity task
+END:VTODO
+END:VCALENDAR
+```
+
+HTTP *
+[Asserts]
+status >= 200
+status < 400
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 15 — Alice GET on admin's event and task.
+#
+# Reads take a different route from the verbs above: they are
+# gated by `has_calendar_perm(…, Read)`, which returns a bool and
+# yields None rather than raising. That makes the denial a
+# not-found produced by the handler, not by the error mapper — a
+# separate path, and one no step so far exercises.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/caldav/{{default_calendar_id}}/dav-error-test-ok.ics
+Authorization: Bearer {{alice_token}}
+
+HTTP 404
+[Asserts]
+body not contains "Regression sanity happy path"
+
+
+GET {{base_url}}/caldav/{{default_calendar_id}}/dav-error-test-todo.ics
+Authorization: Bearer {{alice_token}}
+
+HTTP 404
+[Asserts]
+body not contains "Regression sanity task"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 16 — Alice REPORT over admin's calendar.
+#
+# The body assertions carry the weight here. A multistatus can be
+# a "successful" 207 while still listing objects the caller may
+# not see, so a status check alone would pass a server that
+# leaks. Assert on content: neither summary may appear, whatever
+# the status turns out to be.
+# ─────────────────────────────────────────────────────────────
+REPORT {{base_url}}/caldav/{{default_calendar_id}}/
+Authorization: Bearer {{alice_token}}
+Depth: 1
+Content-Type: application/xml
+```
+<?xml version="1.0" encoding="UTF-8"?>
+<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:prop><D:getetag/><C:calendar-data/></D:prop>
+  <C:filter><C:comp-filter name="VCALENDAR"/></C:filter>
+</C:calendar-query>
+```
+
+HTTP 404
+[Asserts]
+body not contains "Regression sanity happy path"
+body not contains "Regression sanity task"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 17 — Alice PUT into admin's calendar, twice: once creating
+# a new object, once overwriting an existing one.
+#
+# Both route through the single `upsert_ical_objects` gate
+# (`Permission::Create`), but they take different branches inside
+# it — insert versus update — and only the second can destroy
+# data that already exists.
+# ─────────────────────────────────────────────────────────────
+PUT {{base_url}}/caldav/{{default_calendar_id}}/dav-error-alice-intruder.ics
+Authorization: Bearer {{alice_token}}
+Content-Type: text/calendar
+```
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//OxiCloud test//EN
+BEGIN:VTODO
+UID:dav-error-alice-intruder
+DTSTAMP:20260101T120000Z
+SUMMARY:Alice should not be able to store this
+END:VTODO
+END:VCALENDAR
+```
+
+HTTP 404
+
+
+PUT {{base_url}}/caldav/{{default_calendar_id}}/dav-error-test-todo.ics
+Authorization: Bearer {{alice_token}}
+Content-Type: text/calendar
+```
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//OxiCloud test//EN
+BEGIN:VTODO
+UID:dav-error-test-todo
+DTSTAMP:20260101T120000Z
+SUMMARY:Overwritten by Alice
+END:VTODO
+END:VCALENDAR
+```
+
+HTTP 404
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 18 — Alice DELETE on admin's task.
+#
+# The task twin of Step 11. The delete path resolves the .ics
+# name to an id *within* the named calendar, then re-derives the
+# owning calendar from that id before checking permission — two
+# independent gates. This is the request that fails if either is
+# removed as redundant.
+# ─────────────────────────────────────────────────────────────
+DELETE {{base_url}}/caldav/{{default_calendar_id}}/dav-error-test-todo.ics
+Authorization: Bearer {{alice_token}}
+
+HTTP 404
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 19 — Nothing Alice attempted actually happened.
+#
+# The load-bearing step of this group. Every assertion above
+# would still pass against a server that denied the *response*
+# after performing the write; only re-reading as the owner proves
+# the objects survived, unmodified, and that the intruder was
+# never created.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/caldav/{{default_calendar_id}}/dav-error-test-todo.ics
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+[Asserts]
+body contains "Regression sanity task"
+body not contains "Overwritten by Alice"
+
+
+GET {{base_url}}/caldav/{{default_calendar_id}}/dav-error-alice-intruder.ics
+Authorization: Bearer {{admin_token}}
+
+HTTP 404
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 20 — Sanity: admin's own PROPPATCH still succeeds. Guards
 # against a fix that over-corrects and starts denying legitimate
 # writes. `HTTP *` because PROPPATCH multi-status can be 207 or
 # 200 depending on the property set; we assert the negative
@@ -381,10 +578,20 @@ status < 400
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 15 — Cleanup: delete Alice so downstream test files don't
+# Step 21 — Cleanup: delete Alice so downstream test files don't
 # inherit an extra user (per feedback_hurl_teardown_shared_db —
-# state carries across the run.sh invocation).
+# state carries across the run.sh invocation), and drop the task
+# fixture Step 14 added to the admin's *default* calendar, which
+# lives for the whole run.
 # ─────────────────────────────────────────────────────────────
+DELETE {{base_url}}/caldav/{{default_calendar_id}}/dav-error-test-todo.ics
+Authorization: Bearer {{admin_token}}
+
+HTTP *
+[Asserts]
+status < 500
+
+
 DELETE {{base_url}}/api/admin/users/{{alice_id}}
 Authorization: Bearer {{admin_token}}
 
