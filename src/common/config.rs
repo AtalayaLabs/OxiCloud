@@ -2398,18 +2398,24 @@ pub struct FeaturesConfig {
     ///   * Hurl smoke coverage — 28 scenarios in `rt_bus_check.sh`,
     ///     six of them collab-specific (S20-S28).
     ///
-    /// Off by default in the current release cycle so operators can
-    /// opt in on their own schedule. Flipping the default to `true`
-    /// is a release-cycle decision — the feature is production-ready
-    /// once `OXICLOUD_ENABLE_MESSAGE_BUS` is also on. Beyond the
-    /// blockers above, two non-blocking follow-ups are worth
-    /// mentioning in release notes: (1) folder-scoped grant revoke
-    /// does not proactively evict collab sessions on descendant files
-    /// (an intentional design skip — see `docs/plan/markdown-collab.md
-    /// § Eviction`), and (2) group-membership loss awaits the ReBAC
-    /// migration.
+    /// **On by default as of 2026-09-21.** The audit above lists the
+    /// shipped surface; opt out with
+    /// `OXICLOUD_ENABLE_MARKDOWN_COLLAB=false` for any deployment
+    /// that specifically doesn't want live Yjs routing on the wire.
     ///
-    /// Env: `OXICLOUD_ENABLE_MARKDOWN_COLLAB` (default `false`).
+    /// Two non-blocking follow-ups worth mentioning in release notes:
+    ///
+    ///   1. Folder-scoped grant revoke does NOT proactively evict
+    ///      collab sessions on descendant files (intentional — see
+    ///      `docs/plan/markdown-collab.md § Eviction` for the
+    ///      data-loss trade-off that motivated the skip). Per-frame
+    ///      Update AuthZ + `rt.write_denied` catch the caller within
+    ///      one keystroke.
+    ///   2. Group-membership loss awaits the ReBAC migration. Wire
+    ///      path is already in place — see
+    ///      `[[project_collab_authz_eviction_pending]]`.
+    ///
+    /// Env: `OXICLOUD_ENABLE_MARKDOWN_COLLAB` (default `true`).
     pub enable_markdown_collab: bool,
 
     /// Background purge of expired `storage.role_grants` rows.
@@ -2622,14 +2628,16 @@ impl Default for FeaturesConfig {
             // reachable at `/webdav/@drive/`.
             webdav_drive_listing_prefix: "@drive".to_string(),
             enable_message_bus: true, // Message bus (WS + ticket) on by default
-            // Off by default in this release cycle. All C1-C7 phases
-            // (backend, editor, robustness) shipped as of 2026-09-21;
-            // see the field doc-comment for the audit. Flipping the
-            // default is a release-cycle decision — operators opting
-            // in explicitly today is the safer rollout while the
-            // eviction / write-denied vocabulary settles into
-            // production traffic. Requires enable_message_bus.
-            enable_markdown_collab: false,
+            // On by default as of 2026-09-21: every C1-C7 phase plus
+            // the full eviction / graceful-denial / doc-size-cap
+            // robustness pass has shipped and is covered by 28 hurl
+            // scenarios. See the field doc-comment for the audit.
+            // Requires enable_message_bus (which also defaults on);
+            // the cross-flag boot check in `from_env` will refuse to
+            // start if collab is on but the bus is off, so this
+            // pair can only be inconsistent through an explicit
+            // operator override.
+            enable_markdown_collab: true,
             grant_cleanup: GrantCleanupConfig::default(),
             notifications_retention_days: 30, // 30 days is the plan's default
         }
