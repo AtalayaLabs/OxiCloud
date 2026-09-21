@@ -184,6 +184,7 @@ pub const KNOWN: &[(&str, &str)] = &[
     ("features", "OXICLOUD_COLLAB_IDLE_SCAN_INTERVAL_SECS"),
     ("features", "OXICLOUD_COLLAB_IDLE_TTL_MINUTES"),
     ("features", "OXICLOUD_COLLAB_IDLE_TTL_SECONDS"),
+    ("features", "OXICLOUD_COLLAB_MAX_DOC_BYTES"),
     ("features", "OXICLOUD_ENABLE_FILE_SHARING"),
     ("features", "OXICLOUD_ENABLE_MARKDOWN_COLLAB"),
     ("features", "OXICLOUD_ENABLE_MUSIC"),
