@@ -1979,14 +1979,20 @@ log "S27 OK (file grant revoked → collab:<id> evicted with grant_revoked)"
 # we skip sending any UPDATE frame: the actor never dirties, so the
 # flush path never runs; the only writes are the initial upload and
 # the external replace.
-log "S28: external replace of a live-collab file evicts with reason=external_write."
+log "S28: WebDAV PUT overwrite of a live-collab file evicts with reason=external_write."
 
+# Upload the .md at the DRIVE ROOT so the WebDAV PUT below has a
+# trivial path (no folder-name path segment needed). WebDAV serves
+# the user's default drive, so `/webdav/s28-<suffix>.md` maps to a
+# root-level file. `s28-$suffix.md` keeps the name unique across
+# retries.
+s28_name="s28_${suffix}.md"
 tmp_md_s28="$(mktemp -t rtbus_s28_body.XXXXXX)"; : > "$tmp_md_s28"
 upload_resp_s28="$(mktemp -t rtbus_s28_resp.XXXXXX)"
 status=$(curl -sS -o "$upload_resp_s28" -w "%{http_code}" -X POST \
   -H "Authorization: Bearer $user1_token" \
-  -F "folder_id=$folder_a" \
-  -F "file=@$tmp_md_s28;filename=s28.md" \
+  -F "folder_id=$root_id" \
+  -F "file=@$tmp_md_s28;filename=$s28_name" \
   "$base_url/api/files/upload")
 rm -f "$tmp_md_s28"
 if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
@@ -2011,20 +2017,23 @@ ready_s28="$(mktemp -t rtbus_s28_ready.XXXXXX)"; rm -f "$ready_s28"
 helper_pid=$!
 wait_ready "$ready_s28"
 
-# External replace — upload with the same filename in the same folder
-# routes through FileUploadService's "existing file, replace content"
-# branch, which fires on_file_updated with WriteSource::External.
+# External replace — WebDAV PUT overwrites the existing file at
+# the same path. This routes through
+# FileUploadService::update_file_streaming_with_perms — the same
+# branch NextCloud PUT and WOPI PutFile take — which fires
+# on_file_updated with WriteSource::External. The multipart
+# `POST /api/files/upload` path would 409 on a duplicate name;
+# WebDAV PUT is the canonical external-write producer.
 tmp_md_replace="$(mktemp -t rtbus_s28_replace.XXXXXX)"
 printf 'external write from outside collab\n' > "$tmp_md_replace"
-replace_resp="$(mktemp -t rtbus_s28_replace_resp.XXXXXX)"
-status=$(curl -sS -o "$replace_resp" -w "%{http_code}" -X POST \
+status=$(curl -sS -o /dev/null -w "%{http_code}" -X PUT \
   -H "Authorization: Bearer $user1_token" \
-  -F "folder_id=$folder_a" \
-  -F "file=@$tmp_md_replace;filename=s28.md" \
-  "$base_url/api/files/upload")
-rm -f "$tmp_md_replace" "$replace_resp"
+  -H "Content-Type: text/markdown" \
+  --data-binary "@$tmp_md_replace" \
+  "$base_url/webdav/$s28_name")
+rm -f "$tmp_md_replace"
 if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
-  die "S28: external replace failed with HTTP $status"
+  die "S28: external replace via WebDAV PUT failed with HTTP $status"
 fi
 
 if ! wait "$helper_pid"; then
