@@ -362,10 +362,49 @@ Slice status (2026-09-21):
   `collab:<file_id>` topics — symmetric to the pre-existing
   folder-topic eviction cascade. Guarded by hurl S27 (user2 has
   a file-scoped Viewer grant, subscribes to collab, grant revoked
-  → revoked entry appears with grant_revoked reason). Folder-level
-  revokes that cascade to collab sessions on descendant files
-  remain Phase-B — would require enumerating the folder subtree
-  at revoke time.
+  → revoked entry appears with grant_revoked reason).
+
+  **Folder-level revoke cascade to descendant collab sessions:
+  intentionally NOT wired.** (Design considered 2026-09-21, rejected.)
+  The reasoning for future implementors:
+
+  - The per-frame Update AuthZ gate (see [`collab_session_service`'s
+    write path](../src/application/services/collab_session_service.rs)
+    + hurl S19 / S26) already blocks post-revoke UPDATEs at the wire.
+    A caller who loses Update via a folder revoke sees `rt.write_denied`
+    on their next keystroke (B's graceful denial); the FE's read-only
+    slice flips `#canWrite` and reconfigures the editor to read-only
+    within that same tick.
+  - `CollabSessionService::evict_sessions_for_file` publishes the
+    eviction control on the outbox and immediately breaks the actor
+    loop — it does NOT flush pending dirt first. Adding a folder-cascade
+    eviction path would therefore *lose* up to `debounce_max` (60s
+    prod) of pre-revoke edits that were authorized when applied and
+    are sitting in the debouncer waiting for the next flush tick.
+  - Skipping the cascade preserves those authorized edits: the actor
+    keeps running, the debouncer fires normally, pre-revoke edits
+    land in the blob, only post-revoke ephemeral keystrokes (which
+    the server refuses anyway) get discarded on the next reconnect.
+
+  So the trade-off is:
+  - ✅ Ship the cascade  → immediate "Disconnected" pill (feels
+    responsive), at the cost of losing up to 60s of authorized
+    pre-revoke work sitting in the debouncer.
+  - ✅ Skip the cascade   → one-keystroke lag before the editor
+    visibly drops to read-only, zero authorized-work loss.
+
+  Skipping wins. If a future need makes the visual feedback more
+  important than the data-loss window (e.g. an admin-kick action
+  that MUST be visibly enforced within milliseconds), extend the
+  eviction path to flush-before-shutdown FIRST, then wire the
+  cascade. Without that flush, cascading folder revokes is a
+  regression.
+
+  Note that `resource_deleted` (S24) and `external_write` (S28)
+  eviction paths are correct AS-IS without flush-before-shutdown:
+  in both cases discarding pending dirt is the right behaviour
+  (the file is going away, or the CRDT is already stale relative
+  to the fresh external blob).
 - ⬜ **`group_membership_lost`** — same wire path as
   `grant_revoked`, different producer. When a user is removed from
   a group that has a file grant, the group-membership service
