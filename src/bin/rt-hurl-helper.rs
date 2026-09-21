@@ -1284,31 +1284,130 @@ async fn collab_converge(args: Args) -> Result<(), HelperError> {
     let topic = format!("collab:{}", uuid_bytes_to_dashed(&file_id));
     subscribe_topic(&mut ws, &topic, deadline).await?;
 
-    // 2. Ready-file after the subscribe ack — the orchestrator uses
-    //    it to launch every peer in parallel only after they've all
-    //    installed their subscriptions, so no peer misses another's
-    //    initial UPDATE.
+    // 2. Sync-step-1 catch-up. Every real Yjs client does this on
+    //    connect, and the multi-client shape needs it: broadcast
+    //    subscribers only see UPDATEs from the moment they
+    //    subscribed forwards — earlier peers' inserts do NOT
+    //    replay through the broadcast channel. Without sync-step-1,
+    //    the last client to subscribe wins the CRDT race by seeing
+    //    only its own state; the earliest client sees everyone.
+    //    Sync-step-2 catches us up on whatever the actor's Doc
+    //    already holds, so subsequent broadcasts round out the
+    //    picture symmetrically for every peer.
+    //
+    //    State vector for a fresh empty Doc encodes to a single
+    //    `0x00` byte (varint count of clients = 0). Encoding the
+    //    real thing costs a `state_vector().encode_v1()` call and
+    //    changes nothing for a Doc that hasn't been touched yet.
+    let doc = Doc::new();
+    {
+        let mut req = Vec::with_capacity(18);
+        req.push(0x03); // kind::SYNC
+        req.extend_from_slice(&file_id);
+        req.push(0x00); // empty state vector
+        ws.send(Message::Binary(req.into())).await?;
+    }
+    // Await sync-step-2 reply. Skip UPDATE frames from peers that
+    // may have raced in ahead — we'll apply them AFTER sync-step-2
+    // in the main listen loop; the CRDT is idempotent so a duplicate
+    // apply is a no-op.
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(HelperError::Expectation(
+                "timeout waiting for sync-step-2 reply".into(),
+            ));
+        }
+        let msg = match timeout(remaining, ws.next()).await {
+            Ok(Some(Ok(m))) => m,
+            Ok(Some(Err(e))) => return Err(HelperError::Protocol(format!("ws error: {e}"))),
+            Ok(None) => {
+                return Err(HelperError::Protocol(
+                    "socket closed before sync-step-2 arrived".into(),
+                ));
+            }
+            Err(_) => {
+                return Err(HelperError::Expectation(
+                    "timeout waiting for sync-step-2 reply".into(),
+                ));
+            }
+        };
+        let bytes = match msg {
+            Message::Binary(b) => b,
+            _ => continue,
+        };
+        if bytes.len() < 17 {
+            continue;
+        }
+        let mut got_file_id = [0u8; 16];
+        got_file_id.copy_from_slice(&bytes[1..17]);
+        if got_file_id != file_id {
+            continue;
+        }
+        match bytes[0] {
+            0x03 => {
+                // sync-step-2 — apply the diff (may be a 1-byte
+                // empty-update marker for a fresh actor).
+                let payload = &bytes[17..];
+                if !payload.is_empty() {
+                    let update = Update::decode_v1(payload).map_err(|e| {
+                        HelperError::Expectation(format!("sync-step-2 decode: {e}"))
+                    })?;
+                    let mut txn = doc.transact_mut();
+                    txn.apply_update(update).map_err(|e| {
+                        HelperError::Expectation(format!("sync-step-2 apply: {e}"))
+                    })?;
+                }
+                break;
+            }
+            0x01 => {
+                // Peer UPDATE that arrived before our sync-step-2;
+                // apply it now — same idempotent CRDT contract.
+                let update = Update::decode_v1(&bytes[17..]).map_err(|e| {
+                    HelperError::Expectation(format!("early UPDATE decode: {e}"))
+                })?;
+                let mut txn = doc.transact_mut();
+                txn.apply_update(update).map_err(|e| {
+                    HelperError::Expectation(format!("early UPDATE apply: {e}"))
+                })?;
+                continue;
+            }
+            _ => continue,
+        }
+    }
+
+    // 3. Ready-file AFTER sync-step-2 caught up. The orchestrator's
+    //    barrier ensures every peer has both subscribed AND finished
+    //    its catch-up before any of them broadcasts — no client
+    //    inserts into a Doc that's about to receive a peer's
+    //    "existing" state.
     if let Some(path) = args.ready_file.as_deref()
         && let Err(e) = std::fs::write(path, b"")
     {
         eprintln!("rt-hurl-helper: could not touch --ready-file {path}: {e}");
     }
 
-    // 3. Local Y.Doc. Insert `my_content` at position 0. Different
-    //    clients insert different strings so a divergence bug shows
-    //    up as different final texts on different clients — the
-    //    strongest signal.
-    let doc = Doc::new();
+    // 4. Local insert. Position 0. Different clients insert different
+    //    strings so a divergence bug shows up as different final
+    //    texts across the five outputs.
     {
         let text = doc.get_or_insert_text("content");
         let mut txn = doc.transact_mut();
-        text.insert(&mut txn, 0, &my_content);
+        let cur_len = text.get_string(&txn).chars().count() as u32;
+        text.insert(&mut txn, cur_len, &my_content);
     }
+    // Encode the WHOLE doc — cheapest correct wire. Peers applied
+    // most of these bytes already via sync-step-2; Yjs is idempotent
+    // so the duplicate apply is a no-op. Bandwidth waste isn't the
+    // assertion here (a convergence test cares about final state,
+    // not wire size), and a proper "diff against post-sync state
+    // vector" would require capturing the SV before the insert —
+    // extra bookkeeping for zero test signal.
     let my_delta = doc
         .transact()
         .encode_state_as_update_v1(&StateVector::default());
 
-    // 4. Broadcast our contribution — [0x01][file_id][update].
+    // 5. Broadcast our contribution — [0x01][file_id][update].
     let mut frame = Vec::with_capacity(17 + my_delta.len());
     frame.push(0x01);
     frame.extend_from_slice(&file_id);
