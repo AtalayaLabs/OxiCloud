@@ -1006,6 +1006,29 @@ export class MessageBusClient {
 		return elapsed;
 	}
 
+	/** Explicit-flush for the collab actor of `fileId`. Fires
+	 *  `rt.collab_flush` and awaits the id-correlated `{ flushed:
+	 *  bool }` reply. Idempotent on the server: a clean actor
+	 *  short-circuits with `{ flushed: false }`. Callers get
+	 *  `null` on any transport failure (WS closed, denial, timeout
+	 *  before ack) — the flush is fire-and-forget from the user's
+	 *  perspective (tab close, unmount, visibility hidden), so the
+	 *  best we can do on failure is log and move on. */
+	async collabFlush(fileId: string): Promise<{ flushed: boolean } | null> {
+		try {
+			const result = (await this.#call((id) => ({
+				jsonrpc: '2.0',
+				id,
+				method: 'rt.collab_flush',
+				params: { file_id: fileId }
+			}))) as { flushed?: boolean } | undefined;
+			return { flushed: result?.flushed === true };
+		} catch (err) {
+			busLog.debug('collabFlush failed', { fileId, error: err });
+			return null;
+		}
+	}
+
 	#call(makeFrame: (id: number) => object): Promise<unknown> {
 		if (this.state !== 'connected' || !this.#ws) {
 			const err: MessageBusError = {

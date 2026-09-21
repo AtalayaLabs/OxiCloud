@@ -324,6 +324,35 @@ export class CollabDoc {
 		return this.doc.getText(ROOT_TEXT_NAME);
 	}
 
+	/** Explicit flush — asks the server to materialise the CRDT to
+	 *  the file's blob NOW instead of waiting for the debouncer.
+	 *
+	 *  Called from three places in `CollabEditor`:
+	 *    * `visibilitychange → hidden` — user switched tabs / minimised
+	 *      / locked screen. Idempotent + cheap when the doc is
+	 *      already clean.
+	 *    * `pagehide` — a more reliable "we're going away" hook than
+	 *      `beforeunload`, especially for tab close on Safari.
+	 *    * `$effect` cleanup on component unmount — route change,
+	 *      logout, or the collab feature toggling off.
+	 *
+	 *  Best-effort by design: `MessageBusClient.collabFlush` returns
+	 *  `null` on transport failure and this method never throws. When
+	 *  the socket is already closed or the caller lost Update, the
+	 *  ambient debouncer + `debounce_max` (default 60 s) still bounds
+	 *  worst-case staleness — this method just tightens the common
+	 *  case to sub-second latency. */
+	async flush(): Promise<void> {
+		if (this.#destroyed || !this.#unsubscribeTopic) return;
+		// Only bother flushing when we have write capability. A Viewer
+		// has nothing to flush; a session that lost `#canWrite` via a
+		// grant drop or a doc-too-large denial has already been read-
+		// onlied on the client, and the server would refuse the flush
+		// with `no_edit` anyway.
+		if (!this.#canWrite) return;
+		await messageBus.collabFlush(this.fileId);
+	}
+
 	/** Reactive-friendly getter for the current sync state. */
 	syncState(): SyncState {
 		return this.#syncState;

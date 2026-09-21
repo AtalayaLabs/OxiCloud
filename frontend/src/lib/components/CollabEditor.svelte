@@ -17,13 +17,11 @@
 	// The compartment defaults to read-only until the ack lands —
 	// fail-closed, matching the server's own gate.
 	//
-	// Still ahead:
-	//   * Explicit rt.collab_flush on unmount — the debouncer already
-	//     bounds staleness to 60s; wiring `beforeunload` is a polish
-	//     slice.
-	//   * Grant-drop mid-session eviction — today a demoted Editor
-	//     keeps their local capability cache until reconnect. See
-	//     `project_collab_authz_eviction_pending`.
+	// Explicit-flush hooks: `visibilitychange → hidden`, `pagehide`,
+	// and $effect cleanup all fire `rt.collab_flush` to tighten
+	// worst-case staleness on the file's blob from ≤60 s (the
+	// debouncer's max) down to sub-second latency. See the effect
+	// body below for the wiring.
 
 	// CodeMirror runtime lives entirely inside the mount effect —
 	// dynamic-imported below alongside the language grammar. Only
@@ -495,8 +493,56 @@
 			reconfigureReadOnly(readOnly);
 		})();
 
+		// Explicit-flush hooks. The debouncer's `debounce_max` (default
+		// 60 s server-side) bounds worst-case staleness; these three
+		// events tighten the common case to sub-second latency by asking
+		// the server to flush NOW when the user is visibly done with the
+		// tab. All three fire the same idempotent `rt.collab_flush` —
+		// a clean actor short-circuits with `{ flushed: false }`, so
+		// firing on every visibility toggle costs a round-trip at
+		// worst.
+		//
+		//   * `visibilitychange → hidden` — the primary hook. Fires
+		//     reliably across browsers on tab switch / minimise /
+		//     screen lock. Also fires on tab close in most cases.
+		//   * `pagehide` — belt for the tab-close path, especially on
+		//     Safari where `visibilitychange` sometimes misses the
+		//     final close.
+		//   * `$effect` cleanup below — braces for programmatic
+		//     unmount (route change, logout, feature toggle off).
+		const flushIfLive = () => {
+			// `collab` may already be undefined mid-cleanup — guard.
+			if (!cancelled && collab) {
+				void collab.flush();
+			}
+		};
+		const onVisibility = () => {
+			if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+				flushIfLive();
+			}
+		};
+		const onPageHide = () => flushIfLive();
+		if (typeof document !== 'undefined') {
+			document.addEventListener('visibilitychange', onVisibility);
+		}
+		if (typeof window !== 'undefined') {
+			window.addEventListener('pagehide', onPageHide);
+		}
+
 		return () => {
 			cancelled = true;
+			// Unmount flush BEFORE destroy — otherwise the WS is gone
+			// by the time the flush fires and we lose the window.
+			// Best-effort: `flush()` swallows errors internally so a
+			// dead socket collapses to a debug log, not an unhandled
+			// promise rejection.
+			void collab?.flush();
+			if (typeof document !== 'undefined') {
+				document.removeEventListener('visibilitychange', onVisibility);
+			}
+			if (typeof window !== 'undefined') {
+				window.removeEventListener('pagehide', onPageHide);
+			}
 			view?.destroy();
 			view = undefined;
 			collab?.destroy();
