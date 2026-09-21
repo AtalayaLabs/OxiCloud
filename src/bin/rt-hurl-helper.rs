@@ -47,6 +47,16 @@
 //!   --file $FILE_UUID \
 //!   --content "hello from A" \
 //!   --timeout 5s
+//!
+//! rt-hurl-helper collab-converge \
+//!   --url ws://127.0.0.1:$PORT/api/rt/ws \
+//!   --token $USER_JWT \
+//!   --file $FILE_UUID \
+//!   --my-content "alpha " \
+//!   --settle-ms 500 \
+//!   --ready-file /tmp/ready.c0 \
+//!   --output /tmp/s29_c0.json \
+//!   --timeout 15s
 //! ```
 //!
 //! Exit codes:
@@ -128,6 +138,16 @@ struct Args {
     /// after decoding the incoming UPDATE.
     content: Option<String>,
     expect_content: Option<String>,
+    /// `--settle-ms <n>` — collab-converge exit condition: leave the
+    /// listen loop when no update has arrived for this many
+    /// milliseconds. Default 500. Bounded by `--timeout` — a truly
+    /// stuck fan-out surfaces as a timeout, not an early exit.
+    settle_ms: Option<u64>,
+    /// `--my-content <string>` — collab-converge only: the string
+    /// this client inserts at position 0 of its local Y.Doc.
+    /// Different across peers so a divergence bug shows up as
+    /// different final texts on different clients.
+    my_content: Option<String>,
     /** `--expect-write-denied <reason>` — after `collab-fanout-write`
      *  sends its UPDATE, stay connected and wait for an
      *  `rt.write_denied` notification with the given `reason`. On
@@ -166,6 +186,21 @@ enum Mode {
     /// unchanged content. Used by S22 to prove the WS-level flush
     /// trigger works without waiting on the debouncer.
     CollabFlush,
+    /// Multi-client CRDT convergence probe: subscribe to
+    /// `collab:<file_id>`, insert `--my-content` at position 0 of a
+    /// local Y.Doc, broadcast the resulting delta, then keep applying
+    /// incoming updates until the doc has been quiet for
+    /// `--settle-ms` (default 500 ms). Write the final decoded text
+    /// to `--output` so the shell orchestrator can `diff` every
+    /// client's output — identical outputs across N clients prove
+    /// convergence.
+    ///
+    /// Used by the 5+ headless-client integration test (S29) — the
+    /// C7 robustness item the plan calls out. Guards a class of
+    /// regressions the 2-client S22 can't reach: broadcast-channel
+    /// backpressure under contention, forwarder lag handling on the
+    /// slowest client, and CRDT ordering when writes interleave.
+    CollabConverge,
 }
 
 /// Parse a canonical dashed UUID (e.g. `f47ac10b-58cc-4372-a567-0e02b2c3d479`)
@@ -215,6 +250,7 @@ fn parse_args() -> Result<Args, String> {
         Some("collab-fanout-listen") => Mode::CollabFanoutListen,
         Some("collab-fanout-write") => Mode::CollabFanoutWrite,
         Some("collab-flush") => Mode::CollabFlush,
+        Some("collab-converge") => Mode::CollabConverge,
         Some(other) => return Err(format!("unknown mode: {other}")),
         None => return Err("mode is required".into()),
     };
@@ -233,6 +269,8 @@ fn parse_args() -> Result<Args, String> {
     let mut content = None;
     let mut expect_content = None;
     let mut expect_write_denied = None;
+    let mut settle_ms = None;
+    let mut my_content = None;
 
     while let Some(flag) = it.next() {
         let value = it
@@ -265,6 +303,14 @@ fn parse_args() -> Result<Args, String> {
             "--content" => content = Some(value),
             "--expect-content" => expect_content = Some(value),
             "--expect-write-denied" => expect_write_denied = Some(value),
+            "--settle-ms" => {
+                settle_ms = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| format!("--settle-ms not a number: {value}"))?,
+                );
+            }
+            "--my-content" => my_content = Some(value),
             other => return Err(format!("unknown flag: {other}")),
         }
     }
@@ -294,6 +340,8 @@ fn parse_args() -> Result<Args, String> {
         content,
         expect_content,
         expect_write_denied,
+        settle_ms,
+        my_content,
     })
 }
 
@@ -318,6 +366,7 @@ async fn main() -> ExitCode {
         Mode::CollabFanoutListen => collab_fanout_listen(args).await,
         Mode::CollabFanoutWrite => collab_fanout_write(args).await,
         Mode::CollabFlush => collab_flush(args).await,
+        Mode::CollabConverge => collab_converge(args).await,
     };
 
     match result {
@@ -1211,4 +1260,146 @@ async fn collab_flush(args: Args) -> Result<(), HelperError> {
         }
         return Ok(());
     }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Mode: collab-converge (multi-client CRDT convergence probe)
+// ════════════════════════════════════════════════════════════════════════════
+
+async fn collab_converge(args: Args) -> Result<(), HelperError> {
+    let file_id = args.file_id.ok_or_else(|| {
+        HelperError::Protocol("--file <uuid> required for collab-converge".into())
+    })?;
+    let my_content = args.my_content.clone().ok_or_else(|| {
+        HelperError::Protocol("--my-content <string> required for collab-converge".into())
+    })?;
+    let settle = Duration::from_millis(args.settle_ms.unwrap_or(500));
+
+    let mut ws = connect_ws(&args.url, &args.auth).await?;
+    let deadline = tokio::time::Instant::now() + args.timeout;
+
+    // 1. Subscribe on the collab topic — clears the Read gate and
+    //    installs the actor's forwarder so this socket receives
+    //    every peer's subsequent UPDATE.
+    let topic = format!("collab:{}", uuid_bytes_to_dashed(&file_id));
+    subscribe_topic(&mut ws, &topic, deadline).await?;
+
+    // 2. Ready-file after the subscribe ack — the orchestrator uses
+    //    it to launch every peer in parallel only after they've all
+    //    installed their subscriptions, so no peer misses another's
+    //    initial UPDATE.
+    if let Some(path) = args.ready_file.as_deref()
+        && let Err(e) = std::fs::write(path, b"")
+    {
+        eprintln!("rt-hurl-helper: could not touch --ready-file {path}: {e}");
+    }
+
+    // 3. Local Y.Doc. Insert `my_content` at position 0. Different
+    //    clients insert different strings so a divergence bug shows
+    //    up as different final texts on different clients — the
+    //    strongest signal.
+    let doc = Doc::new();
+    {
+        let text = doc.get_or_insert_text("content");
+        let mut txn = doc.transact_mut();
+        text.insert(&mut txn, 0, &my_content);
+    }
+    let my_delta = doc
+        .transact()
+        .encode_state_as_update_v1(&StateVector::default());
+
+    // 4. Broadcast our contribution — [0x01][file_id][update].
+    let mut frame = Vec::with_capacity(17 + my_delta.len());
+    frame.push(0x01);
+    frame.extend_from_slice(&file_id);
+    frame.extend_from_slice(&my_delta);
+    ws.send(Message::Binary(frame.into())).await?;
+
+    // 5. Listen for peer UPDATEs, applying each to our local Doc.
+    //    Exit when `settle` elapses with no new frame — that's when
+    //    the fan-out has visibly quiesced. Bounded by `deadline` (the
+    //    caller's `--timeout`) so a wedged fan-out surfaces loudly.
+    let mut peer_updates_applied: usize = 0;
+    let mut last_frame_at = tokio::time::Instant::now();
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            // Overall timeout — write whatever we have and let the
+            // shell decide. Do NOT return Err here: a slow fan-out
+            // will diff against other clients' outputs and the shell
+            // can distinguish "one client stuck" from "everyone
+            // converged".
+            break;
+        }
+        // Settle: no incoming frame for `settle_ms` since the last
+        // observed frame — the fan-out is quiet. Because our own
+        // UPDATE fires an actor-side broadcast that reaches us too
+        // (idempotent in Yjs), `last_frame_at` moves off the initial
+        // send time within the first read.
+        if now.saturating_duration_since(last_frame_at) >= settle {
+            break;
+        }
+        let recv_deadline = std::cmp::min(deadline, last_frame_at + settle);
+        let remaining = recv_deadline.saturating_duration_since(now);
+        let msg = match timeout(remaining, ws.next()).await {
+            Ok(Some(Ok(m))) => m,
+            Ok(Some(Err(e))) => return Err(HelperError::Protocol(format!("ws error: {e}"))),
+            Ok(None) => break,  // socket closed by peer — fall through to output
+            Err(_) => continue, // no frame in the window; the outer loop re-checks the settle window
+        };
+        let bytes = match msg {
+            Message::Binary(b) => b,
+            _ => continue,
+        };
+        if bytes.len() < 17 || bytes[0] != 0x01 {
+            continue;
+        }
+        let mut got_file_id = [0u8; 16];
+        got_file_id.copy_from_slice(&bytes[1..17]);
+        if got_file_id != file_id {
+            continue;
+        }
+        // Apply the update. A malformed peer frame is a protocol
+        // violation — surface it rather than silently swallowing.
+        let update = Update::decode_v1(&bytes[17..])
+            .map_err(|e| HelperError::Expectation(format!("peer update didn't decode: {e}")))?;
+        {
+            let mut txn = doc.transact_mut();
+            txn.apply_update(update)
+                .map_err(|e| HelperError::Expectation(format!("apply_update failed: {e}")))?;
+        }
+        peer_updates_applied += 1;
+        last_frame_at = tokio::time::Instant::now();
+    }
+
+    // 6. Decode the converged text and write it as JSON. The shell
+    //    diffs every client's `final_text` — identical across all N
+    //    clients proves convergence. Yjs's CRDT ordering is
+    //    deterministic given the same set of ops, so any divergence
+    //    means a fan-out gap (a client didn't see some peer's UPDATE)
+    //    or a decode / apply bug.
+    let final_text = {
+        let text = doc.get_or_insert_text("content");
+        text.get_string(&doc.transact())
+    };
+    let final_length = final_text.chars().count();
+    if let Some(path) = args.output.as_ref() {
+        let summary = json!({
+            "my_content":            my_content,
+            "final_text":            final_text,
+            "final_length":          final_length,
+            "peer_updates_applied":  peer_updates_applied,
+        });
+        std::fs::write(path, serde_json::to_vec_pretty(&summary).unwrap())
+            .map_err(|e| HelperError::Protocol(format!("write output: {e}")))?;
+    }
+    // Sanity: our own insertion MUST be in the converged text — a
+    // helper that reports "converged" without carrying its own
+    // contribution is broken.
+    if !final_text.contains(&my_content) {
+        return Err(HelperError::Expectation(format!(
+            "my own insertion missing from converged text: {my_content:?} not in {final_text:?}",
+        )));
+    }
+    Ok(())
 }

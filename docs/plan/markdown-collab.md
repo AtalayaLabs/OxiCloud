@@ -770,9 +770,15 @@ abbreviated, per project convention.
   custom provider + basic route. `.md` split-preview. ~5 days.
 - **C6 — Presence polish (collab-scoped).** Avatar rail, cursor
   colors, hover-to-highlight, follow-cursor. ~2 days.
-- **C7 — Robustness pass.** Out-of-band write eviction, oversized
-  file refusal, idle GC, malformed-frame handling, audit lines,
-  integration test with 5+ headless clients. ~4 days.
+- **C7 — Robustness pass.** ✅ Shipped 2026-09-21. Out-of-band write
+  eviction (S28 `external_write`), oversized-doc refusal
+  (`max_doc_bytes` + `rt.write_denied doc_too_large`), idle GC
+  (S23 `collab_idle_gc` job), malformed-frame handling
+  (`collab.protocol_violation` audit + WS close),
+  audit lines on every denial / eviction path, and the 5-headless-
+  client convergence test (S29 via new `rt-hurl-helper collab-converge`
+  mode — each peer inserts a distinct string and every peer's final
+  decoded text must be byte-identical).
 - **Later — Version history.** `collab.doc_snapshots`, "Name this
   version", restore. ~3 days.
 

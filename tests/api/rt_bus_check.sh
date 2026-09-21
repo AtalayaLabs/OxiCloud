@@ -116,6 +116,20 @@
 #                                       dedup because rows would come
 #                                       in both via WS push and via
 #                                       the delta fetch).
+#   S29 Collab multi-client convergence
+#                             — 5 headless clients on the same .md
+#                                file each subscribe, insert a
+#                                distinct string, and listen until
+#                                the fan-out quiesces. All 5 clients'
+#                                final decoded texts MUST be
+#                                byte-identical — that's CRDT
+#                                convergence in one assertion. Guards
+#                                the C7 robustness item: broadcast
+#                                backpressure under contention,
+#                                forwarder lag handling, and CRDT
+#                                ordering when writes interleave —
+#                                none of which the 2-client S22 can
+#                                reach.
 #   S28 Collab external-write eviction
 #                             — a .md file is under active collab
 #                                edit; a REST upload replaces its
@@ -2030,4 +2044,116 @@ rev_reason_s28=$(jq -r '.revoked[0].reason' "$out_s28")
 rm -f "$out_s28"
 log "S28 OK (external replace → collab:<id> evicted with external_write)"
 
-log "All twenty-eight message-bus scenarios passed."
+# ── Scenario 29 — Multi-client convergence (C7 robustness) ────────────────
+# Five headless clients on the same .md file each subscribe, insert a
+# distinct string, and listen until the fan-out quiesces. All five
+# `final_text` outputs MUST be byte-identical — that's CRDT convergence
+# in one assertion. Guards a class of regressions the 2-client S22 can't
+# reach: broadcast backpressure, forwarder lag on the slowest client,
+# and CRDT ordering when writes interleave.
+log "S29: 5-client CRDT convergence — all peers agree on the same final text."
+
+tmp_md_s29="$(mktemp -t rtbus_s29_body.XXXXXX)"; : > "$tmp_md_s29"
+upload_resp_s29="$(mktemp -t rtbus_s29_resp.XXXXXX)"
+status=$(curl -sS -o "$upload_resp_s29" -w "%{http_code}" -X POST \
+  -H "Authorization: Bearer $user1_token" \
+  -F "folder_id=$folder_a" \
+  -F "file=@$tmp_md_s29;filename=s29.md" \
+  "$base_url/api/files/upload")
+rm -f "$tmp_md_s29"
+if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
+  cat "$upload_resp_s29" >&2; rm -f "$upload_resp_s29"
+  die "S29: .md upload failed with HTTP $status"
+fi
+s29_file_id=$(jq -r '.id' "$upload_resp_s29")
+rm -f "$upload_resp_s29"
+[[ -n "$s29_file_id" && "$s29_file_id" != "null" ]] || die "S29: could not extract file id"
+
+# Distinct insertions per client — a divergence bug surfaces as
+# different final_text values across the five outputs. Same length
+# for each so the converged text has a predictable total.
+S29_INSERTIONS=("alpha " "bravo " "delta " "gamma " "kappa ")
+S29_CLIENTS=5
+
+s29_ready_files=()
+s29_output_files=()
+s29_pids=()
+
+# Launch all 5 clients in parallel. Each blocks on its own ready-file
+# path, so orchestration waits for all subscribes to install BEFORE
+# any peer's UPDATE goes out. Without that, a slow subscribe would
+# miss earlier peers' initial inserts and the final text would be
+# missing that peer's contribution — surfacing as divergence rather
+# than a stuck peer.
+for i in $(seq 0 $((S29_CLIENTS - 1))); do
+  out=$(mktemp -t "rtbus_s29_c${i}.XXXXXX")
+  ready=$(mktemp -t "rtbus_s29_c${i}_ready.XXXXXX"); rm -f "$ready"
+  s29_output_files+=("$out")
+  s29_ready_files+=("$ready")
+  "$HELPER_BIN" collab-converge \
+    --url "$ws_url" \
+    --token "$user1_token" \
+    --file "$s29_file_id" \
+    --my-content "${S29_INSERTIONS[$i]}" \
+    --settle-ms 800 \
+    --timeout 15s \
+    --ready-file "$ready" \
+    --output "$out" &
+  s29_pids+=($!)
+done
+
+# Wait for every client's subscribe ack.
+for ready in "${s29_ready_files[@]}"; do
+  wait_ready "$ready"
+done
+
+# All 5 subscribes installed — now the clients start broadcasting
+# their inserts. Wait for every client to exit.
+s29_failed=0
+for pid in "${s29_pids[@]}"; do
+  if ! wait "$pid"; then
+    s29_failed=1
+  fi
+done
+if [[ "$s29_failed" -ne 0 ]]; then
+  for out in "${s29_output_files[@]}"; do
+    printf '\n--- %s ---\n' "$out" >&2
+    cat "$out" >&2 || true
+  done
+  die "S29: at least one client exited non-zero"
+fi
+
+# Convergence assertion — every final_text must equal client 0's.
+c0_text=$(jq -r '.final_text' "${s29_output_files[0]}")
+c0_len=$(jq -r '.final_length' "${s29_output_files[0]}")
+[[ -n "$c0_text" && "$c0_text" != "null" ]] \
+  || { cat "${s29_output_files[0]}"; die "S29: client 0 has no final_text"; }
+# Total length must be sum of every insertion — 5 × 6 chars = 30.
+expected_len=30
+[[ "$c0_len" == "$expected_len" ]] \
+  || { for out in "${s29_output_files[@]}"; do cat "$out"; done
+       die "S29: client 0 length $c0_len != expected $expected_len"; }
+for i in $(seq 1 $((S29_CLIENTS - 1))); do
+  ci_text=$(jq -r '.final_text' "${s29_output_files[$i]}")
+  if [[ "$ci_text" != "$c0_text" ]]; then
+    for out in "${s29_output_files[@]}"; do
+      printf '\n--- %s ---\n' "$out" >&2
+      cat "$out" >&2 || true
+    done
+    die "S29: client $i diverged from client 0
+  c0: $c0_text
+  ci: $ci_text"
+  fi
+done
+# Every insertion must be present in the converged text — a helper
+# that trivially converged on empty would fail this.
+for insertion in "${S29_INSERTIONS[@]}"; do
+  [[ "$c0_text" == *"$insertion"* ]] \
+    || die "S29: converged text missing $insertion: $c0_text"
+done
+
+# Cleanup
+for out in "${s29_output_files[@]}"; do rm -f "$out"; done
+log "S29 OK (5 clients converged: $c0_len chars, text=$c0_text)"
+
+log "All twenty-nine message-bus scenarios passed."

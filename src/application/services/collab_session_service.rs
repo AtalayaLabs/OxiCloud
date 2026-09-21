@@ -191,10 +191,7 @@ pub enum CollabError {
     /// symmetric with the AuthzDenied write-path treatment
     /// introduced in the graceful-write-denied slice.
     #[error("doc size cap ({limit_bytes} B) exceeded on file {file_id}")]
-    DocTooLarge {
-        file_id: Uuid,
-        limit_bytes: usize,
-    },
+    DocTooLarge { file_id: Uuid, limit_bytes: usize },
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -615,11 +612,7 @@ impl ActorState {
         // BEFORE apply so the offending update never enters the CRDT
         // — Yjs has no rollback in `yrs`, and applying-then-refusing
         // would leave the doc permanently over the cap.
-        if self
-            .doc_bytes
-            .saturating_add(bytes.len())
-            > self.limits.max_doc_bytes
-        {
+        if self.doc_bytes.saturating_add(bytes.len()) > self.limits.max_doc_bytes {
             return Err(CollabError::DocTooLarge {
                 file_id: self.file_id,
                 limit_bytes: self.limits.max_doc_bytes,
