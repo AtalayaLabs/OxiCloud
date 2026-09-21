@@ -1354,22 +1354,19 @@ async fn collab_converge(args: Args) -> Result<(), HelperError> {
                         HelperError::Expectation(format!("sync-step-2 decode: {e}"))
                     })?;
                     let mut txn = doc.transact_mut();
-                    txn.apply_update(update).map_err(|e| {
-                        HelperError::Expectation(format!("sync-step-2 apply: {e}"))
-                    })?;
+                    txn.apply_update(update)
+                        .map_err(|e| HelperError::Expectation(format!("sync-step-2 apply: {e}")))?;
                 }
                 break;
             }
             0x01 => {
                 // Peer UPDATE that arrived before our sync-step-2;
                 // apply it now — same idempotent CRDT contract.
-                let update = Update::decode_v1(&bytes[17..]).map_err(|e| {
-                    HelperError::Expectation(format!("early UPDATE decode: {e}"))
-                })?;
+                let update = Update::decode_v1(&bytes[17..])
+                    .map_err(|e| HelperError::Expectation(format!("early UPDATE decode: {e}")))?;
                 let mut txn = doc.transact_mut();
-                txn.apply_update(update).map_err(|e| {
-                    HelperError::Expectation(format!("early UPDATE apply: {e}"))
-                })?;
+                txn.apply_update(update)
+                    .map_err(|e| HelperError::Expectation(format!("early UPDATE apply: {e}")))?;
                 continue;
             }
             _ => continue,

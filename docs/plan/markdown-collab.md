@@ -1,11 +1,13 @@
 # Plan — Collaborative markdown & text editor (Phase A shipping bundle)
 
-## Status (2026-09-14 update)
+## Status (2026-09-21 update)
 
-**Phase A partially shipped.** Three of the seven sub-phases from
-[§ Phasing](#phasing) below already landed in sibling PRs — they
-appear in this plan for context but are no longer scope for the
-current branch:
+**Phase A shipped.** Every C1-C7 sub-phase has landed, plus the
+robustness pass and the follow-up eviction / graceful-denial work
+that the plan didn't originally scope. `OXICLOUD_ENABLE_MARKDOWN_COLLAB`
+is on by default as of 2026-09-21.
+
+Landed in sibling PRs (pre-dated this branch):
 
 - **C3 — Folder-live updates.** `MessageBusEvent::FileCreated / Deleted / …`
   publish sites are wired in `FileManagementService`, `FolderService`
@@ -20,11 +22,76 @@ current branch:
   eviction is shipped and documented in
   [`docs/architecture/message-bus-and-notifications.md`](../architecture/message-bus-and-notifications.md).
 
-**This branch scopes the remaining collab-specific work: C1, C2,
-C5, C6, C7 (see § Phasing).** The plan sections describing
-notifications, folder-live updates, and the bus protocol are kept
-verbatim below as design record — but the arch doc linked above is
-the durable reference for anything already live.
+Landed on this branch:
+
+- **C1 — Backend skeleton.** `collab.doc_sessions` migration,
+  `CollabSessionService`, in-memory actor registry, unit tests.
+- **C2 — WS integration.** Binary frame routing, sync protocol,
+  per-frame AuthZ (Read on SYNC, Update on UPDATE), audit lines.
+- **C5 — Editor frontend.** CodeMirror 6 + `y-codemirror.next`,
+  dynamic-imported language grammars (~25 languages via
+  `@codemirror/lang-*` + `@codemirror/legacy-modes`), read-only
+  compartment gated on the subscribe-ack's `capabilities.can_write`.
+- **C6 — Presence.** Awareness-driven peer cursors with per-user
+  names and deterministic hex colours from a 12-slot palette. The
+  plan's avatar-rail-in-header polish is a follow-up (see § Follow-ups).
+- **C7 — Robustness pass.** Out-of-band write eviction, oversized
+  doc refusal, idle GC, malformed-frame handling, graceful
+  `rt.write_denied` on Update denial, explicit-flush on tab hide /
+  pagehide / unmount, five-headless-client convergence test.
+
+Eviction vocabulary (all three land as `rt.revoked` with a distinct
+`reason` on `collab:{file_id}`):
+
+- `resource_deleted` — file trashed / hard-deleted (S24).
+- `grant_revoked` — file-scoped grant revoked; `AuthzChanged`
+  carries `affected_files` (S27).
+- `external_write` — REST replace / WebDAV PUT / WOPI PutFile
+  (S28), via the `WriteSource` discriminator on
+  `FileLifecycleHook::on_file_updated`.
+
+Graceful write-denials on the same socket without closing it (S26,
+E): `rt.write_denied` with `reason ∈ { "no_edit", "doc_too_large" }`.
+
+Guarded by **29 hurl scenarios** in `tests/api/rt_bus_check.sh`;
+S20-S29 are collab-specific.
+
+### Follow-ups (deliberately out of scope for this shipping bundle)
+
+- **`.md` split-pane preview** — plan section still valid; not yet
+  shipped. `$derived(ytext.toString())` through
+  `unified` / `remark-parse` / `rehype-stringify`, resizable pane,
+  per-user preference persisted.
+- **Avatar rail in editor header** — hover-highlight-cursor +
+  click-scroll-to-cursor. Peer cursor labels ship; the header rail
+  UI does not.
+- **LF / no-BOM / trailing-newline normalization on flush** — noted
+  as risk in this plan; deferred by explicit call ("unix-only for
+  today"). Pasted CRLF or BOM currently survives to the blob.
+- **Folder-scoped grant revoke cascade to descendant files** —
+  intentional design skip; documented in § Eviction. Would
+  regress by discarding pre-revoke authorized edits sitting in the
+  debouncer without a `flush_and_evict` primitive.
+- **`group_membership_lost` eviction** — wire path already in
+  place (`AuthzChanged { affected_files }`); needs a producer in
+  the group-membership service after the ReBAC migration.
+- **Language grammar gaps** — `.php`, `.graphql`, `.proto`, `.rst`,
+  `.ps1`, `.bat`/`.cmd` fall back to markdown highlighting today.
+  Tracked in memory `project_collab_syntax_highlighting_gaps`.
+- **Reindex debounce** — collab flush shouldn't flood Tantivy.
+  Memory: `project_collab_flush_reindex_deferred`.
+- **Server-side MIME table** — retires the FE's `TEXTY_EXT_RE`
+  duplicate list. Separate branch. Memory:
+  `project_mime_guess_overrides_pending`.
+
+### Explicitly Phase B / Later (out of this plan's scope)
+
+- `file:{id}:comments` topic + inline comments.
+- `file:{id}:shares` topic (share dialog subscribes).
+- Version history — `collab.doc_snapshots`, "Name this version",
+  restore.
+- ProseMirror WYSIWYG — Y.XmlFragment migration path documented
+  below.
 
 ## Context
 
