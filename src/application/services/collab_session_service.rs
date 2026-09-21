@@ -127,6 +127,25 @@ pub struct CollabLimits {
     /// exists so tests can shrink it to millisecond scales without
     /// waiting on the default. Default 1 s.
     pub debounce_tick: Duration,
+    /// Ceiling on the actor's encoded Yjs state size, in bytes.
+    /// Enforced before every `apply_update`: if applying the
+    /// incoming update WOULD push the running total over this cap,
+    /// the update is rejected with [`CollabError::DocTooLarge`].
+    ///
+    /// The running total is a conservative over-estimate — it sums
+    /// each applied update's raw byte length (which the CRDT can
+    /// then internally compress on snapshot). A snapshot resets the
+    /// estimate to the compacted state's real encoded size, so
+    /// long-running sessions self-correct after each compaction.
+    ///
+    /// Default 10 MB. Rationale: text collaboration on markdown /
+    /// code is well under this; a caller trying to grow the doc
+    /// past 10 MB is either a bug (loop uploading via UPDATE) or
+    /// a resource-exhaustion attempt. Both cases should be refused
+    /// at the wire, not applied. When operators need bigger docs
+    /// (say a legitimate long-form workflow), override via
+    /// `OXICLOUD_COLLAB_MAX_DOC_BYTES` in the env.
+    pub max_doc_bytes: usize,
 }
 
 impl Default for CollabLimits {
@@ -137,6 +156,7 @@ impl Default for CollabLimits {
             debounce_idle: Duration::from_secs(15),
             debounce_max: Duration::from_secs(60),
             debounce_tick: Duration::from_secs(1),
+            max_doc_bytes: 10 * 1024 * 1024,
         }
     }
 }
@@ -163,6 +183,17 @@ pub enum CollabError {
     AuthzDenied {
         permission: &'static str,
         file_id: Uuid,
+    },
+    /// Applying the incoming update would push the actor's running
+    /// encoded-doc-bytes total over [`CollabLimits::max_doc_bytes`].
+    /// The WS binary router turns this into a graceful `rt.write_denied`
+    /// with `reason: "doc_too_large"` and keeps the socket alive —
+    /// symmetric with the AuthzDenied write-path treatment
+    /// introduced in the graceful-write-denied slice.
+    #[error("doc size cap ({limit_bytes} B) exceeded on file {file_id}")]
+    DocTooLarge {
+        file_id: Uuid,
+        limit_bytes: usize,
     },
 }
 
@@ -460,6 +491,15 @@ struct ActorState {
     /// previous materialisation). Loaded from the row on attach;
     /// stamped after each successful flush.
     last_flushed_content_hash: Option<String>,
+    /// Running estimate of the encoded doc size in bytes. Compared
+    /// against [`CollabLimits::max_doc_bytes`] before each apply to
+    /// refuse updates that would push the doc over the cap.
+    ///
+    /// Conservative over-estimate — sums each applied update's raw
+    /// bytes (which the CRDT can internally compress on snapshot).
+    /// Reset to the real compacted size after every `snapshot()` so
+    /// long-running sessions self-correct.
+    doc_bytes: usize,
 }
 
 impl ActorState {
@@ -524,6 +564,14 @@ impl ActorState {
             }
         };
         let (outbox, _) = broadcast::channel(limits.broadcast_capacity);
+        // Seed the `doc_bytes` running estimate from the compacted
+        // state — whether we just loaded a snapshot from the repo or
+        // seeded fresh from the blob, the encoded state's length is
+        // the current doc size.
+        let doc_bytes = doc
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default())
+            .len();
         Ok(Self {
             file_id,
             doc,
@@ -537,6 +585,7 @@ impl ActorState {
             first_dirty_at: None,
             last_dirty_at: None,
             last_flushed_content_hash,
+            doc_bytes,
         })
     }
 
@@ -560,6 +609,22 @@ impl ActorState {
     /// timestamps advance so the tick branch of `run_actor` can decide
     /// whether the idle / max thresholds have been crossed.
     async fn apply_update(&mut self, caller_id: Uuid, bytes: Vec<u8>) -> Result<(), CollabError> {
+        // Doc-size cap. `doc_bytes` is a running over-estimate that
+        // gets reset to the compacted size after every snapshot, so
+        // the check is conservative rather than paranoid. Reject
+        // BEFORE apply so the offending update never enters the CRDT
+        // — Yjs has no rollback in `yrs`, and applying-then-refusing
+        // would leave the doc permanently over the cap.
+        if self
+            .doc_bytes
+            .saturating_add(bytes.len())
+            > self.limits.max_doc_bytes
+        {
+            return Err(CollabError::DocTooLarge {
+                file_id: self.file_id,
+                limit_bytes: self.limits.max_doc_bytes,
+            });
+        }
         let update = Update::decode_v1(&bytes)
             .map_err(|e| CollabError::BadUpdate(format!("decode: {e}")))?;
         {
@@ -567,6 +632,11 @@ impl ActorState {
             txn.apply_update(update)
                 .map_err(|e| CollabError::BadUpdate(format!("apply: {e}")))?;
         }
+        // Advance the running estimate now that the apply committed.
+        // The next snapshot will recompute this to the compacted size,
+        // so growth stays bounded by real doc size, not by the sum of
+        // historical updates.
+        self.doc_bytes = self.doc_bytes.saturating_add(bytes.len());
         self.repo.touch_after_update(self.file_id).await?;
         self.updates_since_snapshot += 1;
         if self.updates_since_snapshot >= self.limits.snapshot_after_updates {
@@ -613,6 +683,12 @@ impl ActorState {
             .transact()
             .encode_state_as_update_v1(&StateVector::default());
         let sv = self.doc.transact().state_vector().encode_v1();
+        // Reset the running size estimate to the compacted doc's
+        // real encoded length. `doc_bytes` was inflating with each
+        // apply's raw bytes; the CRDT internally deduplicates on
+        // snapshot so the compacted state is (usually much) smaller.
+        // Keeps the cap check anchored to reality on long sessions.
+        self.doc_bytes = snapshot.len();
         self.repo
             .save_snapshot(self.file_id, &snapshot, &sv)
             .await?;
@@ -2175,5 +2251,93 @@ mod tests {
         svc.evict_sessions_for_file(file_id, "resource_deleted")
             .await;
         assert_eq!(svc.live_session_count(), 0);
+    }
+
+    // Doc-size cap enforcement: an UPDATE that would push the actor
+    // over `max_doc_bytes` MUST be refused with `DocTooLarge` BEFORE
+    // it enters the CRDT — Yjs has no rollback in `yrs`, so an
+    // apply-then-refuse would leave the doc permanently over the cap.
+    #[tokio::test]
+    async fn apply_update_rejects_when_over_max_doc_bytes() {
+        // Cap so tight that even the seeded fresh doc fits with room
+        // for a modest first update, but a payload of a few hundred
+        // bytes trips the check. Yjs update encoding has ~30 B of
+        // framing overhead per insert, so a 500-char string encodes
+        // to ~530-ish bytes and blows past a 200 B cap.
+        let limits = CollabLimits {
+            max_doc_bytes: 200,
+            ..CollabLimits::default()
+        };
+        let svc = service_with_seed("", limits);
+        let file_id = Uuid::new_v4();
+        let session = svc.attach_file(Uuid::nil(), file_id).await.unwrap();
+
+        // Build a big update on a client Doc so the wire delta is
+        // real Yjs-encoded bytes, not synthetic. 500 chars is
+        // overkill vs 200 B cap.
+        let client = Doc::new();
+        {
+            let text = client.get_or_insert_text(ROOT_TEXT_NAME);
+            let mut txn = client.transact_mut();
+            text.insert(&mut txn, 0, &"x".repeat(500));
+        }
+        let big_delta = client
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+        assert!(
+            big_delta.len() > 200,
+            "test wants an update bigger than the cap; got {} B",
+            big_delta.len()
+        );
+
+        let err = session
+            .apply_update(Uuid::nil(), big_delta)
+            .await
+            .expect_err("over-cap update must be rejected");
+        match err {
+            CollabError::DocTooLarge {
+                file_id: reported_id,
+                limit_bytes,
+            } => {
+                assert_eq!(reported_id, file_id);
+                assert_eq!(limit_bytes, 200);
+            }
+            other => panic!("expected DocTooLarge, got {other:?}"),
+        }
+
+        // Server doc must be unchanged — the reject-before-apply
+        // ordering is the whole safety property. If the update had
+        // slipped through, `get_text` would return 500 x's.
+        assert_eq!(session.get_text().await.unwrap(), "");
+    }
+
+    #[tokio::test]
+    async fn apply_update_within_cap_succeeds() {
+        // Mirror of the previous test: same tight cap, but the update
+        // is small enough that `doc_bytes + update.len()` stays under
+        // the cap. Sanity-checks that the check doesn't over-reject
+        // on legitimately-sized edits at boot.
+        let limits = CollabLimits {
+            max_doc_bytes: 200,
+            ..CollabLimits::default()
+        };
+        let svc = service_with_seed("", limits);
+        let file_id = Uuid::new_v4();
+        let session = svc.attach_file(Uuid::nil(), file_id).await.unwrap();
+
+        let client = Doc::new();
+        {
+            let text = client.get_or_insert_text(ROOT_TEXT_NAME);
+            let mut txn = client.transact_mut();
+            text.insert(&mut txn, 0, "hi");
+        }
+        let small_delta = client
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+        session
+            .apply_update(Uuid::nil(), small_delta)
+            .await
+            .expect("under-cap update must apply");
+        assert_eq!(session.get_text().await.unwrap(), "hi");
     }
 }

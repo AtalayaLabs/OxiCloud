@@ -325,6 +325,19 @@ admin_kick}`.
 
 Slice status (2026-09-21):
 
+- ✅ **`max_doc_bytes` enforcement** — `CollabLimits` gains a
+  `max_doc_bytes: usize` field (default 10 MB, env override
+  `OXICLOUD_COLLAB_MAX_DOC_BYTES`). `ActorState` tracks a running
+  `doc_bytes` estimate — seeded from the compacted state on load,
+  incremented by each apply's raw byte length, reset to the real
+  compacted size on every snapshot. `apply_update` refuses BEFORE
+  the CRDT apply if `doc_bytes + incoming.len() > max_doc_bytes` —
+  Yjs has no rollback in `yrs`, so apply-then-refuse would leave
+  the doc permanently over the cap. Wire treatment: the WS binary
+  router emits `rt.write_denied { reason: "doc_too_large" }` and
+  keeps the socket alive (same graceful shape as an Update
+  permission denial from B). Two unit tests guard the enforcement
+  path.
 - ✅ **Graceful `rt.write_denied` on UPDATE denial** — the collab
   binary-frame router in `rt_ws.rs` no longer closes the WS on
   `CollabError::AuthzDenied { permission: "update" }`. Instead it

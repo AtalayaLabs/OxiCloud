@@ -711,6 +711,43 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
                                 }
                                 break;
                             }
+                            Err(crate::application::services::collab_session_service::CollabError::DocTooLarge {
+                                file_id,
+                                limit_bytes,
+                            }) => {
+                                // Doc-size cap tripped. Same wire
+                                // treatment as an Update-permission
+                                // denial (see B's graceful path): emit
+                                // `rt.write_denied` and keep the socket
+                                // alive so peers with valid grants
+                                // continue receiving fan-out, and the
+                                // FE editor drops into read-only via
+                                // the write-denied handler. Distinct
+                                // wire reason so the FE can surface
+                                // "the document is too large to keep
+                                // editing" rather than "you can't
+                                // write to this file" — same code
+                                // path, different UX copy on the
+                                // client side.
+                                tracing::info!(
+                                    target: "audit",
+                                    event = "collab.doc_too_large",
+                                    reason = "doc_too_large",
+                                    caller_id = %caller_id,
+                                    file_id = %file_id,
+                                    limit_bytes = limit_bytes,
+                                    "👮🏻‍♂️ collab update refused: doc size cap reached",
+                                );
+                                let frame = write_denied_notification(file_id, "doc_too_large");
+                                if socket
+                                    .send(Message::Text(frame.into()))
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                                continue;
+                            }
                             Err(e) => {
                                 tracing::info!(
                                     target: "audit",

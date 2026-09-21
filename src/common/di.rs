@@ -2639,6 +2639,17 @@ impl AppServiceFactory {
             {
                 limits.debounce_tick = std::time::Duration::from_millis(ms);
             }
+            // Doc-size cap for the CRDT — refuses UPDATE frames that
+            // would push the actor's running encoded-doc-bytes total
+            // over this. Default 10 MB in `CollabLimits`; override
+            // for extreme workflows (long-form technical docs) or
+            // shrink to test the enforcement path with cheap
+            // fixtures.
+            if let Ok(raw) = std::env::var("OXICLOUD_COLLAB_MAX_DOC_BYTES")
+                && let Ok(bytes) = raw.parse::<usize>()
+            {
+                limits.max_doc_bytes = bytes;
+            }
             let collab = Arc::new(
                 crate::application::services::collab_session_service::CollabSessionService::new(
                     repo, reader, writer, authz, limits,

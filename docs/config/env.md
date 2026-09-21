@@ -148,6 +148,7 @@ The **idle-GC** scheduled job reaps stale `collab.doc_sessions` rows: force-flus
 | `OXICLOUD_COLLAB_IDLE_TTL_MINUTES` | `30` | Idle-GC TTL: a session with no `apply_update` for this many minutes is eligible for reaping on the next scan. Clamped to a minimum of 1. |
 | `OXICLOUD_COLLAB_IDLE_SCAN_INTERVAL_SECS` | `300` (5 min) | How often the idle-GC job fires. Scanning much less often than the TTL turns the TTL into a fiction — the effective TTL becomes ~`TTL + SCAN_INTERVAL`. |
 | `OXICLOUD_COLLAB_IDLE_BATCH_LIMIT` | `200` | Maximum sessions reaped in one tick. A backlog carries to the next tick — the scan walks `last_activity_at ASC` so the coldest rows are evicted first. Clamped to a minimum of 1. |
+| `OXICLOUD_COLLAB_MAX_DOC_BYTES` | `10485760` (10 MB) | Ceiling on the actor's encoded Yjs state. An UPDATE that would push the running total over this is refused with `rt.write_denied { reason: "doc_too_large" }` and the socket stays alive. Text collaboration on markdown / code stays well under this; a caller trying to grow past the cap is either a runaway client or a resource-exhaustion attempt. |
 
 ## Boot-time refuse-to-boot checks
 
