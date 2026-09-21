@@ -2368,32 +2368,46 @@ pub struct FeaturesConfig {
     /// and there's no transport for CRDT ops (boot refuses this
     /// combination — see the cross-flag check in `from_env`).
     ///
-    /// TODO(collab-default-on): all C2/C7 backend pieces are shipped.
-    /// Remaining before flipping the default:
+    /// Every C1-C7 phase has shipped as of 2026-09-21, including
+    /// the robustness pass:
     ///
-    ///   * C5 — frontend editor (CodeMirror 6 + collab extensions).
-    ///     Without a client, the backend serves the wire correctly
-    ///     but no user can actually collab-edit through the UI. The
-    ///     feature can be exercised end-to-end today only via the
-    ///     api-test helpers (rt-hurl-helper collab-*).
-    ///   * Idle-GC job (plan § Backend step 5) — background scan of
-    ///     `collab.doc_sessions` for rows past `idle_ttl` (default
-    ///     30 min) with no attached sockets. Without it, quiet
-    ///     sessions accumulate ~1 MiB each indefinitely; workable
-    ///     for a small dev instance, not right for default-on.
+    ///   * Read/write bridges — `FileBlobDocContentReader` /
+    ///     `FileBlobDocContentWriter` + debouncer (15 s idle /
+    ///     60 s max), materialising CRDT → blob through the normal
+    ///     dedup + lifecycle pipeline.
+    ///   * Per-frame AuthZ — Read on SYNC, Update on UPDATE via
+    ///     `CollabAuthzGate`.
+    ///   * `CollabEditor.svelte` — CodeMirror 6 + `y-codemirror.next`
+    ///     with awareness (peer cursors + names), dynamic-imported
+    ///     language grammars, read-only compartment gated on the
+    ///     subscribe-ack's `capabilities.can_write`.
+    ///   * Idle-GC — `collab_idle_gc` scheduled job reaps stale
+    ///     `collab.doc_sessions` rows (default 30 min TTL, 5 min
+    ///     scan cadence).
+    ///   * Eviction surface — `resource_deleted` (S24),
+    ///     `grant_revoked` (S27), `external_write` (S28) all fire
+    ///     `evict_sessions_for_file` and land as `rt.revoked` on the
+    ///     collab topic.
+    ///   * Graceful denials — Update-permission denial and
+    ///     doc-size-cap trip emit `rt.write_denied` (reasons
+    ///     `no_edit` / `doc_too_large`) and keep the socket alive;
+    ///     the FE editor drops into read-only via the same
+    ///     compartment path.
+    ///   * Doc-size cap — [`CollabLimits::max_doc_bytes`], default
+    ///     10 MB, env override `OXICLOUD_COLLAB_MAX_DOC_BYTES`.
+    ///   * Hurl smoke coverage — 28 scenarios in `rt_bus_check.sh`,
+    ///     six of them collab-specific (S20-S28).
     ///
-    /// Shipped:
-    ///   * Read-side bridge — `FileBlobDocContentReader` seeds fresh
-    ///     CRDTs from blob text.
-    ///   * Write-side bridge — `FileBlobDocContentWriter` +
-    ///     debouncer (15 s idle / 60 s max) flushes CRDT text back
-    ///     to the file's blob through the normal dedup / lifecycle
-    ///     pipeline.
-    ///   * Per-frame AuthZ (Read on SYNC, Update on UPDATE) via the
-    ///     `CollabAuthzGate` port.
-    ///
-    /// Off by default until C5 + idle-GC — the feature is currently
-    /// dev/staging-only from an operator's perspective.
+    /// Off by default in the current release cycle so operators can
+    /// opt in on their own schedule. Flipping the default to `true`
+    /// is a release-cycle decision — the feature is production-ready
+    /// once `OXICLOUD_ENABLE_MESSAGE_BUS` is also on. Beyond the
+    /// blockers above, two non-blocking follow-ups are worth
+    /// mentioning in release notes: (1) folder-scoped grant revoke
+    /// does not proactively evict collab sessions on descendant files
+    /// (an intentional design skip — see `docs/plan/markdown-collab.md
+    /// § Eviction`), and (2) group-membership loss awaits the ReBAC
+    /// migration.
     ///
     /// Env: `OXICLOUD_ENABLE_MARKDOWN_COLLAB` (default `false`).
     pub enable_markdown_collab: bool,
@@ -2608,9 +2622,13 @@ impl Default for FeaturesConfig {
             // reachable at `/webdav/@drive/`.
             webdav_drive_listing_prefix: "@drive".to_string(),
             enable_message_bus: true, // Message bus (WS + ticket) on by default
-            // Off by default — the collab wire is under development
-            // and only ops who explicitly opt in should see live Yjs
-            // routing. Requires enable_message_bus to be true.
+            // Off by default in this release cycle. All C1-C7 phases
+            // (backend, editor, robustness) shipped as of 2026-09-21;
+            // see the field doc-comment for the audit. Flipping the
+            // default is a release-cycle decision — operators opting
+            // in explicitly today is the safer rollout while the
+            // eviction / write-denied vocabulary settles into
+            // production traffic. Requires enable_message_bus.
             enable_markdown_collab: false,
             grant_cleanup: GrantCleanupConfig::default(),
             notifications_retention_days: 30, // 30 days is the plan's default
