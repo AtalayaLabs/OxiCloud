@@ -1589,12 +1589,23 @@
 
 	// Probe WOPI editability whenever the context target changes to a file. Image
 	// files use the inline viewer, so they never show the editor entries.
+	//
+	// When collab is enabled AND the filename is text-shaped
+	// (`TEXTY_EXT_RE`), suppress the WOPI edit action entirely — the
+	// collab editor (reached via the plain "Open" item, which routes
+	// through `FileViewer`) is the right home for `.md` / `.txt` /
+	// code / config files. Two competing "Edit" affordances on the
+	// same file confuses the menu and, worse, the WOPI round-trip
+	// stomps live collab sessions on that file (external_write
+	// eviction fires).
 	$effect(() => {
 		const tg = ctxTarget;
 		ctxCanEditWopi = false;
 		if (!tg || tg.kind !== 'file') return;
 		const f = listing.files.find((x) => x.id === tg.id);
 		if (!f || (f.mime_type ?? '').startsWith('image/')) return;
+		const collabAvailable = serverConfig.loaded && serverConfig.features.markdown_collab === true;
+		if (collabAvailable && TEXTY_EXT_RE.test(tg.name)) return;
 		void canEditWithWopi(tg.name).then((ok) => {
 			// Guard against a stale resolve after the menu moved to another target.
 			if (ctxTarget?.id === tg.id) ctxCanEditWopi = ok;
