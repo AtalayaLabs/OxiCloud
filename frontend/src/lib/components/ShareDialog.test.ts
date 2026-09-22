@@ -76,6 +76,36 @@ const chainWithInherited = {
 	]
 };
 
+/**
+ * Same walk, but the access sits on the DRIVE rather than a folder.
+ *
+ * Drive-anchored grants take a different branch: they cannot link into
+ * `/files` (a drive has no browsable folder URL of its own), so the chip
+ * points at the drive's config page, where drive membership is actually
+ * managed.
+ */
+const chainWithDriveInherited = {
+	ancestors: [{ id: 'fold1', name: 'Sub', parent_id: null, drive_id: 'd1' }],
+	access_source: { kind: 'drive', drive: { id: 'd1', name: 'Marketing', kind: 'shared' } },
+	effective_grants: [
+		{
+			id: 'g-drive',
+			subject: { type: 'group', id: 'team-a' },
+			role: 'editor',
+			resource: { type: 'drive', id: 'd1' }
+		}
+	],
+	effective_links: [
+		{
+			grant_id: 'lg-drive',
+			share_id: 's10',
+			name: 'Drive-wide link',
+			has_password: false,
+			resource: { type: 'drive', id: 'd1' }
+		}
+	]
+};
+
 beforeEach(() => {
 	vi.clearAllMocks();
 	m(fetchGrantsForResource).mockResolvedValue([]);
@@ -180,6 +210,35 @@ it('lists a public link inherited from an ancestor', async () => {
 	expect(screen.getByTestId('share-dialog-inherited-link-source-lg1').textContent).toContain(
 		'Projects'
 	);
+});
+
+it('points a drive-inherited grant at the drive config page', async () => {
+	m(getFolderAncestorsWithGrants).mockResolvedValue(chainWithDriveInherited);
+	const onretarget = vi.fn();
+	render(ShareDialog, { props: { open: true, item: folderItem, onretarget } });
+
+	const source = await screen.findByTestId('share-dialog-member-source-group-team-a');
+	expect(source.getAttribute('href')).toContain('/config/drive/d1');
+	expect(source.textContent).toContain('Marketing');
+
+	// Navigation only. Re-pointing THIS dialog at a drive would offer
+	// folder controls for a resource that has none — drive grants use a
+	// narrower role ladder and support no public links, which is why the
+	// config page runs the dialog with allowLinks=false.
+	await fireEvent.click(source);
+	expect(onretarget).not.toHaveBeenCalled();
+});
+
+it('points a drive-inherited public link at the drive config page', async () => {
+	m(getFolderAncestorsWithGrants).mockResolvedValue(chainWithDriveInherited);
+	render(ShareDialog, { props: { open: true, item: folderItem } });
+
+	await fireEvent.click(await screen.findByTestId('share-dialog-link-tab'));
+
+	const source = await screen.findByTestId('share-dialog-inherited-link-source-lg-drive');
+	expect(source.getAttribute('href')).toContain('/config/drive/d1');
+	// Before this the row was flat text — visible, but a dead end.
+	expect(source.tagName).toBe('A');
 });
 
 it('walks from the parent folder when sharing a file', async () => {

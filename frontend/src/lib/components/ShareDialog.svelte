@@ -139,8 +139,18 @@
 		inherited?: {
 			/** Folder or drive name, for the source chip. */
 			label: string;
-			/** Folder id to navigate to. Null for a drive — no browsable URL. */
+			/**
+			 * Where the chip goes. Exactly one is set.
+			 *
+			 * `folderId` → `/files/{id}`, where the grant is direct and
+			 * this same dialog can edit it — so that case also re-points
+			 * the dialog. `driveId` → `/config/drive/{uuid}`, which runs
+			 * the drive-kind dialog instead; navigation only, because
+			 * drive membership is a different grant type with its own
+			 * role vocabulary and no public links.
+			 */
 			folderId: string | null;
+			driveId: string | null;
 		};
 	}
 	/**
@@ -161,8 +171,9 @@
 		hasPassword: boolean;
 		/** Source folder or drive name. */
 		label: string;
-		/** Folder to navigate to; null for a drive (no browsable URL). */
+		/** See `Member.inherited` — exactly one of these is set. */
 		folderId: string | null;
+		driveId: string | null;
 		expiry: string | null;
 	}
 
@@ -263,6 +274,7 @@
 					hasPassword: l.has_password,
 					label: l.resource.type === 'drive' ? driveName : (nameById.get(l.resource.id) ?? ''),
 					folderId: l.resource.type === 'drive' ? null : l.resource.id,
+					driveId: l.resource.type === 'drive' ? l.resource.id : null,
 					expiry: isoToDate(l.expires_at)
 				}));
 
@@ -278,7 +290,8 @@
 						expiry: isoToDate(g.expires_at),
 						inherited: {
 							label: isDrive ? driveName : (nameById.get(g.resource.id) ?? ''),
-							folderId: isDrive ? null : g.resource.id
+							folderId: isDrive ? null : g.resource.id,
+							driveId: isDrive ? g.resource.id : null
 						}
 					}
 				];
@@ -814,19 +827,30 @@
 												<Icon name="level-up-alt" />
 												<span>{m.inherited.label}</span>
 											</a>
-										{:else}
-											<span
-												class="member__source member__source--drive"
+										{:else if m.inherited.driveId}
+											{@const did = m.inherited.driveId}
+											<!--
+												Drives go to their config page, not `/files`: drive
+												membership is a different grant type — its own role
+												ladder, no public links — and that page runs the
+												drive-kind dialog. No `onretarget`, for the same
+												reason: re-pointing THIS dialog at a drive would
+												offer folder controls for a resource that does not
+												take them.
+											-->
+											<a
+												class="member__source"
+												href={resolve(`/config/drive/${did}`)}
 												data-testid={`share-dialog-member-source-${m.subject.type}-${m.subject.id}`}
 												title={t(
 													'share.inherited_from_drive_title',
 													{ name: m.inherited.label },
-													'Inherited from drive "{{name}}" — change it in the drive settings'
+													'Inherited from drive "{{name}}" — open its settings to change this'
 												)}
 											>
 												<Icon name="hdd" />
 												<span>{m.inherited.label}</span>
-											</span>
+											</a>
 										{/if}
 									{:else}
 										{@render expiryChip(m.expiry, (v) => changeMemberExpiry(m, v))}
@@ -1020,19 +1044,21 @@
 										<Icon name="level-up-alt" />
 										<span>{l.label}</span>
 									</a>
-								{:else}
-									<span
-										class="member__source member__source--drive"
+								{:else if l.driveId}
+									{@const did = l.driveId}
+									<a
+										class="member__source"
+										href={resolve(`/config/drive/${did}`)}
 										data-testid={`share-dialog-inherited-link-source-${l.grantId}`}
 										title={t(
 											'share.inherited_link_on_drive_title',
 											{ name: l.label },
-											'This link lives on drive “{{name}}”'
+											'This link lives on drive “{{name}}” — open its settings'
 										)}
 									>
 										<Icon name="hdd" />
 										<span>{l.label}</span>
-									</span>
+									</a>
 								{/if}
 							</li>
 						{/each}
@@ -1222,10 +1248,6 @@
 	a.member__source:hover {
 		color: var(--color-accent);
 		background: var(--color-accent-bg);
-	}
-
-	.member__source--drive {
-		cursor: default;
 	}
 
 	/* Inherited public links. Separated from the direct list by a rule
