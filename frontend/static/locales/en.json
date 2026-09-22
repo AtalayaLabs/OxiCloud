@@ -255,7 +255,8 @@
     "remove": "Remove",
     "new_document_text": "New text document",
     "new_document_spreadsheet": "New spreadsheet",
-    "new_document_presentation": "New presentation"
+    "new_document_presentation": "New presentation",
+    "new_text_file": "New text file"
   },
   "user_menu": {
     "appearance": "Appearance",
@@ -556,7 +557,12 @@
     "dotfiles_hidden_toast": "Dotfiles hidden",
     "dotfiles_shown_toast": "Dotfiles shown",
     "new_document": "New document",
-    "new_document_prompt": "Document name"
+    "new_document_prompt": "Document name",
+    "new_text_file": "New text file",
+    "new_text_file_prompt": "Filename (e.g. notes.md)",
+    "new_text_file_hint": "Include the extension in the filename (e.g. .md, .txt, .c, .py, .rs).",
+    "new_text_file_binary_ext_title": "Non-text extension",
+    "new_text_file_binary_ext_message": "\"{{name}}\" doesn't look like a text file. The editor will open it as text — that usually breaks binary formats. Continue anyway?"
   },
   "dialogs": {
     "rename_folder": "Rename folder",

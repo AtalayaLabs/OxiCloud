@@ -7,6 +7,7 @@ pub mod blob_diagnostics;
 pub mod blobs_consistency_service;
 pub mod cached_blob_backend;
 pub mod chunked_upload_service;
+pub mod collab_idle_gc_service;
 pub mod compression_service;
 pub mod consistency_batch_service;
 pub mod db_pool_monitor;

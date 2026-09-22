@@ -3,9 +3,11 @@
 //! Hurl is HTTP-only — it can't do a WS upgrade, let alone read frames
 //! for later assertion. This binary is the WS half of the smoke test:
 //! opens `/api/rt/ws`, speaks JSON-RPC 2.0, and either collects events
-//! into a JSON file for shell assertions (`subscribe-and-collect`) or
+//! into a JSON file for shell assertions (`subscribe-and-collect`),
 //! validates that an authz-denied subscribe returns the expected wire
-//! error code (`expect-denied`).
+//! error code (`expect-denied`), or exercises the collab binary-frame
+//! path (`collab-sync-probe`) by sending a Yjs sync-step-1 request and
+//! asserting on the sync-step-2 reply header.
 //!
 //! Invocation (from `tests/api/rt_bus_check.sh`):
 //!
@@ -24,6 +26,37 @@
 //!   --subscribe folder:$FOLDER_A \
 //!   --reason no_read \
 //!   --timeout 2s
+//!
+//! rt-hurl-helper collab-sync-probe \
+//!   --url ws://127.0.0.1:$PORT/api/rt/ws \
+//!   --token $USER_JWT \
+//!   --file $FILE_UUID \
+//!   --timeout 3s
+//!
+//! rt-hurl-helper collab-fanout-listen \
+//!   --url ws://127.0.0.1:$PORT/api/rt/ws \
+//!   --token $USER_JWT \
+//!   --file $FILE_UUID \
+//!   --expect-content "hello from A" \
+//!   --ready-file /tmp/ready.b \
+//!   --timeout 5s
+//!
+//! rt-hurl-helper collab-fanout-write \
+//!   --url ws://127.0.0.1:$PORT/api/rt/ws \
+//!   --token $USER_JWT \
+//!   --file $FILE_UUID \
+//!   --content "hello from A" \
+//!   --timeout 5s
+//!
+//! rt-hurl-helper collab-converge \
+//!   --url ws://127.0.0.1:$PORT/api/rt/ws \
+//!   --token $USER_JWT \
+//!   --file $FILE_UUID \
+//!   --my-content "alpha " \
+//!   --settle-ms 500 \
+//!   --ready-file /tmp/ready.c0 \
+//!   --output /tmp/s29_c0.json \
+//!   --timeout 15s
 //! ```
 //!
 //! Exit codes:
@@ -38,10 +71,15 @@
 //!
 //! ```jsonc
 //! {
-//!   "subscribed": ["folder:..."],
-//!   "events":     [ { "topic": "folder:...", "event": "file_created",
-//!                     "data": { ... } } ],
-//!   "timed_out":  false
+//!   "subscribed":     ["folder:..."],
+//!   "subscribe_acks": [ { "topic": "collab:...",
+//!                         "result": { "subscribed": "collab:...",
+//!                                     "capabilities": { "can_write": true } } } ],
+//!   "events":         [ { "topic": "folder:...", "event": "file_created",
+//!                         "data":  { ... } } ],
+//!   "revoked":        [ { "topic": "collab:...", "reason": "resource_deleted" } ],
+//!   "pings_received": 0,
+//!   "timed_out":      false
 //! }
 //! ```
 
@@ -54,6 +92,8 @@ use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
+use yrs::updates::decoder::Decode;
+use yrs::{Doc, GetString, ReadTxn, StateVector, Text, Transact, Update};
 
 // ════════════════════════════════════════════════════════════════════════════
 // CLI parsing (minimal, dependency-free)
@@ -68,6 +108,14 @@ struct Args {
     auth: WsAuth,
     subscribe: Vec<String>,
     expect_events: Option<usize>,
+    /// `--expect-revoked <n>` — minimum count of server-initiated
+    /// `rt.revoked` notifications the helper must observe before
+    /// exiting the collect loop. Composes with `--expect-events`:
+    /// the exit predicate ANDs both counters plus "all subscribes
+    /// ack'd". Default 0 keeps existing scenarios untouched. Used
+    /// by S24 to wait for a delete-triggered eviction without
+    /// racing the timeout.
+    expect_revoked: Option<usize>,
     reason: Option<String>,
     timeout: Duration,
     output: Option<String>,
@@ -78,6 +126,37 @@ struct Args {
     /// in time" race that occasionally dropped events on slow /
     /// cold-cache runs. Off by default; only used by the smoke test.
     ready_file: Option<String>,
+    /// `--file <uuid>` — the target file for `collab-sync-probe`,
+    /// `collab-fanout-listen` and `collab-fanout-write`. Parsed to
+    /// 16 raw bytes so the helper can emit the wire header
+    /// (`[1 byte kind][16 bytes file_id]…`) without pulling in the
+    /// uuid crate.
+    file_id: Option<[u8; 16]>,
+    /// `--content <string>` — text the write-side helper inserts into
+    /// a fresh Yjs Doc before broadcasting the resulting UPDATE.
+    /// `--expect-content <string>` — text the listen-side asserts on
+    /// after decoding the incoming UPDATE.
+    content: Option<String>,
+    expect_content: Option<String>,
+    /// `--settle-ms <n>` — collab-converge exit condition: leave the
+    /// listen loop when no update has arrived for this many
+    /// milliseconds. Default 500. Bounded by `--timeout` — a truly
+    /// stuck fan-out surfaces as a timeout, not an early exit.
+    settle_ms: Option<u64>,
+    /// `--my-content <string>` — collab-converge only: the string
+    /// this client inserts at position 0 of its local Y.Doc.
+    /// Different across peers so a divergence bug shows up as
+    /// different final texts on different clients.
+    my_content: Option<String>,
+    /** `--expect-write-denied <reason>` — after `collab-fanout-write`
+     *  sends its UPDATE, stay connected and wait for an
+     *  `rt.write_denied` notification with the given `reason`. On
+     *  match, issue `rt.ping` and require a successful ack — proves
+     *  the socket survived the denial (defence-in-depth on B: the
+     *  server MUST NOT close the WS just because one UPDATE was
+     *  refused). Skipping this flag keeps the historic "send + close"
+     *  shape untouched. */
+    expect_write_denied: Option<String>,
 }
 
 /// How the helper authenticates the WS upgrade. Mirrors the two paths
@@ -90,6 +169,57 @@ enum WsAuth {
 enum Mode {
     SubscribeAndCollect,
     ExpectDenied,
+    CollabSyncProbe,
+    /// Subscribe to `collab:<file_id>`, wait for one `0x01` UPDATE
+    /// frame to arrive, decode it, assert its text content matches
+    /// `--expect-content`. Used with a paired `collab-fanout-write`
+    /// helper on a second socket to prove the actor's outbox fans out
+    /// to every subscriber.
+    CollabFanoutListen,
+    /// Subscribe to `collab:<file_id>`, build a Yjs UPDATE that
+    /// inserts `--content` into an otherwise-empty doc, send it as a
+    /// `0x01` binary frame, and exit. Companion to `collab-fanout-listen`.
+    CollabFanoutWrite,
+    /// Send one `rt.collab_flush { file_id }` JSON-RPC request and
+    /// await the ack. Reply carries `{ flushed: bool }` — true if a
+    /// blob write happened, false if the actor short-circuited on
+    /// unchanged content. Used by S22 to prove the WS-level flush
+    /// trigger works without waiting on the debouncer.
+    CollabFlush,
+    /// Multi-client CRDT convergence probe: subscribe to
+    /// `collab:<file_id>`, insert `--my-content` at position 0 of a
+    /// local Y.Doc, broadcast the resulting delta, then keep applying
+    /// incoming updates until the doc has been quiet for
+    /// `--settle-ms` (default 500 ms). Write the final decoded text
+    /// to `--output` so the shell orchestrator can `diff` every
+    /// client's output — identical outputs across N clients prove
+    /// convergence.
+    ///
+    /// Used by the 5+ headless-client integration test (S29) — the
+    /// C7 robustness item the plan calls out. Guards a class of
+    /// regressions the 2-client S22 can't reach: broadcast-channel
+    /// backpressure under contention, forwarder lag handling on the
+    /// slowest client, and CRDT ordering when writes interleave.
+    CollabConverge,
+}
+
+/// Parse a canonical dashed UUID (e.g. `f47ac10b-58cc-4372-a567-0e02b2c3d479`)
+/// into its 16 raw bytes. Kept dependency-free — pulling in the `uuid`
+/// crate for one hex-decode would be overkill.
+fn parse_uuid_bytes(s: &str) -> Result<[u8; 16], String> {
+    let hex: String = s.chars().filter(|c| *c != '-').collect();
+    if hex.len() != 32 {
+        return Err(format!(
+            "bad uuid (want 32 hex chars, got {}): {s}",
+            hex.len()
+        ));
+    }
+    let mut out = [0u8; 16];
+    for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
+        let s = std::str::from_utf8(chunk).map_err(|_| format!("bad uuid: {s}"))?;
+        out[i] = u8::from_str_radix(s, 16).map_err(|_| format!("bad uuid hex: {s}"))?;
+    }
+    Ok(out)
 }
 
 fn parse_duration(s: &str) -> Result<Duration, String> {
@@ -116,6 +246,11 @@ fn parse_args() -> Result<Args, String> {
     let mode = match it.next().as_deref() {
         Some("subscribe-and-collect") => Mode::SubscribeAndCollect,
         Some("expect-denied") => Mode::ExpectDenied,
+        Some("collab-sync-probe") => Mode::CollabSyncProbe,
+        Some("collab-fanout-listen") => Mode::CollabFanoutListen,
+        Some("collab-fanout-write") => Mode::CollabFanoutWrite,
+        Some("collab-flush") => Mode::CollabFlush,
+        Some("collab-converge") => Mode::CollabConverge,
         Some(other) => return Err(format!("unknown mode: {other}")),
         None => return Err("mode is required".into()),
     };
@@ -125,10 +260,17 @@ fn parse_args() -> Result<Args, String> {
     let mut ticket = None;
     let mut subscribe = Vec::new();
     let mut expect_events = None;
+    let mut expect_revoked = None;
     let mut reason = None;
     let mut timeout = Duration::from_secs(3);
     let mut output = None;
     let mut ready_file = None;
+    let mut file_id = None;
+    let mut content = None;
+    let mut expect_content = None;
+    let mut expect_write_denied = None;
+    let mut settle_ms = None;
+    let mut my_content = None;
 
     while let Some(flag) = it.next() {
         let value = it
@@ -146,10 +288,29 @@ fn parse_args() -> Result<Args, String> {
                         .map_err(|_| format!("--expect-events not a number: {value}"))?,
                 );
             }
+            "--expect-revoked" => {
+                expect_revoked = Some(
+                    value
+                        .parse::<usize>()
+                        .map_err(|_| format!("--expect-revoked not a number: {value}"))?,
+                );
+            }
             "--reason" => reason = Some(value),
             "--timeout" => timeout = parse_duration(&value)?,
             "--output" => output = Some(value),
             "--ready-file" => ready_file = Some(value),
+            "--file" => file_id = Some(parse_uuid_bytes(&value)?),
+            "--content" => content = Some(value),
+            "--expect-content" => expect_content = Some(value),
+            "--expect-write-denied" => expect_write_denied = Some(value),
+            "--settle-ms" => {
+                settle_ms = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| format!("--settle-ms not a number: {value}"))?,
+                );
+            }
+            "--my-content" => my_content = Some(value),
             other => return Err(format!("unknown flag: {other}")),
         }
     }
@@ -170,10 +331,17 @@ fn parse_args() -> Result<Args, String> {
         auth,
         subscribe,
         expect_events,
+        expect_revoked,
         reason,
         timeout,
         output,
         ready_file,
+        file_id,
+        content,
+        expect_content,
+        expect_write_denied,
+        settle_ms,
+        my_content,
     })
 }
 
@@ -194,6 +362,11 @@ async fn main() -> ExitCode {
     let result = match args.mode {
         Mode::SubscribeAndCollect => subscribe_and_collect(args).await,
         Mode::ExpectDenied => expect_denied(args).await,
+        Mode::CollabSyncProbe => collab_sync_probe(args).await,
+        Mode::CollabFanoutListen => collab_fanout_listen(args).await,
+        Mode::CollabFanoutWrite => collab_fanout_write(args).await,
+        Mode::CollabFlush => collab_flush(args).await,
+        Mode::CollabConverge => collab_converge(args).await,
     };
 
     match result {
@@ -290,6 +463,7 @@ async fn subscribe_and_collect(args: Args) -> Result<(), HelperError> {
         ));
     }
     let expect_events = args.expect_events.unwrap_or(0);
+    let expect_revoked = args.expect_revoked.unwrap_or(0);
 
     let mut ws = connect_ws(&args.url, &args.auth).await?;
 
@@ -309,6 +483,14 @@ async fn subscribe_and_collect(args: Args) -> Result<(), HelperError> {
         ws.send(Message::Text(frame.to_string().into())).await?;
         pending_subs.insert(req_id, topic.clone());
     }
+
+    // Successful subscribe acks with their full `result` object.
+    // Kept parallel to `subscribed` (which stores just the topic
+    // strings) so existing scenarios that only look at topic names
+    // don't break, while new scenarios can assert on the ack payload
+    // — capabilities for collab topics, custom fields for future
+    // topic classes. One entry per topic, in subscribe order.
+    let mut subscribe_acks: Vec<Value> = Vec::new();
 
     let mut events: Vec<Value> = Vec::new();
     // Server-initiated eviction notifications (`rt.revoked`) — captured
@@ -331,8 +513,15 @@ async fn subscribe_and_collect(args: Args) -> Result<(), HelperError> {
             timed_out = true;
             break;
         }
-        // Exit early: all acks received AND enough events collected.
-        if pending_subs.is_empty() && events.len() >= expect_events {
+        // Exit early: all acks received AND enough events AND enough
+        // revocations collected. `expect_revoked` defaults to 0 so
+        // scenarios that only care about events keep their original
+        // shape; S24 (delete-triggered eviction) opts in with
+        // `--expect-revoked 1`.
+        if pending_subs.is_empty()
+            && events.len() >= expect_events
+            && revoked.len() >= expect_revoked
+        {
             break;
         }
 
@@ -375,7 +564,18 @@ async fn subscribe_and_collect(args: Args) -> Result<(), HelperError> {
                 )));
             }
             if let Some(topic) = topic {
-                subscribed.push(topic);
+                subscribed.push(topic.clone());
+                // Capture the ack payload for scenarios that assert
+                // on `capabilities` (S25 read-only) or other future
+                // per-topic ack fields. `null` on missing result is
+                // defensive — the server always populates it today
+                // but leaving the wire flexibility in the trace
+                // shows up loudly if it ever regresses.
+                let result = value.get("result").cloned().unwrap_or(Value::Null);
+                subscribe_acks.push(serde_json::json!({
+                    "topic":  topic,
+                    "result": result,
+                }));
             }
             // Every requested subscribe is now ack'd — signal the
             // orchestrator that publishes targeted at these topics
@@ -417,13 +617,15 @@ async fn subscribe_and_collect(args: Args) -> Result<(), HelperError> {
         }
     }
 
-    // Assertion: at least `expect_events` collected before timeout.
-    let met = events.len() >= expect_events;
+    // Assertion: at least `expect_events` events AND `expect_revoked`
+    // revocations collected before timeout.
+    let met = events.len() >= expect_events && revoked.len() >= expect_revoked;
 
     // Always write output (even on failure) so the shell can diff.
     if let Some(path) = args.output.as_ref() {
         let summary = json!({
             "subscribed": subscribed,
+            "subscribe_acks": subscribe_acks,
             "events": events,
             "revoked": revoked,
             "pings_received": pings_received,
@@ -435,9 +637,11 @@ async fn subscribe_and_collect(args: Args) -> Result<(), HelperError> {
 
     if !met {
         return Err(HelperError::Expectation(format!(
-            "expected {} events, got {} ({}timeout)",
+            "expected {} events / {} revoked, got {} / {} ({}timeout)",
             expect_events,
+            expect_revoked,
             events.len(),
+            revoked.len(),
             if timed_out { "with " } else { "no " }
         )));
     }
@@ -517,4 +721,781 @@ async fn expect_denied(args: Args) -> Result<(), HelperError> {
         }
         return Ok(());
     }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Mode: collab-sync-probe
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Sends one Yjs sync-step-1 request as a binary frame and asserts the server
+// answers with a well-formed sync-step-2 reply on the same file. Exercises
+// the full C2 path in one probe: parse the wire header, spawn the actor,
+// seed content via the reader, encode `state_as_update_v1(&sv)`, wrap the
+// payload back in a 0x03 frame, and ship it to the socket.
+//
+// Wire format is `collab_wire.rs`:
+//   [1 byte kind = 0x03 SYNC][16 bytes file_id BE][payload = state vector]
+// The reply carries the same header (kind 0x03, same file_id) and a
+// non-empty payload — even for an empty doc, `encode_state_as_update_v1`
+// emits the 2-byte "empty update" marker, so a zero-length payload is a
+// regression (missing route wiring or the reader failed silently).
+
+async fn collab_sync_probe(args: Args) -> Result<(), HelperError> {
+    let file_id = args.file_id.ok_or_else(|| {
+        HelperError::Protocol("--file <uuid> required for collab-sync-probe".into())
+    })?;
+
+    let mut ws = connect_ws(&args.url, &args.auth).await?;
+
+    // Build sync-step-1: [0x03][file_id 16 bytes][state vector = 0x00].
+    //
+    // "I know nothing yet" is NOT a zero-length payload — Yjs's
+    // `StateVector::encode_v1` starts with a varint count of clients,
+    // and an empty state vector encodes to exactly one byte, `0x00`.
+    // A zero-length payload here fails `StateVector::decode_v1` with
+    // "unexpected end of buffer" and the server tears the socket down
+    // (see `collab.protocol_violation` audit event). This one byte is
+    // the wire equivalent of the client's "fresh doc, send me
+    // everything you have".
+    let mut req = Vec::with_capacity(18);
+    req.push(0x03); // kind::SYNC — the collab_wire.rs constant, inlined
+    req.extend_from_slice(&file_id);
+    req.push(0x00); // StateVector::default().encode_v1() == [0x00]
+    ws.send(Message::Binary(req.into())).await?;
+
+    // Await the first binary frame within the deadline. Text frames are
+    // legal on the same socket (server-initiated `rt.event` or
+    // `rt.revoked` notifications, keepalive Pings), so drain them
+    // without asserting until a Binary arrives or the timer trips.
+    let deadline = tokio::time::Instant::now() + args.timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(HelperError::Expectation(
+                "timeout without a binary reply on the collab file".into(),
+            ));
+        }
+
+        let msg = match timeout(remaining, ws.next()).await {
+            Ok(Some(Ok(m))) => m,
+            Ok(Some(Err(e))) => return Err(HelperError::Protocol(format!("ws error: {e}"))),
+            // A close mid-probe is a real regression — the server rejected
+            // the frame and tore the socket down. Report as expectation
+            // failure so the shell test surfaces the audit line, not as a
+            // protocol error (which reads as infra breakage).
+            Ok(None) => {
+                return Err(HelperError::Expectation(
+                    "connection closed before a binary reply arrived".into(),
+                ));
+            }
+            Err(_) => {
+                return Err(HelperError::Expectation(
+                    "timeout without a binary reply on the collab file".into(),
+                ));
+            }
+        };
+
+        let bytes = match msg {
+            Message::Binary(b) => b,
+            // Text / Ping / Pong / Close(before-drain) — ignore and keep
+            // reading. This tolerates the auto-sub notifications the WS
+            // installs at open time and any server keepalive.
+            _ => continue,
+        };
+
+        // Frame layout: kind(1) + file_id(16) + payload(≥1).
+        if bytes.len() < 17 {
+            return Err(HelperError::Expectation(format!(
+                "reply frame too short: {} bytes (want header + payload)",
+                bytes.len()
+            )));
+        }
+        let reply_kind = bytes[0];
+        if reply_kind != 0x03 {
+            return Err(HelperError::Expectation(format!(
+                "reply kind 0x{reply_kind:02x}, want 0x03 (SYNC)"
+            )));
+        }
+        let mut reply_file_id = [0u8; 16];
+        reply_file_id.copy_from_slice(&bytes[1..17]);
+        if reply_file_id != file_id {
+            return Err(HelperError::Expectation(
+                "reply file_id does not match request".into(),
+            ));
+        }
+        let payload_len = bytes.len() - 17;
+        if payload_len == 0 {
+            return Err(HelperError::Expectation(
+                "reply payload is empty — sync-step-2 should carry the encoded diff (even the \
+                 empty-update marker is 2 bytes)"
+                    .into(),
+            ));
+        }
+
+        if let Some(path) = args.output.as_ref() {
+            let summary = json!({
+                "kind": reply_kind,
+                "file_id_matches": true,
+                "payload_len": payload_len,
+            });
+            std::fs::write(path, serde_json::to_vec_pretty(&summary).unwrap())
+                .map_err(|e| HelperError::Protocol(format!("write output: {e}")))?;
+        }
+
+        return Ok(());
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Mode: collab-fanout-listen / collab-fanout-write
+// ════════════════════════════════════════════════════════════════════════════
+//
+// These two paired modes exercise the actor's fan-out path: an UPDATE
+// applied on one socket must reach every other socket subscribed to
+// the same `Topic::Collab(file_id)`. Both first speak JSON-RPC to
+// clear the subscribe-time `Read` AuthZ gate — the server's forwarder
+// task is what wires the broadcast receiver to the WS out queue, so
+// unless you're subscribed you don't receive.
+
+/// JSON-RPC subscribe to a single topic and wait for the id-matched
+/// ack. Returns cleanly on `result`, errors on `error`. Shared by
+/// both fanout modes so the wire-level handshake is captured in one
+/// place.
+async fn subscribe_topic(
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    topic: &str,
+    request_deadline: tokio::time::Instant,
+) -> Result<(), HelperError> {
+    let req_id: u64 = 1;
+    let frame = json!({
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "method": "rt.subscribe",
+        "params": { "topic": topic },
+    });
+    ws.send(Message::Text(frame.to_string().into())).await?;
+
+    // Drain non-ack frames (server-initiated notifications, pings,
+    // binary events) until we see the ack keyed on `id`.
+    loop {
+        let remaining = request_deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(HelperError::Expectation(format!(
+                "timeout waiting for subscribe ack on {topic}"
+            )));
+        }
+        let msg = match timeout(remaining, ws.next()).await {
+            Ok(Some(Ok(m))) => m,
+            Ok(Some(Err(e))) => return Err(HelperError::Protocol(format!("ws error: {e}"))),
+            Ok(None) => return Err(HelperError::Protocol("connection closed by peer".into())),
+            Err(_) => {
+                return Err(HelperError::Expectation(format!(
+                    "timeout waiting for subscribe ack on {topic}"
+                )));
+            }
+        };
+        let Message::Text(text) = msg else { continue };
+        let value: Value = serde_json::from_str(&text)
+            .map_err(|e| HelperError::Protocol(format!("bad frame: {e}: {text}")))?;
+        let Some(id_num) = value.get("id").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        if id_num != req_id {
+            continue;
+        }
+        if let Some(err) = value.get("error") {
+            return Err(HelperError::Expectation(format!("subscribe denied: {err}")));
+        }
+        return Ok(());
+    }
+}
+
+async fn collab_fanout_listen(args: Args) -> Result<(), HelperError> {
+    let file_id = args.file_id.ok_or_else(|| {
+        HelperError::Protocol("--file <uuid> required for collab-fanout-listen".into())
+    })?;
+    let expected = args.expect_content.clone().ok_or_else(|| {
+        HelperError::Protocol("--expect-content <string> required for collab-fanout-listen".into())
+    })?;
+
+    let mut ws = connect_ws(&args.url, &args.auth).await?;
+    let deadline = tokio::time::Instant::now() + args.timeout;
+
+    // 1. Clear the subscribe-time AuthZ gate. Without this, no
+    //    forwarder is installed on the server side and the broadcast
+    //    never reaches this socket.
+    let topic = format!("collab:{}", uuid_bytes_to_dashed(&file_id));
+    subscribe_topic(&mut ws, &topic, deadline).await?;
+
+    // 2. Touch the ready-file so the orchestrator knows to fire the
+    //    paired writer. Same convention as `subscribe-and-collect`.
+    if let Some(path) = args.ready_file.as_deref()
+        && let Err(e) = std::fs::write(path, b"")
+    {
+        eprintln!("rt-hurl-helper: could not touch --ready-file {path}: {e}");
+    }
+
+    // 3. Wait for a binary `0x01` UPDATE frame keyed on our file_id.
+    //    Text frames on this socket during this window would be
+    //    unrelated notifications; drain and ignore.
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(HelperError::Expectation(format!(
+                "timeout waiting for a 0x01 fan-out frame on collab:{}",
+                uuid_bytes_to_dashed(&file_id)
+            )));
+        }
+        let msg = match timeout(remaining, ws.next()).await {
+            Ok(Some(Ok(m))) => m,
+            Ok(Some(Err(e))) => return Err(HelperError::Protocol(format!("ws error: {e}"))),
+            Ok(None) => {
+                return Err(HelperError::Expectation(
+                    "connection closed before a fan-out frame arrived".into(),
+                ));
+            }
+            Err(_) => {
+                return Err(HelperError::Expectation(
+                    "timeout waiting for a 0x01 fan-out frame".into(),
+                ));
+            }
+        };
+        let bytes = match msg {
+            Message::Binary(b) => b,
+            _ => continue,
+        };
+        if bytes.len() < 17 {
+            return Err(HelperError::Expectation(format!(
+                "fan-out frame too short: {} bytes",
+                bytes.len()
+            )));
+        }
+        if bytes[0] != 0x01 {
+            // Not an UPDATE — could be a SYNC reply from an unrelated
+            // in-flight request; ignore and keep waiting.
+            continue;
+        }
+        let mut reply_file_id = [0u8; 16];
+        reply_file_id.copy_from_slice(&bytes[1..17]);
+        if reply_file_id != file_id {
+            continue;
+        }
+        // Decode the payload as a Yjs update and apply to a fresh Doc
+        // to extract the resulting text. This is the strongest
+        // assertion we can make at the wire level — a lax "payload
+        // non-empty" check would miss a fan-out that broadcasts the
+        // wrong bytes.
+        let update = Update::decode_v1(&bytes[17..]).map_err(|e| {
+            HelperError::Expectation(format!("payload is not a valid Yjs update: {e}"))
+        })?;
+        let doc = Doc::new();
+        {
+            let mut txn = doc.transact_mut();
+            txn.apply_update(update)
+                .map_err(|e| HelperError::Expectation(format!("apply_update failed: {e}")))?;
+        }
+        let text_ref = doc.get_or_insert_text("content");
+        let got = text_ref.get_string(&doc.transact());
+        if got != expected {
+            return Err(HelperError::Expectation(format!(
+                "fan-out content mismatch: got {got:?}, want {expected:?}"
+            )));
+        }
+        return Ok(());
+    }
+}
+
+async fn collab_fanout_write(args: Args) -> Result<(), HelperError> {
+    let file_id = args.file_id.ok_or_else(|| {
+        HelperError::Protocol("--file <uuid> required for collab-fanout-write".into())
+    })?;
+    let content = args.content.clone().ok_or_else(|| {
+        HelperError::Protocol("--content <string> required for collab-fanout-write".into())
+    })?;
+
+    let mut ws = connect_ws(&args.url, &args.auth).await?;
+    let deadline = tokio::time::Instant::now() + args.timeout;
+
+    // 1. Subscribe: clears the Read gate. Without this the server
+    //    accepts the binary frame (the router doesn't require a
+    //    subscribe) but the write-side integration keeps the two
+    //    handshakes together — it's what the frontend will do.
+    let topic = format!("collab:{}", uuid_bytes_to_dashed(&file_id));
+    subscribe_topic(&mut ws, &topic, deadline).await?;
+
+    // 2. Build a Yjs UPDATE that inserts `content` at position 0 of
+    //    an otherwise-empty Doc. The client Doc is local to this
+    //    process; the server's actor has its own Doc and will apply
+    //    the incoming update against it. Origin skip is intentionally
+    //    not filtered — this sender will also see the update come
+    //    back through its own broadcast subscription (idempotent).
+    let client_doc = Doc::new();
+    {
+        let text_ref = client_doc.get_or_insert_text("content");
+        let mut txn = client_doc.transact_mut();
+        text_ref.insert(&mut txn, 0, &content);
+    }
+    let update_bytes = client_doc
+        .transact()
+        .encode_state_as_update_v1(&StateVector::default());
+
+    // 3. Wrap in the collab wire header: [0x01][file_id][update].
+    let mut frame = Vec::with_capacity(17 + update_bytes.len());
+    frame.push(0x01);
+    frame.extend_from_slice(&file_id);
+    frame.extend_from_slice(&update_bytes);
+    ws.send(Message::Binary(frame.into())).await?;
+
+    // 4a. Optional: wait for an `rt.write_denied` notification and
+    //     prove the socket survives. Guarded by
+    //     `--expect-write-denied <reason>` — S26 uses this to lock
+    //     the graceful-denial invariant (server refuses one UPDATE,
+    //     keeps the socket alive). Without the flag the historic
+    //     "send and close" shape is preserved for the other
+    //     scenarios (S19 etc.).
+    if let Some(expected_reason) = args.expect_write_denied.as_deref() {
+        let file_id_str = uuid_bytes_to_dashed(&file_id);
+        await_write_denied_then_ping(&mut ws, &file_id_str, expected_reason, deadline).await?;
+    }
+
+    // 4. Best-effort clean close so the server's forwarder tears
+    //    down promptly, not on TCP timeout.
+    let _ = ws.close(None).await;
+    Ok(())
+}
+
+/// Drain the socket until an `rt.write_denied` notification arrives
+/// with the given `file_id` + `reason`. Then send `rt.ping` and
+/// require a successful ack — that's the "socket survived the
+/// denial" invariant. A prior server implementation broke the loop
+/// on UPDATE denial and closed the WS; this drain wouldn't complete
+/// under that shape and the test fails loudly.
+async fn await_write_denied_then_ping(
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    expected_file_id: &str,
+    expected_reason: &str,
+    deadline: tokio::time::Instant,
+) -> Result<(), HelperError> {
+    // 1. Wait for the rt.write_denied notification.
+    let mut saw_denied = false;
+    while !saw_denied {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(HelperError::Expectation(
+                "timeout waiting for rt.write_denied".into(),
+            ));
+        }
+        let msg = match timeout(remaining, ws.next()).await {
+            Ok(Some(Ok(m))) => m,
+            Ok(Some(Err(e))) => return Err(HelperError::Protocol(format!("ws error: {e}"))),
+            Ok(None) => {
+                return Err(HelperError::Protocol(
+                    "socket closed before rt.write_denied".into(),
+                ));
+            }
+            Err(_) => {
+                return Err(HelperError::Expectation(
+                    "timeout waiting for rt.write_denied".into(),
+                ));
+            }
+        };
+        let text = match msg {
+            Message::Text(t) => t,
+            Message::Binary(_) | Message::Ping(_) | Message::Pong(_) => continue,
+            _ => continue,
+        };
+        let v: Value = serde_json::from_str(&text)
+            .map_err(|e| HelperError::Protocol(format!("bad frame: {e}: {text}")))?;
+        if v.get("method").and_then(Value::as_str) == Some("rt.write_denied") {
+            let params = v
+                .get("params")
+                .ok_or_else(|| HelperError::Expectation("rt.write_denied missing params".into()))?;
+            let got_file_id = params.get("file_id").and_then(Value::as_str).unwrap_or("");
+            let got_reason = params.get("reason").and_then(Value::as_str).unwrap_or("");
+            if got_file_id != expected_file_id {
+                return Err(HelperError::Expectation(format!(
+                    "rt.write_denied file_id mismatch: got {got_file_id}, want {expected_file_id}",
+                )));
+            }
+            if got_reason != expected_reason {
+                return Err(HelperError::Expectation(format!(
+                    "rt.write_denied reason mismatch: got {got_reason}, want {expected_reason}",
+                )));
+            }
+            saw_denied = true;
+        }
+    }
+
+    // 2. Prove the socket is still alive: rt.ping / ack.
+    let ping_id: u64 = 42;
+    let ping = json!({
+        "jsonrpc": "2.0",
+        "id":      ping_id,
+        "method":  "rt.ping",
+    });
+    ws.send(Message::Text(ping.to_string().into())).await?;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(HelperError::Expectation(
+                "timeout waiting for rt.ping ack after rt.write_denied".into(),
+            ));
+        }
+        let msg = match timeout(remaining, ws.next()).await {
+            Ok(Some(Ok(m))) => m,
+            Ok(Some(Err(e))) => return Err(HelperError::Protocol(format!("ws error: {e}"))),
+            Ok(None) => {
+                return Err(HelperError::Protocol(
+                    "socket closed after rt.write_denied".into(),
+                ));
+            }
+            Err(_) => {
+                return Err(HelperError::Expectation(
+                    "timeout waiting for ping ack".into(),
+                ));
+            }
+        };
+        let text = match msg {
+            Message::Text(t) => t,
+            _ => continue,
+        };
+        let v: Value = serde_json::from_str(&text)
+            .map_err(|e| HelperError::Protocol(format!("bad frame: {e}: {text}")))?;
+        if v.get("id").and_then(Value::as_u64) == Some(ping_id) {
+            if v.get("error").is_some() {
+                return Err(HelperError::Expectation(format!(
+                    "rt.ping failed after rt.write_denied: {}",
+                    v.get("error").unwrap()
+                )));
+            }
+            return Ok(());
+        }
+    }
+}
+
+/// Format 16 raw UUID bytes as canonical dashed hex — inverse of
+/// `parse_uuid_bytes`. Used to build the JSON-RPC topic string from
+/// the same file_id bytes the binary frame carries. Dependency-free
+/// like its inverse.
+fn uuid_bytes_to_dashed(b: &[u8; 16]) -> String {
+    let mut out = String::with_capacity(36);
+    for (i, byte) in b.iter().enumerate() {
+        if matches!(i, 4 | 6 | 8 | 10) {
+            out.push('-');
+        }
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Mode: collab-flush
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Send `rt.collab_flush { file_id }` and assert on the id-matched
+// reply. Success reply carries `{ flushed: bool }`; error reply
+// carries a JSON-RPC `error` object.
+
+async fn collab_flush(args: Args) -> Result<(), HelperError> {
+    let file_id = args
+        .file_id
+        .ok_or_else(|| HelperError::Protocol("--file <uuid> required for collab-flush".into()))?;
+
+    let mut ws = connect_ws(&args.url, &args.auth).await?;
+    let deadline = tokio::time::Instant::now() + args.timeout;
+
+    let req_id: u64 = 1;
+    let file_id_str = uuid_bytes_to_dashed(&file_id);
+    let frame = json!({
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "method": "rt.collab_flush",
+        "params": { "file_id": file_id_str },
+    });
+    ws.send(Message::Text(frame.to_string().into())).await?;
+
+    // Drain until the id-matched ack. Text notifications are legal
+    // on the same socket (auto-sub identity topics push events);
+    // ignore anything that isn't our correlated reply.
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(HelperError::Expectation(
+                "timeout waiting for rt.collab_flush ack".into(),
+            ));
+        }
+        let msg = match timeout(remaining, ws.next()).await {
+            Ok(Some(Ok(m))) => m,
+            Ok(Some(Err(e))) => return Err(HelperError::Protocol(format!("ws error: {e}"))),
+            Ok(None) => return Err(HelperError::Protocol("connection closed by peer".into())),
+            Err(_) => {
+                return Err(HelperError::Expectation(
+                    "timeout waiting for rt.collab_flush ack".into(),
+                ));
+            }
+        };
+        let Message::Text(text) = msg else { continue };
+        let value: Value = serde_json::from_str(&text)
+            .map_err(|e| HelperError::Protocol(format!("bad frame: {e}: {text}")))?;
+        let Some(id_num) = value.get("id").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        if id_num != req_id {
+            continue;
+        }
+        if let Some(err) = value.get("error") {
+            return Err(HelperError::Expectation(format!(
+                "rt.collab_flush denied: {err}"
+            )));
+        }
+        // Success path — reply mirrors on --output for shell assertions.
+        if let Some(path) = args.output.as_ref() {
+            let result = value.get("result").cloned().unwrap_or(Value::Null);
+            std::fs::write(path, serde_json::to_vec_pretty(&result).unwrap())
+                .map_err(|e| HelperError::Protocol(format!("write output: {e}")))?;
+        }
+        return Ok(());
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Mode: collab-converge (multi-client CRDT convergence probe)
+// ════════════════════════════════════════════════════════════════════════════
+
+async fn collab_converge(args: Args) -> Result<(), HelperError> {
+    let file_id = args.file_id.ok_or_else(|| {
+        HelperError::Protocol("--file <uuid> required for collab-converge".into())
+    })?;
+    let my_content = args.my_content.clone().ok_or_else(|| {
+        HelperError::Protocol("--my-content <string> required for collab-converge".into())
+    })?;
+    let settle = Duration::from_millis(args.settle_ms.unwrap_or(500));
+
+    let mut ws = connect_ws(&args.url, &args.auth).await?;
+    let deadline = tokio::time::Instant::now() + args.timeout;
+
+    // 1. Subscribe on the collab topic — clears the Read gate and
+    //    installs the actor's forwarder so this socket receives
+    //    every peer's subsequent UPDATE.
+    let topic = format!("collab:{}", uuid_bytes_to_dashed(&file_id));
+    subscribe_topic(&mut ws, &topic, deadline).await?;
+
+    // 2. Sync-step-1 catch-up. Every real Yjs client does this on
+    //    connect, and the multi-client shape needs it: broadcast
+    //    subscribers only see UPDATEs from the moment they
+    //    subscribed forwards — earlier peers' inserts do NOT
+    //    replay through the broadcast channel. Without sync-step-1,
+    //    the last client to subscribe wins the CRDT race by seeing
+    //    only its own state; the earliest client sees everyone.
+    //    Sync-step-2 catches us up on whatever the actor's Doc
+    //    already holds, so subsequent broadcasts round out the
+    //    picture symmetrically for every peer.
+    //
+    //    State vector for a fresh empty Doc encodes to a single
+    //    `0x00` byte (varint count of clients = 0). Encoding the
+    //    real thing costs a `state_vector().encode_v1()` call and
+    //    changes nothing for a Doc that hasn't been touched yet.
+    let doc = Doc::new();
+    {
+        let mut req = Vec::with_capacity(18);
+        req.push(0x03); // kind::SYNC
+        req.extend_from_slice(&file_id);
+        req.push(0x00); // empty state vector
+        ws.send(Message::Binary(req.into())).await?;
+    }
+    // Await sync-step-2 reply. Skip UPDATE frames from peers that
+    // may have raced in ahead — we'll apply them AFTER sync-step-2
+    // in the main listen loop; the CRDT is idempotent so a duplicate
+    // apply is a no-op.
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(HelperError::Expectation(
+                "timeout waiting for sync-step-2 reply".into(),
+            ));
+        }
+        let msg = match timeout(remaining, ws.next()).await {
+            Ok(Some(Ok(m))) => m,
+            Ok(Some(Err(e))) => return Err(HelperError::Protocol(format!("ws error: {e}"))),
+            Ok(None) => {
+                return Err(HelperError::Protocol(
+                    "socket closed before sync-step-2 arrived".into(),
+                ));
+            }
+            Err(_) => {
+                return Err(HelperError::Expectation(
+                    "timeout waiting for sync-step-2 reply".into(),
+                ));
+            }
+        };
+        let bytes = match msg {
+            Message::Binary(b) => b,
+            _ => continue,
+        };
+        if bytes.len() < 17 {
+            continue;
+        }
+        let mut got_file_id = [0u8; 16];
+        got_file_id.copy_from_slice(&bytes[1..17]);
+        if got_file_id != file_id {
+            continue;
+        }
+        match bytes[0] {
+            0x03 => {
+                // sync-step-2 — apply the diff (may be a 1-byte
+                // empty-update marker for a fresh actor).
+                let payload = &bytes[17..];
+                if !payload.is_empty() {
+                    let update = Update::decode_v1(payload).map_err(|e| {
+                        HelperError::Expectation(format!("sync-step-2 decode: {e}"))
+                    })?;
+                    let mut txn = doc.transact_mut();
+                    txn.apply_update(update)
+                        .map_err(|e| HelperError::Expectation(format!("sync-step-2 apply: {e}")))?;
+                }
+                break;
+            }
+            0x01 => {
+                // Peer UPDATE that arrived before our sync-step-2;
+                // apply it now — same idempotent CRDT contract.
+                let update = Update::decode_v1(&bytes[17..])
+                    .map_err(|e| HelperError::Expectation(format!("early UPDATE decode: {e}")))?;
+                let mut txn = doc.transact_mut();
+                txn.apply_update(update)
+                    .map_err(|e| HelperError::Expectation(format!("early UPDATE apply: {e}")))?;
+                continue;
+            }
+            _ => continue,
+        }
+    }
+
+    // 3. Ready-file AFTER sync-step-2 caught up. The orchestrator's
+    //    barrier ensures every peer has both subscribed AND finished
+    //    its catch-up before any of them broadcasts — no client
+    //    inserts into a Doc that's about to receive a peer's
+    //    "existing" state.
+    if let Some(path) = args.ready_file.as_deref()
+        && let Err(e) = std::fs::write(path, b"")
+    {
+        eprintln!("rt-hurl-helper: could not touch --ready-file {path}: {e}");
+    }
+
+    // 4. Local insert. Position 0. Different clients insert different
+    //    strings so a divergence bug shows up as different final
+    //    texts across the five outputs.
+    {
+        let text = doc.get_or_insert_text("content");
+        let mut txn = doc.transact_mut();
+        let cur_len = text.get_string(&txn).chars().count() as u32;
+        text.insert(&mut txn, cur_len, &my_content);
+    }
+    // Encode the WHOLE doc — cheapest correct wire. Peers applied
+    // most of these bytes already via sync-step-2; Yjs is idempotent
+    // so the duplicate apply is a no-op. Bandwidth waste isn't the
+    // assertion here (a convergence test cares about final state,
+    // not wire size), and a proper "diff against post-sync state
+    // vector" would require capturing the SV before the insert —
+    // extra bookkeeping for zero test signal.
+    let my_delta = doc
+        .transact()
+        .encode_state_as_update_v1(&StateVector::default());
+
+    // 5. Broadcast our contribution — [0x01][file_id][update].
+    let mut frame = Vec::with_capacity(17 + my_delta.len());
+    frame.push(0x01);
+    frame.extend_from_slice(&file_id);
+    frame.extend_from_slice(&my_delta);
+    ws.send(Message::Binary(frame.into())).await?;
+
+    // 5. Listen for peer UPDATEs, applying each to our local Doc.
+    //    Exit when `settle` elapses with no new frame — that's when
+    //    the fan-out has visibly quiesced. Bounded by `deadline` (the
+    //    caller's `--timeout`) so a wedged fan-out surfaces loudly.
+    let mut peer_updates_applied: usize = 0;
+    let mut last_frame_at = tokio::time::Instant::now();
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            // Overall timeout — write whatever we have and let the
+            // shell decide. Do NOT return Err here: a slow fan-out
+            // will diff against other clients' outputs and the shell
+            // can distinguish "one client stuck" from "everyone
+            // converged".
+            break;
+        }
+        // Settle: no incoming frame for `settle_ms` since the last
+        // observed frame — the fan-out is quiet. Because our own
+        // UPDATE fires an actor-side broadcast that reaches us too
+        // (idempotent in Yjs), `last_frame_at` moves off the initial
+        // send time within the first read.
+        if now.saturating_duration_since(last_frame_at) >= settle {
+            break;
+        }
+        let recv_deadline = std::cmp::min(deadline, last_frame_at + settle);
+        let remaining = recv_deadline.saturating_duration_since(now);
+        let msg = match timeout(remaining, ws.next()).await {
+            Ok(Some(Ok(m))) => m,
+            Ok(Some(Err(e))) => return Err(HelperError::Protocol(format!("ws error: {e}"))),
+            Ok(None) => break,  // socket closed by peer — fall through to output
+            Err(_) => continue, // no frame in the window; the outer loop re-checks the settle window
+        };
+        let bytes = match msg {
+            Message::Binary(b) => b,
+            _ => continue,
+        };
+        if bytes.len() < 17 || bytes[0] != 0x01 {
+            continue;
+        }
+        let mut got_file_id = [0u8; 16];
+        got_file_id.copy_from_slice(&bytes[1..17]);
+        if got_file_id != file_id {
+            continue;
+        }
+        // Apply the update. A malformed peer frame is a protocol
+        // violation — surface it rather than silently swallowing.
+        let update = Update::decode_v1(&bytes[17..])
+            .map_err(|e| HelperError::Expectation(format!("peer update didn't decode: {e}")))?;
+        {
+            let mut txn = doc.transact_mut();
+            txn.apply_update(update)
+                .map_err(|e| HelperError::Expectation(format!("apply_update failed: {e}")))?;
+        }
+        peer_updates_applied += 1;
+        last_frame_at = tokio::time::Instant::now();
+    }
+
+    // 6. Decode the converged text and write it as JSON. The shell
+    //    diffs every client's `final_text` — identical across all N
+    //    clients proves convergence. Yjs's CRDT ordering is
+    //    deterministic given the same set of ops, so any divergence
+    //    means a fan-out gap (a client didn't see some peer's UPDATE)
+    //    or a decode / apply bug.
+    let final_text = {
+        let text = doc.get_or_insert_text("content");
+        text.get_string(&doc.transact())
+    };
+    let final_length = final_text.chars().count();
+    if let Some(path) = args.output.as_ref() {
+        let summary = json!({
+            "my_content":            my_content,
+            "final_text":            final_text,
+            "final_length":          final_length,
+            "peer_updates_applied":  peer_updates_applied,
+        });
+        std::fs::write(path, serde_json::to_vec_pretty(&summary).unwrap())
+            .map_err(|e| HelperError::Protocol(format!("write output: {e}")))?;
+    }
+    // Sanity: our own insertion MUST be in the converged text — a
+    // helper that reports "converged" without carrying its own
+    // contribution is broken.
+    if !final_text.contains(&my_content) {
+        return Err(HelperError::Expectation(format!(
+            "my own insertion missing from converged text: {my_content:?} not in {final_text:?}",
+        )));
+    }
+    Ok(())
 }

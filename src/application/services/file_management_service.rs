@@ -71,6 +71,21 @@ pub struct FileManagementService {
     /// source-side folder (move). Optional so stubs stay minimal; when
     /// unwired, the affected publishes silently no-op.
     file_read: Option<Arc<FileBlobReadRepository>>,
+    /// Collab session service — used by [`delete_and_cleanup_with_perms`]
+    /// to evict live collaborative sessions on the file BEFORE the row
+    /// is trashed / dropped, so attached editors see an `rt.revoked`
+    /// frame with `reason: "resource_deleted"` instead of a silent
+    /// channel drop.
+    ///
+    /// Wired via [`Self::set_collab_session_service`] AFTER the service
+    /// is built and shared (already behind an `Arc`) because the collab
+    /// service is constructed later in the DI graph than this one; the
+    /// interior `OnceLock` gives us "assign exactly once at boot" without
+    /// making the service mutable. Empty when the collab feature is off,
+    /// which is a silent no-op inside the delete path.
+    collab_session_service: std::sync::OnceLock<
+        Arc<crate::application::services::collab_session_service::CollabSessionService>,
+    >,
 }
 
 impl FileManagementService {
@@ -99,6 +114,7 @@ impl FileManagementService {
             storage_usage: None,
             bus: None,
             file_read,
+            collab_session_service: std::sync::OnceLock::new(),
         }
     }
 
@@ -110,6 +126,19 @@ impl FileManagementService {
     ) -> Self {
         self.bus = Some(bus);
         self
+    }
+
+    /// Wire the collab session service. Late-bound via `OnceLock`
+    /// because the collab service is built later in the DI graph than
+    /// `FileManagementService`; a second call after the first is
+    /// silently ignored (idempotent boot). When unset, the delete
+    /// path's collab eviction hook is a no-op — which is the correct
+    /// behaviour with the collab feature off.
+    pub fn set_collab_session_service(
+        &self,
+        collab: Arc<crate::application::services::collab_session_service::CollabSessionService>,
+    ) {
+        let _ = self.collab_session_service.set(collab);
     }
 
     /// Sets the lifecycle hook dispatcher (thumbnails, audio metadata, …).
@@ -748,6 +777,22 @@ impl FileManagementUseCase for FileManagementService {
         // subscribers should see the same "gone from this folder"
         // event either way.
         let snapshot = self.snapshot_for_publish(id).await;
+
+        // Evict any live collaborative session BEFORE mutating the row.
+        // Whether the delete lands in trash (soft) or as a permanent
+        // drop (fallback), the file is going out of the user's
+        // editing surface — attached editors get an `rt.revoked` frame
+        // with `reason: "resource_deleted"` so their UI transitions to
+        // "the file was deleted" instead of "reconnecting…". Best-
+        // effort: an unparseable id is impossible here (require_file_perm
+        // just accepted it), and no live session is a silent no-op.
+        if let (Some(collab), Ok(file_uuid)) =
+            (self.collab_session_service.get(), Uuid::parse_str(id))
+        {
+            collab
+                .evict_sessions_for_file(file_uuid, "resource_deleted")
+                .await;
+        }
 
         // Step 1: Try trash (soft delete — file row stays, blob stays referenced)
         if let Some(trash) = &self.trash_service {

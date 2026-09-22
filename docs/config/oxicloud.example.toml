@@ -66,6 +66,16 @@ enable_search = true
 enable_trash = true
 enable_file_sharing = true
 enable_video_thumbnails = true
+# Collaborative markdown / text editing (Yjs CRDT over the message-bus
+# WebSocket). On by default as of 2026-09-21 — every C1-C7 phase plus the
+# robustness pass (eviction, graceful denial, doc-size cap, idle-GC,
+# explicit flush on tab hide) is shipped and covered by hurl smoke.
+# Requires the message bus to be enabled on the server (its default
+# `enable = true`); setting collab true with the bus off is a boot-time
+# FATAL. Set false only if you specifically don't want live Yjs routing —
+# e.g. read-only-clients-only or last-write-wins-via-HTTP deployments.
+# See docs/plan/markdown-collab.md.
+# enable_markdown_collab = true
 
 [integrations.smtp]
 host = "smtp.example.org"

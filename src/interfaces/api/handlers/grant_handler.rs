@@ -598,17 +598,34 @@ pub async fn revoke_grant(
     // subscriptions to the affected resource. Silent no-op when the
     // subject isn't a User (Group / Token subjects don't have live
     // sessions to notify — group cascade is Phase-B once group
-    // membership expansion ships). Folder resources only for MVP;
-    // File/Drive topics don't exist yet.
-    if let (Subject::User(target_user), Resource::Folder(folder_id)) = (subject, resource) {
+    // membership expansion ships).
+    //
+    // Two resource classes surface here today:
+    //   * `Folder` — folder-topic subscribers get `rt.revoked`.
+    //     A folder revoke does NOT cascade to collab sessions on
+    //     descendant files (would require enumerating the subtree
+    //     at revoke time — Phase-B).
+    //   * `File` — collab-topic subscribers get `rt.revoked` with
+    //     reason `grant_revoked`. Matches the FE's read-only slice:
+    //     a Viewer previously an Editor drops out of write mode
+    //     immediately without a reconnect.
+    if let Subject::User(target_user) = subject {
         use crate::application::ports::message_bus_ports::{MessageBus, MessageBusEvent, Topic};
-        MessageBus::publish(
-            state.bus.as_ref(),
-            &Topic::UserAuthz(target_user),
-            MessageBusEvent::AuthzChanged {
-                affected_folders: vec![folder_id],
-            },
-        );
+        let (affected_folders, affected_files) = match resource {
+            Resource::Folder(id) => (vec![id], vec![]),
+            Resource::File(id) => (vec![], vec![id]),
+            _ => (vec![], vec![]),
+        };
+        if !affected_folders.is_empty() || !affected_files.is_empty() {
+            MessageBus::publish(
+                state.bus.as_ref(),
+                &Topic::UserAuthz(target_user),
+                MessageBusEvent::AuthzChanged {
+                    affected_folders,
+                    affected_files,
+                },
+            );
+        }
     }
 
     StatusCode::NO_CONTENT.into_response()

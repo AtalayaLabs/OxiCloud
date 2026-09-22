@@ -1851,7 +1851,13 @@ impl crate::application::ports::file_lifecycle::FileLifecycleHook for ThumbnailR
         // Thumbnails are keyed by blob_hash on disk — the copy shares them automatically.
     }
 
-    fn on_file_updated(&self, file_id: &str, blob_hash: &str, content_type: &str) {
+    fn on_file_updated(
+        &self,
+        file_id: &str,
+        blob_hash: &str,
+        content_type: &str,
+        _source: crate::application::ports::file_lifecycle::WriteSource,
+    ) {
         if !ThumbnailService::is_supported_image(content_type) {
             return;
         }

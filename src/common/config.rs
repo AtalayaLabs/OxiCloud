@@ -2357,6 +2357,67 @@ pub struct FeaturesConfig {
     /// Env: `OXICLOUD_MESSAGEBUS_ENABLE` (default `true`).
     pub enable_message_bus: bool,
 
+    /// Collaborative markdown / text editor (Yjs over the message bus).
+    /// When `true` and `enable_message_bus` is also `true`, the WS
+    /// handler routes binary Yjs frames to
+    /// `CollabSessionService` and per-file actors host `yrs::Doc`
+    /// state. When `false`, binary frames are silently dropped —
+    /// clients that speak the collab protocol will time out their
+    /// sync attempts and can fall back to read-only. Requires
+    /// `enable_message_bus`: without it the WS endpoint doesn't exist
+    /// and there's no transport for CRDT ops (boot refuses this
+    /// combination — see the cross-flag check in `from_env`).
+    ///
+    /// Every C1-C7 phase has shipped as of 2026-09-21, including
+    /// the robustness pass:
+    ///
+    ///   * Read/write bridges — `FileBlobDocContentReader` /
+    ///     `FileBlobDocContentWriter` + debouncer (15 s idle /
+    ///     60 s max), materialising CRDT → blob through the normal
+    ///     dedup + lifecycle pipeline.
+    ///   * Per-frame AuthZ — Read on SYNC, Update on UPDATE via
+    ///     `CollabAuthzGate`.
+    ///   * `CollabEditor.svelte` — CodeMirror 6 + `y-codemirror.next`
+    ///     with awareness (peer cursors + names), dynamic-imported
+    ///     language grammars, read-only compartment gated on the
+    ///     subscribe-ack's `capabilities.can_write`.
+    ///   * Idle-GC — `collab_idle_gc` scheduled job reaps stale
+    ///     `collab.doc_sessions` rows (default 30 min TTL, 5 min
+    ///     scan cadence).
+    ///   * Eviction surface — `resource_deleted` (S24),
+    ///     `grant_revoked` (S27), `external_write` (S28) all fire
+    ///     `evict_sessions_for_file` and land as `rt.revoked` on the
+    ///     collab topic.
+    ///   * Graceful denials — Update-permission denial and
+    ///     doc-size-cap trip emit `rt.write_denied` (reasons
+    ///     `no_edit` / `doc_too_large`) and keep the socket alive;
+    ///     the FE editor drops into read-only via the same
+    ///     compartment path.
+    ///   * Doc-size cap — [`CollabLimits::max_doc_bytes`], default
+    ///     10 MB, env override `OXICLOUD_COLLAB_MAX_DOC_BYTES`.
+    ///   * Hurl smoke coverage — 28 scenarios in `rt_bus_check.sh`,
+    ///     six of them collab-specific (S20-S28).
+    ///
+    /// **On by default as of 2026-09-21.** The audit above lists the
+    /// shipped surface; opt out with
+    /// `OXICLOUD_ENABLE_MARKDOWN_COLLAB=false` for any deployment
+    /// that specifically doesn't want live Yjs routing on the wire.
+    ///
+    /// Two non-blocking follow-ups worth mentioning in release notes:
+    ///
+    ///   1. Folder-scoped grant revoke does NOT proactively evict
+    ///      collab sessions on descendant files (intentional — see
+    ///      `docs/plan/markdown-collab.md § Eviction` for the
+    ///      data-loss trade-off that motivated the skip). Per-frame
+    ///      Update AuthZ + `rt.write_denied` catch the caller within
+    ///      one keystroke.
+    ///   2. Group-membership loss awaits the ReBAC migration. Wire
+    ///      path is already in place — see
+    ///      `[[project_collab_authz_eviction_pending]]`.
+    ///
+    /// Env: `OXICLOUD_ENABLE_MARKDOWN_COLLAB` (default `true`).
+    pub enable_markdown_collab: bool,
+
     /// Background purge of expired `storage.role_grants` rows.
     ///
     /// The AuthZ engine already filters expired grants out of every
@@ -2567,6 +2628,16 @@ impl Default for FeaturesConfig {
             // reachable at `/webdav/@drive/`.
             webdav_drive_listing_prefix: "@drive".to_string(),
             enable_message_bus: true, // Message bus (WS + ticket) on by default
+            // On by default as of 2026-09-21: every C1-C7 phase plus
+            // the full eviction / graceful-denial / doc-size-cap
+            // robustness pass has shipped and is covered by 28 hurl
+            // scenarios. See the field doc-comment for the audit.
+            // Requires enable_message_bus (which also defaults on);
+            // the cross-flag boot check in `from_env` will refuse to
+            // start if collab is on but the bus is off, so this
+            // pair can only be inconsistent through an explicit
+            // operator override.
+            enable_markdown_collab: true,
             grant_cleanup: GrantCleanupConfig::default(),
             notifications_retention_days: 30, // 30 days is the plan's default
         }
@@ -3611,6 +3682,30 @@ impl AppConfig {
             && let Ok(val) = enable_message_bus
         {
             config.features.enable_message_bus = val;
+        }
+
+        // Collaborative markdown (Yjs binary frames over the bus).
+        // Off by default; requires the message bus to be on because
+        // the CRDT data plane rides `/api/rt/ws` — without the bus,
+        // that route isn't registered and Yjs frames have nowhere to
+        // land. Refuse to boot on the contradictory combination so an
+        // operator who set the flag without the bus sees the mistake
+        // named at startup, not as "the feature is on but does
+        // nothing" once users complain.
+        if let Ok(enable_markdown_collab) =
+            env::var("OXICLOUD_ENABLE_MARKDOWN_COLLAB").map(|v| v.parse::<bool>())
+            && let Ok(val) = enable_markdown_collab
+        {
+            config.features.enable_markdown_collab = val;
+        }
+        if config.features.enable_markdown_collab && !config.features.enable_message_bus {
+            panic!(
+                "FATAL: OXICLOUD_ENABLE_MARKDOWN_COLLAB=true requires \
+                 OXICLOUD_MESSAGEBUS_ENABLE=true. The collab data plane rides the \
+                 message-bus WebSocket (/api/rt/ws); without it there is no \
+                 socket to route Yjs frames on. Either enable the message bus \
+                 or disable markdown collab."
+            );
         }
 
         // Slice E — notification retention. Read as u32 so a

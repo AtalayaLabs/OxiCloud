@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::ports::authorization_ports::AuthorizationEngine;
-use crate::application::ports::file_lifecycle::FileLifecycleHook;
+use crate::application::ports::file_lifecycle::{FileLifecycleHook, WriteSource};
 use crate::application::ports::file_ports::{FileUploadUseCase, StoredBlob};
 use crate::application::ports::resource_access_hook::ResourceAccessHook;
 use crate::application::ports::storage_ports::{FileReadPort, FileWritePort, StorageUsagePort};
@@ -349,7 +349,12 @@ impl FileUploadService {
         .map_err(|e| DomainError::internal_error("FileUpload", format!("rebuild entity: {e}")))?;
         let dto = FileDto::from(updated);
         if let Some(hook) = &self.file_lifecycle_hook {
-            hook.on_file_updated(file_id, &dto.content_hash, &dto.mime_type);
+            hook.on_file_updated(
+                file_id,
+                &dto.content_hash,
+                &dto.mime_type,
+                WriteSource::External,
+            );
         }
         // Delta-upload commit path — record the swap so Recent reflects
         // "this is the file I just delta-updated".
@@ -629,7 +634,12 @@ impl FileUploadUseCase for FileUploadService {
                 caller_id,
             );
             if let Some(hook) = &self.file_lifecycle_hook {
-                hook.on_file_updated(&file_id, &dto.content_hash, content_type);
+                hook.on_file_updated(
+                    &file_id,
+                    &dto.content_hash,
+                    content_type,
+                    WriteSource::External,
+                );
             }
             self.notify_file_accessed(caller_id, &file_id);
             return Ok(dto);

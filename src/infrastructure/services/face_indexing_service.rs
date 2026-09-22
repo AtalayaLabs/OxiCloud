@@ -149,7 +149,13 @@ impl FileLifecycleHook for FaceIndexingService {
         }
     }
 
-    fn on_file_updated(&self, file_id: &str, blob_hash: &str, content_type: &str) {
+    fn on_file_updated(
+        &self,
+        file_id: &str,
+        blob_hash: &str,
+        content_type: &str,
+        _source: crate::application::ports::file_lifecycle::WriteSource,
+    ) {
         if !is_image(content_type) || !self.analyzer.is_ready() {
             return;
         }

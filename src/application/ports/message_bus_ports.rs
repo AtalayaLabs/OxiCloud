@@ -84,6 +84,29 @@ pub enum Topic {
     /// scheduler-registered strings (e.g. `backend_migration`,
     /// `thumb_derived_import`); the topic string is `job:<name>`.
     Job(String),
+
+    /// A file's collaborative-editing stream — CRDT updates + presence.
+    /// Consumed by the markdown / plain-text editor (`docs/plan/markdown-collab.md`).
+    /// Two frame kinds ride this topic:
+    ///
+    /// - **Text frames (JSON-RPC control plane):** `rt.subscribe` /
+    ///   `rt.unsubscribe` — same shape as any other topic. AuthZ: `Read`
+    ///   on the file (Class 1 resource-scoped).
+    /// - **Binary frames (Yjs sync protocol):** `[1 byte kind][16 bytes
+    ///   file_id][payload]`. Kinds `0x01` (update), `0x02` (awareness),
+    ///   `0x03` (sync-step-1/2). See the plan doc's § Wire protocol
+    ///   table.
+    ///
+    /// The subscribe gate is `Read`; write-side (`0x01`) frames get a
+    /// separate `Edit` check at frame-apply time (out of scope for
+    /// this port — see `interfaces/api/handlers/rt_ws.rs` C2 for
+    /// the write-side check). Awareness (`0x02`) is presence-only,
+    /// gated by subscribe alone.
+    ///
+    /// Presence in this enum reserves the wire shape and the AuthZ
+    /// gate so the C2 WS-integration slice can land without a spec
+    /// change here.
+    Collab(Uuid),
 }
 
 impl Topic {
@@ -95,6 +118,7 @@ impl Topic {
             Topic::UserAuthz(id) => format!("user:{id}:authz"),
             Topic::UserNotifications(id) => format!("user:{id}:notifications"),
             Topic::Job(name) => format!("job:{name}"),
+            Topic::Collab(id) => format!("collab:{id}"),
         }
     }
 
@@ -116,6 +140,10 @@ impl Topic {
                 "notifications" => Ok(Topic::UserNotifications(id)),
                 _ => Err(ParseTopicErr::Unknown),
             };
+        }
+        if let Some(rest) = s.strip_prefix("collab:") {
+            let id = Uuid::parse_str(rest).map_err(|_| ParseTopicErr::BadUuid)?;
+            return Ok(Topic::Collab(id));
         }
         if let Some(name) = s.strip_prefix("job:") {
             // Job names are scheduler-registered short slugs — see
@@ -152,6 +180,13 @@ impl Topic {
             Topic::UserAuthz(id) => AuthzCheck::IdentityMatch { user_id: *id },
             Topic::UserNotifications(id) => AuthzCheck::IdentityMatch { user_id: *id },
             Topic::Job(_) => AuthzCheck::RoleAdmin,
+            // Subscribe gate is Read on the file. The stricter Edit
+            // check for write-side (`0x01`) binary frames happens in
+            // the WS handler after the subscribe passes — this port
+            // only knows about the subscribe gate.
+            Topic::Collab(id) => AuthzCheck::ResourceRead {
+                resource: BusResource::File(*id),
+            },
         }
     }
 }
@@ -179,8 +214,12 @@ pub enum ParseTopicErr {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BusResource {
     Folder(Uuid),
-    // File(Uuid), Drive(Uuid), Calendar(Uuid), AddressBook(Uuid) land with
-    // their topic variants.
+    /// A file's collaborative-editing stream — reserved for
+    /// [`Topic::Collab`]. The AuthZ gate checks `Read` on the file
+    /// via `authorization_ports::Resource::File`.
+    File(Uuid),
+    // Drive(Uuid), Calendar(Uuid), AddressBook(Uuid) land with their
+    // topic variants.
 }
 
 /// The check the WS handler must run at subscribe time. Split into the three
@@ -298,14 +337,35 @@ pub enum MessageBusEvent {
     /// [`Topic::UserAuthz`]. The WS handler auto-subscribes each
     /// session to its own `user:{caller}:authz` topic; on receipt it
     /// walks the session's active subscriptions and evicts any whose
-    /// resource is in `affected_folders`, emitting a `rt.revoked`
-    /// notification per evicted topic.
+    /// resource is named in `affected_folders` or `affected_files`,
+    /// emitting a `rt.revoked` notification per evicted topic.
     ///
-    /// MVP carries folder UUIDs only (the only resource-scoped topic
-    /// that ships in Phase A). When file/drive/calendar topics land,
-    /// the payload extends with additional resource classes — see the
-    /// plan's Phase-B roadmap.
-    AuthzChanged { affected_folders: Vec<Uuid> },
+    /// Two fields, one event:
+    ///
+    ///   * **`affected_folders`** — resource-scoped folder topics
+    ///     (`folder:{id}`), the original Phase-A subject. Emitted on
+    ///     folder-level grant create/revoke.
+    ///   * **`affected_files`** — collab topics (`collab:{id}`),
+    ///     added for the read-only slice's grant-drop eviction. A
+    ///     Viewer whose Editor grant was revoked mid-session must
+    ///     lose their `collab:<id>` sub with reason `grant_revoked`
+    ///     so their editor drops out of write mode without waiting
+    ///     for a reconnect. File-level grant revoke fills this list.
+    ///     Folder-level revokes that cascade to descendant files are
+    ///     a Phase-B enhancement (would require the producer to
+    ///     enumerate the affected subtree).
+    ///
+    /// Both fields default to empty; a well-formed producer sets at
+    /// least one. Per-field `serde(default)` keeps the wire shape
+    /// backwards-compatible with the pre-existing folder-only
+    /// producer (an older event with just `affected_folders` still
+    /// deserializes; `affected_files` defaults to empty).
+    AuthzChanged {
+        #[serde(default)]
+        affected_folders: Vec<Uuid>,
+        #[serde(default)]
+        affected_files: Vec<Uuid>,
+    },
 
     /// A new notification was created for the caller — publishes on
     /// [`Topic::UserNotifications`]. **Pure cache-invalidation
@@ -566,6 +626,33 @@ mod tests {
     }
 
     #[test]
+    fn collab_roundtrip_wire_key_and_parse() {
+        let id = Uuid::new_v4();
+        let t = Topic::Collab(id);
+        assert_eq!(t.to_wire_key(), format!("collab:{id}"));
+        assert_eq!(Topic::parse(&t.to_wire_key()), Ok(t));
+    }
+
+    #[test]
+    fn required_perm_collab_is_resource_read_on_file() {
+        let id = Uuid::new_v4();
+        assert_eq!(
+            Topic::Collab(id).required_perm(),
+            AuthzCheck::ResourceRead {
+                resource: BusResource::File(id)
+            }
+        );
+    }
+
+    #[test]
+    fn parse_rejects_bad_collab_uuid() {
+        assert_eq!(
+            Topic::parse("collab:not-a-uuid"),
+            Err(ParseTopicErr::BadUuid)
+        );
+    }
+
+    #[test]
     fn parse_rejects_bad_uuid() {
         assert_eq!(
             Topic::parse("folder:not-a-uuid"),
@@ -706,6 +793,7 @@ mod tests {
             (
                 MessageBusEvent::AuthzChanged {
                     affected_folders: vec![Uuid::nil()],
+                    affected_files: vec![],
                 },
                 "authz_changed",
             ),

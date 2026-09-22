@@ -78,15 +78,15 @@ Phase C (sync-client push, album live) extend the same channels — see
             },
         },
         // Applied to every message that doesn't set its own — the JSON-RPC
-        // control frames are all `application/json`. Binary Yjs frames
-        // stay out of AsyncAPI (see the Server description for pointers).
+        // control frames are all `application/json`. Binary Yjs frames on
+        // the collab channel override to `application/octet-stream`.
         "defaultContentType": "application/json",
         "servers": {
             "default": {
                 "host": "{host}",
                 "pathname": "/api/rt/ws",
                 "protocol": "wss",
-                "description": "OxiCloud message bus WebSocket endpoint. Text frames are JSON-RPC 2.0. Binary frames (out of AsyncAPI scope) are Yjs sync protocol for the collab editor — see `docs/plan/markdown-collab.md`.",
+                "description": "OxiCloud message bus WebSocket endpoint. Text frames are JSON-RPC 2.0 (control plane + `rt.event` notifications). Binary frames are the Yjs sync protocol for the collab editor — layout `[1 byte kind][16 bytes file_id BE][payload]`, see the `Collab` channel below and `docs/plan/markdown-collab.md`.",
                 "variables": {
                     "host": {
                         "description": "Server host — replace with the deployment domain",
@@ -184,6 +184,25 @@ fn channels() -> Value {
                 "JobEvent":           { "$ref": "#/components/messages/RtFolderEventNotification" },
                 "RevokedNotification": { "$ref": "#/components/messages/RtRevokedNotification" },
             }
+        },
+        "Collab": {
+            "address": "collab:{fileId}",
+            "description": "Collaborative `.md` editing over Yjs. Two frame families ride the same channel:\n\n  * **JSON-RPC control plane** (`rt.subscribe` / `rt.unsubscribe` / `rt.collab_flush`) — same text-frame shape as every other channel.\n  * **Binary data plane** — Yjs sync protocol as raw bytes: `[1 byte kind][16 bytes file_id BE][payload]`. Kinds: `0x01` UPDATE (Yjs update blob), `0x02` AWARENESS (presence, not persisted), `0x03` SYNC (state vector c→s / diff s→c).\n\nAuthZ: `Read` on the file for subscribe (JSON) and for `0x03 SYNC` (defense-in-depth vs the subscribe gate). `Update` on the file for `0x01 UPDATE` and `rt.collab_flush`. AWARENESS is presence-only and rides the subscribe-time Read gate.\n\nSee `docs/plan/markdown-collab.md` and `src/application/services/collab_wire.rs`.",
+            "parameters": {
+                "fileId": { "description": "File UUID — the target `.md` file" }
+            },
+            "messages": {
+                "SubscribeRequest":     { "$ref": "#/components/messages/RtSubscribeRequest" },
+                "UnsubscribeRequest":   { "$ref": "#/components/messages/RtUnsubscribeRequest" },
+                "CollabFlushRequest":   { "$ref": "#/components/messages/RtCollabFlushRequest" },
+                "CollabFlushResponse":  { "$ref": "#/components/messages/RtCollabFlushResponse" },
+                "SubscribedResponse":   { "$ref": "#/components/messages/RtSubscribedResponse" },
+                "ErrorResponse":        { "$ref": "#/components/messages/RtErrorResponse" },
+                "RevokedNotification":  { "$ref": "#/components/messages/RtRevokedNotification" },
+                "CollabSyncFrame":      { "$ref": "#/components/messages/CollabSyncFrame" },
+                "CollabUpdateFrame":    { "$ref": "#/components/messages/CollabUpdateFrame" },
+                "CollabAwarenessFrame": { "$ref": "#/components/messages/CollabAwarenessFrame" },
+            }
         }
     })
 }
@@ -266,6 +285,99 @@ fn operations() -> Value {
                     { "$ref": "#/channels/Folder/messages/PongResponse" }
                 ]
             }
+        },
+        // ── Collab operations ────────────────────────────────────
+        "subscribeCollab": {
+            "action": "send",
+            "channel": { "$ref": "#/channels/Collab" },
+            "title": "rt.subscribe — join a collab session (AuthZ gate: Read)",
+            "summary": "Subscribe to a file's collab channel. Clears the server-side `Permission::Read` gate on the file so the binary data-plane frames start flowing. Without this, the server drops binary frames from this socket. Same JSON-RPC shape as the folder subscribe; only the topic prefix differs.",
+            "messages": [
+                { "$ref": "#/channels/Collab/messages/SubscribeRequest" }
+            ],
+            "reply": {
+                "channel": { "$ref": "#/channels/Collab" },
+                "messages": [
+                    { "$ref": "#/channels/Collab/messages/SubscribedResponse" },
+                    { "$ref": "#/channels/Collab/messages/ErrorResponse" },
+                ]
+            }
+        },
+        "collabFlush": {
+            "action": "send",
+            "channel": { "$ref": "#/channels/Collab" },
+            "title": "rt.collab_flush — force flush CRDT text to blob (on tab close / save)",
+            "summary": "**`rt.collab_flush`** → the FE editor's explicit-save path. Server checks `Permission::Update` on the file, calls `CollabSession::flush_to_blob` (idempotent, short-circuits on unchanged content hash), returns `{ flushed: bool }`. Denials use `no_edit`. See `src/interfaces/api/handlers/rt_ws.rs::handle_collab_flush`.",
+            "messages": [
+                { "$ref": "#/channels/Collab/messages/CollabFlushRequest" }
+            ],
+            "reply": {
+                "channel": { "$ref": "#/channels/Collab" },
+                "messages": [
+                    { "$ref": "#/channels/Collab/messages/CollabFlushResponse" },
+                    { "$ref": "#/channels/Collab/messages/ErrorResponse" },
+                ]
+            }
+        },
+        "sendCollabSync": {
+            "action": "send",
+            "channel": { "$ref": "#/channels/Collab" },
+            "title": "0x03 SYNC (c→s, sync-step-1) — send client state vector",
+            "summary": "Client sends its Yjs state vector so the server can compute the diff needed to catch it up. Payload is `Y.encodeStateVector(doc)` bytes; the empty state vector is a single `0x00` byte (varint 0 clients) — NOT zero-length. Server replies with a `0x03 SYNC` frame carrying the Yjs update bytes.",
+            "messages": [
+                { "$ref": "#/channels/Collab/messages/CollabSyncFrame" }
+            ],
+            "reply": {
+                "channel": { "$ref": "#/channels/Collab" },
+                "messages": [
+                    { "$ref": "#/channels/Collab/messages/CollabSyncFrame" }
+                ]
+            }
+        },
+        "sendCollabUpdate": {
+            "action": "send",
+            "channel": { "$ref": "#/channels/Collab" },
+            "title": "0x01 UPDATE (c→s) — apply Yjs update to the shared doc",
+            "summary": "Client emits a Yjs update blob describing local edits. Server applies to the per-file actor's `yrs::Doc`, broadcasts to every other subscribed socket on the same file, and arms the debouncer for eventual flush-to-blob. AuthZ: server checks `Permission::Update` per frame — a Viewer's frame gets `collab.write_denied` audit and the socket closes.",
+            "messages": [
+                { "$ref": "#/channels/Collab/messages/CollabUpdateFrame" }
+            ]
+        },
+        "receiveCollabUpdate": {
+            "action": "receive",
+            "channel": { "$ref": "#/channels/Collab" },
+            "title": "0x01 UPDATE (s→c) — fan-out from another editor",
+            "summary": "Server broadcasts a Yjs update it applied for another editor on the same file. The originating client also receives its own update back — Yjs's `applyUpdate` is idempotent so this is a no-op locally.",
+            "messages": [
+                { "$ref": "#/channels/Collab/messages/CollabUpdateFrame" }
+            ]
+        },
+        "sendCollabAwareness": {
+            "action": "send",
+            "channel": { "$ref": "#/channels/Collab" },
+            "title": "0x02 AWARENESS (c→s) — presence / cursor position",
+            "summary": "Presence-only (cursor position, user handle, colour). Not applied to the CRDT, not persisted. AuthZ: the subscribe-time Read gate is sufficient — a Viewer's cursor is legitimate.",
+            "messages": [
+                { "$ref": "#/channels/Collab/messages/CollabAwarenessFrame" }
+            ]
+        },
+        "receiveCollabAwareness": {
+            "action": "receive",
+            "channel": { "$ref": "#/channels/Collab" },
+            "title": "0x02 AWARENESS (s→c) — peer presence",
+            "summary": "Server broadcasts another editor's presence bytes. Fan-out policy is same as UPDATE — every subscriber including origin.",
+            "messages": [
+                { "$ref": "#/channels/Collab/messages/CollabAwarenessFrame" }
+            ]
+        },
+        "receiveCollabRevoked": {
+            "action": "receive",
+            "channel": { "$ref": "#/channels/Collab" },
+            "title": "rt.revoked — collab session evicted",
+            "summary": "Grant revoked, file deleted, or admin kicked. Client tears down the editor UI.",
+            "messages": [
+                { "$ref": "#/channels/Collab/messages/RevokedNotification" }
+            ]
         }
     })
 }
@@ -423,6 +535,70 @@ fn components() -> Value {
                         },
                     },
                 }],
+            },
+            // ── Collab: control-plane (JSON) ────────────────────────
+            "RtCollabFlushRequest": {
+                "name": "rt.collab_flush",
+                "title": "Force flush of the CRDT text to the file's blob",
+                "contentType": "application/json",
+                "payload": { "$ref": "#/components/schemas/RtCollabFlushRequestBody" },
+                "examples": [{
+                    "name": "collab-flush",
+                    "summary": "Client → server: on tab close / explicit save",
+                    "payload": {
+                        "jsonrpc": "2.0",
+                        "id": 7,
+                        "method": "rt.collab_flush",
+                        "params": { "file_id": "00000000-0000-0000-0000-000000000000" },
+                    },
+                }],
+            },
+            "RtCollabFlushResponse": {
+                "name": "rt.collab_flush.reply",
+                "title": "Collab flush ack — `result.flushed`",
+                "contentType": "application/json",
+                "payload": { "$ref": "#/components/schemas/RtCollabFlushResponseBody" },
+                "examples": [{
+                    "name": "collab-flush-ok-wrote",
+                    "summary": "Server → client: a blob write happened",
+                    "payload": {
+                        "jsonrpc": "2.0",
+                        "id": 7,
+                        "result": { "flushed": true },
+                    },
+                }, {
+                    "name": "collab-flush-ok-noop",
+                    "summary": "Server → client: unchanged content, short-circuited",
+                    "payload": {
+                        "jsonrpc": "2.0",
+                        "id": 7,
+                        "result": { "flushed": false },
+                    },
+                }],
+            },
+            // ── Collab: data-plane (binary) ─────────────────────────
+            //
+            // Payload schemas are `format: "binary"` — AsyncAPI's JSON
+            // Schema can't describe byte-fielded layouts natively; the
+            // full layout is in the `description`. All three messages
+            // share the 17-byte header prefix.
+            "CollabSyncFrame": {
+                "name": "collab.sync",
+                "title": "0x03 SYNC — Yjs state vector (c→s) / update diff (s→c)",
+                "contentType": "application/octet-stream",
+                "payload": { "$ref": "#/components/schemas/CollabBinaryFrame" },
+            },
+            "CollabUpdateFrame": {
+                "name": "collab.update",
+                "title": "0x01 UPDATE — Yjs update blob (bidirectional)",
+                "contentType": "application/octet-stream",
+                "payload": { "$ref": "#/components/schemas/CollabBinaryFrame" },
+            },
+            "CollabAwarenessFrame": {
+                "name": "collab.awareness",
+                "title": "0x02 AWARENESS — presence (bidirectional, not persisted)",
+                "contentType": "application/octet-stream",
+                "payload": { "$ref": "#/components/schemas/CollabBinaryFrame" },
             }
         },
         "schemas": {
@@ -467,6 +643,13 @@ fn components() -> Value {
             "JobRunStartedData": job_run_started_schema(),
             "JobRunProgressData": job_run_progress_schema(),
             "JobRunEndedData": job_run_ended_schema(),
+
+            // ── Collab ─────────────────────────────────────────────
+            "RtCollabFlushRequestBody":  rpc_request_schema("rt.collab_flush", Some(ref_schema("RtCollabFlushParams"))),
+            "RtCollabFlushResponseBody": rpc_typed_response_schema(ref_schema("RtCollabFlushResult")),
+            "RtCollabFlushParams":       collab_flush_params_schema(),
+            "RtCollabFlushResult":       collab_flush_result_schema(),
+            "CollabBinaryFrame":         collab_binary_frame_schema(),
         },
         // How the client authenticates. Handler side is `auth_middleware`
         // — the same middleware every `/api/*` request goes through, so
@@ -990,5 +1173,82 @@ fn revoked_reason_schema() -> Value {
             "group_membership_lost",
             "admin_kick",
         ]
+    })
+}
+
+// ─────────────────────────── Collab ───────────────────────────
+
+/// Generic JSON-RPC success envelope with a typed `result` — same
+/// shape as [`rpc_pong_response_schema`] but with the result ref
+/// picked by the caller. Used by any method that has a real result
+/// object (`rt.collab_flush` today; more to come).
+fn rpc_typed_response_schema(result_schema: Value) -> Value {
+    json!({
+        "type": "object",
+        "required": ["jsonrpc", "id", "result"],
+        "properties": {
+            "jsonrpc": { "type": "string", "const": "2.0" },
+            "id":      { "type": ["integer", "string", "null"] },
+            "result":  result_schema,
+        }
+    })
+}
+
+/// `params` object for `rt.collab_flush { file_id }`.
+fn collab_flush_params_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["file_id"],
+        "properties": {
+            "file_id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Target file — dashed UUID.",
+            }
+        }
+    })
+}
+
+/// `result` object for the `rt.collab_flush` reply: `{ flushed: bool }`.
+/// `true` = a blob write happened; `false` = the content hash matched
+/// the last flush, so the call was a no-op.
+fn collab_flush_result_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["flushed"],
+        "properties": {
+            "flushed": {
+                "type": "boolean",
+                "description": "`true` when a blob write happened; `false` when the CRDT text was unchanged since the last flush (short-circuit).",
+            }
+        }
+    })
+}
+
+/// Payload schema for every collab data-plane binary message
+/// (`CollabSyncFrame`, `CollabUpdateFrame`, `CollabAwarenessFrame`).
+///
+/// AsyncAPI's JSON Schema can't describe byte-fielded layouts natively
+/// — `format: "binary"` is the standard escape hatch for "opaque bytes,
+/// see the description." The 17-byte prefix layout is the same across
+/// all three kinds; the payload semantics differ (state vector vs
+/// Yjs update blob vs awareness bytes) and are named per-message via
+/// the message's `title`.
+fn collab_binary_frame_schema() -> Value {
+    json!({
+        "type": "string",
+        "format": "binary",
+        "description": "Raw bytes of a collab wire frame. Layout: \
+                        `[1 byte kind][16 bytes file_id BE][payload...]`. \
+                        `kind`: `0x01` UPDATE (Yjs update blob), `0x02` \
+                        AWARENESS (opaque presence bytes, not persisted), \
+                        `0x03` SYNC (Yjs state vector c→s / Yjs update \
+                        s→c). `file_id` is a UUID serialised as its 16 \
+                        raw bytes (matches `Uuid::as_bytes()` on the \
+                        server; `y-codemirror.next` binary handling on \
+                        the client). Empty payloads are legal only for \
+                        the SYNC direction that carries a state vector \
+                        of zero clients — Yjs encodes that as a single \
+                        `0x00` byte, NOT zero bytes.",
     })
 }

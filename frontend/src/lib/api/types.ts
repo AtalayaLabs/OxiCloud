@@ -902,6 +902,10 @@ export interface ServerFeatures {
 	faces: boolean;
 	video_thumbnails: boolean;
 	external_mounts: boolean;
+	/** Collaborative `.md` editing (Yjs CRDT over the message-bus WS).
+	 *  When `false`, the FE hides the "New markdown" menu entry and
+	 *  falls back to the plain `.md` viewer. Requires `message_bus`. */
+	markdown_collab: boolean;
 }
 
 /** One row in `ServerStatus.migration` / `ServerStatus.rotation` — a

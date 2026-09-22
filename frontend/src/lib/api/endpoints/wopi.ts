@@ -11,12 +11,18 @@ export interface WopiEditorData {
 	access_token_ttl: string | number;
 }
 
+// Fallback for when `/wopi/supported-extensions` discovery fails or
+// hasn't landed yet. Restricted to Office-shaped formats that a
+// WOPI editor uniquely handles — anything text-shaped (`.txt`,
+// `.md`, code, config) belongs in the collab editor instead (see
+// `$lib/utils/textyExt`). Including `.txt` here surfaced a WOPI
+// "Edit" action on plain-text files even when no editor could
+// handle them — the collab editor is the right home for those.
 const FALLBACK_EXTS = [
 	'docx',
 	'doc',
 	'odt',
 	'rtf',
-	'txt',
 	'xlsx',
 	'xls',
 	'ods',

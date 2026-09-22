@@ -47,7 +47,9 @@
 	import { apiFetch, withBase } from '$lib/api/client';
 	import { getCsrfHeaders } from '$lib/api/csrf';
 	import { countHidden, filterDotfiles } from '$lib/utils/dotfileFilter';
+	import { TEXTY_EXT_RE } from '$lib/utils/textyExt';
 	import { preferences } from '$lib/stores/preferences.svelte';
+	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import type { FileItem, FolderItem, ItemType } from '$lib/api/types';
 	import ReadOnlyBanner from '$lib/components/ReadOnlyBanner.svelte';
 	import FolderBreadcrumb from '$lib/components/FolderBreadcrumb.svelte';
@@ -1587,12 +1589,23 @@
 
 	// Probe WOPI editability whenever the context target changes to a file. Image
 	// files use the inline viewer, so they never show the editor entries.
+	//
+	// When collab is enabled AND the filename is text-shaped
+	// (`TEXTY_EXT_RE`), suppress the WOPI edit action entirely — the
+	// collab editor (reached via the plain "Open" item, which routes
+	// through `FileViewer`) is the right home for `.md` / `.txt` /
+	// code / config files. Two competing "Edit" affordances on the
+	// same file confuses the menu and, worse, the WOPI round-trip
+	// stomps live collab sessions on that file (external_write
+	// eviction fires).
 	$effect(() => {
 		const tg = ctxTarget;
 		ctxCanEditWopi = false;
 		if (!tg || tg.kind !== 'file') return;
 		const f = listing.files.find((x) => x.id === tg.id);
 		if (!f || (f.mime_type ?? '').startsWith('image/')) return;
+		const collabAvailable = serverConfig.loaded && serverConfig.features.markdown_collab === true;
+		if (collabAvailable && TEXTY_EXT_RE.test(tg.name)) return;
 		void canEditWithWopi(tg.name).then((ok) => {
 			// Guard against a stale resolve after the menu moved to another target.
 			if (ctxTarget?.id === tg.id) ctxCanEditWopi = ok;
@@ -1949,65 +1962,169 @@
 		return () => window.removeEventListener('pointerdown', onDown);
 	});
 
-	// Document kinds the configured editor advertises. Empty until discovery
-	// answers, and empty for good when no editor is configured — creating a
-	// file nothing can open helps nobody.
+	// Document kinds available in the "+ New" menu.
+	//
+	// Two sources of availability:
+	//   * ODF office types (odt/ods/odp) — gated on whether WOPI
+	//     discovery advertises the extension. Creating a `.odt` when
+	//     nothing can open it helps nobody, so the entry disappears.
+	//   * Markdown — gated on `serverConfig.features.markdown_collab`.
+	//     Independent from WOPI (uses the collab editor, not WOPI).
 	let newDocKinds = $state<(keyof typeof NEW_DOC_KINDS)[]>([]);
 	$effect(() => {
+		const collabAvailable = serverConfig.loaded && serverConfig.features.markdown_collab === true;
 		void advertisedExtensions().then((exts) => {
-			newDocKinds = exts
-				? (Object.keys(NEW_DOC_KINDS) as (keyof typeof NEW_DOC_KINDS)[]).filter((k) =>
-						exts.includes(k)
+			const wopiKinds = exts
+				? (Object.keys(NEW_DOC_KINDS) as (keyof typeof NEW_DOC_KINDS)[]).filter(
+						(k) => NEW_DOC_KINDS[k].handler === 'wopi' && exts.includes(k)
 					)
 				: [];
+			// One collab entry: "New text file". User names it — the
+			// extension in the filename decides the CodeMirror language
+			// binding via `TEXTY_EXT_RE`. Split entries per extension
+			// (md, txt, rs, …) would balloon the menu; a single entry
+			// with a filename prompt matches how desktop file managers
+			// do it and lets the user pick any text-shaped extension.
+			const collabKinds: (keyof typeof NEW_DOC_KINDS)[] = collabAvailable ? ['text'] : [];
+			newDocKinds = [...wopiKinds, ...collabKinds];
 		});
 	});
 
+	// `handler` picks which opener to invoke after upload:
+	//   * `wopi` — Office-style edit round-trip via the WOPI iframe.
+	//   * `collab` — mount the collab editor via the file-preview
+	//     path (`openFile` sets `?file=<id>`; FileViewer detects `.md`
+	//     + the feature flag and mounts CollabEditor in place of the
+	//     plain text preview).
 	const NEW_DOC_KINDS = {
 		odt: {
 			mime: 'application/vnd.oasis.opendocument.text',
 			icon: 'file-word',
 			label: 'actions.new_document_text',
-			fallback: 'New text document'
+			fallback: 'New text document',
+			handler: 'wopi'
 		},
 		ods: {
 			mime: 'application/vnd.oasis.opendocument.spreadsheet',
 			icon: 'file-excel',
 			label: 'actions.new_document_spreadsheet',
-			fallback: 'New spreadsheet'
+			fallback: 'New spreadsheet',
+			handler: 'wopi'
 		},
 		odp: {
 			mime: 'application/vnd.oasis.opendocument.presentation',
 			icon: 'file-powerpoint',
 			label: 'actions.new_document_presentation',
-			fallback: 'New presentation'
+			fallback: 'New presentation',
+			handler: 'wopi'
+		},
+		// `text` is a virtual kind — not tied to one extension. The
+		// user picks the extension in the filename prompt (`.md`,
+		// `.txt`, `.rs`, …); anything on the shared TEXTY_EXT_RE
+		// allowlist opens cleanly in the collab editor with the
+		// matching language grammar. Extensions off the allowlist
+		// prompt a "this doesn't look like a text file" confirm
+		// before creating, so `test.jpg` doesn't silently produce a
+		// broken opened-in-CodeMirror binary.
+		text: {
+			mime: 'text/plain',
+			icon: 'file-circle-plus',
+			label: 'actions.new_text_file',
+			fallback: 'New text file',
+			handler: 'collab'
 		}
 	} as const;
 
 	/**
-	 * Create a new empty office document in the current folder and open it
-	 * in the WOPI editor. Client-side only: a bundled blank ODF template
-	 * (static/templates/) is uploaded under the chosen name through the
-	 * regular upload endpoint, so the server needs no template support.
+	 * Create a new empty document in the current folder and open it in
+	 * the appropriate editor.
+	 *
+	 *   * ODF types — fetch a bundled blank template, upload, open in
+	 *     the WOPI editor.
+	 *   * Markdown — upload a zero-byte file, open in the collab
+	 *     editor via the file-preview path. No template fetch; the
+	 *     CRDT seeds from the (empty) blob on first attach.
 	 */
 	async function onNewDocument(kind: keyof typeof NEW_DOC_KINDS) {
 		addMenuOpen = false;
+		const handler = NEW_DOC_KINDS[kind].handler;
+		const isVirtualText = kind === 'text';
+
+		// Prompt copy varies: WOPI kinds prefill a document-shaped
+		// name (no extension — we append the kind's ext). The virtual
+		// "text" kind asks for a full filename including the
+		// extension, so the user can pick `.md` / `.rs` / `.py` /
+		// etc.
 		const name = await promptDialog({
-			title: t('files.new_document', 'New document'),
-			placeholder: t('files.new_document_prompt', 'Document name'),
+			title: isVirtualText
+				? t('files.new_text_file', 'New text file')
+				: t('files.new_document', 'New document'),
+			// The virtual "text" kind lets the user pick any text
+			// extension (`.md`, `.txt`, `.c`, `.py`, `.rs`, …), so
+			// the prompt spells out that the extension is part of
+			// the filename. WOPI kinds append their fixed ext, so no
+			// hint is needed there.
+			message: isVirtualText
+				? t(
+						'files.new_text_file_hint',
+						'Include the extension in the filename (e.g. .md, .txt, .c, .py, .rs).'
+					)
+				: undefined,
+			placeholder: isVirtualText
+				? t('files.new_text_file_prompt', 'Filename (e.g. notes.md)')
+				: t('files.new_document_prompt', 'Document name'),
 			confirmText: t('common.create', 'Create')
 		});
 		if (!name) return;
-		const fname = name.toLowerCase().endsWith(`.${kind}`) ? name : `${name}.${kind}`;
+
+		// Build the final filename. WOPI kinds append the kind's ext
+		// unless the user already typed it. Text kind uses the user's
+		// input verbatim.
+		let fname: string;
+		if (isVirtualText) {
+			fname = name;
+		} else {
+			fname = name.toLowerCase().endsWith(`.${kind}`) ? name : `${name}.${kind}`;
+		}
+
+		// Warn if the text kind's filename doesn't look text-shaped —
+		// e.g. `test.jpg` would open an editable-looking editor over
+		// binary bytes. TEXTY_EXT_RE mirrors the FileViewer's own
+		// gate so what the user sees is what they'll be able to
+		// open. Names without ANY extension pass through — a
+		// filename like `README` is legitimate text.
+		if (isVirtualText && /\.[^./\\]+$/.test(fname) && !TEXTY_EXT_RE.test(fname)) {
+			const proceed = await confirmDialog({
+				title: t('files.new_text_file_binary_ext_title', 'Non-text extension'),
+				message: t(
+					'files.new_text_file_binary_ext_message',
+					{ name: fname },
+					'"{{name}}" doesn\'t look like a text file. The editor will open it as text — that usually breaks binary formats. Continue anyway?'
+				),
+				confirmText: t('common.create', 'Create'),
+				danger: true
+			});
+			if (!proceed) return;
+		}
+
 		try {
-			const res = await fetch(`${base}/templates/blank.${kind}`);
-			if (!res.ok) throw new Error(`template fetch failed: ${res.status}`);
-			const blob = await res.blob();
-			const file = new File([blob], fname, { type: NEW_DOC_KINDS[kind].mime });
+			let file: File;
+			if (handler === 'wopi') {
+				const res = await fetch(`${base}/templates/blank.${kind}`);
+				if (!res.ok) throw new Error(`template fetch failed: ${res.status}`);
+				const blob = await res.blob();
+				file = new File([blob], fname, { type: NEW_DOC_KINDS[kind].mime });
+			} else {
+				// Empty-content file — collab editor seeds fresh.
+				file = new File([], fname, { type: NEW_DOC_KINDS[kind].mime });
+			}
 			await uploadFileWithProgress(currentId, file, () => {});
 			await reloadAndTrackNew();
 			const created = listing.files.find((f) => f.name === fname);
-			if (created) openWopi(created.id, created.name, 'edit');
+			if (created) {
+				if (handler === 'wopi') openWopi(created.id, created.name, 'edit');
+				else openFile(created);
+			}
 		} catch (e) {
 			errorToast(e);
 		}

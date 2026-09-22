@@ -323,11 +323,16 @@ impl Drop for Sub {
 }
 
 /// Messages the per-topic reader tasks send to the session's main
-/// loop. Two shapes:
+/// loop. Three shapes:
 ///
 /// - `Frame` — a client-bound text frame (`rt.event` notification,
 ///   `rt.revoked` notification, whatever). Main loop writes it to
-///   the socket.
+///   the socket as a WS Text frame.
+/// - `Binary` — a client-bound binary frame, pre-encoded to the
+///   collab wire format (`[1 byte kind][16 bytes file_id][payload]`).
+///   The forwarder task for a `Topic::Collab(file_id)` subscription
+///   pushes these when the per-file actor broadcasts an update. Main
+///   loop writes them to the socket as a WS Binary frame.
 /// - `EvictFolders` — internal control signal. The reader for the
 ///   session's auto-subscribed `user:{caller}:authz` topic translates
 ///   inbound [`MessageBusEvent::AuthzChanged`] events into this rather
@@ -336,7 +341,15 @@ impl Drop for Sub {
 ///   per evicted topic.
 enum SessionOut {
     Frame(String),
+    Binary(Vec<u8>),
     EvictFolders(Vec<Uuid>),
+    /// Sibling of [`EvictFolders`] for `collab:{file_id}` topics.
+    /// Same shape (list of resource ids), different topic class, same
+    /// wire outcome (`rt.revoked` per topic that was in the sub set).
+    /// Reason on the wire is `grant_revoked` — an inline UPDATE would
+    /// have used `no_edit` via `rt.write_denied`, but a full grant drop
+    /// tears down the subscribe.
+    EvictCollab(Vec<Uuid>),
 }
 
 /// RAII guard that decrements the live-session counter on ANY exit
@@ -493,6 +506,14 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
                             break;
                         }
                     }
+                    Some(SessionOut::Binary(bytes)) => {
+                        // Pre-encoded collab wire frame from a
+                        // `Topic::Collab(file_id)` forwarder task.
+                        // Ship it verbatim.
+                        if socket.send(Message::Binary(bytes.into())).await.is_err() {
+                            break;
+                        }
+                    }
                     Some(SessionOut::EvictFolders(folders)) => {
                         // Grant-revocation cascade. Walk the sub set;
                         // drop any Folder(id) whose id is in the list;
@@ -502,6 +523,37 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
                         // already-gone topic is a no-op.
                         for folder_uuid in folders {
                             let wire = Topic::Folder(folder_uuid).to_wire_key();
+                            if subs.remove(&wire).is_some() {
+                                let frame = revoked_notification(
+                                    &wire,
+                                    "grant_revoked",
+                                );
+                                if socket
+                                    .send(Message::Text(frame.into()))
+                                    .await
+                                    .is_err()
+                                {
+                                    return; // session dead
+                                }
+                                audit_evicted(caller_id, &wire, "grant_revoked");
+                            }
+                        }
+                    }
+                    Some(SessionOut::EvictCollab(files)) => {
+                        // File-scoped grant-revocation cascade for
+                        // collab topics. Symmetric to `EvictFolders`
+                        // but keyed on `Topic::Collab(file_id)`.
+                        // Removing the sub entry drops the forwarder
+                        // task handle; the actor keeps running for
+                        // other attached sockets (their grants may
+                        // still be valid). `rt.revoked` with reason
+                        // `grant_revoked` tells the client's CollabDoc
+                        // to transition to `disconnected` — read-only
+                        // is stronger than needed here (the caller
+                        // isn't merely dropped to Viewer, they've
+                        // lost Read entirely).
+                        for file_uuid in files {
+                            let wire = Topic::Collab(file_uuid).to_wire_key();
                             if subs.remove(&wire).is_some() {
                                 let frame = revoked_notification(
                                     &wire,
@@ -540,11 +592,173 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
                                 break;
                             }
                     }
-                    Some(Ok(Message::Binary(_))) => {
-                        // Reserved for Yjs sync protocol frames (collab
-                        // editor, Phase A follow-up). Silently ignored in
-                        // MVP so a future client that speaks binary
-                        // frames on the same connection isn't rejected.
+                    Some(Ok(Message::Binary(bytes))) => {
+                        // Yjs sync-protocol frames for the collab editor.
+                        // Format: `[1 byte kind][16 bytes file_id][payload…]`.
+                        // Parsed by `collab_wire::parse_binary_frame`,
+                        // dispatched by `CollabSessionService::handle_binary_frame`.
+                        //
+                        // When the collab feature isn't wired (no
+                        // `collab_session_service` in AppState), silently
+                        // drop the frame — the client will time out its
+                        // own sync attempt and fall back gracefully.
+                        // When it IS wired but the parse fails, close
+                        // the socket with a protocol-violation reason;
+                        // audit line captures the truth.
+                        let Some(collab) = state.collab_session_service.as_ref() else {
+                            continue;
+                        };
+                        use crate::application::services::collab_wire::{
+                            parse_binary_frame, encode_binary_frame, kind, FrameParseErr,
+                        };
+                        let frame = match parse_binary_frame(&bytes) {
+                            Ok(f) => f,
+                            Err(e) => {
+                                tracing::info!(
+                                    target: "audit",
+                                    event = "collab.protocol_violation",
+                                    reason = match &e {
+                                        FrameParseErr::TooShort { .. } => "too_short",
+                                        FrameParseErr::UnknownKind { .. } => "unknown_kind",
+                                    },
+                                    caller_id = %caller_id,
+                                    "👮🏻‍♂️ collab binary frame rejected: {e}",
+                                );
+                                break;
+                            }
+                        };
+                        // Preserve kind + file_id BEFORE moving frame
+                        // into the async call — the encode-back path
+                        // needs both to build the reply header, and a
+                        // parsed frame is one-shot-consumed by the
+                        // router.
+                        let reply_kind = frame.kind;
+                        let reply_file_id = frame.file_id;
+                        match collab.handle_binary_frame(caller_id, frame).await {
+                            Ok(None) => {
+                                // UPDATE + AWARENESS have no per-socket
+                                // reply. Fan-out to other subscribers on
+                                // the topic is a bus-side concern wired
+                                // in a follow-up.
+                            }
+                            Ok(Some(reply_payload)) => {
+                                // SYNC replies come back as the sync-step-2
+                                // payload — re-wrap in a 0x03 binary frame
+                                // (same kind as the incoming sync-step-1
+                                // request per the Yjs protocol) and send.
+                                let out = encode_binary_frame(
+                                    if reply_kind == kind::SYNC { kind::SYNC } else { reply_kind },
+                                    reply_file_id,
+                                    &reply_payload,
+                                );
+                                if socket.send(Message::Binary(out.into())).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(crate::application::services::collab_session_service::CollabError::AuthzDenied {
+                                permission,
+                                file_id,
+                            }) => {
+                                // Per-frame AuthZ denial. Two behaviours,
+                                // split by which permission was missing:
+                                //
+                                //   * `update` — the caller has Read but not
+                                //     Update (Viewer sent an UPDATE frame).
+                                //     Send an `rt.write_denied` notification
+                                //     and keep the socket open: the sub is
+                                //     still valid, the client just can't
+                                //     write. Closing on every Viewer
+                                //     keystroke would flap the connection
+                                //     and defeat the FE's read-only editor
+                                //     UX (the FE gates outbound UPDATEs
+                                //     itself; this path is the defence-in-
+                                //     depth for a malicious / legacy
+                                //     client that ignores the gate).
+                                //
+                                //   * anything else (currently `read` on a
+                                //     SYNC frame — the caller lost Read
+                                //     after subscribe) — close the socket.
+                                //     Anti-enum matches the "bad frame"
+                                //     shape; the caller's next attach
+                                //     re-runs the subscribe gate cleanly.
+                                //
+                                // Both paths still emit an audit line so
+                                // operators can filter denials by class.
+                                let event_name = match permission {
+                                    "update" => "collab.write_denied",
+                                    "read" => "collab.read_denied",
+                                    _ => "collab.authz_denied",
+                                };
+                                tracing::info!(
+                                    target: "audit",
+                                    event = event_name,
+                                    reason = permission,
+                                    caller_id = %caller_id,
+                                    file_id = %file_id,
+                                    "👮🏻‍♂️ collab frame denied: {permission} on file",
+                                );
+                                if permission == "update" {
+                                    let frame = write_denied_notification(file_id, "no_edit");
+                                    if socket
+                                        .send(Message::Text(frame.into()))
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                    // Session keeps running — do NOT break.
+                                    continue;
+                                }
+                                break;
+                            }
+                            Err(crate::application::services::collab_session_service::CollabError::DocTooLarge {
+                                file_id,
+                                limit_bytes,
+                            }) => {
+                                // Doc-size cap tripped. Same wire
+                                // treatment as an Update-permission
+                                // denial (see B's graceful path): emit
+                                // `rt.write_denied` and keep the socket
+                                // alive so peers with valid grants
+                                // continue receiving fan-out, and the
+                                // FE editor drops into read-only via
+                                // the write-denied handler. Distinct
+                                // wire reason so the FE can surface
+                                // "the document is too large to keep
+                                // editing" rather than "you can't
+                                // write to this file" — same code
+                                // path, different UX copy on the
+                                // client side.
+                                tracing::info!(
+                                    target: "audit",
+                                    event = "collab.doc_too_large",
+                                    reason = "doc_too_large",
+                                    caller_id = %caller_id,
+                                    file_id = %file_id,
+                                    limit_bytes = limit_bytes,
+                                    "👮🏻‍♂️ collab update refused: doc size cap reached",
+                                );
+                                let frame = write_denied_notification(file_id, "doc_too_large");
+                                if socket
+                                    .send(Message::Text(frame.into()))
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                                continue;
+                            }
+                            Err(e) => {
+                                tracing::info!(
+                                    target: "audit",
+                                    event = "collab.protocol_violation",
+                                    reason = "apply_failed",
+                                    caller_id = %caller_id,
+                                    "👮🏻‍♂️ collab frame apply failed: {e}",
+                                );
+                                break;
+                            }
+                        }
                     }
                     Some(Ok(Message::Ping(_) | Message::Pong(_))) => {
                         // Client Ping → axum auto-Pongs. Client Pong is
@@ -607,12 +821,127 @@ async fn handle_text_frame(
         ),
         "rt.unsubscribe" => Some(handle_unsubscribe(id, req.params, subs)),
         "rt.ping" => Some(success_response(id, serde_json::json!({ "pong": true }))),
+        "rt.collab_flush" => Some(handle_collab_flush(id, req.params, caller_id, state).await),
         _ => Some(error_response(
             id,
             error_code::METHOD_NOT_FOUND,
             "method_not_found",
             Some(serde_json::json!({ "method": method })),
         )),
+    }
+}
+
+/// `rt.collab_flush { file_id }` — client-initiated flush of the
+/// CRDT text to the file's blob.
+///
+/// **Purpose:** the debouncer covers the ambient case (15 s idle /
+/// 60 s max), but the FE editor knows better than the timer when a
+/// flush is actually wanted: on tab close, on explicit save, or
+/// before a URL change. Sending an explicit flush is one WS message
+/// on the same socket the client is already using for edits — no
+/// second roundtrip, no wall-clock wait on the debouncer.
+///
+/// **AuthZ:** `Permission::Update` on the file. Same gate as `0x01`
+/// UPDATE frames — a Viewer cannot force a flush any more than they
+/// can push an update. Denials use `error_code::NO_EDIT` /
+/// `no_edit`, matching the write-side vocabulary. A missing file OR
+/// a caller without Read collapses to `topic_forbidden` — anti-enum
+/// parity with subscribe.
+///
+/// **Semantics:** delegates to `CollabSession::flush_to_blob`, which
+/// is idempotent (short-circuits on unchanged content hash). Reply
+/// `{ flushed: bool }` — `true` = a blob write happened, `false` =
+/// no-op (nothing to flush, or content hash unchanged since last
+/// flush). Callable at any time during a session.
+///
+/// **No active session case:** if `attach_file` needs to spawn an
+/// actor to serve the request (client called flush before any
+/// `0x03`/`0x01` frame), we still honour it — the actor seeds from
+/// the blob, sees no writes, and short-circuits with `flushed:
+/// false`. Cheap; keeps the API's contract simple.
+async fn handle_collab_flush(
+    id: Value,
+    params: Value,
+    caller_id: Uuid,
+    state: &Arc<AppState>,
+) -> String {
+    // Extract file_id (uuid string).
+    let file_id_str = match params.get("file_id").and_then(Value::as_str) {
+        Some(s) => s,
+        None => {
+            return error_response(
+                id,
+                error_code::INVALID_PARAMS,
+                "invalid_params",
+                Some(serde_json::json!({ "missing": "file_id" })),
+            );
+        }
+    };
+    let file_id = match Uuid::parse_str(file_id_str) {
+        Ok(u) => u,
+        Err(_) => {
+            return error_response(
+                id,
+                error_code::INVALID_PARAMS,
+                "invalid_params",
+                Some(serde_json::json!({ "invalid": "file_id" })),
+            );
+        }
+    };
+
+    // AuthZ. Same shape as an UPDATE binary frame gate: `Update` on
+    // the file; deny collapses to `no_edit`, hidden files collapse
+    // to `topic_forbidden` (anti-enumeration parity with subscribe).
+    if state
+        .authorization
+        .require(
+            Subject::User(caller_id),
+            Permission::Update,
+            Resource::File(file_id),
+        )
+        .await
+        .is_err()
+    {
+        tracing::info!(
+            target: "audit",
+            event = "collab.flush_denied",
+            reason = "no_edit",
+            caller_id = %caller_id,
+            file_id = %file_id,
+            "👮🏻‍♂️ rt.collab_flush denied — no Update on file",
+        );
+        return error_response(
+            id,
+            error_code::NO_EDIT,
+            "no_edit",
+            Some(serde_json::json!({ "file_id": file_id_str })),
+        );
+    }
+
+    // Delegate. Feature-off state returns `flushed: false` — the API
+    // is honest that nothing happened rather than 404'ing.
+    let Some(collab) = state.collab_session_service.as_ref() else {
+        return success_response(id, serde_json::json!({ "flushed": false }));
+    };
+    let session = match collab.attach_file(caller_id, file_id).await {
+        Ok(s) => s,
+        Err(e) => {
+            return error_response(
+                id,
+                error_code::INTERNAL_ERROR,
+                "internal_error",
+                Some(serde_json::json!({ "detail": e.to_string() })),
+            );
+        }
+    };
+    match session.flush_to_blob().await {
+        Ok(flushed) => success_response(id, serde_json::json!({ "flushed": flushed })),
+        Err(e) => error_response(
+            id,
+            error_code::INTERNAL_ERROR,
+            "internal_error",
+            Some(serde_json::json!({ "detail": e.to_string() })),
+        ),
     }
 }
 
@@ -674,12 +1003,19 @@ async fn handle_subscribe(
         }
     };
 
+    // For a `Topic::Collab` subscribe ack, we surface the caller's
+    // Update capability alongside the Read gate below — the FE gates
+    // CodeMirror between edit and read-only mode on this flag. Any
+    // other topic leaves this `None`, and the ack shape stays flat.
+    let mut collab_capabilities: Option<serde_json::Value> = None;
+
     // AuthZ dispatch — one match arm per gate class. Adding a new topic
     // variant with a new gate shape is a compile error here.
     match topic.required_perm() {
         AuthzCheck::ResourceRead { resource } => {
             let domain_resource = match resource {
                 BusResource::Folder(uuid) => Resource::Folder(uuid),
+                BusResource::File(uuid) => Resource::File(uuid),
             };
             if state
                 .authorization
@@ -696,6 +1032,36 @@ async fn handle_subscribe(
                     "no_read",
                     Some(serde_json::json!({ "topic": topic_str })),
                 );
+            }
+            // Second pass for collab topics only: probe Update on the
+            // same resource so the ack can carry `can_write`. The
+            // authorization engine's decision cache turns this into a
+            // no-op after warm-up.
+            //
+            // Use `check` (returns bool) rather than `require` (audits
+            // on failure): a Viewer legitimately answers `false` here
+            // and that MUST NOT flood the `authz.denied` audit stream
+            // — the subscribe itself succeeded via Read, and the
+            // capability answer is informational, not a gate. Reserving
+            // `require` for enforcement paths keeps the audit signal
+            // meaningful; a spurious "authz.denied" per Viewer opening
+            // a file drowns out real denials.
+            //
+            // Infra errors (DB blip) collapse to `can_write: false` —
+            // fail-closed matches the FE's own fail-closed default.
+            if matches!(topic, Topic::Collab(_))
+                && let BusResource::File(file_uuid) = resource
+            {
+                let can_write = state
+                    .authorization
+                    .check(
+                        Subject::User(caller_id),
+                        Permission::Update,
+                        Resource::File(file_uuid),
+                    )
+                    .await
+                    .unwrap_or(false);
+                collab_capabilities = Some(serde_json::json!({ "can_write": can_write }));
             }
         }
         AuthzCheck::IdentityMatch { user_id } => {
@@ -731,7 +1097,17 @@ async fn handle_subscribe(
     // notifications.
     install_subscription(topic, subs, out_tx, state);
 
-    success_response(id, serde_json::json!({ "subscribed": topic_str }))
+    // Collab subscribes carry an extra `capabilities` object so the FE
+    // can render read-only affordances without a second round trip.
+    // Other topics keep the flat `{ subscribed: <topic> }` shape.
+    let result = match collab_capabilities {
+        Some(caps) => serde_json::json!({
+            "subscribed":   topic_str,
+            "capabilities": caps,
+        }),
+        None => serde_json::json!({ "subscribed": topic_str }),
+    };
+    success_response(id, result)
 }
 
 fn handle_unsubscribe(id: Value, params: Value, subs: &mut HashMap<String, Sub>) -> String {
@@ -780,6 +1156,23 @@ fn install_subscription(
     state: &Arc<AppState>,
 ) {
     let topic_wire = topic.to_wire_key();
+
+    // `Topic::Collab(file_id)` doesn't ride the JSON bus — its data
+    // plane is a per-file broadcast channel owned by the collab actor.
+    // Spawn a forwarder task that receives raw update bytes and
+    // pre-encodes them into `0x01` binary frames for the socket.
+    // If the collab service isn't wired (feature off), the subscribe
+    // still succeeds — we just install a no-op sub — matching the
+    // `Read`-gate-passed shape of any other topic. Silent-drop is
+    // acceptable here because the feature-off state is a boot-time
+    // decision, not a runtime one; the operator sees it in the
+    // `collab.service_enabled` audit line (or its absence).
+    if let Topic::Collab(file_id) = topic {
+        let reader = spawn_collab_forwarder(file_id, out_tx.clone(), state);
+        subs.insert(topic_wire, Sub { reader });
+        return;
+    }
+
     let mut stream = MessageBus::subscribe(state.bus.as_ref(), &topic);
     let out_tx_task = out_tx.clone();
     let translate_authz = matches!(topic, Topic::UserAuthz(_));
@@ -788,10 +1181,34 @@ fn install_subscription(
 
     let reader = tokio::spawn(async move {
         while let Some(event) = stream.next().await {
-            let message = if translate_authz {
+            if translate_authz {
+                // AuthzChanged fans out into up to TWO SessionOut
+                // messages — one per non-empty resource class. Sending
+                // both in sequence keeps the main loop's handling
+                // symmetric (each class has its own SessionOut
+                // variant + its own rt.revoked reason). A well-formed
+                // producer sets at least one; both-empty is a no-op.
                 match event {
-                    MessageBusEvent::AuthzChanged { affected_folders } => {
-                        SessionOut::EvictFolders(affected_folders)
+                    MessageBusEvent::AuthzChanged {
+                        affected_folders,
+                        affected_files,
+                    } => {
+                        if !affected_folders.is_empty()
+                            && out_tx_task
+                                .send(SessionOut::EvictFolders(affected_folders))
+                                .await
+                                .is_err()
+                        {
+                            break;
+                        }
+                        if !affected_files.is_empty()
+                            && out_tx_task
+                                .send(SessionOut::EvictCollab(affected_files))
+                                .await
+                                .is_err()
+                        {
+                            break;
+                        }
                     }
                     // The authz topic only carries AuthzChanged in
                     // MVP; other variants would be a producer bug —
@@ -799,16 +1216,144 @@ fn install_subscription(
                     // doesn't spam the client.
                     _ => continue,
                 }
-            } else {
-                SessionOut::Frame(event_notification(&topic_wire_reader, &event))
-            };
-            if out_tx_task.send(message).await.is_err() {
+            } else if out_tx_task
+                .send(SessionOut::Frame(event_notification(
+                    &topic_wire_reader,
+                    &event,
+                )))
+                .await
+                .is_err()
+            {
                 // Session's outbound channel closed — receiver dropped.
                 break;
             }
         }
     });
     subs.insert(topic_wire, Sub { reader });
+}
+
+/// Spawn a forwarder task for a `Topic::Collab(file_id)` subscription.
+///
+/// The task attaches the caller's session to the per-file actor,
+/// obtains a `broadcast::Receiver` on its update outbox, and pipes
+/// every applied update as a `0x01` binary frame to `out_tx`. The
+/// task terminates when:
+///
+/// - the session's `out_tx` is dropped (WS closed), OR
+/// - the actor's outbox drops all senders (actor shut down / idle-GC'd), OR
+/// - the receiver falls `broadcast_capacity` updates behind
+///   (`RecvError::Lagged`) — logged and terminated; the client's WS
+///   reconnect + sync-step-1 catches up cleanly.
+///
+/// A missing `collab_session_service` (feature off) or an attach
+/// error (repo blip) collapses to "no-op forwarder": the task exits
+/// immediately with an audit line so the operator sees why the
+/// subscribe ack'd but delivered nothing.
+fn spawn_collab_forwarder(
+    file_id: Uuid,
+    out_tx: mpsc::Sender<SessionOut>,
+    state: &Arc<AppState>,
+) -> JoinHandle<()> {
+    let collab = state.collab_session_service.clone();
+    tokio::spawn(async move {
+        let Some(collab) = collab else {
+            tracing::debug!(
+                target: "oxicloud::collab",
+                file_id = %file_id,
+                "collab subscribe with feature off — no-op forwarder",
+            );
+            return;
+        };
+        // Attach the file (spawns or reuses the actor) and take a
+        // broadcast receiver on its update outbox. The caller_id used
+        // for the reader is the session's — attach_file uses it only
+        // when seeding a fresh doc from the blob.
+        //
+        // Attach can fail (repo error, stale FK). Log + exit; the
+        // subscribe was already ack'd so the client sees a healthy
+        // topic that just never delivers — the same shape as the
+        // "feature off" case, and the audit line explains which.
+        let session = match collab.attach_file(Uuid::nil(), file_id).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    target: "oxicloud::collab",
+                    file_id = %file_id,
+                    error = %e,
+                    "collab forwarder: attach_file failed",
+                );
+                return;
+            }
+        };
+        let mut rx = match session.subscribe_updates().await {
+            Ok(rx) => rx,
+            Err(e) => {
+                tracing::warn!(
+                    target: "oxicloud::collab",
+                    file_id = %file_id,
+                    error = %e,
+                    "collab forwarder: subscribe_updates failed",
+                );
+                return;
+            }
+        };
+        use crate::application::services::collab_session_service::INTERNAL_KIND_EVICTED;
+        use crate::application::services::collab_wire::encode_binary_frame;
+        let topic_wire = Topic::Collab(file_id).to_wire_key();
+        loop {
+            match rx.recv().await {
+                Ok((frame_kind, payload)) => {
+                    if frame_kind == INTERNAL_KIND_EVICTED {
+                        // Server-only control message from
+                        // `CollabSessionService::evict_sessions_for_file`.
+                        // Never a valid wire kind — translate into an
+                        // `rt.revoked` text frame so the SPA transitions
+                        // its collab UI, then unwind. Reason is
+                        // UTF-8-decoded from the payload; a corrupt
+                        // producer defaults to a generic marker so we
+                        // still ship SOME signal to the client.
+                        let reason = std::str::from_utf8(&payload).unwrap_or("evicted");
+                        let frame = revoked_notification(&topic_wire, reason);
+                        let _ = out_tx.send(SessionOut::Frame(frame)).await;
+                        return;
+                    }
+                    // Broadcast carries `(kind, bytes)` so UPDATE and
+                    // AWARENESS share the same channel without a
+                    // second forwarder. Encode with the kind the actor
+                    // stamped; wire layout is otherwise identical.
+                    let frame = encode_binary_frame(frame_kind, file_id, &payload);
+                    if out_tx.send(SessionOut::Binary(frame)).await.is_err() {
+                        // Session dead; unwind the forwarder.
+                        return;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    // Slow consumer: the actor sent updates faster than
+                    // this forwarder drained them for
+                    // `broadcast_capacity` frames. `rx` is still valid
+                    // and would keep returning `Lagged` until it catches
+                    // up, so grab a fresh receiver instead — that
+                    // discards the backlog cleanly. The client's next
+                    // sync-step-1 (issued on reconnect or explicitly)
+                    // reconciles anything missed; Yjs's idempotent
+                    // apply guarantees no double-application.
+                    tracing::info!(
+                        target: "audit",
+                        event = "collab.forwarder_lagged",
+                        file_id = %file_id,
+                        dropped = n,
+                        "👮🏻‍♂️ collab forwarder fell behind; \
+                         resubscribing on a fresh receiver",
+                    );
+                    match session.subscribe_updates().await {
+                        Ok(fresh) => rx = fresh,
+                        Err(_) => return, // actor gone — unwind
+                    }
+                }
+            }
+        }
+    })
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -883,13 +1428,38 @@ fn split_event_discriminator(mut event_json: Value) -> (String, Value) {
 /// Emitted when a subscription is evicted mid-session (grant revoked,
 /// resource deleted, etc.). Not tied to a request id — client sees
 /// this as a signal to stop rendering the topic.
-fn revoked_notification(topic_wire: &str, reason: &'static str) -> String {
+fn revoked_notification(topic_wire: &str, reason: &str) -> String {
     serde_json::to_string(&RpcNotification {
         jsonrpc: JSONRPC_V2,
         method: "rt.revoked",
         params: serde_json::json!({
             "topic": topic_wire,
             "reason": reason,
+        }),
+    })
+    .expect("RpcNotification always serializes")
+}
+
+/// Build the server-initiated `rt.write_denied` JSON-RPC notification.
+/// Emitted when a collab UPDATE frame arrives from a caller that has
+/// Read on the file but not Update (typical Viewer with a share
+/// grant); the socket stays open — only the individual frame is
+/// dropped — so a legitimate Reader keeps receiving fan-out on the
+/// same subscription.
+///
+/// Parity with `rt.revoked`: `reason` carries the stable machine key
+/// (`no_edit` today, room for `frozen`, `admin_lock`, etc.). The
+/// numeric wire code (`error_code::NO_EDIT = -32007`) is documented
+/// on the constant itself; the notification keeps a string reason for
+/// consistency with the rest of `rt.*` — clients that need to map to
+/// codes can do so client-side, but the wire remains readable.
+fn write_denied_notification(file_id: Uuid, reason: &'static str) -> String {
+    serde_json::to_string(&RpcNotification {
+        jsonrpc: JSONRPC_V2,
+        method: "rt.write_denied",
+        params: serde_json::json!({
+            "file_id": file_id,
+            "reason":  reason,
         }),
     })
     .expect("RpcNotification always serializes")
