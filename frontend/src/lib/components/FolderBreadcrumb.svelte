@@ -33,8 +33,20 @@
 		onDrop?: (targetFolderId: string, e: DragEvent) => void;
 		/** MIME type of the row-drag payload — defaults to the shipped one. */
 		dragMime?: string;
+		/**
+		 * Optional share handler — renders a share button next to the
+		 * LEAF crumb, giving "share the folder I'm looking at" the same
+		 * one-click affordance rows already have in their action cell.
+		 *
+		 * Opt-in like `onDrop`, and for a harder reason than symmetry:
+		 * `/s/[token]` renders this component for anonymous visitors,
+		 * who must never be offered a share control. Keeping the button
+		 * off unless a page asks for it means that surface can't grow one
+		 * by accident.
+		 */
+		onShare?: (folderId: string, folderName: string) => void;
 	}
-	let { folderId, onDrop, dragMime = 'application/x-oxi-item' }: Props = $props();
+	let { folderId, onDrop, dragMime = 'application/x-oxi-item', onShare }: Props = $props();
 
 	// Fetch chain when folderId changes. `$state` + `$effect` primer
 	// avoids blocking the initial render — the breadcrumb slot appears
@@ -193,6 +205,48 @@
 	// token variants stay drop-inert even when the chip is clickable.
 	const rootDropTarget = $derived<string | null>(
 		chain && chain.access_source.kind === 'drive' ? (chain.ancestors[0]?.id ?? null) : null
+	);
+
+	/**
+	 * The folder the share button acts on: whatever the trail currently
+	 * ends at.
+	 *
+	 * Two shapes, because "leaf" is not always a crumb. Deep in a tree
+	 * it's the last entry of `visibleCrumbs`; at a drive root the chain
+	 * is empty and the root chip itself is where you are — so the target
+	 * is the deduplicated drive-root ancestor, the same folder
+	 * `rootDropTarget` already accepts drops into.
+	 *
+	 * Null for share/token roots with no crumbs: those chips are an
+	 * abstract access boundary rather than a folder, which is why they
+	 * have no href and no drop target either. Nothing to share.
+	 *
+	 * **At a drive root this shares the root FOLDER, not the drive** —
+	 * deliberate (Ed, 2026-09-22): a root folder is an ordinary folder
+	 * and shares like any other, while drive membership is a separate,
+	 * complementary vector living on `/config/drive/{uuid}`. Worth
+	 * knowing they are not interchangeable:
+	 *
+	 *   - only a `resource_type='drive'` grant puts the drive in the
+	 *     recipient's drive list (`query_readable_by` joins on exactly
+	 *     that); a root-folder grant surfaces in `/shared-with-me`
+	 *     instead;
+	 *   - public links exist for folders but not drives, so this path
+	 *     can mint a link to a whole drive's contents;
+	 *   - personal drives refuse membership mutation entirely
+	 *     (`refuse_if_personal`), so the folder route is the ONLY way to
+	 *     share one — which is why excluding the drive root here would
+	 *     have left the most common case with no share affordance at all.
+	 *
+	 * Cascading the two together (walk up to the drive's share
+	 * properties) is planned, not built.
+	 */
+	const shareTarget = $derived<FolderAncestor | null>(
+		visibleCrumbs.length > 0
+			? visibleCrumbs[visibleCrumbs.length - 1]
+			: chain?.access_source.kind === 'drive'
+				? (chain.ancestors[0] ?? null)
+				: null
 	);
 </script>
 
@@ -365,6 +419,34 @@
 				<span class="breadcrumb-crumb-name">{c.name}</span>
 			</a>
 		{/each}
+		<!--
+			Share the folder you're in. A SIBLING of the leaf anchor, never
+			a child: crumb children are `pointer-events: none` (the
+			drop-flicker fix below), so a nested button would render and
+			refuse every click — and a <button> inside an <a> is invalid
+			markup besides.
+
+			Not permission-gated here, matching the row button in
+			`ResourceList`: the server owns that decision, and guessing at
+			it client-side would hide the control from people who can in
+			fact share. Nor does it carry the row button's `.active`
+			shared-state styling — `FolderAncestor` has no `is_shared`,
+			and fetching it just to tint an icon would put a request on
+			every breadcrumb render.
+		-->
+		{#if onShare && shareTarget}
+			{@const target = shareTarget}
+			<button
+				type="button"
+				class="breadcrumb-share"
+				data-testid={`folder-breadcrumb-share-${target.id}`}
+				title={t('files.share', 'Share')}
+				aria-label={t('breadcrumb.share_folder', { name: target.name }, 'Share folder: {{name}}')}
+				onclick={() => onShare(target.id, target.name)}
+			>
+				<Icon name="oxiexport" />
+			</button>
+		{/if}
 	</nav>
 {/if}
 
@@ -403,6 +485,37 @@
 		display: inline-flex;
 		align-items: center;
 		gap: var(--space-1);
+	}
+
+	/* Share button on the leaf crumb. Borrows the crumb-link hover
+	   treatment (accent text on a tinted background) so it reads as part
+	   of the trail rather than a toolbar control that happens to sit
+	   nearby. Muted at rest: the trail is for orientation first, and a
+	   permanently-accented button next to the leaf would compete with the
+	   bold "you are here" weight.
+
+	   Left margin only — the flex `gap` on `.breadcrumb` already spaces
+	   it from the leaf, and this nudges it slightly further so it groups
+	   with the leaf instead of floating between crumbs. */
+	.breadcrumb-share {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		margin-left: var(--space-0-5);
+		padding: var(--space-0-5) var(--space-1);
+		border: none;
+		border-radius: var(--radius-sm);
+		background: none;
+		color: var(--color-text-muted);
+		cursor: pointer;
+		transition:
+			background 0.15s,
+			color 0.15s;
+	}
+
+	.breadcrumb-share:hover {
+		color: var(--color-accent);
+		background: var(--color-accent-bg);
 	}
 
 	/* Group-subject chip — small `users` glyph in a subtle badge, sits

@@ -2,10 +2,11 @@ use crate::application::dtos::cursor::PageCursor;
 use crate::application::dtos::drive_dto::DriveKindDto;
 use crate::application::dtos::folder_dto::{
     AccessSourceDriveDto, AccessSourceDto, AccessSourceKind, AccessSourceSubjectDto,
-    AccessSourceSubjectKind, CreateFolderDto, FolderAncestorDto, FolderAncestorsDto, FolderDto,
-    FolderResourceCursor, FolderResourceRow, ListResourcesOptions, MoveFolderDto, RenameFolderDto,
+    AccessSourceSubjectKind, CreateFolderDto, EffectiveLinkDto, FolderAncestorDto,
+    FolderAncestorsDto, FolderDto, FolderResourceCursor, FolderResourceRow, ListResourcesOptions,
+    MoveFolderDto, RenameFolderDto,
 };
-use crate::application::dtos::grant_dto::RoleDto;
+use crate::application::dtos::grant_dto::{GrantDto, RoleDto};
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::external_mount_ports::MountEntry;
 use crate::application::ports::file_lifecycle::FileLifecycleHook;
@@ -18,7 +19,9 @@ use crate::application::services::mount_dto::{
 use crate::application::services::mount_registry::MountConfig;
 use crate::common::errors::{DomainError, ErrorKind};
 use crate::domain::repositories::folder_repository::FolderRepository;
-use crate::domain::services::authorization::{Permission, Resource, ResourceKind, Role, Subject};
+use crate::domain::services::authorization::{
+    Grant, Permission, Resource, ResourceKind, Role, Subject,
+};
 use crate::domain::services::external_mount_id::NodeId;
 use crate::domain::services::path_service::{StoragePath, validate_storage_name};
 use crate::infrastructure::repositories::pg::folder_db_repository::FolderDbRepository;
@@ -1157,11 +1160,30 @@ impl FolderService {
         &self,
         leaf_id: &str,
         caller: Subject,
+        include_grants: bool,
     ) -> Result<FolderAncestorsDto, DomainError> {
         // Gate: caller must have Read on the leaf. Denial → 404 (anti-enum).
         self.authz
             .require(caller, Permission::Read, Self::folder_resource(leaf_id)?)
             .await?;
+
+        // `include_grants` RAISES the permission this endpoint needs.
+        // Read earns you the breadcrumb; it does not earn you the access
+        // list. Enumerating who else can reach a folder is exactly what
+        // `Permission::Share` gates on `GET /api/grants`, and routing the
+        // same data through a different endpoint must not launder that
+        // requirement — otherwise any viewer could list every subject
+        // with access, plus the names of ancestors above them.
+        //
+        // Checked here rather than in the handler because AuthZ lives in
+        // the service layer (see `src/AGENTS.md` § AuthZ enforcement
+        // points) — a second caller of this method inherits the gate
+        // instead of having to remember it.
+        if include_grants {
+            self.authz
+                .require(caller, Permission::Share, Self::folder_resource(leaf_id)?)
+                .await?;
+        }
 
         let leaf_uuid =
             Uuid::parse_str(leaf_id).map_err(|_| DomainError::not_found("Folder", leaf_id))?;
@@ -1191,6 +1213,11 @@ impl FolderService {
         // The topmost surviving row is the root of the caller's view.
         // Its grant profile drives `AccessSource`.
         let top = &rows[0];
+        // Copied out now: the grants collection below runs after `rows`
+        // has been consumed into the ancestor DTOs. Every row in a chain
+        // shares one drive (a folder tree cannot span drives), so the
+        // top row's is the chain's.
+        let top_drive_id = top.drive_id;
 
         // Subject enrichment: identify the specific grant that gave the
         // caller access to `top`, then resolve its subject's display
@@ -1299,6 +1326,73 @@ impl FolderService {
             }
         };
 
+        // Collected BEFORE `rows` is consumed below, and only over rows
+        // that survived the visibility trim — that restriction is what
+        // makes this safe to hand back (see `fetch_grants_on_resources`).
+        let (effective_grants, effective_links) = if include_grants {
+            let folder_ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
+            let raw = self
+                .folder_storage
+                .fetch_grants_on_resources(&folder_ids, top_drive_id)
+                .await?;
+
+            // Token grants are public links, not people. Split here so
+            // neither list makes a client re-partition before rendering.
+            let (link_rows, subject_rows): (Vec<_>, Vec<_>) =
+                raw.into_iter().partition(|g| g.subject_type == "token");
+
+            let links = link_rows
+                .into_iter()
+                .filter_map(|g| {
+                    Some(EffectiveLinkDto {
+                        grant_id: g.id,
+                        share_id: g.subject_id,
+                        name: g.share_name,
+                        // A token grant with no share row is a dangling
+                        // reference — the share was deleted without its
+                        // grant. Treat as unprotected rather than
+                        // claiming a password it may not have.
+                        has_password: g.share_has_password.unwrap_or(false),
+                        resource: Resource::from_parts(&g.resource_type, g.resource_id)?.into(),
+                        expires_at: g.expires_at,
+                    })
+                })
+                .collect();
+
+            let grants = subject_rows
+                .into_iter()
+                .filter_map(|g| {
+                    // Build the DOMAIN `Grant`, then let the existing
+                    // `From<Grant> for GrantDto` produce the wire shape.
+                    // Assembling `GrantDto` field-by-field here would be
+                    // a second definition of that shape, free to drift
+                    // from the one `GET /api/grants` serves — and a
+                    // client consuming both would see the same row two
+                    // ways. One conversion, one contract.
+                    //
+                    // A row whose subject/resource/role fails to parse is
+                    // schema drift — a value this binary predates.
+                    // Dropped rather than surfaced: an access list reads
+                    // as complete, so a half-built entry is worse than a
+                    // missing one, and the ENUM plus FKs make it
+                    // unreachable short of a rollback.
+                    Some(GrantDto::from(Grant {
+                        id: g.id,
+                        subject: Subject::from_parts(&g.subject_type, g.subject_id)?,
+                        resource: Resource::from_parts(&g.resource_type, g.resource_id)?,
+                        role: Role::parse(&g.role)?,
+                        granted_by: g.granted_by,
+                        granted_at: g.granted_at,
+                        expires_at: g.expires_at,
+                    }))
+                })
+                .collect();
+
+            (Some(grants), Some(links))
+        } else {
+            (None, None)
+        };
+
         let ancestors = rows
             .into_iter()
             .map(|r| FolderAncestorDto {
@@ -1312,6 +1406,8 @@ impl FolderService {
         Ok(FolderAncestorsDto {
             ancestors,
             access_source,
+            effective_grants,
+            effective_links,
         })
     }
 

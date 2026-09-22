@@ -360,7 +360,14 @@
     "unlock": "Unlock",
     "role_label": "Role",
     "col_shared_by": "Shared by",
-    "col_shared": "Shared"
+    "col_shared": "Shared",
+    "the_drive": "the drive",
+    "none_direct": "No public link on this item itself.",
+    "inherited_links_title": "Also reachable through a public link",
+    "inherited_link_on_drive_title": "This link lives on drive “{{name}}”",
+    "inherited_link_manage": "Open “{{name}}” to manage or remove this link",
+    "inherited_from_folder_title": "Inherited from folder \"{{name}}\" — open it to change this",
+    "inherited_from_drive_title": "Inherited from drive \"{{name}}\" — change it in the drive settings"
   },
   "share_dialogTitle": "Share Link",
   "share_linkLabel": "Share Link:",
@@ -639,6 +646,7 @@
   "breadcrumb": {
     "home": "Home",
     "aria": "Breadcrumb",
+    "share_folder": "Share folder: {{name}}",
     "root": {
       "personal_drive": "Personal drive: {{name}}",
       "shared_drive": "Shared drive: {{name}}",

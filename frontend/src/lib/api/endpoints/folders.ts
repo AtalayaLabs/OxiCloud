@@ -138,6 +138,32 @@ export function getFolderAncestors(id: string): Promise<FolderAncestorsResponse>
 	return request;
 }
 
+/**
+ * Ancestor chain PLUS every grant that reaches the folder — its own,
+ * each visible ancestor's, and the drive's.
+ *
+ * A separate function rather than a flag on {@link getFolderAncestors},
+ * for two reasons:
+ *
+ * 1. That one dedups in-flight requests keyed by folder id alone. A
+ *    shared key across both shapes would let a breadcrumb request
+ *    (grants omitted) satisfy a dialog request that needs them — a
+ *    nasty, timing-dependent bug.
+ * 2. It requires a different permission. `include_grants=true` raises
+ *    the endpoint's requirement from Read to Share, so this call can
+ *    403 where the plain breadcrumb succeeds. Callers should expect it.
+ *
+ * Not deduped or cached: opening a share dialog is rare and the access
+ * list must be current — a stale one would misreport who can reach the
+ * folder.
+ */
+export function getFolderAncestorsWithGrants(id: string): Promise<FolderAncestorsResponse> {
+	return apiJson<FolderAncestorsResponse>(
+		`/api/folders/${id}/ancestors?include_grants=true`,
+		NO_CACHE
+	);
+}
+
 /** One page of `/api/folders/{id}/resources`. */
 export interface FolderPage {
 	/**
