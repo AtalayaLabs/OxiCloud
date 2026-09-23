@@ -115,6 +115,8 @@ export class CollabDoc {
 	#unsubscribeTopic: UnsubscribeHandle | null = null;
 	#unregisterHandler: (() => void) | null = null;
 	#docUpdateHandler: ((update: Uint8Array, origin: unknown) => void) | null = null;
+	/** Unsubscribe for the bus reconnect hook; `null` until connect(). */
+	#offReconnect: (() => void) | null = null;
 	#awarenessUpdateHandler:
 		| ((
 				changes: { added: number[]; updated: number[]; removed: number[] },
@@ -274,17 +276,29 @@ export class CollabDoc {
 		};
 		this.awareness.on('update', this.#awarenessUpdateHandler);
 
-		// Sync-step-1: send our state vector, server replies with the
-		// missing updates. Send immediately — the WS is already
-		// connected (subscribe kicked it) OR will be shortly, and the
-		// bus client's #onOpen replays the subscribe on reconnect but
-		// NOT this binary frame. We rely on the server's actor to
-		// re-broadcast state to a reconnected client via any future
-		// UPDATE it applies; a proper reconnect handshake with
-		// on-reconnect resync is a follow-up polish slice.
+		// Sync-step-1: send our state vector, the server replies with
+		// everything we're missing — which on a fresh attach is the whole
+		// document. `sendBinary` DROPS frames while the socket is still
+		// connecting, and on a cold page load it usually is: the subscribe
+		// above only kicks the connection off. A dropped handshake is not
+		// retried by anyone, so the editor sits there empty with no error
+		// anywhere — no HTTP request to fail, and the drop is logged at
+		// `debug`. Wait for the socket instead.
+		void messageBus.whenConnected().then(() => {
+			if (!this.#destroyed) this.#sendSyncStep1();
+		});
+		// And again after every reconnect: the bus replays subscribes on
+		// its own, but not binary frames, so without this a socket that
+		// dropped mid-session comes back with a doc nobody re-synced.
+		this.#offReconnect = messageBus.onReconnect(() => {
+			if (!this.#destroyed) this.#sendSyncStep1();
+		});
+	}
+
+	/** Ask the server for everything this doc is missing. */
+	#sendSyncStep1(): void {
 		const sv = Y.encodeStateVector(this.doc);
-		const frame = encodeFrame(KIND_SYNC, this.fileId, sv);
-		messageBus.sendBinary(frame);
+		messageBus.sendBinary(encodeFrame(KIND_SYNC, this.fileId, sv));
 	}
 
 	/** Dispose. Idempotent; safe from Svelte $effect cleanup. */
@@ -294,6 +308,10 @@ export class CollabDoc {
 		if (this.#docUpdateHandler) {
 			this.doc.off('update', this.#docUpdateHandler);
 			this.#docUpdateHandler = null;
+		}
+		if (this.#offReconnect) {
+			this.#offReconnect();
+			this.#offReconnect = null;
 		}
 		if (this.#awarenessUpdateHandler) {
 			this.awareness.off('update', this.#awarenessUpdateHandler);

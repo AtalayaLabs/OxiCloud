@@ -218,6 +218,9 @@ export class MessageBusClient {
 	 *  reactive. Same rationale as `#subs` / `#pending`. */
 	// eslint-disable-next-line svelte/prefer-svelte-reactivity
 	#reconnectHandlers = new Set<ReconnectHandler>();
+	/** Resolvers waiting on [`whenConnected`]. Flushed in `#onOpen`.
+	 *  Plain array — internal, not reactive. */
+	#connectedWaiters: Array<() => void> = [];
 	/** setTimeout handle for the "close on hidden after grace" timer.
 	 *  `null` when the tab is visible OR the timer already fired. See
 	 *  `HIDDEN_GRACE_MS` for the design tradeoff. */
@@ -381,6 +384,27 @@ export class MessageBusClient {
 	 * server, since bus publishes during the disconnect never reached
 	 * this session. See `project_message_bus_reconnect_gap` memory.
 	 */
+	/**
+	 * Resolve once the socket is open — immediately if it already is.
+	 *
+	 * `sendBinary` drops frames while the socket is still connecting, which
+	 * is fine for a keystroke or a presence ping (the next one carries the
+	 * state) but fatal for a handshake nobody repeats. Callers that must not
+	 * lose their first frame await this instead of firing blind.
+	 *
+	 * Never rejects: a connection that never comes leaves the promise
+	 * pending, and the caller's own state machine (the circuit breaker feeds
+	 * `state`) is what surfaces that to the user.
+	 */
+	whenConnected(): Promise<void> {
+		if (this.state === 'connected') return Promise.resolve();
+		// Same kick `subscribe` does, and with the same exception: from
+		// `unavailable` the circuit breaker is open and only an explicit
+		// `reconnect()` (or a refresh) may re-arm it.
+		if (this.state === 'idle' || this.state === 'disconnected') this.#connect();
+		return new Promise((resolve) => this.#connectedWaiters.push(resolve));
+	}
+
 	onReconnect(cb: ReconnectHandler): () => void {
 		return untrack(() => {
 			this.#reconnectHandlers.add(cb);
@@ -613,6 +637,12 @@ export class MessageBusClient {
 		// `hasConnectedBefore` bit, so handlers only fire on 2nd+ open.
 		const isReconnect = this.#hasConnectedBefore;
 		this.#hasConnectedBefore = true;
+		// Release anyone who parked on `whenConnected()` before the socket
+		// was up. Taken first so a waiter that re-enters the client sees an
+		// empty queue rather than resolving twice.
+		const waiters = this.#connectedWaiters;
+		this.#connectedWaiters = [];
+		for (const resolve of waiters) resolve();
 		// Replay every already-known topic. `entry.acked` is reset here
 		// because the fresh connection has no server-side memory of
 		// prior subscriptions.
