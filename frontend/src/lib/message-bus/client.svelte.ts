@@ -22,6 +22,7 @@ import log from 'loglevel';
 import { untrack } from 'svelte';
 
 import { apiJson } from '$lib/api/client';
+import { session } from '$lib/stores/session.svelte';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import { RtErrorCode } from './error-codes';
 import {
@@ -576,6 +577,34 @@ export class MessageBusClient {
 	 *  the CSRF header ourselves per every state-changing endpoint's
 	 *  convention (see `endpoints/shares.ts` for the pattern). */
 	async #exchangeAndOpen(gen: number): Promise<void> {
+		// Never ask for a ticket that cannot be granted. A public-share
+		// visitor holds an ANONYMOUS session, and `/api/rt/ticket` is
+		// off the anonymous allowlist by design — the request is
+		// refused and writes an `authz.denied` audit line every time.
+		// Handling the 403 gracefully still leaves one line per connect;
+		// not sending it leaves none.
+		//
+		// `load()` is idempotent and cached, so this is one `/api/auth/me`
+		// probe per page rather than one per connect attempt, and on
+		// every authenticated path it has already resolved by now.
+		//
+		// This is the chokepoint every caller reaches — `subscribe()`,
+		// `whenConnected()`, the reconnect timer — so the guard holds
+		// without each of them having to remember it.
+		await session.load();
+		if (gen !== this.#connectGen) return; // superseded while probing
+		if (!session.isAuthenticated) {
+			busLog.debug('no authenticated session — not requesting a WS ticket');
+			// `disconnected`, deliberately, not `unavailable`. The
+			// terminal state is only re-armed by an explicit
+			// `reconnect()`, which nothing calls on login — so a user
+			// signing in within the same tab would be left with a bus
+			// that never connects. From `disconnected`, the next
+			// `subscribe()` re-enters `#connect()` and succeeds.
+			this.state = 'disconnected';
+			return;
+		}
+
 		let subprotocol: string;
 		try {
 			const res = await apiJson<RtTicketResponse>('/api/rt/ticket', {

@@ -26,7 +26,12 @@ vi.mock('$lib/stores/serverConfig.svelte', () => ({ serverConfig: cfg }));
 // WS ticket route is deliberately off the anonymous share allowlist. These
 // tests describe the authenticated case, so say so explicitly — see the
 // anonymous test at the bottom for the other side.
-const { sess } = vi.hoisted(() => ({ sess: { isAuthenticated: true } }));
+// `load` is part of the contract the message bus relies on — it probes
+// the session before asking for a WS ticket — so the stub needs it even
+// though these tests never connect.
+const { sess } = vi.hoisted(() => ({
+	sess: { isAuthenticated: true, load: async () => null }
+}));
 vi.mock('$lib/stores/session.svelte', () => ({ session: sess }));
 // The real editor mounts CodeMirror and a message-bus session; the stub just
 // renders the toolbar the viewer passes in.
