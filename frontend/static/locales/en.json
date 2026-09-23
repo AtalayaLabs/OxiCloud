@@ -1,4 +1,15 @@
 {
+  "collab": {
+    "conflict": {
+      "title": "This file was changed by someone else",
+      "body": "Your unsaved changes could not be saved to {{name}}, so they were kept in a separate file:",
+      "save_failed": "Your unsaved changes could NOT be saved automatically. They exist only in this editor — copy them somewhere safe before leaving this page.",
+      "deleted": "Deleted {{name}}.",
+      "open_copy": "Open my saved copy",
+      "delete_copy": "Delete my saved copy",
+      "open_current": "Discard what's on screen and open the updated {{name}}"
+    }
+  },
   "server": {
     "magic_link": {
       "page": {

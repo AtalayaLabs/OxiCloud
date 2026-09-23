@@ -85,6 +85,17 @@ export interface CollabDocOpts {
 	 *  UPDATE frames MUST be suppressed (server would reject them
 	 *  and, today, drop the WS). */
 	onCapabilities?: (caps: CollabCapabilities) => void;
+	/** The server ended this session because the file was replaced from
+	 *  outside it — a WebDAV PUT, a WOPI save, a re-upload — while this
+	 *  doc still held edits that had not reached the blob.
+	 *
+	 *  Distinct from a plain `external_write` eviction, which means the
+	 *  file changed but nothing of the user's was pending. This reason
+	 *  is the server's promise that unsaved text exists, and it is the
+	 *  consumer's cue to preserve the local buffer before re-attaching:
+	 *  the CRDT's edits can never reach the original file now, so a
+	 *  silent reload would discard them. */
+	onExternalWriteConflict?: () => void;
 }
 
 export class CollabDoc {
@@ -100,6 +111,7 @@ export class CollabDoc {
 	#syncState: SyncState = 'idle';
 	#onSyncStateChange?: (state: SyncState) => void;
 	#onCapabilities?: (caps: CollabCapabilities) => void;
+	#onExternalWriteConflict?: () => void;
 	/** Dispose fn returned by `messageBus.registerWriteDeniedHandler`,
 	 *  cleared in `destroy()`. */
 	#unregisterWriteDenied: (() => void) | null = null;
@@ -134,6 +146,7 @@ export class CollabDoc {
 		this.fileId = opts.fileId;
 		this.#onSyncStateChange = opts.onSyncStateChange;
 		this.#onCapabilities = opts.onCapabilities;
+		this.#onExternalWriteConflict = opts.onExternalWriteConflict;
 		this.doc = new Y.Doc();
 		this.awareness = new awarenessProtocol.Awareness(this.doc);
 	}
@@ -217,6 +230,15 @@ export class CollabDoc {
 				// treat unknown reasons defensively anyway.
 				const reason: string = revoked.reason;
 				this.#setSyncState(reason === 'subscribe_denied' ? 'denied' : 'disconnected');
+
+				// The server could not save our text and never will:
+				// the file was replaced from outside this session while
+				// we still held unflushed edits. Fired BEFORE the
+				// read-only flip below so the consumer can capture the
+				// buffer while it is still exactly what the user typed.
+				if (reason === 'external_write_conflict') {
+					this.#onExternalWriteConflict?.();
+				}
 
 				// A revocation always means "you no longer have Update on
 				// this file, at minimum" — flip write mode off proactively

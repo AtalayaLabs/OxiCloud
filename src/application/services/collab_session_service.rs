@@ -978,6 +978,38 @@ async fn run_actor(mut state: ActorState, mut inbox: mpsc::Receiver<SessionMsg>)
                             &e,
                             CollabError::Storage(de) if de.kind == crate::common::errors::ErrorKind::NotFound
                         );
+                        // An external write replaced the blob. Our text
+                        // can NEVER reach this file now — the baseline
+                        // will not match again for the life of this
+                        // actor, so every later tick would fail
+                        // identically while the doc keeps accepting
+                        // keystrokes it cannot persist.
+                        //
+                        // Stop immediately and say why. `flush_due`
+                        // only fires on a dirty doc, so reaching here
+                        // always means there IS unsaved work — which is
+                        // exactly what separates this from the plain
+                        // `external_write` eviction the lifecycle hook
+                        // raises. Clients seeing this reason must
+                        // preserve their buffer before re-attaching.
+                        if matches!(
+                            &e,
+                            CollabError::Storage(de) if de.kind == crate::common::errors::ErrorKind::PreconditionFailed
+                        ) {
+                            tracing::warn!(
+                                target: "audit",
+                                event = "collab.session_conflicted",
+                                reason = "external_write_conflict",
+                                file_id = %state.file_id,
+                                attached_sockets = state.attached.len(),
+                                "👮🏻‍♂️ collab session ended with unflushed edits: file changed outside the session",
+                            );
+                            let _ = state.outbox.send((
+                                INTERNAL_KIND_EVICTED,
+                                b"external_write_conflict".to_vec(),
+                            ));
+                            break;
+                        }
                         tracing::warn!(
                             target: "oxicloud::collab",
                             file_id = %state.file_id,
@@ -2286,6 +2318,54 @@ mod tests {
             writer.seen_preconditions.lock().unwrap().clone(),
             vec![None]
         );
+    }
+
+    #[tokio::test]
+    async fn conflicted_flush_evicts_with_a_reason_that_says_work_is_unsaved() {
+        let limits = CollabLimits {
+            debounce_idle: Duration::from_millis(50),
+            debounce_max: Duration::from_millis(500),
+            debounce_tick: Duration::from_millis(20),
+            ..CollabLimits::default()
+        };
+        let writer = Arc::new(CasWriter::new("blob-v1"));
+        let svc = Arc::new(CollabSessionService::new(
+            Arc::new(MemRepo::new()),
+            Arc::new(StubReader {
+                content: Mutex::new(b"hello".to_vec()),
+                blob_hash: Mutex::new(Some("blob-v1".to_string())),
+            }),
+            writer.clone(),
+            Arc::new(AllowAll),
+            limits,
+        ));
+        let file_id = Uuid::new_v4();
+        let caller = Uuid::new_v4();
+        let session = svc.attach_file(caller, file_id).await.unwrap();
+        let mut rx = session.subscribe_updates().await.unwrap();
+
+        dirty(&session, caller, " world").await;
+        writer.external_write("blob-from-webdav");
+
+        // Drain until the control frame: the dirtying update is
+        // broadcast first and is not what this test is about.
+        let reason = loop {
+            let (kind, payload) = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .expect("a control frame within 2s")
+                .expect("channel open until the actor drops");
+            if kind == INTERNAL_KIND_EVICTED {
+                break String::from_utf8(payload).unwrap();
+            }
+        };
+
+        // Distinct from the lifecycle hook's plain `external_write`:
+        // this one promises there IS unflushed text, which is what
+        // tells the client to preserve its buffer as a conflict copy
+        // instead of silently reloading.
+        assert_eq!(reason, "external_write_conflict");
+        assert_eq!(writer.write_count(), 0);
+        assert_eq!(writer.current_hash().as_deref(), Some("blob-from-webdav"));
     }
 
     #[tokio::test]

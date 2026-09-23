@@ -6,7 +6,15 @@ const { bus } = vi.hoisted(() => {
 	return {
 		bus: {
 			sent: [] as Uint8Array[],
-			subscribe: vi.fn(() => () => {}),
+			/** Revoked callbacks the docs registered, so a test can
+			 *  play the server evicting a session. */
+			revokes: [] as ((r: { reason: string }) => void)[],
+			subscribe: vi.fn(
+				(_topic: string, _onEvent: unknown, onRevoked?: (r: { reason: string }) => void) => {
+					if (onRevoked) bus.revokes.push(onRevoked);
+					return () => {};
+				}
+			),
 			registerBinaryHandler: vi.fn(() => () => {}),
 			registerWriteDeniedHandler: vi.fn(() => () => {}),
 			collabFlush: vi.fn(async () => {}),
@@ -28,7 +36,11 @@ const { bus } = vi.hoisted(() => {
 				await Promise.resolve();
 			},
 			/** Fire the bus's reconnect hook. */
-			reopen: () => reconnect?.()
+			reopen: () => reconnect?.(),
+			/** Play a server-initiated eviction on the collab topic. */
+			revoke: (reason: string) => {
+				for (const r of [...bus.revokes]) r({ reason });
+			}
 		}
 	};
 });
@@ -39,6 +51,7 @@ import { KIND_AWARENESS, KIND_SYNC, decodeFrame } from './wireCodec';
 
 beforeEach(() => {
 	bus.sent.length = 0;
+	bus.revokes.length = 0;
 	vi.clearAllMocks();
 });
 
@@ -121,5 +134,45 @@ describe('departure announcement', () => {
 		doc.destroy();
 
 		expect(departures()).toHaveLength(1);
+	});
+});
+
+// A conflicted flush is terminal: the file was replaced from outside
+// the session while this doc still held unflushed text, and the
+// baseline can never match again. The server says so with a reason
+// distinct from a plain external write, and the editor uses it to
+// rescue the buffer into a conflict copy.
+describe('external-write conflict', () => {
+	const FILE = '11111111-2222-3333-4444-555555555555';
+
+	it('signals a conflict when the server says work is unsaved', async () => {
+		const onExternalWriteConflict = vi.fn();
+		const doc = new CollabDoc({ fileId: FILE, onExternalWriteConflict });
+		doc.connect();
+		await bus.open();
+
+		bus.revoke('external_write_conflict');
+
+		// Miss this and the user's edits are gone on the next reload,
+		// with nothing on screen to say so.
+		expect(onExternalWriteConflict).toHaveBeenCalledTimes(1);
+		doc.destroy();
+	});
+
+	it('does not signal a conflict for an ordinary eviction', async () => {
+		const onExternalWriteConflict = vi.fn();
+		const doc = new CollabDoc({ fileId: FILE, onExternalWriteConflict });
+		doc.connect();
+		await bus.open();
+
+		// A plain external write (nothing of ours pending), a revoked
+		// grant, a deleted file. Rescuing a copy on these would litter
+		// the folder with duplicates of content already safely saved.
+		bus.revoke('external_write');
+		bus.revoke('grant_revoked');
+		bus.revoke('resource_deleted');
+
+		expect(onExternalWriteConflict).not.toHaveBeenCalled();
+		doc.destroy();
 	});
 });
