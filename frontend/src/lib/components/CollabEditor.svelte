@@ -98,7 +98,7 @@
 		{ tag: t.constant(t.variableName), color: 'var(--syntax-number)' },
 		{ tag: t.standard(t.variableName), color: 'var(--syntax-keyword)' }
 	]);
-	import { onDestroy } from 'svelte';
+	import { onDestroy, untrack } from 'svelte';
 
 	import { CollabDoc, type SyncState } from '$lib/collab/collabDoc';
 	import { messageBus } from '$lib/message-bus/client.svelte';
@@ -335,11 +335,29 @@
 
 	let syncState = $state<SyncState>('idle');
 	let container: HTMLDivElement | undefined = $state();
-	/** Reactive read-only state. Fail-closed default: until the
-	 *  subscribe ack arrives with `can_write: true`, the editor is
-	 *  read-only. Flips only when the server explicitly grants
-	 *  Update. See `readOnlyCompartment` for the live wire-up. */
-	let readOnly = $state(true);
+	/** Does the server say this caller may write? Fail-closed default:
+	 *  flipped only by a subscribe ack carrying `can_write: true`.
+	 *  Authorization only — see `readOnly` for what the editor
+	 *  actually enforces. */
+	let canWrite = $state(false);
+
+	/** What the editor enforces. Permission is necessary but NOT
+	 *  sufficient: the doc must also have finished syncing.
+	 *
+	 *  Until sync-step-2 lands, the local `Y.Doc` is legitimately
+	 *  empty — indistinguishable, from the editor's point of view,
+	 *  from a genuinely empty file. Typing into it would produce
+	 *  CRDT inserts positioned against that empty doc, which the
+	 *  server then merges into the real content: the user's text
+	 *  lands at the top of a file they could not see, and the flush
+	 *  writes the result to the blob. Nothing is deleted (an empty
+	 *  local doc has no text to author a delete for, so the file
+	 *  cannot be wiped this way) but the file is still corrupted.
+	 *
+	 *  Gating on `synced` closes that window by construction rather
+	 *  than relying on the sync handshake never failing. See
+	 *  `readOnlyCompartment` for the live wire-up. */
+	const readOnly = $derived(!canWrite || syncState !== 'synced');
 
 	/** Effective state shown to the user. The bus's circuit-tripped
 	 *  `unavailable` outranks any per-doc state — no point telling
@@ -378,16 +396,27 @@
 	 *  `Compartment` is bound to one `EditorState`. */
 	let readOnlyCompartment: Compartment | undefined;
 	/** Live reconfigure hook set by the mount effect's async IIFE once
-	 *  the CodeMirror runtime has been dynamic-imported. Called by
-	 *  `onCapabilities` when a subscribe ack arrives AFTER the editor
-	 *  mounted — flips the readOnly compartment without needing
-	 *  `EditorState` in scope outside the IIFE (keeping the SSR bundle
-	 *  free of CodeMirror runtime references). `undefined` before the
-	 *  runtime loads: the ack's `readOnly` value is already stored on
-	 *  the reactive `readOnly` state, so the initial compartment
-	 *  value picks it up by construction when the IIFE finally builds
-	 *  the EditorState. */
+	 *  the CodeMirror runtime has been dynamic-imported. Flips the
+	 *  readOnly compartment without needing `EditorState` in scope
+	 *  outside the IIFE (keeping the SSR bundle free of CodeMirror
+	 *  runtime references). `undefined` before the runtime loads:
+	 *  `readOnly`'s current value is picked up by construction when
+	 *  the IIFE finally builds the EditorState. */
 	let reconfigureReadOnly: ((v: boolean) => void) | undefined;
+
+	// Push `readOnly` into the live CodeMirror compartment whenever it
+	// moves — on a capability change (subscribe ack, mid-session
+	// demotion) AND on a sync-state change. The latter is what makes
+	// the doc un-typeable until sync-step-2 has landed; see `readOnly`.
+	//
+	// A no-op until the runtime IIFE sets the hook, which is correct:
+	// the EditorState it then builds reads `readOnly` directly, and it
+	// calls the hook once itself to settle any value that moved while
+	// the chunks were in flight.
+	$effect(() => {
+		const ro = readOnly;
+		untrack(() => reconfigureReadOnly?.(ro));
+	});
 
 	// Mount effect: attach CodeMirror + CollabDoc when `container`
 	// becomes available. Runs once per `fileId` change; the cleanup
@@ -416,7 +445,7 @@
 		// a leftover `false` from a previous file would let a viewer
 		// type into a new file for the sub-second window between
 		// mount and the fresh subscribe ack.
-		readOnly = true;
+		canWrite = false;
 
 		collab = new CollabDoc({
 			fileId: currentFileId,
@@ -424,17 +453,13 @@
 				syncState = s;
 			},
 			onCapabilities: (caps) => {
-				readOnly = !caps.canWrite;
-				// If the editor is already mounted, reconfigure the
-				// live compartment so the caller sees the mode switch
-				// immediately. Delegated via `reconfigureReadOnly`
-				// (set by the async IIFE once the CodeMirror runtime
-				// loads) so this callback stays runtime-free — a plain
-				// closure with no `EditorState` reference, which keeps
-				// the SSR bundle from pulling CodeMirror. Before the
-				// hook is set, `readOnly` alone is authoritative and
-				// the initial state build reads its current value.
-				reconfigureReadOnly?.(readOnly);
+				// Record the permission only. Pushing it into the live
+				// CodeMirror compartment is the effect below's job —
+				// `readOnly` now depends on `syncState` as well, and
+				// that moves without any capability change, so a
+				// reconfigure driven from this callback alone would
+				// leave the editor writable on a doc that never synced.
+				canWrite = caps.canWrite;
 			}
 		});
 		collab.connect();
