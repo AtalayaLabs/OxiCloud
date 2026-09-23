@@ -510,7 +510,10 @@
 			readOnlyCompartment = new CompartmentCtor();
 
 			const state = EditorState.create({
-				doc: '', // initial content comes from the CRDT after sync-step-2
+				// Seeded from the CRDT, not empty: sync-step-2 can land while
+				// the chunks above load, and `yCollab` only applies updates
+				// that arrive after it binds.
+				doc: collabRef.yText().toString(),
 				extensions: [
 					lineNumbers(),
 					history(),
