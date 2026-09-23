@@ -6,6 +6,11 @@
  * `openapi-typescript`) so these track the Rust DTOs; until then, extend here.
  */
 
+// `import type`, not a value import: `endpoints/grants.ts` already pulls
+// `ItemType` from this file, so a value import would close a runtime
+// cycle. Type-only imports are erased entirely, leaving nothing to cycle.
+import type { Grant } from './endpoints/grants';
+
 export type ItemType = 'file' | 'folder';
 
 export interface LightItem {
@@ -583,6 +588,42 @@ export interface AccessSource {
 export interface FolderAncestorsResponse {
 	ancestors: FolderAncestor[];
 	access_source: AccessSource;
+	/**
+	 * Every grant that reaches the leaf — its own, each visible
+	 * ancestor's, and the drive's.
+	 *
+	 * Present ONLY when fetched via `getFolderAncestorsWithGrants()`
+	 * (`?include_grants=true`); `undefined` on the breadcrumb's plain
+	 * call. Each entry's `resource` names where it sits, so:
+	 *
+	 *   - `resource.id === leafId`            → direct
+	 *   - `resource.type === 'folder'`, other → inherited; resolve the
+	 *                                           folder name from `ancestors`
+	 *   - `resource.type === 'drive'`         → from the drive
+	 */
+	effective_grants?: Grant[];
+	/**
+	 * Public links reaching the leaf, from the same walk. Separate from
+	 * `effective_grants` because a link is not a subject — no name to
+	 * resolve, no role to change, nobody to notify.
+	 *
+	 * Same presence rule: only via `getFolderAncestorsWithGrants()`.
+	 */
+	effective_links?: EffectiveLink[];
+}
+
+/** A public link on an ancestor folder or the drive. */
+export interface EffectiveLink {
+	/** Token grant id — stable list key. */
+	grant_id: string;
+	/** `storage.shares.id`. */
+	share_id: string;
+	/** Operator-given name; absent when the link was never named. */
+	name?: string;
+	has_password: boolean;
+	/** Where the link lives. Resolve a folder's name from `ancestors`. */
+	resource: { type: 'file' | 'folder' | 'drive'; id: string };
+	expires_at?: string | null;
 }
 
 // ─── Job registry (Part 1 + Part 2) ────────────────────────────────────────

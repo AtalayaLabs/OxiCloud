@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use crate::application::dtos::cursor::{CursorListResponse, CursorQuery, PageCursor};
 use crate::application::dtos::display_helpers::intern_display;
-use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto, RoleDto};
+use crate::application::dtos::grant_dto::{
+    GrantDto, ResourceContentDto, ResourceDto, ResourceTypeDto, RoleDto,
+};
 use crate::domain::entities::folder::Folder;
 use crate::domain::services::authorization::ResourceKind;
 use chrono::{DateTime, Utc};
@@ -326,6 +328,26 @@ impl FolderResourceCursor {
 
 impl PageCursor for FolderResourceCursor {}
 
+/// Query parameters for `GET /api/folders/{id}/ancestors`.
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct AncestorsQuery {
+    /// Include every grant that reaches this folder — its own, each
+    /// visible ancestor's, and the drive's — in `effective_grants`.
+    /// Default `false`.
+    ///
+    /// **Raises the permission the endpoint requires** from `Read` to
+    /// `Share`: the breadcrumb only needs the chain, but listing who
+    /// else holds access is what `Permission::Share` gates everywhere
+    /// else. Enforced in `get_ancestors_with_perms`, not here.
+    ///
+    /// Send the literal `true` / `false`. `serde_urlencoded` rejects
+    /// `1`, `yes` and `on` outright rather than guessing, and the
+    /// whole query struct fails to deserialize when it does — so a
+    /// truthy-looking `?include_grants=1` is a 400, not a silent false.
+    #[serde(default)]
+    pub include_grants: bool,
+}
+
 /// Query parameters for `GET /api/folders/{id}/resources`.
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct FolderResourcesQuery {
@@ -513,4 +535,76 @@ pub struct AccessSourceSubjectDto {
 pub struct FolderAncestorsDto {
     pub ancestors: Vec<FolderAncestorDto>,
     pub access_source: AccessSourceDto,
+    /// Every grant that reaches the leaf: its own, each visible
+    /// ancestor's, and the drive's. Answers "who can get at this
+    /// folder, and through what?" — a question the per-resource grant
+    /// listing cannot, because it only ever reports direct rows.
+    ///
+    /// **Present only for `?include_grants=true`.** Omitted otherwise
+    /// because the breadcrumb calls this endpoint on every folder
+    /// navigation and must not start paying for a grants query it never
+    /// reads.
+    ///
+    /// No separate "source" field: each [`GrantDto`] already names the
+    /// resource it sits on, so a client tells direct from inherited by
+    /// comparing `resource.id` against the leaf, and resolves an
+    /// inherited grant's display name from `ancestors` — which it
+    /// already has in the same response.
+    ///
+    /// Safe by construction: the ancestor walk drops folders the caller
+    /// cannot Read (see `get_ancestors_with_perms`), and this only
+    /// collects grants for ancestors that survived. A caller can never
+    /// learn of a folder — or of who holds access to one — that they
+    /// could not already see.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_grants: Option<Vec<GrantDto>>,
+    /// Public links that reach the leaf, from the same walk.
+    ///
+    /// Split out of `effective_grants` rather than mixed in: a link is
+    /// not a subject. It has no name to resolve, no role to change and
+    /// nobody to notify, and clients render it in a different place
+    /// entirely. Keeping both in one list made every consumer
+    /// re-partition by `subject.type` before it could draw anything.
+    ///
+    /// Same presence rule as `effective_grants` — only for
+    /// `?include_grants=true`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_links: Option<Vec<EffectiveLinkDto>>,
+}
+
+/// A public link on an ancestor folder (or the drive) that also reaches
+/// the requested folder.
+///
+/// Carries the share's own metadata — a token grant alone would give a
+/// client nothing to show but an opaque id.
+///
+/// **Not [`ShareDto`](crate::application::dtos::share_dto::ShareDto),
+/// deliberately.** That type carries `token` and `url` — the live
+/// secret — which is right when handing someone a link they own, and
+/// wrong here. The caller holds `Share` on a DESCENDANT; the ancestor's
+/// link may publish the whole ancestor tree, so "something above you is
+/// published, here is where" is the honest payload and a working URL is
+/// an escalation they never visited that folder to earn. Both fields
+/// are non-`Option` there, so reuse would mean `""` — a value a client
+/// could build a broken link from.
+///
+/// `expires_at` is the GRANT's, not the share row's. The two can
+/// diverge, and the grant is what actually gates access.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct EffectiveLinkDto {
+    /// `storage.role_grants.id` of the token grant. Stable list key.
+    pub grant_id: Uuid,
+    /// The share this link belongs to (`storage.shares.id`, which is the
+    /// token grant's subject).
+    pub share_id: Uuid,
+    /// Operator-given link name. `None` when the creator never set one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Whether opening the link requires a password.
+    pub has_password: bool,
+    /// Where the link lives — the folder or drive carrying the grant.
+    /// Clients resolve a folder's display name from `ancestors`.
+    pub resource: ResourceDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
 }

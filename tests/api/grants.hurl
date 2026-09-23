@@ -1439,6 +1439,278 @@ HTTP 200
 
 
 # ════════════════════════════════════════════════════════════════════
+# Phase 3F — Effective grants: GET /api/folders/{id}/ancestors
+#            ?include_grants=true
+# ════════════════════════════════════════════════════════════════════
+# The share dialog answers "who can reach this folder?", which the
+# per-resource grant listing cannot: `GET /api/grants` reports only
+# rows sitting ON the resource, while access mostly arrives by cascade
+# from an ancestor or the drive. The ancestors endpoint grew a flag
+# that returns the whole picture.
+#
+# Three properties are worth pinning, and they fail in different ways:
+#
+#   * the flag RAISES the required permission from Read to Share. Miss
+#     that and any viewer can enumerate an access list — silently, with
+#     a 200.
+#   * inherited grants actually come back, tagged with the resource
+#     they sit on. That is the feature.
+#   * the walk's visibility trim still bounds the result. This one is
+#     inherited from `get_ancestors_with_perms` rather than written by
+#     the feature, which is exactly why it needs a test: nothing here
+#     would notice if the trim changed underneath it.
+#
+# Fixture: a three-level tree, self-contained (unique names) like the
+# rest of this file.
+#
+#     eg-root   ← grant: dave (viewer)         + a public link
+#       eg-mid  ← grant: dave (viewer), eve (owner)
+#         eg-leaf   ← the folder under test, no grants of its own
+#
+# Eve holds Share on eg-mid and NOTHING above it. That gap is the
+# fixture's whole point — see 3F.5.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/folders
+Authorization: Bearer {{alice_token}}
+Content-Type: application/json
+{ "name": "eg-root", "parent_id": "{{alice_home_id}}" }
+
+HTTP 201
+[Captures]
+eg_root_id: jsonpath "$.id"
+
+
+POST {{base_url}}/api/folders
+Authorization: Bearer {{alice_token}}
+Content-Type: application/json
+{ "name": "eg-mid", "parent_id": "{{eg_root_id}}" }
+
+HTTP 201
+[Captures]
+eg_mid_id: jsonpath "$.id"
+
+
+POST {{base_url}}/api/folders
+Authorization: Bearer {{alice_token}}
+Content-Type: application/json
+{ "name": "eg-leaf", "parent_id": "{{eg_mid_id}}" }
+
+HTTP 201
+[Captures]
+eg_leaf_id: jsonpath "$.id"
+
+
+# Grants. Dave gets Viewer on eg-mid — Read but NOT Share, which is
+# the caller the permission test needs. Eve gets Owner on eg-mid (so
+# she holds Share there) and Viewer on eg-root.
+POST {{base_url}}/api/grants
+Authorization: Bearer {{alice_token}}
+Content-Type: application/json
+{
+  "subject":  { "type": "user",   "id": "{{dave_user_id}}" },
+  "resource": { "type": "folder", "id": "{{eg_mid_id}}" },
+  "role": "viewer"
+}
+
+HTTP 201
+
+
+POST {{base_url}}/api/grants
+Authorization: Bearer {{alice_token}}
+Content-Type: application/json
+{
+  "subject":  { "type": "user",   "id": "{{eve_user_id}}" },
+  "resource": { "type": "folder", "id": "{{eg_mid_id}}" },
+  "role": "owner"
+}
+
+HTTP 201
+
+
+# On eg-ROOT, deliberately NOT eve. Eve must hold nothing above eg-mid
+# or the walk stops trimming for her and 3F.5 tests nothing — a grant
+# on an ancestor is precisely what makes that ancestor visible.
+POST {{base_url}}/api/grants
+Authorization: Bearer {{alice_token}}
+Content-Type: application/json
+{
+  "subject":  { "type": "user",   "id": "{{dave_user_id}}" },
+  "resource": { "type": "folder", "id": "{{eg_root_id}}" },
+  "role": "viewer"
+}
+
+HTTP 201
+
+
+# A password-protected public link on eg-root. Its token grant is what
+# `effective_links` reports, joined back to `storage.shares` for the
+# name and password flag a bare grant row cannot supply.
+POST {{base_url}}/api/shares
+Authorization: Bearer {{alice_token}}
+Content-Type: application/json
+{
+  "item_id":   "{{eg_root_id}}",
+  "item_name": "eg-root public link",
+  "item_type": "folder",
+  "password":  "LinkPassword1!"
+}
+
+HTTP 201
+
+
+# ─────────────────────────────────────────────────────────────
+# 3F.1 — Without the flag, neither collection is emitted.
+#
+# The breadcrumb calls this endpoint on every folder navigation and
+# must not start paying for a grants query. `not exists` rather than
+# an empty-array check: the fields are `skip_serializing_if`, so
+# absent and empty are different answers and only absent proves the
+# work was skipped.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/folders/{{eg_leaf_id}}/ancestors
+Authorization: Bearer {{alice_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.effective_grants" not exists
+jsonpath "$.effective_links" not exists
+
+
+# ─────────────────────────────────────────────────────────────
+# 3F.2 — With the flag, the owner sees grants from BOTH ancestors,
+#        each tagged with the resource it sits on.
+#
+# eg-leaf carries no grants of its own, so everything here arrived by
+# cascade — which is the whole point: `GET /api/grants` on eg-leaf
+# would return an empty list for a folder three people can open.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/folders/{{eg_leaf_id}}/ancestors?include_grants=true
+Authorization: Bearer {{alice_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.effective_grants" exists
+# `exists` / `not exists`, never `count`, on a filtered result.
+#
+# A jsonpath filter matching exactly ONE element collapses to that
+# element on this Hurl version, so `count` fails with "invalid filter
+# input type — actual: object, expected: list". The match count here
+# depends on fixture state, so any assertion that assumes a list is a
+# coin flip. `exists` answers the same question and types cleanly
+# whether the result is an object, a list, or nothing.
+#
+# Both people and both levels must appear, or "who can reach this?"
+# under-reports for anyone granted above the folder being asked about.
+jsonpath "$.effective_grants[?(@.subject.id == '{{dave_user_id}}')]" exists
+jsonpath "$.effective_grants[?(@.subject.id == '{{eve_user_id}}')]" exists
+jsonpath "$.effective_grants[?(@.resource.id == '{{eg_mid_id}}')]" exists
+jsonpath "$.effective_grants[?(@.resource.id == '{{eg_root_id}}')]" exists
+
+
+# ─────────────────────────────────────────────────────────────
+# 3F.3 — The public link on eg-root reaches eg-leaf, and arrives with
+#        its own name and password flag.
+#
+# Separate from `effective_grants` on purpose: a link is not a subject.
+# The name is why this is a join and not just the grant row — a token
+# grant alone gives a client nothing to show but an opaque id.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/folders/{{eg_leaf_id}}/ancestors?include_grants=true
+Authorization: Bearer {{alice_token}}
+
+HTTP 200
+[Asserts]
+# `body contains` for the metadata rather than `$.effective_links[0]`:
+# indexing assumes a list, and a single-element result collapses to an
+# object here (same trap as the filters above).
+body contains "eg-root public link"
+body contains "\"has_password\":true"
+jsonpath "$.effective_links[?(@.resource.id == '{{eg_root_id}}')]" exists
+# And it is NOT mixed in among the people — a link has no role to set
+# and nobody to notify, so a client rendering it as a member would
+# offer controls that cannot work.
+jsonpath "$.effective_grants[?(@.subject.type == 'token')]" not exists
+
+
+# ─────────────────────────────────────────────────────────────
+# 3F.4 — THE PERMISSION TEST. Read earns the chain; only Share earns
+#        the access list.
+#
+# Dave holds Viewer on eg-mid, which cascades Read to eg-leaf. The
+# plain call must keep working — he needs a breadcrumb. The same URL
+# with the flag must be refused, or every viewer in the system can
+# enumerate who else has access.
+#
+# 403, not 404: he just proved Read on this folder, so its existence
+# is already known to him and the anti-enumeration shape would be
+# theatre. Graduated denial — see the `require` helper.
+#
+# This is the assertion to keep if any are ever dropped. Nothing else
+# guards the second `require` in `get_ancestors_with_perms`; remove it
+# and every other test in this suite still passes.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/folders/{{eg_leaf_id}}/ancestors
+Authorization: Bearer {{dave_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.effective_grants" not exists
+
+
+GET {{base_url}}/api/folders/{{eg_leaf_id}}/ancestors?include_grants=true
+Authorization: Bearer {{dave_token}}
+
+HTTP 403
+
+
+# ─────────────────────────────────────────────────────────────
+# 3F.5 — The visibility trim still bounds the result.
+#
+# Eve holds Owner on eg-mid — so she passes 3F.4's Share gate — and
+# nothing at all above it. Asking about eg-mid she must see the grants
+# there and NOT eg-root's, because the walk drops ancestors she cannot
+# Read before any grant is collected.
+#
+# The property comes from `get_ancestors_with_perms`, not from this
+# feature — which is exactly why it is pinned here. If the trim ever
+# loosened, this endpoint would start handing out folder names, and
+# folder access lists, from above a caller's reach.
+#
+# NOTE the gate is leaf-only, and that is deliberate: a caller with
+# Share on the leaf DOES see the access lists of ancestors they can
+# merely Read, because those grants cascade down and govern the leaf —
+# "who can reach this folder" would be a lie without them. What they
+# never see is an ancestor they cannot Read at all. An earlier draft of
+# this test gave eve a Viewer grant on eg-root to dramatise the point
+# and proved the opposite: the grant made eg-root readable, so it
+# stayed in her walk and its access list came with it.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/folders/{{eg_mid_id}}/ancestors?include_grants=true
+Authorization: Bearer {{eve_token}}
+
+HTTP 200
+[Asserts]
+# Present: what lives on eg-mid, her boundary.
+jsonpath "$.effective_grants[?(@.resource.id == '{{eg_mid_id}}')]" exists
+# Absent: anything anchored above it — including her OWN viewer grant
+# on eg-root, which is the sharpest form of the test. It exists, it is
+# hers, and she still must not see it from here, because the folder it
+# sits on is outside her view.
+jsonpath "$.effective_grants[?(@.resource.id == '{{eg_root_id}}')]" not exists
+# And the public link, for the same reason: naming it would disclose
+# that eg-root exists and is published.
+jsonpath "$.effective_links[?(@.resource.id == '{{eg_root_id}}')]" not exists
+
+
+# Teardown for this phase. The tree carries grants and a share; the
+# lifecycle trigger clears both when the root goes.
+DELETE {{base_url}}/api/folders/{{eg_root_id}}
+Authorization: Bearer {{alice_token}}
+
+HTTP 204
+
+
+# ════════════════════════════════════════════════════════════════════
 # Phase 3E — Lifecycle cleanup. Alice deletes the batch-test root.
 #            Trigger removes all of frank's grants.
 # ════════════════════════════════════════════════════════════════════

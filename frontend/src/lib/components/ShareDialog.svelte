@@ -29,6 +29,9 @@
 		searchRecipients,
 		type Recipient
 	} from '$lib/api/endpoints/recipients';
+	import { getFolderAncestorsWithGrants } from '$lib/api/endpoints/folders';
+	import { getFile } from '$lib/api/endpoints/files';
+	import { resolve } from '$app/paths';
 	import type { ShareItem } from '$lib/api/types';
 	import type { GrantResourceType } from '$lib/api/endpoints/grants';
 	import Icon from '$lib/icons/Icon.svelte';
@@ -63,9 +66,34 @@
 		 * tab would suggest a capability that doesn't exist.
 		 */
 		allowLinks?: boolean;
+		/**
+		 * Re-point the dialog at another resource, without closing it.
+		 *
+		 * Only the source chip on an inherited row uses this: that chip
+		 * also navigates (its `href` moves the page behind the dialog to
+		 * the source folder), and on `/files` that navigation keeps the
+		 * SAME route — so the page never remounts and `item` would stay
+		 * pinned to the folder the user started from. The dialog would
+		 * sit there still showing the inherited, greyed rows, which is
+		 * exactly the wrong half of the point: the user clicked to go
+		 * somewhere they can EDIT the grant.
+		 *
+		 * Pages that own a share target wire this to reassign it; the
+		 * load effect keys off `item`, so re-pointing reloads by itself.
+		 * Optional because pages reached from a different route unmount
+		 * on navigation anyway and have nothing stale to fix.
+		 */
+		onretarget?: (target: Target) => void;
 	}
 
-	let { open = $bindable(false), item, onshared, onchange, allowLinks = true }: Props = $props();
+	let {
+		open = $bindable(false),
+		item,
+		onshared,
+		onchange,
+		allowLinks = true,
+		onretarget
+	}: Props = $props();
 
 	// When the public-link tab is hidden, force the People view — otherwise a
 	// caller toggling `allowLinks` between renders could land on the now-hidden
@@ -98,8 +126,59 @@
 		/** Representative grant id for notify (any grant on this subject). */
 		notifyGrantId?: string;
 		expiry: string | null; // YYYY-MM-DD or null
+		/**
+		 * Set when this access comes from somewhere ABOVE the item — an
+		 * ancestor folder or the drive — rather than from a grant on the
+		 * item itself. Undefined means direct.
+		 *
+		 * Inherited rows are read-only here: the grant lives on another
+		 * resource, so editing it from this dialog would silently mutate
+		 * a different folder's sharing. The row links to the source
+		 * instead.
+		 */
+		inherited?: {
+			/** Folder or drive name, for the source chip. */
+			label: string;
+			/**
+			 * Where the chip goes. Exactly one is set.
+			 *
+			 * `folderId` → `/files/{id}`, where the grant is direct and
+			 * this same dialog can edit it — so that case also re-points
+			 * the dialog. `driveId` → `/config/drive/{uuid}`, which runs
+			 * the drive-kind dialog instead; navigation only, because
+			 * drive membership is a different grant type with its own
+			 * role vocabulary and no public links.
+			 */
+			folderId: string | null;
+			driveId: string | null;
+		};
 	}
+	/**
+	 * A public link on an ancestor folder (or the drive) that also
+	 * reaches this item.
+	 *
+	 * Deliberately thinner than {@link ShareItem}: the effective-grants
+	 * walk returns the token GRANT, not the share row, so there is no
+	 * link name, password flag or URL here. That is the honest shape —
+	 * this section exists to say "this is publicly reachable, and here is
+	 * where that was decided", and the chip goes to the folder that owns
+	 * the link so it can be inspected or revoked at its source.
+	 */
+	interface InheritedLink {
+		grantId: string;
+		/** The link's own name, as its creator set it. */
+		name: string;
+		hasPassword: boolean;
+		/** Source folder or drive name. */
+		label: string;
+		/** See `Member.inherited` — exactly one of these is set. */
+		folderId: string | null;
+		driveId: string | null;
+		expiry: string | null;
+	}
+
 	let members = $state<Member[]>([]);
+	let inheritedLinks = $state<InheritedLink[]>([]);
 	let grantsLoading = $state(false);
 	let query = $state('');
 	let results = $state<Recipient[]>([]);
@@ -144,13 +223,127 @@
 		}));
 	}
 
+	/**
+	 * Inherited access: grants sitting on an ancestor folder or the
+	 * drive, which reach this item by cascade.
+	 *
+	 * `walkFrom` is where the climb starts — the folder itself when
+	 * sharing a folder, the PARENT folder when sharing a file.
+	 * `selfFolderId` names the one folder whose grants are direct and
+	 * must not be double-listed; a file passes none, because the walk
+	 * begins above it and every grant it returns is genuinely inherited.
+	 *
+	 * Drives are excluded by the caller: a drive is the top of the chain
+	 * and inherits from nothing.
+	 *
+	 * Failure is swallowed on purpose: the direct list answers "who did I
+	 * share this with", and losing the inherited half should degrade the
+	 * dialog, not empty it. The likely failure is a 403 —
+	 * `include_grants=true` requires Share, and a caller can reach this
+	 * dialog with less.
+	 */
+	async function loadInherited(
+		walkFrom: string,
+		selfFolderId?: string
+	): Promise<{ people: Member[]; links: InheritedLink[] }> {
+		try {
+			const chain = await getFolderAncestorsWithGrants(walkFrom);
+			const grants = chain.effective_grants ?? [];
+			const nameById = new Map(chain.ancestors.map((a) => [a.id, a.name]));
+			const driveName = chain.access_source.drive?.name ?? t('share.the_drive', 'the drive');
+
+			// Drop grants on the item itself — those are the direct ones,
+			// already loaded, and listing them twice would double every row.
+			const inheritedGrants = grants.filter(
+				(g) => !(selfFolderId && g.resource.type === 'folder' && g.resource.id === selfFolderId)
+			);
+
+			// Public links on an ancestor. They belong on the Link tab, not
+			// among people — a link is not a subject you can name, notify
+			// or assign a role to.
+			// They arrive pre-separated, carrying their own name and
+			// password flag — a bare token grant would leave nothing to
+			// show but an opaque id.
+			const links: InheritedLink[] = (chain.effective_links ?? [])
+				.filter(
+					(l) => !(selfFolderId && l.resource.type === 'folder' && l.resource.id === selfFolderId)
+				)
+				.map((l) => ({
+					grantId: l.grant_id,
+					name: l.name || t('share.sharedLink', 'Shared link'),
+					hasPassword: l.has_password,
+					label: l.resource.type === 'drive' ? driveName : (nameById.get(l.resource.id) ?? ''),
+					folderId: l.resource.type === 'drive' ? null : l.resource.id,
+					driveId: l.resource.type === 'drive' ? l.resource.id : null,
+					expiry: isoToDate(l.expires_at)
+				}));
+
+			const people = inheritedGrants.flatMap((g) => {
+				if (g.subject.type === 'token') return [];
+				const isDrive = g.resource.type === 'drive';
+				return [
+					{
+						subject: g.subject,
+						recipient: resolveRecipient(g.subject.type as 'user' | 'group', g.subject.id),
+						role: displayRole(g.role),
+						grantIds: [g.id],
+						expiry: isoToDate(g.expires_at),
+						inherited: {
+							label: isDrive ? driveName : (nameById.get(g.resource.id) ?? ''),
+							folderId: isDrive ? null : g.resource.id,
+							driveId: isDrive ? g.resource.id : null
+						}
+					}
+				];
+			});
+
+			return { people, links };
+		} catch {
+			return { people: [], links: [] };
+		}
+	}
+
+	/**
+	 * Pick the walk start for `item`'s kind.
+	 *
+	 * - **folder** — climb from itself, excluding its own grants (direct).
+	 * - **file** — climb from its parent folder. That id is not on
+	 *   `Target` (`{id, name, kind}`), so it costs one `getFile` first.
+	 *   Worth it: a file's access is overwhelmingly inherited, so without
+	 *   this the dialog answers "who can see this document?" with just
+	 *   the handful of grants placed directly on it — which usually
+	 *   means an empty list next to a file half the company can read.
+	 * - **drive** — top of the chain, nothing above it to inherit from.
+	 */
+	async function loadInheritedFor(
+		target: Target
+	): Promise<{ people: Member[]; links: InheritedLink[] }> {
+		if (target.kind === 'folder') return loadInherited(target.id, target.id);
+		if (target.kind === 'file') {
+			try {
+				const file = await getFile(target.id);
+				// No `selfFolderId`: the walk starts at the parent, so the
+				// parent's own grants are inherited by the file, not direct.
+				return await loadInherited(file.folder_id);
+			} catch {
+				return { people: [], links: [] };
+			}
+		}
+		return { people: [], links: [] };
+	}
+
 	async function loadGrants() {
 		if (!item) return;
 		grantsLoading = true;
 		try {
 			await ensureResolvers();
 			directoryAvailable = isDirectoryAvailable();
-			members = groupGrants(await fetchGrantsForResource(item.kind, item.id));
+			const direct = groupGrants(await fetchGrantsForResource(item.kind, item.id));
+			const inherited = await loadInheritedFor(item);
+			// Direct first within each role group, so the rows a user can
+			// actually act on sit above the read-only ones.
+			members = [...direct, ...inherited.people];
+			inheritedLinks = inherited.links;
 		} catch (e) {
 			errorToast(e);
 		} finally {
@@ -284,6 +477,17 @@
 	let newLinkName = $state('');
 	let password = $state('');
 	let expiresAt = $state<string | null>(null);
+
+	// Tab counts. Declared here, after `shares` — both badges read state
+	// that lives on either side of the People/Link split.
+	//
+	// Inherited entries count. The question a badge answers is "can
+	// anyone reach this?", and access through an ancestor counts exactly
+	// as much as access granted here; a tab reading (0) beside a folder
+	// half the company can open would be the same lie the old "No public
+	// links yet." told.
+	const peopleCount = $derived(members.length);
+	const linkCount = $derived(shares.length + inheritedLinks.length);
 
 	async function loadShares() {
 		// The share-link API only supports file/folder items; the Link tab
@@ -461,6 +665,15 @@
 					onclick={() => (tab = 'people')}
 				>
 					{t('share.people', 'People')}
+					<!--
+						Counts so both answers are visible without opening either
+						tab — the common question is "is this shared at all?", and
+						that used to cost a click into each. Inherited entries are
+						included: they are access, and a tab reading (0) beside a
+						folder half the company can reach would be the same lie the
+						old "No public links yet." told.
+					-->
+					{#if peopleCount > 0}<span class="tab-badge">{peopleCount}</span>{/if}
 				</button>
 				<button
 					role="tab"
@@ -469,6 +682,7 @@
 					onclick={() => (tab = 'link')}
 				>
 					{t('share.public_link', 'Public link')}
+					{#if linkCount > 0}<span class="tab-badge">{linkCount}</span>{/if}
 				</button>
 			</div>
 		{/if}
@@ -547,9 +761,17 @@
 							<span class="member-group__badge">{group.members.length}</span>
 						</div>
 						<ul class="members">
-							{#each group.members as m (m.subject.type + m.subject.id)}
+							<!--
+								Keyed by subject AND source: the same person can hold a
+								direct grant here and an inherited one from above, and
+								those are two distinct rows. Keying on subject alone
+								would collapse them and Svelte would reuse one row for
+								both.
+							-->
+							{#each group.members as m (m.subject.type + m.subject.id + (m.inherited?.folderId ?? (m.inherited ? 'drive' : 'direct')))}
 								<li
 									class="member"
+									class:member--inherited={m.inherited}
 									class:member--expired={m.expiry && new Date(m.expiry) < new Date()}
 								>
 									{#if m.subject.type === 'user'}
@@ -567,27 +789,92 @@
 												>{/if}
 										</span>
 									{/if}
-									{@render expiryChip(m.expiry, (v) => changeMemberExpiry(m, v))}
-									<select
-										class="role-select"
-										data-testid={`share-dialog-member-role-${m.subject.type}-${m.subject.id}`}
-										value={m.role}
-										onchange={(e) => changeRole(m, e.currentTarget.value as ShareRole)}
-									>
-										{#each ROLES as r (r.v)}<option value={r.v}>{r.l}</option>{/each}
-									</select>
-									<button
-										class="btn-action"
-										data-testid={`share-dialog-member-notify-${m.subject.type}-${m.subject.id}`}
-										title={t('share.notifyByEmail', 'Notify by email')}
-										onclick={() => notifyMember(m)}><Icon name="paper-plane" /></button
-									>
-									<button
-										class="btn-action btn-action--delete"
-										data-testid={`share-dialog-member-remove-${m.subject.type}-${m.subject.id}`}
-										title={t('share.revoke', 'Remove')}
-										onclick={() => removeMember(m)}><Icon name="user-xmark" /></button
-									>
+									{#if m.inherited}
+										<!--
+											Inherited access is shown, never edited. The grant
+											lives on another resource, so a role change or a
+											revoke here would quietly alter a DIFFERENT folder's
+											sharing — and would surprise whoever set it. The chip
+											is the way through: it opens that folder, where the
+											grant is direct and editable.
+
+											Rendering the controls disabled instead was the
+											alternative; a link that leads somewhere beats three
+											dead controls that explain nothing.
+										-->
+										{#if m.inherited.folderId}
+											{@const src = m.inherited}
+											<!--
+												Link AND re-target. The href moves the page behind
+												the dialog (and keeps middle-click / open-in-new-tab
+												working); `onretarget` re-points the dialog itself,
+												which a same-route navigation would otherwise leave
+												stranded on the folder the user came from.
+											-->
+											<a
+												class="member__source"
+												href={resolve(`/files/${src.folderId}`)}
+												data-testid={`share-dialog-member-source-${m.subject.type}-${m.subject.id}`}
+												title={t(
+													'share.inherited_from_folder_title',
+													{ name: src.label },
+													'Inherited from folder "{{name}}" — open it to change this'
+												)}
+												onclick={() =>
+													src.folderId &&
+													onretarget?.({ id: src.folderId, name: src.label, kind: 'folder' })}
+											>
+												<Icon name="level-up-alt" />
+												<span>{m.inherited.label}</span>
+											</a>
+										{:else if m.inherited.driveId}
+											{@const did = m.inherited.driveId}
+											<!--
+												Drives go to their config page, not `/files`: drive
+												membership is a different grant type — its own role
+												ladder, no public links — and that page runs the
+												drive-kind dialog. No `onretarget`, for the same
+												reason: re-pointing THIS dialog at a drive would
+												offer folder controls for a resource that does not
+												take them.
+											-->
+											<a
+												class="member__source"
+												href={resolve(`/config/drive/${did}`)}
+												data-testid={`share-dialog-member-source-${m.subject.type}-${m.subject.id}`}
+												title={t(
+													'share.inherited_from_drive_title',
+													{ name: m.inherited.label },
+													'Inherited from drive "{{name}}" — open its settings to change this'
+												)}
+											>
+												<Icon name="hdd" />
+												<span>{m.inherited.label}</span>
+											</a>
+										{/if}
+									{:else}
+										{@render expiryChip(m.expiry, (v) => changeMemberExpiry(m, v))}
+										<select
+											class="role-select"
+											data-testid={`share-dialog-member-role-${m.subject.type}-${m.subject.id}`}
+											value={m.role}
+											onchange={(e) => changeRole(m, e.currentTarget.value as ShareRole)}
+										>
+											{#each ROLES as r (r.v)}<option value={r.v}>{r.l}</option>{/each}
+										</select>
+										<button
+											class="btn-action"
+											data-testid={`share-dialog-member-notify-${m.subject.type}-${m.subject.id}`}
+											title={t('share.notifyByEmail', 'Notify by email')}
+											onclick={() => notifyMember(m)}><Icon name="paper-plane" /></button
+										>
+										<button
+											class="btn-action btn-action--delete"
+											data-testid={`share-dialog-member-remove-${m.subject.type}-${m.subject.id}`}
+											title={t('share.revoke', 'Remove')}
+											onclick={() => removeMember(m)}><Icon name="user-xmark" /></button
+										>
+									{/if}
 								</li>
 							{/each}
 						</ul>
@@ -646,7 +933,19 @@
 					<div class="skeleton__line"></div>
 				</div>
 			{:else if shares.length === 0}
-				<p class="status">{t('share.none', 'No public links yet.')}</p>
+				<!--
+					Deliberately narrower than it used to read. "No public
+					links yet." was a statement about EXPOSURE, and it was
+					wrong whenever an ancestor carried a link: the item was
+					publicly reachable while the dialog said it wasn't. It
+					now only claims nothing was published *here*, and the
+					inherited section below supplies the rest.
+				-->
+				<p class="status">
+					{inheritedLinks.length > 0
+						? t('share.none_direct', 'No public link on this item itself.')
+						: t('share.none', 'No public links yet.')}
+				</p>
 			{:else}
 				<ul class="links">
 					{#each shares as s (s.id)}
@@ -691,6 +990,80 @@
 						</li>
 					{/each}
 				</ul>
+			{/if}
+
+			<!--
+				Public links on an ancestor. These reach this item too, so
+				omitting them would let the tab imply the item is private
+				when it is on the open internet.
+
+				Read-only, like inherited people: the link belongs to
+				another folder, and deleting it from here would revoke
+				access to everything else under that folder. The chip goes
+				to the source instead. No URL shown — the walk returns the
+				token grant, not the share row, so there is no link to copy
+				without a second lookup against a folder the caller may not
+				be entitled to enumerate.
+			-->
+			{#if inheritedLinks.length > 0}
+				<section class="inherited-links">
+					<h3 class="inherited-links__title">
+						<Icon name="link" />
+						{t('share.inherited_links_title', 'Also reachable through a public link')}
+					</h3>
+					<ul class="links">
+						{#each inheritedLinks as l (l.grantId)}
+							<li class="link-row link-row--inherited">
+								<!--
+									Same shape as a direct link row above — lock glyph when
+									password-protected, then the link's own name — which is
+									also the shape of a person row: identity on the left,
+									source chip on the right. These rows differ from direct
+									ones in what you can DO with them, not in how they read.
+								-->
+								<span class="link-row__title">
+									<Icon name={l.hasPassword ? 'lock' : 'link'} />
+									<span class="link-row__name">{l.name}</span>
+								</span>
+								{#if l.expiry}
+									<span class="link-row__expiry">{l.expiry}</span>
+								{/if}
+								{#if l.folderId}
+									{@const fid = l.folderId}
+									<a
+										class="member__source"
+										href={resolve(`/files/${fid}`)}
+										data-testid={`share-dialog-inherited-link-source-${l.grantId}`}
+										title={t(
+											'share.inherited_link_manage',
+											{ name: l.label },
+											'Open “{{name}}” to manage or remove this link'
+										)}
+										onclick={() => onretarget?.({ id: fid, name: l.label, kind: 'folder' })}
+									>
+										<Icon name="level-up-alt" />
+										<span>{l.label}</span>
+									</a>
+								{:else if l.driveId}
+									{@const did = l.driveId}
+									<a
+										class="member__source"
+										href={resolve(`/config/drive/${did}`)}
+										data-testid={`share-dialog-inherited-link-source-${l.grantId}`}
+										title={t(
+											'share.inherited_link_on_drive_title',
+											{ name: l.label },
+											'This link lives on drive “{{name}}” — open its settings'
+										)}
+									>
+										<Icon name="hdd" />
+										<span>{l.label}</span>
+									</a>
+								{/if}
+							</li>
+						{/each}
+					</ul>
+				</section>
 			{/if}
 		{/if}
 	</div>
@@ -842,6 +1215,89 @@
 
 	.member--expired {
 		opacity: 0.6;
+	}
+
+	/* Inherited access. Muted rather than hidden: these people CAN reach
+	   the folder, so leaving them out would answer "who has access?"
+	   wrongly — but they are not editable here, and the weight difference
+	   is what says so before anyone clicks. */
+	.member--inherited {
+		opacity: 0.75;
+	}
+
+	/* Where the inherited grant actually lives. A link when it is a
+	   folder (go there and it becomes editable); flat text for a drive,
+	   which has no browsable URL of its own — its grants are managed in
+	   the drive settings. */
+	.member__source {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1);
+		max-width: 14ch;
+		padding: var(--space-0-5) var(--space-1);
+		border-radius: var(--radius-sm);
+		background: var(--color-bg-muted);
+		color: var(--color-text-muted);
+		font-size: var(--text-xs);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		text-decoration: none;
+	}
+
+	a.member__source:hover {
+		color: var(--color-accent);
+		background: var(--color-accent-bg);
+	}
+
+	/* Inherited public links. Separated from the direct list by a rule
+	   rather than a tab of their own: they answer the same question
+	   ("is this reachable by link?") and splitting them would let
+	   someone read only the first half. */
+	/* Count pill in a tab label. Sized off the tab's own font so it
+	   tracks the label rather than floating at a fixed size. */
+	.tab-badge {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 1.5em;
+		margin-left: var(--space-1);
+		padding: 0 0.4em;
+		border-radius: 999px;
+		background: var(--color-bg-muted);
+		color: var(--color-text-muted);
+		font-size: 0.85em;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.tabs button[aria-selected='true'] .tab-badge {
+		background: var(--color-accent-bg);
+		color: var(--color-accent);
+	}
+
+	.inherited-links {
+		margin-top: var(--space-4);
+		padding-top: var(--space-3);
+		border-top: 1px solid var(--color-border);
+	}
+
+	.inherited-links__title {
+		display: flex;
+		align-items: center;
+		gap: var(--space-1);
+		margin: 0 0 var(--space-2);
+		font-size: var(--text-sm);
+		font-weight: var(--weight-medium);
+		color: var(--color-text-muted);
+	}
+
+	.link-row--inherited {
+		opacity: 0.75;
+	}
+
+	.link-row__expiry {
+		font-size: var(--text-xs);
+		color: var(--color-text-muted);
 	}
 
 	.member__label {

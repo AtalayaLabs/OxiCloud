@@ -9,6 +9,7 @@
 //! recursive CTEs or N+1 queries.
 
 use crate::domain::services::authorization::Subject;
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -108,6 +109,36 @@ pub struct AncestorRow {
     pub depth: i32,
     pub has_folder_grant: bool,
     pub has_drive_grant: bool,
+}
+
+/// Raw `storage.role_grants` row projected by
+/// [`FolderDbRepository::fetch_grants_on_resources`].
+///
+/// Deliberately flat strings rather than the domain `Grant`: this repo
+/// has no business constructing `Subject` / `Resource` enums, and the
+/// service already owns that parsing for the neighbouring ancestor-walk
+/// rows. `role` arrives `::text`-cast for the same reason every other
+/// query here does — the ENUM has no sqlx decoder.
+#[derive(Debug, sqlx::FromRow)]
+pub struct GrantRowRaw {
+    pub id: Uuid,
+    pub subject_type: String,
+    pub subject_id: Uuid,
+    pub resource_type: String,
+    pub resource_id: Uuid,
+    pub role: String,
+    pub granted_by: Uuid,
+    pub granted_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    /// Public-link name, for `subject_type = 'token'` rows only.
+    ///
+    /// A token grant's `subject_id` IS the `storage.shares.id` it was
+    /// minted for, which is what the LEFT JOIN keys on. Null for user
+    /// and group grants (no join partner), and also null for a link
+    /// whose creator never named it — `item_name` is nullable.
+    pub share_name: Option<String>,
+    /// Whether that link is password-protected. Null on non-token rows.
+    pub share_has_password: Option<bool>,
 }
 
 /// Type alias for paginated folder rows (includes total_count as
@@ -1610,6 +1641,58 @@ impl FolderDbRepository {
         .fetch_optional(self.pool())
         .await
         .map_err(|e| DomainError::internal_error("FolderDb", format!("drive header lookup: {e}")))
+    }
+
+    /// Every grant sitting on any of `folder_ids`, plus every grant on
+    /// `drive_id` — the raw material for "who can reach this folder, and
+    /// through what?".
+    ///
+    /// **Authorization must be verified by the caller.** There is no
+    /// subject filter here by design: the point is to report grants held
+    /// by OTHER people. Two obligations follow, both discharged in
+    /// `get_ancestors_with_perms`:
+    ///
+    /// 1. pass only ancestors that survived the visibility trim, so this
+    ///    cannot name a folder the caller may not Read;
+    /// 2. require `Permission::Share` on the leaf first — `Read` is not
+    ///    enough to enumerate an access list.
+    ///
+    /// Expired rows are filtered: a lapsed grant confers nothing, and
+    /// showing it in an access list would misreport who has access.
+    ///
+    /// Ordered strongest-role-first, exploiting the `storage.grant_role`
+    /// ENUM's declaration order (owner → viewer), so a client renders the
+    /// most privileged subjects at the top without re-sorting.
+    pub async fn fetch_grants_on_resources(
+        &self,
+        folder_ids: &[Uuid],
+        drive_id: Uuid,
+    ) -> Result<Vec<GrantRowRaw>, DomainError> {
+        sqlx::query_as::<_, GrantRowRaw>(
+            r#"
+            SELECT g.id, g.subject_type, g.subject_id,
+                   g.resource_type, g.resource_id,
+                   g.role::text AS role, g.granted_by, g.granted_at, g.expires_at,
+                   s.item_name AS share_name,
+                   (s.password_hash IS NOT NULL) AS share_has_password
+              FROM storage.role_grants g
+              LEFT JOIN storage.shares s
+                     ON g.subject_type = 'token' AND s.id = g.subject_id
+             WHERE (g.expires_at IS NULL OR g.expires_at > NOW())
+               AND (
+                     (g.resource_type = 'folder' AND g.resource_id = ANY($1))
+                  OR (g.resource_type = 'drive'  AND g.resource_id = $2)
+                   )
+             ORDER BY g.role ASC, g.granted_at DESC
+            "#,
+        )
+        .bind(folder_ids)
+        .bind(drive_id)
+        .fetch_all(self.pool())
+        .await
+        .map_err(|e| {
+            DomainError::internal_error("FolderDb", format!("effective grants lookup: {e}"))
+        })
     }
 
     /// Cursor-paginated combined listing of sub-folders and files inside

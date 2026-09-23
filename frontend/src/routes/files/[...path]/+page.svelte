@@ -2292,6 +2292,7 @@
 				folderId={currentId}
 				onDrop={(target, e) => onCrumbDrop(e, target)}
 				dragMime={DRAG_TYPE}
+				onShare={(id, name) => openShare('folder', id, name)}
 			/>
 		{/snippet}
 
@@ -2437,6 +2438,28 @@
 			// the row without waiting for the next listing refetch.
 			const row = orderedItems.find((it) => it.id === id);
 			if (row) row.is_shared = true;
+		}}
+		onretarget={(target) => {
+			// Clicking an inherited grant's source chip. Its href already
+			// navigates this page to that folder, but /files → /files is
+			// the same route, so nothing remounts and the dialog would
+			// keep showing the folder we just left — with the grant still
+			// greyed and uneditable. Re-pointing it makes the grant
+			// direct, which is the whole reason the user clicked.
+			//
+			// The chip only ever emits a folder — a drive has no
+			// browsable URL and renders as flat text, not a link — but
+			// `Target.kind` carries the wider grant vocabulary. Narrow
+			// instead of casting, so a future drive-linking chip fails
+			// here loudly rather than assigning an unbrowsable id.
+			//
+			// Rebuilt field-by-field rather than assigned whole: `Target`
+			// is a plain interface, not a discriminated union, so checking
+			// `target.kind` narrows the FIELD but leaves `target` itself
+			// typed as-is. Naming the fields is what carries the narrowed
+			// `kind` through.
+			if (target.kind === 'drive') return;
+			actionTarget = { id: target.id, name: target.name, kind: target.kind };
 		}}
 	/>
 {/if}
