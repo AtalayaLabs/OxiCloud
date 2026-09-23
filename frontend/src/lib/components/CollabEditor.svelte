@@ -1,4 +1,6 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
+	import Icon from '$lib/icons/Icon.svelte';
 	// Collaborative markdown editor.
 	//
 	// Mounts CodeMirror 6 with markdown syntax + the `y-codemirror.next`
@@ -306,8 +308,30 @@
 		 *  missing filename falls back to markdown highlighting (a
 		 *  safe superset for prose, does no harm on code). */
 		filename?: string;
+		/** Actions rendered on the left of the status row — the host
+		 *  decides what belongs there (download, open in a window,
+		 *  hand off to the office editor). Keeping them in this row
+		 *  rather than in a bar of their own means the editor chrome
+		 *  stays two bars deep, like the office editor's. */
+		toolbar?: Snippet;
 	}
-	let { fileId, filename }: Props = $props();
+	let { fileId, filename, toolbar }: Props = $props();
+
+	/** Who else has this file open, from the awareness registry. */
+	interface Peer {
+		id: number;
+		name: string;
+		color: string;
+	}
+	let peers = $state<Peer[]>([]);
+
+	/** Up to two letters for the avatar: initials of a two-word name,
+	 *  otherwise the first two characters. */
+	function initials(name: string): string {
+		const parts = name.trim().split(/\s+/).filter(Boolean);
+		if (parts.length > 1) return (parts[0][0] + parts[1][0]).toUpperCase();
+		return (parts[0] ?? '?').slice(0, 2).toUpperCase();
+	}
 
 	let syncState = $state<SyncState>('idle');
 	let container: HTMLDivElement | undefined = $state();
@@ -323,6 +347,26 @@
 	 *  up. Denied stays terminal (that's already a permanent state). */
 	const displayState = $derived<SyncState>(
 		messageBus.state === 'unavailable' && syncState !== 'denied' ? 'unavailable' : syncState
+	);
+
+	/** Tooltip for the state badge — the visible cue is the icon. */
+	const statusLabel = $derived(
+		displayState === 'idle'
+			? 'Ready'
+			: displayState === 'syncing'
+				? 'Syncing…'
+				: displayState === 'synced'
+					? 'Synced'
+					: 'Disconnected — changes stay local until the connection returns'
+	);
+	const statusIcon = $derived(
+		displayState === 'synced'
+			? 'check-circle'
+			: displayState === 'syncing'
+				? 'circle-notch'
+				: displayState === 'disconnected'
+					? 'exclamation-triangle'
+					: 'clock'
 	);
 
 	let collab: CollabDoc | undefined;
@@ -407,6 +451,25 @@
 			color: palette.color,
 			colorLight: palette.colorLight
 		});
+
+		// Everyone else in the registry, for the avatars in the status
+		// row. `change` fires on join, leave and every cursor move, so
+		// the list stays current without polling.
+		const awareness = collab.awareness;
+		const refreshPeers = () => {
+			peers = [...awareness.getStates().entries()]
+				.filter(([id]) => id !== awareness.clientID)
+				.map(([id, state]) => {
+					const user = (state as { user?: { name?: string; color?: string } }).user;
+					return {
+						id,
+						name: user?.name ?? 'Anonymous',
+						color: user?.color ?? 'var(--color-text-muted)'
+					};
+				});
+		};
+		awareness.on('change', refreshPeers);
+		refreshPeers();
 
 		// Dynamic-import the CodeMirror runtime alongside the language
 		// grammar. Everything the editor needs is a code-split chunk,
@@ -543,6 +606,8 @@
 			if (typeof window !== 'undefined') {
 				window.removeEventListener('pagehide', onPageHide);
 			}
+			awareness.off('change', refreshPeers);
+			peers = [];
 			view?.destroy();
 			view = undefined;
 			collab?.destroy();
@@ -584,30 +649,54 @@
 		</div>
 	{:else}
 		<div class="collab-editor__status">
-			<span class="collab-editor__status-pill collab-editor__status-pill--{displayState}">
-				{#if displayState === 'idle'}
-					Ready
-				{:else if displayState === 'syncing'}
-					Syncing…
-				{:else if displayState === 'synced'}
-					Synced
-				{:else if displayState === 'disconnected'}
-					Disconnected
+			{#if toolbar}
+				<div class="collab-editor__tools">{@render toolbar()}</div>
+			{/if}
+			<div class="collab-editor__meta">
+				{#if peers.length > 0}
+					<!-- Who else is in this file. Same colour as their caret,
+					     so an avatar and a cursor are recognisably one person. -->
+					<div
+						class="collab-editor__peers"
+						data-testid="collab-editor-peers"
+						title={peers.map((p) => p.name).join(', ')}
+					>
+						{#each peers as peer (peer.id)}
+							<span class="collab-editor__peer" style:background={peer.color} aria-label={peer.name}
+								>{initials(peer.name)}</span
+							>
+						{/each}
+					</div>
 				{/if}
-			</span>
-			{#if readOnly && displayState !== 'idle' && displayState !== 'syncing'}
-				<!-- Only surface read-only AFTER the server's capabilities
+				<!-- Icon + colour rather than a word: the row is chrome, and the
+					     states read faster as a green tick, a spinner and a red
+					     warning than as text. The label lives in the tooltip. -->
+				<span
+					class="collab-editor__state collab-editor__state--{displayState}"
+					data-testid="collab-editor-state"
+					data-state={displayState}
+					title={statusLabel}
+					aria-label={statusLabel}
+					role="status"
+				>
+					<Icon name={statusIcon} />
+				</span>
+				{#if readOnly && displayState !== 'idle' && displayState !== 'syncing'}
+					<!-- Only surface read-only AFTER the server's capabilities
 				     ack has landed (syncState transitions past `syncing`).
 				     Otherwise the fail-closed default would flash a
 				     "Read only" pill during every mount, even for
 				     Editors — surprising and wrong. -->
-				<span
-					class="collab-editor__status-pill collab-editor__status-pill--readonly"
-					title="You don't have permission to edit this file"
-				>
-					Read only
-				</span>
-			{/if}
+					<span
+						class="collab-editor__state collab-editor__state--readonly"
+						data-testid="collab-editor-readonly"
+						title="Read only — you don't have permission to edit this file"
+						aria-label="Read only"
+					>
+						<Icon name="lock" />
+					</span>
+				{/if}
+			</div>
 		</div>
 		<div
 			bind:this={container}
@@ -627,38 +716,80 @@
 	}
 
 	.collab-editor__status {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem;
+		flex-wrap: wrap;
 		padding: 0.4rem 0.75rem;
 		border-bottom: 1px solid var(--border-subtle);
 		background: var(--surface-2);
 	}
 
-	.collab-editor__status-pill {
+	.collab-editor__tools,
+	.collab-editor__meta {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+
+	/* Pushed right when there are no tools, so the status pill keeps its
+	   place whether the host passes a toolbar or not. */
+	.collab-editor__meta {
+		margin-left: auto;
+	}
+
+	.collab-editor__peers {
+		display: flex;
+		align-items: center;
+	}
+
+	.collab-editor__peer {
 		display: inline-flex;
 		align-items: center;
-		padding: 0.15rem 0.5rem;
+		justify-content: center;
+		width: 1.6rem;
+		height: 1.6rem;
+		margin-right: -0.4rem;
+		border: 2px solid var(--surface-2);
 		border-radius: 999px;
-		font-size: 0.75rem;
+		font-size: 0.65rem;
+		font-weight: 600;
+		color: var(--color-text-light);
+	}
+
+	.collab-editor__peer:last-child {
+		margin-right: 0;
+	}
+
+	/* One badge shape for every state; colour and icon carry the meaning. */
+	.collab-editor__state {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 1.6rem;
+		height: 1.6rem;
+		border-radius: 999px;
 		background: var(--surface-3);
 		color: var(--text-muted);
 	}
 
-	.collab-editor__status-pill--synced {
+	.collab-editor__state--synced {
 		background: var(--status-success-bg);
 		color: var(--status-success-fg);
 	}
 
-	.collab-editor__status-pill--syncing {
-		background: var(--status-info-bg);
-		color: var(--status-info-fg);
+	.collab-editor__state--syncing {
+		color: var(--color-primary, var(--text-muted));
 	}
 
-	.collab-editor__status-pill--disconnected {
-		background: var(--status-error-bg);
-		color: var(--status-error-fg);
+	/* The one state a user must notice: their edits are not reaching anyone. */
+	.collab-editor__state--disconnected {
+		background: var(--status-danger-bg, var(--surface-3));
+		color: var(--status-danger-fg, var(--color-danger));
 	}
 
-	.collab-editor__status-pill--readonly {
-		margin-left: 0.5rem;
+	.collab-editor__state--readonly {
 		background: var(--status-warning-bg, var(--surface-3));
 		color: var(--status-warning-fg, var(--text-muted));
 	}

@@ -16,6 +16,18 @@ vi.mock('$lib/api/endpoints/wopi', () => ({
 		access_token_ttl: 0
 	}))
 }));
+// Collab is off for most of these tests — a text file then takes the plain
+// preview path the older assertions describe. The one collab test flips it.
+const { cfg } = vi.hoisted(() => ({
+	cfg: { loaded: true, features: { markdown_collab: false } }
+}));
+vi.mock('$lib/stores/serverConfig.svelte', () => ({ serverConfig: cfg }));
+// The real editor mounts CodeMirror and a message-bus session; the stub just
+// renders the toolbar the viewer passes in.
+vi.mock(
+	'$lib/components/CollabEditor.svelte',
+	async () => await import('./__mocks__/CollabEditor.svelte')
+);
 import { apiFetch } from '$lib/api/client';
 import { canEditWithWopi } from '$lib/api/endpoints/wopi';
 import FileViewer from './FileViewer.svelte';
@@ -95,4 +107,45 @@ it('handles a failed text fetch without crashing', async () => {
 	});
 	await screen.findByTestId('file-viewer-dialog');
 	await waitFor(() => expect(af).toHaveBeenCalled());
+});
+
+// A text-shaped file is edited in place, so the viewer hands its chrome to the
+// editor: title + close stay on top, the actions move down next to the sync
+// state — the shape the office editor already has.
+it('moves the actions into the editor row for a collab-editable file', async () => {
+	cfg.features.markdown_collab = true;
+	render(FileViewer, {
+		props: {
+			open: true,
+			file: file({ name: 'notes.md', mime_type: 'text/markdown', category: 'Document' })
+		}
+	});
+	await screen.findByTestId('collab-editor-stub');
+	expect(screen.getByTestId('file-viewer-collab-window-link')).toBeTruthy();
+	expect(screen.getByTestId('file-viewer-collab-download-link')).toBeTruthy();
+	// The top bar keeps only the title and the close button.
+	expect(screen.queryByTestId('file-viewer-download-link')).toBeNull();
+	expect(screen.queryByTestId('file-viewer-open-new-tab-link')).toBeNull();
+	expect(screen.getByTestId('file-viewer-close-btn')).toBeTruthy();
+	expect(screen.getByTestId('file-viewer-close-btn')).toBeTruthy();
+	cfg.features.markdown_collab = false;
+});
+
+// Fullscreen is the default, and the toggle sticks for the next file opened
+// on this device.
+it('remembers the editor fullscreen choice', async () => {
+	cfg.features.markdown_collab = true;
+	const md = file({ name: 'notes.md', mime_type: 'text/markdown', category: 'Document' });
+	const first = render(FileViewer, { props: { open: true, file: md } });
+	const toggle = await screen.findByTestId('file-viewer-collab-fullscreen-btn');
+	expect(toggle.getAttribute('aria-pressed')).toBe('true');
+	await fireEvent.click(toggle);
+	expect(toggle.getAttribute('aria-pressed')).toBe('false');
+	first.unmount();
+
+	render(FileViewer, { props: { open: true, file: md } });
+	const again = await screen.findByTestId('file-viewer-collab-fullscreen-btn');
+	expect(again.getAttribute('aria-pressed')).toBe('false');
+	localStorage.removeItem('oxi-collab-fullscreen');
+	cfg.features.markdown_collab = false;
 });

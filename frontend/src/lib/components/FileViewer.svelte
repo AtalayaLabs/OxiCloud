@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { apiFetch } from '$lib/api/client';
+	import { resolve } from '$app/paths';
 	import { fileDownloadUrl, fileInlineUrl } from '$lib/api/endpoints/files';
 	import { canEditWithWopi } from '$lib/api/endpoints/wopi';
 	import type { FileItem } from '$lib/api/types';
@@ -105,6 +106,22 @@
 	 *  with the "New file" action in the files route so both gates agree
 	 *  on what qualifies as text-shaped.
 	 */
+	/** Fullscreen vs. windowed for the text editor, remembered per device.
+	 *  Same call as the grid/list view mode, and for the same reason: it
+	 *  follows the screen you are on, not the account you log in with, and
+	 *  a 13" laptop and a 27" monitor want different answers. Defaults to
+	 *  fullscreen so the editor opens like the office one. */
+	const FULLSCREEN_KEY = 'oxi-collab-fullscreen';
+	let collabFullscreen = $state(
+		typeof localStorage === 'undefined' || localStorage.getItem(FULLSCREEN_KEY) !== 'false'
+	);
+	function toggleCollabFullscreen() {
+		collabFullscreen = !collabFullscreen;
+		if (typeof localStorage !== 'undefined') {
+			localStorage.setItem(FULLSCREEN_KEY, String(collabFullscreen));
+		}
+	}
+
 	const collabForFile = $derived(
 		!!file &&
 			serverConfig.loaded &&
@@ -208,6 +225,7 @@
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div
 		class="fv"
+		class:fv--collab={collabForFile && collabFullscreen}
 		role="dialog"
 		data-testid="file-viewer-dialog"
 		aria-modal="true"
@@ -215,70 +233,75 @@
 		tabindex="-1"
 		onclick={(e) => e.target === e.currentTarget && close()}
 	>
-		<div class="fv__panel">
+		<div class="fv__panel" class:fv__panel--collab={collabForFile && collabFullscreen}>
 			<header class="fv__bar">
 				<span class="fv__title">{file.name}</span>
 				<div class="fv__actions">
-					{#if kind === 'image'}
-						<div class="fv__zoom" role="group" aria-label={t('viewer.zoom', 'Zoom')}>
+					<!-- A collab-editable file gets the office-editor chrome:
+					     title + close up here, everything else in the editor's
+					     own row below, next to the sync state. -->
+					{#if !collabForFile}
+						{#if kind === 'image'}
+							<div class="fv__zoom" role="group" aria-label={t('viewer.zoom', 'Zoom')}>
+								<button
+									class="fv__zoom-btn"
+									data-testid="file-viewer-zoom-out-btn"
+									title={t('viewer.zoom_out', 'Zoom out')}
+									aria-label={t('viewer.zoom_out', 'Zoom out')}
+									onclick={() => zoomBy(0.8)}
+								>
+									<Icon name="search-minus" />
+								</button>
+								<button
+									class="fv__zoom-btn"
+									data-testid="file-viewer-zoom-reset-btn"
+									title={t('viewer.zoom_reset', 'Reset zoom')}
+									aria-label={t('viewer.zoom_reset', 'Reset zoom')}
+									onclick={resetZoom}
+								>
+									<Icon name="expand" />
+								</button>
+								<button
+									class="fv__zoom-btn"
+									data-testid="file-viewer-zoom-in-btn"
+									title={t('viewer.zoom_in', 'Zoom in')}
+									aria-label={t('viewer.zoom_in', 'Zoom in')}
+									onclick={() => zoomBy(1.2)}
+								>
+									<Icon name="search-plus" />
+								</button>
+							</div>
+						{/if}
+						{#if canEdit && !readOnly}
 							<button
-								class="fv__zoom-btn"
-								data-testid="file-viewer-zoom-out-btn"
-								title={t('viewer.zoom_out', 'Zoom out')}
-								aria-label={t('viewer.zoom_out', 'Zoom out')}
-								onclick={() => zoomBy(0.8)}
+								class="btn btn-primary btn-sm"
+								data-testid="file-viewer-edit-btn"
+								onclick={() => (wopiOpen = true)}
 							>
-								<Icon name="search-minus" />
+								<Icon name="pen" />
+								{t('files.edit', 'Edit')}
 							</button>
-							<button
-								class="fv__zoom-btn"
-								data-testid="file-viewer-zoom-reset-btn"
-								title={t('viewer.zoom_reset', 'Reset zoom')}
-								aria-label={t('viewer.zoom_reset', 'Reset zoom')}
-								onclick={resetZoom}
-							>
-								<Icon name="expand" />
-							</button>
-							<button
-								class="fv__zoom-btn"
-								data-testid="file-viewer-zoom-in-btn"
-								title={t('viewer.zoom_in', 'Zoom in')}
-								aria-label={t('viewer.zoom_in', 'Zoom in')}
-								onclick={() => zoomBy(1.2)}
-							>
-								<Icon name="search-plus" />
-							</button>
-						</div>
-					{/if}
-					{#if canEdit && !readOnly}
-						<button
-							class="btn btn-primary btn-sm"
-							data-testid="file-viewer-edit-btn"
-							onclick={() => (wopiOpen = true)}
+						{/if}
+						<a
+							class="btn btn-secondary btn-sm"
+							data-testid="file-viewer-download-link"
+							href={fileDownloadUrl(file.id)}
+							download
+							rel="external"
 						>
-							<Icon name="pen" />
-							{t('files.edit', 'Edit')}
-						</button>
+							<Icon name="download" />
+							{t('common.download', 'Download')}
+						</a>
+						<a
+							class="btn btn-secondary btn-sm"
+							data-testid="file-viewer-open-new-tab-link"
+							href={fileInlineUrl(file.id)}
+							target="_blank"
+							rel="external noreferrer"
+						>
+							<Icon name="external-link-alt" />
+						</a>
 					{/if}
-					<a
-						class="btn btn-secondary btn-sm"
-						data-testid="file-viewer-download-link"
-						href={fileDownloadUrl(file.id)}
-						download
-						rel="external"
-					>
-						<Icon name="download" />
-						{t('common.download', 'Download')}
-					</a>
-					<a
-						class="btn btn-secondary btn-sm"
-						data-testid="file-viewer-open-new-tab-link"
-						href={fileInlineUrl(file.id)}
-						target="_blank"
-						rel="external noreferrer"
-					>
-						<Icon name="external-link-alt" />
-					</a>
 					<button
 						class="fv__close"
 						data-testid="file-viewer-close-btn"
@@ -298,7 +321,60 @@
 					     lands in `kind === 'other'` and would otherwise
 					     miss the text branch. -->
 					<div class="fv__collab">
-						<CollabEditor fileId={file.id} filename={file.name} />
+						<CollabEditor fileId={file.id} filename={file.name}>
+							{#snippet toolbar()}
+								<!-- Icon-only: this row belongs to the document, not to the
+								     chrome, so the tools stay out of the way. Names live in
+								     the tooltips. -->
+								<button
+									class="fv__tool"
+									data-testid="file-viewer-collab-fullscreen-btn"
+									onclick={toggleCollabFullscreen}
+									title={collabFullscreen
+										? t('viewer.exit_fullscreen', 'Exit full screen')
+										: t('viewer.fullscreen', 'Full screen')}
+									aria-label={collabFullscreen
+										? t('viewer.exit_fullscreen', 'Exit full screen')
+										: t('viewer.fullscreen', 'Full screen')}
+									aria-pressed={collabFullscreen}
+								>
+									<Icon name={collabFullscreen ? 'compress' : 'expand'} />
+								</button>
+								<a
+									class="fv__tool"
+									data-testid="file-viewer-collab-window-link"
+									href={resolve(`/collab/${file.id}`)}
+									target="_blank"
+									rel="noreferrer"
+									title={t('viewer.open_in_window', 'Open in a window')}
+									aria-label={t('viewer.open_in_window', 'Open in a window')}
+								>
+									<Icon name="external-link-alt" />
+								</a>
+								<a
+									class="fv__tool"
+									data-testid="file-viewer-collab-download-link"
+									href={fileDownloadUrl(file.id)}
+									download
+									rel="external"
+									title={t('common.download', 'Download')}
+									aria-label={t('common.download', 'Download')}
+								>
+									<Icon name="download" />
+								</a>
+								{#if canEdit && !readOnly}
+									<button
+										class="fv__tool"
+										data-testid="file-viewer-collab-office-btn"
+										onclick={() => (wopiOpen = true)}
+										title={t('viewer.edit_in_office', 'Edit in Office')}
+										aria-label={t('viewer.edit_in_office', 'Edit in Office')}
+									>
+										<Icon name="pen" />
+									</button>
+								{/if}
+							{/snippet}
+						</CollabEditor>
 					</div>
 				{:else if kind === 'image'}
 					<img
@@ -354,6 +430,11 @@
 {/if}
 
 <style>
+	/* No gutter for the editor — it takes the viewport, like the office one. */
+	.fv.fv--collab {
+		padding: 0;
+	}
+
 	.fv {
 		position: fixed;
 		inset: 0;
@@ -363,6 +444,33 @@
 		align-items: center;
 		justify-content: center;
 		padding: 2rem;
+	}
+
+	/* Editing wants the room: same footprint as the office editor, which
+	   takes the whole viewport rather than a centred card. */
+	/* Square icon buttons for the editor row — same footprint as the zoom
+	   controls, so the two toolbars look related. */
+	.fv__tool {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 2rem;
+		height: 2rem;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm, 4px);
+		background: var(--color-bg-surface);
+		color: var(--color-text);
+		cursor: pointer;
+	}
+
+	.fv__tool:hover {
+		background: var(--color-bg-hover, var(--color-bg-surface-alt));
+	}
+
+	.fv__panel.fv__panel--collab {
+		width: 100%;
+		height: 100%;
+		border-radius: 0;
 	}
 
 	.fv__panel {
