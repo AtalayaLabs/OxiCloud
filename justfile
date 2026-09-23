@@ -194,6 +194,27 @@ audit:
 openapi:
     cargo run --features dev_tools --bin generate-openapi
 
+# Local mirror of the `openapi-spec-drift` CI job. Regenerates
+# `resources/gen/openapi.json` from the `#[utoipa::path(...)]`
+# attributes scattered across the handlers and fails if the
+# committed file differs from the fresh output. Included in
+# `pre-pull-request` so developers catch drift BEFORE pushing —
+# the CI job is belt-and-braces, not the only defence.
+check-openapi-spec: openapi
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! git diff --exit-code resources/gen/openapi.json; then
+        echo ""
+        echo "❌ OpenAPI spec drift: committed openapi.json differs from the fresh"
+        echo "   generator output. Someone edited a #[utoipa::path] attribute"
+        echo "   (added a handler, changed a schema, renamed a path) without"
+        echo "   regenerating. Fix:"
+        echo "     git add resources/gen/openapi.json"
+        echo "     git commit -m 'chore(openapi): regenerate spec'"
+        exit 1
+    fi
+    echo "✅ OpenAPI spec: committed file matches generator output"
+
 # Regenerate `resources/gen/asyncapi.json` — the WS surface's spec,
 # analogue of openapi.json. Built from the `Topic`, `MessageBusEvent`,
 # and `error_code` constants in `application/ports/message_bus_ports.rs`
@@ -476,4 +497,4 @@ test-docker-tags:
 
 # Check and test everything
 # recommanded before pull request
-pre-pull-request: test-docker-tags check fe-check audit check-migrations check-message-bus-spec test test-integration fe-test build test-bundle test-api fe-build-e2e  front-test
+pre-pull-request: test-docker-tags check fe-check audit check-migrations check-message-bus-spec check-openapi-spec test test-integration fe-test build test-bundle test-api fe-build-e2e  front-test

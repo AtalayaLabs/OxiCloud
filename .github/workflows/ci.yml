@@ -27,6 +27,7 @@ jobs:
       plugins: ${{ steps.filter.outputs.plugins }}
       migrations: ${{ steps.filter.outputs.migrations }}
       message_bus_spec: ${{ steps.filter.outputs.message_bus_spec }}
+      openapi_spec: ${{ steps.filter.outputs.openapi_spec }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -60,6 +61,20 @@ jobs:
               - 'frontend/scripts/gen-message-bus-types.mjs'
               - 'frontend/src/lib/generated/message-bus/**'
               - 'frontend/package.json'
+            openapi_spec:
+              # Every REST/WOPI/WebDAV/NextCloud handler carries
+              # `#[utoipa::path(...)]` attributes that feed the OpenAPI
+              # spec. A change to any handler can shift the wire, so
+              # the filter is broad — anything under `handlers/`, DTOs
+              # the paths reference, the generator itself, or a utoipa
+              # version bump in Cargo.toml.
+              - 'src/interfaces/api/handlers/**'
+              - 'src/interfaces/nextcloud/**'
+              - 'src/application/dtos/**'
+              - 'src/bin/generate-openapi.rs'
+              - 'resources/gen/openapi.json'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
 
   frontend-check:
     name: Frontend — svelte-check, ESLint, Stylelint, Prettier
@@ -141,6 +156,45 @@ jobs:
             echo "::error::Message-bus spec drift: the committed files differ from what the"
             echo "::error::generator produces from source. Run \`just asyncapi-ts\` locally"
             echo "::error::and commit the result — that recipe re-runs both stages."
+            exit 1
+          fi
+
+  # Regenerates the OpenAPI spec and fails the PR if the output drifts
+  # from what was committed. Same discipline as the AsyncAPI job
+  # above and the wasm-fixture approach elsewhere — the OpenAPI JSON
+  # is a compile-time artefact of the `#[utoipa::path(...)]`
+  # attributes scattered across every handler, so it must be
+  # reproducible from source. Without this guard, someone adding a
+  # new handler (or tweaking an existing path's schema) can ship a
+  # stale spec — and the deploy-docs workflow that publishes the
+  # public API reference off `resources/gen/openapi.json` would
+  # quietly serve outdated docs.
+  #
+  # Scoped by the `openapi_spec` path filter — anything under
+  # `handlers/`, DTOs those paths reference, the generator, or the
+  # utoipa version in Cargo.toml. Skipped when a PR doesn't touch
+  # any of them.
+  openapi-spec-drift:
+    name: OpenAPI spec — utoipa drift
+    needs: changes
+    if: needs.changes.outputs.openapi_spec == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Regenerate OpenAPI spec
+        # `just openapi` = `cargo run --features dev_tools --bin generate-openapi`.
+        run: cargo run --features dev_tools --bin generate-openapi
+      - name: Fail if committed openapi.json drifted
+        run: |
+          if ! git diff --exit-code resources/gen/openapi.json; then
+            echo ""
+            echo "::error::OpenAPI spec drift: the committed openapi.json differs from"
+            echo "::error::what the generator produces from source. Someone edited a"
+            echo "::error::#[utoipa::path] attribute (added a handler, changed a schema,"
+            echo "::error::renamed a path) without regenerating. Run \`just openapi\`"
+            echo "::error::locally and commit resources/gen/openapi.json."
             exit 1
           fi
 
