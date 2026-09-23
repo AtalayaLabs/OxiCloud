@@ -124,6 +124,11 @@ export class CollabDoc {
 		  ) => void)
 		| null = null;
 	#destroyed = false;
+	/** Guards `announceDeparture` — `pagehide` and `destroy()` both
+	 *  call it and either may fire first. A second announce would
+	 *  bump the awareness clock again for a client that is already
+	 *  gone. */
+	#departureAnnounced = false;
 
 	constructor(opts: CollabDocOpts) {
 		this.fileId = opts.fileId;
@@ -301,10 +306,53 @@ export class CollabDoc {
 		messageBus.sendBinary(encodeFrame(KIND_SYNC, this.fileId, sv));
 	}
 
+	/** Tell peers this client is leaving, by removing its own entry
+	 *  from the awareness registry.
+	 *
+	 *  Must run while `#awarenessUpdateHandler` is still attached AND
+	 *  the topic subscription is still live — the removal reaches
+	 *  peers only as an ordinary awareness update over that socket.
+	 *  Hence it is the FIRST thing `destroy()` does, not part of the
+	 *  teardown that follows.
+	 *
+	 *  Without it every page load leaks a phantom peer: the reloaded
+	 *  tab comes back with a brand-new `clientID` while the old one
+	 *  sits in every other client's registry unclaimed, so the "who's
+	 *  here" badge counts one more person per refresh. y-protocols
+	 *  does prune states that go 30 s without a heartbeat, so the
+	 *  ghosts are self-limiting — but a user refreshing a few times
+	 *  in a row watches the count climb, which is exactly when they
+	 *  are looking at it.
+	 *
+	 *  Idempotent: `destroy()` and the `pagehide` hook both call it
+	 *  and either may win. */
+	announceDeparture(): void {
+		if (this.#departureAnnounced) return;
+		this.#departureAnnounced = true;
+		try {
+			// Encodes as this client's id with a bumped clock and a
+			// `null` state — the canonical "I'm gone" awareness
+			// update. `removed` flows through the update handler like
+			// any other change, so no special send path is needed.
+			awarenessProtocol.removeAwarenessStates(
+				this.awareness,
+				[this.awareness.clientID],
+				'departure'
+			);
+		} catch (err) {
+			// Best-effort: the socket may already be closing. A missed
+			// announce degrades to the 30 s timeout, not to breakage.
+			collabLog.debug('departure announce failed', { fileId: this.fileId, error: err });
+		}
+	}
+
 	/** Dispose. Idempotent; safe from Svelte $effect cleanup. */
 	destroy(): void {
 		if (this.#destroyed) return;
 		this.#destroyed = true;
+		// FIRST — see `announceDeparture`. Everything below detaches
+		// the very machinery the announcement travels through.
+		this.announceDeparture();
 		if (this.#docUpdateHandler) {
 			this.doc.off('update', this.#docUpdateHandler);
 			this.#docUpdateHandler = null;
@@ -329,10 +377,13 @@ export class CollabDoc {
 			this.#unsubscribeTopic();
 			this.#unsubscribeTopic = null;
 		}
-		// `Awareness.destroy` emits one final "remove this client" tick
-		// that peers use to render the cursor going away. Do it BEFORE
-		// tearing down the Y.Doc — Awareness is bound to the doc's
-		// clientID and needs the doc alive to encode the removal.
+		// The "remove this client" tick already went out via
+		// `announceDeparture` above, while the send path was still
+		// wired. This call only stops the local heartbeat interval and
+		// drops listeners — its own `setLocalState(null)` reaches
+		// nobody, since the update handler is detached by now. Still
+		// do it BEFORE the Y.Doc: Awareness is bound to the doc's
+		// clientID and needs the doc alive.
 		this.awareness.destroy();
 		this.doc.destroy();
 	}

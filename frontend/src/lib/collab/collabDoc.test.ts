@@ -35,7 +35,7 @@ const { bus } = vi.hoisted(() => {
 vi.mock('$lib/message-bus/client.svelte', () => ({ messageBus: bus }));
 
 import { CollabDoc } from './collabDoc';
-import { KIND_SYNC, decodeFrame } from './wireCodec';
+import { KIND_AWARENESS, KIND_SYNC, decodeFrame } from './wireCodec';
 
 beforeEach(() => {
 	bus.sent.length = 0;
@@ -71,11 +71,55 @@ describe('sync-step-1 handshake', () => {
 		doc.destroy();
 	});
 
-	it('sends nothing once destroyed', async () => {
+	it('sends no handshake once destroyed', async () => {
 		const doc = new CollabDoc({ fileId: '11111111-2222-3333-4444-555555555555' });
 		doc.connect();
 		doc.destroy();
 		await bus.open();
-		expect(bus.sendBinary).not.toHaveBeenCalled();
+		// Scoped to SYNC rather than "nothing at all": `destroy()`
+		// legitimately emits one AWARENESS frame retracting this
+		// client's presence (see the departure suite below). The
+		// handshake is what must not fire on a doc nobody is holding.
+		expect(bus.sent.filter((b) => decodeFrame(b)?.kind === KIND_SYNC)).toHaveLength(0);
+	});
+});
+
+// A reloaded tab returns with a brand-new awareness clientID. The old
+// one only leaves its peers' registries if somebody announces it — and
+// nobody did, so every refresh added a phantom person to everyone
+// else's presence badge.
+describe('departure announcement', () => {
+	const FILE = '11111111-2222-3333-4444-555555555555';
+	const departures = () =>
+		bus.sent.map((b) => decodeFrame(b)).filter((f) => f?.kind === KIND_AWARENESS);
+
+	it('reaches the wire while the send path is still wired', async () => {
+		const doc = new CollabDoc({ fileId: FILE });
+		doc.connect();
+		await bus.open();
+		// Publish some presence so there is a state to retract.
+		doc.awareness.setLocalStateField('user', { name: 'ed' });
+		bus.sent.length = 0;
+
+		doc.destroy();
+
+		// `destroy()` used to detach the awareness update handler BEFORE
+		// calling `awareness.destroy()`, so the "I'm gone" tick was
+		// emitted into a void.
+		expect(departures()).toHaveLength(1);
+	});
+
+	it('happens only once across pagehide and destroy', async () => {
+		const doc = new CollabDoc({ fileId: FILE });
+		doc.connect();
+		await bus.open();
+		doc.awareness.setLocalStateField('user', { name: 'ed' });
+		bus.sent.length = 0;
+
+		// Both hooks fire on a normal reload; either may win.
+		doc.announceDeparture();
+		doc.destroy();
+
+		expect(departures()).toHaveLength(1);
 	});
 });

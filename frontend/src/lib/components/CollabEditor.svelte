@@ -612,7 +612,19 @@
 				flushIfLive();
 			}
 		};
-		const onPageHide = () => flushIfLive();
+		// `pagehide` is the path a reload or a tab close actually
+		// takes — Svelte's `$effect` cleanup does NOT run when the
+		// document is torn down, so without announcing here the
+		// departure is never sent and every refresh leaves a phantom
+		// peer in everyone else's presence list.
+		//
+		// Gated on `!persisted`: a bfcache-suspended page comes back
+		// with the same `clientID`, so declaring it gone would erase a
+		// peer who is still there.
+		const onPageHide = (e: PageTransitionEvent) => {
+			flushIfLive();
+			if (!e.persisted && !cancelled) collab?.announceDeparture();
+		};
 		if (typeof document !== 'undefined') {
 			document.addEventListener('visibilitychange', onVisibility);
 		}
