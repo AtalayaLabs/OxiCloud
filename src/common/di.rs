@@ -3930,6 +3930,24 @@ impl crate::application::ports::collab_ports::DocContentReader for FileBlobDocCo
         }
         Ok(out)
     }
+
+    async fn current_blob_hash(
+        &self,
+        _caller_id: uuid::Uuid,
+        file_id: uuid::Uuid,
+    ) -> Result<Option<String>, crate::common::errors::DomainError> {
+        use crate::application::ports::storage_ports::FileReadPort;
+        // Row read only — the blob itself is not touched. This is the
+        // baseline the actor's first flush compares against, so it must
+        // be observed at seed time, not later.
+        let file = self.file_read.get_file(&file_id.to_string()).await?;
+        let hash = file.content_hash();
+        Ok(if hash.is_empty() {
+            None
+        } else {
+            Some(hash.to_owned())
+        })
+    }
 }
 
 /// C7 slice 2: flush the CRDT text back to the file's blob. The
@@ -3977,6 +3995,7 @@ impl crate::application::ports::collab_ports::DocContentWriter for FileBlobDocCo
         caller_id: uuid::Uuid,
         file_id: uuid::Uuid,
         content: Vec<u8>,
+        expected_blob_hash: Option<String>,
     ) -> Result<String, crate::common::errors::DomainError> {
         use crate::application::ports::file_lifecycle::FileLifecycleHook;
         use crate::application::ports::storage_ports::{FileReadPort, FileWritePort};
@@ -3999,14 +4018,29 @@ impl crate::application::ports::collab_ports::DocContentWriter for FileBlobDocCo
         let blob_hash = dedup_result.hash().to_string();
 
         // 2. Swap the file's blob reference. `None` for `modified_at`
-        //    lets the repo stamp `NOW()`; `None` for `expected_hash`
-        //    disables optimistic-concurrency (collab is the ONLY
-        //    writer while the session is active — an external write
-        //    would evict the session via the AuthzChanged path per
-        //    the plan's "external write conflict" edge case).
+        //    lets the repo stamp `NOW()`.
+        //
+        //    `expected_blob_hash` makes this a compare-and-swap. It
+        //    used to be hardcoded `None` on the grounds that collab is
+        //    the only writer while a session is live, because an
+        //    external write evicts the session. That holds eventually,
+        //    not immediately: `CollabEvictLifecycleHook` dispatches via
+        //    `tokio::spawn`, so the external write returns while the
+        //    eviction is still queued, and the actor's debounce tick
+        //    can fire inside that gap — overwriting the new blob with
+        //    CRDT text derived from the old one, silently. Passing the
+        //    hash the actor last saw turns that race into a
+        //    `PreconditionFailed` the caller can act on.
         let (new_hash, _updated_at) = self
             .file_write
-            .update_file_content_with_blob(&file_id_str, &blob_hash, size, None, caller_id, None)
+            .update_file_content_with_blob(
+                &file_id_str,
+                &blob_hash,
+                size,
+                None,
+                caller_id,
+                expected_blob_hash.as_deref(),
+            )
             .await?;
 
         // 3. Blow the download cache so a subsequent GET doesn't
