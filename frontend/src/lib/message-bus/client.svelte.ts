@@ -664,6 +664,30 @@ export class MessageBusClient {
 	 *  itself in 250 ms), so schedule the next attempt through the
 	 *  standard reconnect path. */
 	#onTicketFailure(err: unknown): void {
+		// A 403 here is a decision, not a hiccup. The clearest case is an
+		// anonymous session — a public-share visitor — for whom
+		// `/api/rt/ticket` is deliberately off the allowlist: that caller
+		// is never getting a WebSocket, so every retry is a request the
+		// server will refuse identically, and each one writes an
+		// `authz.denied` line. Left on the backoff path it turns a
+		// frontend mistake into a permanent trickle of audit noise.
+		//
+		// `unavailable` is the existing terminal state: no automatic
+		// retry, re-armed only by an explicit `reconnect()` or a page
+		// load. 401 is deliberately NOT treated this way — the apiFetch
+		// interceptor already refreshes and retries once, and a session
+		// restored in another tab can still recover on the normal
+		// backoff.
+		//
+		// Read as a plain `status` field rather than `instanceof
+		// ApiError`: importing the class here would make every test that
+		// mocks `$lib/api/client` — a dozen of them — have to export it,
+		// and the check needs one number.
+		if ((err as { status?: number } | null)?.status === 403) {
+			busLog.warn('ticket refused — not retrying', { error: err });
+			this.state = 'unavailable';
+			return;
+		}
 		busLog.warn('ticket exchange failed — reconnect scheduled', { error: err });
 		this.state = 'disconnected';
 		if (this.#subs.size > 0) this.#scheduleReconnect();

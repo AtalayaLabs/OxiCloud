@@ -8,6 +8,7 @@
 	import WopiEditor from '$lib/components/WopiEditor.svelte';
 	import CollabEditor from '$lib/components/CollabEditor.svelte';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
+	import { session } from '$lib/stores/session.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 	import { TEXTY_EXT_RE } from '$lib/utils/textyExt';
 
@@ -122,8 +123,32 @@
 		}
 	}
 
+	/**
+	 * Whether to hand this file to the collaborative editor rather than
+	 * the plain text preview.
+	 *
+	 * `readOnly` and `isAuthenticated` are both required, and they are
+	 * not the same check:
+	 *
+	 * - `!readOnly` is intent. A viewer the host opened read-only is
+	 *   asking for a preview; mounting an editor there is wrong even
+	 *   when the caller could technically edit.
+	 * - `isAuthenticated` is capability. Collab runs over the message
+	 *   bus, which needs a WS ticket from `POST /api/rt/ticket`, and
+	 *   that route is deliberately NOT on the anonymous share
+	 *   allowlist. A public-share visitor mounting the editor gets a
+	 *   403 per attempt (`authz.denied`,
+	 *   `reason="anonymous_route_not_allowlisted"`) and an editor that
+	 *   never syncs.
+	 *
+	 * Keeping both means neither a future component that forgets
+	 * `readOnly`, nor a future route that authenticates differently,
+	 * re-opens the hole on its own.
+	 */
 	const collabForFile = $derived(
 		!!file &&
+			!readOnly &&
+			session.isAuthenticated &&
 			serverConfig.loaded &&
 			serverConfig.features.markdown_collab === true &&
 			(kindOf(file) === 'text' || TEXTY_EXT_RE.test(file.name))
