@@ -44,7 +44,7 @@ Legend: ✅ shipped · 🟡 partial · ❌ not implemented · 🔮 future-friend
 | OPAQUE PAKE (RFC 9807) — server never sees the plaintext password | ✅ | ❌ | ❌ | ❌ |
 | DPoP session binding (RFC 9449) — non-extractable browser P-256 key, stolen cookies alone are useless | ✅ | ❌ | ❌ | ❌ |
 | OIDC SSO (as client) | ✅ + back-channel logout + RP-initiated logout propagation | ✅ (Workspace + Cloud Identity) | ✅ (Business) | ✅ (Entra ID native) |
-| Self-issued OIDC (BYO IdP) | ✅ | ❌ | ❌ | ❌ |
+| Self-issued OIDC (BYO IdP) — invitee brings their own IdP, OxiCloud accepts | 🔮 (design-aligned, not implemented) | ❌ | ❌ | ❌ |
 | Email-challenge invitee login (magic link) | ✅ | ✅ | ✅ | ✅ (Entra B2B) |
 | 2FA / MFA enforcement | ❌ (deliberate — delegate to OIDC IdP instead of shipping a second MFA stack) | ✅ | ✅ | ✅ |
 | App passwords | ✅ | 🟡 (legacy) | ❌ | ✅ |
@@ -54,11 +54,11 @@ Legend: ✅ shipped · 🟡 partial · ❌ not implemented · 🔮 future-friend
 | Nested groups | ✅ (depth ≤ 8, cycle-checked) | ❌ (flat) | ❌ (flat) | ✅ (AAD nesting) |
 | Public link | ✅ (token-based) | ✅ | ✅ | ✅ |
 | Link with password | ✅ | ❌ | ✅ (Business) | ✅ (Business) |
-| Link with expiry | 🟡 (grant-level `expires_at` shipped; link-scoped UI still open) | ✅ | ✅ (Business) | ✅ (Business) |
+| Link with expiry | ✅ | ✅ | ✅ (Business) | ✅ (Business) |
 | Sharing notifications (email + in-app bell) | ✅ | ✅ | ✅ | ✅ |
 | Disable download / view-only | ❌ | ✅ | ✅ (Business) | ✅ (Business) |
 | Watermarks | ❌ | ✅ (Workspace) | ✅ (Business+) | ✅ (E5) |
-| Domain-restricted share | ❌ | ✅ | ✅ | ✅ |
+| Domain-restricted share | ✅ (operator-controlled via env — allow / block domains at the invitee-email layer) | ✅ | ✅ | ✅ |
 | Expiring per-user grants | ✅ (`expires_at` on grant) | ✅ (Workspace) | ❌ | ✅ |
 | **Authorization model** | | | | |
 | ReBAC (subject → role → resource, with cascades) | ✅ | 🟡 (Drive ACLs cascade but no first-class ReBAC) | 🟡 | 🟡 |
@@ -145,34 +145,30 @@ Legend: ✅ shipped · 🟡 partial · ❌ not implemented · 🔮 future-friend
 3. **OPAQUE password login.** The server never sees the plaintext password.
    A DB dump or wire capture yields nothing replayable elsewhere. Nobody at
    consumer / small-team scale offers this today.
-4. **Self-issued OIDC for external invitees.** None of the majors let an
-   invitee say *"I'd like to log in with my own IdP, not yours"*. This is
-   genuinely novel and aligned with the federated / decentralized direction
-   the web is moving.
-5. **Real-time collaborative editing built on Yjs CRDT** for text / markdown /
+4. **Real-time collaborative editing built on Yjs CRDT** for text / markdown /
    code. Live peer cursors, capabilities-gated read-only, eviction on
    grant-revoke or external write. First-class in the platform — not delegated
    to an office app.
-6. **Content-addressable storage with BLAKE3 dedup — both whole-file and
+5. **Content-addressable storage with BLAKE3 dedup — both whole-file and
    sub-file (CDC).** A storage-efficiency advantage no proprietary cloud
    surfaces to admins. Uploads short-circuit on hash match; large files with
    small edits re-transmit only the touched chunks.
-7. **Unified ReBAC across every domain object.** One coherent authorization
+6. **Unified ReBAC across every domain object.** One coherent authorization
    model spans files, folders, drives, contacts, calendars, address books,
    music, and collab sessions. The majors have separate ACL systems per
    product line; OxiCloud unifies them under a single grant model.
-8. **Folder-tree inheritance done as a single SQL operator** (`ltree @>`)
+7. **Folder-tree inheritance done as a single SQL operator** (`ltree @>`)
    against a GiST index. One grant row covers an entire subtree, evaluated
    at check time in O(log N).
-9. **Native nested groups with cycle protection and depth cap.** Better than
+8. **Native nested groups with cycle protection and depth cap.** Better than
    Dropbox (no nesting) and Google Groups (flat).
-10. **External mounts** — S3 / WebDAV / etc. providers appear as folders in
-    the user's tree. Users see their existing cloud storage alongside
-    OxiCloud-native storage without leaving the app.
-11. **Anti-enumeration by construction.** Every AuthZ denial and every unknown
+9. **External mounts** — S3 / WebDAV / etc. providers appear as folders in
+   the user's tree. Users see their existing cloud storage alongside
+   OxiCloud-native storage without leaving the app.
+10. **Anti-enumeration by construction.** Every AuthZ denial and every unknown
     resource returns the same wire shape. No side-channel for guessing which
     files exist.
-12. **AsyncAPI + OpenAPI both published and drift-gated in CI.** Every wire
+11. **AsyncAPI + OpenAPI both published and drift-gated in CI.** Every wire
     change requires regenerated specs to merge — no drift between "what the
     docs say" and "what the server does".
 
