@@ -98,11 +98,60 @@
 		{ tag: t.constant(t.variableName), color: 'var(--syntax-number)' },
 		{ tag: t.standard(t.variableName), color: 'var(--syntax-keyword)' }
 	]);
-	import { onDestroy } from 'svelte';
+	import { onDestroy, untrack } from 'svelte';
 
 	import { CollabDoc, type SyncState } from '$lib/collab/collabDoc';
 	import { messageBus } from '$lib/message-bus/client.svelte';
 	import { session } from '$lib/stores/session.svelte';
+	import { deleteFile, getFile, uploadFile } from '$lib/api/endpoints/files';
+	import type { FileItem } from '$lib/api/types';
+	// Aliased: this module already binds `t` to CodeMirror's highlight
+	// `tags`, and the syntax palette above depends on that name.
+	import { t as tr } from '$lib/i18n/index.svelte';
+	import { errorToast } from '$lib/utils/errors';
+	import { resolve } from '$app/paths';
+	import { goto } from '$app/navigation';
+
+	/**
+	 * Outcome of an external-write conflict: the file was replaced from
+	 * outside this session while the editor still held unsaved text.
+	 *
+	 * The copy is written WITHOUT asking. The alternative — prompt
+	 * first, save only on confirmation — loses the work outright if the
+	 * tab is closed, the network drops, or the browser is killed while
+	 * the dialog sits open. A stray file the user can delete in one
+	 * click is a far better failure mode than vanished work.
+	 */
+	interface ConflictState {
+		/** Name the copy was saved under, shown verbatim to the user. */
+		copyName: string;
+		/** The created file, when the upload came back with one — needed
+		 *  to offer "open" and "delete" on the copy specifically. */
+		copy: FileItem | null;
+		/** Set when the copy could NOT be written. The buffer is then
+		 *  the only place the text exists, so the UI must say so
+		 *  plainly rather than imply the work is safe. */
+		error: boolean;
+		/** Flipped once the user deletes the copy, so the banner stops
+		 *  offering a file that is gone. */
+		deleted: boolean;
+	}
+
+	/**
+	 * `notes.md` → `notes.conflict-2026-09-23T14-05-33.md`.
+	 *
+	 * Extension preserved so the copy opens in the same editor and
+	 * keeps its syntax highlighting; the marker goes before it, where
+	 * it cannot change how the file is handled.
+	 */
+	function conflictCopyName(original: string, now: Date): string {
+		const stamp = now.toISOString().slice(0, 19).replace(/:/g, '-');
+		const dot = original.lastIndexOf('.');
+		// `dot <= 0` covers "no extension" and dotfiles like `.env`,
+		// where the leading dot is part of the name, not a suffix.
+		if (dot <= 0) return `${original}.conflict-${stamp}`;
+		return `${original.slice(0, dot)}.conflict-${stamp}${original.slice(dot)}`;
+	}
 
 	/** Dynamically resolve a CodeMirror language extension from the
 	 *  file's extension. Each `import()` call is code-split by Vite
@@ -334,12 +383,88 @@
 	}
 
 	let syncState = $state<SyncState>('idle');
+	let conflict = $state<ConflictState | null>(null);
+
+	/**
+	 * Preserve the editor's text as a sibling file after the server
+	 * refused to flush it.
+	 *
+	 * Runs without confirmation — see [`ConflictState`] for why. Goes
+	 * through the ordinary upload endpoint, so quota, AuthZ, dedup,
+	 * audit and the lifecycle hooks all apply exactly as they would to
+	 * any other new file; nothing here is a privileged back door.
+	 */
+	async function saveConflictCopy(fileId: string, name: string | undefined, text: string) {
+		// The filename prop is optional (the standalone /collab route
+		// mounts without it), so fall back to the server's copy.
+		let originalName = name;
+		let folderId: string | null = null;
+		try {
+			const file = await getFile(fileId);
+			originalName ??= file.name;
+			folderId = file.folder_id ?? null;
+		} catch {
+			// Non-fatal: an unknown folder still uploads, to the root.
+			// Losing the text matters; losing its location does not.
+		}
+		const copyName = conflictCopyName(originalName ?? 'document.txt', new Date());
+		try {
+			const copy = await uploadFile(folderId, new File([text], copyName, { type: 'text/plain' }));
+			conflict = { copyName, copy, error: false, deleted: false };
+		} catch {
+			// The buffer is now the ONLY place this text exists. Say so
+			// instead of letting the banner imply it was saved — the
+			// editor keeps rendering the content, so the user can still
+			// copy it out by hand.
+			conflict = { copyName, copy: null, error: true, deleted: false };
+		}
+	}
+
+	/** Navigate to the saved copy, opening it in the viewer. */
+	function openConflictCopy() {
+		const copy = conflict?.copy;
+		if (!copy) return;
+		// `resolve()` types a route, not a query string, so the
+		// `?file=` deep-link is appended after it.
+		const url = `${resolve(`/files/${copy.folder_id ?? ''}`)}?file=${copy.id}`;
+		// eslint-disable-next-line svelte/no-navigation-without-resolve
+		void goto(url);
+	}
+
+	async function deleteConflictCopy() {
+		const id = conflict?.copy?.id;
+		if (!id || !conflict) return;
+		try {
+			await deleteFile(id);
+			conflict = { ...conflict, deleted: true };
+		} catch (e) {
+			errorToast(e);
+		}
+	}
 	let container: HTMLDivElement | undefined = $state();
-	/** Reactive read-only state. Fail-closed default: until the
-	 *  subscribe ack arrives with `can_write: true`, the editor is
-	 *  read-only. Flips only when the server explicitly grants
-	 *  Update. See `readOnlyCompartment` for the live wire-up. */
-	let readOnly = $state(true);
+	/** Does the server say this caller may write? Fail-closed default:
+	 *  flipped only by a subscribe ack carrying `can_write: true`.
+	 *  Authorization only — see `readOnly` for what the editor
+	 *  actually enforces. */
+	let canWrite = $state(false);
+
+	/** What the editor enforces. Permission is necessary but NOT
+	 *  sufficient: the doc must also have finished syncing.
+	 *
+	 *  Until sync-step-2 lands, the local `Y.Doc` is legitimately
+	 *  empty — indistinguishable, from the editor's point of view,
+	 *  from a genuinely empty file. Typing into it would produce
+	 *  CRDT inserts positioned against that empty doc, which the
+	 *  server then merges into the real content: the user's text
+	 *  lands at the top of a file they could not see, and the flush
+	 *  writes the result to the blob. Nothing is deleted (an empty
+	 *  local doc has no text to author a delete for, so the file
+	 *  cannot be wiped this way) but the file is still corrupted.
+	 *
+	 *  Gating on `synced` closes that window by construction rather
+	 *  than relying on the sync handshake never failing. See
+	 *  `readOnlyCompartment` for the live wire-up. */
+	const readOnly = $derived(!canWrite || syncState !== 'synced');
 
 	/** Effective state shown to the user. The bus's circuit-tripped
 	 *  `unavailable` outranks any per-doc state — no point telling
@@ -378,16 +503,27 @@
 	 *  `Compartment` is bound to one `EditorState`. */
 	let readOnlyCompartment: Compartment | undefined;
 	/** Live reconfigure hook set by the mount effect's async IIFE once
-	 *  the CodeMirror runtime has been dynamic-imported. Called by
-	 *  `onCapabilities` when a subscribe ack arrives AFTER the editor
-	 *  mounted — flips the readOnly compartment without needing
-	 *  `EditorState` in scope outside the IIFE (keeping the SSR bundle
-	 *  free of CodeMirror runtime references). `undefined` before the
-	 *  runtime loads: the ack's `readOnly` value is already stored on
-	 *  the reactive `readOnly` state, so the initial compartment
-	 *  value picks it up by construction when the IIFE finally builds
-	 *  the EditorState. */
+	 *  the CodeMirror runtime has been dynamic-imported. Flips the
+	 *  readOnly compartment without needing `EditorState` in scope
+	 *  outside the IIFE (keeping the SSR bundle free of CodeMirror
+	 *  runtime references). `undefined` before the runtime loads:
+	 *  `readOnly`'s current value is picked up by construction when
+	 *  the IIFE finally builds the EditorState. */
 	let reconfigureReadOnly: ((v: boolean) => void) | undefined;
+
+	// Push `readOnly` into the live CodeMirror compartment whenever it
+	// moves — on a capability change (subscribe ack, mid-session
+	// demotion) AND on a sync-state change. The latter is what makes
+	// the doc un-typeable until sync-step-2 has landed; see `readOnly`.
+	//
+	// A no-op until the runtime IIFE sets the hook, which is correct:
+	// the EditorState it then builds reads `readOnly` directly, and it
+	// calls the hook once itself to settle any value that moved while
+	// the chunks were in flight.
+	$effect(() => {
+		const ro = readOnly;
+		untrack(() => reconfigureReadOnly?.(ro));
+	});
 
 	// Mount effect: attach CodeMirror + CollabDoc when `container`
 	// becomes available. Runs once per `fileId` change; the cleanup
@@ -416,25 +552,28 @@
 		// a leftover `false` from a previous file would let a viewer
 		// type into a new file for the sub-second window between
 		// mount and the fresh subscribe ack.
-		readOnly = true;
+		canWrite = false;
 
 		collab = new CollabDoc({
 			fileId: currentFileId,
 			onSyncStateChange: (s) => {
 				syncState = s;
 			},
+			onExternalWriteConflict: () => {
+				// Capture the buffer synchronously, before any await:
+				// the doc is about to stop receiving updates and the
+				// component may unmount underneath us.
+				const rescued = collab?.yText().toString() ?? '';
+				void saveConflictCopy(currentFileId, currentFilename, rescued);
+			},
 			onCapabilities: (caps) => {
-				readOnly = !caps.canWrite;
-				// If the editor is already mounted, reconfigure the
-				// live compartment so the caller sees the mode switch
-				// immediately. Delegated via `reconfigureReadOnly`
-				// (set by the async IIFE once the CodeMirror runtime
-				// loads) so this callback stays runtime-free — a plain
-				// closure with no `EditorState` reference, which keeps
-				// the SSR bundle from pulling CodeMirror. Before the
-				// hook is set, `readOnly` alone is authoritative and
-				// the initial state build reads its current value.
-				reconfigureReadOnly?.(readOnly);
+				// Record the permission only. Pushing it into the live
+				// CodeMirror compartment is the effect below's job —
+				// `readOnly` now depends on `syncState` as well, and
+				// that moves without any capability change, so a
+				// reconfigure driven from this callback alone would
+				// leave the editor writable on a doc that never synced.
+				canWrite = caps.canWrite;
 			}
 		});
 		collab.connect();
@@ -587,7 +726,19 @@
 				flushIfLive();
 			}
 		};
-		const onPageHide = () => flushIfLive();
+		// `pagehide` is the path a reload or a tab close actually
+		// takes — Svelte's `$effect` cleanup does NOT run when the
+		// document is torn down, so without announcing here the
+		// departure is never sent and every refresh leaves a phantom
+		// peer in everyone else's presence list.
+		//
+		// Gated on `!persisted`: a bfcache-suspended page comes back
+		// with the same `clientID`, so declaring it gone would erase a
+		// peer who is still there.
+		const onPageHide = (e: PageTransitionEvent) => {
+			flushIfLive();
+			if (!e.persisted && !cancelled) collab?.announceDeparture();
+		};
 		if (typeof document !== 'undefined') {
 			document.addEventListener('visibilitychange', onVisibility);
 		}
@@ -701,6 +852,70 @@
 				{/if}
 			</div>
 		</div>
+		{#if conflict}
+			<!-- Every action names WHICH file it acts on. With two
+			     versions on screen, "delete it" / "reload" are
+			     ambiguous enough to make someone throw away the wrong
+			     one. -->
+			<div class="collab-editor__conflict" role="alert" data-testid="collab-editor-conflict">
+				<p class="collab-editor__conflict-title">
+					{tr('collab.conflict.title', undefined, 'This file was changed by someone else')}
+				</p>
+				{#if conflict.error}
+					<p class="collab-editor__conflict-body">
+						{tr(
+							'collab.conflict.save_failed',
+							undefined,
+							'Your unsaved changes could NOT be saved automatically. They exist only in this editor — copy them somewhere safe before leaving this page.'
+						)}
+					</p>
+				{:else if conflict.deleted}
+					<p class="collab-editor__conflict-body">
+						{tr('collab.conflict.deleted', { name: conflict.copyName }, 'Deleted {{name}}.')}
+					</p>
+				{:else}
+					<p class="collab-editor__conflict-body">
+						{tr(
+							'collab.conflict.body',
+							{ name: filename ?? '' },
+							'Your unsaved changes could not be saved to {{name}}, so they were kept in a separate file:'
+						)}
+					</p>
+					<p class="collab-editor__conflict-file">{conflict.copyName}</p>
+				{/if}
+				<div class="collab-editor__conflict-actions">
+					{#if conflict.copy && !conflict.deleted}
+						<button
+							type="button"
+							class="collab-editor__conflict-btn"
+							onclick={openConflictCopy}
+							data-testid="collab-editor-conflict-open"
+						>
+							{tr('collab.conflict.open_copy', undefined, 'Open my saved copy')}
+						</button>
+						<button
+							type="button"
+							class="collab-editor__conflict-btn"
+							onclick={deleteConflictCopy}
+							data-testid="collab-editor-conflict-delete"
+						>
+							{tr('collab.conflict.delete_copy', undefined, 'Delete my saved copy')}
+						</button>
+					{/if}
+					<button
+						type="button"
+						class="collab-editor__conflict-btn collab-editor__conflict-btn--primary"
+						onclick={() => location.reload()}
+					>
+						{tr(
+							'collab.conflict.open_current',
+							{ name: filename ?? '' },
+							"Discard what's on screen and open the updated {{name}}"
+						)}
+					</button>
+				</div>
+			</div>
+		{/if}
 		<div
 			bind:this={container}
 			class="collab-editor__pane"
@@ -795,6 +1010,56 @@
 	.collab-editor__state--readonly {
 		background: var(--status-warning-bg, var(--surface-3));
 		color: var(--status-warning-fg, var(--text-muted));
+	}
+
+	.collab-editor__conflict {
+		padding: 0.75rem 1rem;
+		background: var(--color-bg-surface);
+		border-bottom: 2px solid var(--color-danger);
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+
+	.collab-editor__conflict-title {
+		margin: 0;
+		font-weight: 600;
+		color: var(--color-danger);
+	}
+
+	.collab-editor__conflict-body {
+		margin: 0;
+		color: var(--color-text);
+	}
+
+	.collab-editor__conflict-file {
+		margin: 0;
+		font-family: var(--font-mono, monospace);
+		word-break: break-all;
+		color: var(--color-text);
+	}
+
+	.collab-editor__conflict-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		margin-top: 0.25rem;
+	}
+
+	.collab-editor__conflict-btn {
+		padding: 0.35rem 0.75rem;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm, 4px);
+		background: var(--color-bg);
+		color: var(--color-text);
+		cursor: pointer;
+		font: inherit;
+		text-decoration: none;
+	}
+
+	.collab-editor__conflict-btn--primary {
+		border-color: var(--color-danger);
+		color: var(--color-danger);
 	}
 
 	.collab-editor__pane {

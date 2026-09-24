@@ -132,6 +132,24 @@ pub trait DocSessionRepository: Send + Sync + 'static {
 #[async_trait]
 pub trait DocContentReader: Send + Sync + 'static {
     async fn read_content(&self, caller_id: Uuid, file_id: Uuid) -> Result<Vec<u8>, DomainError>;
+
+    /// The blob hash the file row currently points at, without
+    /// streaming the content.
+    ///
+    /// Read once at seed time so the actor knows which blob its CRDT
+    /// was derived from. That value is what the flush passes as
+    /// `expected_blob_hash`, turning the write into a compare-and-swap
+    /// against the row — see [`DocContentWriter::write_content`].
+    ///
+    /// `Ok(None)` means "hash unknown" (a file row with no blob yet).
+    /// The flush treats that as "cannot prove safety" and writes
+    /// blind, matching the pre-CAS behaviour rather than refusing to
+    /// save at all.
+    async fn current_blob_hash(
+        &self,
+        caller_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<Option<String>, DomainError>;
 }
 
 /// Writes the current CRDT text back to the file blob on debounced
@@ -139,8 +157,23 @@ pub trait DocContentReader: Send + Sync + 'static {
 /// (or its equivalent) so dedup, versioning, quota, and audit all
 /// stay in the normal file-write pipeline.
 ///
-/// Returns the content hash of the written blob so the caller can
-/// stamp `record_flush(hash)` and short-circuit future no-op flushes.
+/// Returns the blob hash the file row now points at, so the caller can
+/// carry it into the NEXT flush's `expected_blob_hash` and keep the
+/// compare-and-swap chain unbroken.
+///
+/// `expected_blob_hash`: when `Some`, the swap only lands if the row
+/// still points at that blob; a mismatch fails with
+/// [`ErrorKind::PreconditionFailed`] and leaves the row untouched.
+///
+/// This is what stops a debounced flush from silently destroying a
+/// write that arrived from outside the collab session — a WebDAV PUT,
+/// a WOPI PutFile, a re-upload. Such a write does fire
+/// `CollabEvictLifecycleHook`, but that hook is a `tokio::spawn`
+/// fire-and-forget: the external write returns while eviction is still
+/// queued, and the actor's debounce tick can fire in that gap. The
+/// flush would then write CRDT text derived from the PRE-write content
+/// straight over the new blob, with no error and no audit trail.
+/// Eviction narrows the window; the precondition closes it.
 #[cfg_attr(feature = "test_utils", mockall::automock)]
 #[async_trait]
 pub trait DocContentWriter: Send + Sync + 'static {
@@ -149,6 +182,7 @@ pub trait DocContentWriter: Send + Sync + 'static {
         caller_id: Uuid,
         file_id: Uuid,
         content: Vec<u8>,
+        expected_blob_hash: Option<String>,
     ) -> Result<String, DomainError>;
 }
 

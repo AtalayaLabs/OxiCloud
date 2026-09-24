@@ -45,7 +45,13 @@ export async function dedupCheckBatch(hashes: string[]): Promise<Set<string>> {
 	return new Set(data?.owned ?? []);
 }
 
-export async function uploadFile(folderId: string | null, file: File): Promise<void> {
+/**
+ * Upload a file. Resolves to the created file — the endpoint replies
+ * `201` with the new row, and callers that need its id (to link to it,
+ * or to offer an undo) would otherwise have to re-list the folder to
+ * find what they just made. Callers that don't care simply ignore it.
+ */
+export async function uploadFile(folderId: string | null, file: File): Promise<FileItem | null> {
 	const form = new FormData();
 	if (folderId) form.append('folder_id', folderId);
 	form.append('file', file);
@@ -57,6 +63,14 @@ export async function uploadFile(folderId: string | null, file: File): Promise<v
 		body: form
 	});
 	if (!res.ok) throw new Error(`upload failed: ${res.status}`);
+	// Tolerate a body-less success: the upload itself is what matters,
+	// and an older/proxied response shape must not turn a completed
+	// upload into a thrown error.
+	try {
+		return (await res.json()) as FileItem;
+	} catch {
+		return null;
+	}
 }
 
 /**

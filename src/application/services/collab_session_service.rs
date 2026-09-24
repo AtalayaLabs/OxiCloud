@@ -448,6 +448,14 @@ const ROOT_TEXT_NAME: &str = "content";
 struct ActorState {
     file_id: Uuid,
     doc: Doc,
+    /// Blob hash this actor believes the file row points at: observed
+    /// at attach, then replaced with each successful flush's return.
+    ///
+    /// Passed as the flush's `expected_blob_hash`, which makes the
+    /// write a compare-and-swap. `None` means the baseline could not
+    /// be established, and the flush falls back to writing blind
+    /// rather than refusing to save.
+    last_known_blob_hash: Option<String>,
     attached: HashSet<SocketId>,
     updates_since_snapshot: i32,
     limits: CollabLimits,
@@ -509,6 +517,7 @@ impl ActorState {
         repo: Arc<dyn DocSessionRepository>,
         writer: Arc<dyn DocContentWriter>,
         seed_content: Option<Vec<u8>>,
+        baseline_blob_hash: Option<String>,
         limits: CollabLimits,
     ) -> Result<Self, CollabError> {
         let doc = Doc::new();
@@ -572,6 +581,7 @@ impl ActorState {
         Ok(Self {
             file_id,
             doc,
+            last_known_blob_hash: baseline_blob_hash,
             attached: HashSet::new(),
             updates_since_snapshot,
             limits,
@@ -778,10 +788,59 @@ impl ActorState {
         //    short-circuit key so the compare on next tick stays
         //    consistent regardless of chunking geometry; the writer's
         //    return is verified but not tracked.
-        let _writer_hash = self
+        //    `last_known_blob_hash` rides along as the precondition:
+        //    the swap lands only if the row still points at the blob
+        //    this CRDT was derived from.
+        let writer_hash = match self
             .writer
-            .write_content(caller_id, self.file_id, bytes)
-            .await?;
+            .write_content(
+                caller_id,
+                self.file_id,
+                bytes,
+                self.last_known_blob_hash.clone(),
+            )
+            .await
+        {
+            Ok(h) => h,
+            Err(e) if e.kind == ErrorKind::PreconditionFailed => {
+                // Somebody wrote this file from outside the session —
+                // WebDAV PUT, WOPI, a re-upload — after we seeded. The
+                // blob on disk is NOT what our CRDT was derived from,
+                // so writing our text would destroy their content
+                // wholesale. Refuse, and leave the row exactly as the
+                // external writer left it.
+                //
+                // Deliberately NOT retried with a refreshed baseline:
+                // that is just the blind overwrite again, one round
+                // trip later. `CollabEvictLifecycleHook` is already in
+                // flight for this same write and will tear the session
+                // down; every client then re-attaches and re-seeds
+                // from the new blob.
+                //
+                // The dirty marks are left standing on purpose. They
+                // are the record that this actor holds unflushed text,
+                // and clearing them here would let the session go on
+                // looking clean while its edits exist nowhere but RAM.
+                tracing::warn!(
+                    target: "audit",
+                    event = "collab.flush_conflict",
+                    reason = "external_write",
+                    caller_id = %caller_id,
+                    file_id = %self.file_id,
+                    expected_blob_hash = ?self.last_known_blob_hash,
+                    "👮🏻‍♂️ collab flush refused: file changed outside the session; not overwriting",
+                );
+                return Err(CollabError::Storage(e));
+            }
+            Err(e) => return Err(CollabError::Storage(e)),
+        };
+
+        // Carry the new blob hash forward as the next flush's
+        // precondition, keeping the compare-and-swap chain unbroken.
+        // Distinct from `content_hash` below: for a chunked file this
+        // is the manifest hash, and it is what the file row actually
+        // stores, so it is the only value a CAS can be built on.
+        self.last_known_blob_hash = Some(writer_hash);
 
         // 5. Stamp DB + in-memory mirror WITH `content_hash` (the
         //    raw BLAKE3 of the text we just wrote). This matches
@@ -919,6 +978,38 @@ async fn run_actor(mut state: ActorState, mut inbox: mpsc::Receiver<SessionMsg>)
                             &e,
                             CollabError::Storage(de) if de.kind == crate::common::errors::ErrorKind::NotFound
                         );
+                        // An external write replaced the blob. Our text
+                        // can NEVER reach this file now — the baseline
+                        // will not match again for the life of this
+                        // actor, so every later tick would fail
+                        // identically while the doc keeps accepting
+                        // keystrokes it cannot persist.
+                        //
+                        // Stop immediately and say why. `flush_due`
+                        // only fires on a dirty doc, so reaching here
+                        // always means there IS unsaved work — which is
+                        // exactly what separates this from the plain
+                        // `external_write` eviction the lifecycle hook
+                        // raises. Clients seeing this reason must
+                        // preserve their buffer before re-attaching.
+                        if matches!(
+                            &e,
+                            CollabError::Storage(de) if de.kind == crate::common::errors::ErrorKind::PreconditionFailed
+                        ) {
+                            tracing::warn!(
+                                target: "audit",
+                                event = "collab.session_conflicted",
+                                reason = "external_write_conflict",
+                                file_id = %state.file_id,
+                                attached_sockets = state.attached.len(),
+                                "👮🏻‍♂️ collab session ended with unflushed edits: file changed outside the session",
+                            );
+                            let _ = state.outbox.send((
+                                INTERNAL_KIND_EVICTED,
+                                b"external_write_conflict".to_vec(),
+                            ));
+                            break;
+                        }
                         tracing::warn!(
                             target: "oxicloud::collab",
                             file_id = %state.file_id,
@@ -999,11 +1090,32 @@ impl CollabSessionService {
             Some(_) => None, // load-path — actor reads from repo itself
             None => Some(self.reader.read_content(caller_id, file_id).await?),
         };
+        // The blob this actor's CRDT corresponds to, as of right now.
+        // Baseline for the flush's compare-and-swap — read on EVERY
+        // attach, not just the seeding one: on the load-path the
+        // snapshot may have been persisted long ago while the blob
+        // moved on, and an actor respawning after an idle GC must
+        // compare against today's blob, not the one it last wrote.
+        // Best-effort — a lookup failure leaves the baseline unknown
+        // and the flush writes blind, exactly as it did before.
+        let baseline_blob_hash = match self.reader.current_blob_hash(caller_id, file_id).await {
+            Ok(h) => h,
+            Err(e) => {
+                tracing::warn!(
+                    target: "oxicloud::collab",
+                    file_id = %file_id,
+                    error = %e,
+                    "could not read baseline blob hash — flush will not be able to detect an external write",
+                );
+                None
+            }
+        };
         let state = ActorState::load_or_seed(
             file_id,
             self.repo.clone(),
             self.writer.clone(),
             seed,
+            baseline_blob_hash,
             self.limits,
         )
         .await?;
@@ -1327,6 +1439,10 @@ mod tests {
 
     struct StubReader {
         content: Mutex<Vec<u8>>,
+        /// Baseline the actor reads at attach and uses as its first
+        /// flush precondition. `None` models "hash unknown", which
+        /// deliberately falls back to a blind write.
+        blob_hash: Mutex<Option<String>>,
     }
     #[async_trait]
     impl DocContentReader for StubReader {
@@ -1336,6 +1452,14 @@ mod tests {
             _file_id: Uuid,
         ) -> Result<Vec<u8>, DomainError> {
             Ok(self.content.lock().unwrap().clone())
+        }
+
+        async fn current_blob_hash(
+            &self,
+            _caller_id: Uuid,
+            _file_id: Uuid,
+        ) -> Result<Option<String>, DomainError> {
+            Ok(self.blob_hash.lock().unwrap().clone())
         }
     }
 
@@ -1347,8 +1471,73 @@ mod tests {
             _caller_id: Uuid,
             _file_id: Uuid,
             _content: Vec<u8>,
+            _expected_blob_hash: Option<String>,
         ) -> Result<String, DomainError> {
             Ok("b3-stub".into())
+        }
+    }
+
+    /// Writer that models the repository's compare-and-swap: it holds
+    /// the blob hash the "file row" currently points at, and refuses
+    /// any write whose precondition no longer matches.
+    struct CasWriter {
+        /// What the row points at. `external_write` moves it, standing
+        /// in for a WebDAV PUT / WOPI / re-upload landing mid-session.
+        current: Mutex<Option<String>>,
+        /// Preconditions seen, so a test can prove one was actually
+        /// sent rather than the write being blind.
+        seen_preconditions: Mutex<Vec<Option<String>>>,
+        writes: Mutex<usize>,
+    }
+
+    impl CasWriter {
+        fn new(initial: &str) -> Self {
+            Self {
+                current: Mutex::new(Some(initial.to_string())),
+                seen_preconditions: Mutex::new(Vec::new()),
+                writes: Mutex::new(0),
+            }
+        }
+        /// Simulate a writer outside the collab session replacing the
+        /// blob.
+        fn external_write(&self, new_hash: &str) {
+            *self.current.lock().unwrap() = Some(new_hash.to_string());
+        }
+        fn write_count(&self) -> usize {
+            *self.writes.lock().unwrap()
+        }
+        fn current_hash(&self) -> Option<String> {
+            self.current.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl DocContentWriter for CasWriter {
+        async fn write_content(
+            &self,
+            _caller_id: Uuid,
+            _file_id: Uuid,
+            content: Vec<u8>,
+            expected_blob_hash: Option<String>,
+        ) -> Result<String, DomainError> {
+            self.seen_preconditions
+                .lock()
+                .unwrap()
+                .push(expected_blob_hash.clone());
+            let mut current = self.current.lock().unwrap();
+            if let Some(expected) = expected_blob_hash.as_deref()
+                && current.as_deref() != Some(expected)
+            {
+                return Err(DomainError::new(
+                    ErrorKind::PreconditionFailed,
+                    "collab-test",
+                    "blob hash moved",
+                ));
+            }
+            let new_hash = format!("b3-collab-{}", blake3::hash(&content).to_hex());
+            *current = Some(new_hash.clone());
+            *self.writes.lock().unwrap() += 1;
+            Ok(new_hash)
         }
     }
 
@@ -1368,6 +1557,7 @@ mod tests {
             caller_id: Uuid,
             file_id: Uuid,
             content: Vec<u8>,
+            _expected_blob_hash: Option<String>,
         ) -> Result<String, DomainError> {
             let mut writes = self.writes.lock().unwrap();
             let hash = format!("b3-recorded-{}", writes.len());
@@ -1450,6 +1640,7 @@ mod tests {
             Arc::new(MemRepo::new()),
             Arc::new(StubReader {
                 content: Mutex::new(seed.as_bytes().to_vec()),
+                blob_hash: Mutex::new(None),
             }),
             Arc::new(StubWriter),
             authz,
@@ -1981,12 +2172,200 @@ mod tests {
             Arc::new(MemRepo::new()),
             Arc::new(StubReader {
                 content: Mutex::new(seed.as_bytes().to_vec()),
+                blob_hash: Mutex::new(None),
             }),
             writer.clone(),
             Arc::new(AllowAll),
             limits,
         ));
         (svc, writer)
+    }
+
+    // ── External-write conflict (compare-and-swap on flush) ───────────
+    //
+    // A file can be replaced from outside the collab session — WebDAV
+    // PUT, WOPI PutFile, a re-upload. `CollabEvictLifecycleHook` tears
+    // the session down when that happens, but it dispatches through
+    // `tokio::spawn`: the external write returns while eviction is
+    // still queued, and the actor's debounce tick can fire in that
+    // gap. The flush would then materialise a CRDT seeded from the
+    // PRE-write content straight over the new blob — silent data loss,
+    // no error, no audit line.
+    //
+    // These drive `flush_to_blob` directly rather than through the
+    // debouncer, so they assert the guard itself and not a race.
+
+    fn service_with_cas_writer(
+        seed: &str,
+        baseline: &str,
+    ) -> (Arc<CollabSessionService>, Arc<CasWriter>) {
+        let writer = Arc::new(CasWriter::new(baseline));
+        let svc = Arc::new(CollabSessionService::new(
+            Arc::new(MemRepo::new()),
+            Arc::new(StubReader {
+                content: Mutex::new(seed.as_bytes().to_vec()),
+                blob_hash: Mutex::new(Some(baseline.to_string())),
+            }),
+            writer.clone(),
+            Arc::new(AllowAll),
+            CollabLimits::default(),
+        ));
+        (svc, writer)
+    }
+
+    /// Make the session dirty so a flush has something to write.
+    async fn dirty(session: &CollabSession, caller: Uuid, text: &str) {
+        let client = Doc::new();
+        {
+            let t = client.get_or_insert_text(ROOT_TEXT_NAME);
+            let mut txn = client.transact_mut();
+            t.insert(&mut txn, 0, text);
+        }
+        let update = client
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+        session.apply_update(caller, update).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn flush_passes_the_baseline_blob_hash_as_precondition() {
+        let (svc, writer) = service_with_cas_writer("hello", "blob-v1");
+        let file_id = Uuid::new_v4();
+        let caller = Uuid::new_v4();
+        let session = svc.attach_file(caller, file_id).await.unwrap();
+        dirty(&session, caller, " world").await;
+
+        assert!(session.flush_to_blob().await.unwrap());
+
+        // Without a precondition the write is blind and the conflict
+        // test below could never fail — this is the positive control.
+        let seen = writer.seen_preconditions.lock().unwrap().clone();
+        assert_eq!(seen, vec![Some("blob-v1".to_string())]);
+        assert_eq!(writer.write_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn flush_refuses_to_overwrite_a_write_from_outside_the_session() {
+        let (svc, writer) = service_with_cas_writer("hello", "blob-v1");
+        let file_id = Uuid::new_v4();
+        let caller = Uuid::new_v4();
+        let session = svc.attach_file(caller, file_id).await.unwrap();
+        dirty(&session, caller, " world").await;
+
+        // Somebody PUTs the file while the session holds unflushed text.
+        writer.external_write("blob-from-webdav");
+
+        let err = session.flush_to_blob().await.unwrap_err();
+        assert!(
+            matches!(&err, CollabError::Storage(e) if e.kind == ErrorKind::PreconditionFailed),
+            "expected a precondition failure, got {err:?}",
+        );
+
+        // The point of the whole exercise: their bytes are still there.
+        assert_eq!(writer.write_count(), 0, "nothing may be written");
+        assert_eq!(writer.current_hash().as_deref(), Some("blob-from-webdav"));
+    }
+
+    #[tokio::test]
+    async fn flush_chains_the_precondition_across_successive_writes() {
+        let (svc, writer) = service_with_cas_writer("hello", "blob-v1");
+        let file_id = Uuid::new_v4();
+        let caller = Uuid::new_v4();
+        let session = svc.attach_file(caller, file_id).await.unwrap();
+
+        dirty(&session, caller, "one").await;
+        assert!(session.flush_to_blob().await.unwrap());
+        let after_first = writer.current_hash().unwrap();
+
+        dirty(&session, caller, "two").await;
+        assert!(
+            session.flush_to_blob().await.unwrap(),
+            "second flush must succeed — the actor's own write is not a conflict",
+        );
+
+        // The second precondition must be the hash the FIRST write
+        // returned. Keeping the stale baseline would make every flush
+        // after the first fail against the session's own work.
+        let seen = writer.seen_preconditions.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[1], Some(after_first));
+    }
+
+    #[tokio::test]
+    async fn flush_writes_blind_when_no_baseline_could_be_established() {
+        // `current_blob_hash` returning None models a file row with no
+        // blob yet. Refusing to save there would be worse than the
+        // race we are guarding: the user's text would have nowhere to
+        // go at all.
+        let writer = Arc::new(CasWriter::new("blob-v1"));
+        let svc = Arc::new(CollabSessionService::new(
+            Arc::new(MemRepo::new()),
+            Arc::new(StubReader {
+                content: Mutex::new(b"hello".to_vec()),
+                blob_hash: Mutex::new(None),
+            }),
+            writer.clone(),
+            Arc::new(AllowAll),
+            CollabLimits::default(),
+        ));
+        let file_id = Uuid::new_v4();
+        let caller = Uuid::new_v4();
+        let session = svc.attach_file(caller, file_id).await.unwrap();
+        dirty(&session, caller, " world").await;
+
+        assert!(session.flush_to_blob().await.unwrap());
+        assert_eq!(
+            writer.seen_preconditions.lock().unwrap().clone(),
+            vec![None]
+        );
+    }
+
+    #[tokio::test]
+    async fn conflicted_flush_evicts_with_a_reason_that_says_work_is_unsaved() {
+        let limits = CollabLimits {
+            debounce_idle: Duration::from_millis(50),
+            debounce_max: Duration::from_millis(500),
+            debounce_tick: Duration::from_millis(20),
+            ..CollabLimits::default()
+        };
+        let writer = Arc::new(CasWriter::new("blob-v1"));
+        let svc = Arc::new(CollabSessionService::new(
+            Arc::new(MemRepo::new()),
+            Arc::new(StubReader {
+                content: Mutex::new(b"hello".to_vec()),
+                blob_hash: Mutex::new(Some("blob-v1".to_string())),
+            }),
+            writer.clone(),
+            Arc::new(AllowAll),
+            limits,
+        ));
+        let file_id = Uuid::new_v4();
+        let caller = Uuid::new_v4();
+        let session = svc.attach_file(caller, file_id).await.unwrap();
+        let mut rx = session.subscribe_updates().await.unwrap();
+
+        dirty(&session, caller, " world").await;
+        writer.external_write("blob-from-webdav");
+
+        // Drain until the control frame: the dirtying update is
+        // broadcast first and is not what this test is about.
+        let reason = loop {
+            let (kind, payload) = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .expect("a control frame within 2s")
+                .expect("channel open until the actor drops");
+            if kind == INTERNAL_KIND_EVICTED {
+                break String::from_utf8(payload).unwrap();
+            }
+        };
+
+        // Distinct from the lifecycle hook's plain `external_write`:
+        // this one promises there IS unflushed text, which is what
+        // tells the client to preserve its buffer as a conflict copy
+        // instead of silently reloading.
+        assert_eq!(reason, "external_write_conflict");
+        assert_eq!(writer.write_count(), 0);
+        assert_eq!(writer.current_hash().as_deref(), Some("blob-from-webdav"));
     }
 
     #[tokio::test]

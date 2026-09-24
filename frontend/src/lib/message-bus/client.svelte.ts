@@ -196,6 +196,12 @@ export class MessageBusClient {
 	latencyMs = $state<number | null>(null);
 
 	#ws: WebSocket | null = null;
+	/** Monotonic id for the current connect attempt. Bumped by every
+	 *  `#connect()`; `#exchangeAndOpen` carries its own value and
+	 *  bails if it no longer matches, so a superseded attempt cannot
+	 *  open a second socket. See `#exchangeAndOpen` for the race this
+	 *  closes. */
+	#connectGen = 0;
 	/** Backoff for the NEXT reconnect attempt. Reset to
 	 *  `RECONNECT_MIN_MS` on every successful open. */
 	#backoffMs = RECONNECT_MIN_MS;
@@ -553,7 +559,15 @@ export class MessageBusClient {
 		// finalised inside its `.then`. Errors during exchange land in
 		// `#onTicketFailure`, which mirrors the WS-close reconnect path
 		// so a transient auth blip retries with backoff.
-		void this.#exchangeAndOpen();
+		//
+		// The generation token identifies THIS attempt. The `state`
+		// check above cannot do that job on its own: if the previous
+		// socket's `onclose` lands while our ticket POST is in flight,
+		// state flips to `disconnected`, a second `#connect()` starts
+		// and sets it back to `connecting` — so both attempts then see
+		// `state === 'connecting'` and both open a socket. See
+		// `#exchangeAndOpen`.
+		void this.#exchangeAndOpen(++this.#connectGen);
 	}
 
 	/** POST `/api/rt/ticket`, then open the WS with the returned
@@ -561,7 +575,7 @@ export class MessageBusClient {
 	 *  and session cookie handled by the interceptor — and we attach
 	 *  the CSRF header ourselves per every state-changing endpoint's
 	 *  convention (see `endpoints/shares.ts` for the pattern). */
-	async #exchangeAndOpen(): Promise<void> {
+	async #exchangeAndOpen(gen: number): Promise<void> {
 		let subprotocol: string;
 		try {
 			const res = await apiJson<RtTicketResponse>('/api/rt/ticket', {
@@ -571,13 +585,33 @@ export class MessageBusClient {
 			subprotocol = res.subprotocol;
 			busLog.debug('ticket issued', { expires_in_seconds: res.expires_in_seconds });
 		} catch (err) {
-			this.#onTicketFailure(err);
+			// Only the current attempt may drive the reconnect state
+			// machine; a superseded one reporting failure would
+			// schedule a redundant retry.
+			if (gen === this.#connectGen) this.#onTicketFailure(err);
 			return;
 		}
 		// A close/reconnect could have raced this in-flight exchange;
 		// bail if we lost the "connecting" role in the meantime.
-		if (this.state !== 'connecting') {
-			busLog.debug('ticket exchange raced with close — discarding', { state: this.state });
+		//
+		// Both conditions are load-bearing. `state` catches a close
+		// that left us disconnected. `gen` catches the subtler case
+		// the state check is blind to: a close DID land and a newer
+		// `#connect()` already put state back to `connecting` — the
+		// role was taken and handed on, so state looks unchanged from
+		// here. Without the generation check both attempts proceed,
+		// each assigns `this.#ws`, and the loser's socket is orphaned:
+		// still open, still firing `onopen` into `#onOpen`, which then
+		// replays every subscription against the OTHER socket while
+		// it is still CONNECTING. That surfaced as a burst of
+		// `InvalidStateError: Still in CONNECTING state` immediately
+		// after a `connected` log, with every subscribe failing.
+		if (this.state !== 'connecting' || gen !== this.#connectGen) {
+			busLog.debug('ticket exchange superseded — discarding', {
+				state: this.state,
+				gen,
+				current: this.#connectGen
+			});
 			return;
 		}
 		let ws: WebSocket;
@@ -596,10 +630,33 @@ export class MessageBusClient {
 		// in `#dispatchBinary`). Default is `Blob`; the switch has no
 		// cost when nobody's sending binary.
 		ws.binaryType = 'arraybuffer';
-		ws.onopen = () => this.#onOpen();
-		ws.onmessage = (ev) => this.#onMessage(ev);
+		// Every handler is gated on "am I still the live socket?".
+		// Belt-and-braces alongside the generation check in the
+		// caller: an orphaned socket must never drive the shared
+		// state machine — its `onopen` would mark us connected and
+		// replay subscriptions onto a different socket, and its
+		// `onclose` would schedule a reconnect the live socket
+		// doesn't need.
+		const isLive = () => this.#ws === ws;
+		ws.onopen = () => {
+			if (!isLive()) {
+				busLog.debug('onopen from superseded socket — closing it');
+				try {
+					ws.close();
+				} catch {
+					/* already closing */
+				}
+				return;
+			}
+			this.#onOpen();
+		};
+		ws.onmessage = (ev) => {
+			if (isLive()) this.#onMessage(ev);
+		};
 		ws.onerror = (ev) => busLog.debug('ws error event', { ev });
-		ws.onclose = (ev) => this.#onClose(ev);
+		ws.onclose = (ev) => {
+			if (isLive()) this.#onClose(ev);
+		};
 	}
 
 	/** Handle a failed ticket exchange. Same shape as a WS close —
