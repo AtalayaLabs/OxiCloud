@@ -14,10 +14,10 @@ This document contains the task list for the development of OxiCloud, a minimali
 
 ### File Preview
 - [x] Implement integrated image viewer
-- [ ] Add basic PDF viewer
-- [ ] Generate thumbnails for images
+- [x] Add basic PDF viewer
+- [x] Generate thumbnails for images
 - [x] Implement specific icons by file type
-- [ ] Add text/code preview
+- [x] Add text/code preview
 
 ### Enhanced Search
 - [x] Implement search by name
@@ -26,18 +26,16 @@ This document contains the task list for the development of OxiCloud, a minimali
 - [x] Add filter by file size
 - [x] Add search within specific folders
 - [x] Implement cache for search results
+- [x] Full-text search over file contents — Tantivy-backed content index, text extraction per blob (BLAKE3-keyed cache), asynchronous drain worker so writes never wait on indexing.
 
 ### UI/UX Optimizations
 - [ ] Improve responsive design for mobile devices
-- [ ] Implement drag & drop between folders
+- [x] Implement drag & drop between folders
 - [x] Add support for multiple file selection
 - [x] Implement multiple file uploads
-- [ ] Add progress indicators for long operations
+- [x] Add progress indicators for long operations
 - [x] Implement UI notifications for events
-- [ ] Photos timeline: virtual scrolling
-  - Solo mantener en el DOM las filas visibles en el viewport + un margen. Al hacer scroll, reciclar los nodos que salen por arriba para los que entran por abajo.
-  - Ventajas: Funciona perfectamente con 50,000 fotos. Uso de memoria constante.
-  - Excesiva para ahora — evaluar cuando el volumen de fotos lo justifique.
+- [x] Photos timeline: virtual scrolling — only visible rows in the DOM, constant memory at any library size.
 
 ## Phase 2: Authentication and Multi-User
 
@@ -45,14 +43,14 @@ This document contains the task list for the development of OxiCloud, a minimali
 - [x] Design data model for users
 - [x] Implement user registration
 - [x] Create login system
-- [ ] Add user profile page
-- [ ] Implement password recovery
+- [x] Add user profile page
+- [x] Implement password recovery — admin-initiated reset from the admin panel (user-initiated self-service flow is a follow-up).
 - [x] Separate storage by user
 
 ### Quotas and Permissions
 - [x] Implement storage quota system
 - [x] Add basic role system (admin/user)
-- [ ] Create admin panel
+- [x] Create admin panel
 - [x] Implement folder-level permissions
 - [x] Add storage usage monitoring
 
@@ -60,8 +58,8 @@ This document contains the task list for the development of OxiCloud, a minimali
 - [x] Implement secure password hashing with Argon2
 - [x] Add session management
 - [x] Implement JWT authentication token
-- [ ] Add CSRF protection
-- [ ] Implement login attempt limits
+- [x] Add CSRF protection
+- [x] Implement login attempt limits
 - [ ] Create activity logging system
 
 ## Phase 3: Collaboration Features
@@ -72,7 +70,7 @@ This document contains the task list for the development of OxiCloud, a minimali
 - [x] Implement password protection for links
 - [ ] Add expiration dates for shared links
 - [x] Create page to manage all shared resources
-- [ ] Implement sharing notifications
+- [x] Implement sharing notifications
 
 ### Recycle Bin
 - [x] Design model for storing deleted files
@@ -96,9 +94,9 @@ This document contains the task list for the development of OxiCloud, a minimali
 - [x] Design OpenAPI specification
 - [x] Implement endpoints for file operations
 - [x] Add endpoints for users and authentication
-- [ ] Implement automatic documentation (Swagger)
+- [x] Implement automatic documentation (Swagger)
 - [ ] Create API token system
-- [ ] Implement rate limiting
+- [x] Implement rate limiting
 - [ ] Add API versioning
 
 ### WebDAV Support
@@ -108,8 +106,8 @@ This document contains the task list for the development of OxiCloud, a minimali
 - [x] Add support for locking
 - [x] Test compatibility with standard clients
 - [x] Optimize WebDAV performance
-- [ ] Implement Range Requests (RFC 7233) for resumable transfers
-- [ ] Support partial file updates with HTTP PATCH for bandwidth efficiency
+- [x] Implement Range Requests (RFC 7233) for resumable transfers
+- [x] Support partial file updates for bandwidth efficiency — small edit in a huge file transmits only the touched chunks (CDC-based delta upload).
 
 ### Sync Client
 - [ ] Design client architecture in Rust
@@ -125,11 +123,11 @@ This document contains the task list for the development of OxiCloud, a minimali
 ## Phase 5: Advanced Features
 
 ### File Encryption
-- [ ] Research and select encryption algorithms
-- [ ] Implement at-rest encryption for files
-- [ ] Add key management
-- [ ] Implement encryption for shared files
-- [ ] Create security documentation
+- [x] Research and select encryption algorithms
+- [x] Implement at-rest encryption for files
+- [x] Add key management
+- [x] Implement encryption for shared files
+- [x] Create security documentation
 
 ### File Versioning
 - [ ] Design version storage system
@@ -140,7 +138,7 @@ This document contains the task list for the development of OxiCloud, a minimali
 
 ### Basic Applications
 - [x] Design plugin/app system
-- [ ] Implement basic text viewer/editor
+- [x] Implement basic text viewer/editor
 - [ ] Add simple notes application
 - [x] Implement basic calendar
 - [x] Create API for third-party applications
@@ -156,51 +154,55 @@ This document contains the task list for the development of OxiCloud, a minimali
 - [x] Optimize database queries
 - [ ] Implement scaling strategies
 - [x] Implement transfer acceleration with multipart chunking
-- [ ] Implement differential sync algorithm (similar to rsync)
+- [x] Implement differential sync algorithm (similar to rsync)
 - [x] Add strong ETag support for more efficient caching
+- [x] Recoverable jobs engine — background job runner pauses at a cursor on transient failures and resumes on the next tick instead of losing progress or falsely reporting success.
 
 ### Frontend
-- [ ] Optimize initial asset loading
-- [ ] Implement lazy loading for large lists
+- [x] Optimize initial asset loading
+- [x] Implement lazy loading for large lists
 - [x] Add local cache (localStorage/IndexedDB)
 - [ ] Optimize UI rendering
 - [ ] Implement intelligent prefetching
 - [ ] Add basic offline support
-- [ ] Implement client-side image resizing before upload
+- [x] Implement client-side image resizing before upload
 - [x] Add HTTP/2 support for multiplexing requests
 - [ ] Implement progressive image loading
 
 ### Storage
-- [ ] Research deduplication options
-- [ ] Implement block storage
+- [x] Research deduplication options
+- [x] Implement block storage
 - [x] Add transparent compression by file type
 - [ ] Implement log rotation and archiving
 - [ ] Create automated backup system
-- [ ] Add support for distributed storage
-- [ ] Implement media transcoding for optimized delivery
+- [x] Add support for distributed storage
+- [x] Implement media transcoding for optimized delivery
 - [x] Add content-aware compression by file format
-- [ ] Implement dynamic thumbnail resizing based on viewport
+- [x] Implement dynamic thumbnail resizing based on viewport
+- [x] Online migration between storage backends — hot-switch between local FS / S3 / Azure / encrypted with hash verification, resumable.
+- [x] Filesystem consistency checks — background jobs sweep blob ref-counts, cross-backend orphans, thumbnail and extracted-text orphans. Discovery-only; repair is opt-in.
+- [x] External mounts — S3 / WebDAV / etc. providers appear as folders in the user's tree; reads and writes route through the mount provider transparently.
 
 ### Bandwidth & Transfer Optimization
 - [ ] **Sub-file chunked dedup (Restic/Borg style)**
-  - [ ] Implement Content-Defined Chunking (CDC) with FastCDC/Rabin rolling hash
-  - [ ] Variable-size chunks (target 1-4 MB) instead of whole-file blobs
-  - [ ] Per-chunk BLAKE3 hashing and dedup (saves storage + bandwidth on similar files)
+  - [x] Implement Content-Defined Chunking (CDC) with FastCDC/Rabin rolling hash
+  - [x] Variable-size chunks (target 1-4 MB) instead of whole-file blobs
+  - [x] Per-chunk BLAKE3 hashing and dedup (saves storage + bandwidth on similar files)
   - [ ] Chunk-level Zstd compression (better ratio than whole-file)
   - [ ] Migrate existing whole-file blobs to chunked storage
-- [ ] **Delta sync / rsync-style transfers**
-  - [ ] Implement rolling checksum algorithm for block-level diffing
-  - [ ] Client sends only changed blocks on re-upload (not the full file)
-  - [ ] Server-side block assembly from delta + existing chunks
-  - [ ] Huge savings for large files with small edits (VMs, databases, ISOs)
+- [x] **Delta sync / rsync-style transfers**
+  - [x] Implement rolling checksum algorithm for block-level diffing
+  - [x] Client sends only changed blocks on re-upload (not the full file)
+  - [x] Server-side block assembly from delta + existing chunks
+  - [x] Huge savings for large files with small edits (VMs, databases, ISOs)
 - [ ] **Resumable uploads & downloads (RFC 7233 / tus.io)**
-  - [ ] Server tracks partial upload state; client resumes from last byte on failure
-  - [ ] HTTP Range responses for download resume after network drops
+  - [x] Server tracks partial upload state; client resumes from last byte on failure
+  - [x] HTTP Range responses for download resume after network drops
   - [ ] tus.io protocol support for cross-client compatibility
 - [ ] **Client-side optimization before upload**
-  - [ ] Resize images to configurable max dimensions before upload (e.g. 4K cap)
+  - [x] Resize images to configurable max dimensions before upload (e.g. 4K cap)
   - [ ] Re-encode videos to efficient codec (H.265/AV1) client-side before upload
-  - [ ] ⚡ **HIGH IMPACT / QUICK WIN** — Pre-compute BLAKE3 hash client-side (WASM); query server before upload; skip transfer entirely if blob already exists (instant dedup, zero bandwidth)
+  - [x] ⚡ **HIGH IMPACT / QUICK WIN** — Pre-compute BLAKE3 hash client-side (WASM); query server before upload; skip transfer entirely if blob already exists (instant dedup, zero bandwidth)
 - [ ] **Server-side on-demand transcoding**
   - [ ] Store originals; serve WebP/AVIF for images on request (saves download BW)
   - [ ] Adaptive video streaming (HLS/DASH) from stored originals
@@ -212,16 +214,16 @@ This document contains the task list for the development of OxiCloud, a minimali
 - [ ] **Transfer-level compression**
   - [ ] Zstd streaming compression for HTTP responses (better than gzip for large files)
   - [ ] Brotli for static assets; Zstd for dynamic/binary content
-  - [ ] Content-aware: skip compression for already-compressed formats (JPEG, ZIP, etc.)
+  - [x] Content-aware: skip compression for already-compressed formats (JPEG, ZIP, etc.)
 - [ ] **Batched & multiplexed operations**
   - [ ] Batch small file uploads into single request (tar-stream or multipart bundle)
-  - [ ] HTTP/2 multiplexing for parallel chunk transfers on single connection
-  - [ ] Server-side ZIP streaming for multi-file download (already partial)
+  - [x] HTTP/2 multiplexing for parallel chunk transfers on single connection
+  - [x] Server-side ZIP streaming for multi-file download (already partial)
 
 ## Infrastructure and Deployment
 
 - [x] Create Docker configuration
-- [ ] Implement CI/CD with GitHub Actions
+- [x] Implement CI/CD with GitHub Actions
 - [x] Add automated tests
 - [x] Create installation documentation
 - [ ] Implement monitoring and alerts
@@ -234,12 +236,12 @@ This document contains the task list for the development of OxiCloud, a minimali
   - [x] Implement chunked upload for large files
   - [x] Add file integrity verification
   - [x] Develop adaptive compression by file type
-- [ ] Implement preview for different file types
-  - [ ] Create integrated PDF viewer
-  - [ ] Add office document viewer
-  - [ ] Develop code viewer with syntax highlighting
+- [x] Implement preview for different file types
+  - [x] Create integrated PDF viewer
+  - [x] Add office document viewer
+  - [x] Develop code viewer with syntax highlighting
 - [ ] Add online document editing
-  - [ ] Integrate text/markdown editor
+  - [x] Integrate collaborative text/markdown editor — CodeMirror + Yjs CRDT, peer cursors, read-only for Viewers, eviction on delete / grant-revoke / external write.
   - [ ] Implement collaborative spreadsheet editor
   - [ ] Develop simple image editor
 - [ ] Implement file version control
@@ -273,9 +275,9 @@ This document contains the task list for the development of OxiCloud, a minimali
   - [x] Add per-folder/file permissions
   - [x] Develop customizable roles
   - [x] Implement permission inheritance
-- [ ] Add real-time collaboration
-  - [ ] Develop collaborative editing
-  - [ ] Add presence indicators
+- [x] Add real-time collaboration
+  - [x] Develop collaborative editing
+  - [x] Add presence indicators
   - [ ] Implement per-user change history
 - [ ] Integrate with social networks
   - [ ] Add direct sharing to popular platforms
@@ -295,8 +297,11 @@ This document contains the task list for the development of OxiCloud, a minimali
   - [x] Add customizable requirements
   - [ ] Implement password rotation
   - [ ] Develop compromised password detection
+- [x] OPAQUE password login (RFC 9807) — server never sees the plaintext password; DB dump or wire capture yields nothing replayable.
+- [x] DPoP session binding (RFC 9449) — every request signs a proof with a browser-held, non-extractable P-256 key; stolen cookies alone are useless.
+- [x] Audit logs — structured `target: "audit"` tracing stream for every permission denial, grant change, auth outcome, eviction, admin action; stable event / reason vocabulary so operators can grep + aggregate.
 - [ ] Create detailed audit system
-  - [ ] Log access and actions
+  - [x] Log access and actions
   - [ ] Add security alerts
   - [ ] Implement configurable log retention
 
@@ -348,33 +353,34 @@ This document contains the task list for the development of OxiCloud, a minimali
 - [ ] Add intelligent tagging
   - [ ] Implement entity recognition
   - [ ] Develop topic analysis
-  - [ ] Add facial tagging for photos
+  - [x] Add facial tagging for photos
 - [ ] Develop personalized recommendations
   - [ ] Implement usage-based suggestions
   - [ ] Add relevant content discovery
   - [ ] Develop needs prediction
 - [ ] Implement intelligent photo gallery
-  - [ ] Create advanced photo viewer with smooth zoom and navigation
-  - [ ] Add EXIF metadata extraction and visualization
-  - [ ] Implement map of photo locations
-  - [ ] Develop automatic timeline by date/event
-  - [ ] Add recognition and grouping by identified people
+  - [x] Create advanced photo viewer with smooth zoom and navigation
+  - [x] Add EXIF metadata extraction and visualization
+  - [x] Implement map of photo locations
+  - [x] Develop automatic timeline by date/event
+  - [x] Add recognition and grouping by identified people
   - [ ] Implement automatic album creation by events, places, and people
   - [ ] Develop photo search using combined filters (person+place+date)
   - [ ] Add scene and object detection in photos (beach, mountain, animals, etc.)
   - [ ] Implement similar or duplicate photo detection
   - [ ] Add non-destructive basic editing features (crop, filters, adjustments)
-  - [ ] Video support
+  - [x] Video support
 
 ### Enterprise Collaboration
-- [ ] Create shared workspaces
-  - [ ] Develop team structures
+- [x] Create shared workspaces
+  - [x] Develop team structures — Drives own the storage, Groups hold the grant on them; adding a member to the Group grants them access to every Drive that Group is granted on.
   - [ ] Add project templates
   - [ ] Implement customized dashboards
 - [x] Implement role-based access control
   - [x] Develop customizable roles
   - [x] Add granular access policies
   - [ ] Implement segregation of duties
+- [x] Implement ReBAC (relationship-based access control) — grants are subject→resource relationships (User/Group/Token) × (File/Folder/Drive/Calendar/AddressBook) × (Viewer/Editor/Owner + custom). Cascades from ancestor folders, expands transitively through group membership, anti-enumeration collapses "no access" and "unknown resource" to the same wire shape, decisions cached per-request.
 - [ ] Add comments and annotations
   - [ ] Develop document annotations
   - [ ] Add highlighting and marking
@@ -395,19 +401,22 @@ This document contains the task list for the development of OxiCloud, a minimali
   - [ ] Implement cost optimization
 - [x] Optimize compression and deduplication
   - [x] Develop adaptive compression
-  - [ ] Add block-level deduplication
+  - [x] Add block-level deduplication
   - [ ] Implement similar file detection
 
 ### Interoperability and Extensibility
 - [x] Improve RESTful API
   - [x] Complete OpenAPI documentation
   - [ ] Add API versioning
-  - [ ] Implement intelligent rate limiting
+  - [x] Implement intelligent rate limiting
+- [x] Message bus (pub/sub over WebSocket + AsyncAPI) — one persistent WS per browser, typed topics (`folder:*`, `collab:*`, `user:*:authz`, `notification:*`), server publishes bus events + revocations to interested subscribers; JSON-RPC 2.0 control plane, binary sub-protocol for CRDT / Yjs frames, AsyncAPI 3.0 spec with generated TS DTOs on the FE.
+- [x] CLI for low-level operations — `oxicloud` binary carries admin subcommands (`opaque …`, `migrate …`, …) so operators can run maintenance without a running server.
 - [ ] Develop webhook system
   - [ ] Add configurable triggers
   - [ ] Implement retries and reliability
   - [ ] Develop delivery verification
-- [ ] Implement OAuth for third parties
+- [x] OIDC login (OxiCloud as OIDC client) — sign in via external IdP, OIDC back-channel logout (IdP → OxiCloud) with JTI replay protection, RP-initiated logout propagation (OxiCloud → IdP end_session_endpoint) so the upstream session dies with ours.
+- [ ] Implement OAuth for third parties (OxiCloud as authorization server)
   - [ ] Add standard authentication flows
   - [ ] Develop granular permission management
   - [ ] Implement access revocation
