@@ -10,6 +10,11 @@ const { goto, pageState, session, ui, confirmDialog, promptDialog } = vi.hoisted
 	session: {
 		user: { id: 'me', username: 'admin', is_external: false },
 		isExternalUser: false,
+		// The message bus probes the session before requesting a WS
+		// ticket — this page subscribes to folder topics, so the stub
+		// has to answer.
+		isAuthenticated: true,
+		load: async () => null,
 		loadHomeFolder: vi.fn(async () => 'home'),
 		refresh: vi.fn(async () => {})
 	},

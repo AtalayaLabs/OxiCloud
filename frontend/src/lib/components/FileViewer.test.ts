@@ -22,6 +22,17 @@ const { cfg } = vi.hoisted(() => ({
 	cfg: { loaded: true, features: { markdown_collab: false } }
 }));
 vi.mock('$lib/stores/serverConfig.svelte', () => ({ serverConfig: cfg }));
+// Collab also needs a signed-in caller: it runs over the message bus, whose
+// WS ticket route is deliberately off the anonymous share allowlist. These
+// tests describe the authenticated case, so say so explicitly — see the
+// anonymous test at the bottom for the other side.
+// `load` is part of the contract the message bus relies on — it probes
+// the session before asking for a WS ticket — so the stub needs it even
+// though these tests never connect.
+const { sess } = vi.hoisted(() => ({
+	sess: { isAuthenticated: true, load: async () => null }
+}));
+vi.mock('$lib/stores/session.svelte', () => ({ session: sess }));
 // The real editor mounts CodeMirror and a message-bus session; the stub just
 // renders the toolbar the viewer passes in.
 vi.mock(
@@ -128,6 +139,53 @@ it('moves the actions into the editor row for a collab-editable file', async () 
 	expect(screen.queryByTestId('file-viewer-open-new-tab-link')).toBeNull();
 	expect(screen.getByTestId('file-viewer-close-btn')).toBeTruthy();
 	expect(screen.getByTestId('file-viewer-close-btn')).toBeTruthy();
+	cfg.features.markdown_collab = false;
+});
+
+// A public-share visitor holds an anonymous session, and anonymous
+// sessions never get a WebSocket — `POST /api/rt/ticket` is off their
+// allowlist by design. Mounting the collaborative editor for them
+// produced a 403 per attempt (`authz.denied`,
+// `reason="anonymous_route_not_allowlisted"`) and an editor that could
+// never sync. The plain preview is the correct surface: static, no
+// realtime updates, which is all a share visitor can have.
+it('shows the plain preview instead of the editor for an anonymous visitor', async () => {
+	cfg.features.markdown_collab = true;
+	sess.isAuthenticated = false;
+	af.mockResolvedValue({ ok: true, text: async () => 'hello from the share' });
+
+	render(FileViewer, {
+		props: {
+			open: true,
+			file: file({ name: 'notes.md', mime_type: 'text/markdown', category: 'Document' })
+		}
+	});
+
+	await screen.findByText('hello from the share');
+	expect(screen.queryByTestId('collab-editor-stub')).toBeNull();
+
+	sess.isAuthenticated = true;
+	cfg.features.markdown_collab = false;
+});
+
+// `readOnly` is a separate gate from authentication: a host that opens
+// the viewer read-only is asking for a preview, and that must hold even
+// for a signed-in caller who could otherwise edit.
+it('shows the plain preview instead of the editor when opened read-only', async () => {
+	cfg.features.markdown_collab = true;
+	af.mockResolvedValue({ ok: true, text: async () => 'read only body' });
+
+	render(FileViewer, {
+		props: {
+			open: true,
+			readOnly: true,
+			file: file({ name: 'notes.md', mime_type: 'text/markdown', category: 'Document' })
+		}
+	});
+
+	await screen.findByText('read only body');
+	expect(screen.queryByTestId('collab-editor-stub')).toBeNull();
+
 	cfg.features.markdown_collab = false;
 });
 

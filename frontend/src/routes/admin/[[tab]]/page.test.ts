@@ -2,7 +2,14 @@ import { it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
 
 const { session, ui, pageState } = vi.hoisted(() => ({
-	session: { user: { id: '1', username: 'admin', role: 'admin' } },
+	// `load` + `isAuthenticated`: the message bus probes the session
+	// before asking for a WS ticket, so any stub reachable from a
+	// component that subscribes needs both.
+	session: {
+		user: { id: '1', username: 'admin', role: 'admin' },
+		isAuthenticated: true,
+		load: async () => null
+	},
 	ui: { notify: vi.fn() },
 	// Mock of SvelteKit's `$app/state` `page` — post-URL-routing
 	// the admin page reads `page.params.tab` to derive which
