@@ -1010,7 +1010,7 @@
     "backend_stored": "Stocké",
     "backend_dedup_ratio": "Ratio de déduplication",
     "backend_referenced": "Référencé",
-    "backend_referenced_hint":"Somme des références blobs (taille × ref_nb). Peut dépasser la capacité totale du disque car les miniatures, les objets générés, et le ramasse-miette de blobs en attente sont encore référencés.",
+    "backend_referenced_hint": "Somme des références blobs (taille × ref_nb). Peut dépasser la capacité totale du disque car les miniatures, les objets générés, et le ramasse-miette de blobs en attente sont encore référencés.",
     "status": "Statut",
     "storage": "Stockage",
     "storage_endpoint": "URL du point de terminaison",
@@ -1040,7 +1040,16 @@
       "include_in_music_index_help": "Inclure les fichiers audio de ce Disque dans la bibliothèque Musique. Les Disques personnels par défaut sont inclus automatiquement ; activez cette option pour les Disques partagés qui contiennent réellement une collection musicale (par ex. « Musique famille », « Collaboration groupe »).",
       "implied_by_forbid_sharing": "Déjà appliqué par « Interdire le partage par ressource ».",
       "read_only": "Lecture seule (gel)",
-      "read_only_help": "Geler entièrement le Disque — toute modification est refusée (téléversements, éditions, suppressions, renommages, partages, changements d'appartenance). La lecture et le téléchargement continuent de fonctionner. Le nettoyage automatique de la corbeille est également mis en pause. À utiliser pour les archives, les mises sous scellé légal ou la clôture de comptes. Seul un administrateur peut lever le gel."
+      "read_only_help": "Geler entièrement le Disque — toute modification est refusée (téléversements, éditions, suppressions, renommages, partages, changements d'appartenance). La lecture et le téléchargement continuent de fonctionner. Le nettoyage automatique de la corbeille est également mis en pause. À utiliser pour les archives, les mises sous scellé légal ou la clôture de comptes. Seul un administrateur peut lever le gel.",
+      "implied_by_forbid_public_links": "Déjà appliqué par « Interdire les liens publics ».",
+      "overridden": "remplacé · par défaut : {{value}}",
+      "overridden_title": "Défini sur ce Disque. Ne suivra pas les futures modifications de la valeur par défaut.",
+      "n_days": "{{n}} jours",
+      "no_cap": "sans limite",
+      "max_public_link_days": "Limiter la durée de vie des liens publics",
+      "max_public_link_days_help": "Durée de vie maximale, en jours, d'un lien public dans ce Disque. Laissez vide pour ne pas limiter. Les liens créés au-delà de cette limite sont refusés ; les liens existants qui la dépassent continuent de fonctionner et sont signalés par l'analyse de conformité.",
+      "require_public_link_password": "Exiger un mot de passe sur les liens publics",
+      "require_public_link_password_help": "Les liens publics de ce Disque doivent être protégés par un mot de passe. Les liens créés sans mot de passe sont refusés ; les liens existants sans mot de passe continuent de fonctionner et sont signalés par l'analyse de conformité."
     },
     "drives": "Disques",
     "drive_name": "Nom",
@@ -1329,7 +1338,34 @@
         "unknown": "Inconnu"
       }
     },
-    "storage_backend_audit_triggered": "backend_consistency déclenché pour `{{name}}` — suivez-le dans l’onglet Tâches en arrière-plan."
+    "storage_backend_audit_triggered": "backend_consistency déclenché pour `{{name}}` — suivez-le dans l’onglet Tâches en arrière-plan.",
+    "drive_policies": {
+      "tab": "Règles des Disques",
+      "drive_gone": "Ce Disque n'existe plus — relancez l'analyse.",
+      "hint": "Les valeurs par défaut s'appliquent à tous les Disques de ce genre. Un Disque suit la valeur par défaut pour chaque réglage qu'il n'a pas explicitement remplacé : renforcer une règle ici touche donc l'ensemble du parc, sauf là où quelqu'un en a délibérément décidé autrement.",
+      "personal": "Disques personnels",
+      "shared": "Disques partagés",
+      "not_defaultable": "À définir par Disque — il s'agit d'un état opérationnel, pas d'une valeur par défaut.",
+      "not_applicable": "Ne s'applique pas à ce genre de Disque.",
+      "saved": "Enregistré — appliqué à tous les Disques de ce genre qui ne l'ont pas remplacé.",
+      "reports": "Conformité",
+      "reports_hint": "Les règles sont vérifiées à la création, jamais rétroactivement : en renforcer une ne casse donc jamais un lien existant. Cette analyse sert à rendre ces cas visibles. Elle ne fait que signaler ; rien n'est modifié.",
+      "rescan": "Lancer l'analyse",
+      "scanning": "Analyse en cours…",
+      "drift_title": "Disques moins restrictifs que leur valeur par défaut ({{n}})",
+      "drift_hint": "Seul un Disque avec un remplacement explicite peut apparaître ici — tout réglage laissé libre suit la valeur par défaut par construction. Il s'agit donc d'une liste de décisions délibérées à réexaminer, et elle se met à jour dès que l'une d'elles est corrigée.",
+      "drift_none": "Aucun — chaque Disque est au moins aussi strict que sa valeur par défaut.",
+      "drift_pinned": "{{n}} Disque(s) moins restrictif(s) que leur valeur par défaut",
+      "drift_review": "Examiner",
+      "shares_title": "Partages qui ne respectent pas les règles de leur Disque ({{n}})",
+      "shares_none": "Aucun — tous les liens et partages respectent les règles de leur Disque.",
+      "v_no_password": "sans mot de passe",
+      "v_never_expires": "n'expire jamais",
+      "v_over_cap": "dépasse la durée maximale"
+    },
+    "drives_policy_hint": "Les règles définies ici s'appliquent à un seul Disque et remplacent sa valeur par défaut.",
+    "drives_policy_hint_link": "Modifier les valeurs par défaut de tous les Disques",
+    "drive_manage_policies_for_owner": "Gérer les règles — {{name}} ({{owner}})"
   },
   "profile": {
     "page_title": "Profil",

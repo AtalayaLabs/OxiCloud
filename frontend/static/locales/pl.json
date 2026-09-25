@@ -1018,7 +1018,16 @@
       "include_in_music_index_help": "Uwzględniaj pliki audio z tego Dysku w bibliotece Muzyki. Domyślne dyski osobiste są uwzględniane automatycznie; włącz to dla dysków współdzielonych, które faktycznie zawierają kolekcję muzyczną (np. «Muzyka rodzinna», «Współpraca zespołu»).",
       "implied_by_forbid_sharing": "Już egzekwowane przez «Zakaz udostępniania per-zasób».",
       "read_only": "Tylko do odczytu (zamrożenie)",
-      "read_only_help": "Zamrożenie Dysku w całości — każda modyfikacja zostaje odrzucona (wysyłki, edycje, usunięcia, zmiany nazw, udostępnianie, zmiany członkostwa). Odczyt i pobieranie nadal działają. Automatyczne czyszczenie kosza również jest wstrzymane. Używaj do archiwów, blokad prawnych lub zamykania kont. Tylko administrator może odblokować."
+      "read_only_help": "Zamrożenie Dysku w całości — każda modyfikacja zostaje odrzucona (wysyłki, edycje, usunięcia, zmiany nazw, udostępnianie, zmiany członkostwa). Odczyt i pobieranie nadal działają. Automatyczne czyszczenie kosza również jest wstrzymane. Używaj do archiwów, blokad prawnych lub zamykania kont. Tylko administrator może odblokować.",
+      "implied_by_forbid_public_links": "Już egzekwowane przez «Zakaz linków publicznych».",
+      "overridden": "nadpisane · domyślnie: {{value}}",
+      "overridden_title": "Ustawione na tym dysku. Nie będzie podążać za przyszłymi zmianami wartości domyślnej.",
+      "n_days": "{{n}} dni",
+      "no_cap": "bez limitu",
+      "max_public_link_days": "Ogranicz czas życia linków publicznych",
+      "max_public_link_days_help": "Maksymalny czas życia linku publicznego na tym dysku, w dniach. Pozostaw puste, aby nie ustawiać limitu. Linki tworzone ponad limit są odrzucane; istniejące linki, które go przekraczają, nadal działają i są zgłaszane przez skanowanie zgodności.",
+      "require_public_link_password": "Wymagaj hasła do linków publicznych",
+      "require_public_link_password_help": "Linki publiczne na tym dysku muszą mieć hasło. Linki utworzone bez hasła są odrzucane; istniejące linki bez hasła nadal działają i są zgłaszane przez skanowanie zgodności."
     },
     "drives": "Dyski",
     "drive_name": "Nazwa",
@@ -1297,7 +1306,34 @@
         "unknown": "Nieznane"
       }
     },
-    "storage_backend_audit_triggered": "backend_consistency uruchomiony dla `{{name}}` — obserwuj to na karcie Zadania w tle."
+    "storage_backend_audit_triggered": "backend_consistency uruchomiony dla `{{name}}` — obserwuj to na karcie Zadania w tle.",
+    "drive_policies": {
+      "tab": "Zasady dysków",
+      "drive_gone": "Ten dysk już nie istnieje — uruchom skanowanie ponownie.",
+      "hint": "Wartości domyślne obowiązują dla każdego dysku tego typu. Dysk stosuje wartość domyślną dla każdego ustawienia, którego jawnie nie nadpisał, więc zaostrzenie zasady tutaj obejmuje wszystkie dyski z wyjątkiem tych, w których ktoś świadomie zdecydował inaczej.",
+      "personal": "Dyski osobiste",
+      "shared": "Dyski współdzielone",
+      "not_defaultable": "Ustawiane dla pojedynczego dysku — to stan operacyjny, a nie wartość domyślna.",
+      "not_applicable": "Nie dotyczy tego typu dysku.",
+      "saved": "Zapisano — zastosowano do każdego dysku tego typu, który tego nie nadpisał.",
+      "reports": "Zgodność",
+      "reports_hint": "Zasady są sprawdzane przy tworzeniu, nigdy wstecz — zaostrzenie którejś nigdy nie psuje linku, który już istnieje. To skanowanie sprawia, że takie przypadki stają się widoczne. Tylko raportuje; nic nie jest zmieniane.",
+      "rescan": "Uruchom skanowanie",
+      "scanning": "Skanowanie…",
+      "drift_title": "Dyski mniej restrykcyjne niż ich wartość domyślna ({{n}})",
+      "drift_hint": "Może się tu pojawić wyłącznie dysk z jawnym nadpisaniem — wszystko, co pozostawiono nieustawione, z założenia stosuje wartość domyślną. To zatem lista świadomych decyzji do przejrzenia, aktualizowana natychmiast po poprawieniu którejkolwiek z nich.",
+      "drift_none": "Brak — każdy dysk jest co najmniej tak restrykcyjny jak jego wartość domyślna.",
+      "drift_pinned": "{{n}} dysk(ów) mniej restrykcyjnych niż ich wartość domyślna",
+      "drift_review": "Przejrzyj",
+      "shares_title": "Udostępnienia naruszające zasady swojego dysku ({{n}})",
+      "shares_none": "Brak — każdy link i każde uprawnienie jest zgodne z zasadami swojego dysku.",
+      "v_no_password": "bez hasła",
+      "v_never_expires": "nigdy nie wygasa",
+      "v_over_cap": "przekracza limit"
+    },
+    "drives_policy_hint": "Zasady ustawione tutaj dotyczą jednego dysku i nadpisują jego wartość domyślną.",
+    "drives_policy_hint_link": "Edytuj wartości domyślne dla wszystkich dysków",
+    "drive_manage_policies_for_owner": "Zarządzaj zasadami — {{name}} ({{owner}})"
   },
   "profile": {
     "page_title": "Profil",

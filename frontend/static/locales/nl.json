@@ -1018,7 +1018,16 @@
       "include_in_music_index_help": "Neem audiobestanden uit deze Schijf op in de Muziekbibliotheek. Standaard persoonlijke Schijfs zijn automatisch opgenomen; schakel dit in voor gedeelde Schijfs die daadwerkelijk een muziekcollectie bevatten (bv. «Gezinsmuziek», «Bandsamenwerking»).",
       "implied_by_forbid_sharing": "Al afgedwongen door «Per-resource delen verbieden».",
       "read_only": "Alleen-lezen (bevriezen)",
-      "read_only_help": "Bevries de Schijf volledig — elke wijziging wordt geweigerd (uploads, bewerkingen, verwijderingen, hernoemingen, delen, lidmaatschapswijzigingen). Lezen en downloaden blijven werken. Ook de automatische prullenbakopruiming pauzeert. Voor archieven, juridische bewaarplicht of accountsluitingen. Alleen een beheerder kan ontdooien."
+      "read_only_help": "Bevries de Schijf volledig — elke wijziging wordt geweigerd (uploads, bewerkingen, verwijderingen, hernoemingen, delen, lidmaatschapswijzigingen). Lezen en downloaden blijven werken. Ook de automatische prullenbakopruiming pauzeert. Voor archieven, juridische bewaarplicht of accountsluitingen. Alleen een beheerder kan ontdooien.",
+      "implied_by_forbid_public_links": "Al afgedwongen door «Openbare links verbieden».",
+      "overridden": "overschreven · standaard: {{value}}",
+      "overridden_title": "Ingesteld op deze schijf. Volgt toekomstige wijzigingen van de standaard niet.",
+      "n_days": "{{n}} dagen",
+      "no_cap": "geen limiet",
+      "max_public_link_days": "Levensduur van openbare links beperken",
+      "max_public_link_days_help": "Maximale levensduur, in dagen, van een openbare link in deze schijf. Laat leeg voor geen limiet. Links die daarbuiten worden aangemaakt, worden geweigerd; bestaande links die de limiet overschrijden blijven werken en worden gemeld door de nalevingsscan.",
+      "require_public_link_password": "Wachtwoord vereisen voor openbare links",
+      "require_public_link_password_help": "Openbare links in deze schijf moeten een wachtwoord hebben. Links die zonder wachtwoord worden aangemaakt, worden geweigerd; bestaande links zonder wachtwoord blijven werken en worden gemeld door de nalevingsscan."
     },
     "drives": "Schijven",
     "drive_name": "Naam",
@@ -1297,7 +1306,34 @@
         "unknown": "Onbekend"
       }
     },
-    "storage_backend_audit_triggered": "backend_consistency geactiveerd voor `{{name}}` — volg het op het tabblad Achtergrondtaken."
+    "storage_backend_audit_triggered": "backend_consistency geactiveerd voor `{{name}}` — volg het op het tabblad Achtergrondtaken.",
+    "drive_policies": {
+      "tab": "Schijfbeleid",
+      "drive_gone": "Die schijf bestaat niet meer — voer de scan opnieuw uit.",
+      "hint": "Standaardwaarden gelden voor elke schijf van dat type. Een schijf volgt de standaard voor elke instelling die zij niet uitdrukkelijk heeft overschreven, dus iets hier aanscherpen bereikt het hele bestand, behalve waar iemand bewust anders heeft besloten.",
+      "personal": "Persoonlijke schijven",
+      "shared": "Gedeelde schijven",
+      "not_defaultable": "Per schijf instellen — dit is een bedrijfstoestand, geen standaard.",
+      "not_applicable": "Niet van toepassing op dit type schijf.",
+      "saved": "Opgeslagen — toegepast op elke schijf van dit type die het niet heeft overschreven.",
+      "reports": "Naleving",
+      "reports_hint": "Beleid wordt gecontroleerd bij het aanmaken, nooit met terugwerkende kracht — iets aanscherpen breekt dus nooit een link die al bestaat. Deze scan maakt die gevallen zichtbaar. Ze rapporteert alleen; er wordt niets gewijzigd.",
+      "rescan": "Scan uitvoeren",
+      "scanning": "Bezig met scannen…",
+      "drift_title": "Schijven die minder streng zijn dan hun standaard ({{n}})",
+      "drift_hint": "Alleen een schijf met een uitdrukkelijke overschrijving kan hier verschijnen — alles wat niet is ingesteld volgt per definitie de standaard. Dit is dus een lijst met bewuste beslissingen om te herzien, en hij wordt bijgewerkt zodra er een is gecorrigeerd.",
+      "drift_none": "Geen — elke schijf is minstens zo streng als haar standaard.",
+      "drift_pinned": "{{n}} schijf/schijven minder streng dan hun standaard",
+      "drift_review": "Bekijken",
+      "shares_title": "Gedeelde items die het schijfbeleid schenden ({{n}})",
+      "shares_none": "Geen — elke link en elke machtiging voldoet aan het beleid van de schijf.",
+      "v_no_password": "geen wachtwoord",
+      "v_never_expires": "verloopt nooit",
+      "v_over_cap": "overschrijdt de limiet"
+    },
+    "drives_policy_hint": "Het beleid dat hier wordt ingesteld, geldt voor één schijf en overschrijft haar standaard.",
+    "drives_policy_hint_link": "De standaardwaarden voor alle schijven bewerken",
+    "drive_manage_policies_for_owner": "Beleid beheren — {{name}} ({{owner}})"
   },
   "profile": {
     "page_title": "Profiel",

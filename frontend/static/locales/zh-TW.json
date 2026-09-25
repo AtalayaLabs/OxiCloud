@@ -1000,7 +1000,16 @@
       "include_in_music_index_help": "將此 雲端硬碟 的音訊檔案包含於音樂媒體庫。預設個人 雲端硬碟 會自動包含；針對真正含有音樂收藏的共享 雲端硬碟（例如「家庭音樂」、「樂團協作」），請開啟此選項。",
       "implied_by_forbid_sharing": "已由「禁止以資源為單位的分享」強制執行。",
       "read_only": "唯讀(凍結)",
-      "read_only_help": "完全凍結雲端硬碟 — 任何修改都會被拒絕(上傳、編輯、刪除、重新命名、分享、成員變更)。讀取和下載仍可正常使用。垃圾桶的自動清理也會暫停。適用於封存、法律保留或帳戶關閉。只有管理員可以解凍。"
+      "read_only_help": "完全凍結雲端硬碟 — 任何修改都會被拒絕(上傳、編輯、刪除、重新命名、分享、成員變更)。讀取和下載仍可正常使用。垃圾桶的自動清理也會暫停。適用於封存、法律保留或帳戶關閉。只有管理員可以解凍。",
+      "implied_by_forbid_public_links": "已由「禁止公開連結」強制執行。",
+      "overridden": "已覆寫 · 預設值：{{value}}",
+      "overridden_title": "已在此雲端硬碟上設定。不會跟隨預設值的後續變更。",
+      "n_days": "{{n}} 天",
+      "no_cap": "無上限",
+      "max_public_link_days": "限制公開連結有效期限",
+      "max_public_link_days_help": "此雲端硬碟中公開連結可存續的最長天數。留空表示不限制。超出上限建立的連結會被拒絕；已經超出上限的連結仍可繼續使用，並會由政策合規性掃描回報。",
+      "require_public_link_password": "公開連結必須設定密碼",
+      "require_public_link_password_help": "此雲端硬碟的公開連結必須帶有密碼。未設定密碼建立的連結會被拒絕；既有的無密碼連結仍可繼續使用，並會由政策合規性掃描回報。"
     },
     "drives": "雲端硬碟",
     "drive_name": "名稱",
@@ -1279,7 +1288,34 @@
         "unknown": "未知"
       }
     },
-    "storage_backend_audit_triggered": "backend_consistency 已為 `{{name}}` 觸發 — 在背景工作標籤頁查看。"
+    "storage_backend_audit_triggered": "backend_consistency 已為 `{{name}}` 觸發 — 在背景工作標籤頁查看。",
+    "drive_policies": {
+      "tab": "雲端硬碟政策",
+      "drive_gone": "該雲端硬碟已不存在 — 請重新執行掃描。",
+      "hint": "預設值適用於該類型的所有雲端硬碟。對於未明確覆寫的每一項設定，雲端硬碟都會沿用預設值；因此在此收緊某項政策會作用於全部雲端硬碟，只有被刻意另行設定的除外。",
+      "personal": "個人雲端硬碟",
+      "shared": "共享雲端硬碟",
+      "not_defaultable": "依雲端硬碟個別設定 — 這是一種運作狀態，而非預設值。",
+      "not_applicable": "不適用於此類型的雲端硬碟。",
+      "saved": "已儲存 — 已套用至該類型中所有未覆寫此項的雲端硬碟。",
+      "reports": "合規性",
+      "reports_hint": "政策只在建立時檢查，絕不追溯生效 — 因此收緊政策不會破壞已經存在的連結。此掃描正是用來讓這些情況顯現出來的。它只回報，不做任何變更。",
+      "rescan": "執行掃描",
+      "scanning": "掃描中…",
+      "drift_title": "寬鬆於預設值的雲端硬碟 ({{n}})",
+      "drift_hint": "只有明確覆寫過設定的雲端硬碟才會出現在這裡 — 未設定的項目必然沿用預設值。因此這是一份需要複查的刻意決定清單，其中任何一項被修正後會立即更新。",
+      "drift_none": "無 — 每個雲端硬碟都至少與其預設值同樣嚴格。",
+      "drift_pinned": "{{n}} 個雲端硬碟寬鬆於預設值",
+      "drift_review": "檢視",
+      "shares_title": "違反所屬雲端硬碟政策的分享 ({{n}})",
+      "shares_none": "無 — 所有連結與授權都符合所屬雲端硬碟的政策。",
+      "v_no_password": "無密碼",
+      "v_never_expires": "永不過期",
+      "v_over_cap": "超過期限上限"
+    },
+    "drives_policy_hint": "在此設定的政策僅適用於單一雲端硬碟，並會覆寫其預設值。",
+    "drives_policy_hint_link": "編輯所有雲端硬碟的預設值",
+    "drive_manage_policies_for_owner": "管理政策 — {{name}}（{{owner}}）"
   },
   "profile": {
     "page_title": "個人資料",

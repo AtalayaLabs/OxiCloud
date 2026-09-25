@@ -1018,7 +1018,16 @@
       "include_in_music_index_help": "Audiodateien aus diesem Laufwerk in die Musikbibliothek aufnehmen. Standardmäßig persönliche Laufwerks sind automatisch enthalten; für freigegebene Laufwerks einschalten, die tatsächlich eine Musiksammlung enthalten (z. B. „Familienmusik\", „Bandkooperation\").",
       "implied_by_forbid_sharing": "Bereits durch „Freigabe pro Ressource verbieten\" durchgesetzt.",
       "read_only": "Schreibgeschützt (Sperren)",
-      "read_only_help": "Das Laufwerk vollständig sperren — jede Änderung wird abgelehnt (Uploads, Bearbeitungen, Löschungen, Umbenennungen, Freigaben, Mitgliedschaftsänderungen). Lesen und Herunterladen funktionieren weiterhin. Auch die automatische Bereinigung des Papierkorbs pausiert. Für Archive, gesetzliche Sperren oder Kontoschließungen. Nur ein Administrator kann die Sperre aufheben."
+      "read_only_help": "Das Laufwerk vollständig sperren — jede Änderung wird abgelehnt (Uploads, Bearbeitungen, Löschungen, Umbenennungen, Freigaben, Mitgliedschaftsänderungen). Lesen und Herunterladen funktionieren weiterhin. Auch die automatische Bereinigung des Papierkorbs pausiert. Für Archive, gesetzliche Sperren oder Kontoschließungen. Nur ein Administrator kann die Sperre aufheben.",
+      "implied_by_forbid_public_links": "Bereits durch „Öffentliche Links verbieten“ durchgesetzt.",
+      "overridden": "überschrieben · Standard: {{value}}",
+      "overridden_title": "Auf diesem Laufwerk gesetzt. Folgt künftigen Änderungen des Standards nicht.",
+      "n_days": "{{n}} Tage",
+      "no_cap": "keine Begrenzung",
+      "max_public_link_days": "Lebensdauer öffentlicher Links begrenzen",
+      "max_public_link_days_help": "Maximale Lebensdauer eines öffentlichen Links in diesem Laufwerk, in Tagen. Für keine Begrenzung leer lassen. Links, die darüber hinaus erstellt werden, werden abgelehnt; bereits bestehende Links, die sie überschreiten, funktionieren weiter und werden von der Konformitätsprüfung gemeldet.",
+      "require_public_link_password": "Passwort für öffentliche Links verlangen",
+      "require_public_link_password_help": "Öffentliche Links in diesem Laufwerk müssen ein Passwort tragen. Ohne Passwort erstellte Links werden abgelehnt; bestehende Links ohne Passwort funktionieren weiter und werden von der Konformitätsprüfung gemeldet."
     },
     "drives": "Laufwerke",
     "drive_name": "Name",
@@ -1297,7 +1306,34 @@
         "unknown": "Unbekannt"
       }
     },
-    "storage_backend_audit_triggered": "backend_consistency für `{{name}}` ausgelöst — verfolgen Sie es im Tab Hintergrundaufgaben."
+    "storage_backend_audit_triggered": "backend_consistency für `{{name}}` ausgelöst — verfolgen Sie es im Tab Hintergrundaufgaben.",
+    "drive_policies": {
+      "tab": "Laufwerk-Richtlinien",
+      "drive_gone": "Dieses Laufwerk existiert nicht mehr — führen Sie die Prüfung erneut aus.",
+      "hint": "Die Standardwerte gelten für jedes Laufwerk dieses Typs. Ein Laufwerk folgt dem Standard bei jeder Einstellung, die es nicht ausdrücklich überschrieben hat — eine Verschärfung hier erreicht also den gesamten Bestand, außer dort, wo bewusst etwas anderes entschieden wurde.",
+      "personal": "Persönliche Laufwerke",
+      "shared": "Gemeinsame Laufwerke",
+      "not_defaultable": "Pro Laufwerk festzulegen — das ist ein Betriebszustand, kein Standard.",
+      "not_applicable": "Gilt nicht für diesen Laufwerkstyp.",
+      "saved": "Gespeichert — gilt für jedes Laufwerk dieses Typs, das den Wert nicht überschrieben hat.",
+      "reports": "Konformität",
+      "reports_hint": "Richtlinien werden bei der Erstellung geprüft, niemals rückwirkend — eine Verschärfung zerstört also nie einen bereits bestehenden Link. Diese Prüfung macht solche Fälle sichtbar. Sie meldet nur; es wird nichts geändert.",
+      "rescan": "Prüfung starten",
+      "scanning": "Wird geprüft…",
+      "drift_title": "Laufwerke, die weniger streng sind als ihr Standard ({{n}})",
+      "drift_hint": "Hier kann nur ein Laufwerk mit einer ausdrücklichen Überschreibung erscheinen — alles Nicht-Gesetzte folgt zwangsläufig dem Standard. Dies ist also eine Liste bewusster Entscheidungen zur Überprüfung, und sie aktualisiert sich, sobald eine davon korrigiert wird.",
+      "drift_none": "Keine — jedes Laufwerk ist mindestens so streng wie sein Standard.",
+      "drift_pinned": "{{n}} Laufwerk(e) weniger streng als ihr Standard",
+      "drift_review": "Prüfen",
+      "shares_title": "Freigaben, die gegen ihre Laufwerk-Richtlinie verstoßen ({{n}})",
+      "shares_none": "Keine — jeder Link und jede Berechtigung entspricht der Richtlinie des Laufwerks.",
+      "v_no_password": "kein Passwort",
+      "v_never_expires": "läuft nie ab",
+      "v_over_cap": "überschreitet die Höchstdauer"
+    },
+    "drives_policy_hint": "Hier gesetzte Richtlinien gelten für ein einzelnes Laufwerk und überschreiben dessen Standard.",
+    "drives_policy_hint_link": "Standardwerte für alle Laufwerke bearbeiten",
+    "drive_manage_policies_for_owner": "Richtlinien verwalten — {{name}} ({{owner}})"
   },
   "profile": {
     "page_title": "Profil",

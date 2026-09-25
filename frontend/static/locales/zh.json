@@ -1000,7 +1000,16 @@
       "include_in_music_index_help": "将此 云盘 的音频文件包含在音乐库中。默认个人 云盘 自动包含在内；对于真正包含音乐收藏的共享 云盘（例如\"家庭音乐\"、\"乐队协作\"），请开启此选项。",
       "implied_by_forbid_sharing": "已由\"禁止按资源共享\"强制执行。",
       "read_only": "只读(冻结)",
-      "read_only_help": "完全冻结云盘 — 任何修改都会被拒绝(上传、编辑、删除、重命名、分享、成员变更)。读取和下载仍可正常使用。回收站的自动清理也会暂停。适用于归档、法律保留或账户关闭。只有管理员可以解冻。"
+      "read_only_help": "完全冻结云盘 — 任何修改都会被拒绝(上传、编辑、删除、重命名、分享、成员变更)。读取和下载仍可正常使用。回收站的自动清理也会暂停。适用于归档、法律保留或账户关闭。只有管理员可以解冻。",
+      "implied_by_forbid_public_links": "已由“禁止公开链接”强制执行。",
+      "overridden": "已覆盖 · 默认值：{{value}}",
+      "overridden_title": "已在此云盘上设置。不会跟随默认值的后续更改。",
+      "n_days": "{{n}} 天",
+      "no_cap": "无上限",
+      "max_public_link_days": "限制公开链接有效期",
+      "max_public_link_days_help": "此云盘中公开链接可存续的最长天数。留空表示不限制。超出上限创建的链接会被拒绝；已经超出上限的链接仍可继续使用，并会由策略合规性扫描报告。",
+      "require_public_link_password": "公开链接必须设置密码",
+      "require_public_link_password_help": "此云盘的公开链接必须带有密码。未设置密码创建的链接会被拒绝；已有的无密码链接仍可继续使用，并会由策略合规性扫描报告。"
     },
     "drives": "云盘",
     "drive_name": "名称",
@@ -1279,7 +1288,34 @@
         "unknown": "未知"
       }
     },
-    "storage_backend_audit_triggered": "backend_consistency 已为 `{{name}}` 触发 — 在后台任务标签页查看。"
+    "storage_backend_audit_triggered": "backend_consistency 已为 `{{name}}` 触发 — 在后台任务标签页查看。",
+    "drive_policies": {
+      "tab": "云盘策略",
+      "drive_gone": "该云盘已不存在 — 请重新运行扫描。",
+      "hint": "默认值适用于该类型的所有云盘。对于未显式覆盖的每一项设置，云盘都会沿用默认值；因此在此收紧某项策略会作用于全部云盘，只有被刻意另行设置的除外。",
+      "personal": "个人云盘",
+      "shared": "共享云盘",
+      "not_defaultable": "按云盘单独设置 — 这是一种运行状态，而非默认值。",
+      "not_applicable": "不适用于此类型的云盘。",
+      "saved": "已保存 — 已应用于该类型中所有未覆盖此项的云盘。",
+      "reports": "合规性",
+      "reports_hint": "策略只在创建时检查，绝不追溯生效 — 因此收紧策略不会破坏已经存在的链接。此扫描正是用来让这些情况显现出来的。它只报告，不做任何更改。",
+      "rescan": "运行扫描",
+      "scanning": "正在扫描…",
+      "drift_title": "宽松于默认值的云盘 ({{n}})",
+      "drift_hint": "只有显式覆盖过设置的云盘才会出现在这里 — 未设置的项必然沿用默认值。因此这是一份需要复查的有意决定清单，其中任何一项被纠正后会立即更新。",
+      "drift_none": "无 — 每个云盘都至少与其默认值同样严格。",
+      "drift_pinned": "{{n}} 个云盘宽松于默认值",
+      "drift_review": "查看",
+      "shares_title": "违反所在云盘策略的共享 ({{n}})",
+      "shares_none": "无 — 所有链接和授权都符合所在云盘的策略。",
+      "v_no_password": "无密码",
+      "v_never_expires": "永不过期",
+      "v_over_cap": "超过期限上限"
+    },
+    "drives_policy_hint": "在此设置的策略仅适用于单个云盘，并会覆盖其默认值。",
+    "drives_policy_hint_link": "编辑所有云盘的默认值",
+    "drive_manage_policies_for_owner": "管理策略 — {{name}}（{{owner}}）"
   },
   "profile": {
     "page_title": "个人资料",
