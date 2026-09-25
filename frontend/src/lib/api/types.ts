@@ -470,6 +470,23 @@ export interface DrivePolicies {
 	 * See `docs/plan/drive.md` §8 (`read_only`).
 	 */
 	read_only: boolean;
+	/**
+	 * Longest a public link in this drive may live, in days. `null` means
+	 * no cap — the LAXEST value, since a link that never expires is
+	 * permitted. Enforced at link creation; links that already outlive a
+	 * newly-set cap keep working and are surfaced by
+	 * `drive_policies_consistency`.
+	 *
+	 * The only non-boolean policy. Note the expiry it constrains lives on
+	 * the token's role grant, not on the share row.
+	 */
+	max_public_link_days: number | null;
+	/**
+	 * Public links in this drive must carry a password. Enforced at link
+	 * creation; existing password-less links keep working and are reported
+	 * by the compliance scan.
+	 */
+	require_public_link_password: boolean;
 }
 
 /**
@@ -477,6 +494,34 @@ export interface DrivePolicies {
  * a field leaves that policy untouched (the backend uses a JSONB merge).
  */
 export type DrivePoliciesPartial = Partial<DrivePolicies>;
+
+/**
+ * What changing a per-kind default WOULD do, from
+ * `PUT /api/admin/drive-policies/defaults/{kind}?dry_run=true`.
+ */
+export interface PolicyDefaultsImpact {
+	/** Drives that would end up laxer than the new default — they override it. */
+	drives_weaker_than_default: number;
+	/** Drives whose effective policy the change actually moves. */
+	drives_affected: number;
+	by_knob: { knob: string; follows: number; overrides: number }[];
+	/** The drives behind `drives_weaker_than_default`, named. */
+	weaker_drives: PolicyDrift[];
+}
+
+/**
+ * One drive that is laxer than its kind's default, on the named knobs.
+ *
+ * Returned live by `GET /api/admin/drive-policies/drift`, and by the
+ * dry-run preview for a candidate default — the same shape from both,
+ * because it is the same comparison against a different target.
+ */
+export interface PolicyDrift {
+	id: string;
+	name: string | null;
+	kind: DriveKind;
+	knobs: string[];
+}
 
 /**
  * Request body for `POST /api/drives` (D3a). Mirrors `CreateDriveDto` in

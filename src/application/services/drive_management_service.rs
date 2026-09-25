@@ -515,6 +515,10 @@ impl DriveManagementService {
             .invalidate_drive_policies_cache_for_drive(drive_id)
             .await;
 
+        // Logs the EFFECTIVE policy after the change, not just the keys
+        // this call touched — an audit reader wants "what is in force on
+        // this drive now", and a value inherited from the kind's default
+        // governs it exactly as much as one set here.
         tracing::info!(
             target: "audit",
             event = "drive.policy_changed",
@@ -528,6 +532,8 @@ impl DriveManagementService {
             include_in_photo_index = merged.include_in_photo_index,
             include_in_music_index = merged.include_in_music_index,
             read_only = merged.read_only,
+            max_public_link_days = ?merged.max_public_link_days,
+            require_public_link_password = merged.require_public_link_password,
             "📜 drive policies updated",
         );
         Ok(merged)

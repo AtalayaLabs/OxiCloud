@@ -39,6 +39,8 @@
 	import UserVignette from '$lib/components/UserVignette.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
+	import { drives as drivesStore } from '$lib/stores/drives.svelte';
+	import { readAllPolicies } from '$lib/utils/drivePolicies';
 
 	interface Target {
 		id: string;
@@ -251,6 +253,12 @@
 			const grants = chain.effective_grants ?? [];
 			const nameById = new Map(chain.ancestors.map((a) => [a.id, a.name]));
 			const driveName = chain.access_source.drive?.name ?? t('share.the_drive', 'the drive');
+
+			// The owning drive, captured here because this walk already
+			// resolves it — asking again would be a second round trip for
+			// something we are holding. Its policies gate the link form
+			// below; see `linkPolicies`.
+			driveId = chain.access_source.drive?.id ?? chain.ancestors[0]?.drive_id ?? null;
 
 			// Drop grants on the item itself — those are the direct ones,
 			// already loaded, and listing them twice would double every row.
@@ -478,6 +486,74 @@
 	let password = $state('');
 	let expiresAt = $state<string | null>(null);
 
+	// ── Drive policy, applied to the link form ───────────────────────────────
+	//
+	// The server enforces these at creation and REFUSES rather than clamps
+	// — deliberately, because silently handing back a link that expires
+	// sooner than asked is a dialog disagreeing with the person using it.
+	// That choice only works if the limits are visible BEFORE submitting,
+	// which is what this section is for. Without it the user meets the
+	// policy as a 405 after committing.
+	//
+	// Resolved from the drives store rather than a dedicated endpoint:
+	// `GET /api/drives` already returns EFFECTIVE policies (the kind's
+	// default with this drive's overrides on top), which is exactly what
+	// the server will enforce.
+	let driveId = $state<string | null>(null);
+
+	const linkPolicies = $derived.by(() => {
+		if (!driveId) return null;
+		const d = drivesStore.drives.find((x) => x.id === driveId);
+		return d ? readAllPolicies(d.policies as Record<string, unknown>) : null;
+	});
+
+	/** Latest date a new link may expire, as YYYY-MM-DD, or null for no cap. */
+	const maxExpiryDate = $derived.by(() => {
+		const days = linkPolicies?.max_public_link_days;
+		if (typeof days !== 'number' || days <= 0) return null;
+		// Constructed from a timestamp rather than mutated with
+		// `setDate` — the lint bans mutable Date instances, and UTC
+		// arithmetic matches the server, which adds `Duration::days`.
+		return new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+	});
+
+	const passwordRequired = $derived(linkPolicies?.require_public_link_password === true);
+
+	/**
+	 * Why the form cannot be submitted, or null when it can.
+	 *
+	 * Mirrors the server's gates so the refusal never has to happen. A
+	 * missing expiry counts as over the cap: a link that never expires is
+	 * the laxest value there is, not an exemption — the same rule the
+	 * backend applies.
+	 */
+	const linkBlockedReason = $derived.by(() => {
+		if (!linkPolicies) return null;
+		if (linkPolicies.forbid_public_links) {
+			return t('share.policy_no_links', 'This drive does not allow public links.');
+		}
+		if (passwordRequired && !password.trim()) {
+			return t('share.policy_password_required', 'This drive requires a password on public links.');
+		}
+		if (maxExpiryDate) {
+			if (!expiresAt) {
+				return t(
+					'share.policy_expiry_required',
+					{ date: maxExpiryDate },
+					'This drive caps public links — set an expiry on or before {{date}}.'
+				);
+			}
+			if (expiresAt > maxExpiryDate) {
+				return t(
+					'share.policy_expiry_too_far',
+					{ date: maxExpiryDate },
+					'This drive caps public links at {{date}}.'
+				);
+			}
+		}
+		return null;
+	});
+
 	// Tab counts. Declared here, after `shares` — both badges read state
 	// that lives on either side of the People/Link split.
 	//
@@ -507,6 +583,10 @@
 
 	async function createLink() {
 		if (!item || item.kind === 'drive') return;
+		// Belt to the UI's braces: the button is disabled while a reason
+		// stands, but a keyboard submit or a policy that changed under an
+		// open dialog would otherwise reach the server and come back 405.
+		if (linkBlockedReason) return;
 		creating = true;
 		try {
 			await createShare({
@@ -579,6 +659,10 @@
 		if (open && item) {
 			void loadGrants();
 			void loadShares();
+			// Idempotent and usually already resolved (the sidebar picker
+			// loads it at boot). Needed because the link form reads the
+			// owning drive's effective policies out of it.
+			void drivesStore.load();
 		}
 	});
 </script>
@@ -894,21 +978,35 @@
 						/>
 					</label>
 					<label>
-						<span>{t('share.password_optional', 'Password (optional)')}</span>
+						<span>
+							{passwordRequired
+								? t('share.password_required', 'Password (required)')
+								: t('share.password_optional', 'Password (optional)')}
+						</span>
 						<input
 							type="text"
 							data-testid="share-dialog-link-password-input"
 							bind:value={password}
+							required={passwordRequired}
 							autocomplete="off"
 						/>
 					</label>
 					<label>
-						<span>{t('share.expires_optional', 'Expires (optional)')}</span>
+						<span>
+							{maxExpiryDate
+								? t('share.expires_required', 'Expires (required)')
+								: t('share.expires_optional', 'Expires (optional)')}
+						</span>
+						<!-- `max` caps the native picker, so the limit is visible
+						     in the calendar itself rather than only after a
+						     refusal. The submit guard still checks, because
+						     `max` is advisory in some browsers. -->
 						<input
 							type="date"
 							data-testid="share-dialog-link-expires-input"
 							value={expiresAt ?? ''}
 							min={todayIso()}
+							max={maxExpiryDate ?? undefined}
 							onchange={(e) => {
 								const v = e.currentTarget.value;
 								if (v && v < todayIso()) return;
@@ -917,10 +1015,16 @@
 						/>
 					</label>
 				</div>
+				{#if linkBlockedReason}
+					<p class="sh-policy" data-testid="share-dialog-policy-block">
+						<Icon name="shield-alt" />
+						{linkBlockedReason}
+					</p>
+				{/if}
 				<button
 					class="btn btn-primary"
 					data-testid="share-dialog-create-btn"
-					disabled={creating}
+					disabled={creating || linkBlockedReason !== null}
 					onclick={createLink}
 				>
 					{t('share.create_link', 'Create link')}
@@ -1313,6 +1417,17 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	/* Why the Create button is disabled. Stated inline rather than as a
+	   toast, because it is a standing condition of this drive, not an
+	   event — and the user needs it while deciding what to type. */
+	.sh-policy {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		margin: 0.5rem 0 0;
+		color: var(--color-text-muted);
 	}
 
 	.sh-fields {

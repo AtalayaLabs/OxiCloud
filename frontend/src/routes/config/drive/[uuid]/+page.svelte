@@ -412,6 +412,17 @@
 					"Rules an OxiCloud admin has set for this drive. Only admins can change them; you're seeing the current state."
 				)}
 			</p>
+			<!-- No `compareTo` here, deliberately.
+			     The admin modal passes the kind's defaults so each row can
+			     say whether it is inherited or set on this drive. Doing the
+			     same here would mean fetching
+			     `/api/admin/drive-policies/defaults/{kind}`, which is
+			     admin-only — a member opening this page would take a 403,
+			     and widening that route is a disclosure decision about
+			     instance-wide configuration, not a UI tweak.
+			     The values shown are already the EFFECTIVE ones, so what a
+			     member sees is what is enforced; only the provenance is
+			     withheld. -->
 			<PolicyList values={drivePoliciesView} readonly testIdPrefix="drive-policy" />
 		</details>
 

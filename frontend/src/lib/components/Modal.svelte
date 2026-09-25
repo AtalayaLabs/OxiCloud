@@ -9,9 +9,18 @@
 		onclose?: () => void;
 		children?: Snippet;
 		footer?: Snippet;
+		/**
+		 * Dialog width.
+		 *
+		 * `md` (the default, unchanged) suits a handful of fields, which is
+		 * what nearly every modal here is. `lg` is for content that is a list
+		 * rather than a form — the policy editor puts a title, an inherited
+		 * badge and help text on one row, and at `md` all three wrap.
+		 */
+		size?: 'md' | 'lg';
 	}
 
-	let { open = $bindable(false), title, onclose, children, footer }: Props = $props();
+	let { open = $bindable(false), title, onclose, children, footer, size = 'md' }: Props = $props();
 
 	let dialogEl = $state<HTMLElement | null>(null);
 	let prevFocus: HTMLElement | null = null;
@@ -82,6 +91,7 @@
 	>
 		<div
 			class="modal"
+			class:modal--lg={size === 'lg'}
 			role="dialog"
 			aria-modal="true"
 			aria-label={title}
@@ -136,6 +146,13 @@
 		display: flex;
 		flex-direction: column;
 		animation: modal-pop 0.18s ease;
+	}
+
+	/* Keeps the same `92vw` viewport clamp, so this widens a desktop dialog
+	   and changes nothing on a phone — where 32rem was already the wider of
+	   the two and the clamp is what actually applies. */
+	.modal--lg {
+		width: min(92vw, 48rem);
 	}
 
 	.modal__header {

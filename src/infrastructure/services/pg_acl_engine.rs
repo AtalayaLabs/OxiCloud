@@ -475,6 +475,26 @@ impl PgAclEngine {
         self.drive_policies_cache.invalidate(&drive_id).await;
     }
 
+    /// Flush every cached policy view.
+    ///
+    /// Needed because the cache now holds DEFAULT-RESOLVED values: changing
+    /// a kind's default silently changes the effective policy of every drive
+    /// of that kind which has not overridden the knob. The cache is keyed by
+    /// drive id, and the set of affected drives is exactly "all of them minus
+    /// the overriders" — cheaper and less error-prone to drop the lot than to
+    /// compute that set and invalidate piecemeal.
+    ///
+    /// Without this a tightened default would take up to the 30 s TTL to
+    /// bite, which is tolerable for the photo index but not for
+    /// `forbid_public_links`: an admin who has just forbidden public links
+    /// would watch new ones be minted for half a minute.
+    ///
+    /// Defaults change about as often as an admin opens the settings page,
+    /// so the refill cost is irrelevant.
+    pub async fn invalidate_drive_policies_cache_all(&self) {
+        self.drive_policies_cache.invalidate_all();
+    }
+
     pub async fn invalidate_drive_role_cache_for_drive(&self, drive_id: Uuid) {
         // `invalidate_entries_if` rejects predicates returning errors —
         // simple Fn(K, V) -> bool. We capture `drive_id` by value (Copy)
@@ -1337,7 +1357,13 @@ impl PgAclEngine {
         }
         counters.sql_queries.fetch_add(1, Ordering::Relaxed);
         let row: Option<(serde_json::Value,)> =
-            sqlx::query_as("SELECT policies FROM storage.drives WHERE id = $1")
+            // Effective view, not the raw bag — see the migration. The cached
+            // value is therefore default-resolved, which is why a change to a
+            // KIND's default must invalidate this cache, not only a per-drive
+            // PATCH.
+            sqlx::query_as(
+                "SELECT effective_policies FROM storage.drives_effective WHERE id = $1",
+            )
                 .bind(drive_id)
                 .fetch_optional(self.pool.as_ref())
                 .await

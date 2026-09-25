@@ -282,6 +282,9 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         // touch any drive; user can touch only those they're an owner
         // of).
         handlers::admin_handler::list_all_drives,
+        handlers::admin_handler::get_drive_policy_defaults,
+        handlers::admin_handler::get_drive_policy_drift,
+        handlers::admin_handler::set_drive_policy_defaults,
         handlers::admin_handler::delete_drive_admin,
         handlers::admin_handler::list_drive_members_admin,
         handlers::admin_handler::add_drive_member_admin,
@@ -501,6 +504,10 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             OutgoingResourceItemDto,
             // Drive schemas
             DriveDto,
+            crate::domain::entities::drive::DrivePolicies,
+            crate::application::services::drive_policy_defaults_service::PolicyDefaultsImpactDto,
+            crate::application::services::drive_policy_defaults_service::PolicyKnobImpactDto,
+            crate::application::services::drive_policy_defaults_service::WeakerDriveDto,
             DriveKindDto,
             // Subject-group (ReBAC named groups) schemas
             handlers::subject_group_handler::CreateGroupRequest,
