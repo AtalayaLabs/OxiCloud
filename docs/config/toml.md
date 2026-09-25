@@ -9,7 +9,7 @@ OXICLOUD_CONFIG=/etc/oxicloud/oxicloud.toml oxicloud
 
 Both forms accept either a TOML file (recognised by the `.toml` extension) or a `.env` file, as before. `OXICLOUD_CONFIG` is also honoured by the `opaque`, `migrate` and `storage` subcommands, which cannot parse the flag.
 
-A copy-ready starting point ships as [`oxicloud.example.toml`](./oxicloud.example.toml).
+A copy-ready starting point ships as [`oxicloud.example.toml`](/oxicloud.example.toml).
 
 ## The mapping
 
