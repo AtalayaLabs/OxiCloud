@@ -68,7 +68,7 @@ This document contains the task list for the development of OxiCloud, a minimali
 - [x] Implement shared link generation
 - [x] Add permission configuration for links
 - [x] Implement password protection for links
-- [ ] Add expiration dates for shared links
+- [x] Add expiration dates for shared links
 - [x] Create page to manage all shared resources
 - [x] Implement sharing notifications
 
@@ -268,7 +268,7 @@ This document contains the task list for the development of OxiCloud, a minimali
 
 ### Advanced Sharing
 - [x] Improve public links
-  - [ ] Add configurable expiration date
+  - [x] Add configurable expiration date
   - [x] Implement password protection
   - [ ] Develop download limits
 - [x] Implement granular permissions
