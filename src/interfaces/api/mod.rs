@@ -532,8 +532,15 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         (name = "groups", description = "ReBAC subject-group management endpoints (named, nestable, root-owned)"),
     ),
     info(
+        // OXICLOUD_TAG (bare tag, no `git describe` suffix), NOT
+        // OXICLOUD_VERSION. This spec is regenerated into a committed
+        // JSON file under resources/gen/ and checked by CI drift on
+        // every PR; using the full version would produce a different
+        // hash on every developer's local checkout (each with its own
+        // `git describe` output) and false-positive the check on
+        // every PR. See build.rs → strip_describe_suffix().
         title = "OxiCloud API",
-        version = env!("CARGO_PKG_VERSION"),
+        version = env!("OXICLOUD_TAG"),
         description = "REST API for OxiCloud — self-hosted cloud storage, calendar & contacts",
         license(name = "MIT")
     )

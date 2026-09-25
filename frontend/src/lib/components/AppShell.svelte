@@ -675,7 +675,20 @@
 		<!-- eslint-enable svelte/no-navigation-without-resolve -->
 	</nav>
 
-	{#if session.user}
+	{#if page.url.pathname.startsWith('/admin') && serverConfig.loaded && serverConfig.version}
+		<!-- Admin context: swap the user's personal-quota widget for
+		     the OxiCloud version. Storage usage of the admin's own
+		     account is the least useful signal while auditing the
+		     whole system; build provenance is the most useful. Same
+		     container class + spacing so the sidebar footer footprint
+		     doesn't jump between routes. -->
+		<div class="storage-container storage-container--version">
+			<div class="storage-title">
+				<Icon name="tag" /> <span>{t('sidebar.oxicloud_version', 'OxiCloud')}</span>
+			</div>
+			<div class="storage-version-value">v{serverConfig.version}</div>
+		</div>
+	{:else if session.user}
 		<div class="storage-container">
 			<div class="storage-title">
 				<Icon name="database" /> <span>{t('storage.title', 'Storage')}</span>

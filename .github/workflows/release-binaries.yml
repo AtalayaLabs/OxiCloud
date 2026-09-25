@@ -185,7 +185,15 @@ jobs:
           # `oxicloud --version` reports "unknown".
           GITHUB_SHA: ${{ github.sha }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
+          # Version injection — top-priority input in build.rs, ahead of
+          # every git-derived fallback. Both dispatch and tag-push feed
+          # a `vX.Y.Z`-shaped ref through the same env; the shell strips
+          # the leading `v` so the binary reports the same shape as the
+          # tarball layout (`0.9.2`, not `v0.9.2`).
+          RAW_REF: ${{ github.event.inputs.version || github.ref_name }}
         run: |
+          export OXICLOUD_VERSION="${RAW_REF#v}"
+          echo "Building oxicloud ${OXICLOUD_VERSION} for ${{ matrix.triple }}"
           cargo build --release --features bundled-assets --bin oxicloud --target ${{ matrix.triple }}
 
       # Assemble the tarball layout documented in
