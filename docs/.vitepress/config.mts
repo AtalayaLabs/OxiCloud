@@ -129,6 +129,7 @@ export default defineConfig({
       { text: "Guide", link: "/guide/" },
       { text: "Configuration", link: "/config/" },
       { text: "API Reference", link: "/api/" },
+      { text: "Compare", link: "/compare" },
       { text: "FAQ", link: "/faq" },
     ],
 
@@ -211,6 +212,7 @@ export default defineConfig({
             { text: "UI diagnostics", link: "/architecture/ui-diagnostics" },
           ],
         },
+        { text: "Compare", link: "/compare" },
         { text: "FAQ", link: "/faq" },
       ],
     },
