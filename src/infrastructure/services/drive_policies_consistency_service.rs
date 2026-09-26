@@ -600,34 +600,34 @@ impl RecoverableJobHandler for DrivePoliciesConsistencyCheck {
                         .await;
                     }
 
-                    if let Some((cap_days, over)) = over_cap {
-                        if over {
-                            share_findings += 1;
-                            record_or_log(
-                                store,
-                                DRIVE_POLICIES_CONSISTENCY_JOB_NAME,
-                                "share_outlives_policy_cap",
-                                "anomaly",
-                                Some(share_id),
-                                serde_json::json!({
-                                    "drive_id":   drive_id,
-                                    "drive_name": name,
-                                    "cap_days":   cap_days,
-                                    "expires_at": expires_at,
-                                    "never_expires": expires_at.is_none(),
-                                    "token_name": token_name,
-                                    // Every other finding in this job carries
-                                    // `item_type`, and a report that names the
-                                    // resource kind on some rows but not others
-                                    // reads as a rendering bug — the same folder
-                                    // appeared once as "photos (folder)" and once
-                                    // as bare "photos".
-                                    "item_type":  item_type,
-                                    "removed":    removed,
-                                }),
-                            )
-                            .await;
-                        }
+                    if let Some((cap_days, over)) = over_cap
+                        && over
+                    {
+                        share_findings += 1;
+                        record_or_log(
+                            store,
+                            DRIVE_POLICIES_CONSISTENCY_JOB_NAME,
+                            "share_outlives_policy_cap",
+                            "anomaly",
+                            Some(share_id),
+                            serde_json::json!({
+                                "drive_id":   drive_id,
+                                "drive_name": name,
+                                "cap_days":   cap_days,
+                                "expires_at": expires_at,
+                                "never_expires": expires_at.is_none(),
+                                "token_name": token_name,
+                                // Every other finding in this job carries
+                                // `item_type`, and a report that names the
+                                // resource kind on some rows but not others
+                                // reads as a rendering bug — the same folder
+                                // appeared once as "photos (folder)" and once
+                                // as bare "photos".
+                                "item_type":  item_type,
+                                "removed":    removed,
+                            }),
+                        )
+                        .await;
                     }
                 }
 

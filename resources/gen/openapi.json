@@ -10996,7 +10996,7 @@
           },
           "forbid_sharing": {
             "type": "boolean",
-            "description": "Disables per-resource grants on resources in this drive. Drive-level\nmembership (Owner/Editor/Viewer) still works. Enforced at\n`grant_handler::create_grant`.",
+            "description": "Disables per-resource grants on resources in this drive. Drive-level\nmembership (Owner/Editor/Viewer) still works.\n\nThe BROADER rule: it covers public links too, so it is enforced at\n`grant_handler::create_grant` (via [`DrivePolicies::refuse_sharing`])\n**and** on the public-link path (via\n[`DrivePolicies::refuse_public_links`]). Enforcing only the first left\na drive that forbade sharing outright still minting anonymous links,\nwhile the admin editor greyed `forbid_public_links` out as \"already\nenforced by\" this one.",
             "default": false
           },
           "include_in_music_index": {
