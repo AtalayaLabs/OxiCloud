@@ -1344,7 +1344,9 @@
       "revoking": "Revocando…",
       "revoke_confirm": "Revocar",
       "revoke_confirm_title": "¿Revocar los elementos compartidos de {{name}} que incumplen la política?",
-      "revoke_confirm_body": "Se revocarán {{n}} enlace(s) y permiso(s) de esta unidad. Quien los esté usando perderá el acceso de inmediato, y no se puede deshacer. Las demás unidades no se ven afectadas."
+      "revoke_confirm_body": "Se revocarán {{n}} enlace(s) y permiso(s) de esta unidad. Quien los esté usando perderá el acceso de inmediato, y no se puede deshacer. Las demás unidades no se ven afectadas.",
+      "shares_never_scanned": "Sin analizar todavía — ejecuta el análisis para ver si algún elemento compartido incumple la política de su unidad.",
+      "shares_partial": "Se muestra solo {{name}} — el último análisis se limitó a esa unidad. Ejecuta el análisis para cubrir todas las unidades."
     },
     "drives_policy_hint": "Las políticas definidas aquí se aplican a una sola unidad y anulan su valor predeterminado.",
     "drives_policy_hint_link": "Editar los valores predeterminados de todas las unidades",

@@ -1326,7 +1326,9 @@
       "revoking": "正在撤銷…",
       "revoke_confirm": "撤銷",
       "revoke_confirm_title": "撤銷 {{name}} 中不符合政策的分享？",
-      "revoke_confirm_body": "此雲端硬碟中的 {{n}} 個連結與授權將被撤銷。正在使用的人會立即失去存取權，且無法復原。其他雲端硬碟不受影響。"
+      "revoke_confirm_body": "此雲端硬碟中的 {{n}} 個連結與授權將被撤銷。正在使用的人會立即失去存取權，且無法復原。其他雲端硬碟不受影響。",
+      "shares_never_scanned": "尚未掃描 — 執行掃描以查看是否有分享違反其所屬雲端硬碟的政策。",
+      "shares_partial": "僅顯示 {{name}} — 上次掃描僅限於該雲端硬碟。請執行掃描以涵蓋所有雲端硬碟。"
     },
     "drives_policy_hint": "在此設定的政策僅適用於單一雲端硬碟，並會覆寫其預設值。",
     "drives_policy_hint_link": "編輯所有雲端硬碟的預設值",

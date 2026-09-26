@@ -1344,7 +1344,9 @@
       "revoking": "Revoca in corso…",
       "revoke_confirm": "Revoca",
       "revoke_confirm_title": "Revocare le condivisioni non conformi di {{name}}?",
-      "revoke_confirm_body": "{{n}} link e autorizzazioni di questa unità verranno revocati. Chi li sta usando perde subito l’accesso e l’operazione è irreversibile. Le altre unità non vengono toccate."
+      "revoke_confirm_body": "{{n}} link e autorizzazioni di questa unità verranno revocati. Chi li sta usando perde subito l’accesso e l’operazione è irreversibile. Le altre unità non vengono toccate.",
+      "shares_never_scanned": "Non ancora analizzato — esegui la scansione per vedere se qualche condivisione viola i criteri della sua unità.",
+      "shares_partial": "Viene mostrata solo {{name}} — l’ultima scansione era limitata a quell’unità. Esegui la scansione per coprire tutte le unità."
     },
     "drives_policy_hint": "I criteri impostati qui si applicano a una sola unità e sovrascrivono il suo valore predefinito.",
     "drives_policy_hint_link": "Modifica i valori predefiniti di tutte le unità",

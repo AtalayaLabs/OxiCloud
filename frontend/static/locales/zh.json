@@ -1326,7 +1326,9 @@
       "revoking": "正在撤销…",
       "revoke_confirm": "撤销",
       "revoke_confirm_title": "撤销 {{name}} 中不符合策略的共享？",
-      "revoke_confirm_body": "此云盘中的 {{n}} 个链接和授权将被撤销。正在使用的人会立即失去访问权限，且无法撤销。其他云盘不受影响。"
+      "revoke_confirm_body": "此云盘中的 {{n}} 个链接和授权将被撤销。正在使用的人会立即失去访问权限，且无法撤销。其他云盘不受影响。",
+      "shares_never_scanned": "尚未扫描 — 运行扫描以查看是否有共享违反其所在云盘的策略。",
+      "shares_partial": "仅显示 {{name}} — 上次扫描仅限于该云盘。请运行扫描以覆盖所有云盘。"
     },
     "drives_policy_hint": "在此设置的策略仅适用于单个云盘，并会覆盖其默认值。",
     "drives_policy_hint_link": "编辑所有云盘的默认值",

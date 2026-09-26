@@ -1344,7 +1344,9 @@
       "revoking": "Wird entzogen…",
       "revoke_confirm": "Entziehen",
       "revoke_confirm_title": "Nicht richtlinienkonforme Freigaben von {{name}} entziehen?",
-      "revoke_confirm_body": "{{n}} Link(s) und Berechtigung(en) auf diesem Laufwerk werden entzogen. Wer sie nutzt, verliert sofort den Zugriff, und das lässt sich nicht rückgängig machen. Andere Laufwerke bleiben unberührt."
+      "revoke_confirm_body": "{{n}} Link(s) und Berechtigung(en) auf diesem Laufwerk werden entzogen. Wer sie nutzt, verliert sofort den Zugriff, und das lässt sich nicht rückgängig machen. Andere Laufwerke bleiben unberührt.",
+      "shares_never_scanned": "Noch nicht geprüft — starten Sie die Prüfung, um zu sehen, ob eine Freigabe gegen ihre Laufwerk-Richtlinie verstößt.",
+      "shares_partial": "Es wird nur {{name}} angezeigt — die letzte Prüfung war auf dieses Laufwerk beschränkt. Starten Sie die Prüfung für alle Laufwerke."
     },
     "drives_policy_hint": "Hier gesetzte Richtlinien gelten für ein einzelnes Laufwerk und überschreiben dessen Standard.",
     "drives_policy_hint_link": "Standardwerte für alle Laufwerke bearbeiten",

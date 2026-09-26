@@ -1344,7 +1344,9 @@
       "revoking": "Odwoływanie…",
       "revoke_confirm": "Odwołaj",
       "revoke_confirm_title": "Odwołać niezgodne udostępnienia dysku {{name}}?",
-      "revoke_confirm_body": "Zostanie odwołanych {{n}} link(ów) i uprawnień na tym dysku. Osoby, które ich używają, natychmiast stracą dostęp, a operacji nie można cofnąć. Inne dyski pozostają nietknięte."
+      "revoke_confirm_body": "Zostanie odwołanych {{n}} link(ów) i uprawnień na tym dysku. Osoby, które ich używają, natychmiast stracą dostęp, a operacji nie można cofnąć. Inne dyski pozostają nietknięte.",
+      "shares_never_scanned": "Jeszcze nie skanowano — uruchom skanowanie, aby sprawdzić, czy któreś udostępnienie narusza zasady swojego dysku.",
+      "shares_partial": "Wyświetlany jest tylko {{name}} — ostatnie skanowanie ograniczono do tego dysku. Uruchom skanowanie, aby objąć wszystkie dyski."
     },
     "drives_policy_hint": "Zasady ustawione tutaj dotyczą jednego dysku i nadpisują jego wartość domyślną.",
     "drives_policy_hint_link": "Edytuj wartości domyślne dla wszystkich dysków",

@@ -1376,7 +1376,9 @@
       "revoking": "Révocation…",
       "revoke_confirm": "Révoquer",
       "revoke_confirm_title": "Révoquer les partages non conformes de {{name}} ?",
-      "revoke_confirm_body": "{{n}} lien(s) et partage(s) de ce Disque seront révoqués. Toute personne qui les utilise perdra l’accès immédiatement, et l’opération est irréversible. Les autres Disques ne sont pas touchés."
+      "revoke_confirm_body": "{{n}} lien(s) et partage(s) de ce Disque seront révoqués. Toute personne qui les utilise perdra l’accès immédiatement, et l’opération est irréversible. Les autres Disques ne sont pas touchés.",
+      "shares_never_scanned": "Aucune analyse pour l’instant — lancez l’analyse pour savoir si un partage enfreint les règles de son Disque.",
+      "shares_partial": "Affichage de {{name}} uniquement — la dernière analyse était limitée à ce Disque. Lancez l’analyse pour couvrir tous les Disques."
     },
     "drives_policy_hint": "Les règles définies ici s'appliquent à un seul Disque et remplacent sa valeur par défaut.",
     "drives_policy_hint_link": "Modifier les valeurs par défaut de tous les Disques",

@@ -1288,6 +1288,8 @@
       "drift_pinned": "{{n}} drive(s) less restrictive than their default",
       "drift_review": "Review",
       "shares_title": "Shares that violate their drive policy ({{n}})",
+      "shares_never_scanned": "Not scanned yet — run the scan to see whether any share breaks its drive policy.",
+      "shares_partial": "Showing {{name}} only — the last scan was limited to that drive. Run the scan to cover every drive.",
       "shares_none": "None — every link and grant matches its drive policy.",
       "personal_of": "Personal — {{owner}}",
       "a_group": "a group",

@@ -1344,7 +1344,9 @@
       "revoking": "A revogar…",
       "revoke_confirm": "Revogar",
       "revoke_confirm_title": "Revogar as partilhas não conformes de {{name}}?",
-      "revoke_confirm_body": "{{n}} ligação(ões) e permissão(ões) desta unidade serão revogadas. Quem as estiver a usar perde o acesso imediatamente e não é possível desfazer. As outras unidades não são afetadas."
+      "revoke_confirm_body": "{{n}} ligação(ões) e permissão(ões) desta unidade serão revogadas. Quem as estiver a usar perde o acesso imediatamente e não é possível desfazer. As outras unidades não são afetadas.",
+      "shares_never_scanned": "Ainda não analisado — execute a análise para ver se alguma partilha viola a política da sua unidade.",
+      "shares_partial": "A mostrar apenas {{name}} — a última análise foi limitada a essa unidade. Execute a análise para abranger todas as unidades."
     },
     "drives_policy_hint": "As políticas definidas aqui aplicam-se a uma única unidade e substituem a sua predefinição.",
     "drives_policy_hint_link": "Editar as predefinições de todas as unidades",

@@ -83,6 +83,18 @@
 	/** Drive id whose revocation is in flight, or null. */
 	let revoking = $state<string | null>(null);
 
+	/**
+	 * What the latest scan actually covered.
+	 *
+	 * `'none'` = never run, `'all'` = the whole estate, otherwise the drive
+	 * it was limited to. This exists because an empty finding list is
+	 * ambiguous in a way that matters: "clean", "never looked" and "looked at
+	 * one drive" render identically otherwise, and a compliance panel that
+	 * says nothing is wrong when it has not checked is worse than one that
+	 * says nothing at all.
+	 */
+	let lastScanScope = $state<'none' | 'all' | string>('none');
+
 	/** Live drift — `null` until the first load. */
 	let drift = $state<PolicyDrift[] | null>(null);
 	let driftError = $state<string | null>(null);
@@ -253,8 +265,15 @@
 			// Findings hang off a RUN, so the most recent run has to be
 			// resolved first. `listRuns` returns newest-first.
 			const runs = await listRuns(JOB, 1);
-			const runId = runs[0]?.id;
+			const run = runs[0];
+			const runId = run?.id;
+			// `params` is what the run was triggered with; a `drive` other
+			// than `*` means its findings cover that drive alone.
+			const scopedTo = run?.params?.drive;
+			lastScanScope =
+				typeof scopedTo === 'string' && scopedTo !== '' && scopedTo !== '*' ? scopedTo : 'all';
 			if (!runId) {
+				lastScanScope = 'none';
 				// Never scanned. Empty rather than an error — "no findings yet"
 				// and "no problems" look the same here, and the Run button is
 				// right there.
@@ -311,7 +330,24 @@
 			// so a silent success here would be a lie.
 			if (res.outcome?.outcome === 'err') {
 				findingsError = res.outcome.message ?? 'repair failed';
+				await loadFindings();
+				return;
 			}
+
+			// Re-scan UNSCOPED before redrawing, and this is not merely a
+			// refresh: `loadFindings` reads the latest run, and the run just
+			// made was scoped to one drive. Its findings therefore describe
+			// that drive alone — so reading them as the report would drop
+			// every other drive's violations and leave the panel implying the
+			// estate is clean when it had simply not looked. A real violation
+			// elsewhere would be invisible, which is the one failure mode a
+			// compliance report must not have.
+			//
+			// It also clears the rows just revoked: the repair run recorded
+			// them (before deleting, so each finding could state the truth),
+			// while a fresh scan finds nothing where the access no longer
+			// exists.
+			await triggerJob(JOB);
 			await loadFindings();
 		} catch (e) {
 			findingsError = errorMessage(e);
@@ -353,9 +389,21 @@
 		}
 	}
 
-	/** Everything the scan reports is now a share or grant violation — drift
-	 *  left this job and is computed live, so no filtering is needed. */
-	const shareFindings = $derived(findings ?? []);
+	/**
+	 * The scan's share and grant violations. Drift left this job and is
+	 * computed live, so there is no finding kind to filter out.
+	 *
+	 * What IS filtered: anything the run itself revoked. A repair run records
+	 * each finding before deleting the share — so that the finding can state
+	 * whether the access still exists — which means its own output describes
+	 * things that are already gone. Listing those would tell the admin that
+	 * access they just withdrew is still live.
+	 *
+	 * Belt and braces: a successful revoke re-scans unscoped, so these rows
+	 * normally never reach the display. This is what keeps the panel honest
+	 * when that follow-up scan is the thing that failed.
+	 */
+	const shareFindings = $derived((findings ?? []).filter((f) => detailOf(f).removed !== true));
 
 	/**
 	 * Findings grouped by the drive they belong to.
@@ -688,14 +736,37 @@
 					'Shares that violate their drive policy ({{n}})'
 				)}
 			</h3>
-			{#if shareFindings.length === 0}
+			<!--
+				"Nothing to report" is three different statements, and saying the
+				reassuring one for all three is how a compliance panel lies. An
+				empty list can mean the estate is clean, that nothing has ever
+				been scanned, or that the last run only looked at one drive —
+				and in the last two cases a real violation may exist, unseen.
+			-->
+			{#if lastScanScope === 'none'}
+				<p class="status">
+					{t(
+						'admin.drive_policies.shares_never_scanned',
+						'Not scanned yet — run the scan to see whether any share breaks its drive policy.'
+					)}
+				</p>
+			{:else if lastScanScope !== 'all'}
+				<p class="status--warn">
+					{t(
+						'admin.drive_policies.shares_partial',
+						{ name: driveLabel(lastScanScope) },
+						'Showing {{name}} only — the last scan was limited to that drive. Run the scan to cover every drive.'
+					)}
+				</p>
+			{/if}
+			{#if shareFindings.length === 0 && lastScanScope === 'all'}
 				<p class="status">
 					{t(
 						'admin.drive_policies.shares_none',
 						'None — every link and grant matches its drive policy.'
 					)}
 				</p>
-			{:else}
+			{:else if shareFindings.length > 0}
 				<div data-testid="admin-policy-shares">
 					{#each sharesByDrive as group (group.driveId)}
 						<!--
@@ -833,6 +904,36 @@
 />
 
 <style>
+	/*
+	 * Status lines.
+	 *
+	 * Defined here because the admin route's `.status*` rules are scoped to
+	 * that route's own markup and never reach a child component — the same
+	 * trap `.card` fell into below. Until this, every status line in this
+	 * panel rendered as plain unstyled text, errors included, which is the
+	 * one place colour is doing real work.
+	 */
+	.status,
+	.status--error,
+	.status--warn {
+		margin: var(--space-2) 0;
+		font-size: 0.875rem;
+	}
+
+	.status {
+		color: var(--color-text-muted);
+	}
+
+	.status--error {
+		color: var(--color-danger-alt);
+	}
+
+	/* Amber rather than red: a partial scan is not a failure, it is a claim
+	   the panel is declining to make. */
+	.status--warn {
+		color: var(--color-warning-text);
+	}
+
 	/*
 	 * Spacing between the panel's top-level sections.
 	 *
