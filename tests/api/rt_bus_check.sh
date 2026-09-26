@@ -1549,8 +1549,27 @@ if ! "$HELPER_BIN" collab-flush \
   die "S22: rt.collab_flush call failed"
 fi
 flushed=$(jq -r '.flushed' "$out_s22")
-[[ "$flushed" == "true" ]] \
-  || { cat "$out_s22"; die "S22: expected {flushed:true}, got flushed=$flushed"; }
+# `false` is a legitimate outcome here, not a failure. It means the debounced
+# writer got to this document first, so the explicit call found nothing dirty
+# left to write — which is indistinguishable, from the caller's side, from
+# having done the write itself.
+#
+# Demanding `true` made this step a race against that debouncer: the window is
+# whatever time passes between the fanout-write helper exiting and the
+# collab-flush helper starting, which is one process spawn. A developer
+# machine wins that race; a loaded CI runner loses it, and the step failed
+# with `flushed=false` while the feature was working correctly.
+#
+# The guarantee worth asserting is the one below: once `rt.collab_flush`
+# returns, the content is durable — whoever wrote it. Accepting either value
+# does cost something, so it is stated plainly: if the explicit path ever
+# stopped writing AND the debouncer covered for it, this step would still
+# pass. The body check would not, which is why it is the authoritative one.
+case "$flushed" in
+  true)  log "S22: explicit flush performed the write" ;;
+  false) log "S22: debouncer had already flushed; durability asserted below" ;;
+  *)     cat "$out_s22"; die "S22: expected flushed true|false, got '$flushed'" ;;
+esac
 
 # GET now — the flush was synchronous, so no wall-clock wait.
 downloaded=$(curl -sS -H "Authorization: Bearer $user1_token" \
@@ -1559,7 +1578,7 @@ if [[ "$downloaded" != "$s22_content" ]]; then
   printf 'expected: %s\ngot     : %s\n' "$s22_content" "$downloaded" >&2
   die "S22: downloaded body does not match after rt.collab_flush"
 fi
-log "S22a OK (rt.collab_flush wrote synchronously)"
+log "S22a OK (content durable once rt.collab_flush returned)"
 
 # (b) Viewer denial. Grant user2 Viewer on folder A so they can read
 # the file (Read passes) but Update is refused. Their rt.collab_flush
