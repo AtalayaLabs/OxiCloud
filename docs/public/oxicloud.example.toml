@@ -1,0 +1,91 @@
+# OxiCloud configuration file.
+#
+#   oxicloud --config /etc/oxicloud/oxicloud.toml
+#   OXICLOUD_CONFIG=/etc/oxicloud/oxicloud.toml oxicloud
+#
+# Every key is an environment variable with the `OXICLOUD_` prefix dropped, so
+# `docs/config/env.md` documents this file too: `server_port` here is
+# `OXICLOUD_SERVER_PORT` there. Anything not listed in env.md is not a setting
+# and the server will refuse to start rather than ignore it.
+#
+# This example carries the settings a self-hosted instance usually touches.
+# Every one of them has a default — delete what you do not need.
+
+[server]
+server_host = "0.0.0.0"
+server_port = 8086
+# Serve the whole app under a URL prefix (reverse-proxy subpath deployments).
+# base_path = "/cloud"
+# Public URL used in share links and emails.
+base_url = "https://cloud.example.org"
+static_path = "/opt/oxicloud/static"
+# Tokio pool sizes. Unset = sized from the CPU budget (cgroup quota included).
+# worker_threads = 4
+# max_blocking_threads = 64
+
+# Behind a reverse proxy: the CIDRs whose X-Forwarded-For you trust.
+trust_proxy_cidr = ["10.0.0.0/8", "192.168.0.0/16"]
+
+[database]
+db_connection_string = "postgres://oxicloud:secret@localhost:5432/oxicloud"
+db_max_connections = 20
+db_min_connections = 2
+
+[auth]
+# Generate once and keep: rotating it invalidates every session.
+jwt_secret = "change-me"
+auth_methods = ["password", "oidc"]
+access_token_expiry_secs = 900
+refresh_token_expiry_secs = 2592000
+
+[auth.rate_limit]
+# Nested tables are a grouping aid — this is OXICLOUD_RATE_LIMIT_LOGIN_MAX.
+login_max = 10
+login_window_secs = 60
+
+[auth.oidc]
+enabled = true
+issuer_url = "https://sso.example.org"
+client_id = "oxicloud"
+client_secret = "change-me"
+redirect_uri = "https://cloud.example.org/api/auth/oidc/callback"
+admin_groups = ["admin"]
+
+[storage]
+storage_path = "/var/lib/oxicloud/storage"
+max_upload_size = 10737418240
+
+# Multi-entry storage. The table name is your own label for the entry and is
+# kept verbatim: this is OXICLOUD_STORAGE_local_main_BACKEND.
+[storage.entries.local_main]
+backend = "local"
+root_dir = "/var/lib/oxicloud/blobs"
+
+[features]
+enable_search = true
+enable_trash = true
+enable_file_sharing = true
+enable_video_thumbnails = true
+# Collaborative markdown / text editing (Yjs CRDT over the message-bus
+# WebSocket). On by default as of 2026-09-21 — every C1-C7 phase plus the
+# robustness pass (eviction, graceful denial, doc-size cap, idle-GC,
+# explicit flush on tab hide) is shipped and covered by hurl smoke.
+# Requires the message bus to be enabled on the server (its default
+# `enable = true`); setting collab true with the bus off is a boot-time
+# FATAL. Set false only if you specifically don't want live Yjs routing —
+# e.g. read-only-clients-only or last-write-wins-via-HTTP deployments.
+# See docs/plan/markdown-collab.md.
+# enable_markdown_collab = true
+
+[integrations.smtp]
+host = "smtp.example.org"
+port = 587
+user = "oxicloud@example.org"
+pass = "change-me"
+from = "OxiCloud <oxicloud@example.org>"
+tls = "starttls"
+
+[integrations.wopi]
+enabled = true
+discovery_url = "http://collabora:9980/hosting/discovery"
+public_base_url = "https://cloud.example.org"
