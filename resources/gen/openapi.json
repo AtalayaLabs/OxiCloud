@@ -6,7 +6,7 @@
     "license": {
       "name": "MIT"
     },
-    "version": "0.8.9"
+    "version": "0.9.2"
   },
   "paths": {
     "/api/address-books": {
@@ -13630,7 +13630,7 @@
           },
           "version": {
             "type": "string",
-            "description": "Server version — `CARGO_PKG_VERSION` from `Cargo.toml`. Matches\nwhat `GET /api/version` returns."
+            "description": "Server version — `OXICLOUD_VERSION` derived by `build.rs` from\nthe git tag / `GITHUB_REF_NAME` / `git describe`. Matches what\n`GET /api/version` returns. Cargo.toml stays pinned at `0.0.0`;\nthis string is the canonical build identity."
           }
         }
       },

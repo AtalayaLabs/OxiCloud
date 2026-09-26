@@ -76,6 +76,14 @@ ARG DATABASE_URL="postgres://postgres:postgres@localhost/oxicloud"
 ARG GITHUB_SHA=""
 ARG GITHUB_REF_NAME=""
 ARG GITHUB_HEAD_REF=""
+# Build-time version. Cargo.toml is pinned at 0.0.0 (deliberately —
+# see the comment there); the real version is derived by build.rs
+# from OXICLOUD_VERSION → GITHUB_REF_NAME on tag builds → `git
+# describe` → fallback. The build context has no `.git/`, so we
+# inject the resolved value directly. CI passes it verbatim; local
+# `docker build` can pass `--build-arg OXICLOUD_VERSION=$(git
+# describe --tags --always --dirty=-dirty)`.
+ARG OXICLOUD_VERSION=""
 # Explicit --bin list: defence-in-depth so the prod image never ships
 # test-only bins (e.g. load-seed) even if `required-features` gating
 # changes upstream.
@@ -83,6 +91,7 @@ RUN DATABASE_URL="${DATABASE_URL}" \
     GITHUB_SHA="${GITHUB_SHA}" \
     GITHUB_REF_NAME="${GITHUB_REF_NAME}" \
     GITHUB_HEAD_REF="${GITHUB_HEAD_REF}" \
+    OXICLOUD_VERSION="${OXICLOUD_VERSION}" \
     cargo build --release --bin oxicloud
 # The SPA is built by the Vite frontend stage; bring it in for the runtime copy
 # below (build.rs has no asset pipeline — it only injects git metadata).
@@ -114,6 +123,9 @@ ARG TARGETARCH
 ARG GITHUB_SHA=""
 ARG GITHUB_REF_NAME=""
 ARG GITHUB_HEAD_REF=""
+# See the `builder` stage above for the rationale — same knob, same
+# priority list in build.rs, same call convention.
+ARG OXICLOUD_VERSION=""
 RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharing=shared \
     --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git,sharing=shared \
     --mount=type=cache,id=oxicloud-target-${TARGETARCH},target=/app/target,sharing=locked \
@@ -121,6 +133,7 @@ RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharin
     GITHUB_SHA="${GITHUB_SHA}" \
     GITHUB_REF_NAME="${GITHUB_REF_NAME}" \
     GITHUB_HEAD_REF="${GITHUB_HEAD_REF}" \
+    OXICLOUD_VERSION="${OXICLOUD_VERSION}" \
     cargo build --release && \
     mkdir -p /app/bin && \
     cp target/release/oxicloud /app/bin/oxicloud
@@ -145,12 +158,26 @@ RUN mkdir -p /app/release && \
 # ─── Stage 4: Minimal runtime image ──────────────────────────────────────────
 FROM alpine:3.24.0
 
-# OCI image metadata
+# Version arg — re-declared here because ARGs are scoped per-stage.
+# The runtime stage is a fresh alpine base and doesn't inherit the
+# builder stages' ARG values, so we redeclare and take the same
+# value the workflow passes for `--build-arg OXICLOUD_VERSION=...`.
+# Consumed only by the `org.opencontainers.image.version` label
+# below; the binary itself already carries the version via
+# `env!("OXICLOUD_VERSION")` baked in at compile time.
+ARG OXICLOUD_VERSION=""
+
+# OCI image metadata. `org.opencontainers.image.version` is what
+# `docker inspect` and registry UIs (GHCR, Docker Hub) read to
+# display the image's version; matches the string the binary
+# self-reports via `oxicloud --version` and the value stamped into
+# the OpenAPI / AsyncAPI spec `info.version` fields.
 LABEL org.opencontainers.image.title="OxiCloud" \
       org.opencontainers.image.description="Ultra-fast, secure & lightweight self-hosted cloud storage built in Rust" \
       org.opencontainers.image.url="https://github.com/DioCrafts/OxiCloud" \
       org.opencontainers.image.source="https://github.com/DioCrafts/OxiCloud" \
       org.opencontainers.image.vendor="DioCrafts" \
+      org.opencontainers.image.version="${OXICLOUD_VERSION}" \
       org.opencontainers.image.licenses="MIT"
 
 # Install only necessary runtime dependencies and update packages

@@ -783,6 +783,9 @@
     "calculating": "Calculating...",
     "used": "{{percentage}}% used ({{used}} / {{total}})"
   },
+  "sidebar": {
+    "oxicloud_version": "OxiCloud"
+  },
   "viewer": {
     "unsupported_file": "This file type cannot be previewed.",
     "download_file": "Download file",
@@ -862,6 +865,7 @@
   },
   "admin": {
     "page_title": "Admin Panel",
+    "oxicloud_version": "OxiCloud version",
     "back_to_app": "Back to OxiCloud",
     "loading": "Loading…",
     "access_denied": "Access Denied",

@@ -41,7 +41,7 @@ async fn ready(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 async fn get_version() -> AxumJson<serde_json::Value> {
     AxumJson(json!({
         "name": "OxiCloud",
-        "version": env!("CARGO_PKG_VERSION")
+        "version": env!("OXICLOUD_VERSION")
     }))
 }
 

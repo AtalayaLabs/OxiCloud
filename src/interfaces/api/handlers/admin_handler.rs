@@ -1079,7 +1079,7 @@ pub async fn get_dashboard_stats(
     let dedup_stats = state.core.dedup_service.get_stats().await;
 
     let stats = DashboardStatsDto {
-        server_version: env!("CARGO_PKG_VERSION").to_string(),
+        server_version: env!("OXICLOUD_VERSION").to_string(),
         oidc_configured: auth_app.oidc_enabled(),
         // Snapshot the current live-WS-session count. `Relaxed` because
         // the counter itself uses `Relaxed`; slight staleness on the

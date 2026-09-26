@@ -2025,11 +2025,24 @@
 -->
 <main class="admin">
 	<!--
-	  H1 shows the current section since the sidebar is what
-	  communicates which admin area we're in — the plain "Admin"
-	  h1 was informationless once the tab bar moved out.
+	  H1 + optional dashboard-only version chip on the right. Wrapping
+	  them in a header row lets the chip sit inline with the h1 rather
+	  than pushing content down — the chip is passive metadata, not a
+	  section heading. Version is dashboard-only per operator feedback:
+	  it belongs in the "system overview" tab and is redundant on the
+	  per-domain admin tabs (users, storage, sessions, …). The sidebar
+	  footer still carries it on every admin route as a fallback.
 	-->
-	<h1>{t('admin.title', 'Admin')} > {tabLabel}</h1>
+	<div class="admin-header">
+		<h1>{t('admin.title', 'Admin')} > {tabLabel}</h1>
+		{#if tab === 'dashboard' && serverConfig.loaded && serverConfig.version}
+			<p class="admin-header__version">
+				<Icon name="tag" />
+				<span>{t('admin.oxicloud_version', 'OxiCloud version')}</span>
+				<span class="admin-header__version-value">v{serverConfig.version}</span>
+			</p>
+		{/if}
+	</div>
 
 	{#if tab === 'dashboard'}
 		{#if dashboardError}
@@ -2160,12 +2173,9 @@
 						{row.label}
 					</div>
 				{/each}
-				<!-- Version card intentionally last — tertiary build
-				     metadata (like a footer), least useful at a glance
-				     compared to the feature-toggle cards above. -->
-				<div class="ds-card">
-					<span class="ds-num">v{dashboard.server_version}</span>{t('admin.version', 'Version')}
-				</div>
+				<!-- Version card removed — the build identity now lives in
+				     the page subtitle and the sidebar footer, both of which
+				     are visible on every admin tab, not only the dashboard. -->
 			</div>
 
 			{#if dashboard.users_over_quota > 0}
@@ -5687,6 +5697,39 @@
 		display: flex;
 		flex-direction: column;
 		gap: 1rem;
+	}
+
+	/* Admin header row — h1 on the left, optional build-identity chip
+	   on the right (dashboard tab only). Space-between pushes them to
+	   the row edges; wrap keeps the chip below the h1 on narrow
+	   viewports instead of overlapping. */
+	.admin-header {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: var(--space-3, 0.75rem);
+		flex-wrap: wrap;
+	}
+
+	.admin-header h1 {
+		margin: 0;
+	}
+
+	/* Compact, muted version chip. Mono for git-describe legibility
+	   ("0.9.2-3-g4f12bd25-dirty"), `overflow-wrap: anywhere` so a long
+	   dirty describe string wraps inside the chip on tight layouts. */
+	.admin-header__version {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1-5, 0.375rem);
+		margin: 0;
+		font-size: 0.8125rem;
+		color: var(--color-text-muted);
+	}
+
+	.admin-header__version-value {
+		font-family: var(--font-mono);
+		overflow-wrap: anywhere;
 	}
 
 	.bar {
