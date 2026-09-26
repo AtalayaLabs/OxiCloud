@@ -1009,7 +1009,9 @@
       "max_public_link_days": "限制公開連結有效期限",
       "max_public_link_days_help": "此雲端硬碟中公開連結可存續的最長天數。留空表示不限制。超出上限建立的連結會被拒絕；已經超出上限的連結仍可繼續使用，並會由政策合規性掃描回報。",
       "require_public_link_password": "公開連結必須設定密碼",
-      "require_public_link_password_help": "此雲端硬碟的公開連結必須帶有密碼。未設定密碼建立的連結會被拒絕；既有的無密碼連結仍可繼續使用，並會由政策合規性掃描回報。"
+      "require_public_link_password_help": "此雲端硬碟的公開連結必須帶有密碼。未設定密碼建立的連結會被拒絕；既有的無密碼連結仍可繼續使用，並會由政策合規性掃描回報。",
+      "on": "開啟",
+      "off": "關閉"
     },
     "drives": "雲端硬碟",
     "drive_name": "名稱",
@@ -1319,7 +1321,12 @@
       "r_file": "檔案",
       "r_folder": "資料夾",
       "v_never_expires_cap": "永不過期的公開連結（超過 {{n}} 天上限）",
-      "v_over_cap_detail": "{{date}} 過期的公開連結（超過 {{n}} 天上限）"
+      "v_over_cap_detail": "{{date}} 過期的公開連結（超過 {{n}} 天上限）",
+      "revoke": "撤銷",
+      "revoking": "正在撤銷…",
+      "revoke_confirm": "撤銷",
+      "revoke_confirm_title": "撤銷 {{name}} 中不符合政策的分享？",
+      "revoke_confirm_body": "此雲端硬碟中的 {{n}} 個連結與授權將被撤銷。正在使用的人會立即失去存取權，且無法復原。其他雲端硬碟不受影響。"
     },
     "drives_policy_hint": "在此設定的政策僅適用於單一雲端硬碟，並會覆寫其預設值。",
     "drives_policy_hint_link": "編輯所有雲端硬碟的預設值",

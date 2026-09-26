@@ -1,4 +1,5 @@
-//! Drive-policy compliance scan — discovery only.
+//! Drive-policy compliance scan — discovery by default, per-drive repair on
+//! request.
 //!
 //! Answers the question an admin cannot otherwise ask, and which arises the
 //! moment a default is tightened: **which existing shares violate their
@@ -23,10 +24,27 @@
 //! `_consistency` job reports on data, and drift is configuration posture —
 //! a decision to revisit, not an integrity problem.
 //!
-//! **Read-only, always.** Retroactively revoking links people are using is
-//! not something a policy save — or a background sweep — should do. The
-//! repo's consistency family is discovery-only with repair as a separate
-//! explicit opt-in, and this follows it.
+//! **Read-only by default; deletes only under `repair=true`.**
+//! Retroactively revoking links people are using is not something a policy
+//! save — or a background sweep — should do on its own, so the default run
+//! only reports. `repair` is the separate explicit opt-in the consistency
+//! family is built around.
+//!
+//! Repair additionally **requires `drive`**, and omitting it REFUSES rather
+//! than defaulting to everything. The admin panel puts a repair checkbox
+//! beside a Run button, so a default of "all drives" would make one misclick
+//! revoke every non-compliant share on the deployment — and there is no undo,
+//! the grants are gone.
+//!
+//! `drive=*` is how the whole estate is cleaned deliberately. The wildcard
+//! has to be typed, which is the property that matters: it cannot be reached
+//! by leaving a field blank. A single drive is named by id, or by a name that
+//! matches exactly one.
+//!
+//! Under repair each share is deleted ONCE, before its findings are written,
+//! so every finding states whether the access it describes still exists
+//! (`detail.removed`). One link can breach three knobs at the same time;
+//! deleting per finding would count three revocations for one link.
 //!
 //! The underlying queries are single statements over small tables, so the
 //! job exists for SURFACING rather than performance: `jobs.run_findings` plus
@@ -44,8 +62,8 @@ use uuid::Uuid;
 
 use crate::domain::entities::drive::{DriveKind, DrivePolicies, DrivePolicyOverrides};
 use crate::infrastructure::scheduler::{
-    JobRegistry, JobRunArgs, JobStore, JobStoreProvider, RecoverableJobHandler, RunOutcome,
-    RunStatus, record_or_log,
+    JobParam, JobRegistry, JobRunArgs, JobStore, JobStoreProvider, Mutates, RecoverableJobHandler,
+    RunOutcome, RunStatus, record_or_log,
 };
 
 pub const DRIVE_POLICIES_CONSISTENCY_JOB_NAME: &str = "drive_policies_consistency";
@@ -53,6 +71,21 @@ pub const DRIVE_POLICIES_CONSISTENCY_JOB_NAME: &str = "drive_policies_consistenc
 /// Drives per batch. Drives are few (dozens per install), so this only sets
 /// the cancel-poll cadence.
 const BATCH_SIZE: i64 = 100;
+
+/// The `drive` value meaning "every drive".
+///
+/// Repair refuses to run without `drive`, so this is the only way to clean
+/// the whole estate. A wildcard has to be typed — which is the point: it
+/// cannot be reached by leaving the field blank and clicking Run.
+const ALL_DRIVES: &str = "*";
+
+/// What a run was pointed at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DriveScope {
+    /// Every drive — only from an explicit `drive=*`.
+    All,
+    One(Uuid),
+}
 
 pub struct DrivePoliciesConsistencyCheck {
     pool: Arc<PgPool>,
@@ -72,6 +105,92 @@ impl DrivePoliciesConsistencyCheck {
             .register_recoverable_job(self.clone(), provider.clone(), None)
             .await;
         self
+    }
+
+    /// Resolve the `drive` parameter to exactly one drive id.
+    ///
+    /// Accepts an id, or a name — but a name only when it identifies ONE
+    /// drive. Names are not unique here: every personal drive is called
+    /// "Personal", and two shared drives may share a name. Since the caller
+    /// may be about to delete that drive's shares, an ambiguous name is
+    /// refused with the candidate ids rather than resolved to whichever row
+    /// sorted first.
+    ///
+    /// Returns the operator-facing message on failure — this runs before any
+    /// work, so failing the run with an explanation is the whole handling.
+    async fn resolve_drive(&self, raw: &str) -> Result<Uuid, String> {
+        if let Ok(id) = Uuid::parse_str(raw) {
+            let exists: Result<(i64,), sqlx::Error> =
+                sqlx::query_as("SELECT COUNT(*) FROM storage.drives WHERE id = $1")
+                    .bind(id)
+                    .fetch_one(self.pool.as_ref())
+                    .await;
+            return match exists {
+                Ok((1,)) => Ok(id),
+                Ok(_) => Err(format!("drive `{raw}` does not exist")),
+                Err(e) => Err(format!("resolving drive `{raw}`: {e}")),
+            };
+        }
+
+        // The name lives on the root folder; `storage.drives` has none.
+        let rows = sqlx::query(
+            "SELECT d.id FROM storage.drives d \
+               JOIN storage.folders fo ON fo.id = d.root_folder_id \
+              WHERE fo.name = $1",
+        )
+        .bind(raw)
+        .fetch_all(self.pool.as_ref())
+        .await;
+
+        let rows = match rows {
+            Ok(r) => r,
+            Err(e) => return Err(format!("resolving drive `{raw}`: {e}")),
+        };
+        let ids: Vec<Uuid> = rows.iter().filter_map(|r| r.try_get("id").ok()).collect();
+        match ids.len() {
+            1 => Ok(ids[0]),
+            0 => Err(format!(
+                "no drive is named `{raw}` — pass a drive id, or check the name"
+            )),
+            n => Err(format!(
+                "`{raw}` names {n} drives, so it is ambiguous — pass one of these ids instead: {}",
+                ids.iter()
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+
+    /// Delete one anonymous link and the token grant that carries its access.
+    ///
+    /// Both rows, in one transaction: the `storage.shares` row is the link's
+    /// identity and the `role_grants` row is what actually permits the read.
+    /// Removing only the first would leave a grant with nothing pointing at
+    /// it — access still live, and invisible to this scan on the next run
+    /// because the scan joins through `shares`.
+    async fn delete_link(&self, share_id: Uuid) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "DELETE FROM storage.role_grants WHERE subject_type = 'token' AND subject_id = $1",
+        )
+        .bind(share_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM storage.shares WHERE id = $1")
+            .bind(share_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await
+    }
+
+    /// Delete one user or group grant.
+    async fn delete_grant(&self, grant_id: Uuid) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM storage.role_grants WHERE id = $1")
+            .bind(grant_id)
+            .execute(self.pool.as_ref())
+            .await
+            .map(|_| ())
     }
 
     /// The default bag for each kind, read once per run rather than per
@@ -105,9 +224,48 @@ impl RecoverableJobHandler for DrivePoliciesConsistencyCheck {
 
     fn description(&self) -> &'static str {
         "Reports public links AND user/group grants that violate the policy \
-         of the drive they live in. Read-only — tightening a policy never \
-         revokes access that already exists, so this is how it becomes \
-         visible."
+         of the drive they live in. Read-only by default — tightening a \
+         policy never revokes access that already exists, so this is how it \
+         becomes visible. With `repair=true` and a `drive`, deletes what it \
+         reports on that one drive."
+    }
+
+    /// Read-only unless `repair` is passed. See [`Self::repair_description`].
+    fn mutates(&self) -> Mutates {
+        Mutates::OnRepairOnly
+    }
+
+    fn repair_description(&self) -> Option<&'static str> {
+        Some(
+            "Deletes the reported public links and user/group grants, revoking \
+             the access they carry. There is no undo. Requires `drive`: a \
+             single drive, or `*` to mean every drive — omitting it refuses, \
+             so a misclick cannot clean the whole estate.",
+        )
+    }
+
+    fn parameters(&self) -> &'static [JobParam] {
+        const PARAMS: &[JobParam] = &[
+            JobParam::boolean(
+                "repair",
+                false,
+                "Delete what the scan reports instead of only listing it. Revokes access.",
+            ),
+            // Required for repair, optional for a plain scan (where it simply
+            // narrows the report).
+            //
+            // A drive id, a name that matches exactly one drive, or `*` for
+            // every drive. Names are accepted for convenience but are NOT
+            // unique — every personal drive is called "Personal" — so an
+            // ambiguous name is refused with the candidates rather than
+            // resolved to a guess. Deleting the wrong drive's shares is not
+            // something to be clever about.
+            JobParam::string(
+                "drive",
+                "One drive (id, or a name matching exactly one), or `*` for all. Required with repair=true.",
+            ),
+        ];
+        PARAMS
     }
 
     async fn count_total(&self) -> Option<u64> {
@@ -132,9 +290,68 @@ impl RecoverableJobHandler for DrivePoliciesConsistencyCheck {
     async fn run_resumable(
         &self,
         store: &dyn JobStore,
-        _args: &JobRunArgs,
+        args: &JobRunArgs,
         resume_cursor: Option<Vec<u8>>,
     ) -> RunOutcome {
+        let repair = args.get_bool("repair");
+
+        // Resolve `drive` before anything else: under repair it decides
+        // whether the run may proceed at all.
+        //
+        // `*` is every drive, spelled out. It exists so that "clean the whole
+        // estate" remains possible while staying impossible to reach by
+        // accident — see the refusal below.
+        let scope: Option<DriveScope> = match args.get_str("drive") {
+            None => None,
+            Some(ALL_DRIVES) => Some(DriveScope::All),
+            Some(raw) => match self.resolve_drive(raw).await {
+                Ok(id) => Some(DriveScope::One(id)),
+                Err(message) => return RunOutcome::Failed { message },
+            },
+        };
+
+        // Repair never defaults to the whole deployment. Omitting `drive`
+        // refuses outright rather than falling back to "all", because the
+        // admin panel puts a repair checkbox next to a Run button: one
+        // misclick would otherwise revoke every non-compliant share on the
+        // instance, and there is no undo — the grants are gone.
+        //
+        // `*` is the deliberate form. A wildcard has to be typed, which is
+        // the property that matters; it cannot be arrived at by leaving a
+        // field blank.
+        if repair && scope.is_none() {
+            return RunOutcome::Failed {
+                message: format!(
+                    "drive_policies_consistency: `repair=true` requires `drive` — repair \
+                     deletes shares and there is no undo. Pass a drive id or name to clean \
+                     one drive, or `{ALL_DRIVES}` to clean every drive."
+                ),
+            };
+        }
+
+        let drive_filter: Option<Uuid> = match scope {
+            Some(DriveScope::One(id)) => Some(id),
+            // Both "not specified" (a plain scan) and `*` read everything.
+            Some(DriveScope::All) | None => None,
+        };
+
+        if repair {
+            tracing::info!(
+                target: "audit",
+                event = "drive_policy.repair_started",
+                // The blast radius, named: an operator reading this later has
+                // to be able to tell a one-drive clean-up from an estate-wide
+                // one without reconstructing the query string.
+                scope = match scope {
+                    Some(DriveScope::All) => "all_drives",
+                    _ => "one_drive",
+                },
+                run_id = %store.run_id(),
+                drive_id = ?drive_filter,
+                "👮🏻‍♂️ drive policy repair: non-compliant links and grants in scope will be DELETED",
+            );
+        }
+
         let mut cursor: Option<Uuid> = match resume_cursor {
             None => None,
             Some(bytes) if bytes.is_empty() => None,
@@ -161,6 +378,11 @@ impl RecoverableJobHandler for DrivePoliciesConsistencyCheck {
 
         let mut share_findings = 0u64;
         let mut grant_findings = 0u64;
+        // Only non-zero under repair. Reported separately from the finding
+        // counts because "found 12, removed 12" and "found 12, removed 0" are
+        // different outcomes and an admin must be able to tell them apart.
+        let mut links_removed = 0u64;
+        let mut grants_removed = 0u64;
 
         loop {
             match store.status().await {
@@ -184,11 +406,13 @@ impl RecoverableJobHandler for DrivePoliciesConsistencyCheck {
                    FROM storage.drives d \
                    LEFT JOIN storage.folders fo ON fo.id = d.root_folder_id \
                   WHERE ($1::uuid IS NULL OR d.id > $1) \
+                    AND ($3::uuid IS NULL OR d.id = $3) \
                   ORDER BY d.id \
                   LIMIT $2",
             )
             .bind(cursor)
             .bind(BATCH_SIZE)
+            .bind(drive_filter)
             .fetch_all(self.pool.as_ref())
             .await
             {
@@ -268,12 +492,68 @@ impl RecoverableJobHandler for DrivePoliciesConsistencyCheck {
                     let expires_at: Option<chrono::DateTime<chrono::Utc>> =
                         s.try_get("expires_at").ok().flatten();
 
+                    // Under repair the link is deleted ONCE, before its
+                    // findings are recorded, so each finding can state
+                    // truthfully whether the thing it describes still exists.
+                    //
+                    // Once per link, not once per finding: one link can breach
+                    // three knobs at the same time (forbidden, passwordless,
+                    // and beyond the cap), and deleting it three times would
+                    // count three removals for one revocation.
+                    // Each condition evaluated ONCE and reused below, rather
+                    // than re-tested at its finding site. The cap comparison
+                    // reads the clock, so testing it twice could land either
+                    // side of the boundary and have repair delete a link the
+                    // report never mentioned.
+                    let forbidden = effective.forbid_public_links || effective.forbid_sharing;
+                    let needs_password = effective.require_public_link_password && !has_password;
+                    let over_cap = effective.max_public_link_days.map(|cap| {
+                        // A null expiry is never-expires — the laxest value
+                        // there is, and the finding most worth surfacing.
+                        // Reported explicitly rather than skipped.
+                        let over = match expires_at {
+                            None => true,
+                            Some(exp) => {
+                                exp > chrono::Utc::now() + chrono::Duration::days(cap as i64)
+                            }
+                        };
+                        (cap, over)
+                    });
+
+                    let violates =
+                        forbidden || needs_password || matches!(over_cap, Some((_, true)));
+
+                    let mut removed = false;
+                    if repair && violates {
+                        if let Err(e) = self.delete_link(share_id).await {
+                            // A failed delete means the link is still live.
+                            // Failing the run is the point: a repair that
+                            // silently skipped one and reported success would
+                            // leave the admin believing the drive was clean.
+                            return RunOutcome::Failed {
+                                message: format!("repair: deleting link {share_id}: {e}"),
+                            };
+                        }
+                        links_removed += 1;
+                        removed = true;
+                        tracing::info!(
+                            target: "audit",
+                            event = "drive_policy.share_revoked",
+                            reason = "violates_drive_policy",
+                            run_id = %store.run_id(),
+                            drive_id = %drive_id,
+                            share_id = %share_id,
+                            item_type = %item_type,
+                            "👮🏻‍♂️ public link deleted by drive-policy repair",
+                        );
+                    }
+
                     // The link exists at all, on a drive that now forbids
                     // public links — or forbids per-resource sharing
                     // outright, which covers links too. Report the narrower
                     // knob when both apply, since that is the one an admin
                     // would relax to permit this link.
-                    if effective.forbid_public_links || effective.forbid_sharing {
+                    if forbidden {
                         let knob = if effective.forbid_public_links {
                             "forbid_public_links"
                         } else {
@@ -292,12 +572,16 @@ impl RecoverableJobHandler for DrivePoliciesConsistencyCheck {
                                 "knob":       knob,
                                 "token_name": token_name,
                                 "item_type":  item_type,
+                                // Whether repair deleted it in this same run,
+                                // so a finding never describes a link that is
+                                // already gone as though it were still live.
+                                "removed":    removed,
                             }),
                         )
                         .await;
                     }
 
-                    if effective.require_public_link_password && !has_password {
+                    if needs_password {
                         share_findings += 1;
                         record_or_log(
                             store,
@@ -310,21 +594,13 @@ impl RecoverableJobHandler for DrivePoliciesConsistencyCheck {
                                 "drive_name": name,
                                 "token_name": token_name,
                                 "item_type":  item_type,
+                                "removed":    removed,
                             }),
                         )
                         .await;
                     }
 
-                    if let Some(cap_days) = effective.max_public_link_days {
-                        // A null expiry is never-expires — the laxest value
-                        // there is, and the finding most worth surfacing.
-                        // Reported explicitly rather than skipped.
-                        let over = match expires_at {
-                            None => true,
-                            Some(exp) => {
-                                exp > chrono::Utc::now() + chrono::Duration::days(cap_days as i64)
-                            }
-                        };
+                    if let Some((cap_days, over)) = over_cap {
                         if over {
                             share_findings += 1;
                             record_or_log(
@@ -347,6 +623,7 @@ impl RecoverableJobHandler for DrivePoliciesConsistencyCheck {
                                     // appeared once as "photos (folder)" and once
                                     // as bare "photos".
                                     "item_type":  item_type,
+                                    "removed":    removed,
                                 }),
                             )
                             .await;
@@ -427,6 +704,32 @@ impl RecoverableJobHandler for DrivePoliciesConsistencyCheck {
                         };
 
                         if let Some(knob) = knob {
+                            // Deleted before the finding is written, so the
+                            // finding can say whether the access it describes
+                            // still exists. Same reasoning as for links.
+                            let mut removed = false;
+                            if repair {
+                                if let Err(e) = self.delete_grant(grant_id).await {
+                                    return RunOutcome::Failed {
+                                        message: format!("repair: deleting grant {grant_id}: {e}"),
+                                    };
+                                }
+                                grants_removed += 1;
+                                removed = true;
+                                tracing::info!(
+                                    target: "audit",
+                                    event = "drive_policy.grant_revoked",
+                                    reason = knob,
+                                    run_id = %store.run_id(),
+                                    drive_id = %drive_id,
+                                    grant_id = %grant_id,
+                                    subject_type = %subject_type,
+                                    subject_id = ?subject_id,
+                                    is_external = is_external,
+                                    "👮🏻‍♂️ grant deleted by drive-policy repair",
+                                );
+                            }
+
                             grant_findings += 1;
                             record_or_log(
                                 store,
@@ -444,6 +747,7 @@ impl RecoverableJobHandler for DrivePoliciesConsistencyCheck {
                                     "is_external":   is_external,
                                     "resource_type": resource_type,
                                     "role":          role,
+                                    "removed":       removed,
                                 }),
                             )
                             .await;
@@ -494,6 +798,11 @@ impl RecoverableJobHandler for DrivePoliciesConsistencyCheck {
             "grants_violating_policy".into(),
             serde_json::json!(grant_findings),
         );
+        // Always present, even as zeroes on a plain scan: an admin reading a
+        // past run needs to know whether it removed anything, and an absent
+        // key is ambiguous between "removed none" and "this run could not".
+        extra_stats.insert("links_removed".into(), serde_json::json!(links_removed));
+        extra_stats.insert("grants_removed".into(), serde_json::json!(grants_removed));
         RunOutcome::Completed { extra_stats }
     }
 }

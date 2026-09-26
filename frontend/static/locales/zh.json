@@ -1009,7 +1009,9 @@
       "max_public_link_days": "限制公开链接有效期",
       "max_public_link_days_help": "此云盘中公开链接可存续的最长天数。留空表示不限制。超出上限创建的链接会被拒绝；已经超出上限的链接仍可继续使用，并会由策略合规性扫描报告。",
       "require_public_link_password": "公开链接必须设置密码",
-      "require_public_link_password_help": "此云盘的公开链接必须带有密码。未设置密码创建的链接会被拒绝；已有的无密码链接仍可继续使用，并会由策略合规性扫描报告。"
+      "require_public_link_password_help": "此云盘的公开链接必须带有密码。未设置密码创建的链接会被拒绝；已有的无密码链接仍可继续使用，并会由策略合规性扫描报告。",
+      "on": "开启",
+      "off": "关闭"
     },
     "drives": "云盘",
     "drive_name": "名称",
@@ -1319,7 +1321,12 @@
       "r_file": "文件",
       "r_folder": "文件夹",
       "v_never_expires_cap": "永不过期的公开链接（超过 {{n}} 天上限）",
-      "v_over_cap_detail": "{{date}} 过期的公开链接（超过 {{n}} 天上限）"
+      "v_over_cap_detail": "{{date}} 过期的公开链接（超过 {{n}} 天上限）",
+      "revoke": "撤销",
+      "revoking": "正在撤销…",
+      "revoke_confirm": "撤销",
+      "revoke_confirm_title": "撤销 {{name}} 中不符合策略的共享？",
+      "revoke_confirm_body": "此云盘中的 {{n}} 个链接和授权将被撤销。正在使用的人会立即失去访问权限，且无法撤销。其他云盘不受影响。"
     },
     "drives_policy_hint": "在此设置的策略仅适用于单个云盘，并会覆盖其默认值。",
     "drives_policy_hint_link": "编辑所有云盘的默认值",

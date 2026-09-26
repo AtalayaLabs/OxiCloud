@@ -1049,7 +1049,9 @@
       "max_public_link_days": "Limiter la durée de vie des liens publics",
       "max_public_link_days_help": "Durée de vie maximale, en jours, d'un lien public dans ce Disque. Laissez vide pour ne pas limiter. Les liens créés au-delà de cette limite sont refusés ; les liens existants qui la dépassent continuent de fonctionner et sont signalés par l'analyse de conformité.",
       "require_public_link_password": "Exiger un mot de passe sur les liens publics",
-      "require_public_link_password_help": "Les liens publics de ce Disque doivent être protégés par un mot de passe. Les liens créés sans mot de passe sont refusés ; les liens existants sans mot de passe continuent de fonctionner et sont signalés par l'analyse de conformité."
+      "require_public_link_password_help": "Les liens publics de ce Disque doivent être protégés par un mot de passe. Les liens créés sans mot de passe sont refusés ; les liens existants sans mot de passe continuent de fonctionner et sont signalés par l'analyse de conformité.",
+      "on": "activé",
+      "off": "désactivé"
     },
     "drives": "Disques",
     "drive_name": "Nom",
@@ -1369,7 +1371,12 @@
       "r_file": "fichier",
       "r_folder": "dossier",
       "v_never_expires_cap": "lien public qui n'expire jamais, au-delà de la limite de {{n}} jours",
-      "v_over_cap_detail": "lien public expirant le {{date}}, au-delà de la limite de {{n}} jours"
+      "v_over_cap_detail": "lien public expirant le {{date}}, au-delà de la limite de {{n}} jours",
+      "revoke": "Révoquer",
+      "revoking": "Révocation…",
+      "revoke_confirm": "Révoquer",
+      "revoke_confirm_title": "Révoquer les partages non conformes de {{name}} ?",
+      "revoke_confirm_body": "{{n}} lien(s) et partage(s) de ce Disque seront révoqués. Toute personne qui les utilise perdra l’accès immédiatement, et l’opération est irréversible. Les autres Disques ne sont pas touchés."
     },
     "drives_policy_hint": "Les règles définies ici s'appliquent à un seul Disque et remplacent sa valeur par défaut.",
     "drives_policy_hint_link": "Modifier les valeurs par défaut de tous les Disques",

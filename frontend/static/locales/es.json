@@ -1037,7 +1037,9 @@
       "max_public_link_days": "Limitar la duración de los enlaces públicos",
       "max_public_link_days_help": "Duración máxima, en días, de un enlace público en esta unidad. Déjalo vacío para no poner límite. Los enlaces creados por encima del límite se rechazan; los que ya lo superan siguen funcionando y se indican en el análisis de cumplimiento.",
       "require_public_link_password": "Exigir contraseña en los enlaces públicos",
-      "require_public_link_password_help": "Los enlaces públicos de esta unidad deben llevar contraseña. Los enlaces creados sin ella se rechazan; los enlaces existentes sin contraseña siguen funcionando y se indican en el análisis de cumplimiento."
+      "require_public_link_password_help": "Los enlaces públicos de esta unidad deben llevar contraseña. Los enlaces creados sin ella se rechazan; los enlaces existentes sin contraseña siguen funcionando y se indican en el análisis de cumplimiento.",
+      "on": "activado",
+      "off": "desactivado"
     },
     "drives": "Unidades",
     "drive_name": "Nombre",
@@ -1337,7 +1339,12 @@
       "r_file": "archivo",
       "r_folder": "carpeta",
       "v_never_expires_cap": "enlace público que nunca caduca, por encima del límite de {{n}} días",
-      "v_over_cap_detail": "enlace público que caduca el {{date}}, por encima del límite de {{n}} días"
+      "v_over_cap_detail": "enlace público que caduca el {{date}}, por encima del límite de {{n}} días",
+      "revoke": "Revocar",
+      "revoking": "Revocando…",
+      "revoke_confirm": "Revocar",
+      "revoke_confirm_title": "¿Revocar los elementos compartidos de {{name}} que incumplen la política?",
+      "revoke_confirm_body": "Se revocarán {{n}} enlace(s) y permiso(s) de esta unidad. Quien los esté usando perderá el acceso de inmediato, y no se puede deshacer. Las demás unidades no se ven afectadas."
     },
     "drives_policy_hint": "Las políticas definidas aquí se aplican a una sola unidad y anulan su valor predeterminado.",
     "drives_policy_hint_link": "Editar los valores predeterminados de todas las unidades",

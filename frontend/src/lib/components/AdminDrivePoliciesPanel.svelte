@@ -26,6 +26,7 @@
 	 */
 	import { t } from '$lib/i18n/index.svelte';
 	import { errorMessage } from '$lib/utils/errors';
+	import { confirmDialog } from '$lib/stores/dialogs.svelte';
 	import { formatDate } from '$lib/utils/display';
 	import PolicyList from '$lib/components/PolicyList.svelte';
 	import {
@@ -79,6 +80,8 @@
 	let findings = $state<Finding[] | null>(null);
 	let findingsError = $state<string | null>(null);
 	let scanning = $state(false);
+	/** Drive id whose revocation is in flight, or null. */
+	let revoking = $state<string | null>(null);
 
 	/** Live drift — `null` until the first load. */
 	let drift = $state<PolicyDrift[] | null>(null);
@@ -261,6 +264,59 @@
 			findings = await listFindings(JOB, runId, { limit: 500 });
 		} catch (e) {
 			findingsError = errorMessage(e);
+		}
+	}
+
+	/**
+	 * Delete the violations listed under one drive.
+	 *
+	 * Lives here rather than on the jobs panel because the job requires a
+	 * `drive` and refuses without one — and this is the only screen that
+	 * knows which drive the admin means. The jobs panel renders boolean
+	 * parameters only, so its repair toggle would send no drive and be
+	 * refused; that refusal is the misclick guard working, not a gap to
+	 * route around.
+	 *
+	 * Confirmed first, with the count and the drive named. This revokes
+	 * access and there is no undo, so the dialog states what will stop
+	 * working rather than asking a generic "are you sure".
+	 */
+	async function revokeDriveShares(driveId: string, count: number) {
+		// Two-button confirm, always — this withdraws access from real people
+		// and cannot be undone, so it is never a single-click action. Both
+		// buttons are labelled explicitly: a verb on the destructive one says
+		// what will happen, which "Yes" does not.
+		const ok = await confirmDialog({
+			title: t(
+				'admin.drive_policies.revoke_confirm_title',
+				{ name: driveLabel(driveId) },
+				'Revoke {{name}}’s non-compliant shares?'
+			),
+			message: t(
+				'admin.drive_policies.revoke_confirm_body',
+				{ n: count },
+				'{{n}} link(s) and grant(s) on this drive will be revoked. Anyone using them loses access immediately, and this cannot be undone. Other drives are untouched.'
+			),
+			confirmText: t('admin.drive_policies.revoke_confirm', 'Revoke'),
+			cancelText: t('common.cancel', 'Cancel'),
+			danger: true
+		});
+		if (!ok) return;
+
+		revoking = driveId;
+		findingsError = null;
+		try {
+			const res = await triggerJob(JOB, { repair: true, drive: driveId });
+			// The job reports a failed run in its body rather than as a non-2xx,
+			// so a silent success here would be a lie.
+			if (res.outcome?.outcome === 'err') {
+				findingsError = res.outcome.message ?? 'repair failed';
+			}
+			await loadFindings();
+		} catch (e) {
+			findingsError = errorMessage(e);
+		} finally {
+			revoking = null;
 		}
 	}
 
@@ -616,7 +672,7 @@
 					: t('admin.drive_policies.rescan', 'Run the scan')}
 			</button>
 			<button class="btn" type="button" onclick={loadFindings}>
-				{t('common.refresh', 'Refresh')}
+				{t('admin.jobs.refresh', 'Refresh')}
 			</button>
 		</div>
 
@@ -681,6 +737,26 @@
 									data-testid={`admin-policy-shares-drive-${group.driveId}`}
 								>
 									{t('admin.drive_manage_policies', 'Manage policies')}
+								</button>
+								<!-- Scoped repair. The job refuses to run without a drive,
+								     and this is the only screen that knows which one the
+								     admin means — the jobs panel renders boolean
+								     parameters only, so its repair toggle cannot supply
+								     one. Destructive, so it confirms first. -->
+								<button
+									type="button"
+									class="btn dp__drive-revoke"
+									disabled={revoking !== null}
+									onclick={(e) => {
+										e.preventDefault();
+										e.stopPropagation();
+										void revokeDriveShares(group.driveId, group.items.length);
+									}}
+									data-testid={`admin-policy-revoke-${group.driveId}`}
+								>
+									{revoking === group.driveId
+										? t('admin.drive_policies.revoking', 'Revoking…')
+										: t('admin.drive_policies.revoke', 'Revoke')}
 								</button>
 							</summary>
 							<ul class="dp__findings">
@@ -876,6 +952,37 @@
 		flex: 0 0 auto;
 		font-size: 0.8125rem;
 		font-weight: 400;
+	}
+
+	/* Destructive, and styled to look it — this withdraws access with no
+	   undo, so it must not read as just another link beside "Manage
+	   policies".
+	   Background and border are BOTH set explicitly: the shared `.btn`
+	   declares `border: none` and no background at all, so a bare button
+	   fell back to the user agent's grey `buttonface` — and danger-coloured
+	   text on that grey is the contrast problem. Setting only
+	   `border-color` was inert for the same reason.
+	   `--color-danger-alt` is the danger hue as TEXT; `--color-danger-text`
+	   is white, meant as a foreground on a danger FILL, and would be
+	   invisible here. */
+	.dp__drive-revoke {
+		flex: 0 0 auto;
+		padding: 0.15rem 0.5rem;
+		background: transparent;
+		border: 1px solid var(--color-danger-alt);
+		border-radius: var(--radius-md);
+		color: var(--color-danger-alt);
+		font-size: 0.8125rem;
+		font-weight: 400;
+	}
+
+	.dp__drive-revoke:hover:not(:disabled) {
+		background: var(--color-danger-light-bg);
+	}
+
+	.dp__drive-revoke:disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
 	}
 
 	/* Indent the violations under the drive they belong to. */

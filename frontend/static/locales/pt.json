@@ -1027,7 +1027,9 @@
       "max_public_link_days": "Limitar a duração dos links públicos",
       "max_public_link_days_help": "Duração máxima, em dias, de um link público nesta unidade. Deixe vazio para não definir limite. Os links criados além do limite são recusados; os que já o excedem continuam a funcionar e são comunicados pela análise de conformidade.",
       "require_public_link_password": "Exigir palavra-passe nos links públicos",
-      "require_public_link_password_help": "Os links públicos desta unidade têm de ter uma palavra-passe. Os links criados sem uma são recusados; os links existentes sem palavra-passe continuam a funcionar e são comunicados pela análise de conformidade."
+      "require_public_link_password_help": "Os links públicos desta unidade têm de ter uma palavra-passe. Os links criados sem uma são recusados; os links existentes sem palavra-passe continuam a funcionar e são comunicados pela análise de conformidade.",
+      "on": "ativado",
+      "off": "desativado"
     },
     "drives": "Unidades",
     "drive_name": "Nome",
@@ -1337,7 +1339,12 @@
       "r_file": "arquivo",
       "r_folder": "pasta",
       "v_never_expires_cap": "link público que nunca expira, além do limite de {{n}} dias",
-      "v_over_cap_detail": "link público que expira em {{date}}, além do limite de {{n}} dias"
+      "v_over_cap_detail": "link público que expira em {{date}}, além do limite de {{n}} dias",
+      "revoke": "Revogar",
+      "revoking": "A revogar…",
+      "revoke_confirm": "Revogar",
+      "revoke_confirm_title": "Revogar as partilhas não conformes de {{name}}?",
+      "revoke_confirm_body": "{{n}} ligação(ões) e permissão(ões) desta unidade serão revogadas. Quem as estiver a usar perde o acesso imediatamente e não é possível desfazer. As outras unidades não são afetadas."
     },
     "drives_policy_hint": "As políticas definidas aqui aplicam-se a uma única unidade e substituem a sua predefinição.",
     "drives_policy_hint_link": "Editar as predefinições de todas as unidades",

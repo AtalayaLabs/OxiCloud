@@ -1027,7 +1027,9 @@
       "max_public_link_days": "Limita la durata dei link pubblici",
       "max_public_link_days_help": "Durata massima, in giorni, di un link pubblico in questa unità. Lascia vuoto per non impostare limiti. I link creati oltre il limite vengono rifiutati; quelli che già lo superano continuano a funzionare e vengono segnalati dalla scansione di conformità.",
       "require_public_link_password": "Richiedi una password sui link pubblici",
-      "require_public_link_password_help": "I link pubblici di questa unità devono avere una password. I link creati senza vengono rifiutati; i link esistenti senza password continuano a funzionare e vengono segnalati dalla scansione di conformità."
+      "require_public_link_password_help": "I link pubblici di questa unità devono avere una password. I link creati senza vengono rifiutati; i link esistenti senza password continuano a funzionare e vengono segnalati dalla scansione di conformità.",
+      "on": "attivo",
+      "off": "disattivo"
     },
     "drives": "Unità",
     "drive_name": "Nome",
@@ -1337,7 +1339,12 @@
       "r_file": "file",
       "r_folder": "cartella",
       "v_never_expires_cap": "link pubblico che non scade mai, oltre il limite di {{n}} giorni",
-      "v_over_cap_detail": "link pubblico che scade il {{date}}, oltre il limite di {{n}} giorni"
+      "v_over_cap_detail": "link pubblico che scade il {{date}}, oltre il limite di {{n}} giorni",
+      "revoke": "Revoca",
+      "revoking": "Revoca in corso…",
+      "revoke_confirm": "Revoca",
+      "revoke_confirm_title": "Revocare le condivisioni non conformi di {{name}}?",
+      "revoke_confirm_body": "{{n}} link e autorizzazioni di questa unità verranno revocati. Chi li sta usando perde subito l’accesso e l’operazione è irreversibile. Le altre unità non vengono toccate."
     },
     "drives_policy_hint": "I criteri impostati qui si applicano a una sola unità e sovrascrivono il suo valore predefinito.",
     "drives_policy_hint_link": "Modifica i valori predefiniti di tutte le unità",

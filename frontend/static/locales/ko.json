@@ -1059,7 +1059,9 @@
       "max_public_link_days": "공유 링크 유효 기간 제한",
       "max_public_link_days_help": "이 드라이브의 공유 링크가 유지될 수 있는 최대 일수입니다. 제한하지 않으려면 비워 두세요. 한도를 넘는 링크 생성은 거부됩니다. 이미 한도를 넘은 링크는 계속 동작하며 정책 준수 검사에서 보고됩니다.",
       "require_public_link_password": "공유 링크에 비밀번호 요구",
-      "require_public_link_password_help": "이 드라이브의 공유 링크에는 비밀번호가 있어야 합니다. 비밀번호 없이 만든 링크는 거부됩니다. 기존의 비밀번호 없는 링크는 계속 동작하며 정책 준수 검사에서 보고됩니다."
+      "require_public_link_password_help": "이 드라이브의 공유 링크에는 비밀번호가 있어야 합니다. 비밀번호 없이 만든 링크는 거부됩니다. 기존의 비밀번호 없는 링크는 계속 동작하며 정책 준수 검사에서 보고됩니다.",
+      "on": "켜짐",
+      "off": "꺼짐"
     },
     "tab_plugins": "플러그인",
     "plugins_title": "플러그인",
@@ -1337,7 +1339,12 @@
       "r_file": "파일",
       "r_folder": "폴더",
       "v_never_expires_cap": "만료되지 않는 공유 링크 ({{n}}일 한도 초과)",
-      "v_over_cap_detail": "{{date}}에 만료되는 공유 링크 ({{n}}일 한도 초과)"
+      "v_over_cap_detail": "{{date}}에 만료되는 공유 링크 ({{n}}일 한도 초과)",
+      "revoke": "취소",
+      "revoking": "취소 중…",
+      "revoke_confirm": "취소",
+      "revoke_confirm_title": "{{name}}의 정책 위반 공유를 취소할까요?",
+      "revoke_confirm_body": "이 드라이브의 링크 및 권한 {{n}}개가 취소됩니다. 사용 중인 사람은 즉시 접근 권한을 잃고, 되돌릴 수 없습니다. 다른 드라이브는 영향을 받지 않습니다."
     },
     "drives_policy_hint": "여기서 설정한 정책은 드라이브 하나에만 적용되며 해당 기본값을 재정의합니다.",
     "drives_policy_hint_link": "모든 드라이브의 기본값 편집",

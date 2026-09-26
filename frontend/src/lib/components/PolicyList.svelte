@@ -90,7 +90,7 @@
 				? t('admin.drive_policy.n_days', { n: v }, '{{n}} days')
 				: t('admin.drive_policy.no_cap', 'no cap');
 		}
-		return v === true ? t('common.on', 'on') : t('common.off', 'off');
+		return v === true ? t('admin.drive_policy.on', 'on') : t('admin.drive_policy.off', 'off');
 	}
 
 	/** The default for this knob, when it differs from what is in force. */

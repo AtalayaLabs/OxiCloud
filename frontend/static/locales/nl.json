@@ -1027,7 +1027,9 @@
       "max_public_link_days": "Levensduur van openbare links beperken",
       "max_public_link_days_help": "Maximale levensduur, in dagen, van een openbare link in deze schijf. Laat leeg voor geen limiet. Links die daarbuiten worden aangemaakt, worden geweigerd; bestaande links die de limiet overschrijden blijven werken en worden gemeld door de nalevingsscan.",
       "require_public_link_password": "Wachtwoord vereisen voor openbare links",
-      "require_public_link_password_help": "Openbare links in deze schijf moeten een wachtwoord hebben. Links die zonder wachtwoord worden aangemaakt, worden geweigerd; bestaande links zonder wachtwoord blijven werken en worden gemeld door de nalevingsscan."
+      "require_public_link_password_help": "Openbare links in deze schijf moeten een wachtwoord hebben. Links die zonder wachtwoord worden aangemaakt, worden geweigerd; bestaande links zonder wachtwoord blijven werken en worden gemeld door de nalevingsscan.",
+      "on": "aan",
+      "off": "uit"
     },
     "drives": "Schijven",
     "drive_name": "Naam",
@@ -1337,7 +1339,12 @@
       "r_file": "bestand",
       "r_folder": "map",
       "v_never_expires_cap": "openbare link die nooit verloopt, boven de limiet van {{n}} dagen",
-      "v_over_cap_detail": "openbare link die op {{date}} verloopt, boven de limiet van {{n}} dagen"
+      "v_over_cap_detail": "openbare link die op {{date}} verloopt, boven de limiet van {{n}} dagen",
+      "revoke": "Intrekken",
+      "revoking": "Intrekken…",
+      "revoke_confirm": "Intrekken",
+      "revoke_confirm_title": "Niet-conforme shares van {{name}} intrekken?",
+      "revoke_confirm_body": "{{n}} link(s) en machtiging(en) op deze schijf worden ingetrokken. Wie ze gebruikt, verliest direct toegang en dit kan niet worden teruggedraaid. Andere schijven blijven ongemoeid."
     },
     "drives_policy_hint": "Het beleid dat hier wordt ingesteld, geldt voor één schijf en overschrijft haar standaard.",
     "drives_policy_hint_link": "De standaardwaarden voor alle schijven bewerken",

@@ -1027,7 +1027,9 @@
       "max_public_link_days": "Ogranicz czas życia linków publicznych",
       "max_public_link_days_help": "Maksymalny czas życia linku publicznego na tym dysku, w dniach. Pozostaw puste, aby nie ustawiać limitu. Linki tworzone ponad limit są odrzucane; istniejące linki, które go przekraczają, nadal działają i są zgłaszane przez skanowanie zgodności.",
       "require_public_link_password": "Wymagaj hasła do linków publicznych",
-      "require_public_link_password_help": "Linki publiczne na tym dysku muszą mieć hasło. Linki utworzone bez hasła są odrzucane; istniejące linki bez hasła nadal działają i są zgłaszane przez skanowanie zgodności."
+      "require_public_link_password_help": "Linki publiczne na tym dysku muszą mieć hasło. Linki utworzone bez hasła są odrzucane; istniejące linki bez hasła nadal działają i są zgłaszane przez skanowanie zgodności.",
+      "on": "włączone",
+      "off": "wyłączone"
     },
     "drives": "Dyski",
     "drive_name": "Nazwa",
@@ -1337,7 +1339,12 @@
       "r_file": "plik",
       "r_folder": "folder",
       "v_never_expires_cap": "link publiczny, który nigdy nie wygasa — ponad limit {{n}} dni",
-      "v_over_cap_detail": "link publiczny wygasający {{date}} — ponad limit {{n}} dni"
+      "v_over_cap_detail": "link publiczny wygasający {{date}} — ponad limit {{n}} dni",
+      "revoke": "Odwołaj",
+      "revoking": "Odwoływanie…",
+      "revoke_confirm": "Odwołaj",
+      "revoke_confirm_title": "Odwołać niezgodne udostępnienia dysku {{name}}?",
+      "revoke_confirm_body": "Zostanie odwołanych {{n}} link(ów) i uprawnień na tym dysku. Osoby, które ich używają, natychmiast stracą dostęp, a operacji nie można cofnąć. Inne dyski pozostają nietknięte."
     },
     "drives_policy_hint": "Zasady ustawione tutaj dotyczą jednego dysku i nadpisują jego wartość domyślną.",
     "drives_policy_hint_link": "Edytuj wartości domyślne dla wszystkich dysków",

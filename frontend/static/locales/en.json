@@ -1299,7 +1299,12 @@
       "v_never_expires": "public link that never expires",
       "v_never_expires_cap": "public link that never expires, past the {{n}}-day cap",
       "v_over_cap": "public link outliving the cap",
-      "v_over_cap_detail": "public link expiring {{date}}, past the {{n}}-day cap"
+      "v_over_cap_detail": "public link expiring {{date}}, past the {{n}}-day cap",
+      "revoke": "Revoke",
+      "revoking": "Revoking…",
+      "revoke_confirm": "Revoke",
+      "revoke_confirm_title": "Revoke {{name}}’s non-compliant shares?",
+      "revoke_confirm_body": "{{n}} link(s) and grant(s) on this drive will be revoked. Anyone using them loses access immediately, and this cannot be undone. Other drives are untouched."
     },
     "drive_policy": {
       "forbid_sharing": "Forbid per-resource sharing",
@@ -1322,6 +1327,8 @@
       "overridden_title": "Set on this drive. It will not follow future changes to the default.",
       "n_days": "{{n}} days",
       "no_cap": "no cap",
+      "on": "on",
+      "off": "off",
       "max_public_link_days": "Cap public link lifetime",
       "max_public_link_days_help": "Longest a public link in this drive may live, in days. Leave empty for no cap. Links created beyond the cap are refused; links that already outlive it keep working and are reported by the policy compliance scan.",
       "require_public_link_password": "Require a password on public links",
