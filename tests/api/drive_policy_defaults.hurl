@@ -959,6 +959,33 @@ body contains "dpd_user"
 body contains "forbid_sharing"
 
 
+# ENFORCEMENT, not just reporting: a NEW public link is refused by
+# `forbid_sharing` alone, with `forbid_public_links` explicitly off.
+#
+# This arm was the gap. `forbid_sharing` is the broader rule and three
+# separate places already claimed it covers links — the knob's help text
+# ("covers public links and external sharing as well"), the scan above,
+# which attributes these very links to it, and the admin editor, which
+# greys `forbid_public_links` out as "already enforced by" it. The gate
+# checked only the narrow knob, so the link was created anyway and all
+# three claims were false: an admin who forbade sharing outright still
+# had a drive that minted public links.
+#
+# Asserted here rather than in a new file because the state this needs —
+# forbid_sharing on, forbid_public_links off — is exactly what the block
+# above already set up.
+POST {{base_url}}/api/shares
+Authorization: Bearer {{admin_token}}
+Content-Type: application/json
+{
+  "item_id":   "{{scan_drive_root}}",
+  "item_type": "folder",
+  "item_name": "dpd_link_under_forbid_sharing"
+}
+
+HTTP 405
+
+
 # Both links still resolve. Discovery only — the scan has now
 # named them twice and revoked neither.
 GET {{base_url}}/api/shares/{{good_share_id}}

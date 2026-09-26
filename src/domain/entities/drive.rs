@@ -158,8 +158,15 @@ impl Drive {
 #[serde(default)]
 pub struct DrivePolicies {
     /// Disables per-resource grants on resources in this drive. Drive-level
-    /// membership (Owner/Editor/Viewer) still works. Enforced at
-    /// `grant_handler::create_grant`.
+    /// membership (Owner/Editor/Viewer) still works.
+    ///
+    /// The BROADER rule: it covers public links too, so it is enforced at
+    /// `grant_handler::create_grant` (via [`DrivePolicies::refuse_sharing`])
+    /// **and** on the public-link path (via
+    /// [`DrivePolicies::refuse_public_links`]). Enforcing only the first left
+    /// a drive that forbade sharing outright still minting anonymous links,
+    /// while the admin editor greyed `forbid_public_links` out as "already
+    /// enforced by" this one.
     pub forbid_sharing: bool,
     /// Blocks grants whose subject has `users.is_external = true`. Enforced
     /// at `magic_link_invite_service::resolve_or_create_recipient` and
@@ -482,22 +489,44 @@ impl DrivePolicies {
     /// `share.rejected` audit line and returns
     /// `OperationNotSupported` when on.
     pub fn refuse_public_links(&self, ctx: PublicLinkGateContext) -> Result<(), DomainError> {
-        if !self.forbid_public_links {
+        // `forbid_sharing` is the BROADER rule and covers public links too.
+        // Three separate places already said so — the knob's own help text
+        // ("covers public links and external sharing as well"), the
+        // compliance scan, which reports existing links as violations under
+        // it, and the admin editor, which greys `forbid_public_links` out as
+        // "already enforced by Forbid per-resource sharing". Checking only
+        // the narrow knob here made all three of those claims false: a link
+        // could still be minted on a drive that forbade sharing outright,
+        // while the UI told the admin it could not.
+        //
+        // Report the NARROWER knob when both are on, since that is the one an
+        // admin would relax to permit this link — same precedence the scan
+        // uses, so a refusal and the finding for an existing link name the
+        // same cause.
+        let (reason, message) = if self.forbid_public_links {
+            (
+                "forbid_public_links",
+                "This drive does not allow public links.",
+            )
+        } else if self.forbid_sharing {
+            (
+                "forbid_sharing",
+                "This drive does not allow sharing individual files or folders, \
+                 which includes public links.",
+            )
+        } else {
             return Ok(());
-        }
+        };
         tracing::info!(
             target: "audit",
             event = "share.rejected",
-            reason = "forbid_public_links",
+            reason = reason,
             caller_id = %ctx.caller_id,
             item_type = ctx.item_type,
             item_id = %ctx.item_id,
-            "👮🏻‍♂️ public-link creation refused: forbid_public_links",
+            "👮🏻‍♂️ public-link creation refused",
         );
-        Err(DomainError::operation_not_supported(
-            "Share",
-            "This drive does not allow public links.",
-        ))
+        Err(DomainError::operation_not_supported("Share", message))
     }
 
     /// D5 `forbid_sharing` gate: refuses **per-resource** grants on
@@ -743,6 +772,72 @@ pub struct ExternalSharingGateContext {
     pub drive_id: Option<Uuid>,
     pub resource_type: Option<&'static str>,
     pub resource_id: Option<Uuid>,
+}
+
+#[cfg(test)]
+mod public_link_gate_tests {
+    use super::*;
+
+    fn ctx() -> PublicLinkGateContext {
+        PublicLinkGateContext {
+            caller_id: Uuid::nil(),
+            item_type: "folder",
+            item_id: Uuid::nil(),
+        }
+    }
+
+    #[test]
+    fn permitted_when_neither_knob_is_set() {
+        assert!(DrivePolicies::default().refuse_public_links(ctx()).is_ok());
+    }
+
+    #[test]
+    fn refused_by_the_narrow_knob() {
+        let p = DrivePolicies {
+            forbid_public_links: true,
+            ..Default::default()
+        };
+        assert!(p.refuse_public_links(ctx()).is_err());
+    }
+
+    /// The regression this gate was missing: `forbid_sharing` is the broader
+    /// rule and covers links, which the knob's help text, the compliance scan
+    /// and the admin editor's "already enforced by" hint all asserted — while
+    /// the gate itself let the link through.
+    #[test]
+    fn refused_by_forbid_sharing_alone() {
+        let p = DrivePolicies {
+            forbid_sharing: true,
+            forbid_public_links: false,
+            ..Default::default()
+        };
+        let err = p
+            .refuse_public_links(ctx())
+            .expect_err("forbid_sharing must cover public links");
+        // The message has to say WHY, since the narrow knob is off and an
+        // admin reading "does not allow public links" would go looking at the
+        // wrong setting.
+        assert!(
+            format!("{err}").contains("individual files or folders"),
+            "message should name the broader rule, got: {err}"
+        );
+    }
+
+    #[test]
+    fn narrow_knob_wins_the_reason_when_both_are_set() {
+        let p = DrivePolicies {
+            forbid_sharing: true,
+            forbid_public_links: true,
+            ..Default::default()
+        };
+        let err = p.refuse_public_links(ctx()).expect_err("must refuse");
+        // Same precedence the scan uses, so a refusal and the finding for an
+        // already-existing link name the same cause.
+        assert!(
+            format!("{err}").contains("does not allow public links"),
+            "narrower knob should be reported, got: {err}"
+        );
+    }
 }
 
 #[cfg(test)]
