@@ -269,6 +269,44 @@ pub trait DriveRepository: Send + Sync + 'static {
         folder_id: Uuid,
     ) -> Result<(Uuid, crate::domain::entities::drive::DrivePolicies), DriveRepositoryError>;
 
+    /// Read the default policy bag for a drive kind.
+    ///
+    /// Returns the raw JSONB rather than a typed `DrivePolicies` because the
+    /// caller needs to distinguish "this knob is set in the default" from
+    /// "this knob happens to be false" — the typed view collapses the two.
+    /// Returns an empty object when no row exists, which resolves to
+    /// today's all-permissive behaviour.
+    async fn get_policy_defaults(
+        &self,
+        kind: crate::domain::entities::drive::DriveKind,
+    ) -> Result<serde_json::Value, DriveRepositoryError>;
+
+    /// Replace (not merge) the default bag for a kind, returning the stored
+    /// value.
+    ///
+    /// Replace, deliberately: the per-drive PATCH merges so an admin can
+    /// nudge one knob without restating the rest, but a DEFAULT is a
+    /// complete statement of posture for that kind. Merging would make
+    /// "unset this knob" impossible to express — the caller could never
+    /// take a key back out.
+    async fn set_policy_defaults(
+        &self,
+        kind: crate::domain::entities::drive::DriveKind,
+        policies: &serde_json::Value,
+        updated_by: Uuid,
+    ) -> Result<serde_json::Value, DriveRepositoryError>;
+
+    /// Every drive of the given kind, with its OVERRIDE bag, for the drift
+    /// scan and the impact preview.
+    ///
+    /// Returns `(drive_id, name_or_none, overrides)`. Deliberately the
+    /// overrides rather than the resolved policy — the comparison needs to
+    /// know what was explicitly decided, not what it resolves to.
+    async fn list_drives_with_overrides(
+        &self,
+        kind: crate::domain::entities::drive::DriveKind,
+    ) -> Result<Vec<(Uuid, Option<String>, serde_json::Value)>, DriveRepositoryError>;
+
     /// Resolve just the drive id of a folder — fast PK probe used by
     /// the cross-drive-move gate to identify the move destination
     /// (where we don't need policies, just the discriminator). Returns
@@ -276,10 +314,24 @@ pub trait DriveRepository: Send + Sync + 'static {
     async fn drive_id_for_folder(&self, folder_id: Uuid) -> Result<Uuid, DriveRepositoryError>;
 
     /// Merge the given partial policy bag into the drive's existing
-    /// `policies` JSONB, returning the updated bag. JSONB-level merge
-    /// preserves unknown keys already present on disk (the column stays
-    /// the canonical bag — see `DrivePolicies::from_value`). `caller_id`
-    /// is recorded for the audit log emitted at the service layer.
+    /// `policies` JSONB. JSONB-level merge preserves unknown keys already
+    /// present on disk (the column stays the canonical bag — see
+    /// `DrivePolicies::from_value`). `caller_id` is recorded for the audit
+    /// log emitted at the service layer.
+    ///
+    /// **Returns the EFFECTIVE policy, not the drive's own overrides** —
+    /// the kind's default with this drive's bag laid on top, matching what
+    /// every read path returns. The admin modal writes this response into
+    /// its cached row, so returning raw overrides would flip that row from
+    /// effective to raw on the first save and inherited knobs would start
+    /// displaying as unset.
+    ///
+    /// A key whose value is JSON `null` is REMOVED rather than stored —
+    /// that is how a drive stops overriding a knob and follows its kind's
+    /// default again. A stored null would survive the merge and clear the
+    /// inherited value instead, and would disagree with
+    /// `DrivePolicies::resolve`, which parses into an `Option` and
+    /// inherits.
     ///
     /// Caller is responsible for the `Manage` permission check; this
     /// method does not re-verify.

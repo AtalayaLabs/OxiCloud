@@ -335,6 +335,66 @@ impl ShareUseCase for ShareService {
             item_id: item_uuid,
         })?;
 
+        // A link may exist (checked above) — now: may it be handed out
+        // without a secret, and may it outlive the drive's cap?
+        //
+        // Refuse rather than clamp. The share dialog reads the drive's
+        // effective policies and caps its own expiry picker, so the limit is
+        // visible before the user commits; silently handing back a link that
+        // expires sooner than they asked for would be a dialog quietly
+        // disagreeing with the person using it.
+        //
+        // Creation-time only, like every other policy gate. Links minted
+        // before the policy tightened keep working — the consistency job
+        // reports them rather than this path revoking them.
+        if policies.require_public_link_password && dto.password.as_deref().unwrap_or("").is_empty()
+        {
+            tracing::info!(
+                target: "audit",
+                event = "drive.public_link_refused",
+                reason = "password_required",
+                caller_id = %user_id,
+                item_type = item_type_str,
+                item_id = %item_uuid,
+                "👮🏻‍♂️ public link refused: drive policy requires a password",
+            );
+            // Same error shape as `refuse_public_links` above — a client
+            // that handles one policy refusal handles all three.
+            return Err(crate::common::errors::DomainError::operation_not_supported(
+                "Drive",
+                "This drive requires public links to have a password.",
+            ));
+        }
+
+        if let Some(cap_days) = policies.max_public_link_days {
+            // `None` expiry means never — the laxest possible value, so an
+            // uncapped request under a capped policy is always a refusal
+            // rather than "no expiry to compare".
+            let requested_secs = dto.expires_at.map(|ts| ts as i64);
+            let cap_secs = chrono::Utc::now().timestamp() + (cap_days as i64) * 86_400;
+            let over = match requested_secs {
+                None => true,
+                Some(ts) => ts > cap_secs,
+            };
+            if over {
+                tracing::info!(
+                    target: "audit",
+                    event = "drive.public_link_refused",
+                    reason = "expiry_over_cap",
+                    caller_id = %user_id,
+                    item_type = item_type_str,
+                    item_id = %item_uuid,
+                    cap_days = cap_days,
+                    requested_expires_at = ?requested_secs,
+                    "👮🏻‍♂️ public link refused: expiry exceeds the drive's cap",
+                );
+                return Err(crate::common::errors::DomainError::operation_not_supported(
+                    "Drive",
+                    format!("This drive caps public links at {cap_days} days."),
+                ));
+            }
+        }
+
         let password_hash = match dto.password {
             Some(p) => Some(self.hash_password_async(&p).await?),
             None => None,

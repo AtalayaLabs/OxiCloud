@@ -1500,6 +1500,20 @@ impl AppServiceFactory {
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
         .await;
 
+        // Policy compliance. Reports drives whose explicit overrides are
+        // laxer than their kind's default, and public links that violate the
+        // policy of the drive they live in. The second half matters because
+        // policy enforcement is creation-time only: tightening
+        // `forbid_public_links` never touches links already minted, so this
+        // scan is how they become visible. Read-only, like every sibling.
+        let _ = Arc::new(
+            crate::infrastructure::services::drive_policies_consistency_service::DrivePoliciesConsistencyCheck::new(
+                maintenance_pool.clone(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
         // Second recoverable-run tenant. Iterates `storage.folders`
         // and reports each row whose materialised path/lpath or
         // parent-trashed state has drifted from the parent-chain
@@ -2389,6 +2403,12 @@ impl AppServiceFactory {
                             pool.clone(),
                         ),
                     ),
+                ),
+            ),
+            drive_policy_defaults_service: Arc::new(
+                crate::application::services::drive_policy_defaults_service::DrivePolicyDefaultsService::new(
+                    drive_repo.clone(),
+                    authorization.clone(),
                 ),
             ),
             subject_group_service: Some(Arc::new(
@@ -3604,6 +3624,12 @@ pub struct AppState {
     /// and shared-drive last-owner protection layered in.
     pub drive_management_service: Arc<
         crate::application::services::drive_management_service::DriveManagementService,
+    >,
+    /// Per-drive-kind default policies. New drives inherit these; existing
+    /// drives resolve every knob they have not explicitly overridden
+    /// through them. See `docs/plan/drive-default-policies.md`.
+    pub drive_policy_defaults_service: Arc<
+        crate::application::services::drive_policy_defaults_service::DrivePolicyDefaultsService,
     >,
     /// ReBAC subject-group management (CRUD + membership). `None` when the
     /// auth subsystem is not configured.

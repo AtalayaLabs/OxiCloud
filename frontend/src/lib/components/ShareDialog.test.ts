@@ -30,6 +30,12 @@ vi.mock('$lib/api/endpoints/recipients', () => ({
 // Inherited access — the ancestor walk and the file→parent lookup.
 vi.mock('$lib/api/endpoints/folders', () => ({ getFolderAncestorsWithGrants: vi.fn() }));
 vi.mock('$lib/api/endpoints/files', () => ({ getFile: vi.fn() }));
+// The link form reads the owning drive's EFFECTIVE policies from here —
+// `GET /api/drives` already resolves defaults, so no extra endpoint.
+const { drivesStore } = vi.hoisted(() => ({
+	drivesStore: { drives: [] as { id: string; policies: Record<string, unknown> }[], load: vi.fn() }
+}));
+vi.mock('$lib/stores/drives.svelte', () => ({ drives: drivesStore }));
 
 import { createShare, listSharesForItem } from '$lib/api/endpoints/shares';
 import { fetchGrantsForResource } from '$lib/api/endpoints/grants';
@@ -117,6 +123,91 @@ beforeEach(() => {
 		effective_grants: [],
 		effective_links: []
 	});
+	drivesStore.drives = [];
+});
+
+// ── Drive policy applied to the link form ──────────────────────────────
+//
+// The server REFUSES an over-cap or password-less link rather than
+// clamping it, on the grounds that the dialog shows the limit first.
+// These pin that half of the bargain: without them the user meets the
+// policy as a 405 after committing, which is the worst of both designs.
+
+/** Ancestor chain that resolves the item to drive `d1`. */
+const chainOnDrive = {
+	ancestors: [{ id: 'fold1', name: 'Sub', parent_id: null, drive_id: 'd1' }],
+	access_source: { kind: 'drive', drive: { id: 'd1', name: 'Team', kind: 'shared' } },
+	effective_grants: [],
+	effective_links: []
+};
+
+async function openLinkTabOnDrive(policies: Record<string, unknown>) {
+	m(getFolderAncestorsWithGrants).mockResolvedValue(chainOnDrive);
+	drivesStore.drives = [{ id: 'd1', policies }];
+	render(ShareDialog, { props: { open: true, item: folderItem } });
+	await fireEvent.click(await screen.findByTestId('share-dialog-link-tab'));
+}
+
+it('blocks link creation when the drive forbids public links', async () => {
+	await openLinkTabOnDrive({ forbid_public_links: true });
+
+	const msg = await screen.findByTestId('share-dialog-policy-block');
+	expect(msg.textContent).toContain('does not allow public links');
+	expect((screen.getByTestId('share-dialog-create-btn') as HTMLButtonElement).disabled).toBe(true);
+});
+
+it('requires a password before allowing creation when the policy says so', async () => {
+	await openLinkTabOnDrive({ require_public_link_password: true });
+
+	const btn = () => screen.getByTestId('share-dialog-create-btn') as HTMLButtonElement;
+	await waitFor(() => expect(btn().disabled).toBe(true));
+	expect(screen.getByTestId('share-dialog-policy-block').textContent).toContain(
+		'requires a password'
+	);
+
+	await fireEvent.input(screen.getByTestId('share-dialog-link-password-input'), {
+		target: { value: 'hunter2' }
+	});
+
+	// Typing a password clears the block — the limit was stated up front
+	// rather than surfacing as a refusal after submit.
+	await waitFor(() => expect(btn().disabled).toBe(false));
+	expect(screen.queryByTestId('share-dialog-policy-block')).toBeNull();
+});
+
+it('caps the expiry picker and refuses a date beyond it', async () => {
+	await openLinkTabOnDrive({ max_public_link_days: 7 });
+
+	const input = (await screen.findByTestId('share-dialog-link-expires-input')) as HTMLInputElement;
+	// The cap is on the native picker, so it is visible in the calendar
+	// rather than discovered by being rejected.
+	expect(input.max).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+	const btn = () => screen.getByTestId('share-dialog-create-btn') as HTMLButtonElement;
+	// No expiry at all is over the cap: a link that never expires is the
+	// laxest value there is, not an exemption. Same rule as the server.
+	await waitFor(() => expect(btn().disabled).toBe(true));
+
+	await fireEvent.change(input, { target: { value: '2099-01-01' } });
+	await waitFor(() =>
+		expect(screen.getByTestId('share-dialog-policy-block').textContent).toContain(
+			'caps public links'
+		)
+	);
+	expect(btn().disabled).toBe(true);
+});
+
+it('leaves the form alone when the drive has no link policy', async () => {
+	await openLinkTabOnDrive({});
+
+	// The negative control: without it, every assertion above would pass
+	// on a dialog that simply always blocks.
+	await waitFor(() =>
+		expect((screen.getByTestId('share-dialog-create-btn') as HTMLButtonElement).disabled).toBe(
+			false
+		)
+	);
+	expect(screen.queryByTestId('share-dialog-policy-block')).toBeNull();
 });
 
 it('loads grants and shares when opened', async () => {

@@ -1484,11 +1484,13 @@ if ! "$HELPER_BIN" collab-fanout-write \
   die "S21: helper failed to send the 0x01 UPDATE"
 fi
 
-# Sleep past the idle threshold — server.env sets it to 200 ms so
-# 800 ms is 4× headroom. Not a polling loop because the debouncer's
-# fire time is bounded and deterministic; a poll would either race
-# the download cache or mask a stuck debouncer.
-sleep 0.8
+# Sleep past the idle threshold — server.env sets it to 2 s (raised
+# from 200 ms so S22 can prove its explicit flush is the writer; the
+# reasoning is on the knob), so 3 s is 1.5× headroom. Not a polling
+# loop because the debouncer's fire time is bounded and deterministic;
+# a poll would either race the download cache or mask a stuck
+# debouncer.
+sleep 3
 
 # Download the file body verbatim. Content-Disposition and MIME
 # shouldn't matter — we're comparing bytes.
@@ -1498,7 +1500,7 @@ if [[ "$downloaded" != "$s21_content" ]]; then
   printf 'expected: %s\ngot     : %s\n' "$s21_content" "$downloaded" >&2
   die "S21: downloaded body does not match CRDT text — debouncer/writer regression?"
 fi
-log "S21 OK (blob updated to CRDT text within 800 ms)"
+log "S21 OK (blob updated to CRDT text within 3 s)"
 
 # ── Scenario 22 — Explicit flush via WS `rt.collab_flush` ───────────────────
 # The FE editor's "on tab close" path: the client knows better than
@@ -1539,6 +1541,24 @@ fi
 
 # Explicit flush trigger. No sleep first — this is the entire point:
 # the FE wants a flush RIGHT NOW, not on the debouncer's schedule.
+#
+# `flushed:true` is asserted strictly, and that is now meaningful rather
+# than a race: the debouncer's idle threshold is 2 s (server.env), so the
+# document is still dirty for any plausible gap between the two helper
+# processes. It was 200 ms, which a loaded CI runner could not beat.
+#
+# UNRESOLVED, and worth knowing before weakening anything here: CI has
+# also been seen to return `flushed:false` together with an EMPTY body —
+# see the run on 2026-09-26. Neither is explicable by the debouncer
+# winning, because every path that ends a session flushes first
+# (`gc_stale` does a final `flush_to_blob` explicitly, "so nothing dirty
+# escapes the GC"). An empty blob means the update never entered the
+# CRDT at all, so the loss is on the WRITE side, not the flush side. A
+# `rt-hurl-helper: connect failed: HTTP error: 401 Unauthorized` appears
+# in the same logs and is the leading suspect.
+#
+# Do not relax this assertion to make CI green — it is the only thing
+# currently catching that.
 out_s22="$(mktemp -t rtbus_s22_flush.XXXXXX)"
 if ! "$HELPER_BIN" collab-flush \
      --url "$ws_url" --token "$user1_token" \

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { resolve } from '$app/paths';
 	import { errorMessage, errorToast } from '$lib/utils/errors';
 	import { isAtLeastAdmin, isOwner } from '$lib/utils/roles';
 	import { dateTimeFormatFor } from '$lib/utils/display';
@@ -64,7 +65,7 @@
 		type StorageSettings,
 		type StorageTestResult
 	} from '$lib/api/endpoints/admin';
-	import { createDrive, updateDrivePolicies } from '$lib/api/endpoints/drives';
+	import { createDrive } from '$lib/api/endpoints/drives';
 	import { seedUser } from '$lib/api/endpoints/users';
 	import { resolveOwnerName } from '$lib/api/endpoints/favorites';
 	import { useOwnerCache } from '$lib/composables/useOwnerCache.svelte';
@@ -74,29 +75,21 @@
 		searchRecipients,
 		type Recipient
 	} from '$lib/api/endpoints/recipients';
-	import type {
-		FullUser,
-		Drive,
-		DriveMember,
-		DrivePolicies,
-		DrivePoliciesPartial,
-		SessionSummary,
-		User
-	} from '$lib/api/types';
+	import type { FullUser, Drive, DriveMember, SessionSummary, User } from '$lib/api/types';
 	import { shortUserAgent } from '$lib/utils/userAgent';
 	import { triggerJob } from '$lib/api/endpoints/adminJobs';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { serverStatus } from '$lib/stores/serverStatus.svelte';
 	import AdminJobsPanel from '$lib/components/AdminJobsPanel.svelte';
+	import AdminDrivePoliciesPanel from '$lib/components/AdminDrivePoliciesPanel.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
 	import ActionMenu, { type ActionMenuItem } from '$lib/components/ActionMenu.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import OwnerAvatarStack from '$lib/components/OwnerAvatarStack.svelte';
-	import PolicyList from '$lib/components/PolicyList.svelte';
+	import DrivePoliciesModal from '$lib/components/DrivePoliciesModal.svelte';
 	import QuotaEditor from '$lib/components/QuotaEditor.svelte';
 	import UserVignette from '$lib/components/UserVignette.svelte';
 	import { t } from '$lib/i18n/index.svelte';
-	import { readPolicyBool } from '$lib/utils/drivePolicies';
 	import { session } from '$lib/stores/session.svelte';
 	import { drives as drivesStore } from '$lib/stores/drives.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
@@ -197,6 +190,7 @@
 		| 'users'
 		| 'sessions'
 		| 'drives'
+		| 'policies'
 		| 'mounts'
 		| 'plugins'
 		| 'oidc'
@@ -209,6 +203,7 @@
 		'users',
 		'sessions',
 		'drives',
+		'policies',
 		'mounts',
 		'plugins',
 		'oidc',
@@ -283,6 +278,8 @@
 				return t('admin.sessions', 'Sessions');
 			case 'drives':
 				return t('admin.drives', 'Drives');
+			case 'policies':
+				return t('admin.drive_policies.tab', 'Drive Policies');
 			case 'mounts':
 				return t('admin.mounts.tab', 'External Mounts');
 			case 'plugins':
@@ -1731,76 +1728,17 @@
 	// disable forbid_external_sharing, share, re-enable — net zero
 	// enforcement). The owner UI no longer surfaces policies at all; this
 	// modal is the only editor. See `docs/plan/drive.md` §8.
+	//
+	// The editor itself lives in `DrivePoliciesModal` because the compliance
+	// report on Admin › Drive Policies opens the same one.
 	let managePoliciesDrive = $state<Drive | null>(null);
-	let managePoliciesDraft = $state<Required<DrivePoliciesPartial>>({
-		forbid_sharing: false,
-		forbid_external_sharing: false,
-		forbid_public_links: false,
-		forbid_cross_drive_move: false,
-		forbid_owner_role_change: false,
-		// §15 opt-in scope flags. Default personal drives ship with `true`
-		// on the wire (materialised by the DB-side create path + backfill
-		// migration), so `readPolicyBool` will surface the correct current
-		// state on modal open.
-		include_in_photo_index: false,
-		include_in_music_index: false,
-		read_only: false
-	});
-	let managePoliciesError = $state<string | null>(null);
-	let managePoliciesBusy = $state(false);
 
 	function openManagePolicies(d: Drive) {
 		managePoliciesDrive = d;
-		managePoliciesError = null;
-		const p = (d.policies ?? {}) as Record<string, unknown>;
-		managePoliciesDraft = {
-			forbid_sharing: readPolicyBool(p, 'forbid_sharing'),
-			forbid_external_sharing: readPolicyBool(p, 'forbid_external_sharing'),
-			forbid_public_links: readPolicyBool(p, 'forbid_public_links'),
-			forbid_cross_drive_move: readPolicyBool(p, 'forbid_cross_drive_move'),
-			forbid_owner_role_change: readPolicyBool(p, 'forbid_owner_role_change'),
-			include_in_photo_index: readPolicyBool(p, 'include_in_photo_index'),
-			include_in_music_index: readPolicyBool(p, 'include_in_music_index'),
-			read_only: readPolicyBool(p, 'read_only')
-		};
 	}
 
 	function closeManagePolicies() {
 		managePoliciesDrive = null;
-		managePoliciesError = null;
-	}
-
-	async function saveManagePolicies() {
-		if (!managePoliciesDrive) return;
-		managePoliciesBusy = true;
-		managePoliciesError = null;
-		try {
-			const merged: DrivePolicies = await updateDrivePolicies(
-				managePoliciesDrive.id,
-				managePoliciesDraft
-			);
-			// Refresh the drive row's policies in place so the next time
-			// the admin opens this modal they see the persisted state.
-			const driveId = managePoliciesDrive.id;
-			drivesList = drivesList.map((d) =>
-				d.id === driveId ? { ...d, policies: { ...d.policies, ...merged } } : d
-			);
-			// The shared `drivesStore` (feeds `/config/drive/{uuid}`, the
-			// sidebar picker, the breadcrumb) caches `GET /api/drives` with
-			// `loaded=true` after the first fetch — without this refresh
-			// call the admin's policy change wouldn't propagate to those
-			// surfaces until a full page reload. Sibling `requestDeleteDrive`
-			// does the same after `deleteDriveAdmin`.
-			//
-			// Fire-and-forget: the modal closes immediately; the picker
-			// re-renders in place when the promise settles a few ms later.
-			void drivesStore.refresh();
-			closeManagePolicies();
-		} catch (e) {
-			managePoliciesError = errorMessage(e);
-		} finally {
-			managePoliciesBusy = false;
-		}
 	}
 
 	// ─────────────────────────────────────────────────────────────
@@ -1967,6 +1905,10 @@
 		users: false,
 		sessions: false,
 		drives: false,
+		// `policies` loads its own data inside AdminDrivePoliciesPanel, so it
+		// has no dispatch branch below — the entry exists only to satisfy the
+		// exhaustive Record.
+		policies: false,
 		mounts: false,
 		plugins: false,
 		oidc: false,
@@ -3609,6 +3551,23 @@
 				{t('admin.create_drive', 'Create shared drive')}
 			</button>
 		</div>
+		<!--
+			Policies edited from this tab are per-drive OVERRIDES: they detach
+			that one drive from its kind's default and stop it following future
+			changes. An admin who means "every shared drive should forbid public
+			links" would otherwise set it here, one drive at a time, and wonder
+			why new drives don't have it. Naming the other page is cheaper than
+			letting them find that out by accident.
+		-->
+		<p class="muted admin-drives__policy-hint">
+			{t(
+				'admin.drives_policy_hint',
+				'Policies set here apply to a single drive and override its default.'
+			)}
+			<a href={resolve('/admin/policies')}>
+				{t('admin.drives_policy_hint_link', 'Edit the defaults for all drives')}
+			</a>
+		</p>
 		{#if drivesError}
 			<p class="status status--error">{drivesError}</p>
 		{:else if drivesList.length === 0}
@@ -3791,6 +3750,10 @@
 				</tbody>
 			</table>
 		{/if}
+	{:else if tab === 'policies'}
+		<!-- Self-contained: loads its own defaults and findings, so there is
+		     no `loaded[tab]` dispatch entry for it. -->
+		<AdminDrivePoliciesPanel />
 	{:else if tab === 'jobs'}
 		<AdminJobsPanel />
 	{:else if !pluginsAvailable}
@@ -4196,61 +4159,17 @@
 	{/snippet}
 </Modal>
 
-<!-- Manage-policies modal (D5 admin-only). Toggles for the five known
-     policy keys; unknown keys on the JSONB bag are preserved by the
-     backend merge but not surfaced here (forward-compat is at the
-     server). Save → PATCH /api/drives/{id}/policies. -->
-<Modal
-	open={managePoliciesDrive !== null}
-	title={managePoliciesDrive
-		? t(
-				'admin.drive_manage_policies_for',
-				{ name: managePoliciesDrive.name },
-				'Manage policies — {{name}}'
-			)
-		: t('admin.drive_manage_policies', 'Manage policies')}
+<DrivePoliciesModal
+	drive={managePoliciesDrive}
 	onclose={closeManagePolicies}
->
-	{#if managePoliciesDrive}
-		<div class="form">
-			<p class="muted">
-				{t(
-					'admin.drive_manage_policies_help',
-					'Policies are admin-only — drive owners cannot mutate them. Each toggle controls one enforcement gate.'
-				)}
-			</p>
-			<PolicyList
-				values={managePoliciesDraft}
-				busy={managePoliciesBusy}
-				testIdPrefix="admin-policy"
-				onchange={(key, next) => {
-					managePoliciesDraft[key] = next;
-				}}
-			/>
-			{#if managePoliciesError}
-				<p class="status--error">{managePoliciesError}</p>
-			{/if}
-		</div>
-	{/if}
-	{#snippet footer()}
-		<button
-			class="btn"
-			data-testid="admin-manage-policies-cancel-btn"
-			onclick={closeManagePolicies}
-			disabled={managePoliciesBusy}
-		>
-			{t('common.cancel', 'Cancel')}
-		</button>
-		<button
-			class="btn btn-primary"
-			data-testid="admin-manage-policies-save-btn"
-			onclick={saveManagePolicies}
-			disabled={managePoliciesBusy}
-		>
-			{managePoliciesBusy ? t('common.saving', 'Saving…') : t('common.save', 'Save')}
-		</button>
-	{/snippet}
-</Modal>
+	onsaved={(driveId, merged) => {
+		// Refresh the drive row's policies in place so the next time the
+		// admin opens this modal they see the persisted state.
+		drivesList = drivesList.map((d) =>
+			d.id === driveId ? { ...d, policies: { ...d.policies, ...merged } } : d
+		);
+	}}
+/>
 
 <!-- User-envelope quota edit — uses the shared <QuotaEditor>.
      "Unlimited" checkbox maps to 0 on the wire; positive value * unit
@@ -5781,6 +5700,17 @@
 	.muted {
 		color: var(--color-text-muted);
 		font-size: 0.8125rem;
+	}
+
+	.admin-drives__policy-hint {
+		margin: 0 0 var(--space-3);
+	}
+
+	/* Readable against the muted text it sits in — `--color-accent` is tuned
+	   for fills, not for small text on a page background. */
+	.admin-drives__policy-hint a {
+		color: var(--color-accent-text);
+		text-decoration: underline;
 	}
 
 	.actions {

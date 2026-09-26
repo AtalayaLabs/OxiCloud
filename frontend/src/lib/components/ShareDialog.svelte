@@ -39,6 +39,8 @@
 	import UserVignette from '$lib/components/UserVignette.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
+	import { drives as drivesStore } from '$lib/stores/drives.svelte';
+	import { readAllPolicies } from '$lib/utils/drivePolicies';
 
 	interface Target {
 		id: string;
@@ -184,6 +186,17 @@
 	let results = $state<Recipient[]>([]);
 	let newRole = $state<ShareRole>('viewer');
 	let newExpiry = $state<string | null>(null);
+	/**
+	 * The recipient chosen from the search results, not yet granted.
+	 *
+	 * Picking a result used to create the grant outright, which meant the
+	 * role and expiry beside the search box only had any effect if the user
+	 * had set them BEFORE typing a name — so in practice everyone was added
+	 * as the default role and corrected afterwards. Holding the choice here
+	 * lets the role be decided first, and makes [Add] the moment of commit.
+	 */
+	let selected = $state<Recipient | null>(null);
+	let adding = $state(false);
 	let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
 	function isoToDate(iso: string | null | undefined): string | null {
@@ -251,6 +264,12 @@
 			const grants = chain.effective_grants ?? [];
 			const nameById = new Map(chain.ancestors.map((a) => [a.id, a.name]));
 			const driveName = chain.access_source.drive?.name ?? t('share.the_drive', 'the drive');
+
+			// The owning drive, captured here because this walk already
+			// resolves it — asking again would be a second round trip for
+			// something we are holding. Its policies gate the link form
+			// below; see `linkPolicies`.
+			driveId = chain.access_source.drive?.id ?? chain.ancestors[0]?.drive_id ?? null;
 
 			// Drop grants on the item itself — those are the direct ones,
 			// already loaded, and listing them twice would double every row.
@@ -366,23 +385,35 @@
 		return { type: r.type, id: r.id };
 	}
 
-	async function addRecipient(r: Recipient) {
-		if (!item) return;
+	/** Choose a recipient; nothing is granted until [Add]. */
+	function selectRecipient(r: Recipient) {
+		selected = r;
+		query = '';
+		results = [];
+	}
+
+	async function addSelected() {
+		if (!item || !selected || adding) return;
+		adding = true;
 		try {
 			const res = await createGrant(
-				subjectInput(r),
+				subjectInput(selected),
 				{ type: item.kind, id: item.id },
 				newRole,
 				expiryToIso(newExpiry)
 			);
-			query = '';
-			results = [];
+			// Only the selection is cleared: role and expiry are kept so
+			// adding several people at the same access level is one click
+			// each, which is the common case.
+			selected = null;
 			summarizeNotifications(res.notification.outcomes);
 			onshared?.(item.id);
 			onchange?.(item.id);
 			await loadGrants();
 		} catch (e) {
 			errorToast(e);
+		} finally {
+			adding = false;
 		}
 	}
 
@@ -478,6 +509,109 @@
 	let password = $state('');
 	let expiresAt = $state<string | null>(null);
 
+	// ── Drive policy, applied to the link form ───────────────────────────────
+	//
+	// The server enforces these at creation and REFUSES rather than clamps
+	// — deliberately, because silently handing back a link that expires
+	// sooner than asked is a dialog disagreeing with the person using it.
+	// That choice only works if the limits are visible BEFORE submitting,
+	// which is what this section is for. Without it the user meets the
+	// policy as a 405 after committing.
+	//
+	// Resolved from the drives store rather than a dedicated endpoint:
+	// `GET /api/drives` already returns EFFECTIVE policies (the kind's
+	// default with this drive's overrides on top), which is exactly what
+	// the server will enforce.
+	let driveId = $state<string | null>(null);
+
+	const linkPolicies = $derived.by(() => {
+		if (!driveId) return null;
+		const d = drivesStore.drives.find((x) => x.id === driveId);
+		return d ? readAllPolicies(d.policies as Record<string, unknown>) : null;
+	});
+
+	/** Latest date a new link may expire, as YYYY-MM-DD, or null for no cap. */
+	const maxExpiryDate = $derived.by(() => {
+		const days = linkPolicies?.max_public_link_days;
+		if (typeof days !== 'number' || days <= 0) return null;
+		// Constructed from a timestamp rather than mutated with
+		// `setDate` — the lint bans mutable Date instances, and UTC
+		// arithmetic matches the server, which adds `Duration::days`.
+		return new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+	});
+
+	const passwordRequired = $derived(linkPolicies?.require_public_link_password === true);
+
+	/**
+	 * The drive's link rules, stated whether or not they are being broken.
+	 *
+	 * `linkBlockedReason` below only speaks once the user has already hit a
+	 * limit, which left the constraint invisible until it bit: the Create
+	 * button sat disabled with no indication that a policy existed at all,
+	 * and someone who does not administer the drive has no way to guess one
+	 * does. Saying the rule up front turns a dead control into an
+	 * instruction.
+	 *
+	 * Null when the drive constrains nothing, so an unrestricted share keeps
+	 * its quiet dialog.
+	 */
+	const linkPolicyHint = $derived.by(() => {
+		if (!linkPolicies || linkPolicies.forbid_public_links) return null;
+		const parts: string[] = [];
+		const days = linkPolicies.max_public_link_days;
+		if (typeof days === 'number' && days > 0) {
+			parts.push(
+				t('share.policy_hint_expiry', { n: days }, 'links must expire within {{n}} day(s)')
+			);
+		}
+		if (passwordRequired) {
+			parts.push(t('share.policy_hint_password', 'links need a password'));
+		}
+		if (parts.length === 0) return null;
+		// One sentence naming the drive's rules, rather than a bullet list —
+		// there are at most two, and a list would outweigh the form.
+		return t(
+			'share.policy_hint',
+			{ rules: parts.join(t('share.policy_hint_join', ', and ')) },
+			'This drive limits sharing: {{rules}}.'
+		);
+	});
+
+	/**
+	 * Why the form cannot be submitted, or null when it can.
+	 *
+	 * Mirrors the server's gates so the refusal never has to happen. A
+	 * missing expiry counts as over the cap: a link that never expires is
+	 * the laxest value there is, not an exemption — the same rule the
+	 * backend applies.
+	 */
+	const linkBlockedReason = $derived.by(() => {
+		if (!linkPolicies) return null;
+		if (linkPolicies.forbid_public_links) {
+			return t('share.policy_no_links', 'This drive does not allow public links.');
+		}
+		if (passwordRequired && !password.trim()) {
+			return t('share.policy_password_required', 'This drive requires a password on public links.');
+		}
+		if (maxExpiryDate) {
+			if (!expiresAt) {
+				return t(
+					'share.policy_expiry_required',
+					{ date: maxExpiryDate },
+					'This drive caps public links — set an expiry on or before {{date}}.'
+				);
+			}
+			if (expiresAt > maxExpiryDate) {
+				return t(
+					'share.policy_expiry_too_far',
+					{ date: maxExpiryDate },
+					'This drive caps public links at {{date}}.'
+				);
+			}
+		}
+		return null;
+	});
+
 	// Tab counts. Declared here, after `shares` — both badges read state
 	// that lives on either side of the People/Link split.
 	//
@@ -507,6 +641,10 @@
 
 	async function createLink() {
 		if (!item || item.kind === 'drive') return;
+		// Belt to the UI's braces: the button is disabled while a reason
+		// stands, but a keyboard submit or a policy that changed under an
+		// open dialog would otherwise reach the server and come back 405.
+		if (linkBlockedReason) return;
 		creating = true;
 		try {
 			await createShare({
@@ -579,6 +717,10 @@
 		if (open && item) {
 			void loadGrants();
 			void loadShares();
+			// Idempotent and usually already resolved (the sidebar picker
+			// loads it at boot). Needed because the link form reads the
+			// owning drive's effective policies out of it.
+			void drivesStore.load();
 		}
 	});
 </script>
@@ -695,13 +837,38 @@
 			{:else}
 				<div class="add-row">
 					<div class="search">
-						<input
-							data-testid="share-dialog-search-input"
-							placeholder={t('share.add_people', 'Add people, groups, or email…')}
-							bind:value={query}
-							oninput={onQueryInput}
-							autocomplete="off"
-						/>
+						<!--
+							Either the search box or the chosen recipient, never both:
+							once someone is picked the search has done its job, and
+							leaving the input there invited a second name to be typed
+							over a selection that was about to be granted.
+						-->
+						{#if selected}
+							<div class="sh-picked" data-testid="share-dialog-selected">
+								<Icon
+									name={selected.type === 'group'
+										? 'user-group'
+										: selected.type === 'email'
+											? 'envelope'
+											: 'user'}
+								/>
+								<span class="sh-picked__label">{selected.label}</span>
+								<button
+									class="btn-action"
+									data-testid="share-dialog-clear-selection"
+									title={t('share.clear_selection', 'Choose someone else')}
+									onclick={() => (selected = null)}><Icon name="times" /></button
+								>
+							</div>
+						{:else}
+							<input
+								data-testid="share-dialog-search-input"
+								placeholder={t('share.add_people', 'Add people, groups, or email…')}
+								bind:value={query}
+								oninput={onQueryInput}
+								autocomplete="off"
+							/>
+						{/if}
 						{#if results.length > 0}
 							<ul class="results">
 								{#each results as r (r.type + r.id)}
@@ -709,7 +876,7 @@
 										<button
 											class="result"
 											data-testid={`share-dialog-result-${r.type}-${r.id}`}
-											onclick={() => addRecipient(r)}
+											onclick={() => selectRecipient(r)}
 										>
 											<Icon
 												name={r.type === 'group'
@@ -741,6 +908,22 @@
 						{#each ROLES as r (r.v)}<option value={r.v}>{r.l}</option>{/each}
 					</select>
 					{@render expiryChip(newExpiry, (v) => (newExpiry = v))}
+					<!--
+						The commit. Role and expiry above are only meaningful because
+						this exists: while picking a result granted access outright,
+						they had to be set before the name was typed, so nobody did.
+
+						Still immediate — the dialog gains no Save. Its own single
+						button stays [Close], and this adds one recipient per press.
+					-->
+					<button
+						class="btn btn-primary add-row__submit"
+						data-testid="share-dialog-add-btn"
+						disabled={!selected || adding}
+						onclick={addSelected}
+					>
+						{adding ? t('share.adding', 'Adding…') : t('share.add', 'Add')}
+					</button>
 				</div>
 			{/if}
 
@@ -781,7 +964,11 @@
 											fallbackSublabel={m.recipient.sublabel}
 										/>
 									{:else}
-										<Icon name="user-group" />
+										<!-- Sized to match `UserVignette`'s 32px avatar: a user row
+										     and a group row are the same kind of thing in this
+										     list, and a bare glyph beside a 32px circle made the
+										     rows look misaligned rather than merely different. -->
+										<span class="member__group-badge"><Icon name="user-group" /></span>
 										<span class="member__label">
 											{m.recipient.label}
 											{#if m.recipient.sublabel}<span class="member__sub"
@@ -894,21 +1081,35 @@
 						/>
 					</label>
 					<label>
-						<span>{t('share.password_optional', 'Password (optional)')}</span>
+						<span>
+							{passwordRequired
+								? t('share.password_required', 'Password (required)')
+								: t('share.password_optional', 'Password (optional)')}
+						</span>
 						<input
 							type="text"
 							data-testid="share-dialog-link-password-input"
 							bind:value={password}
+							required={passwordRequired}
 							autocomplete="off"
 						/>
 					</label>
 					<label>
-						<span>{t('share.expires_optional', 'Expires (optional)')}</span>
+						<span>
+							{maxExpiryDate
+								? t('share.expires_required', 'Expires (required)')
+								: t('share.expires_optional', 'Expires (optional)')}
+						</span>
+						<!-- `max` caps the native picker, so the limit is visible
+						     in the calendar itself rather than only after a
+						     refusal. The submit guard still checks, because
+						     `max` is advisory in some browsers. -->
 						<input
 							type="date"
 							data-testid="share-dialog-link-expires-input"
 							value={expiresAt ?? ''}
 							min={todayIso()}
+							max={maxExpiryDate ?? undefined}
 							onchange={(e) => {
 								const v = e.currentTarget.value;
 								if (v && v < todayIso()) return;
@@ -917,11 +1118,36 @@
 						/>
 					</label>
 				</div>
+				<!--
+					One slot, two modes. While the form is submittable this states
+					the drive's rules; once a limit is hit it states the reason the
+					button is off. The blocking form is styled as a constraint
+					rather than as a hint, because muted grey beside a disabled
+					button read as incidental text and left the button looking
+					broken instead of governed.
+				-->
+				{#if linkBlockedReason}
+					<p
+						class="sh-policy sh-policy--blocked"
+						id="share-link-policy"
+						data-testid="share-dialog-policy-block"
+					>
+						<Icon name="shield-alt" />
+						{linkBlockedReason}
+					</p>
+				{:else if linkPolicyHint}
+					<p class="sh-policy" id="share-link-policy" data-testid="share-dialog-policy-hint">
+						<Icon name="shield-alt" />
+						{linkPolicyHint}
+					</p>
+				{/if}
 				<button
-					class="btn btn-primary"
+					class="btn btn-primary sh-create__submit"
 					data-testid="share-dialog-create-btn"
-					disabled={creating}
+					disabled={creating || linkBlockedReason !== null}
 					onclick={createLink}
+					aria-describedby={linkBlockedReason || linkPolicyHint ? 'share-link-policy' : undefined}
+					title={linkBlockedReason ?? undefined}
 				>
 					{t('share.create_link', 'Create link')}
 				</button>
@@ -1101,12 +1327,27 @@
 		border-bottom-color: var(--color-accent);
 	}
 
+	/*
+	 * Same treatment as the link tab's form: separated from the list below it
+	 * and given the same room, because adding someone and reviewing who
+	 * already has access are two different jobs in one panel.
+	 */
 	.add-row {
 		display: flex;
 		gap: var(--space-2);
-		margin-bottom: var(--space-3);
+		padding-bottom: var(--space-4);
+		border-bottom: 1px solid var(--color-border);
+		margin-bottom: var(--space-4);
 		align-items: center;
 		flex-wrap: wrap;
+	}
+
+	/* Far right, on whichever line it ends up on. `.search` is `flex: 1`, so
+	   on a wide dialog this sits right already — but the row wraps, and
+	   without the auto margin the button starts from the left of the second
+	   line the moment the dialog is narrow. */
+	.add-row__submit {
+		margin-left: auto;
 	}
 
 	.search {
@@ -1127,6 +1368,27 @@
 
 	.search input {
 		width: 100%;
+	}
+
+	/* The chosen recipient, occupying the search box's place. Bordered like
+	   an input so the row keeps its shape when the field is swapped out. */
+	.sh-picked {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		min-width: 0;
+		padding: var(--space-2);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		background: var(--color-bg-surface);
+	}
+
+	.sh-picked__label {
+		flex: 1 1 auto;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.results {
@@ -1177,14 +1439,33 @@
 		margin-bottom: var(--space-3);
 	}
 
+	/* Air between groups, not just under each heading. "Who can manage" versus
+	   "who can only view" is the question a reader scans this list for, so the
+	   groups have to read as separate blocks rather than one run of rows with
+	   labels sprinkled through it. */
+	.member-group + .member-group {
+		margin-top: var(--space-5);
+	}
+
+	/*
+	 * Body text colour, not muted grey.
+	 *
+	 * At `--color-text-muted` these headings were quieter than the member
+	 * names beneath them, so they read as a caption belonging to the first row
+	 * rather than as the label for the group — the access level, which is the
+	 * most important thing on the row, was the least visible thing in the
+	 * list. Slight letter-spacing keeps it reading as a section label now
+	 * that it carries full contrast, rather than as another name.
+	 */
 	.member-group__header {
 		display: flex;
 		align-items: center;
 		gap: var(--space-2);
 		font-size: var(--text-sm);
 		font-weight: var(--weight-semibold, 600);
-		color: var(--color-text-muted);
-		margin-bottom: var(--space-2);
+		letter-spacing: 0.02em;
+		color: var(--color-text);
+		margin-bottom: var(--space-3);
 	}
 
 	.member-group__badge {
@@ -1300,6 +1581,27 @@
 		color: var(--color-text-muted);
 	}
 
+	/*
+	 * Group counterpart to `UserVignette`'s avatar, at the same 32px circle.
+	 *
+	 * A group row and a user row are the same kind of entry in this list — a
+	 * subject that has access — so their leading element has to occupy the
+	 * same box, or the labels beside them do not line up and the list looks
+	 * ragged rather than merely mixed. Kept muted: it is a category icon, not
+	 * an identity, and it should not compete with the avatars for attention.
+	 */
+	.member__group-badge {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+		width: 32px;
+		height: 32px;
+		border-radius: 50%;
+		background: var(--color-bg-muted);
+		color: var(--color-text-muted);
+	}
+
 	.member__label {
 		flex: 1;
 		display: flex;
@@ -1313,6 +1615,67 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	/* Why the Create button is disabled. Stated inline rather than as a
+	   toast, because it is a standing condition of this drive, not an
+	   event — and the user needs it while deciding what to type. */
+	/*
+	 * Divides creating a link from the links that already exist — two
+	 * different jobs sharing one panel, and without a rule the Create button
+	 * read as belonging to the first row of the list beneath it.
+	 *
+	 * On the form rather than on the list because three different things can
+	 * follow it — the loading skeleton, the "no links yet" note, or the list
+	 * itself — and the separation should hold for all three rather than be
+	 * repeated on each.
+	 */
+	.sh-create {
+		padding-bottom: var(--space-4);
+		border-bottom: 1px solid var(--color-border);
+		margin-bottom: var(--space-4);
+	}
+
+	/*
+	 * The commit action for this form, bottom-right where a reader expects it.
+	 *
+	 * `width: fit-content` is the part that matters: `.btn` is
+	 * `display: flex`, so as a block-level flex container it stretched to the
+	 * full width of the section — which is why it read as a left-aligned
+	 * banner rather than a button. Shrinking it to its content is what lets
+	 * `margin-left: auto` push it right at all.
+	 *
+	 * Set apart from the fields above so it does not look like another one.
+	 */
+	.sh-create__submit {
+		width: fit-content;
+		margin-top: var(--space-4);
+		margin-left: auto;
+	}
+
+	/* Informational mode: the drive's rules, stated before they are broken.
+	   Quiet on purpose — nothing is wrong yet. */
+	.sh-policy {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		margin: 0.5rem 0 0;
+		color: var(--color-text-muted);
+		font-size: 0.875rem;
+	}
+
+	/* Blocking mode: this is the reason the Create button is disabled, so it
+	   has to carry more weight than helper text. Muted grey here made a
+	   governed button look like a broken one. Amber rather than red: the user
+	   has not done anything wrong, there is a limit to work within. */
+	.sh-policy--blocked {
+		align-items: flex-start;
+		padding: var(--space-2);
+		border: 1px solid var(--color-warning-text);
+		border-radius: var(--radius-md);
+		background: var(--color-warning-bg);
+		color: var(--color-warning-text);
+		font-weight: 500;
 	}
 
 	.sh-fields {

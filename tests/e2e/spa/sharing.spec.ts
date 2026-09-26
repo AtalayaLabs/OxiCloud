@@ -80,6 +80,12 @@ test('invite an external user by email from the share dialog', async ({ page }) 
   await expect(inviteRow).toBeVisible({ timeout: 15_000 });
   await inviteRow.click();
 
+  // Selecting a result no longer grants — the recipient is held so the role
+  // can be chosen first, and [Add] is the commit. See ShareDialog's
+  // `selectRecipient` / `addSelected`.
+  await expect(page.getByTestId('share-dialog-selected')).toBeVisible();
+  await page.getByTestId('share-dialog-add-btn').click();
+
   // The invitee becomes a pending member.
   await expect(page.locator('[data-testid^="share-dialog-member-"]').first()).toBeVisible({
     timeout: 15_000,
