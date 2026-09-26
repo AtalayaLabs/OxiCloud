@@ -340,6 +340,13 @@ impl RecoverableJobHandler for DrivePoliciesConsistencyCheck {
                                     "expires_at": expires_at,
                                     "never_expires": expires_at.is_none(),
                                     "token_name": token_name,
+                                    // Every other finding in this job carries
+                                    // `item_type`, and a report that names the
+                                    // resource kind on some rows but not others
+                                    // reads as a rendering bug — the same folder
+                                    // appeared once as "photos (folder)" and once
+                                    // as bare "photos".
+                                    "item_type":  item_type,
                                 }),
                             )
                             .await;

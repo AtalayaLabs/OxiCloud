@@ -26,6 +26,7 @@
 	 */
 	import { t } from '$lib/i18n/index.svelte';
 	import { errorMessage } from '$lib/utils/errors';
+	import { formatDate } from '$lib/utils/display';
 	import PolicyList from '$lib/components/PolicyList.svelte';
 	import {
 		getDrivePolicyDefaults,
@@ -34,6 +35,8 @@
 		setDrivePolicyDefaults
 	} from '$lib/api/endpoints/admin';
 	import DrivePoliciesModal from '$lib/components/DrivePoliciesModal.svelte';
+	import { resolveOwnerName } from '$lib/api/endpoints/favorites';
+	import { SvelteMap } from 'svelte/reactivity';
 	import { listFindings, listRuns, triggerJob } from '$lib/api/endpoints/adminJobs';
 	import {
 		isDefaultable,
@@ -80,6 +83,68 @@
 	/** Live drift — `null` until the first load. */
 	let drift = $state<PolicyDrift[] | null>(null);
 	let driftError = $state<string | null>(null);
+
+	/**
+	 * Every drive, by id — the report's vocabulary.
+	 *
+	 * Findings carry `drive_id` and little else about the drive, and a bare
+	 * uuid names nothing to a human. One admin-scoped list turns every
+	 * finding into something readable, and is also what `openDrivePolicies`
+	 * resolves against rather than re-fetching per click.
+	 */
+	const drivesById = new SvelteMap<string, Drive>();
+	/** Resolved owner display names, keyed by user id. */
+	const ownerNames = new SvelteMap<string, string>();
+
+	async function loadDrives() {
+		try {
+			const all = await listAllDrives();
+			drivesById.clear();
+			for (const d of all) drivesById.set(d.id, d);
+
+			// Personal drives are ALL named "Personal", so the name identifies
+			// nothing — the owner is the only thing that tells them apart.
+			// Resolved once per owner, not once per finding.
+			const owners = new Set(
+				all
+					.filter((d) => d.kind === 'personal' && d.default_for_user)
+					.map((d) => d.default_for_user!)
+			);
+			for (const uid of owners) {
+				if (ownerNames.has(uid)) continue;
+				try {
+					const n = await resolveOwnerName(uid);
+					if (n) ownerNames.set(uid, n);
+				} catch {
+					// Leave it unresolved; the row falls back to the drive name.
+				}
+			}
+		} catch {
+			// Non-fatal: the report still renders, just with less context.
+		}
+	}
+
+	/** How a drive should be named in a report heading. */
+	function driveLabel(driveId: string | undefined): string {
+		const d = driveId ? drivesById.get(driveId) : undefined;
+		if (!d) return driveId ?? '—';
+		if (d.kind === 'personal') {
+			const owner = d.default_for_user ? ownerNames.get(d.default_for_user) : undefined;
+			// "Personal — ed" rather than a twentieth row reading "Personal".
+			return owner
+				? t('admin.drive_policies.personal_of', { owner }, 'Personal — {{owner}}')
+				: d.name;
+		}
+		return d.name;
+	}
+
+	function driveKindLabel(driveId: string | undefined): string {
+		const d = driveId ? drivesById.get(driveId) : undefined;
+		if (!d) return '';
+		return d.kind === 'personal'
+			? t('admin.drive_kind_personal', 'Personal')
+			: t('admin.drive_kind_shared', 'Shared');
+	}
 
 	/** Scroll target for the pinned summary. */
 	let driftCardEl = $state<HTMLElement | null>(null);
@@ -236,10 +301,120 @@
 	 *  left this job and is computed live, so no filtering is needed. */
 	const shareFindings = $derived(findings ?? []);
 
+	/**
+	 * Findings grouped by the drive they belong to.
+	 *
+	 * Ungrouped, the report was a flat wall of rows that each repeated the
+	 * same drive and the same violated knob — twenty lines of "Personal ·
+	 * Forbid per-resource sharing" that said nothing about which drive or
+	 * which file. Grouping states the drive once, as a heading, and leaves
+	 * each row to say what is actually specific to it.
+	 */
+	const sharesByDrive = $derived.by(() => {
+		// Plain object as the accumulator rather than a Map: the grouping is
+		// local to this computation and never mutated once it escapes, and
+		// `prefer-svelte-reactivity` cannot distinguish that from reactive
+		// state that needs SvelteMap.
+		const groups: Record<string, Finding[]> = {};
+		for (const f of shareFindings) {
+			const id = (detailOf(f).drive_id as string) ?? '';
+			(groups[id] ??= []).push(f);
+		}
+		return Object.entries(groups)
+			.map(([driveId, items]) => ({ driveId, items }))
+			.sort((a, b) => driveLabel(a.driveId).localeCompare(driveLabel(b.driveId)));
+	});
+
+	/**
+	 * What is being shared, as a row label.
+	 *
+	 * Deliberately never the finding's `resource_id`: for a link that is the
+	 * share row's uuid and for a grant it is the grant's, neither of which
+	 * means anything to a reader. When the scan gives no name — which is the
+	 * case for user and group grants — the subject is more informative than
+	 * an id, so the row leads with who it is shared WITH instead.
+	 */
+	function subjectLabel(f: Finding): string {
+		const d = detailOf(f);
+		const item = d.token_name as string | undefined;
+		if (item) return item;
+
+		const username = d.username as string | undefined;
+		if (username) return username;
+		if (d.subject_type === 'group') {
+			return t('admin.drive_policies.a_group', 'a group');
+		}
+		return t('admin.drive_policies.unnamed_resource', 'unnamed');
+	}
+
+	/** The kind of thing shared — file, folder — when the scan says. */
+	function resourceKind(f: Finding): string {
+		const d = detailOf(f);
+		const kind = (d.item_type as string) ?? (d.resource_type as string) ?? '';
+		if (kind === 'file') return t('admin.drive_policies.r_file', 'file');
+		if (kind === 'folder') return t('admin.drive_policies.r_folder', 'folder');
+		return kind;
+	}
+
+	/**
+	 * Why this row is a violation, in the reader's terms.
+	 *
+	 * Says WHAT is wrong with WHICH kind of thing, not just the missing
+	 * attribute. "no password" left the reader to infer that the subject was
+	 * a public link and that a password was required of it; "public link with
+	 * no password" states it. The cap cases go further and name the numbers,
+	 * because "outlives the cap" is a verdict while "expires 12 Mar 2027,
+	 * past the 30-day cap" is the evidence for it — and the admin deciding
+	 * whether to revoke the link needs the evidence.
+	 */
+	function violationLabel(f: Finding): string {
+		const d = detailOf(f);
+		if (f.kind === 'share_missing_required_password') {
+			return t('admin.drive_policies.v_no_password', 'public link with no password');
+		}
+		if (f.kind === 'share_outlives_policy_cap') {
+			const cap = typeof d.cap_days === 'number' ? d.cap_days : null;
+			if (d.never_expires) {
+				return cap === null
+					? t('admin.drive_policies.v_never_expires', 'public link that never expires')
+					: t(
+							'admin.drive_policies.v_never_expires_cap',
+							{ n: cap },
+							'public link that never expires, past the {{n}}-day cap'
+						);
+			}
+			const until = formatDate(d.expires_at as string | undefined);
+			if (cap !== null && until) {
+				return t(
+					'admin.drive_policies.v_over_cap_detail',
+					{ date: until, n: cap },
+					'public link expiring {{date}}, past the {{n}}-day cap'
+				);
+			}
+			return t('admin.drive_policies.v_over_cap', 'public link outliving the cap');
+		}
+		return knobLabel(d.knob as string);
+	}
+
+	/** For a grant, who holds it and with what role. */
+	function grantSuffix(f: Finding): string | null {
+		const d = detailOf(f);
+		if (f.kind !== 'grant_violates_drive_policy') return null;
+		const role = d.role as string | undefined;
+		const external = d.is_external === true;
+		const bits: string[] = [];
+		if (role) bits.push(role);
+		if (external) bits.push(t('admin.drive_policies.external', 'external'));
+		return bits.length ? bits.join(' · ') : null;
+	}
+
 	$effect(() => {
 		for (const k of KINDS) if (!states[k].loaded) void load(k);
 		if (drift === null) void loadDrift();
 		if (findings === null) void loadFindings();
+		// The report names drives, so it needs them before it can render
+		// anything but uuids.
+		if (drivesById.size === 0) void loadDrives();
 	});
 
 	function knobLabel(key: string): string {
@@ -276,8 +451,10 @@
 	async function openDrivePolicies(driveId: string): Promise<void> {
 		policyDriveError = null;
 		try {
-			const all = await listAllDrives();
-			const found = all.find((d) => d.id === driveId);
+			// Served from the map the report already loaded; re-read only if a
+			// click somehow lands before it.
+			if (drivesById.size === 0) await loadDrives();
+			const found = drivesById.get(driveId);
 			if (!found) {
 				// Deleted since the scan ran — say so rather than opening an
 				// empty editor.
@@ -463,26 +640,65 @@
 					)}
 				</p>
 			{:else}
-				<ul class="dp__findings" data-testid="admin-policy-shares">
-					{#each shareFindings as f (f.id)}
-						{@const d = detailOf(f)}
-						<li>
-							<strong>{(d.token_name as string) ?? f.resource_id ?? '—'}</strong>
-							<span class="muted">
-								— {(d.drive_name as string) ?? ''}
-								{#if f.kind === 'share_missing_required_password'}
-									· {t('admin.drive_policies.v_no_password', 'no password')}
-								{:else if f.kind === 'share_outlives_policy_cap'}
-									· {d.never_expires
-										? t('admin.drive_policies.v_never_expires', 'never expires')
-										: t('admin.drive_policies.v_over_cap', 'outlives the cap')}
-								{:else}
-									· {knobLabel(d.knob as string)}
+				<div data-testid="admin-policy-shares">
+					{#each sharesByDrive as group (group.driveId)}
+						<!--
+							The drive is stated once, here, instead of being repeated on
+							every row. Personal drives resolve to their owner because the
+							name is "Personal" for all of them.
+
+							Foldable, and collapsed by default: an account can hold many
+							drives, and the first question this report answers is WHICH
+							drives have violations — the headings and their counts answer
+							that on their own. Expanding is for the drive you then decide
+							to look at.
+
+							`<details>` rather than a JS open/closed map: the browser owns
+							the state, keyboard and screen-reader behaviour come for free,
+							and nothing has to be kept in sync across a re-render.
+
+							A single group opens itself — collapsing the only drive there
+							is would be pure friction.
+						-->
+						<details class="dp__drive" open={sharesByDrive.length === 1}>
+							<summary class="dp__drive-summary">
+								{#if driveKindLabel(group.driveId)}
+									<span class="dp__kind">{driveKindLabel(group.driveId)}</span>
 								{/if}
-							</span>
-						</li>
+								<span class="dp__drive-name">{driveLabel(group.driveId)}</span>
+								<span class="dp__count">{group.items.length}</span>
+								<!-- A trailing action rather than the row itself: the
+								     summary's job is to expand, so editing gets its own
+								     target. `preventDefault` stops the click toggling too. -->
+								<button
+									type="button"
+									class="dp__finding-link dp__drive-edit"
+									onclick={(e) => {
+										e.preventDefault();
+										e.stopPropagation();
+										void openDrivePolicies(group.driveId);
+									}}
+									data-testid={`admin-policy-shares-drive-${group.driveId}`}
+								>
+									{t('admin.drive_manage_policies', 'Manage policies')}
+								</button>
+							</summary>
+							<ul class="dp__findings">
+								{#each group.items as f (f.id)}
+									{@const suffix = grantSuffix(f)}
+									<li>
+										<strong>{subjectLabel(f)}</strong>
+										<span class="muted">
+											{#if resourceKind(f)}({resourceKind(f)}){/if}
+											· {violationLabel(f)}
+											{#if suffix}· {suffix}{/if}
+										</span>
+									</li>
+								{/each}
+							</ul>
+						</details>
 					{/each}
-				</ul>
+				</div>
 			{/if}
 		{/if}
 	</div>
@@ -522,10 +738,21 @@
 	drive={policyDrive}
 	onclose={() => (policyDrive = null)}
 	onsaved={() => {
-		// The lists were computed by a scan that ran before this edit, so
-		// they now describe a state that no longer holds. Re-read rather
-		// than leave a row claiming a drift the admin just fixed.
-		void loadFindings();
+		// Overriding a drive's policy changes DRIFT — whether that drive is
+		// still laxer than its default — so the live drift list is what has
+		// to be re-read. It was calling `loadFindings()`, which re-reads the
+		// same finished job run and therefore could not change: a row the
+		// admin had just fixed stayed on screen.
+		//
+		// The share/grant findings are deliberately NOT refreshed. They come
+		// from a completed scan, and tightening a drive's policy can make
+		// existing shares non-compliant without any scan having noticed yet —
+		// that needs a re-run, which is the button above, not a silent
+		// re-read that would return the same rows.
+		void loadDrift();
+		// The modal wrote new policies, so the cached drive rows the report
+		// names things from are now stale.
+		void loadDrives();
 	}}
 />
 
@@ -600,6 +827,73 @@
 	.dp__finding-link:hover,
 	.dp__finding-link:focus-visible {
 		color: var(--color-accent-hover);
+	}
+
+	/* One foldable block per drive, so the drive is stated once instead of
+	   being repeated on every row. */
+	.dp__drive {
+		border-top: 1px solid var(--color-border);
+	}
+
+	.dp__drive:last-of-type {
+		border-bottom: 1px solid var(--color-border);
+	}
+
+	.dp__drive-summary {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		padding: var(--space-2) 0;
+		cursor: pointer;
+		font-size: 0.9375rem;
+		font-weight: 600;
+	}
+
+	/* Takes the free space so the count and the action sit at the far edge,
+	   lining up down the list however long the names are. */
+	.dp__drive-name {
+		flex: 1 1 auto;
+		min-width: 0;
+		overflow-wrap: anywhere;
+	}
+
+	/* The number of violations on this drive — the reason to expand it, so
+	   it has to be legible while collapsed. */
+	.dp__count {
+		flex: 0 0 auto;
+		min-width: 1.75em;
+		padding: 0 0.45em;
+		border-radius: 999px;
+		background: var(--color-bg-subtle, var(--color-bg-surface));
+		border: 1px solid var(--color-border);
+		font-size: 0.8125rem;
+		font-weight: 400;
+		text-align: center;
+		color: var(--color-text-muted);
+	}
+
+	.dp__drive-edit {
+		flex: 0 0 auto;
+		font-size: 0.8125rem;
+		font-weight: 400;
+	}
+
+	/* Indent the violations under the drive they belong to. */
+	.dp__drive > .dp__findings {
+		margin: 0 0 var(--space-3);
+		padding-left: var(--space-4);
+	}
+
+	/* Personal vs Shared — the distinction changes what the name beside it
+	   means, so it reads as a label rather than as part of the name. */
+	.dp__kind {
+		padding: 0 0.4em;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm, 4px);
+		font-size: 0.75rem;
+		font-weight: 400;
+		color: var(--color-text-muted);
+		white-space: nowrap;
 	}
 
 	.dp__savestate {

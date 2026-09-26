@@ -1289,9 +1289,17 @@
       "drift_review": "Review",
       "shares_title": "Shares that violate their drive policy ({{n}})",
       "shares_none": "None — every link and grant matches its drive policy.",
-      "v_no_password": "no password",
-      "v_never_expires": "never expires",
-      "v_over_cap": "outlives the cap"
+      "personal_of": "Personal — {{owner}}",
+      "a_group": "a group",
+      "unnamed_resource": "unnamed",
+      "external": "external",
+      "r_file": "file",
+      "r_folder": "folder",
+      "v_no_password": "public link with no password",
+      "v_never_expires": "public link that never expires",
+      "v_never_expires_cap": "public link that never expires, past the {{n}}-day cap",
+      "v_over_cap": "public link outliving the cap",
+      "v_over_cap_detail": "public link expiring {{date}}, past the {{n}}-day cap"
     },
     "drive_policy": {
       "forbid_sharing": "Forbid per-resource sharing",
