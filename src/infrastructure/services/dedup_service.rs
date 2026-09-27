@@ -2762,26 +2762,39 @@ impl DedupService {
 
         if new_ref_count == 0 {
             // Last reference — delete row from PG
-            sqlx::query("DELETE FROM storage.blobs WHERE hash = $1")
-                .bind(hash)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| {
-                    DomainError::internal_error(
-                        "Dedup",
-                        format!("Failed to delete blob row: {}", e),
-                    )
-                })?;
+            // Row delete and deletion intent in ONE statement, inside the
+            // caller's transaction — the same shape as `blob_reap_sql`.
+            //
+            // This path used to delete the row, commit, then unlink the object
+            // best-effort with a `warn!`. That is the defect that stranded 29
+            // blobs via `dedup_gc`: once the row is gone nothing DB-driven can
+            // ever look at the hash again, so a failed unlink was unrecoverable
+            // and invisible. It reaches here too — and note this path also serves
+            // DERIVED and ATTACHED artifacts, which have no unlink path of their
+            // own: `purge_derived_blobs` drops the mapping rows and calls
+            // `remove_reference` on each, so they land in exactly this code.
+            sqlx::query(
+                "WITH reaped AS (
+                     DELETE FROM storage.blobs WHERE hash = $1
+                     RETURNING hash, size
+                 )
+                 INSERT INTO storage.pending_actions (hash, action, object, size_bytes)
+                 SELECT hash, 'deletion', 'blob', size FROM reaped
+                 ON CONFLICT (hash, action) DO NOTHING",
+            )
+            .bind(hash)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                DomainError::internal_error("Dedup", format!("Failed to delete blob row: {}", e))
+            })?;
 
             tx.commit().await.map_err(|e| {
                 DomainError::internal_error("Dedup", format!("Failed to commit: {}", e))
             })?;
 
-            // Delete blob from backend AFTER committing PG — the row is gone,
-            // so no concurrent ingest can resurrect a reference.
-            if let Err(e) = self.backend.delete_blob(hash).await {
-                tracing::warn!("Failed to delete blob file {}: {}", hash, e);
-            }
+            // No unlink here. `backend_reclaim` owns it, and owns the retry that
+            // a best-effort call in this position could never have.
 
             // Bug 3 fix: notify hooks — e.g. thumbnail cleanup keyed by hash
             self.reap_blob(hash).await;
@@ -2868,13 +2881,24 @@ impl DedupService {
         // Callers can keep invoking `cleanup_if_orphaned` unconditionally
         // — for CDC paths it's a cheap no-op (manifest still exists OR
         // the hash never had a blob row), for legacy paths it reaps.
+        // Row delete and deletion intent in ONE statement — same reasoning as
+        // `remove_legacy_reference` above and `blob_reap_sql`: the moment this row
+        // is gone, nothing DB-driven can find the hash again, so a best-effort
+        // unlink after the fact is unrecoverable if it fails.
         let deleted_blob = sqlx::query_scalar::<_, String>(
-            "DELETE FROM storage.blobs \
-                WHERE hash = $1 \
-                  AND ref_count <= 0 \
-                  AND NOT EXISTS (SELECT 1 FROM storage.chunk_manifests \
-                                    WHERE $1 = ANY(chunk_hashes)) \
-              RETURNING hash",
+            "WITH reaped AS ( \
+                 DELETE FROM storage.blobs \
+                     WHERE hash = $1 \
+                       AND ref_count <= 0 \
+                       AND NOT EXISTS (SELECT 1 FROM storage.chunk_manifests \
+                                         WHERE $1 = ANY(chunk_hashes)) \
+                   RETURNING hash, size \
+             ), queued AS ( \
+                 INSERT INTO storage.pending_actions (hash, action, object, size_bytes) \
+                 SELECT hash, 'deletion', 'blob', size FROM reaped \
+                 ON CONFLICT (hash, action) DO NOTHING \
+             ) \
+             SELECT hash FROM reaped",
         )
         .bind(hash)
         .fetch_optional(self.pool.as_ref())
@@ -2882,11 +2906,9 @@ impl DedupService {
         .unwrap_or(None);
 
         if deleted_blob.is_some() {
-            if let Err(e) = self.backend.delete_blob(hash).await {
-                tracing::warn!("cleanup_if_orphaned: disk delete failed for {short}: {e}");
-            }
+            // No unlink here either — `backend_reclaim` owns it.
             self.reap_blob(hash).await;
-            tracing::info!("cleanup_if_orphaned: removed orphaned legacy blob {short}");
+            tracing::info!("cleanup_if_orphaned: queued orphaned legacy blob {short} for reclaim");
         }
     }
 

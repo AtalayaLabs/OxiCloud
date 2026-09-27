@@ -359,9 +359,21 @@ log "no refcount drift"
 # it is DB-only by design and never opens a blob. Watch for `blob_corrupted`.
 now_deep=$(curl -sf -X POST "$base_url/api/admin/jobs/backend_consistency/trigger?deep=true" \
   -H "$AUTH" | jq -r '.outcome.count')
-if [[ "$now_deep" != "$base_deep" ]]; then
+# `<=`, not `==`, and the reason is specific rather than lax.
+#
+# `backend_consistency` counts `orphan_blob` — backend objects with no DB row —
+# which is exactly what the deletion queue holds between a reap and its drain.
+# `backend_reclaim` runs on a 300 s schedule, so during a suite that takes
+# minutes it WILL fire and unlink some of those, and the count legitimately DROPS
+# between the baseline and here. An equality assertion would fail on a background
+# job doing its job.
+#
+# What this test actually cares about is that the re-chunk did not ADD findings —
+# a wrong chunk boundary, a truncated write, a hash that no longer matches its
+# name. That is an upper bound, so state it as one.
+if [[ "$now_deep" -gt "$base_deep" ]]; then
   dump_findings backend_consistency
-  fail "deep backend check drifted $base_deep → $now_deep — a re-hash of the migrated chunks \
+  fail "deep backend check grew $base_deep → $now_deep — a re-hash of the migrated chunks \
 disagrees with their names"
 fi
 log "deep re-hash of every chunk agrees"

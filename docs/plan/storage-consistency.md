@@ -39,10 +39,39 @@ unlinked" grows from sub-second to the drain interval, so an upload landing insi
 it would adopt bytes about to be deleted. §2f is not a follow-up to §2b, it is the
 other half of the same change.
 
-One known gap, deliberately left rather than forgotten: **derived and attached
-blob deletions still unlink directly.** The `object` column already admits
-`'derived'` and `'attached'`, but only the base-blob reap path enqueues today.
-Those paths have the same shape and the same defect, at lower volume.
+**Every base-blob unlink path now goes through the queue**, which took two more
+sites than §2a covered. A note here previously called this gap "derived and
+attached blob deletions still unlink directly" — that was wrong in an instructive
+way, and the correction reduces the work rather than adding to it:
+
+**Derived and attached artifacts have no unlink path of their own.**
+`purge_derived_blobs` deletes the mapping rows and calls `remove_reference` on
+each `blob_hash` — they are ordinary content-addressed blobs in `storage.blobs`,
+so their physical deletion has always flowed through the base-blob paths. That is
+exactly what the `object` column's rationale says: it records the ORIGIN of the
+request, not a separate code path. So there was never a derived/attached deletion
+path to convert; there were two base-blob paths still to convert, and doing so
+covers derived and attached completely.
+
+The full set, for anyone auditing it later:
+
+| path | state |
+|---|---|
+| `dedup_gc` reap loop | queues (§2a) |
+| `rechunk_one_legacy_blob` | queues on unlink failure |
+| `remove_legacy_reference` | queues — was delete-row-then-best-effort-unlink |
+| `cleanup_if_orphaned` | queues — same shape |
+| `storage_settings_service` ×6 | not applicable: a backend connectivity self-test writing a synthetic probe blob with no PG row, whose cleanup result is reported to the admin |
+
+The consequence for tests: anything asserting that bytes are gone from disk now
+needs BOTH phases — a `dedup_gc` pass and a `backend_reclaim` drain. Previously
+most deletes unlinked synchronously, so a GC pass was enough.
+
+And one flake this creates by construction: `backend_consistency` counts
+`orphan_blob`, which is precisely what the queue holds between a reap and its
+drain. Since the drain runs on a schedule, that count legitimately DROPS during a
+suite. Baseline comparisons against it must therefore be an upper bound (`<=`),
+never equality — an equality assertion fails on a background job doing its job.
 
 A correction to an earlier note here, which claimed `backend_consistency`'s repair
 arm "still deletes directly": it had **no** repair arm at all — it was
