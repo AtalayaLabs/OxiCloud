@@ -191,6 +191,8 @@ plugin-check:
 audit:
     cargo audit
 
+gen-openapi: openapi
+
 openapi:
     cargo run --features dev_tools --bin generate-openapi
 
@@ -219,6 +221,8 @@ check-openapi-spec: openapi
 # analogue of openapi.json. Built from the `Topic`, `MessageBusEvent`,
 # and `error_code` constants in `application/ports/message_bus_ports.rs`
 # so the spec stays in sync with the wire by construction.
+gen-asyncapi: asyncapi
+
 asyncapi:
     cargo run --features dev_tools --bin generate-asyncapi
 

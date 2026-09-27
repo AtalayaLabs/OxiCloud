@@ -194,7 +194,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--version" | "-V" => {
                 println!(
                     "OxiCloud v{} (branch={} commit={})",
-                    env!("CARGO_PKG_VERSION"),
+                    env!("OXICLOUD_VERSION"),
                     env!("GIT_BRANCH"),
                     env!("GIT_HASH"),
                 );
@@ -299,7 +299,7 @@ fn load_config_file(path: &str) -> Result<(), Box<dyn std::error::Error>> {
 fn print_help() {
     println!(
         "OxiCloud v{} (branch={} commit={})",
-        env!("CARGO_PKG_VERSION"),
+        env!("OXICLOUD_VERSION"),
         env!("GIT_BRANCH"),
         env!("GIT_HASH"),
     );
@@ -554,7 +554,7 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
 
     tracing::info!(
         "OxiCloud v{} | branch={} commit={}",
-        env!("CARGO_PKG_VERSION"),
+        env!("OXICLOUD_VERSION"),
         env!("GIT_BRANCH"),
         env!("GIT_HASH")
     );

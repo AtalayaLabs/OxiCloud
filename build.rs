@@ -145,6 +145,72 @@ fn git_status() {
     .unwrap_or_else(|| "unknown".into());
     println!("cargo:rustc-env=GIT_BRANCH={git_branch}");
 
+    // OXICLOUD_VERSION — the string that identifies "which build is this?"
+    // for humans and machines alike. Four sources, in priority order:
+    //
+    //   1. `OXICLOUD_VERSION` env at build time — the escape hatch for
+    //      Docker builds (host has git + CI env; container doesn't).
+    //      Workflow / Dockerfile derives the version once and hands it
+    //      in as an ARG.
+    //   2. `GITHUB_REF_NAME` when `GITHUB_REF_TYPE == "tag"` — CI tag
+    //      build. Uses the ref verbatim so a shipped release binary
+    //      reports the clean tag (e.g. `v0.9.2`) without a
+    //      describe-suffix.
+    //   3. `git describe --tags --always --dirty=-dirty` — every other
+    //      build. Yields `v0.9.2` on a clean tag, `v0.9.2-3-g4f12bd25`
+    //      on the 3rd commit past that tag, plus `-dirty` when the
+    //      working tree has uncommitted changes.
+    //   4. `Cargo.toml` version + `-unknown` — last-resort fallback for
+    //      a source-tarball build (no `.git`, no CI env, no ARG). The
+    //      `-unknown` suffix is the honest signal: this binary can't
+    //      identify itself.
+    //
+    // `Cargo.toml` is pinned at `version = "0.0.0"` so nothing implicitly
+    // depends on it. The clean version string flows through every runtime
+    // display via `env!("OXICLOUD_VERSION")`.
+    let version = env::var("OXICLOUD_VERSION")
+        .ok()
+        .filter(|v| !v.is_empty() && v != "unknown")
+        .or_else(|| {
+            matches!(env::var("GITHUB_REF_TYPE").as_deref(), Ok("tag"))
+                .then(|| env::var("GITHUB_REF_NAME").ok())
+                .flatten()
+        })
+        .or_else(|| git(&["describe", "--tags", "--always", "--dirty=-dirty"]))
+        .unwrap_or_else(|| format!("{}-unknown", env!("CARGO_PKG_VERSION")));
+
+    // Strip the leading `v` so downstream displays read like
+    // `curl --version` (`OxiCloud 0.9.2` not `OxiCloud v0.9.2`).
+    // The presence/absence of the `v` in git tags is honoured by
+    // stripping it here — the tag format stays owner-of-repo's choice.
+    let clean_version = version.strip_prefix('v').unwrap_or(&version);
+    println!("cargo:rustc-env=OXICLOUD_VERSION={clean_version}");
+    println!("cargo:rerun-if-env-changed=OXICLOUD_VERSION");
+    println!("cargo:rerun-if-env-changed=GITHUB_REF_TYPE");
+
+    // OXICLOUD_TAG — just the tag portion, no `-N-gHASH(-dirty)` suffix.
+    //
+    // Consumed by the OpenAPI / AsyncAPI `info.version` fields, both of
+    // which are regenerated into committed JSON under `resources/gen/`
+    // and checked by a drift CI job on every PR. If those fields
+    // carried the full OXICLOUD_VERSION, every developer's local
+    // `git describe` output (`0.9.2-3-g4f12bd25-dirty`) would differ
+    // from CI's — the drift check would false-positive on every PR.
+    //
+    // Stripping to the bare tag makes the value byte-stable across
+    // every checkout of the same tagged commit. It only changes when a
+    // new tag actually ships — which is exactly when the spec version
+    // *should* change.
+    //
+    // Match pattern: `-<digits>-g<hex>` optionally followed by `-dirty`,
+    // anchored at end-of-string. Applied to the already-`v`-stripped
+    // form so `0.9.2-3-g4f12bd25-dirty` → `0.9.2` and a clean `0.9.2`
+    // stays as-is. `unknown`, `unknown-dirty` and the source-tarball
+    // fallback (`0.0.0-unknown`) survive untouched — they're already
+    // stable strings.
+    let tag = strip_describe_suffix(clean_version);
+    println!("cargo:rustc-env=OXICLOUD_TAG={tag}");
+
     // CI builds: rerun if the injected env changes
     for k in [
         "GITHUB_SHA",
@@ -160,13 +226,28 @@ fn git_status() {
         println!("cargo:rerun-if-env-changed={k}");
     }
 
-    // Only nag on CI builds — the warning fires every time build.rs
-    // runs (branch switch, commit on current branch, first build).
-    // On a local dev loop it becomes noise. CI is where "which commit
-    // built this artifact" is load-bearing (release provenance,
-    // release-note automation).
-    if env::var("CI").is_ok() {
-        println!("cargo:warning=OxiCloud built with git hash: {git_hash} and branch: {git_branch}");
+    // Emit unless every source came up empty. Earlier this line was
+    // gated on `CI=true` to spare local dev the noise, but that also
+    // silenced Docker builder stages (the container doesn't inherit
+    // the runner's `CI` env) — exactly the case where "which version
+    // did we bake in?" is load-bearing.
+    //
+    // The `all-unknown` guard suppresses one specific noise source:
+    // the Docker *cacher* stage (Dockerfile stage 2) that compiles a
+    // dummy `main.rs` just to warm the dep cache, without any of the
+    // GitHub-Actions envs piped through. Its output is `rm -rf`d
+    // before the real builder stage runs — the warning it would emit
+    // ("v0.0.0-unknown …") only misleads log readers into thinking
+    // the real build lost its version stamp.
+    //
+    // Version first because that's the answer a reader is usually
+    // after; tag + hash + branch stay for provenance.
+    let all_unknown =
+        clean_version.ends_with("-unknown") && git_hash == "unknown" && git_branch == "unknown";
+    if !all_unknown {
+        println!(
+            "cargo:warning=OxiCloud v{clean_version} (tag={tag} hash={git_hash} branch={git_branch})"
+        );
     }
 }
 
@@ -241,4 +322,78 @@ fn first_env(keys: &[&str]) -> Option<String> {
     keys.iter()
         .find_map(|k| env::var(k).ok())
         .filter(|s| !s.is_empty())
+}
+
+/// Strip `git describe`'s "commits past tag" suffix so only the tag
+/// name remains. Input shapes handled:
+///
+///   - `0.9.2-3-g4f12bd25-dirty` → `0.9.2`
+///   - `0.9.2-3-g4f12bd25`       → `0.9.2`
+///   - `0.9.2-dirty`             → `0.9.2`  (clean tag with dirty tree)
+///   - `0.9.2`                   → `0.9.2`  (already a bare tag)
+///   - `4f12bd25`                → `4f12bd25` (repo with no tags)
+///   - `0.0.0-unknown`           → `0.0.0-unknown` (source-tarball fallback)
+///
+/// The match is anchored to end-of-string and requires the specific
+/// `-<digits>-g<hex>` shape describe emits — so we do not accidentally
+/// strip a real prerelease segment like `-rc.1`. `-dirty` is stripped
+/// separately (peeled first) because a clean-tagged dirty tree yields
+/// `<tag>-dirty` with no ahead-count in between.
+fn strip_describe_suffix(v: &str) -> String {
+    // Peel `-dirty` first — reduces the remaining problem to two
+    // clean cases: a bare tag, or `<tag>-<ahead>-g<hex>`.
+    let peeled = v.strip_suffix("-dirty").unwrap_or(v);
+
+    // Look for the last `-g<hex>` segment (git describe abbreviates
+    // to 7+ hex chars; we don't hard-code 7 in case someone tuned
+    // core.abbrev). It has to sit right after `-<ahead-count>`.
+    let Some(g_at) = peeled.rfind("-g") else {
+        return peeled.to_string();
+    };
+    // Right of `-g` must be all hex.
+    let hex = &peeled[g_at + 2..];
+    if hex.is_empty() || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return peeled.to_string();
+    }
+    // Left of `-g` should end with `-<digits>` (the "N commits past
+    // tag" segment). If it doesn't, this `-g` wasn't a describe suffix.
+    let left = &peeled[..g_at];
+    let Some(dash_at) = left.rfind('-') else {
+        return peeled.to_string();
+    };
+    let ahead = &left[dash_at + 1..];
+    if ahead.is_empty() || !ahead.bytes().all(|b| b.is_ascii_digit()) {
+        return peeled.to_string();
+    }
+    left[..dash_at].to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_describe_suffix;
+
+    #[test]
+    fn strips_full_describe_suffix() {
+        assert_eq!(strip_describe_suffix("0.9.2-3-g4f12bd25-dirty"), "0.9.2");
+        assert_eq!(strip_describe_suffix("0.9.2-3-g4f12bd25"), "0.9.2");
+    }
+
+    #[test]
+    fn strips_dirty_from_clean_tag() {
+        assert_eq!(strip_describe_suffix("0.9.2-dirty"), "0.9.2");
+    }
+
+    #[test]
+    fn preserves_bare_tag_and_prerelease() {
+        assert_eq!(strip_describe_suffix("0.9.2"), "0.9.2");
+        assert_eq!(strip_describe_suffix("1.0.0-rc.1"), "1.0.0-rc.1");
+        assert_eq!(strip_describe_suffix("1.0.0-beta.2"), "1.0.0-beta.2");
+    }
+
+    #[test]
+    fn preserves_no_tag_and_fallback() {
+        assert_eq!(strip_describe_suffix("4f12bd25"), "4f12bd25");
+        assert_eq!(strip_describe_suffix("0.0.0-unknown"), "0.0.0-unknown");
+        assert_eq!(strip_describe_suffix("unknown"), "unknown");
+    }
 }

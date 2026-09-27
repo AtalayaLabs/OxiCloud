@@ -99,6 +99,12 @@ export default defineConfig({
 
   ignoreDeadLinks: [
     /^https?:\/\/localhost/,
+    // Public-directory assets are served at the site root at build
+    // time but VitePress' dead-link check only knows about markdown
+    // pages — every link into `docs/public/` looks dead to it. List
+    // each such asset explicitly (targeted, not a wildcard) so a
+    // real typo in another markdown link still fails the build.
+    /^\/oxicloud\.example\.toml$/,
   ],
 
   locales: {

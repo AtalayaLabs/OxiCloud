@@ -16,7 +16,7 @@
 //!   any logged-in caller could infer from probing endpoints; giving
 //!   it up front is a UX win.
 //! - `version` — same string the `/api/version` endpoint returns
-//!   (CARGO_PKG_VERSION + git SHA). Public build metadata.
+//!   (`OXICLOUD_VERSION` from `build.rs`). Public build metadata.
 //! - `server_status` — a snapshot of the mutable server-status state
 //!   (maintenance mode, degraded mode, etc.). Same shape the
 //!   `X-Server-Status` header stamps on every response; this endpoint
@@ -40,8 +40,10 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, build_header_p
 /// as JSON-RPC error codes on the message bus).
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ServerConfigDto {
-    /// Server version — `CARGO_PKG_VERSION` from `Cargo.toml`. Matches
-    /// what `GET /api/version` returns.
+    /// Server version — `OXICLOUD_VERSION` derived by `build.rs` from
+    /// the git tag / `GITHUB_REF_NAME` / `git describe`. Matches what
+    /// `GET /api/version` returns. Cargo.toml stays pinned at `0.0.0`;
+    /// this string is the canonical build identity.
     pub version: &'static str,
 
     /// Feature flags — which subsystems the server has enabled.
@@ -153,7 +155,7 @@ pub struct FeaturesDto {
 pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<ServerConfigDto> {
     let f = &state.core.config.features;
     Json(ServerConfigDto {
-        version: env!("CARGO_PKG_VERSION"),
+        version: env!("OXICLOUD_VERSION"),
         features: FeaturesDto {
             message_bus: f.enable_message_bus,
             trash: f.enable_trash,

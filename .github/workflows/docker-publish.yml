@@ -97,6 +97,15 @@ jobs:
         with:
           # Build the exact tag behind the published release or manual dispatch.
           ref: ${{ github.event.inputs.version || github.event.release.tag_name || github.ref }}
+          # This job runs `cargo test --workspace` — no OXICLOUD_VERSION
+          # is injected explicitly, so build.rs falls through to
+          # `git describe --tags`. Without tags in the checkout it
+          # would report an abbreviated SHA as the build version;
+          # nothing currently fails on that, but keeping the stamp
+          # coherent with what release-binaries / docker-publish ship
+          # makes any future spec-version assertion safe too.
+          fetch-depth: 0
+          fetch-tags: true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -232,6 +241,7 @@ jobs:
             GITHUB_SHA=${{ github.sha }}
             GITHUB_REF_NAME=${{ github.ref_name }}
             GITHUB_HEAD_REF=${{ github.head_ref }}
+            OXICLOUD_VERSION=${{ env.VERSION }}
 
       - name: Verify published image
         # Skipped on dry-run — nothing was pushed to pull back.

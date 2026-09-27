@@ -19,6 +19,31 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # `git describe` walks commits back until it hits a tag —
+          # needs BOTH the tags and enough history to reach them.
+          # Default checkout is a shallow single-commit clone with no
+          # tags; describe would return only the SHA and the version
+          # string loses its human-readable prefix. `fetch-depth: 0`
+          # (full history) + `fetch-tags: true` (all tag refs) together
+          # give build.rs a real describe output on PR / dev builds.
+          # Cost is small — the repo is a few MB checked out.
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Compute build version
+        # Resolves the version string once so both the local build-arg
+        # and any future step that wants to log it share the same value.
+        # Priority mirrors build.rs: tag ref → git describe → SHA.
+        id: version
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            v="${GITHUB_REF_NAME#v}"
+          else
+            v="$(git describe --tags --always --dirty=-dirty 2>/dev/null | sed 's/^v//' || echo "unknown")"
+          fi
+          echo "value=${v}" >> "$GITHUB_OUTPUT"
+          echo "OxiCloud version: ${v}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -32,6 +57,20 @@ jobs:
             type=ref,event=branch
             type=ref,event=pr
             type=sha
+          # Override metadata-action's default `image.version`
+          # (which would be `pr-<n>` on a PR, the branch name on
+          # main, etc.) with the same value the workflow computed
+          # and passed as `--build-arg OXICLOUD_VERSION`. Keeps the
+          # label consistent with what `build.rs` bakes into the
+          # binary and what `Dockerfile`'s `LABEL` stamps directly
+          # — so `docker image inspect` and metadata-action's
+          # advertised value never disagree. If a future refactor
+          # wires `${{ steps.meta.outputs.labels }}` into the
+          # build-push-action, this line ensures the metadata
+          # would carry the real build identity, not the trigger's
+          # shape.
+          labels: |
+            org.opencontainers.image.version=${{ steps.version.outputs.value }}
 
       - name: Build Docker image
         uses: docker/build-push-action@v6
@@ -51,6 +90,7 @@ jobs:
             GITHUB_SHA=${{ github.sha }}
             GITHUB_REF_NAME=${{ github.ref_name }}
             GITHUB_HEAD_REF=${{ github.head_ref }}
+            OXICLOUD_VERSION=${{ steps.version.outputs.value }}
 
       - name: Verify image starts correctly
         run: |
@@ -84,3 +124,42 @@ jobs:
           docker run --rm --entrypoint sh test/oxicloud:test -c "ls /app/static/index.html && echo 'OK: static files present'"
 
           echo "✅ Docker build and test completed successfully"
+
+      - name: Verify baked-in version + OCI label
+        # Two-sided check: the string embedded in the binary at
+        # compile time (`env!("OXICLOUD_VERSION")` → `oxicloud
+        # --version` output) must match the `org.opencontainers.image.version`
+        # label the Dockerfile stamps from the same build-arg. If
+        # both agree AND match the runner-computed version, the
+        # whole build-arg → build.rs → LABEL pipeline is intact.
+        run: |
+          set -euo pipefail
+          expected="${{ steps.version.outputs.value }}"
+          echo "expected version: ${expected}"
+
+          echo "=== oxicloud --version (from inside the image) ==="
+          # `--entrypoint` bypasses entrypoint.sh (which is the normal
+          # server-boot flow doing chown + su-exec) and runs the
+          # binary directly — same pattern the "Binary exists" check
+          # above uses.
+          reported=$(docker run --rm --entrypoint /usr/local/bin/oxicloud test/oxicloud:test --version)
+          echo "${reported}"
+
+          echo "=== org.opencontainers.image.version label ==="
+          label=$(docker image inspect test/oxicloud:test \
+            --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')
+          echo "${label}"
+
+          # The binary self-reports as `OxiCloud v<version> (branch=... commit=...)`.
+          # Substring-match the expected version against the reported string —
+          # tolerant of formatting drift on either side while still catching
+          # a version mismatch.
+          if ! echo "${reported}" | grep -q "v${expected}"; then
+            echo "❌ binary reports a different version than build-arg: expected v${expected}, got: ${reported}"
+            exit 1
+          fi
+          if [ "${label}" != "${expected}" ]; then
+            echo "❌ OCI label mismatch: expected '${expected}', got '${label}'"
+            exit 1
+          fi
+          echo "✅ binary + OCI label both report v${expected}"

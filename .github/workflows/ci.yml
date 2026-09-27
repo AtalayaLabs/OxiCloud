@@ -122,6 +122,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # build.rs derives the spec's `info.version` from the nearest
+          # tag via `git describe`. A shallow no-tags checkout falls
+          # back to the abbreviated SHA and the regenerated JSON no
+          # longer matches what a developer committed from a full clone
+          # — the drift check then false-positives. Full history + tags
+          # keeps CI and local in lockstep.
+          fetch-depth: 0
+          fetch-tags: true
       # Rust for `just asyncapi` — the JSON spec is built by
       # `cargo run --features dev_tools --bin generate-asyncapi`.
       - uses: dtolnay/rust-toolchain@stable
@@ -181,6 +190,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Same reason as message-bus-spec-drift above: build.rs feeds
+          # `git describe`'s nearest-tag output into the spec's
+          # `info.version`; without tags + history CI produces a
+          # different value than a developer's commit and the drift
+          # check false-positives.
+          fetch-depth: 0
+          fetch-tags: true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Regenerate OpenAPI spec

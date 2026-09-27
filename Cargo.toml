@@ -1,6 +1,12 @@
 [package]
 name = "oxicloud"
-version = "0.8.9"
+# Deliberately pinned at 0.0.0. The real version is derived at build time
+# by `build.rs` from (in priority): $OXICLOUD_VERSION → GITHUB_REF_NAME on
+# tag builds → `git describe --tags --always --dirty=-dirty` → fallback.
+# Runtime consumers read `env!("OXICLOUD_VERSION")`; nothing reads this
+# field at runtime. Kept static so tagging a release doesn't require a
+# pre-bump PR — the shipped binary reports the tag verbatim.
+version = "0.0.0"
 edition = "2024"
 default-run = "oxicloud"
 

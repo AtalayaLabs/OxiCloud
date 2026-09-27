@@ -282,3 +282,18 @@
     color: var(--color-sidebar-storage-faint);
     font-weight: var(--weight-normal);
 }
+
+/* Admin-context variant: same footprint as the storage indicator
+   above, but the value is a version string (potentially long: e.g.
+   `0.9.2-3-g4f12bd25-dirty`). Mono for legibility and `overflow-wrap`
+   so it wraps inside the sidebar instead of forcing a horizontal
+   scroll on narrow layouts. */
+.storage-container--version .storage-version-value {
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--color-sidebar-storage-faint);
+    font-weight: var(--weight-normal);
+    overflow-wrap: anywhere;
+    line-height: 1.35;
+}

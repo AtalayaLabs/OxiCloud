@@ -63,7 +63,12 @@ fn build_asyncapi() -> Value {
         "asyncapi": "3.0.0",
         "info": {
             "title":   "OxiCloud message bus",
-            "version": env!("CARGO_PKG_VERSION"),
+            // OXICLOUD_TAG (bare tag, no `git describe` suffix), NOT
+            // OXICLOUD_VERSION — this file is committed under
+            // resources/gen/ and drift-checked by CI on every PR.
+            // See build.rs → strip_describe_suffix() and the mirror
+            // comment on the utoipa `info()` in src/interfaces/api/mod.rs.
+            "version": env!("OXICLOUD_TAG"),
             "description": r#"
 JSON-RPC 2.0 over WebSocket for control + events, Yjs sync protocol for
 CRDT binary frames. The wire is described here for the first-PR MVP
