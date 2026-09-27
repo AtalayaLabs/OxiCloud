@@ -488,15 +488,40 @@ impl AppServiceFactory {
         // behaviour.
         image_transcode_service.attach_dedup(dedup_service.clone());
 
-        // One-time background migration: re-chunk pre-CDC whole-file blobs
-        // into chunk manifests so Range reads (and, with encryption, partial
-        // decrypts) stop paying for the entire blob. No-op once converged.
-        if self.config.storage.legacy_rechunk_enabled {
-            dedup_service.spawn_legacy_rechunk();
-        } else {
-            tracing::info!(
-                "Legacy re-chunk migration disabled (OXICLOUD_LEGACY_RECHUNK=false) — \
-                 pre-CDC whole-file blobs, if any, will keep using the legacy read path"
+        // One-time migration: re-chunk pre-CDC whole-file blobs into chunk
+        // manifests so Range reads (and, with encryption, partial decrypts)
+        // stop paying for the entire blob. No-op once converged.
+        //
+        // This is also available as the `backend_rechunk` job, which is where
+        // it belongs — a job has an admin trigger, run history, findings and a
+        // visible cursor, so an operator can answer "has this converged?"
+        // without grepping boot logs. `OXICLOUD_LEGACY_RECHUNK` is DEPRECATED
+        // for that reason and not because deferring the sweep was wrong:
+        // re-reading every blob on a metered backend is a real cost to want
+        // control over, but a triggerable job is schedulable by definition and
+        // `OXICLOUD_STARTUP_JOBS` already decides what runs at boot. Two knobs
+        // for one decision is the defect.
+        //
+        // Warn while set rather than ignoring it, per the house deprecation
+        // path: silently dropping a variable that used to prevent an expensive
+        // re-read would surprise exactly the operators who set it deliberately.
+        // See `docs/plan/storage-consistency.md` §1b.
+        // No spawned task any more: `backend_rechunk` is in the default
+        // `OXICLOUD_STARTUP_JOBS`, so the sweep still runs on every boot — but as
+        // a job, with an admin trigger, run history, findings and a cursor.
+        //
+        // Running both would be wasteful rather than wrong (the manifest row is
+        // an idempotent done marker), but two walkers racing over the same blobs
+        // is no one's intent.
+        if !self.config.storage.legacy_rechunk_enabled {
+            tracing::warn!(
+                "OXICLOUD_LEGACY_RECHUNK=false is DEPRECATED and will be removed in the next \
+                 major release. It still does what you set it for: `backend_rechunk` has been \
+                 dropped from the default startup jobs, so pre-CDC whole-file blobs keep using \
+                 the legacy read path and no egress is spent re-reading them at boot. To keep \
+                 that behaviour once the variable is gone, set OXICLOUD_STARTUP_JOBS explicitly \
+                 without `backend_rechunk`, and trigger the job from the admin panel when the \
+                 egress is convenient."
             );
         }
 
@@ -1576,6 +1601,20 @@ impl AppServiceFactory {
                 std::path::Path::new(&self.storage_path).join(".transcoded"),
                 core.dedup_service.clone(),
                 maintenance_pool.clone(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
+        // §1 of the storage-consistency plan: the pre-CDC re-chunk migration,
+        // promoted from a detached boot task to a job. Registered here rather
+        // than only spawned so convergence is observable — the whole point of
+        // finishing this migration is being able to DELETE the legacy
+        // whole-file read paths, and that decision needs a number an operator
+        // can see rather than a grep over boot logs.
+        let _ = Arc::new(
+            crate::infrastructure::services::backend_rechunk_service::BackendRechunk::new(
+                core.dedup_service.clone(),
             ),
         )
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)

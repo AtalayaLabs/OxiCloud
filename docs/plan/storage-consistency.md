@@ -10,7 +10,10 @@ heading:
 
 | item | state |
 |---|---|
-| §1 CDC migration — one content model | TODO |
+| §1a `backend_rechunk` job | **DONE** — unit tests + API check green |
+| §1b retire `OXICLOUD_LEGACY_RECHUNK` | **DONE** — deprecation warning; removal next major |
+| §1c convergence visible + `LEGACY-WHOLE-FILE-BLOB` markers | **DONE** — finding + 6 tagged sites |
+| §1d share the walk with `backend_rotate` | TODO — optimisation, not required |
 | §2 Durable deletion intent + `backend_reclaim` | TODO |
 | §3 Backoff, and the nested SDK retry | TODO |
 | §4 Same-content refcount leak | **DONE** — unit + API suite green |
@@ -230,6 +233,38 @@ Known sites from a first pass: the `remove_reference` legacy branch
 where the unbounded-read case exists *only* for legacy blobs — that last
 group is the one that actually costs something, since it is why the decrypt
 path carries an unbounded buffer at all.
+
+**As implemented (1a–1c)** — three things the plan had not specified, each from a
+review question worth recording:
+
+* **Per-conversion audit line and finding.** *"Does the rechunk job log the files
+  it changed? It could help Ops."* — it did not: the only per-blob line was
+  `debug`, and it named the hash rather than the files. Now it emits
+  `event="storage.blob_rechunked"` on the **audit** channel with `file_ids`, plus
+  an `info`-severity `legacy_blob_rechunked` finding per blob, following the
+  `refcount_repaired` convention (`blobs_consistency_service.rs:531`) that a
+  successful mutation is not an anomaly. The audit channel is load-bearing rather
+  than cosmetic: `tests/common/server.env` sets `RUST_LOG="warn,audit=info,…"`, so
+  a plain `tracing::info!` is filtered out entirely. And the file ids are the part
+  that cannot be reconstructed afterwards — the whole point of the conversion is
+  that the file stops referencing that hash directly.
+* **Transient failures pause the run instead of counting as failures.** Otherwise
+  an outage marches through every remaining blob recording a finding for each,
+  and a run that converted nothing still reports having examined the instance. The
+  consecutive-failure cap therefore only sees permanent faults, where a streak
+  really does indicate something systemic — a wrong key failing every hash check.
+* **Keyset paging replaced the in-memory failed-hash exclusion list.** A failed
+  hash is skipped because the cursor advanced past it, which also survives a
+  pause; the list could not.
+
+Verification landed as `tests/api/rechunk_legacy_check.sh`, and two of its
+assertions are worth naming because they are what makes it a real test rather
+than a smoke test: the fixture must produce **more than one chunk** (a
+single-chunk file re-chunks to one chunk and would let a broken migration pass),
+and `backend_consistency?deep=true` **re-hashes every chunk** afterwards. The
+deep pass is the strongest available check here — `blobs_consistency` is DB-only
+by design and never opens a blob, and the byte-identical download assertion can
+be satisfied by a warm plaintext cache without the backend holding correct bytes.
 
 **1d — Consider one walk for two jobs.** `backend_rotate` cannot do this work
 — it is object-*preserving* by design, rewriting the same key via

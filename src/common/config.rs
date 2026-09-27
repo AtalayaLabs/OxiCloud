@@ -2576,9 +2576,22 @@ fn parse_startup_job(raw: &str) -> Result<StartupJob, String> {
 /// error is recomputed on the next request — and its `.skip` markers
 /// collapse to one row per distinct content, which is the saving that
 /// only happens once the import runs.
+/// `backend_rechunk` joins them because it replaces a boot-time background
+/// task, and leaving it out would silently stop a migration that used to run
+/// on every start.
+///
+/// It is the mildest member of the list: it deletes nothing an operator could
+/// want back — the whole-file blob it frees has just been rewritten as chunks
+/// and read back through the hash check — and it has no `repair` mode, because
+/// converting IS the job. Its cost is a full read of every legacy blob, which
+/// on a metered remote backend is real egress; that is what
+/// `OXICLOUD_LEGACY_RECHUNK=false` used to buy, and while that variable is
+/// deprecated it still removes this entry (see `startup_jobs_from_env`) so an
+/// operator who deferred the sweep keeps deferring it.
 const DEFAULT_STARTUP_JOBS: &str = "thumb_derived_import?repair=true,\
      thumb_attached_import?repair=true,\
-     transcode_import?repair=true";
+     transcode_import?repair=true,\
+     backend_rechunk";
 
 /// Parse the whole `OXICLOUD_STARTUP_JOBS` value. Empty → no startup
 /// jobs (an explicit opt-out); unset → [`DEFAULT_STARTUP_JOBS`].
@@ -3174,8 +3187,23 @@ impl AppConfig {
         // that never runs, and the symptom ("the tier never drained")
         // surfaces months later with nothing pointing back at the config
         // line.
+        let startup_jobs_explicit = env::var("OXICLOUD_STARTUP_JOBS").is_ok();
         if let Ok(raw) = env::var("OXICLOUD_STARTUP_JOBS") {
             config.startup_jobs = parse_startup_jobs(&raw);
+        }
+
+        // `OXICLOUD_LEGACY_RECHUNK=false` still defers the re-chunk sweep while
+        // the variable is deprecated: it drops `backend_rechunk` from the DEFAULT
+        // startup set. That variable's real purpose was avoiding a full re-read of
+        // every legacy blob on a metered backend, which is a legitimate thing to
+        // want and would be silently taken away by the move to a job.
+        //
+        // Only the default is filtered. An explicit `OXICLOUD_STARTUP_JOBS` is a
+        // direct statement about what should run at boot, and second-guessing it
+        // from another variable is how configuration becomes unpredictable — the
+        // two settings are then contradictory and the more specific one wins.
+        if !config.storage.legacy_rechunk_enabled && !startup_jobs_explicit {
+            config.startup_jobs.retain(|j| j.name != "backend_rechunk");
         }
 
         if let Ok(v) = env::var("OXICLOUD_REUSE_PORT") {
@@ -4646,10 +4674,26 @@ mod tests {
             [
                 "thumb_derived_import",
                 "thumb_attached_import",
-                "transcode_import"
+                "transcode_import",
+                // Replaces the background task once spawned at boot behind
+                // OXICLOUD_LEGACY_RECHUNK. Omitting it here would silently stop
+                // a migration that previously ran on every start.
+                "backend_rechunk"
             ]
         );
-        assert!(jobs.iter().all(|j| raw(j, "repair") == Some("true")));
+        // `repair` on the three imports, and deliberately NOT on the re-chunk:
+        // converting is the whole job, so it has no discovery-only half to opt
+        // out of, and passing an unknown flag is fatal at boot.
+        assert!(
+            jobs.iter()
+                .filter(|j| j.name != "backend_rechunk")
+                .all(|j| raw(j, "repair") == Some("true"))
+        );
+        assert!(
+            jobs.iter()
+                .find(|j| j.name == "backend_rechunk")
+                .is_some_and(|j| raw(j, "repair").is_none())
+        );
         assert!(
             jobs.iter()
                 .all(|j| raw(j, "deep").is_none() && raw(j, "force").is_none())

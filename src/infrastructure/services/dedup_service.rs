@@ -18,6 +18,25 @@
 //! blobs in `storage.blobs`) are served transparently — when no manifest
 //! row exists for a hash, the service falls back to direct blob reads.
 //!
+//! ## `LEGACY-WHOLE-FILE-BLOB` — the tag, and what it is for
+//!
+//! Those fallbacks are tagged with that string so the whole set can be found
+//! with one grep. They exist only for content written before CDC chunking:
+//! `store_from_stream` always writes a manifest, so nothing on a current build
+//! can create a new whole-file blob.
+//!
+//! **The removal criterion is a number, not a judgement call:** once
+//! `backend_rechunk` reports zero legacy blobs, no input reaches any tagged
+//! branch and every one of them can go. That is the whole reason the
+//! conversion was promoted from a detached boot task to a job — "is it safe to
+//! delete these?" needs an answer an operator can read off the admin panel,
+//! not one inferred from boot logs.
+//!
+//! Until then they are load-bearing: a blob the sweep has not reached yet is
+//! still served through them, which is what makes the migration safe to run
+//! incrementally. Delete them as one change, with the count in the commit
+//! message. See `docs/plan/storage-consistency.md` §1.
+//!
 //! **Single-pass streaming ingest** (store_from_stream):
 //!   1. FastCDC boundaries, per-chunk BLAKE3 and the whole-file BLAKE3 are
 //!      all computed WHILE the bytes arrive — no spool file, no mmap
@@ -2388,6 +2407,7 @@ impl DedupService {
     }
 
     /// Get metadata for a blob (manifest-aware with legacy fallback).
+    /// `LEGACY-WHOLE-FILE-BLOB` — deletable once `backend_rechunk` reports zero.
     pub async fn get_blob_metadata(&self, hash: &str) -> Option<BlobMetadataDto> {
         // Check manifest first
         let manifest = sqlx::query_as::<_, (i64, i32, Option<String>)>(
@@ -2428,6 +2448,7 @@ impl DedupService {
     }
 
     /// Add a reference (manifest-aware with legacy fallback).
+    /// `LEGACY-WHOLE-FILE-BLOB` — deletable once `backend_rechunk` reports zero.
     pub async fn add_reference(&self, hash: &str) -> Result<(), DomainError> {
         // Try manifest first
         let manifest_affected = sqlx::query(
@@ -2485,6 +2506,7 @@ impl DedupService {
     }
 
     /// Remove a reference from a blob (manifest-aware with legacy fallback).
+    /// `LEGACY-WHOLE-FILE-BLOB` — deletable once `backend_rechunk` reports zero.
     ///
     /// For CDC manifests: decrements manifest ref_count.  When it reaches 0
     /// the manifest is deleted and all chunk ref_counts are decremented;
@@ -2630,6 +2652,7 @@ impl DedupService {
     }
 
     /// Remove a reference from a legacy whole-file blob.
+    /// `LEGACY-WHOLE-FILE-BLOB` — deletable once `backend_rechunk` reports zero.
     async fn remove_legacy_reference(&self, hash: &str) -> Result<bool, DomainError> {
         let mut tx = self.pool.begin().await.map_err(|e| {
             DomainError::internal_error("Dedup", format!("Failed to begin transaction: {}", e))
@@ -2877,6 +2900,7 @@ impl DedupService {
     }
 
     /// Stream blob content — CDC-aware with legacy fallback.
+    /// `LEGACY-WHOLE-FILE-BLOB` — deletable once `backend_rechunk` reports zero.
     ///
     /// For CDC files: looks up the manifest (RAM-cached), then streams
     /// chunks in order, concatenating them into a single byte stream.
@@ -3686,10 +3710,64 @@ impl DedupService {
         .map_err(|e| DomainError::internal_error("Dedup", format!("Count legacy blobs: {e}")))
     }
 
+    /// One page of the migration's work queue, ordered by hash and starting
+    /// strictly after `cursor`.
+    ///
+    /// Same predicate as [`Self::count_legacy_blobs`] — a blob with no
+    /// manifest that at least one file still references.
+    ///
+    /// Keyset paging on `hash` rather than the in-memory exclusion list
+    /// [`Self::rechunk_legacy_blobs`] carries: a hash that fails conversion is
+    /// passed over simply because the cursor has advanced beyond it, so the
+    /// sweep cannot loop on a corrupt blob without the caller tracking
+    /// anything. It is also what lets the run resume after a pause, which an
+    /// in-memory list cannot survive.
+    pub async fn legacy_blob_candidates_after(
+        &self,
+        cursor: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<(String, Option<String>)>, DomainError> {
+        sqlx::query_as(
+            "SELECT b.hash, b.content_type FROM storage.blobs b
+              WHERE NOT EXISTS (SELECT 1 FROM storage.chunk_manifests m
+                                 WHERE m.file_hash = b.hash)
+                AND EXISTS (SELECT 1 FROM storage.files f
+                             WHERE f.blob_hash = b.hash)
+                AND ($2::text IS NULL OR b.hash > $2)
+              ORDER BY b.hash
+              LIMIT $1",
+        )
+        .bind(limit)
+        .bind(cursor)
+        .fetch_all(self.maintenance_pool.as_ref())
+        .await
+        .map_err(|e| DomainError::internal_error("Dedup", format!("Legacy candidate page: {e}")))
+    }
+
+    /// [`Self::rechunk_one_legacy_blob`] for the `backend_rechunk` job, which
+    /// owns the walk so it can checkpoint and honour a cancel.
+    ///
+    /// Returns what changed so the job can record it as a finding — see
+    /// [`RechunkedBlob`].
+    pub async fn rechunk_legacy_blob(
+        &self,
+        hash: &str,
+        content_type: Option<String>,
+    ) -> Result<RechunkedBlob, DomainError> {
+        self.rechunk_one_legacy_blob(hash, content_type).await
+    }
+
     /// Spawn the legacy re-chunk migration as a background task.
     ///
     /// Zero-cost when no legacy blobs exist (one COUNT query, debug log).
     /// Called from the composition root after `initialize()`.
+    ///
+    /// **Superseded by the `backend_rechunk` job** and kept only for the
+    /// `OXICLOUD_LEGACY_RECHUNK` boot path while that variable is deprecated
+    /// (`docs/plan/storage-consistency.md` §1b). A spawned task has no admin
+    /// trigger, no run history, no findings and no visible cursor, so "has this
+    /// converged on my instance?" is answerable only by reading boot logs.
+    /// Remove with the variable.
     pub fn spawn_legacy_rechunk(self: &Arc<Self>) {
         let svc = Arc::clone(self);
         tokio::spawn(async move {
@@ -3764,9 +3842,9 @@ impl DedupService {
 
             for (hash, content_type) in batch {
                 match self.rechunk_one_legacy_blob(&hash, content_type).await {
-                    Ok(freed) => {
+                    Ok(converted) => {
                         report.migrated += 1;
-                        report.freed_bytes += freed;
+                        report.freed_bytes += converted.freed_bytes;
                         if report.migrated % 50 == 0 {
                             tracing::info!(
                                 "Legacy re-chunk progress: {} migrated, {} failed",
@@ -3806,7 +3884,7 @@ impl DedupService {
         &self,
         hash: &str,
         content_type: Option<String>,
-    ) -> Result<u64, DomainError> {
+    ) -> Result<RechunkedBlob, DomainError> {
         // ── 1. Stream + verify (decrypts via the normal read path) ──
         // The chunk store is fed directly from the blob read stream — no
         // spool file. Sizes come from the CDC pass over the hash-verified
@@ -3832,14 +3910,22 @@ impl DedupService {
         .map_err(|e| DomainError::internal_error("Dedup", format!("Rechunk lock blob: {e}")))?
         .is_some();
 
-        let file_refs: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM storage.files WHERE blob_hash = $1")
+        // The ids, not just a count — this is a migration that rewrites how a
+        // file's content is stored, so if anything looks wrong afterwards the
+        // first question is "which files did it touch?". Answering that from a
+        // count is impossible, and reconstructing it later is impossible too:
+        // the whole point of the conversion is that the file no longer
+        // references this hash directly. Same predicate and same transaction as
+        // the COUNT it replaces, so `file_refs` below is identical.
+        let file_ids: Vec<uuid::Uuid> =
+            sqlx::query_scalar("SELECT id FROM storage.files WHERE blob_hash = $1")
                 .bind(hash)
-                .fetch_one(&mut *tx)
+                .fetch_all(&mut *tx)
                 .await
                 .map_err(|e| {
                     DomainError::internal_error("Dedup", format!("Rechunk count refs: {e}"))
                 })?;
+        let file_refs: i64 = file_ids.len() as i64;
 
         // ref_count = N file references; if every reference vanished while
         // we were spooling, the zero-ref manifest is swept by the existing
@@ -3870,7 +3956,7 @@ impl DedupService {
             tx.rollback().await.ok();
             self.release_chunk_refs(self.maintenance_pool.as_ref(), &chunk_hashes)
                 .await;
-            return Ok(0);
+            return Ok(RechunkedBlob::default());
         }
 
         // The N file references now live on the manifest; remove them from
@@ -3923,8 +4009,31 @@ impl DedupService {
             }
         }
 
-        tracing::debug!(
-            "Legacy re-chunk: {} → {} chunk(s), {} file ref(s) moved to manifest{}",
+        // On the AUDIT channel, at `info`, naming the FILES and not just the
+        // hash.
+        //
+        // Audit rather than plain operational logging, for consistency with what
+        // is already there: `job.trigger` is an audit event
+        // (`admin_handler.rs:3022`), so an operator filtering the audit channel
+        // for what a job run did would otherwise see it start and never see what
+        // it changed. This migration rewrites how a file's content is stored, so
+        // "did this job touch the file that is now misbehaving?" is exactly the
+        // question the audit channel exists to answer.
+        //
+        // `info` rather than the previous `debug`: at debug the answer was absent
+        // from every normal deployment's logs. Bounded by construction — the work
+        // queue only shrinks and nothing creates new whole-file blobs, so this is
+        // one line per blob ONCE per instance, not steady-state chatter.
+        tracing::info!(
+            target: "audit",
+            event = "storage.blob_rechunked",
+            hash = %hash,
+            chunk_count = chunk_hashes.len(),
+            file_refs,
+            file_ids = ?file_ids,
+            freed_bytes = freed,
+            whole_file_blob_freed = blob_row_deleted,
+            "🧩 legacy re-chunk: {} → {} chunk(s), {} file ref(s) moved to manifest{}",
             &hash[..hash.len().min(12)],
             chunk_hashes.len(),
             file_refs,
@@ -3935,7 +4044,11 @@ impl DedupService {
             },
         );
 
-        Ok(freed)
+        Ok(RechunkedBlob {
+            freed_bytes: freed,
+            chunk_count: chunk_hashes.len(),
+            file_ids,
+        })
     }
 
     /// Re-chunk one legacy whole-file blob straight from the backend read
@@ -3984,6 +4097,25 @@ impl DedupService {
             tracing::warn!("Dedup: failed to release chunk refs: {e}");
         }
     }
+}
+
+/// What converting ONE legacy whole-file blob changed.
+///
+/// Returned rather than only logged so `backend_rechunk` can record it as a
+/// finding: logs rotate, and a migration that rewrites how a file's content is
+/// stored is exactly the thing an operator wants a durable, drillable record of
+/// weeks later. The file ids are the load-bearing part — after the conversion
+/// the file no longer references this hash directly, so "which files did that
+/// blob belong to?" becomes unanswerable from the database alone.
+#[derive(Debug, Default, Clone)]
+pub struct RechunkedBlob {
+    /// Physical bytes freed — 0 when the blob doubles as its own single chunk.
+    pub freed_bytes: u64,
+    /// Chunks the content was split into.
+    pub chunk_count: usize,
+    /// Files whose content this blob held, and whose references moved onto the
+    /// new manifest.
+    pub file_ids: Vec<uuid::Uuid>,
 }
 
 /// Outcome of a [`DedupService::rechunk_legacy_blobs`] sweep.
