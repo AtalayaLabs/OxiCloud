@@ -880,6 +880,147 @@
         "x-oxicloud-scope": "role:admin"
       }
     },
+    "/api/admin/drive-policies/defaults/{kind}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "GET /api/admin/drive-policies/defaults/{kind}",
+        "description": "The policy every new drive of this kind inherits, and that existing\ndrives resolve against for every knob they have not overridden.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "operationId": "get_drive_policy_defaults",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "description": "personal | shared",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current defaults for this drive kind",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DrivePolicies"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown drive kind"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Admin required"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-oxicloud-scope": "role:admin"
+      },
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "PUT /api/admin/drive-policies/defaults/{kind}",
+        "description": "**Replaces** the bag rather than merging it. The per-drive PATCH merges\nso an admin can nudge one knob without restating the rest, but a default\nis a complete statement of posture for the kind — merging would leave no\nway to express \"unset this knob\", since a key could never be taken back\nout.\n\nWith `?dry_run=true` nothing is written and the response is the impact\nthe change *would* have: how many drives follow it, how many override it\nand stay put, and how many end up laxer than the new default. That turns\nboth compliance reports into a pre-commit check rather than an\nafter-the-fact audit.\n\nRefuses (400) rather than silently dropping a knob that cannot take\neffect — `read_only`, which is per-drive only, and knobs that do not\napply to the kind. A setting stored where it does nothing is one the\nadmin believes they made.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "operationId": "set_drive_policy_defaults",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "description": "personal | shared",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dry_run",
+            "in": "query",
+            "description": "When true, compute and return the impact WITHOUT saving.\n\nSend the literal `true` / `false`: `serde_urlencoded` refuses `1`,\n`yes` and `on` outright and fails the whole query struct, so a\ntruthy-looking `?dry_run=1` is a 400 rather than a silent false.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Stored defaults, or the impact preview when dry_run=true"
+          },
+          "400": {
+            "description": "Unknown kind, unknown knob, or a knob that cannot be defaulted"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Admin required"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-oxicloud-scope": "role:admin"
+      }
+    },
+    "/api/admin/drive-policies/drift": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "GET /api/admin/drive-policies/drift",
+        "description": "Drives that are currently laxer than their kind's default, across both\nkinds, computed live.\n\nDeliberately NOT a consistency-job finding. It reads two small tables, so\na page load can afford it — and being live is what makes it correct: a\nscan reports a completed run, so a drive the admin has just fixed stays\non the list until someone re-scans. Here the row disappears as soon as\nthe override is corrected.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "operationId": "get_drive_policy_drift",
+        "responses": {
+          "200": {
+            "description": "Drives laxer than their kind's default",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WeakerDriveDto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Admin required"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-oxicloud-scope": "role:admin"
+      }
+    },
     "/api/admin/drives": {
       "get": {
         "tags": [
@@ -10829,6 +10970,67 @@
           "shared"
         ]
       },
+      "DrivePolicies": {
+        "type": "object",
+        "description": "Typed mirror of the `policies` JSONB. Five known keys; the JSONB column\nremains the source of truth and may carry unknown keys verbatim — this\nstruct is a read view for enforcement and a write view for the policy\nPATCH endpoint. Every field defaults to `false` (everything allowed)\nso a freshly-created drive doesn't need a populated policy bag.\n\nSee `docs/plan/drive.md` §8 for the enforcement matrix\n(which callsite each key is checked at).",
+        "properties": {
+          "forbid_cross_drive_move": {
+            "type": "boolean",
+            "description": "Blocks MOVE when `src.drive_id != dst.drive_id`. Enforced at the\nmove endpoints. Lands paired with D6's cross-drive move work.",
+            "default": false
+          },
+          "forbid_external_sharing": {
+            "type": "boolean",
+            "description": "Blocks grants whose subject has `users.is_external = true`. Enforced\nat `magic_link_invite_service::resolve_or_create_recipient` and\n`grant_handler::create_grant`.",
+            "default": false
+          },
+          "forbid_owner_role_change": {
+            "type": "boolean",
+            "description": "Locks the Owner-role membership set: no owner can be added,\nremoved, or demoted by another owner — only OxiCloud admin can\nchange the Owner roster. Editor / Viewer mutations by remaining\nowners are unaffected. Personal drives are already\nsingle-owner-immutable via `refuse_if_personal`, so this policy\nonly adds value on shared drives. Enforced at\n`DriveManagementService::set_member_role` (refuses Owner role\nwrites) and `::remove_member` (refuses Owner removals) when the\ncaller is non-admin.",
+            "default": false
+          },
+          "forbid_public_links": {
+            "type": "boolean",
+            "description": "Blocks anonymous-link (token-share) creation on resources in this\ndrive. Enforced at `share_service::create_shared_link`.",
+            "default": false
+          },
+          "forbid_sharing": {
+            "type": "boolean",
+            "description": "Disables per-resource grants on resources in this drive. Drive-level\nmembership (Owner/Editor/Viewer) still works.\n\nThe BROADER rule: it covers public links too, so it is enforced at\n`grant_handler::create_grant` (via [`DrivePolicies::refuse_sharing`])\n**and** on the public-link path (via\n[`DrivePolicies::refuse_public_links`]). Enforcing only the first left\na drive that forbade sharing outright still minting anonymous links,\nwhile the admin editor greyed `forbid_public_links` out as \"already\nenforced by\" this one.",
+            "default": false
+          },
+          "include_in_music_index": {
+            "type": "boolean",
+            "description": "Same shape as `include_in_photo_index`, applied to the Music\nlibrary surface (playlists today; a `/api/music/tracks` library\nview later). Symmetric opt-in — Music was originally cross-drive\nvia a `forbid_music_index` opt-out, but that mixed-form naming\ncreated \"one include-in, one forbid\" confusion and the\n\"shared audio is always intentional\" claim didn't hold under\nscrutiny (voicemail MP3s in a work drive shouldn't bleed into\nthe personal library). See §15.",
+            "default": false
+          },
+          "include_in_photo_index": {
+            "type": "boolean",
+            "description": "Opts this drive into the `/api/photos` timeline (§15). Non-default\ndrives are omitted by default so a random shared folder full of\nscreenshots doesn't bleed into the personal timeline; owners flip\nthis on when the drive genuinely is a photo library (e.g. \"Family\nPhotos\"). Default personal drives get `true` on creation via the\n`PersonalDriveLifecycleHook` + a one-shot backfill for existing\nrows, so the SQL predicate is a single positive rule with no\nper-kind carve-out. Read at `file_blob_read_repository::\nlist_media_files` + `list_geo_clusters`. See §15 for the query\nshape and rationale.",
+            "default": false
+          },
+          "max_public_link_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Cap, in days, on how long an anonymous link in this drive may live.\n`None` = no cap, which is the LAXEST value — a link that never\nexpires is permitted. Enforced at `share_service::create_shared_link`.\n\nThe first non-boolean knob. Note the expiry it constrains lives on\n`storage.role_grants.expires_at` for the token grant, NOT on\n`storage.shares` — that column was dropped in\n`20260601000000_rebac_expiry_and_perms_cleanup.sql`.",
+            "default": null,
+            "minimum": 0
+          },
+          "read_only": {
+            "type": "boolean",
+            "description": "**Full freeze / legal-hold.** When `true`, every mutation on\nresources in this drive is refused — user-initiated and\nbackground alike. Compliance-grade guarantee:\n\n- User-initiated: enforced at `PgAclEngine::check_inner`, which\n  short-circuits `Create` / `Update` / `Delete` / `Share`\n  permissions on any resource in a read-only drive. Read still\n  passes. Manage-on-Drive still passes so admins can un-freeze.\n- Background jobs: the periodic trash-retention purge and\n  orphan-upload sweep filter out read-only drives at SELECT\n  time (SQL-side `JOIN storage.drives … WHERE (policies->>\n  'read_only')::boolean IS NOT TRUE`). Retention clock keeps\n  ticking; on unfreeze, the next sweep tick catches up.\n\nApplies to both personal and shared drives — a user winding\ndown their account, freezing a secondary personal archive, or\nputting a shared drive on legal hold all use the same knob.\nMutation is admin-only via `PATCH /api/drives/{id}/policies`\n(per §8 — same carve-out as every other policy).",
+            "default": false
+          },
+          "require_public_link_password": {
+            "type": "boolean",
+            "description": "Requires every anonymous link in this drive to carry a password.\nEnforced at `share_service::create_shared_link`; the corresponding\nstate is `storage.shares.password_hash IS NOT NULL`.",
+            "default": false
+          }
+        }
+      },
       "EffectiveLinkDto": {
         "type": "object",
         "description": "A public link on an ancestor folder (or the drive) that also reaches\nthe requested folder.\n\nCarries the share's own metadata — a token grant alone would give a\nclient nothing to show but an opaque id.\n\n**Not [`ShareDto`](crate::application::dtos::share_dto::ShareDto),\ndeliberately.** That type carries `token` and `url` — the live\nsecret — which is right when handing someone a link they own, and\nwrong here. The caller holds `Share` on a DESCENDANT; the ancestor's\nlink may publish the whole ancestor tree, so \"something above you is\npublished, here is where\" is the honest payload and a working URL is\nan escalation they never visited that folder to earn. Both fields\nare non-`Option` there, so reuse would mean `\"\"` — a value a client\ncould build a broken link from.\n\n`expires_at` is the GRANT's, not the share row's. The two can\ndiverge, and the grant is what actually gates access.",
@@ -12554,6 +12756,65 @@
           },
           "type": {
             "type": "string"
+          }
+        }
+      },
+      "PolicyDefaultsImpactDto": {
+        "type": "object",
+        "description": "What changing a default would do, computed WITHOUT applying it.\n\nThe point of the whole feature: an admin sees the blast radius before\ncommitting, rather than discovering it in a compliance report afterwards.",
+        "required": [
+          "drives_weaker_than_default",
+          "drives_affected",
+          "by_knob",
+          "weaker_drives"
+        ],
+        "properties": {
+          "by_knob": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PolicyKnobImpactDto"
+            },
+            "description": "Per-knob breakdown, so the UI can say WHICH setting has the reach\nrather than only how many drives are involved."
+          },
+          "drives_affected": {
+            "type": "integer",
+            "description": "Drives whose effective policy the change actually moves — i.e. those\ninheriting the knob rather than overriding it.",
+            "minimum": 0
+          },
+          "drives_weaker_than_default": {
+            "type": "integer",
+            "description": "Drives of this kind that would end up LESS restrictive than the new\ndefault, because they explicitly override a knob it tightens. They\nkeep their override — this is the count that will appear in the drift\nreport.",
+            "minimum": 0
+          },
+          "weaker_drives": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WeakerDriveDto"
+            },
+            "description": "The drives behind `drives_weaker_than_default`, named.\n\nThe scan reports the same verdict and names the drive; this preview\ncomputes it over the same rows and had the ids in hand already. Giving\nback only a count made the two surfaces disagree about how much they\nwere willing to say — an admin told \"3 drives will stay weaker\" right\nbefore saving cannot act on it, and has to save, run the scan, and\ncome back to learn which 3. Naming them here is what makes this a\npre-commit check rather than a warning."
+          }
+        }
+      },
+      "PolicyKnobImpactDto": {
+        "type": "object",
+        "required": [
+          "knob",
+          "follows",
+          "overrides"
+        ],
+        "properties": {
+          "follows": {
+            "type": "integer",
+            "description": "Drives that inherit this knob and would follow the new value.",
+            "minimum": 0
+          },
+          "knob": {
+            "type": "string"
+          },
+          "overrides": {
+            "type": "integer",
+            "description": "Drives that override this knob and would stay put — reported as drift\nwhen their value is the laxer one.",
+            "minimum": 0
           }
         }
       },
@@ -14574,7 +14835,22 @@
               "null"
             ]
           },
+          "max_public_link_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Day cap on public links. Double `Option` so three states are\ndistinguishable on the wire, which a single `Option` collapses:\n\n  * absent     → `None`       → leave whatever this drive has\n  * `null`     → `Some(None)` → REMOVE the override, inherit again\n  * a number   → `Some(Some)` → set the cap here\n\nWithout the middle case there would be no way to stop overriding a\nknob once you started — the drive would be pinned to its current\nvalue forever, silently ignoring every future default change.\n\n`deserialize_with` is REQUIRED, not decoration. Plain\n`#[serde(default)] Option<Option<u32>>` collapses the first two\nstates: serde maps a JSON `null` onto the OUTER `Option`, so both\nabsent and null arrive as `None` and the clear silently becomes a\nno-op. Forcing the field through a deserializer that wraps whatever\nit receives in `Some` is what keeps `null` distinguishable — the\ndeserializer only runs when the key is present.",
+            "minimum": 0
+          },
           "read_only": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "require_public_link_password": {
             "type": [
               "boolean",
               "null"
@@ -14847,6 +15123,38 @@
         "properties": {
           "password": {
             "type": "string"
+          }
+        }
+      },
+      "WeakerDriveDto": {
+        "type": "object",
+        "description": "One drive that would remain laxer than the candidate default.",
+        "required": [
+          "id",
+          "kind",
+          "knobs"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "description": "Which kind's default it is being judged against — the live report\nlists both kinds together, and \"Personal\" is every personal drive's\nname, so the row would otherwise be ambiguous."
+          },
+          "knobs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The knobs on which it is laxer — the same per-knob verdict the scan\nemits one finding per, so the two lists read identically."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       }

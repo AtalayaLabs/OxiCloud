@@ -558,7 +558,7 @@ impl FileBlobReadRepository {
             r#"
             WITH accessible AS MATERIALIZED (
                 SELECT d.id
-                  FROM storage.drives d
+                  FROM storage.drives_effective d
                   JOIN storage.role_grants g
                     ON g.resource_type = 'drive'
                    AND g.resource_id   = d.id
@@ -568,7 +568,7 @@ impl FileBlobReadRepository {
                               (SELECT storage.caller_group_ids($1)))
                        )
                    AND (g.expires_at IS NULL OR g.expires_at > NOW())
-                   AND (d.policies->>'include_in_photo_index')::boolean = true
+                   AND (d.effective_policies->>'include_in_photo_index')::boolean = true
             )
             SELECT top.id, top.name, top.folder_id, fo.path,
                    top.size, top.mime_type,
@@ -686,7 +686,7 @@ impl FileBlobReadRepository {
               JOIN storage.files fi ON fi.id = fm.file_id
              WHERE fi.drive_id IN (
                      SELECT d.id
-                       FROM storage.drives d
+                       FROM storage.drives_effective d
                        JOIN storage.role_grants g
                          ON g.resource_type = 'drive'
                         AND g.resource_id   = d.id
@@ -696,7 +696,7 @@ impl FileBlobReadRepository {
                                    (SELECT storage.caller_group_ids($1)))
                             )
                         AND (g.expires_at IS NULL OR g.expires_at > NOW())
-                        AND (d.policies->>'include_in_photo_index')::boolean = true
+                        AND (d.effective_policies->>'include_in_photo_index')::boolean = true
                    )
                AND NOT fi.is_trashed
                AND fm.latitude IS NOT NULL

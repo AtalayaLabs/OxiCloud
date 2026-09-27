@@ -114,6 +114,12 @@
 				label: t('admin.drives', 'Drives'),
 				icon: 'hdd',
 				section: 'admin-drives'
+			},
+			{
+				href: '/admin/policies',
+				label: t('admin.drive_policies.tab', 'Drive Policies'),
+				icon: 'shield-alt',
+				section: 'admin-policies'
 			}
 		];
 		if (serverConfig.features.external_mounts) {

@@ -569,9 +569,16 @@ mod tests {
 
     /// The shipped example is the first thing an operator copies, so it must
     /// satisfy the same schema the server enforces.
+    ///
+    /// It lives in `docs/public/` because that is the only directory VitePress
+    /// serves at the site root — `docs/config/toml.md` links it as
+    /// `/oxicloud.example.toml`, and a `.toml` anywhere else under `docs/` is
+    /// not copied into the built site at all. This test is also what keeps the
+    /// file from going missing: it was deleted once, and nothing noticed until
+    /// the suite was run.
     #[test]
     fn shipped_example_is_valid() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/config/oxicloud.example.toml");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/public/oxicloud.example.toml");
         let document = std::fs::read_to_string(&path).expect("example config is shipped");
         let vars = flatten(&document).expect("example config parses against the schema");
         assert_eq!(vars["OXICLOUD_SERVER_PORT"], "8086");

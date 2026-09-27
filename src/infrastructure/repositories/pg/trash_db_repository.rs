@@ -255,7 +255,7 @@ impl TrashRepository for TrashDbRepository {
         // The `read_only` policy on a drive is a compliance-grade freeze:
         // NO state on the drive changes while the policy is on, including
         // background retention. The `JOIN storage.drives d ... AND
-        // (d.policies->>'read_only')::boolean IS NOT TRUE` filter excludes
+        // (d.effective_policies->>'read_only')::boolean IS NOT TRUE` filter excludes
         // frozen drives at SELECT time. Retention clock keeps ticking; on
         // unfreeze, the next sweep tick catches up on anything past its
         // TTL. Legal-hold guarantee documented in `docs/plan/drive.md` §8
@@ -276,10 +276,10 @@ impl TrashRepository for TrashDbRepository {
                 "DELETE FROM storage.files
                   WHERE id IN (SELECT f.id
                                  FROM storage.files f
-                                 JOIN storage.drives d ON d.id = f.drive_id
+                                 JOIN storage.drives_effective d ON d.id = f.drive_id
                                 WHERE f.is_trashed = TRUE
                                   AND f.trashed_at < $1
-                                  AND (d.policies->>'read_only')::boolean IS NOT TRUE
+                                  AND (d.effective_policies->>'read_only')::boolean IS NOT TRUE
                                 ORDER BY f.trashed_at
                                 LIMIT $2)",
                 cutoff,
@@ -298,10 +298,10 @@ impl TrashRepository for TrashDbRepository {
                 "DELETE FROM storage.folders
                   WHERE id IN (SELECT f.id
                                  FROM storage.folders f
-                                 JOIN storage.drives d ON d.id = f.drive_id
+                                 JOIN storage.drives_effective d ON d.id = f.drive_id
                                 WHERE f.is_trashed = TRUE
                                   AND f.trashed_at < $1
-                                  AND (d.policies->>'read_only')::boolean IS NOT TRUE
+                                  AND (d.effective_policies->>'read_only')::boolean IS NOT TRUE
                                 ORDER BY f.trashed_at
                                 LIMIT $2)",
                 cutoff,

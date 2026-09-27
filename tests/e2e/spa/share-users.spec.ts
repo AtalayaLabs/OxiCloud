@@ -35,6 +35,12 @@ test('share a folder with another user and manage the grant', async ({ page }) =
   await expect(result).toBeVisible({ timeout: 15_000 });
   await result.click();
 
+  // Selecting a result no longer grants — the recipient is held so the role
+  // can be chosen first, and [Add] is the commit. See ShareDialog's
+  // `selectRecipient` / `addSelected`.
+  await expect(page.getByTestId('share-dialog-selected')).toBeVisible();
+  await page.getByTestId('share-dialog-add-btn').click();
+
   // The member row appears with role/notify/remove controls.
   const memberRole = page.locator('[data-testid^="share-dialog-member-role-"]').first();
   await expect(memberRole).toBeVisible({ timeout: 15_000 });
@@ -94,6 +100,12 @@ test('share a folder with a group', async ({ page }) => {
   const groupResult = page.locator('[data-testid^="share-dialog-result-group-"]').first();
   await expect(groupResult).toBeVisible({ timeout: 15_000 });
   await groupResult.click();
+
+  // Selecting a result no longer grants — the recipient is held so the role
+  // can be chosen first, and [Add] is the commit. See ShareDialog's
+  // `selectRecipient` / `addSelected`.
+  await expect(page.getByTestId('share-dialog-selected')).toBeVisible();
+  await page.getByTestId('share-dialog-add-btn').click();
 
   await expect(page.locator('[data-testid^="share-dialog-member-"]').first()).toBeVisible({
     timeout: 15_000,

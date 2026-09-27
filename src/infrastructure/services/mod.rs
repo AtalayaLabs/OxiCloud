@@ -15,6 +15,7 @@ pub mod dedup_service;
 pub mod dpop_nonce_service;
 pub mod dpop_replay_cache;
 pub mod dpop_verifier;
+pub mod drive_policies_consistency_service;
 pub mod drives_consistency_service;
 pub mod encrypted_blob_backend;
 pub mod entry_backend;

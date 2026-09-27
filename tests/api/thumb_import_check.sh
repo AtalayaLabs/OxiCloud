@@ -78,6 +78,39 @@ fail() {
   exit 1
 }
 
+# Wait for a COUNT query to reach at least `want`, or give up.
+#
+# Thumbnail derivation is spawned, not awaited: `generate_all_sizes_background`
+# runs after the upload responds, and the `content_derived_blobs` row lands
+# with it. So asserting the row exists straight after an HTTP round-trip is a
+# race — one this script won more often than not on a developer machine and
+# lost in CI, where the runner is slower and contended.
+#
+# Polling rather than a flat `sleep`: the wait costs nothing when the row is
+# already there, which is the normal case.
+#
+# Bounded, and deliberately so — a test that waits forever for state that is
+# never coming reports a hung job instead of a failure, which is strictly
+# worse than a red assertion. Ten seconds is far longer than generating three
+# thumbnails from a fixture takes; if it elapses, the row is not late, it is
+# absent.
+readonly WAIT_ATTEMPTS=40
+readonly WAIT_INTERVAL=0.25
+
+wait_count() {
+  local query="$1" want="$2" got=0 i
+  for ((i = 0; i < WAIT_ATTEMPTS; i++)); do
+    got=$(sql "$query")
+    if [[ "$got" =~ ^[0-9]+$ ]] && ((got >= want)); then
+      echo "$got"
+      return 0
+    fi
+    sleep "$WAIT_INTERVAL"
+  done
+  echo "$got"
+  return 1
+}
+
 # psql inside the compose container — no host psql dependency, matching
 # how spawn-db.sh probes readiness.
 sql() {
@@ -157,10 +190,15 @@ cp "$UPLOADED_THUMB" "$SIDECAR_DIR/$BLOB_HASH.jpg"
 # keying split exists to preserve.
 log "legacy sidecars written to $SIDECAR_DIR"
 
-DERIVED_BEFORE=$(sql "SELECT count(*) FROM storage.content_derived_blobs WHERE source_hash='$BLOB_HASH';")
-ATTACHED_BEFORE=$(sql "SELECT count(*) FROM storage.file_attached_blobs WHERE file_id='$FILE_ID';")
-[[ "$DERIVED_BEFORE"  -ge 1 ]] || fail "expected a content_derived_blobs row before stripping"
-[[ "$ATTACHED_BEFORE" -ge 1 ]] || fail "expected a file_attached_blobs row before stripping"
+# Both rows are waited for rather than read once. The derived row is written
+# by the spawned generation task, so it genuinely lags the HTTP response; the
+# attached row is written by the PUT and is normally there already, in which
+# case the wait returns on its first poll and costs nothing. Waiting on both
+# keeps the next reader from having to know which is which.
+DERIVED_BEFORE=$(wait_count "SELECT count(*) FROM storage.content_derived_blobs WHERE source_hash='$BLOB_HASH';" 1) \
+  || fail "expected a content_derived_blobs row before stripping — waited ${WAIT_ATTEMPTS} × ${WAIT_INTERVAL}s, got $DERIVED_BEFORE"
+ATTACHED_BEFORE=$(wait_count "SELECT count(*) FROM storage.file_attached_blobs WHERE file_id='$FILE_ID';" 1) \
+  || fail "expected a file_attached_blobs row before stripping — waited ${WAIT_ATTEMPTS} × ${WAIT_INTERVAL}s, got $ATTACHED_BEFORE"
 log "rows present before stripping: derived=$DERIVED_BEFORE attached=$ATTACHED_BEFORE"
 
 # ── 2. Strip the rows → this IS the legacy state ─────────────────────────

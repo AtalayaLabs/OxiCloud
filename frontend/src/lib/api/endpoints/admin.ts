@@ -11,8 +11,11 @@ import type {
 	Drive,
 	DriveMember,
 	DriveMemberSubject,
+	DrivePolicies,
 	DriveRole,
-	FullUser
+	FullUser,
+	PolicyDefaultsImpact,
+	PolicyDrift
 } from '$lib/api/types';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
@@ -534,6 +537,94 @@ export interface OidcTestResult {
 	issuer?: string;
 	authorization_endpoint?: string;
 	provider_name_suggestion?: string;
+}
+
+/**
+ * Per-drive-kind default policies.
+ *
+ * New drives inherit these wholesale, and existing drives resolve every
+ * knob they have not explicitly overridden through them — so tightening a
+ * default reaches the whole estate except where someone deliberately
+ * decided otherwise.
+ */
+export function getDrivePolicyDefaults(kind: 'personal' | 'shared'): Promise<DrivePolicies> {
+	return apiJson<DrivePolicies>(`/api/admin/drive-policies/defaults/${kind}`, {
+		credentials: 'same-origin'
+	});
+}
+
+/**
+ * Drives that are currently laxer than their kind's default, both kinds.
+ *
+ * Live, not a consistency-job finding. It reads two small tables, so the
+ * page can afford it on every load — and being live is what makes it
+ * correct: a scan reports a run that has already finished, so a drive the
+ * admin just fixed would stay on the list until someone re-scanned.
+ */
+export function getDrivePolicyDrift(): Promise<PolicyDrift[]> {
+	return apiJson<PolicyDrift[]>('/api/admin/drive-policies/drift', {
+		credentials: 'same-origin'
+	});
+}
+
+/**
+ * Replace the defaults for a kind.
+ *
+ * REPLACE, not merge — a default is a complete statement of posture for the
+ * kind, and merging would leave no way to express "unset this knob".
+ *
+ * Send only knobs that are actually set: omitting a key is how "no default
+ * for this" is expressed, and `null` for the day-cap means no cap.
+ */
+export async function setDrivePolicyDefaults(
+	kind: 'personal' | 'shared',
+	bag: Record<string, unknown>
+): Promise<DrivePolicies> {
+	return putDefaults<DrivePolicies>(kind, bag, false);
+}
+
+/**
+ * What `setDrivePolicyDefaults` WOULD do, without doing it.
+ *
+ * Returns how many drives follow the change, how many override it and stay
+ * put, and how many end up laxer than the new default. This is what makes
+ * the compliance reports a pre-commit check rather than an after-the-fact
+ * audit.
+ */
+export async function previewDrivePolicyDefaults(
+	kind: 'personal' | 'shared',
+	bag: Record<string, unknown>
+): Promise<PolicyDefaultsImpact> {
+	return putDefaults<PolicyDefaultsImpact>(kind, bag, true);
+}
+
+async function putDefaults<T>(
+	kind: 'personal' | 'shared',
+	bag: Record<string, unknown>,
+	dryRun: boolean
+): Promise<T> {
+	// `dry_run` must be the literal `true`/`false`: the backend's query
+	// struct refuses `1`/`yes`/`on` outright and fails the whole request.
+	const res = await apiFetch(
+		`/api/admin/drive-policies/defaults/${kind}?dry_run=${dryRun ? 'true' : 'false'}`,
+		{
+			method: 'PUT',
+			headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
+			credentials: 'same-origin',
+			body: JSON.stringify(bag)
+		}
+	);
+	if (!res.ok) {
+		let detail = '';
+		try {
+			const e = (await res.json()) as { message?: string };
+			detail = e.message ?? '';
+		} catch {
+			/* non-JSON error body */
+		}
+		throw new Error(detail || `drive policy defaults failed: ${res.status}`);
+	}
+	return (await res.json()) as T;
 }
 
 export function getOidcSettings(): Promise<OidcSettings> {

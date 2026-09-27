@@ -154,12 +154,19 @@ impl Drive {
 ///
 /// See `docs/plan/drive.md` §8 for the enforcement matrix
 /// (which callsite each key is checked at).
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(default)]
 pub struct DrivePolicies {
     /// Disables per-resource grants on resources in this drive. Drive-level
-    /// membership (Owner/Editor/Viewer) still works. Enforced at
-    /// `grant_handler::create_grant`.
+    /// membership (Owner/Editor/Viewer) still works.
+    ///
+    /// The BROADER rule: it covers public links too, so it is enforced at
+    /// `grant_handler::create_grant` (via [`DrivePolicies::refuse_sharing`])
+    /// **and** on the public-link path (via
+    /// [`DrivePolicies::refuse_public_links`]). Enforcing only the first left
+    /// a drive that forbade sharing outright still minting anonymous links,
+    /// while the admin editor greyed `forbid_public_links` out as "already
+    /// enforced by" this one.
     pub forbid_sharing: bool,
     /// Blocks grants whose subject has `users.is_external = true`. Enforced
     /// at `magic_link_invite_service::resolve_or_create_recipient` and
@@ -221,6 +228,123 @@ pub struct DrivePolicies {
     /// Mutation is admin-only via `PATCH /api/drives/{id}/policies`
     /// (per §8 — same carve-out as every other policy).
     pub read_only: bool,
+    /// Cap, in days, on how long an anonymous link in this drive may live.
+    /// `None` = no cap, which is the LAXEST value — a link that never
+    /// expires is permitted. Enforced at `share_service::create_shared_link`.
+    ///
+    /// The first non-boolean knob. Note the expiry it constrains lives on
+    /// `storage.role_grants.expires_at` for the token grant, NOT on
+    /// `storage.shares` — that column was dropped in
+    /// `20260601000000_rebac_expiry_and_perms_cleanup.sql`.
+    pub max_public_link_days: Option<u32>,
+    /// Requires every anonymous link in this drive to carry a password.
+    /// Enforced at `share_service::create_shared_link`; the corresponding
+    /// state is `storage.shares.password_hash IS NOT NULL`.
+    pub require_public_link_password: bool,
+}
+
+/// Every policy knob, as a stable machine name.
+///
+/// Single source of truth for "what knobs exist" on the Rust side — the
+/// comparison, the defaults validation and the drift scan all iterate this
+/// rather than each repeating the list. Mirrors `policyDefs` in
+/// `frontend/src/lib/utils/drivePolicies.ts`.
+pub const POLICY_KNOBS: &[&str] = &[
+    "forbid_sharing",
+    "forbid_external_sharing",
+    "forbid_public_links",
+    "forbid_cross_drive_move",
+    "forbid_owner_role_change",
+    "include_in_photo_index",
+    "include_in_music_index",
+    "read_only",
+    "max_public_link_days",
+    "require_public_link_password",
+];
+
+/// Knobs that may NOT appear in a per-kind default bag.
+///
+/// `read_only` is an operational state — freeze THIS drive, for a reason,
+/// usually for a duration — not a standing posture. A default that froze
+/// every drive at once has no legitimate use, and its drift finding
+/// ("writable while the default says frozen") would be pure noise. See
+/// `docs/plan/drive-default-policies.md`.
+pub const NON_DEFAULTABLE_KNOBS: &[&str] = &["read_only"];
+
+/// Returns `false` when the knob is meaningless for the given drive kind.
+///
+/// `forbid_owner_role_change` is moot on a personal drive: membership is
+/// immutable there by a hardcoded guard (`refuse_if_personal`) that fires
+/// before any policy is read, so the flag changes nothing either way.
+/// Comparing it would produce a drift finding no admin can act on — and a
+/// compliance list with false positives is one nobody reads.
+pub fn knob_applies_to_kind(knob: &str, kind: DriveKind) -> bool {
+    !(knob == "forbid_owner_role_change" && matches!(kind, DriveKind::Personal))
+}
+
+/// Per-drive policy OVERRIDES — the shape actually stored in
+/// `storage.drives.policies` once defaults exist.
+///
+/// The distinction from [`DrivePolicies`] is the whole point: here `None`
+/// means **inherit the kind's default**, where in `DrivePolicies` a `false`
+/// means "this is the effective value". Before defaults existed the two
+/// were the same thing, and an absent key simply meant `false`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct DrivePolicyOverrides {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forbid_sharing: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forbid_external_sharing: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forbid_public_links: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forbid_cross_drive_move: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forbid_owner_role_change: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_in_photo_index: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_in_music_index: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_only: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_public_link_days: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub require_public_link_password: Option<bool>,
+}
+
+impl DrivePolicyOverrides {
+    /// Lenient parse, same contract as [`DrivePolicies::from_value`]: a
+    /// malformed bag reads as "no overrides" rather than refusing the read.
+    pub fn from_value(value: &serde_json::Value) -> Self {
+        use serde::Deserialize as _;
+        Self::deserialize(value).unwrap_or_default()
+    }
+}
+
+/// How a knob's values order by strictness.
+///
+/// Needed because the direction is **not uniform**: for the `forbid_*`
+/// family `true` is stricter, but `include_in_*` are opt-INs to a global
+/// index, so `false` is stricter there. Getting this backwards silently
+/// inverts the drift report, which is why each knob states it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Strictness {
+    /// `true` is the stricter value (`forbid_*`, `read_only`, …).
+    TrueIsStricter,
+    /// `false` is the stricter value (`include_in_*` — opt-in to exposure).
+    FalseIsStricter,
+    /// Smaller is stricter; `None` (no cap) is the laxest value of all.
+    SmallerIsStricter,
+}
+
+pub fn knob_strictness(knob: &str) -> Strictness {
+    match knob {
+        "include_in_photo_index" | "include_in_music_index" => Strictness::FalseIsStricter,
+        "max_public_link_days" => Strictness::SmallerIsStricter,
+        _ => Strictness::TrueIsStricter,
+    }
 }
 
 impl DrivePolicies {
@@ -241,6 +365,118 @@ impl DrivePolicies {
         Self::deserialize(value).unwrap_or_default()
     }
 
+    /// Effective policy = the kind's default, with the drive's explicit
+    /// overrides laid on top.
+    ///
+    /// This is what every enforcement site consumes; none of them changed
+    /// when defaults landed, because they still receive a fully-resolved
+    /// `DrivePolicies`. Mirrors the SQL side exactly — `storage.drives_effective`
+    /// computes `default || overrides`, and `||` is right-biased in Postgres
+    /// for the same reason the overrides win here.
+    pub fn resolve(default: &DrivePolicies, overrides: &DrivePolicyOverrides) -> Self {
+        Self {
+            forbid_sharing: overrides.forbid_sharing.unwrap_or(default.forbid_sharing),
+            forbid_external_sharing: overrides
+                .forbid_external_sharing
+                .unwrap_or(default.forbid_external_sharing),
+            forbid_public_links: overrides
+                .forbid_public_links
+                .unwrap_or(default.forbid_public_links),
+            forbid_cross_drive_move: overrides
+                .forbid_cross_drive_move
+                .unwrap_or(default.forbid_cross_drive_move),
+            forbid_owner_role_change: overrides
+                .forbid_owner_role_change
+                .unwrap_or(default.forbid_owner_role_change),
+            include_in_photo_index: overrides
+                .include_in_photo_index
+                .unwrap_or(default.include_in_photo_index),
+            include_in_music_index: overrides
+                .include_in_music_index
+                .unwrap_or(default.include_in_music_index),
+            read_only: overrides.read_only.unwrap_or(default.read_only),
+            // `None` here genuinely means "inherit", so `.or()` rather than
+            // `.unwrap_or()`: the default's own `None` (no cap) must survive.
+            max_public_link_days: overrides
+                .max_public_link_days
+                .or(default.max_public_link_days),
+            require_public_link_password: overrides
+                .require_public_link_password
+                .unwrap_or(default.require_public_link_password),
+        }
+    }
+
+    /// Read one knob as a JSON value, for the generic per-knob paths
+    /// (comparison, drift detail). Keeps the knob list in one place instead
+    /// of every caller matching on field names.
+    pub fn knob_value(&self, knob: &str) -> serde_json::Value {
+        use serde_json::Value;
+        match knob {
+            "forbid_sharing" => Value::Bool(self.forbid_sharing),
+            "forbid_external_sharing" => Value::Bool(self.forbid_external_sharing),
+            "forbid_public_links" => Value::Bool(self.forbid_public_links),
+            "forbid_cross_drive_move" => Value::Bool(self.forbid_cross_drive_move),
+            "forbid_owner_role_change" => Value::Bool(self.forbid_owner_role_change),
+            "include_in_photo_index" => Value::Bool(self.include_in_photo_index),
+            "include_in_music_index" => Value::Bool(self.include_in_music_index),
+            "read_only" => Value::Bool(self.read_only),
+            "require_public_link_password" => Value::Bool(self.require_public_link_password),
+            "max_public_link_days" => match self.max_public_link_days {
+                Some(d) => Value::from(d),
+                None => Value::Null,
+            },
+            _ => Value::Null,
+        }
+    }
+
+    /// Is `self` at least as strict as `other` on this one knob?
+    ///
+    /// Per-knob rather than a blanket comparison because the direction
+    /// varies — see [`Strictness`]. The `SmallerIsStricter` arm is the one
+    /// most easily written backwards: `None` means "no cap", which is LAXER
+    /// than any cap, so a `None` self is at least as strict as `other` only
+    /// when `other` is also `None`.
+    pub fn at_least_as_strict_on(&self, other: &Self, knob: &str) -> bool {
+        match knob_strictness(knob) {
+            Strictness::TrueIsStricter => {
+                let (a, b) = (self.knob_bool(knob), other.knob_bool(knob));
+                a || !b
+            }
+            Strictness::FalseIsStricter => {
+                let (a, b) = (self.knob_bool(knob), other.knob_bool(knob));
+                !a || b
+            }
+            Strictness::SmallerIsStricter => {
+                match (self.max_public_link_days, other.max_public_link_days) {
+                    (_, None) => true,        // nothing is laxer than no cap
+                    (None, Some(_)) => false, // we have no cap, they do → we are laxer
+                    (Some(a), Some(b)) => a <= b,
+                }
+            }
+        }
+    }
+
+    fn knob_bool(&self, knob: &str) -> bool {
+        matches!(self.knob_value(knob), serde_json::Value::Bool(true))
+    }
+
+    /// The knobs on which `self` is LESS restrictive than `default`.
+    ///
+    /// Empty means compliant. Deliberately a list rather than a verdict:
+    /// policies are a lattice, not a ladder — a drive can be stricter on one
+    /// knob and weaker on another, so "is this drive compliant?" has no
+    /// single answer worth rendering. Knobs that do not apply to the kind
+    /// are skipped entirely (see [`knob_applies_to_kind`]).
+    pub fn weaker_than(&self, default: &Self, kind: DriveKind) -> Vec<&'static str> {
+        POLICY_KNOBS
+            .iter()
+            .filter(|k| knob_applies_to_kind(k, kind))
+            .filter(|k| !NON_DEFAULTABLE_KNOBS.contains(*k))
+            .filter(|k| !self.at_least_as_strict_on(default, k))
+            .copied()
+            .collect()
+    }
+
     /// D5 `forbid_public_links` gate, used by every entry point that
     /// mints an anonymous token-share on a resource in this drive
     /// (`share_service::create_shared_link` today; future protocol
@@ -253,22 +489,44 @@ impl DrivePolicies {
     /// `share.rejected` audit line and returns
     /// `OperationNotSupported` when on.
     pub fn refuse_public_links(&self, ctx: PublicLinkGateContext) -> Result<(), DomainError> {
-        if !self.forbid_public_links {
+        // `forbid_sharing` is the BROADER rule and covers public links too.
+        // Three separate places already said so — the knob's own help text
+        // ("covers public links and external sharing as well"), the
+        // compliance scan, which reports existing links as violations under
+        // it, and the admin editor, which greys `forbid_public_links` out as
+        // "already enforced by Forbid per-resource sharing". Checking only
+        // the narrow knob here made all three of those claims false: a link
+        // could still be minted on a drive that forbade sharing outright,
+        // while the UI told the admin it could not.
+        //
+        // Report the NARROWER knob when both are on, since that is the one an
+        // admin would relax to permit this link — same precedence the scan
+        // uses, so a refusal and the finding for an existing link name the
+        // same cause.
+        let (reason, message) = if self.forbid_public_links {
+            (
+                "forbid_public_links",
+                "This drive does not allow public links.",
+            )
+        } else if self.forbid_sharing {
+            (
+                "forbid_sharing",
+                "This drive does not allow sharing individual files or folders, \
+                 which includes public links.",
+            )
+        } else {
             return Ok(());
-        }
+        };
         tracing::info!(
             target: "audit",
             event = "share.rejected",
-            reason = "forbid_public_links",
+            reason = reason,
             caller_id = %ctx.caller_id,
             item_type = ctx.item_type,
             item_id = %ctx.item_id,
-            "👮🏻‍♂️ public-link creation refused: forbid_public_links",
+            "👮🏻‍♂️ public-link creation refused",
         );
-        Err(DomainError::operation_not_supported(
-            "Share",
-            "This drive does not allow public links.",
-        ))
+        Err(DomainError::operation_not_supported("Share", message))
     }
 
     /// D5 `forbid_sharing` gate: refuses **per-resource** grants on
@@ -514,4 +772,237 @@ pub struct ExternalSharingGateContext {
     pub drive_id: Option<Uuid>,
     pub resource_type: Option<&'static str>,
     pub resource_id: Option<Uuid>,
+}
+
+#[cfg(test)]
+mod public_link_gate_tests {
+    use super::*;
+
+    fn ctx() -> PublicLinkGateContext {
+        PublicLinkGateContext {
+            caller_id: Uuid::nil(),
+            item_type: "folder",
+            item_id: Uuid::nil(),
+        }
+    }
+
+    #[test]
+    fn permitted_when_neither_knob_is_set() {
+        assert!(DrivePolicies::default().refuse_public_links(ctx()).is_ok());
+    }
+
+    #[test]
+    fn refused_by_the_narrow_knob() {
+        let p = DrivePolicies {
+            forbid_public_links: true,
+            ..Default::default()
+        };
+        assert!(p.refuse_public_links(ctx()).is_err());
+    }
+
+    /// The regression this gate was missing: `forbid_sharing` is the broader
+    /// rule and covers links, which the knob's help text, the compliance scan
+    /// and the admin editor's "already enforced by" hint all asserted — while
+    /// the gate itself let the link through.
+    #[test]
+    fn refused_by_forbid_sharing_alone() {
+        let p = DrivePolicies {
+            forbid_sharing: true,
+            forbid_public_links: false,
+            ..Default::default()
+        };
+        let err = p
+            .refuse_public_links(ctx())
+            .expect_err("forbid_sharing must cover public links");
+        // The message has to say WHY, since the narrow knob is off and an
+        // admin reading "does not allow public links" would go looking at the
+        // wrong setting.
+        assert!(
+            format!("{err}").contains("individual files or folders"),
+            "message should name the broader rule, got: {err}"
+        );
+    }
+
+    #[test]
+    fn narrow_knob_wins_the_reason_when_both_are_set() {
+        let p = DrivePolicies {
+            forbid_sharing: true,
+            forbid_public_links: true,
+            ..Default::default()
+        };
+        let err = p.refuse_public_links(ctx()).expect_err("must refuse");
+        // Same precedence the scan uses, so a refusal and the finding for an
+        // already-existing link name the same cause.
+        assert!(
+            format!("{err}").contains("does not allow public links"),
+            "narrower knob should be reported, got: {err}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod policy_default_tests {
+    use super::*;
+
+    fn strict_default() -> DrivePolicies {
+        DrivePolicies {
+            forbid_public_links: true,
+            include_in_photo_index: false,
+            max_public_link_days: Some(30),
+            require_public_link_password: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resolve_takes_the_default_when_nothing_is_overridden() {
+        let got = DrivePolicies::resolve(&strict_default(), &DrivePolicyOverrides::default());
+        assert_eq!(got, strict_default());
+    }
+
+    #[test]
+    fn resolve_lets_an_override_win_over_the_default() {
+        let overrides = DrivePolicyOverrides {
+            forbid_public_links: Some(false),
+            ..Default::default()
+        };
+        let got = DrivePolicies::resolve(&strict_default(), &overrides);
+        assert!(!got.forbid_public_links, "explicit override must win");
+        // Everything NOT overridden still follows the default — the whole
+        // point of live inheritance.
+        assert!(got.require_public_link_password);
+        assert_eq!(got.max_public_link_days, Some(30));
+    }
+
+    #[test]
+    fn an_absent_cap_override_inherits_rather_than_clearing_the_cap() {
+        // `None` on a scalar override means "inherit", NOT "no cap". Using
+        // `unwrap_or` instead of `or` would silently drop every inherited
+        // cap and the drive would read as uncapped.
+        let got = DrivePolicies::resolve(&strict_default(), &DrivePolicyOverrides::default());
+        assert_eq!(got.max_public_link_days, Some(30));
+    }
+
+    #[test]
+    fn forbid_flags_treat_true_as_stricter() {
+        let strict = DrivePolicies {
+            forbid_public_links: true,
+            ..Default::default()
+        };
+        let lax = DrivePolicies {
+            forbid_public_links: false,
+            ..Default::default()
+        };
+        assert!(strict.at_least_as_strict_on(&lax, "forbid_public_links"));
+        assert!(!lax.at_least_as_strict_on(&strict, "forbid_public_links"));
+    }
+
+    #[test]
+    fn index_opt_ins_are_inverted_true_is_laxer() {
+        // `include_in_*` are opt-INs to a global index, so `true` is MORE
+        // exposure. Sharing the `forbid_*` direction would invert the
+        // report for exactly these two knobs.
+        let exposed = DrivePolicies {
+            include_in_photo_index: true,
+            ..Default::default()
+        };
+        let private = DrivePolicies {
+            include_in_photo_index: false,
+            ..Default::default()
+        };
+        assert!(private.at_least_as_strict_on(&exposed, "include_in_photo_index"));
+        assert!(!exposed.at_least_as_strict_on(&private, "include_in_photo_index"));
+    }
+
+    #[test]
+    fn no_cap_is_the_laxest_value_of_all() {
+        // The comparison most likely to be written backwards.
+        let uncapped = DrivePolicies {
+            max_public_link_days: None,
+            ..Default::default()
+        };
+        let capped = DrivePolicies {
+            max_public_link_days: Some(30),
+            ..Default::default()
+        };
+        let tighter = DrivePolicies {
+            max_public_link_days: Some(7),
+            ..Default::default()
+        };
+
+        assert!(!uncapped.at_least_as_strict_on(&capped, "max_public_link_days"));
+        assert!(capped.at_least_as_strict_on(&uncapped, "max_public_link_days"));
+        assert!(tighter.at_least_as_strict_on(&capped, "max_public_link_days"));
+        assert!(!capped.at_least_as_strict_on(&tighter, "max_public_link_days"));
+        // Equal caps are "at least as strict" — not a violation.
+        assert!(capped.at_least_as_strict_on(&capped, "max_public_link_days"));
+    }
+
+    #[test]
+    fn weaker_than_reports_every_violated_knob_not_a_verdict() {
+        // Stricter on one knob, weaker on two others: policies are a
+        // lattice, so there is no single compliant/non-compliant answer.
+        let drive = DrivePolicies {
+            forbid_public_links: false,   // weaker
+            include_in_photo_index: true, // weaker (opt-in to exposure)
+            forbid_sharing: true,         // STRICTER than the default
+            max_public_link_days: Some(30),
+            require_public_link_password: true,
+            ..Default::default()
+        };
+        let weak = drive.weaker_than(&strict_default(), DriveKind::Shared);
+        assert!(weak.contains(&"forbid_public_links"));
+        assert!(weak.contains(&"include_in_photo_index"));
+        assert!(
+            !weak.contains(&"forbid_sharing"),
+            "being stricter is not a violation"
+        );
+        assert_eq!(weak.len(), 2);
+    }
+
+    #[test]
+    fn a_compliant_drive_reports_nothing() {
+        assert!(
+            strict_default()
+                .weaker_than(&strict_default(), DriveKind::Shared)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn owner_role_change_is_never_compared_on_a_personal_drive() {
+        // Membership is immutable on personal drives via `refuse_if_personal`,
+        // which fires before any policy is read — so `false` here changes
+        // nothing and must not be reported as drift.
+        let default = DrivePolicies {
+            forbid_owner_role_change: true,
+            ..Default::default()
+        };
+        let drive = DrivePolicies {
+            forbid_owner_role_change: false,
+            ..Default::default()
+        };
+
+        assert!(drive.weaker_than(&default, DriveKind::Personal).is_empty());
+        // …but it IS a real violation on a shared drive.
+        assert_eq!(
+            drive.weaker_than(&default, DriveKind::Shared),
+            vec!["forbid_owner_role_change"]
+        );
+    }
+
+    #[test]
+    fn read_only_is_never_reported_as_drift() {
+        // Not defaultable, so a writable drive is never "weaker" than a
+        // frozen default — that finding would be noise, not a problem.
+        let default = DrivePolicies {
+            read_only: true,
+            ..Default::default()
+        };
+        let drive = DrivePolicies {
+            read_only: false,
+            ..Default::default()
+        };
+        assert!(drive.weaker_than(&default, DriveKind::Shared).is_empty());
+    }
 }

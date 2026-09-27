@@ -209,6 +209,8 @@ hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test 
   "$API_DIR/user_envelope_quota.hurl" \
   "$API_DIR/regression_595_unlimited_user_quota.hurl" \
   "$API_DIR/drive_policies.hurl" \
+  "$API_DIR/drive_policy_defaults.hurl" \
+  "$API_DIR/drive_policy_repair.hurl" \
   "$API_DIR/drive_read_only.hurl" \
   "$API_DIR/cross_drive_move.hurl" \
   "$API_DIR/cross_drive_copy.hurl" \

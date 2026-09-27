@@ -220,6 +220,16 @@ pub fn admin_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         // Retention cleanup — operator-triggered, not periodic.
         // See `purge_job_runs` docstring for the semantics.
         .route("/jobs/runs/purge", post(purge_job_runs))
+        // Per-drive-kind default policies. Deliberately under `/api/admin`
+        // rather than beside the per-drive `PATCH /api/drives/{id}/policies`:
+        // this nest carries the `require_admin` router layer, so the guard is
+        // structural rather than a check each handler must remember. The
+        // per-drive endpoint keeps its documented handler-layer deviation.
+        .route(
+            "/drive-policies/defaults/{kind}",
+            get(get_drive_policy_defaults).put(set_drive_policy_defaults),
+        )
+        .route("/drive-policies/drift", get(get_drive_policy_drift))
         // Drives — admin-wide view (distinct from `/api/drives` which
         // is filtered to the caller's role grants).
         .route("/drives", get(list_all_drives))
@@ -2286,6 +2296,139 @@ pub async fn set_plugin_retention(
     );
 
     Ok((StatusCode::OK, Json(dto)))
+}
+
+/// Parse the `{kind}` path segment, refusing anything that is not a real
+/// drive kind rather than defaulting to one.
+fn parse_drive_kind(raw: &str) -> Result<crate::domain::entities::drive::DriveKind, AppError> {
+    crate::domain::entities::drive::DriveKind::parse(raw)
+        .ok_or_else(|| AppError::bad_request(format!("unknown drive kind `{raw}`")))
+}
+
+/// GET /api/admin/drive-policies/defaults/{kind}
+///
+/// The policy every new drive of this kind inherits, and that existing
+/// drives resolve against for every knob they have not overridden.
+#[utoipa::path(
+    get,
+    path = "/api/admin/drive-policies/defaults/{kind}",
+    params(("kind" = String, Path, description = "personal | shared")),
+    responses(
+        (status = 200, description = "Current defaults for this drive kind", body = crate::domain::entities::drive::DrivePolicies),
+        (status = 400, description = "Unknown drive kind"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn get_drive_policy_defaults(
+    State(state): State<Arc<AppState>>,
+    Path(kind): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let kind = parse_drive_kind(&kind)?;
+    let defaults = state.drive_policy_defaults_service.get(kind).await?;
+    Ok((StatusCode::OK, Json(defaults)))
+}
+
+/// GET /api/admin/drive-policies/drift
+///
+/// Drives that are currently laxer than their kind's default, across both
+/// kinds, computed live.
+///
+/// Deliberately NOT a consistency-job finding. It reads two small tables, so
+/// a page load can afford it — and being live is what makes it correct: a
+/// scan reports a completed run, so a drive the admin has just fixed stays
+/// on the list until someone re-scans. Here the row disappears as soon as
+/// the override is corrected.
+#[utoipa::path(
+    get,
+    path = "/api/admin/drive-policies/drift",
+    responses(
+        (status = 200, description = "Drives laxer than their kind's default", body = Vec<crate::application::services::drive_policy_defaults_service::WeakerDriveDto>),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn get_drive_policy_drift(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::domain::entities::drive::DriveKind;
+    let mut out = Vec::new();
+    for kind in [DriveKind::Personal, DriveKind::Shared] {
+        out.extend(state.drive_policy_defaults_service.drift(kind).await?);
+    }
+    Ok((StatusCode::OK, Json(out)))
+}
+
+/// Query for [`set_drive_policy_defaults`].
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
+pub struct SetPolicyDefaultsQuery {
+    /// When true, compute and return the impact WITHOUT saving.
+    ///
+    /// Send the literal `true` / `false`: `serde_urlencoded` refuses `1`,
+    /// `yes` and `on` outright and fails the whole query struct, so a
+    /// truthy-looking `?dry_run=1` is a 400 rather than a silent false.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// PUT /api/admin/drive-policies/defaults/{kind}
+///
+/// **Replaces** the bag rather than merging it. The per-drive PATCH merges
+/// so an admin can nudge one knob without restating the rest, but a default
+/// is a complete statement of posture for the kind — merging would leave no
+/// way to express "unset this knob", since a key could never be taken back
+/// out.
+///
+/// With `?dry_run=true` nothing is written and the response is the impact
+/// the change *would* have: how many drives follow it, how many override it
+/// and stay put, and how many end up laxer than the new default. That turns
+/// both compliance reports into a pre-commit check rather than an
+/// after-the-fact audit.
+///
+/// Refuses (400) rather than silently dropping a knob that cannot take
+/// effect — `read_only`, which is per-drive only, and knobs that do not
+/// apply to the kind. A setting stored where it does nothing is one the
+/// admin believes they made.
+#[utoipa::path(
+    put,
+    path = "/api/admin/drive-policies/defaults/{kind}",
+    params(("kind" = String, Path, description = "personal | shared"), SetPolicyDefaultsQuery),
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "Stored defaults, or the impact preview when dry_run=true"),
+        (status = 400, description = "Unknown kind, unknown knob, or a knob that cannot be defaulted"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn set_drive_policy_defaults(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+    Path(kind): Path<String>,
+    Query(q): Query<SetPolicyDefaultsQuery>,
+    Json(bag): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, AppError> {
+    let kind = parse_drive_kind(&kind)?;
+
+    if q.dry_run {
+        let impact = state
+            .drive_policy_defaults_service
+            .preview(kind, &bag)
+            .await?;
+        return Ok((StatusCode::OK, Json(serde_json::json!(impact))));
+    }
+
+    let stored = state
+        .drive_policy_defaults_service
+        .set(auth_user.id, kind, bag)
+        .await?;
+    Ok((StatusCode::OK, Json(serde_json::json!(stored))))
 }
 
 /// GET /api/admin/drives — list every drive on the system, admin-only.

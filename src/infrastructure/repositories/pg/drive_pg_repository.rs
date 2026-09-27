@@ -209,11 +209,11 @@ impl DrivePgRepository {
         let rows = sqlx::query(
             r#"
             SELECT d.id, d.kind, d.default_for_user, d.root_folder_id,
-                   d.quota_bytes, d.used_bytes, d.policies,
+                   d.quota_bytes, d.used_bytes, d.effective_policies AS policies,
                    d.created_at, d.updated_at,
                    f.name AS root_folder_name,
                    MIN(g.role)::text AS caller_role
-              FROM storage.drives d
+              FROM storage.drives_effective d
               JOIN storage.folders f ON f.id = d.root_folder_id
               JOIN storage.role_grants g
                 ON g.resource_type = 'drive'
@@ -225,7 +225,7 @@ impl DrivePgRepository {
                    )
                AND (g.expires_at IS NULL OR g.expires_at > NOW())
              GROUP BY d.id, d.kind, d.default_for_user, d.root_folder_id,
-                      d.quota_bytes, d.used_bytes, d.policies,
+                      d.quota_bytes, d.used_bytes, d.effective_policies,
                       d.created_at, d.updated_at, f.name
              ORDER BY (d.default_for_user IS NULL) ASC,
                       LOWER(f.name) ASC
@@ -288,21 +288,24 @@ impl DriveRepository for DrivePgRepository {
 
         // 1. Drive row (root_folder_id NULL — populated in step 3).
         //
-        // Default personal drives are seeded with `include_in_photo_index`
-        // + `include_in_music_index` = true so the Photos / Music
-        // predicates (§15) can be a single positive rule keyed off the
-        // JSONB flag — no per-kind carve-out needed at query time. Any
-        // future admin PATCH toggling either flag off shows a confirm
-        // dialog in the UI (unusual action; empties the user's Photos
-        // timeline / Music library).
+        // Empty policy bag — NOT a mistake, and not "everything allowed".
+        //
+        // The bag holds OVERRIDES only; an empty one means "inherit the
+        // personal-kind default entirely", and that default is seeded with
+        // the `include_in_photo_index` / `include_in_music_index` flags this
+        // INSERT used to hardcode. Moving them to
+        // `storage.drive_policy_defaults` is what lets an admin change the
+        // posture for future AND existing drives from one place, instead of
+        // it being frozen in this literal.
+        //
+        // Consequence worth knowing: a drive created here has nothing of its
+        // own to report as drift, which is exactly right — it has not decided
+        // anything yet.
         let drive_id: Uuid = sqlx::query_scalar(
             r#"
             INSERT INTO storage.drives
                 (kind, default_for_user, quota_bytes, policies)
-            VALUES (
-                'personal', $1, $2,
-                '{"include_in_photo_index": true, "include_in_music_index": true}'::jsonb
-            )
+            VALUES ('personal', $1, $2, '{}'::jsonb)
             RETURNING id
             "#,
         )
@@ -363,10 +366,10 @@ impl DriveRepository for DrivePgRepository {
         let row = sqlx::query(
             r#"
             SELECT d.id, d.kind, d.default_for_user, d.root_folder_id,
-                   d.quota_bytes, d.used_bytes, d.policies,
+                   d.quota_bytes, d.used_bytes, d.effective_policies AS policies,
                    d.created_at, d.updated_at,
                    f.name AS root_folder_name
-              FROM storage.drives d
+              FROM storage.drives_effective d
               JOIN storage.folders f ON f.id = d.root_folder_id
              WHERE d.id = $1
             "#,
@@ -483,10 +486,10 @@ impl DriveRepository for DrivePgRepository {
         let row = sqlx::query(
             r#"
             SELECT d.id, d.kind, d.default_for_user, d.root_folder_id,
-                   d.quota_bytes, d.used_bytes, d.policies,
+                   d.quota_bytes, d.used_bytes, d.effective_policies AS policies,
                    d.created_at, d.updated_at,
                    f.name AS root_folder_name
-              FROM storage.drives d
+              FROM storage.drives_effective d
               JOIN storage.folders f ON f.id = d.root_folder_id
              WHERE d.id = $1
             "#,
@@ -605,10 +608,10 @@ impl DriveRepository for DrivePgRepository {
         let row = sqlx::query(
             r#"
             SELECT d.id, d.kind, d.default_for_user, d.root_folder_id,
-                   d.quota_bytes, d.used_bytes, d.policies,
+                   d.quota_bytes, d.used_bytes, d.effective_policies AS policies,
                    d.created_at, d.updated_at,
                    f.name AS root_folder_name
-              FROM storage.drives d
+              FROM storage.drives_effective d
               JOIN storage.folders f ON f.id = d.root_folder_id
              WHERE d.id = $1
             "#,
@@ -632,10 +635,10 @@ impl DriveRepository for DrivePgRepository {
         let rows = sqlx::query(
             r#"
             SELECT d.id, d.kind, d.default_for_user, d.root_folder_id,
-                   d.quota_bytes, d.used_bytes, d.policies,
+                   d.quota_bytes, d.used_bytes, d.effective_policies AS policies,
                    d.created_at, d.updated_at,
                    f.name AS root_folder_name
-              FROM storage.drives d
+              FROM storage.drives_effective d
               JOIN storage.folders f ON f.id = d.root_folder_id
              WHERE d.id = ANY($1)
             "#,
@@ -659,10 +662,10 @@ impl DriveRepository for DrivePgRepository {
         let row = sqlx::query(
             r#"
             SELECT d.id, d.kind, d.default_for_user, d.root_folder_id,
-                   d.quota_bytes, d.used_bytes, d.policies,
+                   d.quota_bytes, d.used_bytes, d.effective_policies AS policies,
                    d.created_at, d.updated_at,
                    f.name AS root_folder_name
-              FROM storage.drives d
+              FROM storage.drives_effective d
               JOIN storage.folders f ON f.id = d.root_folder_id
              WHERE d.default_for_user = $1
             "#,
@@ -708,10 +711,10 @@ impl DriveRepository for DrivePgRepository {
         let rows = sqlx::query(
             r#"
             SELECT d.id, d.kind, d.default_for_user, d.root_folder_id,
-                   d.quota_bytes, d.used_bytes, d.policies,
+                   d.quota_bytes, d.used_bytes, d.effective_policies AS policies,
                    d.created_at, d.updated_at,
                    f.name AS root_folder_name
-              FROM storage.drives d
+              FROM storage.drives_effective d
               JOIN storage.folders f ON f.id = d.root_folder_id
              ORDER BY LOWER(f.name) ASC
             "#,
@@ -728,8 +731,12 @@ impl DriveRepository for DrivePgRepository {
         file_id: Uuid,
     ) -> Result<crate::domain::entities::drive::DrivePolicies, DriveRepositoryError> {
         let row = sqlx::query(
-            "SELECT d.policies \
-               FROM storage.drives d \
+            // `drives_effective`, not `drives`: the per-drive bag holds only
+            // OVERRIDES now, so enforcement must see the kind's default laid
+            // underneath. Aliased back to `policies` so `policies_from_row`
+            // — and every caller — is unchanged.
+            "SELECT d.effective_policies AS policies \
+               FROM storage.drives_effective d \
                JOIN storage.files  f ON f.drive_id = d.id \
               WHERE f.id = $1",
         )
@@ -746,8 +753,8 @@ impl DriveRepository for DrivePgRepository {
         folder_id: Uuid,
     ) -> Result<crate::domain::entities::drive::DrivePolicies, DriveRepositoryError> {
         let row = sqlx::query(
-            "SELECT d.policies \
-               FROM storage.drives  d \
+            "SELECT d.effective_policies AS policies \
+               FROM storage.drives_effective d \
                JOIN storage.folders fo ON fo.drive_id = d.id \
               WHERE fo.id = $1",
         )
@@ -764,8 +771,8 @@ impl DriveRepository for DrivePgRepository {
         file_id: Uuid,
     ) -> Result<(Uuid, crate::domain::entities::drive::DrivePolicies), DriveRepositoryError> {
         let row = sqlx::query(
-            "SELECT d.id, d.policies \
-               FROM storage.drives d \
+            "SELECT d.id, d.effective_policies AS policies \
+               FROM storage.drives_effective d \
                JOIN storage.files  f ON f.drive_id = d.id \
               WHERE f.id = $1",
         )
@@ -785,8 +792,8 @@ impl DriveRepository for DrivePgRepository {
         folder_id: Uuid,
     ) -> Result<(Uuid, crate::domain::entities::drive::DrivePolicies), DriveRepositoryError> {
         let row = sqlx::query(
-            "SELECT d.id, d.policies \
-               FROM storage.drives  d \
+            "SELECT d.id, d.effective_policies AS policies \
+               FROM storage.drives_effective d \
                JOIN storage.folders fo ON fo.drive_id = d.id \
               WHERE fo.id = $1",
         )
@@ -799,6 +806,68 @@ impl DriveRepository for DrivePgRepository {
             .try_get("id")
             .map_err(|e| Self::map_sqlx_err("get_drive_id_and_policies_for_folder", e))?;
         Ok((drive_id, policies_from_row(&row)))
+    }
+
+    async fn get_policy_defaults(
+        &self,
+        kind: crate::domain::entities::drive::DriveKind,
+    ) -> Result<serde_json::Value, DriveRepositoryError> {
+        let row: Option<(serde_json::Value,)> =
+            sqlx::query_as("SELECT policies FROM storage.drive_policy_defaults WHERE kind = $1")
+                .bind(kind.as_str())
+                .fetch_optional(self.pool.as_ref())
+                .await
+                .map_err(|e| Self::map_sqlx_err("get_policy_defaults", e))?;
+        // No row => no defaults => today's all-permissive behaviour. The
+        // migration seeds both kinds, so this is the "someone deleted the
+        // row" path, not a normal one.
+        Ok(row.map(|(v,)| v).unwrap_or_else(|| serde_json::json!({})))
+    }
+
+    async fn set_policy_defaults(
+        &self,
+        kind: crate::domain::entities::drive::DriveKind,
+        policies: &serde_json::Value,
+        updated_by: Uuid,
+    ) -> Result<serde_json::Value, DriveRepositoryError> {
+        let row: (serde_json::Value,) = sqlx::query_as(
+            "INSERT INTO storage.drive_policy_defaults (kind, policies, updated_by) \
+                  VALUES ($1, $2, $3) \
+             ON CONFLICT (kind) DO UPDATE \
+                     SET policies   = EXCLUDED.policies, \
+                         updated_by = EXCLUDED.updated_by, \
+                         updated_at = now() \
+               RETURNING policies",
+        )
+        .bind(kind.as_str())
+        .bind(policies)
+        .bind(updated_by)
+        .fetch_one(self.pool.as_ref())
+        .await
+        .map_err(|e| Self::map_sqlx_err("set_policy_defaults", e))?;
+        Ok(row.0)
+    }
+
+    async fn list_drives_with_overrides(
+        &self,
+        kind: crate::domain::entities::drive::DriveKind,
+    ) -> Result<Vec<(Uuid, Option<String>, serde_json::Value)>, DriveRepositoryError> {
+        // `storage.drives` has no name column — a drive's display name is
+        // its root folder's. LEFT JOIN so a drive whose root is missing
+        // still appears in the scan rather than vanishing from a report
+        // about drives.
+        let rows: Vec<(Uuid, Option<String>, serde_json::Value)> = sqlx::query_as(
+            "SELECT d.id, fo.name, d.policies \
+               FROM storage.drives d \
+               LEFT JOIN storage.folders fo ON fo.id = d.root_folder_id \
+              WHERE d.kind = $1 \
+              ORDER BY d.id",
+        )
+        .bind(kind.as_str())
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| Self::map_sqlx_err("list_drives_with_overrides", e))?;
+        Ok(rows)
     }
 
     async fn drive_id_for_folder(&self, folder_id: Uuid) -> Result<Uuid, DriveRepositoryError> {
@@ -826,19 +895,65 @@ impl DriveRepository for DrivePgRepository {
         // merge and clobber other flags). RETURNING surfaces the
         // post-merge bag so the audit log shows what the row actually
         // carries afterwards.
+        // A key sent as JSON `null` means REMOVE the override, not "store
+        // null". The distinction matters now that defaults exist: a stored
+        // null would survive the `||` merge and CLEAR the inherited value,
+        // whereas an absent key falls through to the default. Removing the
+        // key is the only way to express "stop deciding this here".
+        //
+        // It also keeps the SQL and the Rust resolution in agreement. The
+        // view computes `default || overrides`, so a null override would
+        // win there and mean "no value"; `DrivePolicies::resolve` parses
+        // the override into an `Option` and would inherit. Those two would
+        // disagree about the same row — the kind of divergence that shows
+        // up as a policy behaving differently depending on which code path
+        // read it.
+        let (to_set, to_remove): (serde_json::Map<_, _>, Vec<String>) = match partial.as_object() {
+            Some(obj) => {
+                let mut set = serde_json::Map::new();
+                let mut remove = Vec::new();
+                for (k, v) in obj {
+                    if v.is_null() {
+                        remove.push(k.clone());
+                    } else {
+                        set.insert(k.clone(), v.clone());
+                    }
+                }
+                (set, remove)
+            }
+            None => (serde_json::Map::new(), Vec::new()),
+        };
+
         let row: Option<(serde_json::Value,)> = sqlx::query_as(
-            "UPDATE storage.drives \
-                SET policies   = policies || $2, \
-                    updated_at = now() \
-              WHERE id = $1 \
-              RETURNING policies",
+            // Returns the EFFECTIVE bag, not the drive's own overrides.
+            //
+            // Every read path resolves through `drives_effective`, and the
+            // admin modal writes this response straight into its cached
+            // row — so returning raw overrides would flip that row from
+            // effective to raw on the first save, and the panel would
+            // start showing inherited knobs as unset. Same shape in and
+            // out of every surface is worth one CTE.
+            //
+            // `- $3::text[]` strips the cleared keys before the merge adds
+            // the set ones; an empty array is a no-op.
+            "WITH upd AS ( \
+                 UPDATE storage.drives \
+                    SET policies   = (policies - $3::text[]) || $2, \
+                        updated_at = now() \
+                  WHERE id = $1 \
+                  RETURNING id, kind, policies \
+             ) \
+             SELECT COALESCE(p.policies, '{}'::jsonb) || upd.policies \
+               FROM upd \
+               LEFT JOIN storage.drive_policy_defaults p ON p.kind = upd.kind",
         )
         .bind(drive_id)
-        .bind(partial)
+        .bind(serde_json::Value::Object(to_set))
+        .bind(&to_remove)
         .fetch_optional(self.pool.as_ref())
         .await
         .map_err(|e| Self::map_sqlx_err("update_policies", e))?;
-        let raw = row
+        let effective = row
             .ok_or_else(|| DriveRepositoryError::NotFound(drive_id.to_string()))?
             .0;
         // Policy edits must not serve a stale `policies` bag from the
@@ -847,7 +962,7 @@ impl DriveRepository for DrivePgRepository {
         self.default_drive_cache.invalidate_all();
         self.invalidate_readable_all();
         Ok(crate::domain::entities::drive::DrivePolicies::from_value(
-            &raw,
+            &effective,
         ))
     }
 

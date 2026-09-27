@@ -407,6 +407,41 @@ pub struct UpdateDrivePoliciesDto {
     pub include_in_music_index: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read_only: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_public_link_password: Option<bool>,
+    /// Day cap on public links. Double `Option` so three states are
+    /// distinguishable on the wire, which a single `Option` collapses:
+    ///
+    ///   * absent     → `None`       → leave whatever this drive has
+    ///   * `null`     → `Some(None)` → REMOVE the override, inherit again
+    ///   * a number   → `Some(Some)` → set the cap here
+    ///
+    /// Without the middle case there would be no way to stop overriding a
+    /// knob once you started — the drive would be pinned to its current
+    /// value forever, silently ignoring every future default change.
+    ///
+    /// `deserialize_with` is REQUIRED, not decoration. Plain
+    /// `#[serde(default)] Option<Option<u32>>` collapses the first two
+    /// states: serde maps a JSON `null` onto the OUTER `Option`, so both
+    /// absent and null arrive as `None` and the clear silently becomes a
+    /// no-op. Forcing the field through a deserializer that wraps whatever
+    /// it receives in `Some` is what keeps `null` distinguishable — the
+    /// deserializer only runs when the key is present.
+    #[serde(default, deserialize_with = "present_option")]
+    pub max_public_link_days: Option<Option<u32>>,
+}
+
+/// Distinguishes "field absent" from "field present and null".
+///
+/// Only called when the key IS present, so wrapping in `Some` marks
+/// presence; the inner `Option` then carries null-vs-value. Absent fields
+/// never reach here and fall back to `#[serde(default)]` → `None`.
+fn present_option<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    T: serde::Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    serde::Deserialize::deserialize(deserializer).map(Some)
 }
 
 /// `PATCH /api/drives/{id}/policies` — **OxiCloud-admin only** policy
@@ -493,6 +528,25 @@ pub async fn update_drive_policies(
     }
     if let Some(v) = dto.read_only {
         partial_obj.insert("read_only".into(), serde_json::Value::Bool(v));
+    }
+    if let Some(v) = dto.require_public_link_password {
+        partial_obj.insert(
+            "require_public_link_password".into(),
+            serde_json::Value::Bool(v),
+        );
+    }
+    // Explicit `null` travels through as JSON null, which the repository
+    // reads as "remove this key" rather than "store null" — see
+    // `update_policies`. That is how an admin stops overriding a knob and
+    // returns the drive to following its kind's default.
+    if let Some(v) = dto.max_public_link_days {
+        partial_obj.insert(
+            "max_public_link_days".into(),
+            match v {
+                Some(days) => serde_json::Value::from(days),
+                None => serde_json::Value::Null,
+            },
+        );
     }
     // Pass the raw JSON straight through so the JSONB `||` merge in
     // the repo only touches keys the caller supplied. Round-tripping
@@ -607,5 +661,44 @@ pub async fn update_drive_quota(
         )
             .into_response(),
         Err(e) => AppError::from(e).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod policy_dto_tests {
+    use super::UpdateDrivePoliciesDto;
+
+    /// The three wire states must stay distinguishable.
+    ///
+    /// Not a formality: with a plain `#[serde(default)] Option<Option<u32>>`
+    /// serde maps a JSON `null` onto the OUTER option, so absent and null
+    /// both arrive as `None` and "clear this override" silently becomes
+    /// "change nothing". The drive then stays pinned to whatever cap it had
+    /// and quietly ignores every future change to its kind's default, with
+    /// no error anywhere to notice.
+    #[test]
+    fn absent_null_and_value_are_three_distinct_states() {
+        let absent: UpdateDrivePoliciesDto = serde_json::from_str("{}").unwrap();
+        assert_eq!(absent.max_public_link_days, None, "absent = leave alone");
+
+        let cleared: UpdateDrivePoliciesDto =
+            serde_json::from_str(r#"{"max_public_link_days": null}"#).unwrap();
+        assert_eq!(
+            cleared.max_public_link_days,
+            Some(None),
+            "explicit null = remove the override and inherit again"
+        );
+
+        let set: UpdateDrivePoliciesDto =
+            serde_json::from_str(r#"{"max_public_link_days": 30}"#).unwrap();
+        assert_eq!(set.max_public_link_days, Some(Some(30)), "number = set it");
+    }
+
+    #[test]
+    fn the_other_knobs_still_round_trip() {
+        let dto: UpdateDrivePoliciesDto =
+            serde_json::from_str(r#"{"require_public_link_password": true}"#).unwrap();
+        assert_eq!(dto.require_public_link_password, Some(true));
+        assert_eq!(dto.forbid_public_links, None);
     }
 }

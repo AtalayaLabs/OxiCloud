@@ -10,6 +10,7 @@ pub mod contact_service;
 pub mod delta_upload_service;
 pub mod device_auth_service;
 pub mod drive_management_service;
+pub mod drive_policy_defaults_service;
 pub mod external_identity_service;
 pub mod external_mount_router;
 pub mod external_upload_service;
