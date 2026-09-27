@@ -3,6 +3,7 @@ pub mod azure_blob_backend;
 pub mod backend_consistency_service;
 pub mod backend_migration_service;
 pub mod backend_rechunk_service;
+pub mod backend_reclaim_service;
 pub mod backend_rotate_service;
 pub mod blob_diagnostics;
 pub mod blobs_consistency_service;

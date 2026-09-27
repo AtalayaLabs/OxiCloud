@@ -1606,6 +1606,30 @@ impl AppServiceFactory {
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
         .await;
 
+        // §2 of the storage-consistency plan: the other half of the deletion
+        // path. `dedup_gc` reaps unreferenced rows and records the deletion
+        // intent in `storage.pending_actions` in the same transaction; this job
+        // unlinks the objects and clears the rows.
+        //
+        // Registered WITH an interval, unlike almost everything else here. The
+        // drain defers anything enqueued mid-run to the next run, so on-demand
+        // only would leave fresh entries waiting for a human — which is precisely
+        // how `dedup_gc` came to accumulate 29 unreclaimed blobs on a live
+        // instance: registered `None, // on-demand`, and nothing ever triggered
+        // it.
+        let _ = Arc::new(
+            crate::infrastructure::services::backend_reclaim_service::BackendReclaim::new(
+                maintenance_pool.clone(),
+                core.dedup_service.backend().clone(),
+            ),
+        )
+        .register_recoverable_job(
+            &core.job_registry,
+            &job_store_provider_dyn,
+            Some(crate::infrastructure::services::backend_reclaim_service::RECLAIM_INTERVAL),
+        )
+        .await;
+
         // §1 of the storage-consistency plan: the pre-CDC re-chunk migration,
         // promoted from a detached boot task to a job. Registered here rather
         // than only spawned so convergence is observable — the whole point of

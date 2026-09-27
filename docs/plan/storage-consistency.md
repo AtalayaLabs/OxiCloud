@@ -14,18 +14,39 @@ heading:
 | §1b retire `OXICLOUD_LEGACY_RECHUNK` | **DONE** — deprecation warning; removal next major |
 | §1c convergence visible + `LEGACY-WHOLE-FILE-BLOB` markers | **DONE** — finding + 6 tagged sites |
 | §1d share the walk with `backend_rotate` | TODO — optimisation, not required |
-| §2 Durable deletion intent + `backend_reclaim` | TODO |
+| §2a schema + atomic enqueue | **DONE** — `storage.pending_actions`, reap-and-enqueue in one statement |
+| §2b `backend_reclaim` drain | **DONE** — scheduled every 300s, per-object `FOR UPDATE SKIP LOCKED` |
+| §2c backlog visibility | TODO — depth / oldest / parked are not surfaced yet |
+| §2d `backend_consistency` repair arm enqueues | TODO — still deletes directly |
+| §2e creation side | design note only, no code by design |
+| §2f resurrection race | **DONE** — drain re-verifies under lock; chunk settle cancels before writing |
 | §3 Backoff, and the nested SDK retry | TODO |
 | §4 Same-content refcount leak | **DONE** — unit + API suite green |
 | §5 Boot: unreachable vs misconfigured | TODO |
 | §6 Cache plaintext — eviction ordering | **DONE** — unit test green |
 | §6 Cache plaintext — `backend_cache_cleanup` job | TODO |
 
-The two `DONE` items were taken first deliberately: both are surgical, both are
-independent of the queue, and both are live defects on the reporting instance
+§4 and §6's ordering fix were taken first deliberately: both are surgical, both
+are independent of the queue, and both are live defects on the reporting instance
 rather than design work — §4 is the direct cause of the
 `manifest_refcount_mismatch` findings, and §6's ordering bug is why the deleted
 content was still readable in plaintext.
+
+**§2a, §2b and §2f had to ship together**, which was not obvious from the plan's
+numbering. The queue alone makes the resurrection race *worse* than the
+best-effort unlink it replaces: the window between "row reaped" and "bytes
+unlinked" grows from sub-second to the drain interval, so an upload landing inside
+it would adopt bytes about to be deleted. §2f is not a follow-up to §2b, it is the
+other half of the same change.
+
+Two known gaps, deliberately left rather than forgotten:
+
+* **Derived and attached blob deletions still unlink directly.** The `object`
+  column already admits `'derived'` and `'attached'`, but only the base-blob reap
+  path enqueues today. Those paths have the same shape and the same defect, at
+  lower volume.
+* **`backend_consistency`'s repair arm still deletes directly** (§2d) rather than
+  enqueueing, so a repair run bypasses the retry machinery it should be feeding.
 
 Named for the guarantee rather than one of its mechanisms. It began as
 "blob reclamation" — fixing deletion — but the same window exists on

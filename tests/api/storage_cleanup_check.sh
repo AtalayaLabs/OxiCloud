@@ -379,6 +379,59 @@ if [[ "$GC_DRAINED" -ne 1 ]]; then
 fi
 log "GC total: $GC_TOTAL_BLOBS blob(s), $GC_TOTAL_BYTES byte(s) freed."
 
+# ── 3b. Drain the deletion queue ──────────────────────────────────────────────
+# Reclamation is TWO phases now, and this script asserts on the second one's
+# result, so it has to run it.
+#
+# `dedup_gc` no longer touches the backend. It reaps unreferenced rows and
+# records the deletion intent in `storage.pending_actions` in the SAME
+# transaction; `backend_reclaim` unlinks the objects and clears the rows. The
+# split is what makes a failed unlink retryable instead of lost — the old
+# best-effort `delete_blob` in the reap loop stranded bytes with no row, which
+# this very sweep could then never see, and that is how 29 orphaned blobs
+# accumulated on a live S3 instance.
+#
+# So without this trigger the disk check below fails with every blob the suite
+# ever deleted still present — correctly, because nothing has unlinked them.
+#
+# Looped for the same reason as the GC passes: the phases interleave. Reaping a
+# source cascades into releasing its derived and attached rows, so a later GC
+# pass can enqueue more work after an earlier drain has already run.
+RECLAIM_TOTAL=0
+RECLAIM_ZERO_STREAK=0
+for reclaim_pass in 1 2 3 4; do
+    RECLAIM_RESULT=$(curl -sf -X POST -H "$AUTH" "$base_url/api/admin/jobs/backend_reclaim/trigger")
+    [[ -z "$RECLAIM_RESULT" ]] && fail "backend_reclaim returned an empty body (pass $reclaim_pass)"
+    # `.ok` must be checked before the counters are believed. This job runs on a
+    # 300 s schedule, so a scheduled run can be in flight when the trigger lands,
+    # and the registry serialises runs of the same job — a rejected trigger comes
+    # back with zero counters, indistinguishable from an empty queue. Treating
+    # that as "drained" would exit this loop early and fail the disk check below
+    # for a reason that has nothing to do with reclamation.
+    echo "$RECLAIM_RESULT" | jq -e '.ok == true' >/dev/null \
+      || fail "backend_reclaim trigger was not accepted (pass $reclaim_pass): $RECLAIM_RESULT"
+    RECLAIMED=$(echo "$RECLAIM_RESULT" | jq -r '.outcome.extra.extra_stats.reclaimed // 0')
+    PARKED=$(echo "$RECLAIM_RESULT" | jq -r '.outcome.extra.extra_stats.parked // 0')
+    RECLAIM_TOTAL=$((RECLAIM_TOTAL + RECLAIMED))
+    log "reclaim pass $reclaim_pass unlinked $RECLAIMED object(s), parked $PARKED."
+    # A parked object is never retried automatically, so it is a hard failure
+    # here rather than something to poll through: on a local backend an unlink has
+    # no business failing, and a silent leak is the exact outcome this machinery
+    # exists to prevent.
+    [[ "$PARKED" -eq 0 ]] || fail "backend_reclaim parked $PARKED object(s) — check its findings"
+    # Two consecutive zeros, matching the GC loop above and for the same reason:
+    # one zero only says the queue was empty at that instant, and a GC cascade can
+    # enqueue more after a drain has already passed over it.
+    if [[ "$RECLAIMED" -eq 0 ]]; then
+        [[ "$RECLAIM_ZERO_STREAK" -ge 1 ]] && break
+        RECLAIM_ZERO_STREAK=1
+    else
+        RECLAIM_ZERO_STREAK=0
+    fi
+    sleep 1
+done
+log "reclaim total: $RECLAIM_TOTAL object(s) unlinked."
+
 # ── 4. Disk verification ──────────────────────────────────────────────────────
 
 THUMB_FILES=$(find "$STORAGE_PATH/.thumbnails" -type f 2>/dev/null || true)
@@ -393,6 +446,36 @@ if [[ -n "$THUMB_FILES" || -n "$BLOB_FILES" ]]; then
     log "Thumb/blob leftovers detected — polling for async worker drain (race guard)"
     for attempt in 1 2 3 4 5; do
         sleep 1
+        # Re-DRAIN, not just re-check. Sleeping was the right remedy when the
+        # detached `on_blob_deleted` tasks unlinked blobs themselves: the work was
+        # already in flight and waiting let it land. Since the deletion queue, the
+        # only thing that unlinks a blob is `backend_reclaim` — so for anything
+        # under `.blobs/` a poll that merely waits can never succeed, however many
+        # attempts it makes.
+        #
+        # This is what made the check intermittent: a GC cascade releasing derived
+        # and attached rows can enqueue more deletions AFTER the drain loop above
+        # has already seen two empty passes, and whether the run went green then
+        # depended on which side of that boundary the last enqueue fell.
+        #
+        # The sleep still matters for `.thumbnails/`, which has no queue and does
+        # still depend on detached workers finishing.
+        #
+        # BOTH phases, in order, because there are two ways a blob can still be on
+        # disk here and they need different remedies:
+        #
+        #   * refcount released but the row never reaped — a detached
+        #     `on_blob_deleted` task finished after the last GC pass. Needs
+        #     `dedup_gc`; the blob is not in the queue and draining cannot help.
+        #   * row reaped and intent queued but not yet drained. Needs
+        #     `backend_reclaim`; another GC pass would find nothing.
+        #
+        # Running GC first also feeds the drain in the same attempt, so one
+        # iteration can resolve a two-step cascade instead of needing two.
+        curl -sf -X POST -H "$AUTH" \
+          "$base_url/api/admin/jobs/dedup_gc/trigger?force=true" >/dev/null 2>&1 || true
+        curl -sf -X POST -H "$AUTH" \
+          "$base_url/api/admin/jobs/backend_reclaim/trigger" >/dev/null 2>&1 || true
         THUMB_FILES=$(find "$STORAGE_PATH/.thumbnails" -type f 2>/dev/null || true)
         BLOB_FILES=$(find  "$STORAGE_PATH/.blobs"      -type f 2>/dev/null || true)
         [[ -z "$THUMB_FILES" && -z "$BLOB_FILES" ]] && break
