@@ -1,9 +1,28 @@
 # Plan — Storage consistency: keeping the registry and the backend in agreement
 
-**Status:** design captured 2026-09-27 from a sandbox investigation. Not
-implemented. Triggered by 29 `orphan_blob` findings and two
-`manifest_refcount_mismatch` findings on a live S3 + encryption + cache
-deployment, plus a deliberate network-outage test.
+**Status:** design captured 2026-09-27 from a sandbox investigation; review
+closed and **implementation started 2026-09-27**. Triggered by 29
+`orphan_blob` findings and two `manifest_refcount_mismatch` findings on a live
+S3 + encryption + cache deployment, plus a deliberate network-outage test.
+
+Progress, kept current as work lands — each item carries its own marker at its
+heading:
+
+| item | state |
+|---|---|
+| §1 CDC migration — one content model | TODO |
+| §2 Durable deletion intent + `backend_reclaim` | TODO |
+| §3 Backoff, and the nested SDK retry | TODO |
+| §4 Same-content refcount leak | **DONE** — unit + API suite green |
+| §5 Boot: unreachable vs misconfigured | TODO |
+| §6 Cache plaintext — eviction ordering | **DONE** — unit test green |
+| §6 Cache plaintext — `backend_cache_cleanup` job | TODO |
+
+The two `DONE` items were taken first deliberately: both are surgical, both are
+independent of the queue, and both are live defects on the reporting instance
+rather than design work — §4 is the direct cause of the
+`manifest_refcount_mismatch` findings, and §6's ordering bug is why the deleted
+content was still readable in plaintext.
 
 Named for the guarantee rather than one of its mechanisms. It began as
 "blob reclamation" — fixing deletion — but the same window exists on
@@ -1084,7 +1103,7 @@ other exists.
 Cheap to check before deciding: `RUST_LOG=aws_smithy_runtime=debug` shows the
 SDK's own attempts, so the real multiplier is observable rather than inferred.
 
-### 4. The same-content refcount leak (`manifest_refcount_mismatch`)
+### 4. The same-content refcount leak (`manifest_refcount_mismatch`) — **DONE**
 
 Root cause is a single line — `file_blob_write_repository.rs:253`:
 
@@ -1129,6 +1148,28 @@ its release disagree about the same-hash case; the attached-blob path has the
 same shape in a different table. Worth checking whether one fix covers all
 of them before writing three.
 
+**As implemented.** The guard is simply gone: the release is now
+unconditional, because when `old_hash == new_hash` the value to release is the
+same string either way, so one unconditional `remove_reference(&old_hash)` is
+correct in both arms. The minimal diff turned out to be the right one — no
+restructuring of the call-site pairing was needed.
+
+Verified before touching it, given the `data_loss` warning above: all three
+callers reach it through the single wrapper `update_file_content_with_blob`,
+whose comment already states the contract — *"swap_blob_hash consumes its
+reference and releases it on failure"* — and every error path in
+`swap_blob_hash` already releases `new_hash` (`:218`, `:234`, `:244`). That is
+the decisive evidence: if any caller did **not** hold a reference, those
+existing error paths would already be over-releasing and reaping live content,
+which is a far louder bug than a slow leak. So the incoming reference is real
+on every path, and consuming it on success is what the function was always
+meant to do.
+
+Left deliberately best-effort. A failure to release now over-counts — a
+storage leak that `blobs_consistency` detects and repairs — where failing the
+request would discard a write that already succeeded. Wrong in the cheap
+direction, on purpose.
+
 ### 5. Boot: distinguish "unreachable" from "misconfigured"
 
 A transient backend error at startup panics after a **700 ms** total budget
@@ -1146,7 +1187,7 @@ happens (service ordering at boot). A bounded boot retry — 30–60 s, logging
 each attempt — keeps fail-fast for genuine misconfiguration, which surfaces
 as a non-transient error and should still panic at once.
 
-### 6. Cache retains plaintext of deleted content
+### 6. Cache retains plaintext of deleted content — ordering **DONE**, job TODO
 
 `CachedBlobBackend::delete_blob` invalidates the index and removes the
 cached file — but *after* `self.inner.delete_blob(&hash).await?`. The `?`
@@ -1164,6 +1205,19 @@ the cache sits *outside* the encryption wrapper
 so S3 holds ciphertext while the cache holds cleartext.
 
 Cleanup should not be conditional on the remote delete succeeding.
+
+**As implemented.** `delete_blob` now invalidates the index and unlinks the
+cached file **before** calling `inner.delete_blob(&hash)`, and returns the
+inner result directly — so the local copy goes whether or not the remote call
+succeeds, and the error still propagates unchanged to the caller.
+
+Local-first rather than "inner, then evict in both arms", which would also have
+fixed the reported bug. The ordering matters for the *crash* case: a kill
+between the two steps must not be the one that retains plaintext. Evicting
+first means a crash leaves at worst a cold cache entry for a blob whose delete
+then failed — one remote re-fetch — while the object itself becomes an orphan
+the sweep already knows how to find. That is the same bias the rest of this
+plan follows: leak bytes rather than retain plaintext or lose data.
 
 #### Does `.blob-cache/` need a consistency check of its own?
 
@@ -1310,6 +1364,35 @@ with it, the first scheduled run clears it.
    for enqueued hashes, and the repair arm must enqueue rather than delete.
 5. Refcount: a same-content rewrite must leave `ref_count` unchanged, and
    `manifests_consistency` must report no mismatch after N repeats.
+   **Landed** as `tests/api/refcount_same_content_rewrite.hurl` (registered in
+   `run.sh` beside `dedup_blob_cleanup.hurl`). It uploads a fixture whose
+   content is unique to the file so `ref_count` can be asserted absolutely,
+   rewrites it three times through the WebDAV PUT overwrite-by-path branch —
+   asserting 204 rather than 201 each time, since a second file row would
+   legitimately raise the count and mask the bug — and holds `ref_count == 1`
+   throughout. Both refcount tenants are then re-run and compared against
+   baselines captured up front rather than against zero, so pre-existing drift
+   from sibling suites cannot flunk it.
+
+   The assertion that matters most is the last one: after the file is trashed
+   **and purged**, `exists == false`. That is the user-visible harm rather than
+   a restatement of the count — a surplus reference means the blob can never
+   reach zero, so its bytes are pinned for the life of the deployment. With the
+   leak and three rewrites, the blob survives the purge.
+
+   **Green.** The first run already confirmed the fix — `ref_count == 1` after
+   each of the three identical rewrites, and both consistency tenants back at
+   their baselines — but tripped on a wrong status code in the teardown
+   (`DELETE /api/trash/{id}` returns **200**, not 204, unlike the `/api/files`
+   and `/api/folders` deletes). Corrected, and the suite passes.
+
+   One fragility worth knowing rather than fixing: a mid-run failure poisons the
+   next run, because folder names are unique per parent and the `ref_count`
+   assertions are absolute, so a leftover folder or file breaks steps 3 and 5
+   respectively. Hurl has no conditionals, so self-healing is not available; the
+   file's header documents the four-request cleanup instead. That is the same
+   trade `refcount_cascade.hurl` makes — it ships a diagnostic script rather than
+   attempting idempotence.
 6. `just check`, `just test`, `just test-integration`, `just api-test`.
 
 ### How to test this — instrument per claim, and mocks are the least useful one
@@ -1320,6 +1403,20 @@ and a barrier, not for mocks: a `mockall` mock of `BlobStorageBackend` would
 assert that we called the port we already know we called, while the claims worth
 pinning live in PostgreSQL's locking semantics and in the real decorator stack.
 Five instruments, in rough order of value:
+
+**0. Already landed, as the first instance of instrument 1 below.**
+`failed_backend_delete_still_evicts_the_plaintext_copy`
+(`cached_blob_backend.rs`) proves §6's ordering fix with an `UndeletableBackend`
+— a hand-rolled delegating decorator whose `delete_blob` always fails
+transiently. It asserts both halves that matter: the failure still propagates
+(and stays `is_transient`, so the caller can retry the remote object) *and* the
+local plaintext is gone anyway.
+
+Confirmed to be a real regression test rather than a tautology by reverting the
+ordering and watching it fail on the right assertion — *"plaintext of deleted
+content survived a failed backend delete"*. Worth doing for every test in this
+plan: each one exists to catch a specific defect, so each should be seen failing
+against that defect before being trusted.
 
 **1. A reusable fault-injecting backend decorator — the key instrument.** The
 codebase already does this per-file and by hand: `HangingBackend`
