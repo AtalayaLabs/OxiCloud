@@ -9,8 +9,9 @@
 #   bash tests/api/run.sh drive_polic refcount # several
 #   SKIP_BUILD=1 bash tests/api/run.sh rechunk_legacy   # reuse the current binary
 #
-# The server is rebuilt on every run so the suite always tests the working tree;
-# `SKIP_BUILD=1` reuses whatever is in target/ for when only test scripts changed.
+# The server is rebuilt on every LOCAL run so the suite always tests the working
+# tree. In CI ($CI set) the pre-built artifact is used as-is — see the build
+# block below. `SKIP_BUILD=1` forces that skip locally too.
 #
 # Selectors are plain substring matches against the scenario name (a .hurl
 # basename or a *_check.sh basename), so `drive_polic` picks up drive_policies,
@@ -216,18 +217,34 @@ OXICLOUD_BIN="$REPO_ROOT/target/$BUILD_TARGET/oxicloud"
 # this ran `cargo run &` directly, which conflated the two and tripped
 # the 120 s readiness timeout on any `cargo clean` run.
 #
-# ALWAYS build, rather than only when the binary is missing. The previous
-# `! -x` guard meant an existing binary was reused no matter how stale, so
-# editing server code and re-running the suite silently tested the OLD
-# build — a green run that proves nothing, and a new log line or endpoint
-# that appears to have had no effect. Cargo is the right thing to ask "is
-# this current?"; a file-existence check is not. An unchanged tree costs a
-# no-op `cargo build` of a second or two.
+# Build locally on every run, but NOT in CI.
 #
-# `SKIP_BUILD=1` opts out for the case the old guard was really serving:
-# iterating on the test scripts themselves, where the server has not changed
-# and even a second is noise.
-if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
+# Locally the old `[[ ! -x $BIN ]]` guard reused an existing binary however
+# stale, so editing server code and re-running the suite silently tested the
+# OLD build — a green run that proves nothing. Cargo is the right thing to
+# ask "is this current?"; file existence is not, and an unchanged tree costs
+# a no-op build of a second or two.
+#
+# CI is the opposite case and must be left alone. The `api-test` workflow job
+# declares `needs: build` and downloads the release binary as an ARTIFACT into
+# `target/release/`, with no cargo cache and no `target/` tree — so a
+# `cargo build --release` here would be a full COLD release build of several
+# minutes, once per test job, defeating the shared build job entirely.
+# `$CI` is set by GitHub Actions (and by every other CI worth naming).
+#
+# `SKIP_BUILD=1` forces the same skip locally, for iterating on the test
+# scripts themselves where the server has not changed.
+if [[ ! -x "$OXICLOUD_BIN" ]]; then
+  NEED_BUILD=1   # nothing to run at all
+elif [[ "${SKIP_BUILD:-0}" == "1" ]]; then
+  NEED_BUILD=0
+elif [[ -n "${CI:-}" ]]; then
+  NEED_BUILD=0   # a pre-built artifact is the contract; see above
+else
+  NEED_BUILD=1
+fi
+
+if (( NEED_BUILD )); then
   # Wording matters now that this runs every time: nothing here cleans, and on
   # an unchanged tree it is a no-op of a second or two. Only a cold target/
   # takes minutes.
