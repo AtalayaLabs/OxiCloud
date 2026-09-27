@@ -23,6 +23,31 @@
 //! * **Deleting an absent object is success.** That is what makes the job safe to
 //!   schedule and safe to re-run.
 //!
+//! ## Why this is a recoverable job even though it is NOT resumable
+//!
+//! Worth stating, because the resume half of the interface is deliberately
+//! unused and a reader will otherwise look for the cursor logic.
+//!
+//! **It does not need a cursor.** The queue is self-draining: a settled row is
+//! DELETED, so "resume" and "run again" are the same operation. The run takes a
+//! fresh boundary each time rather than restoring one, which is safe precisely
+//! because nothing marks a row as seen — a row a run misses is simply still
+//! there next time. `checkpoint` is called only to report progress; the cursor
+//! it carries is always empty, and `run_resumable` ignores the one it is given.
+//!
+//! **It does need findings.** Per `scheduler::handler`, only handlers that
+//! persist per-run rows get a findings drawer — and a PARKED object is the one
+//! outcome here that never self-corrects: nothing will retry it, so it is bytes
+//! leaked indefinitely until a human looks. Reporting that as a count in a log
+//! line would bury the single fact an operator has to act on.
+//!
+//! It also gets cooperative cancellation for free, which a drain over a large
+//! backlog genuinely needs.
+//!
+//! By contrast `dedup_gc` and `collab_idle_gc` are plain jobs, correctly: they
+//! report totals, not per-resource outcomes, so they have nothing to put in a
+//! findings drawer.
+//!
 //! See `docs/plan/storage-consistency.md` §2.
 
 use async_trait::async_trait;
@@ -62,6 +87,15 @@ pub const RECLAIM_INTERVAL: std::time::Duration = std::time::Duration::from_secs
 /// outage cannot march the entire backlog into the parked state, which would turn
 /// a temporary problem into a pile of manual work.
 const MAX_ATTEMPTS: i32 = 8;
+
+/// A 1-attempt budget would park on the first failure, defeating the retry this
+/// whole queue exists to provide. Compile-time rather than a test: the value is a
+/// constant, so a bad edit should fail the build instead of waiting for someone
+/// to run the suite.
+const _: () = assert!(
+    MAX_ATTEMPTS > 1,
+    "MAX_ATTEMPTS must allow at least one retry"
+);
 
 pub struct BackendReclaim {
     pool: Arc<PgPool>,
@@ -516,9 +550,8 @@ mod tests {
         let after_permanent = attempts + 1;
         assert_eq!(after_transient, 3);
         assert_eq!(after_permanent, 4);
-        assert!(
-            MAX_ATTEMPTS > 1,
-            "a 1-attempt budget would park on first try"
-        );
+        // The MAX_ATTEMPTS > 1 invariant is asserted at compile time beside the
+        // constant, not here — clippy is right that asserting a constant in a
+        // test is a tautology that only fires when someone runs the suite.
     }
 }

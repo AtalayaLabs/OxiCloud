@@ -3236,6 +3236,33 @@ impl DedupService {
             1.0
         };
 
+        // Deletion-queue backlog, in one round trip.
+        //
+        // Reported beside the storage figures because it qualifies them:
+        // `total_bytes_stored` counts bytes whose rows are already gone and
+        // whose unlink has not happened yet, so a large backlog means the
+        // storage number is an over-count rather than live usage.
+        //
+        // Defaults to zeroes on error rather than failing the whole stats call —
+        // an unreadable queue must not blank out the storage figures an operator
+        // came for. The table may also legitimately not exist yet on an instance
+        // mid-migration.
+        let (reclaim_pending, reclaim_oldest_secs, reclaim_parked): (i64, i64, i64) =
+            sqlx::query_as(
+                "SELECT
+                     COUNT(*) FILTER (WHERE parked_at IS NULL),
+                     COALESCE(
+                         EXTRACT(EPOCH FROM (now() - MIN(requested_at)
+                             FILTER (WHERE parked_at IS NULL)))::bigint,
+                         0),
+                     COUNT(*) FILTER (WHERE parked_at IS NOT NULL)
+                   FROM storage.pending_actions
+                  WHERE action = 'deletion'",
+            )
+            .fetch_one(self.pool.as_ref())
+            .await
+            .unwrap_or((0, 0, 0));
+
         DedupStatsDto {
             total_blobs,
             total_bytes_stored,
@@ -3243,6 +3270,9 @@ impl DedupService {
             bytes_saved,
             dedup_hits: 0,
             dedup_ratio,
+            reclaim_pending: reclaim_pending.max(0) as u64,
+            reclaim_oldest_secs: reclaim_oldest_secs.max(0) as u64,
+            reclaim_parked: reclaim_parked.max(0) as u64,
         }
     }
 

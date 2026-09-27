@@ -222,6 +222,26 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
          deleted."
     }
 
+    fn mutates(&self) -> crate::infrastructure::scheduler::Mutates {
+        // Discovery-only by default; `?repair=true` writes deletion-queue rows.
+        // Declared rather than left at the `Never` default so the admin UI offers
+        // the toggle with a confirmation instead of presenting a scan that can
+        // quietly change state.
+        crate::infrastructure::scheduler::Mutates::OnRepairOnly
+    }
+
+    fn repair_description(&self) -> Option<&'static str> {
+        Some(
+            "Queues every orphaned blob for reclamation. This run DELETES \
+             NOTHING itself — it records the intent in the deletion queue, and \
+             `backend_reclaim` unlinks each object only after re-checking, under \
+             a row lock, that nothing references it. So an object that became \
+             referenced again between the scan and the drain is never deleted: \
+             the queued intent is discarded instead. Reversible until the drain \
+             runs, by emptying the queue.",
+        )
+    }
+
     fn parameters(&self) -> &'static [crate::infrastructure::scheduler::JobParam] {
         use crate::infrastructure::scheduler::JobParam;
         const PARAMS: &[JobParam] = &[
@@ -236,6 +256,14 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                 "Name of the storage entry to audit. Absent audits the \
                  active backend; naming an entry is how either side of a \
                  migration gets audited directly.",
+            ),
+            JobParam::boolean(
+                "repair",
+                false,
+                "Queue each orphaned blob for reclamation instead of only \
+                 reporting it. Nothing is deleted by this run: the object is \
+                 recorded in the deletion queue and backend_reclaim unlinks it \
+                 after re-checking that nothing references it.",
             ),
         ];
         PARAMS
@@ -410,6 +438,7 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
         // continue shallow and the run-detail view can show what the scan
         // actually verified.
         let deep = args.get_bool("deep");
+        let repair = args.get_bool("repair");
 
         // Verify through storage, never through a read-through cache.
         //
@@ -731,16 +760,80 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                         // in-flight upload reads as an orphan.
                         if !matches!(b.mtime, Some(m) if m > grace_cutoff) {
                             finding_count += 1;
+                            // Under `?repair=true`, hand the orphan to the
+                            // deletion queue instead of only naming it.
+                            //
+                            // Queue rather than unlink here, deliberately. This
+                            // scan holds a stale listing — the enumeration
+                            // started before the comparison reached this hash —
+                            // so deleting from inside it would act on a view of
+                            // the world that may already be wrong. The drain
+                            // re-verifies under a row lock immediately before its
+                            // unlink, so routing through it means an object that
+                            // became referenced in the meantime is never deleted;
+                            // its queued intent is discarded instead.
+                            //
+                            // It also means repair inherits the retry, backoff
+                            // and parking the queue already provides, rather than
+                            // being one more best-effort delete of the kind this
+                            // whole plan exists to remove.
+                            let queued = if repair {
+                                match sqlx::query(
+                                    "INSERT INTO storage.pending_actions
+                                         (hash, action, object, size_bytes, entry_name)
+                                     VALUES ($1, 'deletion', 'blob', $2, $3)
+                                     ON CONFLICT (hash, action) DO NOTHING",
+                                )
+                                .bind(&b.hash)
+                                // 0, because the enumeration does not carry sizes
+                                // and asking the backend per orphan would add a
+                                // round trip to a scan that may be walking
+                                // millions of keys. `size_bytes` only feeds the
+                                // backlog's "reclaimable space" figure, so it
+                                // under-reports for queue rows from this path
+                                // rather than costing anything.
+                                .bind(0_i64)
+                                // The audited entry, which for `?storage=<name>`
+                                // is NOT the active backend — recording it is the
+                                // only way the drain could ever tell them apart.
+                                .bind(args.get_str("storage"))
+                                .execute(self.pool.as_ref())
+                                .await
+                                {
+                                    Ok(_) => true,
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "backend_consistency: failed to queue orphan {} \
+                                             for reclaim: {e}",
+                                            &b.hash[..b.hash.len().min(12)],
+                                        );
+                                        false
+                                    }
+                                }
+                            } else {
+                                false
+                            };
                             record_or_log(
                                 store,
                                 BACKEND_CONSISTENCY_JOB_NAME,
-                                "orphan_blob",
-                                "inconsistent",
+                                // Distinct kind when queued, so the findings
+                                // drawer distinguishes "found and handed to the
+                                // drain" from "found, nothing done" — and severity
+                                // `info` for the former, matching the
+                                // `refcount_repaired` convention that a handled
+                                // finding is not an anomaly.
+                                if queued {
+                                    "orphan_blob_queued"
+                                } else {
+                                    "orphan_blob"
+                                },
+                                if queued { "info" } else { "inconsistent" },
                                 None,
                                 serde_json::json!({
                                     "hash":    b.hash,
                                     "mtime":   b.mtime.map(|t| t.to_rfc3339()),
                                     "backend": backend.backend_type(),
+                                    "queued_for_reclaim": queued,
                                 }),
                             )
                             .await;

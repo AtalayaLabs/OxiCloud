@@ -16,8 +16,8 @@ heading:
 | §1d share the walk with `backend_rotate` | TODO — optimisation, not required |
 | §2a schema + atomic enqueue | **DONE** — `storage.pending_actions`, reap-and-enqueue in one statement |
 | §2b `backend_reclaim` drain | **DONE** — scheduled every 300s, per-object `FOR UPDATE SKIP LOCKED` |
-| §2c backlog visibility | TODO — depth / oldest / parked are not surfaced yet |
-| §2d `backend_consistency` repair arm enqueues | TODO — still deletes directly |
+| §2c backlog visibility | **DONE** — depth, oldest-age and parked count on the dedup stats |
+| §2d `backend_consistency` repair arm | **DONE** — `?repair=true` ENQUEUES; it never deletes |
 | §2e creation side | design note only, no code by design |
 | §2f resurrection race | **DONE** — drain re-verifies under lock; chunk settle cancels before writing |
 | §3 Backoff, and the nested SDK retry | TODO |
@@ -39,14 +39,29 @@ unlinked" grows from sub-second to the drain interval, so an upload landing insi
 it would adopt bytes about to be deleted. §2f is not a follow-up to §2b, it is the
 other half of the same change.
 
-Two known gaps, deliberately left rather than forgotten:
+One known gap, deliberately left rather than forgotten: **derived and attached
+blob deletions still unlink directly.** The `object` column already admits
+`'derived'` and `'attached'`, but only the base-blob reap path enqueues today.
+Those paths have the same shape and the same defect, at lower volume.
 
-* **Derived and attached blob deletions still unlink directly.** The `object`
-  column already admits `'derived'` and `'attached'`, but only the base-blob reap
-  path enqueues today. Those paths have the same shape and the same defect, at
-  lower volume.
-* **`backend_consistency`'s repair arm still deletes directly** (§2d) rather than
-  enqueueing, so a repair run bypasses the retry machinery it should be feeding.
+A correction to an earlier note here, which claimed `backend_consistency`'s repair
+arm "still deletes directly": it had **no** repair arm at all — it was
+discovery-only. §2d therefore added one, and the shape matters. It does not delete;
+it **enqueues**, and `backend_reclaim` does the deleting. Two reasons, and the
+first is the one that makes this better than a direct repair would have been:
+
+* The scan holds a **stale listing** — enumeration began before the comparison
+  reached any given hash — so deleting from inside it acts on a view that may
+  already be wrong. The drain re-verifies under a row lock immediately before its
+  unlink, so an object referenced again in the meantime is never deleted; its
+  queued intent is discarded instead.
+* Repair inherits the retry, backoff and parking the queue already provides,
+  instead of being one more best-effort delete of exactly the kind this plan
+  exists to remove.
+
+Findings distinguish the two outcomes: `orphan_blob` (`inconsistent`, nothing
+done) versus `orphan_blob_queued` (`info`, handed to the drain), following the
+`refcount_repaired` convention that a handled finding is not an anomaly.
 
 Named for the guarantee rather than one of its mechanisms. It began as
 "blob reclamation" — fixing deletion — but the same window exists on

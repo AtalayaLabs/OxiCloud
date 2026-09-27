@@ -105,6 +105,30 @@ pub struct DedupStatsDto {
     pub dedup_hits: u64,
     /// Deduplication ratio (referenced / stored).
     pub dedup_ratio: f64,
+
+    // ── Deletion-queue backlog ───────────────────────────────────────────
+    //
+    // Surfaced here rather than behind a new endpoint because the question an
+    // operator is asking — "is my storage figure honest?" — is the same one
+    // these stats already answer. `total_bytes_stored` counts bytes whose rows
+    // are gone and whose unlink has not happened yet, so without the backlog
+    // beside it the number reads as live usage.
+    //
+    // The three that matter, and why each is not derivable from the others:
+    /// Objects awaiting unlinking. Reclaimable space not yet reclaimed.
+    pub reclaim_pending: u64,
+    /// Age of the oldest pending entry, in seconds.
+    ///
+    /// Depth alone cannot distinguish a healthy queue that is simply busy from
+    /// one that has stopped draining — a steady depth of 50 is fine if entries
+    /// are seconds old and a standing failure if the oldest is a week old.
+    pub reclaim_oldest_secs: u64,
+    /// Objects the drain has given up on until a human intervenes.
+    ///
+    /// Excluded from `reclaim_pending`, because they are not pending: nothing
+    /// will retry them. Any value above zero is bytes leaked indefinitely, and
+    /// it is the one figure here that is never self-correcting.
+    pub reclaim_parked: u64,
 }
 
 /// Port for content-addressable deduplication operations.
