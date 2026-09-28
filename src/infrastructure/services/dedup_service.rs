@@ -5610,6 +5610,35 @@ mod delta_upload_integration_tests {
             .expect("blob query")
     }
 
+    /// Is this hash sitting in the deletion queue?
+    ///
+    /// Reclamation is two phases now: `garbage_collect` deletes the row and
+    /// records the intent in the SAME transaction, and `backend_reclaim` unlinks
+    /// the object. So "the row is gone" no longer implies "the bytes are gone",
+    /// and a test asserting the second immediately after GC is asserting the old
+    /// contract.
+    async fn queued_for_deletion(pool: &PgPool, hash: &str) -> bool {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM storage.pending_actions
+                             WHERE hash = $1 AND action = 'deletion')",
+        )
+        .bind(hash)
+        .fetch_one(pool)
+        .await
+        .expect("pending_actions query")
+    }
+
+    /// Drain one hash through the REAL `backend_reclaim` settle path.
+    ///
+    /// Deliberately not a test-local "unlink then delete the row": that would
+    /// pass while production diverged from it, and the whole point of the settle
+    /// path is the re-verify and the row lock it does on the way.
+    async fn drain_one(svc: &DedupService, pool: &Arc<PgPool>, hash: &str) {
+        use crate::infrastructure::services::backend_reclaim_service::BackendReclaim;
+        let reclaim = BackendReclaim::new(pool.clone(), svc.backend().clone());
+        reclaim.settle_one(hash, None).await;
+    }
+
     async fn cleanup(pool: &PgPool, file_hash: &str, file_id: Uuid, extra_hashes: &[String]) {
         let chunks: Option<Vec<String>> = sqlx::query_scalar(
             "SELECT chunk_hashes FROM storage.chunk_manifests WHERE file_hash = $1",
@@ -5869,9 +5898,26 @@ mod delta_upload_integration_tests {
             blob_ref(&pool, &aged).await.is_none(),
             "aged orphan row removed"
         );
+        // Two phases: GC records the intent, the drain does the unlink. Asserting
+        // the bytes are gone right after GC would be asserting the old contract —
+        // and the queue exists precisely so a failed unlink survives to be
+        // retried instead of stranding bytes with no row.
+        assert!(
+            queued_for_deletion(&pool, &aged).await,
+            "aged orphan queued for reclamation"
+        );
+        assert!(
+            svc.backend().blob_exists(&aged).await.unwrap(),
+            "bytes stay until the drain runs"
+        );
+        drain_one(&svc, &pool, &aged).await;
         assert!(
             !svc.backend().blob_exists(&aged).await.unwrap(),
-            "aged orphan file unlinked"
+            "aged orphan file unlinked by the drain"
+        );
+        assert!(
+            !queued_for_deletion(&pool, &aged).await,
+            "queue row cleared once the object is gone"
         );
         // Fresh orphan preserved by the grace window.
         assert_eq!(
@@ -6066,9 +6112,18 @@ mod delta_upload_integration_tests {
         svc.garbage_collect().await.expect("gc");
         for c in &chunks {
             assert!(blob_ref(&pool, c).await.is_none(), "chunk row reclaimed");
+            // GC records the intent; the drain unlinks. See the comment in
+            // `garbage_collect_honours_grace_window_and_references`.
+            assert!(
+                queued_for_deletion(&pool, c).await,
+                "chunk queued for reclamation"
+            );
+        }
+        for c in &chunks {
+            drain_one(&svc, &pool, c).await;
             assert!(
                 !svc.backend().blob_exists(c).await.unwrap(),
-                "chunk file reclaimed"
+                "chunk file reclaimed by the drain"
             );
         }
 

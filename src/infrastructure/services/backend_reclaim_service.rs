@@ -103,7 +103,11 @@ pub struct BackendReclaim {
 }
 
 /// One settled item's effect on the run's counters.
-enum Settled {
+///
+/// `pub(crate)` so integration tests can drive the REAL settle path rather than
+/// reimplementing it — a test that re-derives "unlink then delete the row" would
+/// pass while production diverged from it.
+pub(crate) enum Settled {
     /// Unlinked (or already absent) and the row is gone.
     Reclaimed { bytes: u64 },
     /// A live reference appeared, so the intent was wrong and was discarded.
@@ -147,7 +151,7 @@ impl BackendReclaim {
     /// copy of bytes it did not write — or keeping the window small, which is
     /// what the old code relied on and what a deferred queue destroys by design.
     /// A lease is the escape if these transactions ever become a problem.
-    async fn settle_one(&self, hash: &str, entry_name: Option<&str>) -> Settled {
+    pub(crate) async fn settle_one(&self, hash: &str, entry_name: Option<&str>) -> Settled {
         let mut tx = match self.pool.begin().await {
             Ok(tx) => tx,
             Err(e) => {
