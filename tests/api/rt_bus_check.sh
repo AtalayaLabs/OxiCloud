@@ -1532,12 +1532,20 @@ rm -f "$upload_resp"
 [[ -n "$s22_file_id" && "$s22_file_id" != "null" ]] || die "S22: could not extract file id"
 
 s22_content="Hello OxiCloud from S22"
-if ! "$HELPER_BIN" collab-fanout-write \
-     --url "$ws_url" --token "$user1_token" \
-     --file "$s22_file_id" --content "$s22_content" \
-     --timeout 5s > /dev/null 2>&1; then
-  die "S22: fanout-write helper failed"
-fi
+# The write happens INSIDE the collab-flush invocation below, on the same
+# connection — deliberately, and it is what makes `flushed:true` assertable.
+#
+# Writing from a separate helper process meant the document's dirty window had
+# to survive process exit, process spawn, a fresh WS connect and re-auth. If the
+# debouncer's 2 s idle threshold elapsed in that gap it flushed first, and the
+# explicit flush then correctly reported `flushed:false` — a failure about
+# process-spawn latency, not about the feature.
+#
+# That gap is unbounded in practice and is why this passed locally and failed in
+# CI: on a workstation the spawn is ~100 ms, while the CI runner is also
+# cold-building this helper in release with no cargo cache, so it can exceed
+# seconds. Raising the server threshold cannot fix it either — S21 above asserts
+# the debouncer DOES fire within 3 s, so the window is squeezed from both sides.
 
 # Explicit flush trigger. No sleep first — this is the entire point:
 # the FE wants a flush RIGHT NOW, not on the debouncer's schedule.
@@ -1562,7 +1570,7 @@ fi
 out_s22="$(mktemp -t rtbus_s22_flush.XXXXXX)"
 if ! "$HELPER_BIN" collab-flush \
      --url "$ws_url" --token "$user1_token" \
-     --file "$s22_file_id" \
+     --file "$s22_file_id" --content "$s22_content" \
      --timeout 3s \
      --output "$out_s22"; then
   cat "$out_s22" >&2 || true

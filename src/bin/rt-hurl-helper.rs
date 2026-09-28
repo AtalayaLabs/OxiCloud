@@ -180,6 +180,10 @@ enum Mode {
     /// inserts `--content` into an otherwise-empty doc, send it as a
     /// `0x01` binary frame, and exit. Companion to `collab-fanout-listen`.
     CollabFanoutWrite,
+    /// With `--content`, write it on the same connection first, so the
+    /// document is guaranteed still dirty when the flush arrives — see the
+    /// comment in `collab_flush` for why a separate write process is racy.
+    ///
     /// Send one `rt.collab_flush { file_id }` JSON-RPC request and
     /// await the ack. Reply carries `{ flushed: bool }` — true if a
     /// blob write happened, false if the actor short-circuited on
@@ -1207,6 +1211,44 @@ async fn collab_flush(args: Args) -> Result<(), HelperError> {
 
     let mut ws = connect_ws(&args.url, &args.auth).await?;
     let deadline = tokio::time::Instant::now() + args.timeout;
+
+    // Optional write on the SAME connection, immediately before the flush.
+    //
+    // This exists to remove a race, not for convenience. Doing the write in a
+    // separate helper process means the document's dirty window has to survive
+    // process exit, process spawn, a fresh WS connect and re-auth — and if the
+    // debouncer's idle threshold elapses in that gap it flushes first, so the
+    // explicit flush correctly reports `flushed: false` and the assertion fails
+    // for reasons that have nothing to do with the feature under test.
+    //
+    // That gap is unbounded in practice: on a loaded CI runner (which also
+    // cold-builds this very binary in release) process spawn plus handshake can
+    // exceed seconds, while on a developer workstation it is ~100 ms — which is
+    // exactly why this failed only in CI. Widening the server-side threshold
+    // cannot fix it either, because a sibling scenario asserts the debouncer
+    // DOES fire within 3 s, so the window is squeezed from both sides.
+    //
+    // On one connection the document cannot go idle between the two frames, so
+    // the race is gone by construction rather than by tuning. It is also closer
+    // to what the feature guards: the editor's "save now on tab close" path
+    // writes and flushes on the socket it already holds.
+    if let Some(content) = args.content.clone() {
+        let client_doc = Doc::new();
+        {
+            let text_ref = client_doc.get_or_insert_text("content");
+            let mut txn = client_doc.transact_mut();
+            text_ref.insert(&mut txn, 0, &content);
+        }
+        let update_bytes = client_doc
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+
+        let mut frame = Vec::with_capacity(17 + update_bytes.len());
+        frame.push(0x01);
+        frame.extend_from_slice(&file_id);
+        frame.extend_from_slice(&update_bytes);
+        ws.send(Message::Binary(frame.into())).await?;
+    }
 
     let req_id: u64 = 1;
     let file_id_str = uuid_bytes_to_dashed(&file_id);
