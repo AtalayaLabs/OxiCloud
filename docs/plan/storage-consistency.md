@@ -1632,6 +1632,70 @@ the attempt count we would be guessing at.
 neither store — that a service calls `authz.require(...)` before mutating, say.
 That is what the `test_utils` mocks exist for, and it is not this plan's problem.
 
+## Follow-up scope — NOT in this PR
+
+From an audit for the defect class this plan exists to remove: a backend request
+whose failure is logged and forgotten, leaving an inconsistency nothing can
+rediscover. The finding is that **the deletion path was the outlier, not the
+norm** — the migration and satellite code is written with real discipline here.
+But its enabling condition is systemic.
+
+### 1. The detectors are never scheduled — the biggest item
+
+Every consistency job is registered on-demand:
+
+| job | interval |
+|---|---|
+| `blobs_consistency`, `manifests_consistency`, `satellites_consistency` | `None` |
+| `files_consistency`, `folders_consistency`, `drives_consistency` | `None` |
+| `drive_policies_consistency`, `backend_consistency` | `None` |
+| `backend_reclaim`, `backend_cache_cleanup` | scheduled (added here) |
+
+This matters more than any individual call site, because **"it's fine, a sweep
+will find it" is the justification the codebase leans on everywhere — including
+this plan's own invariant — and it is currently unfunded.** It is also exactly
+the mechanism behind the 29 orphans: `dedup_gc` was `None, // on-demand`, nobody
+clicked, and bytes accumulated for months.
+
+So this plan's stated guarantee — *every disagreement is either recorded in the
+outbox or discoverable by the sweep, and both are bounded and observable* — holds
+in its first half and, until the detectors run on their own, only aspirationally
+in its second.
+
+Giving at least `blobs_consistency` and `satellites_consistency` a schedule is
+cheap (DB-only). `backend_consistency` is the judgement call, since a bucket walk
+costs real money on S3 — a weekly `deep=false` default would be defensible.
+
+**Review direction: `*_consistency` jobs need retry-and-pause on recoverable
+error, not the queue treatment.** They are read-mostly, so a transient failure
+should pause the run at its cursor and resume, exactly as
+`docs/plan/jobs-handling-recoverable-error.md` describes — not be routed through
+`pending_actions`, which exists for intents that must outlive a process.
+
+### 2. Log-and-forget sites, classified
+
+*Acceptable — discoverable or recomputable* (subject to item 1):
+`remove_reference` failures at `dedup_service.rs:901`, `:989`, `:1105`, `:1311`
+leave an over-count so the blob never reaches 0, which `blobs_consistency`
+recomputes and repairs. `IngestGuard`'s rollback still registers chunks at
+`ref_count = 0`, so GC finds them. Thumbnails and transcodes are pure functions of
+their source.
+
+*Correctly handled:* `persist_migration_readonly(true)` and
+`persist_active_backend_name` both fail the run rather than continuing; the
+readonly RELEASE logs but states the exact consequence and errs conservative.
+
+*Genuinely silent (`let _ = …`, not even logged), all local scratch rather than
+content:* `thumbnail_service.rs:1914` (legacy sidecar unlink — a shrinking set,
+since thumbnails now go to `store_derived_blob`), `s3_blob_backend.rs:211,237`
+(spool removal), `chunked_upload_service.rs` ×6, `image_transcode_service.rs:688`.
+
+### 3. §1d — one walk for two jobs
+
+`backend_rechunk` and `backend_rotate` both read every blob in full. Sharing the
+walk roughly halves the cost for a deployment needing both. An optimisation, never
+a requirement.
+
 ## Not in scope
 
 - **Soft-undelete of blob content.** A queue with a delay window could
