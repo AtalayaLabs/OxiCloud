@@ -13,7 +13,7 @@ heading:
 | §1a `backend_rechunk` job | **DONE** — unit tests + API check green |
 | §1b retire `OXICLOUD_LEGACY_RECHUNK` | **DONE** — deprecation warning; removal next major |
 | §1c convergence visible + `LEGACY-WHOLE-FILE-BLOB` markers | **DONE** — finding + 6 tagged sites |
-| §1d share the walk with `backend_rotate` | TODO — optimisation, not required |
+| §1d share the walk with `backend_rotate` | **CLOSED** — premise was wrong; rechunk is DB-filtered to legacy blobs |
 | §2a schema + atomic enqueue | **DONE** — `storage.pending_actions`, reap-and-enqueue in one statement |
 | §2b `backend_reclaim` drain | **DONE** — scheduled every 300s, per-object `FOR UPDATE SKIP LOCKED` |
 | §2c backlog visibility | **DONE** — depth, oldest-age and parked count on the dedup stats |
@@ -339,14 +339,35 @@ a manifest row). But both pay the same dominant cost: **a full read of every
 blob**, which on a remote backend is the egress bill and the wall-clock, not
 the CPU. They differ only in what they do with the already-decrypted bytes.
 
-So on a metered backend, running both in one pass roughly halves the
-dominant cost. Either share the per-blob walk (cursor, resume, findings —
-machinery `backend_rotate` already has) behind a pluggable per-blob decision,
-or at minimum document that the two should be scheduled together. Relevant to
-any S3 + encryption deployment, which pays twice today.
+**CLOSED — will not do. The premise above is wrong**, and the correction is
+worth keeping because it is the kind of mistake that makes an optimisation look
+attractive.
 
-**Prerequisite for nothing here, simplifier for everything.** Do it first if
-capacity allows; do not block §2/§3 on it.
+"Both read every blob" is true only on a fully pre-CDC instance. The two jobs
+select completely different candidate sets:
+
+| job | candidates |
+|---|---|
+| `backend_rechunk` | `WHERE NOT EXISTS (manifest) AND EXISTS (file)` — **legacy blobs only** |
+| `backend_rotate` | `SELECT hash FROM storage.blobs` — **every blob** |
+
+`backend_rechunk` filters in the DATABASE before reading anything, so it only ever
+touches the legacy subset. Their read sets therefore overlap on that subset alone,
+and a shared walk could save at most its size — never the whole store.
+
+Which makes the optimisation self-defeating: the legacy set is precisely what
+`backend_rechunk` consumes, so the available saving shrinks to zero exactly as the
+migration it would accelerate completes. On a converged instance the candidate
+query returns empty and the job reads nothing, so there is no double-read left to
+remove.
+
+Against that: a shared walk would couple two independently pausable jobs onto one
+cursor, findings stream and lifecycle — and observability is the reason these are
+jobs at all. It is also now a retrofit rather than a design choice.
+
+The residue worth keeping is one sentence of operator guidance, not code: let
+`backend_rechunk` converge before scheduling a rotation, so the legacy blobs are
+read once as chunks rather than twice.
 
 ### 2. Durable deletion intent + a drain job
 
@@ -1690,11 +1711,13 @@ content:* `thumbnail_service.rs:1914` (legacy sidecar unlink — a shrinking set
 since thumbnails now go to `store_derived_blob`), `s3_blob_backend.rs:211,237`
 (spool removal), `chunked_upload_service.rs` ×6, `image_transcode_service.rs:688`.
 
-### 3. §1d — one walk for two jobs
+### 3. §1d — closed, not deferred
 
-`backend_rechunk` and `backend_rotate` both read every blob in full. Sharing the
-walk roughly halves the cost for a deployment needing both. An optimisation, never
-a requirement.
+Reviewed and dropped: the "both read every blob" premise was wrong.
+`backend_rechunk` filters in the database to legacy blobs only, so the overlap
+with `backend_rotate` is that subset alone — and it shrinks to zero as the
+migration completes. See §1d for the full reasoning. The residue is one sentence
+of operator guidance, not code.
 
 ## Not in scope
 
