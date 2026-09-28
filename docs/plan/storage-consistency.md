@@ -20,7 +20,7 @@ heading:
 | §2d `backend_consistency` repair arm | **DONE** — `?repair=true` ENQUEUES; it never deletes |
 | §2e creation side | design note only, no code by design |
 | §2f resurrection race | **DONE** — drain re-verifies under lock; chunk settle cancels before writing |
-| §3 Backoff, and the nested SDK retry | TODO |
+| §3 Backoff, and the nested SDK retry | **DONE** — per-document flush backoff; SDK retry made explicit |
 | §4 Same-content refcount leak | **DONE** — unit + API suite green |
 | §5 Boot: unreachable vs misconfigured | TODO |
 | §6 Cache plaintext — eviction ordering | **DONE** — unit test green |
@@ -1151,6 +1151,26 @@ backing off.
 It self-heals and loses nothing, so severity is low; the fix belongs on the
 collab flush tick (per-document backoff after consecutive transient
 failures), not in the decorator.
+
+**As implemented.** Two fields on the collab actor — `flush_failures` and
+`flush_retry_not_before` — and a `flush_due` that returns false while a backoff is
+outstanding, whatever the debounce thresholds say. The delay doubles from the tick
+interval and caps at five minutes.
+
+Capped rather than unbounded because this must never become "give up": the
+document keeps accepting keystrokes that exist only in memory, so the write has to
+keep being retried until it succeeds or the actor is evicted. The cap is what
+bounds how stale the on-disk copy stays once the backend recovers.
+
+Any success clears it, including a no-op short-circuit — if the path is healthy
+enough to compare hashes, it is healthy. And the log line now states the real
+delay instead of "will retry on next tick", which was the misleading part: it was
+true, and the next tick started a fresh retry budget.
+
+`flush_backoff` is a free function rather than a method so it is testable without
+constructing an `ActorState`; the tests pin the doubling, the cap, that the cap
+HOLDS for a long tick rather than being an artefact of the exponent clamp, and
+that `u32::MAX` failures neither wraps nor panics.
 
 #### And the retry budget is not what it looks like: the SDK retries too
 

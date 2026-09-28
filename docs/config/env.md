@@ -327,7 +327,7 @@ Exponential backoff retries for transient errors on S3 and Azure.
 | Variable | Default | Description |
 |---|---|---|
 | `OXICLOUD_STORAGE_RETRY_ENABLED` | `true` | Enable retry with exponential backoff |
-| `OXICLOUD_STORAGE_RETRY_MAX_RETRIES` | `3` | Maximum retry attempts |
+| `OXICLOUD_STORAGE_RETRY_MAX_RETRIES` | `3` | Maximum retry attempts for the backend decorator. **On S3 the effective budget is multiplicative, not this number**: the AWS SDK retries beneath this layer with its own policy (standard mode, 3 attempts, jittered), so the total is roughly this × the SDK's. The two are deliberate and complementary — the SDK is the better classifier, distinguishing throttling from 5xx from a dead connection, while this is the uniform outer bound across every backend. It is also not a stable multiplier: the SDK's standard mode uses a retry token bucket, so its contribution shrinks under sustained failure, which is exactly the regime an outage creates. Use `RUST_LOG=aws_smithy_runtime=debug` to see the SDK's own attempts if the real number matters. |
 | `OXICLOUD_STORAGE_RETRY_INITIAL_BACKOFF_MS` | `100` | Initial backoff in milliseconds |
 | `OXICLOUD_STORAGE_RETRY_MAX_BACKOFF_MS` | `10000` | Maximum backoff cap in milliseconds |
 | `OXICLOUD_STORAGE_RETRY_BACKOFF_MULTIPLIER` | `2.0` | Backoff multiplier per retry |

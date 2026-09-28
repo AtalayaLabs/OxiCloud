@@ -70,6 +70,35 @@ impl S3BlobBackend {
             .stalled_stream_protection(
                 aws_sdk_s3::config::StalledStreamProtectionConfig::enabled().build(),
             )
+            // Retry policy stated EXPLICITLY, not inherited.
+            //
+            // `behavior_version_latest()` below is load-bearing in a way that is
+            // easy to miss: `aws-smithy-runtime`'s default-retry plugin enables
+            // retries only for AWS SDK clients at BehaviorVersion ≥ v2026-01-12,
+            // and `latest()` IS that version. So the SDK has been retrying
+            // underneath `RetryBlobBackend` since an SDK upgrade — nesting nobody
+            // chose, because `retry_config` was never set here and the enabling
+            // default arrived from outside.
+            //
+            // Setting it makes the behaviour a decision rather than a consequence,
+            // and pins it against the next default change.
+            //
+            // The division of labour is the same one the timeout block above
+            // describes, and for the same reason: the SDK is the better
+            // CLASSIFIER — it distinguishes throttling from 5xx from a dead
+            // connection and jitters between attempts — while the decorator is the
+            // uniform outer bound across every backend. Keeping both is
+            // deliberate; what was wrong was neither layer knowing the other
+            // existed.
+            //
+            // Consequence for operators: the effective budget is MULTIPLICATIVE.
+            // `OXICLOUD_STORAGE_RETRY_MAX_RETRIES` tunes one factor of a product,
+            // not the total. It is also not a stable multiplier — `standard()`
+            // uses a retry token bucket, so the SDK's contribution shrinks under
+            // sustained failure, which is exactly the regime an outage creates.
+            // `RUST_LOG=aws_smithy_runtime=debug` shows the SDK's own attempts if
+            // the real number ever matters.
+            .retry_config(aws_sdk_s3::config::retry::RetryConfig::standard())
             .behavior_version_latest();
 
         if let Some(ref endpoint) = config.endpoint_url {
