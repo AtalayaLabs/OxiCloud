@@ -22,9 +22,9 @@ heading:
 | §2f resurrection race | **DONE** — drain re-verifies under lock; chunk settle cancels before writing |
 | §3 Backoff, and the nested SDK retry | **DONE** — per-document flush backoff; SDK retry made explicit |
 | §4 Same-content refcount leak | **DONE** — unit + API suite green |
-| §5 Boot: unreachable vs misconfigured | TODO |
+| §5 Boot: unreachable vs misconfigured | **DONE** — 60 s bounded retry on transient only |
 | §6 Cache plaintext — eviction ordering | **DONE** — unit test green |
-| §6 Cache plaintext — `backend_cache_cleanup` job | TODO |
+| §6 Cache plaintext — `backend_cache_cleanup` job | **DONE** — hourly, remote backends only |
 
 §4 and §6's ordering fix were taken first deliberately: both are surgical, both
 are independent of the queue, and both are live defects on the reporting instance
@@ -1466,6 +1466,31 @@ Three details for the implementation:
 This also subsumes the one-off problem: plaintext already on disk from before the
 ordering fix ships. Without the job that residue needs an admin to notice it;
 with it, the first scheduled run clears it.
+
+**As implemented.** Hourly, `Mutates::Always`, and registered **only when a cache
+exists** — the cache decorator is built for remote backends only, so on a Local
+deployment there is no second copy of anything to go stale and the job would be a
+directory walk over nothing, forever.
+
+Two implementation notes worth keeping:
+
+* **It walks the DIRECTORY, not the moka index.** The index is in-memory and
+  rebuilt at boot, so an entry the index has forgotten would be invisible to an
+  index-based walk — and those are exactly the files this job exists to find.
+* **DI now retains the concrete `Arc<CachedBlobBackend>`.** The cache is the one
+  layer with storage of its own that needs sweeping, and neither its directory nor
+  its index is reachable through `dyn BlobStorageBackend`. Coercing the handle away
+  at construction, as the code did, would have forced a downcast later.
+
+The grace window errs toward keeping entries in all three ambiguous cases — no
+mtime, an unreadable stat, or a clock that moved backwards — because skipping
+costs one more sweep while guessing wrong deletes a live cache entry. The unit
+tests pin each of those.
+
+**Coverage limitation, stated rather than papered over:** the API suite runs on a
+Local backend, where the cache is disabled, so none of this is exercised
+end-to-end there. The unit tests cover the staleness predicate; a real run needs a
+remote-backend environment, which today means the Azurite suite.
 
 ## Verification
 

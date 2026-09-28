@@ -61,6 +61,95 @@ use interfaces::{
     web::{StaticSource, create_web_routes, resolve_static_source},
 };
 
+/// How long boot will wait for storage that is merely not up YET.
+///
+/// The previous behaviour was a 700 ms total budget — `RetryBlobBackend`'s
+/// 100/200/400 ms — and then a panic. That cannot distinguish a misconfigured
+/// bucket from a network stack that has not finished coming up, and the second is
+/// the case that actually happens: service ordering at boot, a container starting
+/// before its overlay network, a DNS resolver not yet answering.
+const BOOT_STORAGE_RETRY_BUDGET: Duration = Duration::from_secs(60);
+
+/// Build `AppState`, retrying while the failure is TRANSIENT.
+///
+/// Fail-fast on unreachable storage is right, and this keeps it — the argument is
+/// only about which failures deserve a wait. A transient error means the backend
+/// said "not now" (timeout, DNS, connection refused); a permanent one means it
+/// said "no" (bad credentials, missing bucket, unwritable volume). The first can
+/// fix itself within seconds of boot and the second never will, so they get
+/// opposite treatment and, more importantly, opposite MESSAGES.
+///
+/// The old single message advised checking "that the storage volume is writable
+/// by the oxicloud user (UID 1001)" for every failure — which for a DNS failure
+/// sends the operator to entirely the wrong place, and is the part of this that
+/// actually costs time at 3am.
+async fn build_app_state_with_boot_retry(
+    factory: &AppServiceFactory,
+    db_pools: Option<infrastructure::db::DbPools>,
+) -> oxicloud::common::di::AppState {
+    let deadline = std::time::Instant::now() + BOOT_STORAGE_RETRY_BUDGET;
+    let mut delay = Duration::from_secs(1);
+    let mut attempt = 0u32;
+
+    loop {
+        attempt += 1;
+        // `DbPools` is not `Clone`, but `PgPool` is (it is Arc-backed), so each
+        // attempt gets its own handle pair over the same underlying pools.
+        let pools = db_pools.as_ref().map(|p| infrastructure::db::DbPools {
+            primary: p.primary.clone(),
+            maintenance: p.maintenance.clone(),
+        });
+
+        match factory.build_app_state(pools).await {
+            Ok(state) => {
+                if attempt > 1 {
+                    tracing::info!(attempt, "storage backend reachable — continuing boot");
+                }
+                return state;
+            }
+            Err(e) if e.is_transient() && std::time::Instant::now() < deadline => {
+                // Every attempt is logged. A silent wait looks identical to a
+                // hang, and an operator watching a container start needs to see
+                // that it is retrying rather than stuck.
+                tracing::warn!(
+                    attempt,
+                    retry_in_secs = delay.as_secs(),
+                    error = %e,
+                    "storage backend not reachable yet — retrying (waiting up to {}s total)",
+                    BOOT_STORAGE_RETRY_BUDGET.as_secs(),
+                );
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(8));
+            }
+            Err(e) if e.is_transient() => {
+                panic!(
+                    "FATAL: storage backend still unreachable after {}s ({attempt} attempts): {e}\n\
+                     \n\
+                     The error is transient, so this is a connectivity problem rather than a \
+                     configuration one: check that the backend host resolves and is routable \
+                     from this container, that any S3/Azure endpoint is correct and reachable, \
+                     and that a dependent service (network, VPN, object store) finishes starting \
+                     before OxiCloud. If storage genuinely starts slower than this, raise the \
+                     boot budget rather than restarting in a loop.",
+                    BOOT_STORAGE_RETRY_BUDGET.as_secs(),
+                );
+            }
+            Err(e) => {
+                // Not transient: waiting cannot help, so do not pretend it might.
+                panic!(
+                    "FATAL: failed to build application state: {e}\n\
+                     \n\
+                     The error is NOT transient, so this is a configuration or permission \
+                     problem and retrying would not fix it. If running in Docker, ensure the \
+                     storage volume is writable by the oxicloud user (UID 1001); otherwise \
+                     check backend credentials, the bucket or container name, and the \
+                     encryption key material."
+                );
+            }
+        }
+    }
+}
+
 fn parse_addr(host: &str, port: u16) -> Result<SocketAddr, String> {
     // Strip surrounding brackets from IPv6: [::1] -> ::1
     let host = host.trim();
@@ -683,8 +772,7 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
     // Build all services via the factory
     let factory = AppServiceFactory::with_config(storage_path, locales_path, config.clone());
 
-    let app_state = factory.build_app_state(db_pools).await
-        .expect("Failed to build application state. If running in Docker, ensure the storage volume is writable by the oxicloud user (UID 1001)");
+    let app_state = build_app_state_with_boot_retry(&factory, db_pools).await;
 
     // Wrap in Arc so that Axum clones a single refcount per request
     // instead of deep-copying ~42 Arc fields + 16 String/PathBuf allocations.

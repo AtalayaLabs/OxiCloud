@@ -107,6 +107,56 @@ impl CachedBlobBackend {
     fn cached_path(&self, hash: &str) -> PathBuf {
         cached_path_in(&self.cache_dir, hash)
     }
+
+    /// Every hash currently on disk, with its mtime.
+    ///
+    /// Read from the DIRECTORY rather than the moka index deliberately: the index
+    /// is in-memory and rebuilt at boot, so a file the index has forgotten would
+    /// be invisible to an index-based walk — and those are exactly the entries
+    /// `backend_cache_cleanup` exists to find.
+    ///
+    /// The mtime feeds that job's grace window. A cache entry is written BEFORE
+    /// the backend put and well before the PG row, so a fresh entry legitimately
+    /// has no reference yet and must not be mistaken for a stale one.
+    pub async fn cached_entries(&self) -> Vec<(String, Option<std::time::SystemTime>)> {
+        let mut out = Vec::new();
+        let Ok(mut shards) = fs::read_dir(&self.cache_dir).await else {
+            return out;
+        };
+        while let Ok(Some(shard)) = shards.next_entry().await {
+            if !shard.path().is_dir() {
+                continue;
+            }
+            let Ok(mut files) = fs::read_dir(shard.path()).await else {
+                continue;
+            };
+            while let Ok(Some(entry)) = files.next_entry().await {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("blob") {
+                    continue;
+                }
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                let mtime = fs::metadata(&path)
+                    .await
+                    .ok()
+                    .and_then(|m| m.modified().ok());
+                out.push((stem.to_string(), mtime));
+            }
+        }
+        out
+    }
+
+    /// Drop one entry: index first, then the file.
+    ///
+    /// Both halves are needed — the eviction listener only unlinks on
+    /// size-eviction, so an explicit invalidation leaves the file behind unless
+    /// the caller removes it (the same pairing `delete_blob` does).
+    pub async fn evict_cached(&self, hash: &str) {
+        self.index.invalidate(hash);
+        let _ = fs::remove_file(self.cached_path(hash)).await;
+    }
 }
 
 impl BlobStorageBackend for CachedBlobBackend {

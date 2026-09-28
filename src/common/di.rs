@@ -342,6 +342,13 @@ impl AppServiceFactory {
         // per-entry, so they still apply here. `active_backend_kind`
         // gates the "remote-only" decorators the same as before.
         let mut blob_backend: Arc<dyn BlobStorageBackend> = base_backend;
+        // Concrete handle to the disk cache, when one is in the stack. `None` for
+        // Local backends, where the cache is not built at all — which is also why
+        // `backend_cache_cleanup` simply is not registered there: there is no
+        // second copy of anything to go stale.
+        let mut cache_handle: Option<
+            Arc<crate::infrastructure::services::cached_blob_backend::CachedBlobBackend>,
+        > = None;
 
         // Timeout decorator — INNERMOST, and applied to every backend
         // kind including Local.
@@ -434,7 +441,15 @@ impl AppServiceFactory {
                 cache_dir: cache_path,
                 max_cache_bytes: self.config.storage.cache.max_size_bytes,
             };
-            blob_backend = Arc::new(CachedBlobBackend::new(blob_backend, &cfg));
+            // Keep the CONCRETE handle as well as the trait object. The cache is
+            // the only layer whose own storage needs sweeping —
+            // `backend_cache_cleanup` has to walk its directory and invalidate its
+            // index, neither of which is reachable through
+            // `dyn BlobStorageBackend`. Coercing it away here (as this did) is
+            // what would otherwise force a downcast later.
+            let cached = Arc::new(CachedBlobBackend::new(blob_backend, &cfg));
+            cache_handle = Some(cached.clone());
+            blob_backend = cached;
             tracing::info!("Blob storage LRU disk cache enabled");
         }
 
@@ -634,6 +649,7 @@ impl AppServiceFactory {
             blob_backend: blob_backend_for_consistency,
             blob_backend_hot_swap,
             active_backend_name,
+            blob_cache: cache_handle,
         })
     }
 
@@ -1629,6 +1645,29 @@ impl AppServiceFactory {
             Some(crate::infrastructure::services::backend_reclaim_service::RECLAIM_INTERVAL),
         )
         .await;
+
+        // §6: sweep the disk cache for entries whose content is gone.
+        //
+        // Registered only when a cache exists — Local backends have none, so
+        // there is no second copy of anything to go stale. This is about PRIVACY
+        // rather than space: the cache sits outside the encryption wrapper, so
+        // its entries are plaintext while the remote holds ciphertext, and
+        // capacity eviction alone can leave a stale entry indefinitely on a cache
+        // that is not full.
+        if let Some(cache) = core.blob_cache.clone() {
+            let _ = Arc::new(
+                crate::infrastructure::services::backend_cache_cleanup_service::BackendCacheCleanup::new(
+                    maintenance_pool.clone(),
+                    cache,
+                ),
+            )
+            .register_recoverable_job(
+                &core.job_registry,
+                &job_store_provider_dyn,
+                Some(crate::infrastructure::services::backend_cache_cleanup_service::CACHE_CLEANUP_INTERVAL),
+            )
+            .await;
+        }
 
         // §1 of the storage-consistency plan: the pre-CDC re-chunk migration,
         // promoted from a detached boot task to a job. Registered here rather
@@ -3420,6 +3459,14 @@ pub struct CoreServices {
     /// longer required for cutover.
     pub blob_backend_hot_swap:
         Arc<crate::infrastructure::services::swappable_blob_backend::SwappableBlobBackend>,
+    /// The disk cache, when one is in the stack (remote backends only).
+    ///
+    /// Kept as the concrete type because the cache is the one layer with storage
+    /// of its own that needs sweeping: `backend_cache_cleanup` walks its directory
+    /// and invalidates its index, and neither is reachable through
+    /// `dyn BlobStorageBackend`.
+    pub blob_cache:
+        Option<Arc<crate::infrastructure::services::cached_blob_backend::CachedBlobBackend>>,
     /// Name of the storage entry the LIVE `blob_backend` was built
     /// from. Populated at boot: either from
     /// `admin_settings.storage.active_backend_name` when set, or the
