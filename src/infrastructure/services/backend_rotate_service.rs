@@ -140,7 +140,10 @@ impl RecoverableJobHandler for BackendRotateService {
          entry's current head key: encrypts plaintext, re-encrypts under a \
          rotated key, decrypts when the head is 'none', and upgrades \
          legacy blobs to v1. Blobs already in the right format are skipped, \
-         so re-running after a key change is cheap."
+         so re-running after a key change is cheap. Reads EVERY blob, unlike \
+         backend_rechunk which the database filters down to pre-CDC ones — so \
+         on a metered backend let backend_rechunk converge first, and the \
+         legacy blobs get read once as chunks instead of twice."
     }
 
     fn parameters(&self) -> &'static [crate::infrastructure::scheduler::JobParam] {

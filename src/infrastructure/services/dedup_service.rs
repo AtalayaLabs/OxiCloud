@@ -18,6 +18,25 @@
 //! blobs in `storage.blobs`) are served transparently — when no manifest
 //! row exists for a hash, the service falls back to direct blob reads.
 //!
+//! ## `LEGACY-WHOLE-FILE-BLOB` — the tag, and what it is for
+//!
+//! Those fallbacks are tagged with that string so the whole set can be found
+//! with one grep. They exist only for content written before CDC chunking:
+//! `store_from_stream` always writes a manifest, so nothing on a current build
+//! can create a new whole-file blob.
+//!
+//! **The removal criterion is a number, not a judgement call:** once
+//! `backend_rechunk` reports zero legacy blobs, no input reaches any tagged
+//! branch and every one of them can go. That is the whole reason the
+//! conversion was promoted from a detached boot task to a job — "is it safe to
+//! delete these?" needs an answer an operator can read off the admin panel,
+//! not one inferred from boot logs.
+//!
+//! Until then they are load-bearing: a blob the sweep has not reached yet is
+//! still served through them, which is what makes the migration safe to run
+//! incrementally. Delete them as one change, with the count in the commit
+//! message. See `docs/plan/storage-consistency.md` §1.
+//!
 //! **Single-pass streaming ingest** (store_from_stream):
 //!   1. FastCDC boundaries, per-chunk BLAKE3 and the whole-file BLAKE3 are
 //!      all computed WHILE the bytes arrive — no spool file, no mmap
@@ -604,8 +623,24 @@ fn blob_reap_sql(registry: &BlobReferenceRegistry) -> String {
              predicate would lose its registry cross-check",
         );
 
+    // The row delete and the queue insert are ONE statement, so they commit
+    // together or not at all. That atomicity is the whole fix: previously the
+    // row went first and the unlink followed best-effort, so a failed unlink
+    // left bytes with no row — invisible to this very sweep, which is
+    // DB-driven. A crash between the two steps had the same effect.
+    //
+    // `ON CONFLICT (hash, action) DO NOTHING`, never DO UPDATE: the intent is
+    // idempotent, and resetting `attempts` / `last_error` / `parked_at` would
+    // defeat the backoff exactly under churn, silently un-park entries a human
+    // parked, and destroy the diagnostic. The one case that should get a clean
+    // slate — a hash re-uploaded then dereferenced again — already does, because
+    // the re-upload DELETES the row (see the resurrection race in the plan).
+    //
+    // `entry_name` is left NULL, meaning "drain via the active backend" — see
+    // the migration for why nothing can name the entry here.
     format!(
-        "DELETE FROM storage.blobs
+        "WITH reaped AS (
+             DELETE FROM storage.blobs
                   WHERE ctid = ANY(
                       SELECT b.ctid FROM storage.blobs b
                        WHERE b.ref_count <= 0
@@ -622,7 +657,13 @@ fn blob_reap_sql(registry: &BlobReferenceRegistry) -> String {
                          AND {unreferenced}
                        LIMIT $1
                   )
-                  RETURNING hash, size"
+                  RETURNING hash, size
+         ), queued AS (
+             INSERT INTO storage.pending_actions (hash, action, object, size_bytes)
+             SELECT hash, 'deletion', 'blob', size FROM reaped
+             ON CONFLICT (hash, action) DO NOTHING
+         )
+         SELECT hash, size FROM reaped"
     )
 }
 
@@ -2255,14 +2296,74 @@ impl DedupService {
             return Ok(());
         }
 
+        // ── Cancel any queued deletion for the chunks we are about to write ──
+        //
+        // These hashes have NO live `storage.blobs` row — that is exactly what
+        // made them "ours to write" above — and a hash with no row is precisely
+        // the state `dedup_gc` leaves behind when it reaps: row deleted, deletion
+        // intent queued, bytes still on the backend. So the bytes we are about to
+        // rely on may be scheduled for unlinking.
+        //
+        // `DELETE … RETURNING` is the whole serialisation, and the ordering is
+        // what makes it correct: cancel BEFORE writing.
+        //
+        //   * Row present → we delete it, `backend_reclaim` can never act on that
+        //     hash again, and our write stands.
+        //   * Row absent because the drain already committed → the bytes are gone
+        //     with it, so the write below actually writes.
+        //   * Drain mid-unlink, holding the row lock → this DELETE WAITS for its
+        //     transaction, and once it commits we are in the previous case.
+        //
+        // The wait is the point. A plain `DELETE` blocks where the drain's
+        // `FOR UPDATE SKIP LOCKED` skips, and that asymmetry is deliberate: the
+        // drain has a thousand other rows it could do, while this upload needs
+        // *this* hash and proceeding as though the object were safe is the
+        // data-loss outcome.
+        //
+        // Without this, the deletion queue would make things WORSE than the
+        // best-effort unlink it replaced: the window between "row reaped" and
+        // "bytes unlinked" grows from sub-second to the drain interval, and an
+        // upload landing inside it would adopt bytes about to be deleted.
+        let contested: HashSet<String> = {
+            let hashes: Vec<&str> = to_write.iter().map(|(h, _)| h.as_str()).collect();
+            sqlx::query_scalar::<_, String>(
+                "DELETE FROM storage.pending_actions
+                  WHERE hash = ANY($1) AND action = 'deletion'
+                  RETURNING hash",
+            )
+            .bind(&hashes)
+            .fetch_all(pool.as_ref())
+            .await
+            .map_err(|e| {
+                DomainError::internal_error(
+                    "Dedup",
+                    format!("Failed to cancel queued deletions for incoming chunks: {e}"),
+                )
+            })?
+            .into_iter()
+            .collect()
+        };
+
         // Unsynced writes — durability comes from the single end-of-stream
         // sweep, before any PG row references these chunks.
         let results: Vec<Result<(String, i64), DomainError>> = stream::iter(to_write)
             .map(|(hash, data)| {
                 let backend = backend.clone();
+                let rewrite = contested.contains(&hash);
                 async move {
                     let len = data.len() as i64;
-                    backend.put_blob_from_bytes_unsynced(&hash, data).await?;
+                    if rewrite {
+                        // Queued for deletion means nothing referenced these
+                        // bytes, so their provenance is unverified — a truncated
+                        // or half-written object from an earlier failure would be
+                        // silently adopted by the idempotent-skip path, which
+                        // writes nothing when the object merely EXISTS. Rewrite
+                        // instead. Paid only on this rare path, and it makes a
+                        // re-upload self-heal an orphan rather than inherit it.
+                        backend.put_blob_from_bytes_replace(&hash, data).await?;
+                    } else {
+                        backend.put_blob_from_bytes_unsynced(&hash, data).await?;
+                    }
                     Ok((hash, len))
                 }
             })
@@ -2388,6 +2489,7 @@ impl DedupService {
     }
 
     /// Get metadata for a blob (manifest-aware with legacy fallback).
+    /// `LEGACY-WHOLE-FILE-BLOB` — deletable once `backend_rechunk` reports zero.
     pub async fn get_blob_metadata(&self, hash: &str) -> Option<BlobMetadataDto> {
         // Check manifest first
         let manifest = sqlx::query_as::<_, (i64, i32, Option<String>)>(
@@ -2428,6 +2530,7 @@ impl DedupService {
     }
 
     /// Add a reference (manifest-aware with legacy fallback).
+    /// `LEGACY-WHOLE-FILE-BLOB` — deletable once `backend_rechunk` reports zero.
     pub async fn add_reference(&self, hash: &str) -> Result<(), DomainError> {
         // Try manifest first
         let manifest_affected = sqlx::query(
@@ -2485,6 +2588,7 @@ impl DedupService {
     }
 
     /// Remove a reference from a blob (manifest-aware with legacy fallback).
+    /// `LEGACY-WHOLE-FILE-BLOB` — deletable once `backend_rechunk` reports zero.
     ///
     /// For CDC manifests: decrements manifest ref_count.  When it reaches 0
     /// the manifest is deleted and all chunk ref_counts are decremented;
@@ -2630,6 +2734,7 @@ impl DedupService {
     }
 
     /// Remove a reference from a legacy whole-file blob.
+    /// `LEGACY-WHOLE-FILE-BLOB` — deletable once `backend_rechunk` reports zero.
     async fn remove_legacy_reference(&self, hash: &str) -> Result<bool, DomainError> {
         let mut tx = self.pool.begin().await.map_err(|e| {
             DomainError::internal_error("Dedup", format!("Failed to begin transaction: {}", e))
@@ -2657,26 +2762,39 @@ impl DedupService {
 
         if new_ref_count == 0 {
             // Last reference — delete row from PG
-            sqlx::query("DELETE FROM storage.blobs WHERE hash = $1")
-                .bind(hash)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| {
-                    DomainError::internal_error(
-                        "Dedup",
-                        format!("Failed to delete blob row: {}", e),
-                    )
-                })?;
+            // Row delete and deletion intent in ONE statement, inside the
+            // caller's transaction — the same shape as `blob_reap_sql`.
+            //
+            // This path used to delete the row, commit, then unlink the object
+            // best-effort with a `warn!`. That is the defect that stranded 29
+            // blobs via `dedup_gc`: once the row is gone nothing DB-driven can
+            // ever look at the hash again, so a failed unlink was unrecoverable
+            // and invisible. It reaches here too — and note this path also serves
+            // DERIVED and ATTACHED artifacts, which have no unlink path of their
+            // own: `purge_derived_blobs` drops the mapping rows and calls
+            // `remove_reference` on each, so they land in exactly this code.
+            sqlx::query(
+                "WITH reaped AS (
+                     DELETE FROM storage.blobs WHERE hash = $1
+                     RETURNING hash, size
+                 )
+                 INSERT INTO storage.pending_actions (hash, action, object, size_bytes)
+                 SELECT hash, 'deletion', 'blob', size FROM reaped
+                 ON CONFLICT (hash, action) DO NOTHING",
+            )
+            .bind(hash)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                DomainError::internal_error("Dedup", format!("Failed to delete blob row: {}", e))
+            })?;
 
             tx.commit().await.map_err(|e| {
                 DomainError::internal_error("Dedup", format!("Failed to commit: {}", e))
             })?;
 
-            // Delete blob from backend AFTER committing PG — the row is gone,
-            // so no concurrent ingest can resurrect a reference.
-            if let Err(e) = self.backend.delete_blob(hash).await {
-                tracing::warn!("Failed to delete blob file {}: {}", hash, e);
-            }
+            // No unlink here. `backend_reclaim` owns it, and owns the retry that
+            // a best-effort call in this position could never have.
 
             // Bug 3 fix: notify hooks — e.g. thumbnail cleanup keyed by hash
             self.reap_blob(hash).await;
@@ -2763,13 +2881,24 @@ impl DedupService {
         // Callers can keep invoking `cleanup_if_orphaned` unconditionally
         // — for CDC paths it's a cheap no-op (manifest still exists OR
         // the hash never had a blob row), for legacy paths it reaps.
+        // Row delete and deletion intent in ONE statement — same reasoning as
+        // `remove_legacy_reference` above and `blob_reap_sql`: the moment this row
+        // is gone, nothing DB-driven can find the hash again, so a best-effort
+        // unlink after the fact is unrecoverable if it fails.
         let deleted_blob = sqlx::query_scalar::<_, String>(
-            "DELETE FROM storage.blobs \
-                WHERE hash = $1 \
-                  AND ref_count <= 0 \
-                  AND NOT EXISTS (SELECT 1 FROM storage.chunk_manifests \
-                                    WHERE $1 = ANY(chunk_hashes)) \
-              RETURNING hash",
+            "WITH reaped AS ( \
+                 DELETE FROM storage.blobs \
+                     WHERE hash = $1 \
+                       AND ref_count <= 0 \
+                       AND NOT EXISTS (SELECT 1 FROM storage.chunk_manifests \
+                                         WHERE $1 = ANY(chunk_hashes)) \
+                   RETURNING hash, size \
+             ), queued AS ( \
+                 INSERT INTO storage.pending_actions (hash, action, object, size_bytes) \
+                 SELECT hash, 'deletion', 'blob', size FROM reaped \
+                 ON CONFLICT (hash, action) DO NOTHING \
+             ) \
+             SELECT hash FROM reaped",
         )
         .bind(hash)
         .fetch_optional(self.pool.as_ref())
@@ -2777,11 +2906,9 @@ impl DedupService {
         .unwrap_or(None);
 
         if deleted_blob.is_some() {
-            if let Err(e) = self.backend.delete_blob(hash).await {
-                tracing::warn!("cleanup_if_orphaned: disk delete failed for {short}: {e}");
-            }
+            // No unlink here either — `backend_reclaim` owns it.
             self.reap_blob(hash).await;
-            tracing::info!("cleanup_if_orphaned: removed orphaned legacy blob {short}");
+            tracing::info!("cleanup_if_orphaned: queued orphaned legacy blob {short} for reclaim");
         }
     }
 
@@ -2877,6 +3004,7 @@ impl DedupService {
     }
 
     /// Stream blob content — CDC-aware with legacy fallback.
+    /// `LEGACY-WHOLE-FILE-BLOB` — deletable once `backend_rechunk` reports zero.
     ///
     /// For CDC files: looks up the manifest (RAM-cached), then streams
     /// chunks in order, concatenating them into a single byte stream.
@@ -3130,6 +3258,33 @@ impl DedupService {
             1.0
         };
 
+        // Deletion-queue backlog, in one round trip.
+        //
+        // Reported beside the storage figures because it qualifies them:
+        // `total_bytes_stored` counts bytes whose rows are already gone and
+        // whose unlink has not happened yet, so a large backlog means the
+        // storage number is an over-count rather than live usage.
+        //
+        // Defaults to zeroes on error rather than failing the whole stats call —
+        // an unreadable queue must not blank out the storage figures an operator
+        // came for. The table may also legitimately not exist yet on an instance
+        // mid-migration.
+        let (reclaim_pending, reclaim_oldest_secs, reclaim_parked): (i64, i64, i64) =
+            sqlx::query_as(
+                "SELECT
+                     COUNT(*) FILTER (WHERE parked_at IS NULL),
+                     COALESCE(
+                         EXTRACT(EPOCH FROM (now() - MIN(requested_at)
+                             FILTER (WHERE parked_at IS NULL)))::bigint,
+                         0),
+                     COUNT(*) FILTER (WHERE parked_at IS NOT NULL)
+                   FROM storage.pending_actions
+                  WHERE action = 'deletion'",
+            )
+            .fetch_one(self.pool.as_ref())
+            .await
+            .unwrap_or((0, 0, 0));
+
         DedupStatsDto {
             total_blobs,
             total_bytes_stored,
@@ -3137,6 +3292,9 @@ impl DedupService {
             bytes_saved,
             dedup_hits: 0,
             dedup_ratio,
+            reclaim_pending: reclaim_pending.max(0) as u64,
+            reclaim_oldest_secs: reclaim_oldest_secs.max(0) as u64,
+            reclaim_parked: reclaim_parked.max(0) as u64,
         }
     }
 
@@ -3598,27 +3756,23 @@ impl DedupService {
             }
             let n = batch.len();
 
-            // The rows are already gone, so a concurrent re-upload of identical
-            // content recreates both row and file (durability before
-            // visibility); the grace window above keeps that race vanishingly
-            // narrow. Unlink the backing files with bounded fan-out so a large
-            // sweep doesn't serialise on a slow (e.g. S3) backend.
-            let backend = self.backend.clone();
-            let deleted: Vec<(String, i64)> = stream::iter(batch)
-                .map(|(hash, size)| {
-                    let backend = backend.clone();
-                    async move {
-                        if let Err(e) = backend.delete_blob(&hash).await {
-                            tracing::warn!("Failed to delete orphan blob {hash}: {e}");
-                        }
-                        (hash, size)
-                    }
-                })
-                .buffer_unordered(Self::CHUNK_UPLOAD_CONCURRENCY)
-                .collect()
-                .await;
-
-            for (hash, size) in &deleted {
+            // NO backend unlink here any more. The statement above enqueued each
+            // reaped hash into `storage.pending_actions` in the same transaction
+            // as the row delete, and `backend_reclaim` unlinks from there.
+            //
+            // This is the fix for the 29 stranded blobs. The unlink used to
+            // happen right here, best-effort, with a `warn!` on failure — and a
+            // failure left bytes that this sweep could never see again, because
+            // it selects from `storage.blobs` and the row was already gone. The
+            // work is not being deferred for elegance: it is being made
+            // RETRYABLE, which a fire-and-forget call in a loop cannot be.
+            //
+            // Division of labour, now that two jobs share one deletion:
+            // `dedup_gc` decides what is unreferenced and records the intent;
+            // `backend_reclaim` acts on the intent and clears it. Neither does
+            // the other's work, and `dedup_gc` no longer touches the backend at
+            // all — so its runtime stops depending on backend latency.
+            for (hash, size) in &batch {
                 self.reap_blob(hash).await;
                 total_bytes += *size as u64;
             }
@@ -3686,10 +3840,68 @@ impl DedupService {
         .map_err(|e| DomainError::internal_error("Dedup", format!("Count legacy blobs: {e}")))
     }
 
+    /// One page of the migration's work queue, ordered by hash and starting
+    /// strictly after `cursor`.
+    ///
+    /// Same predicate as [`Self::count_legacy_blobs`] — a blob with no
+    /// manifest that at least one file still references.
+    ///
+    /// Keyset paging on `hash` rather than the in-memory exclusion list
+    /// [`Self::rechunk_legacy_blobs`] carries: a hash that fails conversion is
+    /// passed over simply because the cursor has advanced beyond it, so the
+    /// sweep cannot loop on a corrupt blob without the caller tracking
+    /// anything. It is also what lets the run resume after a pause, which an
+    /// in-memory list cannot survive.
+    pub async fn legacy_blob_candidates_after(
+        &self,
+        cursor: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<(String, Option<String>)>, DomainError> {
+        sqlx::query_as(
+            "SELECT b.hash, b.content_type FROM storage.blobs b
+              WHERE NOT EXISTS (SELECT 1 FROM storage.chunk_manifests m
+                                 WHERE m.file_hash = b.hash)
+                AND EXISTS (SELECT 1 FROM storage.files f
+                             WHERE f.blob_hash = b.hash)
+                AND ($2::text IS NULL OR b.hash > $2)
+              ORDER BY b.hash
+              LIMIT $1",
+        )
+        .bind(limit)
+        .bind(cursor)
+        .fetch_all(self.maintenance_pool.as_ref())
+        .await
+        .map_err(|e| DomainError::internal_error("Dedup", format!("Legacy candidate page: {e}")))
+    }
+
+    /// [`Self::rechunk_one_legacy_blob`] for the `backend_rechunk` job, which
+    /// owns the walk so it can checkpoint and honour a cancel.
+    ///
+    /// Returns what changed so the job can record it as a finding — see
+    /// [`RechunkedBlob`].
+    pub async fn rechunk_legacy_blob(
+        &self,
+        hash: &str,
+        content_type: Option<String>,
+    ) -> Result<RechunkedBlob, DomainError> {
+        self.rechunk_one_legacy_blob(hash, content_type).await
+    }
+
     /// Spawn the legacy re-chunk migration as a background task.
     ///
     /// Zero-cost when no legacy blobs exist (one COUNT query, debug log).
     /// Called from the composition root after `initialize()`.
+    ///
+    /// **Superseded by the `backend_rechunk` job, and no longer called.** The
+    /// composition root used to spawn this at boot; the job is now in the default
+    /// `OXICLOUD_STARTUP_JOBS` instead, so the sweep still runs on every start
+    /// but with an admin trigger, run history, findings and a resumable cursor —
+    /// "has this converged on my instance?" stopped being a question you answer
+    /// by reading boot logs.
+    ///
+    /// Kept as public API for one release so an embedder calling it directly is
+    /// not broken without warning. Delete it with `OXICLOUD_LEGACY_RECHUNK`
+    /// (`docs/plan/storage-consistency.md` §1b).
     pub fn spawn_legacy_rechunk(self: &Arc<Self>) {
         let svc = Arc::clone(self);
         tokio::spawn(async move {
@@ -3764,9 +3976,9 @@ impl DedupService {
 
             for (hash, content_type) in batch {
                 match self.rechunk_one_legacy_blob(&hash, content_type).await {
-                    Ok(freed) => {
+                    Ok(converted) => {
                         report.migrated += 1;
-                        report.freed_bytes += freed;
+                        report.freed_bytes += converted.freed_bytes;
                         if report.migrated % 50 == 0 {
                             tracing::info!(
                                 "Legacy re-chunk progress: {} migrated, {} failed",
@@ -3806,7 +4018,7 @@ impl DedupService {
         &self,
         hash: &str,
         content_type: Option<String>,
-    ) -> Result<u64, DomainError> {
+    ) -> Result<RechunkedBlob, DomainError> {
         // ── 1. Stream + verify (decrypts via the normal read path) ──
         // The chunk store is fed directly from the blob read stream — no
         // spool file. Sizes come from the CDC pass over the hash-verified
@@ -3832,14 +4044,22 @@ impl DedupService {
         .map_err(|e| DomainError::internal_error("Dedup", format!("Rechunk lock blob: {e}")))?
         .is_some();
 
-        let file_refs: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM storage.files WHERE blob_hash = $1")
+        // The ids, not just a count — this is a migration that rewrites how a
+        // file's content is stored, so if anything looks wrong afterwards the
+        // first question is "which files did it touch?". Answering that from a
+        // count is impossible, and reconstructing it later is impossible too:
+        // the whole point of the conversion is that the file no longer
+        // references this hash directly. Same predicate and same transaction as
+        // the COUNT it replaces, so `file_refs` below is identical.
+        let file_ids: Vec<uuid::Uuid> =
+            sqlx::query_scalar("SELECT id FROM storage.files WHERE blob_hash = $1")
                 .bind(hash)
-                .fetch_one(&mut *tx)
+                .fetch_all(&mut *tx)
                 .await
                 .map_err(|e| {
                     DomainError::internal_error("Dedup", format!("Rechunk count refs: {e}"))
                 })?;
+        let file_refs: i64 = file_ids.len() as i64;
 
         // ref_count = N file references; if every reference vanished while
         // we were spooling, the zero-ref manifest is swept by the existing
@@ -3870,7 +4090,7 @@ impl DedupService {
             tx.rollback().await.ok();
             self.release_chunk_refs(self.maintenance_pool.as_ref(), &chunk_hashes)
                 .await;
-            return Ok(0);
+            return Ok(RechunkedBlob::default());
         }
 
         // The N file references now live on the manifest; remove them from
@@ -3915,16 +4135,71 @@ impl DedupService {
         if blob_row_deleted && !chunk_hashes.iter().any(|c| c == hash) {
             match self.backend.delete_blob(hash).await {
                 Ok(()) => freed = total_size,
-                Err(e) => tracing::warn!(
-                    "Legacy re-chunk: converted {} but failed to delete the \
-                     old whole-file blob (GC will not retry — row is gone): {e}",
-                    &hash[..hash.len().min(12)],
-                ),
+                Err(e) => {
+                    // Don't just warn. The blob row is gone, so nothing
+                    // DB-driven can ever look at this hash again — the old
+                    // comment here said as much ("GC will not retry — row is
+                    // gone"), which is the precise shape of the defect that
+                    // stranded 29 blobs. Record the intent so `backend_reclaim`
+                    // retries it.
+                    //
+                    // The fast path is unchanged: the unlink is attempted inline
+                    // and usually succeeds, so the object is normally gone before
+                    // this function returns. Only the failure becomes durable
+                    // instead of lost.
+                    if let Err(q) = sqlx::query(
+                        "INSERT INTO storage.pending_actions
+                             (hash, action, object, size_bytes)
+                         VALUES ($1, 'deletion', 'blob', $2)
+                         ON CONFLICT (hash, action) DO NOTHING",
+                    )
+                    .bind(hash)
+                    .bind(total_size as i64)
+                    .execute(self.maintenance_pool.as_ref())
+                    .await
+                    {
+                        tracing::error!(
+                            "Legacy re-chunk: converted {} but could neither delete the old \
+                             whole-file blob ({e}) nor queue it for reclaim ({q}) — those bytes \
+                             are leaked until backend_consistency finds them",
+                            &hash[..hash.len().min(12)],
+                        );
+                    } else {
+                        tracing::warn!(
+                            "Legacy re-chunk: converted {} but failed to delete the old \
+                             whole-file blob ({e}) — queued for backend_reclaim",
+                            &hash[..hash.len().min(12)],
+                        );
+                    }
+                }
             }
         }
 
-        tracing::debug!(
-            "Legacy re-chunk: {} → {} chunk(s), {} file ref(s) moved to manifest{}",
+        // On the AUDIT channel, at `info`, naming the FILES and not just the
+        // hash.
+        //
+        // Audit rather than plain operational logging, for consistency with what
+        // is already there: `job.trigger` is an audit event
+        // (`admin_handler.rs:3022`), so an operator filtering the audit channel
+        // for what a job run did would otherwise see it start and never see what
+        // it changed. This migration rewrites how a file's content is stored, so
+        // "did this job touch the file that is now misbehaving?" is exactly the
+        // question the audit channel exists to answer.
+        //
+        // `info` rather than the previous `debug`: at debug the answer was absent
+        // from every normal deployment's logs. Bounded by construction — the work
+        // queue only shrinks and nothing creates new whole-file blobs, so this is
+        // one line per blob ONCE per instance, not steady-state chatter.
+        tracing::info!(
+            target: "audit",
+            event = "storage.blob_rechunked",
+            hash = %hash,
+            chunk_count = chunk_hashes.len(),
+            file_refs,
+            file_ids = ?file_ids,
+            freed_bytes = freed,
+            whole_file_blob_freed = blob_row_deleted,
+            "🧩 legacy re-chunk: {} → {} chunk(s), {} file ref(s) moved to manifest{}",
             &hash[..hash.len().min(12)],
             chunk_hashes.len(),
             file_refs,
@@ -3935,7 +4210,11 @@ impl DedupService {
             },
         );
 
-        Ok(freed)
+        Ok(RechunkedBlob {
+            freed_bytes: freed,
+            chunk_count: chunk_hashes.len(),
+            file_ids,
+        })
     }
 
     /// Re-chunk one legacy whole-file blob straight from the backend read
@@ -3984,6 +4263,25 @@ impl DedupService {
             tracing::warn!("Dedup: failed to release chunk refs: {e}");
         }
     }
+}
+
+/// What converting ONE legacy whole-file blob changed.
+///
+/// Returned rather than only logged so `backend_rechunk` can record it as a
+/// finding: logs rotate, and a migration that rewrites how a file's content is
+/// stored is exactly the thing an operator wants a durable, drillable record of
+/// weeks later. The file ids are the load-bearing part — after the conversion
+/// the file no longer references this hash directly, so "which files did that
+/// blob belong to?" becomes unanswerable from the database alone.
+#[derive(Debug, Default, Clone)]
+pub struct RechunkedBlob {
+    /// Physical bytes freed — 0 when the blob doubles as its own single chunk.
+    pub freed_bytes: u64,
+    /// Chunks the content was split into.
+    pub chunk_count: usize,
+    /// Files whose content this blob held, and whose references moved onto the
+    /// new manifest.
+    pub file_ids: Vec<uuid::Uuid>,
 }
 
 /// Outcome of a [`DedupService::rechunk_legacy_blobs`] sweep.
@@ -4244,10 +4542,20 @@ mod tests {
     /// hardcoded `NOT EXISTS` guards **and** the registry predicate, ANDed.
     /// The registry fragment is not a replacement here — see `blob_reap_sql`
     /// for why substituting it would reap a legacy blob row mid-rechunk.
+    ///
+    /// It now also pins the `pending_actions` arm, which is the load-bearing
+    /// part of the whole storage-consistency fix: the row delete and the
+    /// deletion-intent insert must remain in ONE statement, so they commit
+    /// together. Split them and a crash — or any failure — between the two
+    /// strands bytes with no row, invisible to this very sweep because it
+    /// selects from `storage.blobs`. That is how 29 orphaned blobs accumulated.
+    /// `ON CONFLICT (hash, action) DO NOTHING` is equally deliberate: DO UPDATE
+    /// would reset the drain's backoff and un-park entries a human parked.
     #[tokio::test]
     async fn blob_reap_statement_is_stable() {
         let sql = DedupService::new_stub().blob_reap_sql;
-        let expected = r#"DELETE FROM storage.blobs
+        let expected = r#"WITH reaped AS (
+             DELETE FROM storage.blobs
                   WHERE ctid = ANY(
                       SELECT b.ctid FROM storage.blobs b
                        WHERE b.ref_count <= 0
@@ -4265,7 +4573,13 @@ mod tests {
         OR EXISTS (SELECT 1 FROM storage.chunk_manifests cnt_m WHERE b.hash = ANY(cnt_m.chunk_hashes)))
                        LIMIT $1
                   )
-                  RETURNING hash, size"#;
+                  RETURNING hash, size
+         ), queued AS (
+             INSERT INTO storage.pending_actions (hash, action, object, size_bytes)
+             SELECT hash, 'deletion', 'blob', size FROM reaped
+             ON CONFLICT (hash, action) DO NOTHING
+         )
+         SELECT hash, size FROM reaped"#;
         assert_eq!(sql, expected, "blob reap statement changed:\n{sql}");
     }
 
@@ -5296,6 +5610,35 @@ mod delta_upload_integration_tests {
             .expect("blob query")
     }
 
+    /// Is this hash sitting in the deletion queue?
+    ///
+    /// Reclamation is two phases now: `garbage_collect` deletes the row and
+    /// records the intent in the SAME transaction, and `backend_reclaim` unlinks
+    /// the object. So "the row is gone" no longer implies "the bytes are gone",
+    /// and a test asserting the second immediately after GC is asserting the old
+    /// contract.
+    async fn queued_for_deletion(pool: &PgPool, hash: &str) -> bool {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM storage.pending_actions
+                             WHERE hash = $1 AND action = 'deletion')",
+        )
+        .bind(hash)
+        .fetch_one(pool)
+        .await
+        .expect("pending_actions query")
+    }
+
+    /// Drain one hash through the REAL `backend_reclaim` settle path.
+    ///
+    /// Deliberately not a test-local "unlink then delete the row": that would
+    /// pass while production diverged from it, and the whole point of the settle
+    /// path is the re-verify and the row lock it does on the way.
+    async fn drain_one(svc: &DedupService, pool: &Arc<PgPool>, hash: &str) {
+        use crate::infrastructure::services::backend_reclaim_service::BackendReclaim;
+        let reclaim = BackendReclaim::new(pool.clone(), svc.backend().clone());
+        reclaim.settle_one(hash, None).await;
+    }
+
     async fn cleanup(pool: &PgPool, file_hash: &str, file_id: Uuid, extra_hashes: &[String]) {
         let chunks: Option<Vec<String>> = sqlx::query_scalar(
             "SELECT chunk_hashes FROM storage.chunk_manifests WHERE file_hash = $1",
@@ -5555,9 +5898,26 @@ mod delta_upload_integration_tests {
             blob_ref(&pool, &aged).await.is_none(),
             "aged orphan row removed"
         );
+        // Two phases: GC records the intent, the drain does the unlink. Asserting
+        // the bytes are gone right after GC would be asserting the old contract —
+        // and the queue exists precisely so a failed unlink survives to be
+        // retried instead of stranding bytes with no row.
+        assert!(
+            queued_for_deletion(&pool, &aged).await,
+            "aged orphan queued for reclamation"
+        );
+        assert!(
+            svc.backend().blob_exists(&aged).await.unwrap(),
+            "bytes stay until the drain runs"
+        );
+        drain_one(&svc, &pool, &aged).await;
         assert!(
             !svc.backend().blob_exists(&aged).await.unwrap(),
-            "aged orphan file unlinked"
+            "aged orphan file unlinked by the drain"
+        );
+        assert!(
+            !queued_for_deletion(&pool, &aged).await,
+            "queue row cleared once the object is gone"
         );
         // Fresh orphan preserved by the grace window.
         assert_eq!(
@@ -5752,9 +6112,18 @@ mod delta_upload_integration_tests {
         svc.garbage_collect().await.expect("gc");
         for c in &chunks {
             assert!(blob_ref(&pool, c).await.is_none(), "chunk row reclaimed");
+            // GC records the intent; the drain unlinks. See the comment in
+            // `garbage_collect_honours_grace_window_and_references`.
+            assert!(
+                queued_for_deletion(&pool, c).await,
+                "chunk queued for reclamation"
+            );
+        }
+        for c in &chunks {
+            drain_one(&svc, &pool, c).await;
             assert!(
                 !svc.backend().blob_exists(c).await.unwrap(),
-                "chunk file reclaimed"
+                "chunk file reclaimed by the drain"
             );
         }
 

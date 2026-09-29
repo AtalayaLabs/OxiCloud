@@ -107,6 +107,56 @@ impl CachedBlobBackend {
     fn cached_path(&self, hash: &str) -> PathBuf {
         cached_path_in(&self.cache_dir, hash)
     }
+
+    /// Every hash currently on disk, with its mtime.
+    ///
+    /// Read from the DIRECTORY rather than the moka index deliberately: the index
+    /// is in-memory and rebuilt at boot, so a file the index has forgotten would
+    /// be invisible to an index-based walk — and those are exactly the entries
+    /// `backend_cache_cleanup` exists to find.
+    ///
+    /// The mtime feeds that job's grace window. A cache entry is written BEFORE
+    /// the backend put and well before the PG row, so a fresh entry legitimately
+    /// has no reference yet and must not be mistaken for a stale one.
+    pub async fn cached_entries(&self) -> Vec<(String, Option<std::time::SystemTime>)> {
+        let mut out = Vec::new();
+        let Ok(mut shards) = fs::read_dir(&self.cache_dir).await else {
+            return out;
+        };
+        while let Ok(Some(shard)) = shards.next_entry().await {
+            if !shard.path().is_dir() {
+                continue;
+            }
+            let Ok(mut files) = fs::read_dir(shard.path()).await else {
+                continue;
+            };
+            while let Ok(Some(entry)) = files.next_entry().await {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("blob") {
+                    continue;
+                }
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                let mtime = fs::metadata(&path)
+                    .await
+                    .ok()
+                    .and_then(|m| m.modified().ok());
+                out.push((stem.to_string(), mtime));
+            }
+        }
+        out
+    }
+
+    /// Drop one entry: index first, then the file.
+    ///
+    /// Both halves are needed — the eviction listener only unlinks on
+    /// size-eviction, so an explicit invalidation leaves the file behind unless
+    /// the caller removes it (the same pairing `delete_blob` does).
+    pub async fn evict_cached(&self, hash: &str) {
+        self.index.invalidate(hash);
+        let _ = fs::remove_file(self.cached_path(hash)).await;
+    }
 }
 
 impl BlobStorageBackend for CachedBlobBackend {
@@ -333,12 +383,28 @@ impl BlobStorageBackend for CachedBlobBackend {
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), DomainError>> + Send + '_>> {
         let hash = hash.to_string();
         Box::pin(async move {
-            self.inner.delete_blob(&hash).await?;
-            // Explicit invalidation unlinks here (the eviction listener
-            // only unlinks size-evictions).
+            // Drop the local copy FIRST, and never gate it on the remote
+            // delete succeeding.
+            //
+            // This cache sits *outside* the encryption wrapper — `di.rs` wraps
+            // the backend with encryption, then wraps that with this cache — so
+            // the remote holds ciphertext while the entry here is plaintext.
+            // Evicting after `inner.delete_blob(&hash).await?` meant that a
+            // failed remote delete (routine on a remote backend, and the norm
+            // during an outage) returned early and left readable plaintext of
+            // deleted content on local disk indefinitely. That is how the
+            // orphaned blobs in this investigation were read at all.
+            //
+            // Local-first because a crash between the two steps must not be the
+            // case that retains plaintext: evicting first leaves at worst a cold
+            // entry for a blob whose delete then failed, costing one remote
+            // re-fetch, which is the cheap direction to be wrong in.
+            //
+            // Explicit invalidation still needs the unlink below — the eviction
+            // listener only unlinks size-evictions.
             self.index.invalidate(&hash);
             let _ = fs::remove_file(self.cached_path(&hash)).await;
-            Ok(())
+            self.inner.delete_blob(&hash).await
         })
     }
 
@@ -574,6 +640,7 @@ impl CachedBlobBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::ports::blob_storage_ports::BoxFut;
     use crate::infrastructure::services::local_blob_backend::LocalBlobBackend;
     use futures::StreamExt;
 
@@ -626,5 +693,123 @@ mod tests {
         assert_eq!(read_range(&cached, &hash, 1, Some(3)).await, b"bc");
         assert!(read_range(&cached, &hash, 3, Some(3)).await.is_empty());
         assert_eq!(read_range(&cached, &hash, 2, None).await, b"cdef");
+    }
+
+    /// Delegates everything to an inner backend except `delete_blob`, which
+    /// always fails transiently — a stand-in for the remote backend being
+    /// unreachable, which is the case that used to leave plaintext behind.
+    ///
+    /// Hand-rolled rather than mocked, matching `HangingBackend` in
+    /// `timeout_blob_backend`. Worth promoting into a general
+    /// `FaultyBlobBackend` under `test_utils` once the deletion-queue work
+    /// needs fault injection in more than one module.
+    struct UndeletableBackend(Arc<dyn BlobStorageBackend>);
+
+    impl BlobStorageBackend for UndeletableBackend {
+        fn delete_blob(&self, _hash: &str) -> BoxFut<'_, Result<(), DomainError>> {
+            Box::pin(async {
+                Err(DomainError::transient_backend(
+                    "BlobStorage",
+                    "backend unreachable",
+                ))
+            })
+        }
+
+        fn initialize(&self) -> BoxFut<'_, Result<(), DomainError>> {
+            self.0.initialize()
+        }
+        fn put_blob(&self, hash: &str, source_path: &Path) -> BoxFut<'_, Result<u64, DomainError>> {
+            self.0.put_blob(hash, source_path)
+        }
+        fn put_blob_from_bytes(
+            &self,
+            hash: &str,
+            data: Bytes,
+        ) -> BoxFut<'_, Result<u64, DomainError>> {
+            self.0.put_blob_from_bytes(hash, data)
+        }
+        fn get_blob_stream(&self, hash: &str) -> BoxFut<'_, Result<BlobStream, DomainError>> {
+            self.0.get_blob_stream(hash)
+        }
+        fn get_blob_range_stream(
+            &self,
+            hash: &str,
+            start: u64,
+            end: Option<u64>,
+        ) -> BoxFut<'_, Result<BlobStream, DomainError>> {
+            self.0.get_blob_range_stream(hash, start, end)
+        }
+        fn blob_exists(&self, hash: &str) -> BoxFut<'_, Result<bool, DomainError>> {
+            self.0.blob_exists(hash)
+        }
+        fn blob_size(&self, hash: &str) -> BoxFut<'_, Result<u64, DomainError>> {
+            self.0.blob_size(hash)
+        }
+        fn health_check(&self) -> BoxFut<'_, Result<StorageHealthStatus, DomainError>> {
+            self.0.health_check()
+        }
+        fn backend_type(&self) -> &'static str {
+            self.0.backend_type()
+        }
+        fn local_blob_path(&self, hash: &str) -> Option<PathBuf> {
+            self.0.local_blob_path(hash)
+        }
+    }
+
+    /// The cache sits outside the encryption wrapper, so its entries are
+    /// plaintext. A failed remote delete must NOT leave that plaintext on
+    /// disk — which it did while eviction was sequenced after
+    /// `inner.delete_blob(..)?` and skipped by the `?`.
+    #[tokio::test]
+    async fn failed_backend_delete_still_evicts_the_plaintext_copy() {
+        let data = Bytes::from_static(b"secret-after-delete");
+        let hash = blake3::hash(&data).to_hex().to_string();
+
+        let inner_root = tempfile::tempdir().expect("inner tempdir");
+        let local = Arc::new(LocalBlobBackend::new(inner_root.path()));
+        local.initialize().await.expect("initialize inner");
+        local
+            .put_blob_from_bytes(&hash, data.clone())
+            .await
+            .expect("seed inner");
+
+        let cache_root = tempfile::tempdir().expect("cache tempdir");
+        let cached = CachedBlobBackend::new(
+            Arc::new(UndeletableBackend(local.clone())),
+            &BlobCacheConfig {
+                cache_dir: cache_root.path().to_path_buf(),
+                max_cache_bytes: 1024 * 1024,
+            },
+        );
+        cached.initialize().await.expect("initialize cache");
+
+        // Populate the cache, and confirm the plaintext really is on disk.
+        assert_eq!(read_range(&cached, &hash, 0, None).await, &data[..]);
+        let cached_path = cached.local_blob_path(&hash).expect("cache entry present");
+        assert!(
+            cached_path.exists(),
+            "cache file should exist before delete"
+        );
+
+        // The delete must report the backend failure — the caller has to know
+        // the remote object is still there, so it can be retried.
+        let err = cached
+            .delete_blob(&hash)
+            .await
+            .expect_err("inner failure must propagate");
+        assert!(
+            err.is_transient(),
+            "a retryable failure must stay retryable"
+        );
+
+        // …and yet the local plaintext must be gone regardless.
+        assert!(
+            !cached_path.exists(),
+            "plaintext of deleted content survived a failed backend delete"
+        );
+        assert!(
+            cached.local_blob_path(&hash).is_none(),
+            "cache index still claims an entry for the deleted hash"
+        );
     }
 }

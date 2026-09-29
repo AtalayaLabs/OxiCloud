@@ -445,6 +445,28 @@ impl CollabSession {
 /// or their `Y.Text` handle will point at a different (empty) type.
 const ROOT_TEXT_NAME: &str = "content";
 
+/// Beyond this, doubling buys nothing and only delays recovery once the backend
+/// comes back.
+const MAX_FLUSH_BACKOFF: Duration = Duration::from_secs(300);
+
+/// Exponential backoff before the next flush attempt, derived from the tick
+/// interval and capped at [`MAX_FLUSH_BACKOFF`].
+///
+/// Capped rather than unbounded because this must never become "give up": the
+/// document is still accepting keystrokes that exist only in memory, so the write
+/// has to keep being retried until it succeeds or the actor is evicted. The cap
+/// bounds how stale the on-disk copy stays after the backend recovers.
+///
+/// A free function so it is testable without building an `ActorState` — it is
+/// pure arithmetic over two inputs and never needed `self`.
+fn flush_backoff(tick: Duration, failures: u32) -> Duration {
+    // Shift is clamped well below `u32::BITS`: at tick = 1 s, 2^9 already exceeds
+    // the cap, and an unclamped shift would be undefined behaviour territory once
+    // a long outage pushed the count past 31.
+    let factor = 1u32 << failures.min(9);
+    (tick * factor).min(MAX_FLUSH_BACKOFF)
+}
+
 struct ActorState {
     file_id: Uuid,
     doc: Doc,
@@ -490,6 +512,16 @@ struct ActorState {
     /// Bounds the "how quiet has the doc been" deadline via
     /// `limits.debounce_idle`.
     last_dirty_at: Option<Instant>,
+    /// Consecutive non-terminal flush failures. Reset to 0 by any successful
+    /// flush, including a no-op one — if the write path is healthy enough to
+    /// short-circuit, it is healthy.
+    flush_failures: u32,
+    /// Earliest `Instant` at which another flush may be attempted.
+    ///
+    /// The retry budget that was missing: `RetryBlobBackend`'s three attempts are
+    /// per CALL, so without this the next tick simply started a fresh budget and a
+    /// sustained outage retried forever at tick cadence.
+    flush_retry_not_before: Option<Instant>,
     /// In-memory mirror of `collab.doc_sessions.last_flushed_content_hash`
     /// — the content hash of the last successful blob write. Used to
     /// short-circuit no-op flushes (CRDT text unchanged since the
@@ -591,6 +623,8 @@ impl ActorState {
             last_writer_id: None,
             first_dirty_at: None,
             last_dirty_at: None,
+            flush_failures: 0,
+            flush_retry_not_before: None,
             last_flushed_content_hash,
             doc_bytes,
         })
@@ -718,12 +752,31 @@ impl ActorState {
     ///     for non-collab consumers on a doc that never quiets down).
     ///
     /// A clean doc (`first_dirty_at.is_none()`) is never due.
+    /// A doc in flush-failure backoff is not due until the backoff elapses,
+    /// whatever the debounce thresholds say.
+    ///
+    /// Without this the retry budget RESETS every tick. `RetryBlobBackend` is
+    /// correct inside one call — 3 attempts, 100→200→400 ms — but that budget is
+    /// per call, and nothing above it decayed: when the three were exhausted this
+    /// branch logged "will retry on next tick" and the next tick started a fresh
+    /// budget from 100 ms. A sustained outage therefore had a dirty document
+    /// retrying forever at tick cadence, three connection attempts a time, which
+    /// reads in the logs as *accelerating* rather than backing off — the symptom
+    /// observed during a deliberate network-outage test.
     fn flush_due(&self, now: Instant) -> bool {
+        if matches!(self.flush_retry_not_before, Some(t) if now < t) {
+            return false;
+        }
         let (Some(first), Some(last)) = (self.first_dirty_at, self.last_dirty_at) else {
             return false;
         };
         now.duration_since(last) >= self.limits.debounce_idle
             || now.duration_since(first) >= self.limits.debounce_max
+    }
+
+    /// [`flush_backoff`] for this actor's tick interval.
+    fn flush_backoff(&self, failures: u32) -> Duration {
+        flush_backoff(self.limits.debounce_tick, failures)
     }
 
     /// Flush the CRDT text to the file's blob. Idempotent: a call with
@@ -965,7 +1018,15 @@ async fn run_actor(mut state: ActorState, mut inbox: mpsc::Receiver<SessionMsg>)
                     // `oxicloud::collab` target so operators can spot
                     // sustained failures without an audit-channel
                     // false positive on every tick.
-                    if let Err(e) = state.flush_to_blob().await {
+                    let flush_result = state.flush_to_blob().await;
+                    if flush_result.is_ok() {
+                        // Clear the backoff on ANY success, including a no-op
+                        // short-circuit: if the path is healthy enough to compare
+                        // hashes, it is healthy.
+                        state.flush_failures = 0;
+                        state.flush_retry_not_before = None;
+                    }
+                    if let Err(e) = flush_result {
                         // Non-recoverable classes shut the actor down
                         // rather than retry forever. Today the main
                         // one is "file row disappeared" — the DELETE
@@ -1010,13 +1071,29 @@ async fn run_actor(mut state: ActorState, mut inbox: mpsc::Receiver<SessionMsg>)
                             ));
                             break;
                         }
+                        // Arm the backoff before logging, so the log can state the
+                        // real delay instead of the misleading "next tick".
+                        let retry_in = if terminal {
+                            Duration::ZERO
+                        } else {
+                            state.flush_failures = state.flush_failures.saturating_add(1);
+                            let delay = state.flush_backoff(state.flush_failures);
+                            state.flush_retry_not_before = Some(Instant::now() + delay);
+                            delay
+                        };
                         tracing::warn!(
                             target: "oxicloud::collab",
                             file_id = %state.file_id,
                             error = %e,
                             terminal,
+                            consecutive_failures = state.flush_failures,
+                            retry_in_secs = retry_in.as_secs(),
                             "🧵 debounced flush failed{}",
-                            if terminal { " (terminal — shutting actor down)" } else { "; will retry on next tick" },
+                            if terminal {
+                                " (terminal — shutting actor down)".to_string()
+                            } else {
+                                format!("; retrying in {}s", retry_in.as_secs())
+                            },
                         );
                         if terminal {
                             break;
@@ -1351,6 +1428,43 @@ mod tests {
     use chrono::Utc;
     use std::sync::Mutex;
     use tokio::sync::RwLock;
+
+    // ── Flush backoff ──────────────────────────────────────────────────
+
+    /// The defect this exists for: `RetryBlobBackend`'s budget is per CALL, so
+    /// before this the next tick started a fresh one and a sustained outage
+    /// retried forever at tick cadence — three connection attempts a second,
+    /// which reads as accelerating rather than backing off.
+    #[test]
+    fn flush_backoff_doubles_then_caps() {
+        let tick = Duration::from_secs(1);
+
+        // First failure waits one tick, not zero: retrying immediately is what
+        // produced the observed behaviour.
+        assert_eq!(flush_backoff(tick, 0), Duration::from_secs(1));
+        assert_eq!(flush_backoff(tick, 1), Duration::from_secs(2));
+        assert_eq!(flush_backoff(tick, 2), Duration::from_secs(4));
+        assert_eq!(flush_backoff(tick, 5), Duration::from_secs(32));
+
+        // Capped, and — the part worth pinning — it STAYS capped rather than
+        // growing without bound or wrapping. A doc unsaved through a long outage
+        // must still retry promptly once the backend returns.
+        assert_eq!(flush_backoff(tick, 9), MAX_FLUSH_BACKOFF);
+        assert_eq!(flush_backoff(tick, 50), MAX_FLUSH_BACKOFF);
+        assert_eq!(flush_backoff(tick, u32::MAX), MAX_FLUSH_BACKOFF);
+    }
+
+    /// A longer tick must not multiply past the cap either — the shift is
+    /// clamped on the exponent, so a large tick still has to be bounded by the
+    /// `min`, not by the clamp.
+    #[test]
+    fn flush_backoff_cap_holds_for_a_long_tick() {
+        let tick = Duration::from_secs(60);
+        assert_eq!(flush_backoff(tick, 0), Duration::from_secs(60));
+        assert_eq!(flush_backoff(tick, 2), Duration::from_secs(240));
+        assert_eq!(flush_backoff(tick, 3), MAX_FLUSH_BACKOFF);
+        assert_eq!(flush_backoff(tick, 9), MAX_FLUSH_BACKOFF);
+    }
 
     // ── In-memory repo stub ────────────────────────────────────────────
 

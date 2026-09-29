@@ -68,6 +68,13 @@
 //! blobs** written before CDC chunking: a range read of one still decrypts
 //! the entire blob (re-uploading the file re-stores it chunked).
 //!
+//! `LEGACY-WHOLE-FILE-BLOB` — this is the costly one of the group, and the
+//! reason the decrypt path carries an unbounded buffer at all. Once
+//! `backend_rechunk` reports zero legacy blobs on an instance there is no
+//! input that reaches it, and the bound becomes structural rather than
+//! documented. Grep the tag for the full set; see
+//! `docs/plan/storage-consistency.md` §1.
+//!
 //! Crypto work for payloads ≥ 64 KiB runs on the blocking pool so AES-GCM
 //! never stalls the async runtime, and decryption happens **in place** —
 //! the ciphertext buffer is reused for the plaintext instead of allocating

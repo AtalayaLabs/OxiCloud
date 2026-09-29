@@ -131,6 +131,7 @@ tests/caldav/server.log
 
 # Test fixtures generated on-the-fly by tests/api/run.sh
 tests/fixtures/chunk-over-cap-*.bin
+tests/fixtures/rechunk-legacy-*.bin
 wasm/oxicloud-hash/target/
 
 # devenv / direnv

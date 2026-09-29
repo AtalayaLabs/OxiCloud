@@ -250,10 +250,27 @@ impl FileBlobWriteRepository {
             ));
         }
 
-        // Decrement old blob ref (only if hash changed, best-effort)
-        if old_hash != new_hash
-            && let Err(e) = self.dedup.remove_reference(&old_hash).await
-        {
+        // Release exactly one reference — whether or not the hash changed.
+        //
+        // The caller handed us one reference on `new_hash`
+        // (`update_file_content_with_blob`: "swap_blob_hash consumes its
+        // reference"), and the row holds exactly one afterwards. When the
+        // content changed, the one to drop is the row's old hash. When it did
+        // not, `old_hash == new_hash`, and the one to drop is the caller's
+        // surplus — the same value either way, so one unconditional release is
+        // correct in both cases.
+        //
+        // Guarding this on `old_hash != new_hash` leaked one reference per
+        // same-content rewrite, which is what `manifest_refcount_mismatch`
+        // reported: a document saved repeatedly over identical bytes accrued
+        // references it could never shed, so its blob could never reach
+        // `ref_count = 0` and never be reclaimed. The guard reads as an
+        // optimisation — skip a decrement that would be followed by an
+        // increment — and is only wrong because the increment already happened
+        // in the caller. Best-effort by design: a failure here over-counts
+        // (a storage leak), which `blobs_consistency` detects and repairs,
+        // whereas failing the request would discard a write that succeeded.
+        if let Err(e) = self.dedup.remove_reference(&old_hash).await {
             tracing::warn!(
                 "Failed to decrement old blob ref {}: {}",
                 &old_hash[..12],
