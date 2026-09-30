@@ -386,6 +386,7 @@ async fn handle_propfind(
         .to_string();
 
     let user = extract_user(&req)?;
+    let request_path = req.uri().path().to_owned();
     let addressbook_service = get_addressbook_service(&state)?;
     let contact_svc = get_contact_service(&state)?;
 
@@ -501,11 +502,8 @@ async fn handle_propfind(
             // Depth-1 streams the contact listing page by page; depth-0
             // has no contact section and keeps the tiny buffered path.
             if depth != "0" {
-                let base_href = format!(
-                    "{}/carddav/{}/",
-                    crate::common::config::server_base_path(),
-                    address_book_id
-                );
+                let base_href =
+                    super::dav_paths::collection_href("carddav", &request_path, address_book_id);
                 return Ok(build_streaming_book_propfind(
                     contact_svc.clone(),
                     address_book,
@@ -516,11 +514,8 @@ async fn handle_propfind(
                 ));
             }
 
-            let base_href = &format!(
-                "{}/carddav/{}/",
-                crate::common::config::server_base_path(),
-                address_book_id
-            );
+            let base_href =
+                &super::dav_paths::collection_href("carddav", &request_path, address_book_id);
             let mut response_body = Vec::new();
 
             CardDavAdapter::generate_addressbook_collection_propfind(
@@ -552,11 +547,8 @@ async fn handle_propfind(
                 })?;
 
             // Build single-resource PROPFIND response
-            let base_href = &format!(
-                "{}/carddav/{}/",
-                crate::common::config::server_base_path(),
-                address_book_id
-            );
+            let base_href =
+                &super::dav_paths::collection_href("carddav", &request_path, address_book_id);
             let report = CardDavReportType::AddressbookMultiget {
                 hrefs: vec![format!("{}{}.vcf", base_href, contact_uid)],
                 props: vec![],
@@ -588,6 +580,7 @@ async fn handle_report(
     path: &str,
 ) -> Result<Response<Body>, AppError> {
     let user = extract_user(&req)?;
+    let request_path = req.uri().path().to_owned();
     let contact_svc = get_contact_service(&state)?;
 
     let body_bytes = body::to_bytes(req.into_body(), MAX_CARDDAV_BODY)
@@ -609,11 +602,8 @@ async fn handle_report(
         &report,
         CardDavReportType::AddressbookQuery { .. } | CardDavReportType::SyncCollection { .. }
     ) {
-        let base_href = format!(
-            "{}/carddav/{}/",
-            crate::common::config::server_base_path(),
-            address_book_id
-        );
+        let base_href =
+            super::dav_paths::collection_href("carddav", &request_path, address_book_id);
         return Ok(build_streaming_contacts_report(
             contact_svc.clone(),
             address_book_id.to_string(),
@@ -646,11 +636,7 @@ async fn handle_report(
         }
     };
 
-    let base_href = &format!(
-        "{}/carddav/{}/",
-        crate::common::config::server_base_path(),
-        address_book_id
-    );
+    let base_href = &super::dav_paths::collection_href("carddav", &request_path, address_book_id);
     let mut response_body = Vec::new();
     CardDavAdapter::generate_contacts_response(&mut response_body, &contacts, &report, base_href)
         .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
