@@ -36,7 +36,9 @@ use crate::application::adapters::webdav_adapter::{PropFindRequest, PropFindType
 use crate::application::dtos::calendar_dto::{
     CalendarEventDto, CalendarTodoDto, CreateCalendarDto, CreateEventICalDto, UpdateCalendarDto,
 };
-use crate::application::ports::calendar_ports::{CalendarObject, CalendarUseCase};
+use crate::application::ports::calendar_ports::{
+    AccessibleCalendar, CalendarObject, CalendarUseCase,
+};
 use crate::application::services::calendar_service::CalendarService;
 use crate::common::di::AppState;
 use crate::interfaces::errors::AppError;
@@ -226,21 +228,19 @@ fn build_streaming_report_response(
 
 /// Streamed depth-1 collection PROPFIND: head (multistatus + the
 /// calendar's own response), one chunk per hydrated UID page, footer.
-#[allow(clippy::too_many_arguments)]
 fn build_streaming_collection_propfind(
     calendar_service: Arc<CalendarService>,
-    calendar: crate::application::dtos::calendar_dto::CalendarDto,
+    calendar: AccessibleCalendar,
     propfind_request: PropFindRequest,
     calendar_id: String,
     base_href: String,
-    caller_id: String,
     user_id: uuid::Uuid,
 ) -> Response<Body> {
     let stream = async_stream::try_stream! {
         let mut buf = Vec::with_capacity(2048);
         {
             let mut w = Writer::new(&mut buf);
-            CalDavAdapter::write_collection_head(&mut w, &calendar, &propfind_request, &base_href, &caller_id)
+            CalDavAdapter::write_collection_head(&mut w, &calendar, &propfind_request, &base_href)
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
         }
         yield Bytes::from(buf);
@@ -597,9 +597,6 @@ async fn handle_propfind(
         .to_string();
 
     let user = extract_user(&req)?;
-    // Caller UUID (string form) — gates the `<D:write/>` privilege on calendars
-    // the caller owns, so clients mount their own calendars read-write.
-    let caller_id = user.id.to_string();
     let calendar_service = get_calendar_service(&state)?;
 
     let body_bytes = body::to_bytes(req.into_body(), MAX_CALDAV_BODY)
@@ -638,7 +635,6 @@ async fn handle_propfind(
             &propfind_request,
             base_href,
             &user.username,
-            &caller_id,
         )
         .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
 
@@ -686,7 +682,9 @@ async fn handle_propfind(
         if parts.len() == 1 {
             // Single path segment: UUID means calendar ID, otherwise user home
             let calendar_result = if first_is_uuid {
-                calendar_service.get_calendar(first_segment, user.id).await
+                calendar_service
+                    .get_calendar_with_access(first_segment, user.id)
+                    .await
             } else {
                 Err(crate::domain::errors::DomainError::new(
                     crate::domain::errors::ErrorKind::NotFound,
@@ -713,7 +711,6 @@ async fn handle_propfind(
                         propfind_request,
                         first_segment.to_string(),
                         base_href,
-                        caller_id.clone(),
                         user.id,
                     ));
                 }
@@ -732,7 +729,6 @@ async fn handle_propfind(
                     &propfind_request,
                     base_href,
                     &depth,
-                    &caller_id,
                 )
                 .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
 
@@ -773,7 +769,6 @@ async fn handle_propfind(
                     &calendars,
                     &propfind_request,
                     base_href,
-                    &caller_id,
                 )
                 .map_err(|e| AppError::internal_error(format!("Failed to generate XML: {}", e)))?;
 
@@ -799,7 +794,7 @@ async fn handle_propfind(
                     // /caldav/{username}/{calendar_id}
                     // Try to get this as a calendar collection
                     let cal = calendar_service
-                        .get_calendar(sub_parts[0], user.id)
+                        .get_calendar_with_access(sub_parts[0], user.id)
                         .await
                         .map_err(|e| AppError::not_found(format!("Calendar not found: {}", e)))?;
 
@@ -818,7 +813,6 @@ async fn handle_propfind(
                             propfind_request,
                             sub_parts[0].to_string(),
                             base_href,
-                            caller_id.clone(),
                             user.id,
                         ));
                     }
@@ -838,7 +832,6 @@ async fn handle_propfind(
                         &propfind_request,
                         base_href,
                         &depth,
-                        &caller_id,
                     )
                     .map_err(|e| {
                         AppError::internal_error(format!("Failed to generate XML: {}", e))

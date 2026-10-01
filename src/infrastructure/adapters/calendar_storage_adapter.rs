@@ -289,6 +289,7 @@ impl CalendarStoragePort for CalendarStorageAdapter {
     async fn upsert_ical_objects(
         &self,
         dto: CreateEventICalDto,
+        allow_replace: bool,
     ) -> Result<UpsertObjectsResult, DomainError> {
         let calendar_id = Uuid::parse_str(&dto.calendar_id).map_err(|_| {
             DomainError::new(
@@ -327,6 +328,39 @@ impl CalendarStoragePort for CalendarStorageAdapter {
         } else {
             CalendarTodo::parse_from_components(calendar_id, &components)?
         };
+
+        // Insert-only mode: refuse the whole body up front if any of
+        // its UIDs is already taken, before a single row is touched —
+        // a partial write (first component in, second refused) would
+        // leave the object half-updated. Any row counts, master or
+        // exception, event or task: adding an override to someone
+        // else's series is modifying it.
+        if !allow_replace {
+            let mut uids: Vec<String> = parsed_events
+                .iter()
+                .map(|e| e.ical_uid().to_string())
+                .chain(parsed_todos.iter().map(|t| t.ical_uid().to_string()))
+                .collect();
+            uids.sort_unstable();
+            uids.dedup();
+            let taken = !self
+                .event_repository
+                .find_events_by_ical_uids(&calendar_id, &uids)
+                .await?
+                .is_empty()
+                || !self
+                    .todo_repository
+                    .find_todos_by_ical_uids(&calendar_id, &uids)
+                    .await?
+                    .is_empty();
+            if taken {
+                return Err(DomainError::new(
+                    ErrorKind::AlreadyExists,
+                    "CalendarObject",
+                    "A calendar object with this UID already exists",
+                ));
+            }
+        }
 
         let mut events = Vec::with_capacity(parsed_events.len());
         let mut todos = Vec::with_capacity(parsed_todos.len());

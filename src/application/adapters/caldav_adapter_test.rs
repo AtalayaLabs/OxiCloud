@@ -5,12 +5,17 @@ mod tests {
         PropFindRequest, PropFindType, QualifiedName,
     };
     use crate::application::dtos::calendar_dto::{CalendarDto, CalendarEventDto};
+    use crate::application::ports::calendar_ports::{AccessibleCalendar, CalendarAccess};
     use chrono::{TimeZone, Utc};
     use std::collections::HashMap;
     use std::io::Cursor;
 
-    fn sample_calendar() -> CalendarDto {
-        CalendarDto {
+    fn sample_calendar() -> AccessibleCalendar {
+        with_access(CalendarAccess::Own)
+    }
+
+    fn with_access(access: CalendarAccess) -> AccessibleCalendar {
+        let calendar = CalendarDto {
             id: "cal-001".to_string(),
             name: "Personal".to_string(),
             owner_id: "user-001".to_string(),
@@ -20,7 +25,8 @@ mod tests {
             created_at: Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
             updated_at: Utc.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap(),
             custom_properties: HashMap::new(),
-        }
+        };
+        AccessibleCalendar { calendar, access }
     }
 
     fn sample_event() -> CalendarEventDto {
@@ -193,7 +199,6 @@ mod tests {
             &calendars,
             &request,
             "/caldav/",
-            "user-001",
         );
 
         assert!(
@@ -233,7 +238,6 @@ mod tests {
             &request,
             "/caldav/cal-001",
             "0",
-            "user-001",
         );
 
         assert!(
@@ -264,7 +268,6 @@ mod tests {
             &request,
             "/caldav/cal-001",
             "1",
-            "user-001",
         );
 
         assert!(
@@ -283,52 +286,68 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_owner_gets_write_privilege_but_non_owner_is_read_only() {
-        // Regression for #480: the privilege gate previously compared owner_id
-        // against the literal "current_user_id", so <D:write/> was never emitted
-        // and every CalDAV client mounted calendars read-only.
-        let calendar = sample_calendar(); // owner_id = "user-001"
+    /// The `current-user-privilege-set` block of a depth-0 collection
+    /// PROPFIND rendered at `access`.
+    fn privilege_set_xml(access: CalendarAccess) -> String {
         let request = PropFindRequest {
             prop_find_type: PropFindType::AllProp,
         };
-
-        // Owner → read + write.
-        let mut owner_out = Vec::new();
+        let mut out = Vec::new();
         CalDavAdapter::generate_calendar_collection_propfind(
-            &mut owner_out,
-            &calendar,
+            &mut out,
+            &with_access(access),
             &[],
             &request,
             "/caldav/cal-001/",
             "0",
-            "user-001",
         )
-        .expect("owner propfind");
-        let owner_xml = String::from_utf8(owner_out).expect("utf8");
-        assert!(
-            owner_xml.contains("D:write"),
-            "Owner must be granted <D:write/>, got: {owner_xml}"
-        );
+        .expect("propfind");
+        let xml = String::from_utf8(out).expect("utf8");
+        let start = xml
+            .find("<D:current-user-privilege-set>")
+            .expect("privilege set present");
+        let end = xml.find("</D:current-user-privilege-set>").expect("closed");
+        xml[start..end].to_string()
+    }
 
-        // A different caller (e.g. a read-only share) → read only, never write.
-        let mut other_out = Vec::new();
-        CalDavAdapter::generate_calendar_collection_propfind(
-            &mut other_out,
-            &calendar,
-            &[],
-            &request,
-            "/caldav/cal-001/",
-            "0",
-            "a-different-user",
-        )
-        .expect("non-owner propfind");
-        let other_xml = String::from_utf8(other_out).expect("utf8");
-        assert!(other_xml.contains("D:read"), "Non-owner keeps <D:read/>");
-        assert!(
-            !other_xml.contains("D:write"),
-            "Non-owner must NOT get <D:write/>, got: {other_xml}"
-        );
+    /// #776: the advertised privileges follow the caller's role, not
+    /// `owner_id` — a shared calendar is no longer always read-only.
+    /// Tag matches are exact (`<D:write-content/>`), so `D:write` would
+    /// not be mistaken for `D:write-content`.
+    #[test]
+    fn test_privilege_set_follows_access_level() {
+        let all = [
+            "<D:read/>",
+            "<D:bind/>",
+            "<D:unbind/>",
+            "<D:write-content/>",
+            "<D:write/>",
+            "<D:write-properties/>",
+            "<D:all/>",
+        ];
+        for (access, expected) in [
+            (CalendarAccess::Read, &["<D:read/>"][..]),
+            (CalendarAccess::Contribute, &["<D:read/>", "<D:bind/>"][..]),
+            (
+                CalendarAccess::Edit,
+                &[
+                    "<D:read/>",
+                    "<D:write-content/>",
+                    "<D:bind/>",
+                    "<D:unbind/>",
+                ][..],
+            ),
+            (CalendarAccess::Own, &["<D:all/>"][..]),
+        ] {
+            let xml = privilege_set_xml(access);
+            for privilege in all {
+                assert_eq!(
+                    xml.contains(privilege),
+                    expected.contains(&privilege),
+                    "{access:?}: {privilege} presence wrong in {xml}"
+                );
+            }
+        }
     }
 
     // ========================
@@ -488,7 +507,7 @@ mod tests {
     #[test]
     fn test_root_propfind_response_has_discovery_properties() {
         // Depth 0: only root entry, no calendars (simulates initial discovery)
-        let calendars: Vec<CalendarDto> = vec![];
+        let calendars: Vec<AccessibleCalendar> = vec![];
         let request = PropFindRequest {
             prop_find_type: PropFindType::Prop(vec![
                 QualifiedName {
@@ -509,7 +528,6 @@ mod tests {
             &request,
             "/caldav/",
             "testuser",
-            "user-001",
         );
         assert!(
             result.is_ok(),
@@ -559,7 +577,6 @@ mod tests {
             &request,
             "/caldav/",
             "testuser",
-            "user-001",
         );
         assert!(result.is_ok());
 
@@ -642,7 +659,6 @@ mod tests {
             &request,
             "/caldav/cal-001/",
             "0",
-            "user-001",
         );
         assert!(result.is_ok(), "Failed: {:?}", result.err());
 
