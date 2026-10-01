@@ -241,17 +241,20 @@ fi
 # 6h. Immutable-asset cache header is applied by the `_app/immutable`
 #     nested router. Pick any hashed asset from the embed inventory
 #     — the boot log doesn't list them, so grep the shell HTML for one
-#     of its `modulepreload` refs.
-imm_asset=$(echo "$body" | grep -oE '/_app/immutable/[^"]+\.js' | head -n1)
+#     of its `modulepreload` refs. Those are relative (one build serves
+#     any deployment prefix), so match without a leading slash and put
+#     the root back when requesting. `|| true` keeps `set -e` from
+#     killing the script before `fail` can say what was missing.
+imm_asset=$(echo "$body" | grep -oE '_app/immutable/[^"]+\.js' | head -n1 || true)
 if [[ -n "$imm_asset" ]]; then
-  cc=$(curl -sI "$base_url$imm_asset" | grep -i '^cache-control:' | tr -d '\r')
+  cc=$(curl -sI "$base_url/$imm_asset" | grep -i '^cache-control:' | tr -d '\r')
   if echo "$cc" | grep -q 'immutable'; then
     pass "immutable-asset cache header applied: $cc"
   else
     fail "immutable-asset $imm_asset cache header wrong: $cc"
   fi
 else
-  fail "couldn't find a /_app/immutable/*.js reference in the shell HTML to test"
+  fail "couldn't find an _app/immutable/*.js reference in the shell HTML to test"
 fi
 
 # 6i. Shell HTML carries a Content-Security-Policy with sha256 script
