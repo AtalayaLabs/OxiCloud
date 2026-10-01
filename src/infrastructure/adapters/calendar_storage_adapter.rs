@@ -372,7 +372,11 @@ impl CalendarStoragePort for CalendarStorageAdapter {
             // Existing row lookup routes on the master/exception split.
             // Master: (calendar_id, ical_uid) WHERE recurrence_id IS NULL
             // Exception: (calendar_id, ical_uid, recurrence_id)
+            // Insert-only mode never replaces: a row that appeared since
+            // the up-front check (concurrent PUT) must collide on the
+            // unique index, not be deleted and overwritten.
             let existing = match event.recurrence_id().copied() {
+                _ if !allow_replace => None,
                 Some(rid) => {
                     self.event_repository
                         .find_event_by_ical_uid_and_recurrence_id(&calendar_id, &ical_uid, &rid)
@@ -407,6 +411,7 @@ impl CalendarStoragePort for CalendarStorageAdapter {
             // Same master/exception routing as events — recurring
             // tasks override single occurrences via RECURRENCE-ID.
             let existing = match todo.recurrence_id().copied() {
+                _ if !allow_replace => None,
                 Some(rid) => {
                     self.todo_repository
                         .find_todo_by_ical_uid_and_recurrence_id(&calendar_id, &ical_uid, &rid)
