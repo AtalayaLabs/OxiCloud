@@ -51,6 +51,10 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 COMMON="$REPO_ROOT/tests/common"
 API_DIR="$REPO_ROOT/tests/api"
 
+# Shared cargo-build wrapper (quiet on success, tailable while it runs).
+# shellcheck source=../common/cargo_build.sh
+source "$COMMON/cargo_build.sh"
+
 # test.env is the single source of truth for connection details and credentials.
 # shellcheck source=test.env
 source "$API_DIR/test.env"
@@ -253,8 +257,8 @@ if (( NEED_BUILD )); then
   # — there is NO `--profile debug` flag (it would error). Only the
   # release path needs an explicit flag.
   case "$BUILD_TARGET" in
-    debug)   (cd "$REPO_ROOT" && cargo build           2>&1 | tail -n 20) || die "cargo build failed" ;;
-    release) (cd "$REPO_ROOT" && cargo build --release 2>&1 | tail -n 20) || die "cargo build --release failed" ;;
+    debug)   cargo_build_logged "OxiCloud server (debug)"             || die "cargo build failed" ;;
+    release) cargo_build_logged "OxiCloud server (release)" --release || die "cargo build --release failed" ;;
     *)       die "Unsupported BUILD_TARGET='$BUILD_TARGET' (expected 'debug' or 'release')" ;;
   esac
 fi
@@ -505,10 +509,9 @@ fi
 if selected opaque; then
 OPAQUE_HELPER_BIN="$REPO_ROOT/target/$BUILD_TARGET/opaque-hurl-helper"
 if [[ ! -x "$OPAQUE_HELPER_BIN" ]]; then
-  log "Building opaque-hurl-helper ($BUILD_TARGET)..."
   case "$BUILD_TARGET" in
-    debug)   (cd "$REPO_ROOT" && cargo build           --features test_utils --bin opaque-hurl-helper 2>&1 | tail -n 20) || die "opaque-hurl-helper build failed" ;;
-    release) (cd "$REPO_ROOT" && cargo build --release --features test_utils --bin opaque-hurl-helper 2>&1 | tail -n 20) || die "opaque-hurl-helper build failed" ;;
+    debug)   cargo_build_logged "opaque-hurl-helper (debug)"             --features test_utils --bin opaque-hurl-helper || die "opaque-hurl-helper build failed" ;;
+    release) cargo_build_logged "opaque-hurl-helper (release)" --release --features test_utils --bin opaque-hurl-helper || die "opaque-hurl-helper build failed" ;;
   esac
 fi
 log "Running OPAQUE crypto handshake helper..."
@@ -534,10 +537,9 @@ fi
 if selected dpop; then
 DPOP_HELPER_BIN="$REPO_ROOT/target/$BUILD_TARGET/dpop-hurl-helper"
 if [[ ! -x "$DPOP_HELPER_BIN" ]]; then
-  log "Building dpop-hurl-helper ($BUILD_TARGET)..."
   case "$BUILD_TARGET" in
-    debug)   (cd "$REPO_ROOT" && cargo build           --features test_utils --bin dpop-hurl-helper 2>&1 | tail -n 20) || die "dpop-hurl-helper build failed" ;;
-    release) (cd "$REPO_ROOT" && cargo build --release --features test_utils --bin dpop-hurl-helper 2>&1 | tail -n 20) || die "dpop-hurl-helper build failed" ;;
+    debug)   cargo_build_logged "dpop-hurl-helper (debug)"             --features test_utils --bin dpop-hurl-helper || die "dpop-hurl-helper build failed" ;;
+    release) cargo_build_logged "dpop-hurl-helper (release)" --release --features test_utils --bin dpop-hurl-helper || die "dpop-hurl-helper build failed" ;;
   esac
 fi
 log "Running DPoP wire-protocol helper..."
