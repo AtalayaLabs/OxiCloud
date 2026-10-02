@@ -1,7 +1,7 @@
 # Plan — Failures that say what they are, and satellite lifecycles that cannot be skipped
 
 **Status:** design captured 2026-10-01; **Part A phases 1–3 implemented
-2026-10-02.** Follow-up to
+2026-10-02, phase 4 (surfacing) 2026-10-03.** Follow-up to
 `storage-consistency.md` (merged as PR #771), which fixed the *recording* half of
 that plan's invariant and left the *discovery* half resting on detectors nothing
 runs.
@@ -506,6 +506,16 @@ Two things lose it before it reaches a human:
    `bug_admin_jobs_ok_despite_findings`. `outcome == "ok"` means *the run walked its
    whole subject*, which is not what the word suggests to someone scanning a list.
    A run that completed and found data loss is, to the eye, identical to a clean one.
+
+   **Half of this was already fixed, and the half that remained was the one that
+   mattered.** The panel has flipped its pill to amber "issues" on a non-empty
+   `severity_counts` since 2026-07-29 — but it read those counts from
+   `last_outcome`, which is *in-memory, written when a dispatch completes*. A
+   restart empties it, so the amber pill survived only until the next restart and
+   the row fell back to a neutral "—". That is precisely the case this plan is
+   about: a **scheduled** detector runs with nobody watching the dispatch, so the
+   in-memory copy is the one nobody ever sees. Findings are durable rows; the
+   signal drawn from them has to be too.
 2. **There is no out-of-band path at all.** Learning about a finding requires
    opening the right run and expanding a drawer, on purpose, having already
    suspected something.
@@ -596,7 +606,7 @@ Surfacing changes the order given earlier in this plan:
 | 1 | Retry (Part A ph. 1) | **DONE** — `verify_bytes` re-reads once |
 | 2 | Classify (Part A ph. 2) | **DONE** — `classify_stream_read_error` + source chain |
 | 3 | Pause (Part A ph. 3) | **DONE** — `backend_consistency`, `backend_rotate`; `backend_rechunk` already had it |
-| 4 | **Panel shows findings** | TODO — tiny, and makes every later phase legible |
+| 4 | **Panel shows findings** | **DONE** — counts read from `jobs.run_findings`, not from memory |
 | 5 | Schedule the detectors (Part A ph. 4) | TODO — safe to automate once 4 lands |
 | 6 | `NotificationSink` + transports | TODO — out-of-band reach, once what it sends is trustworthy |
 

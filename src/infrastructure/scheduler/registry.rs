@@ -11,7 +11,7 @@
 //! registration (plugin manifests, admin UI) can acquire a write
 //! lock without racing readers.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -267,6 +267,7 @@ impl JobRegistry {
                     // scheduler state pulls in neither dependency.
                     paused_run: None,
                     last_run_status: None,
+                    last_run_severity_counts: None,
                     startup: None,
                 }
             })
@@ -400,6 +401,23 @@ pub struct JobSummary {
     /// Prefer this over `last_outcome` wherever the two could disagree.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_run_status: Option<String>,
+    /// Findings of the most recent run, counted per severity, read from
+    /// `jobs.run_findings` — the same numbers [`JobOutcome`] carries in
+    /// `extra.severity_counts`, but sourced from the rows rather than
+    /// from memory.
+    ///
+    /// It exists because the panel turns its outcome pill amber on a
+    /// non-empty count, and `last_outcome` is in-memory: a restart
+    /// empties it, so a completed run that recorded data loss read as a
+    /// neutral "—" with nothing to act on. Findings are durable, so the
+    /// signal drawn from them must be too — and that matters most for a
+    /// *scheduled* detector, which runs with nobody watching the
+    /// dispatch.
+    ///
+    /// `None` — no run row for this job. `Some({})` — a run that found
+    /// nothing, which is the good news and a different fact.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_run_severity_counts: Option<BTreeMap<String, u64>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interval_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]

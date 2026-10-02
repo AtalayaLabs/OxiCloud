@@ -2788,8 +2788,9 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         // `one_active_run_per_job` partial unique index allows only one
         // non-terminal row per job, and a resume reuses it rather than
         // starting a new one, so a non-terminal row is always the newest.
-        /// `(job_name, status, run_id, started_at, scanned, total)` — the
-        /// enrichment row shape, named so the query's type stays legible.
+        /// `(job_name, status, run_id, started_at, scanned, total,
+        /// severity_counts)` — the enrichment row shape, named so the
+        /// query's type stays legible.
         type LatestRunRow = (
             String,
             String,
@@ -2797,28 +2798,70 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
             chrono::DateTime<chrono::Utc>,
             Option<i64>,
             Option<i64>,
+            sqlx::types::Json<std::collections::BTreeMap<String, u64>>,
         );
+        // The per-severity counts come from the findings themselves
+        // rather than from the run's `stats`, for the same reason
+        // `status` does: a run's outcome lives in memory and a restart
+        // empties it, while findings are rows. One correlated aggregate
+        // over `jobs.run_findings`, keyed by the run id the CTE already
+        // selected — not a round-trip per job.
         let latest_rows: Vec<LatestRunRow> = sqlx::query_as(
             r#"
-            SELECT DISTINCT ON (job_name)
-                job_name,
-                status::TEXT,
-                id,
-                started_at,
-                (stats  ->> 'scanned_count')::BIGINT AS scanned,
-                (params ->> 'total_rows')::BIGINT   AS total
-            FROM jobs.recoverable_runs
-            ORDER BY job_name, started_at DESC
+            WITH latest AS (
+                SELECT DISTINCT ON (job_name)
+                    job_name,
+                    status::TEXT AS status,
+                    id,
+                    started_at,
+                    (stats  ->> 'scanned_count')::BIGINT AS scanned,
+                    (params ->> 'total_rows')::BIGINT   AS total
+                FROM jobs.recoverable_runs
+                ORDER BY job_name, started_at DESC
+            )
+            SELECT
+                l.job_name,
+                l.status,
+                l.id,
+                l.started_at,
+                l.scanned,
+                l.total,
+                COALESCE(
+                    (SELECT jsonb_object_agg(s.severity, s.n)
+                       FROM (SELECT severity, COUNT(*) AS n
+                               FROM jobs.run_findings
+                              WHERE run_id = l.id
+                              GROUP BY severity) s),
+                    '{}'::jsonb
+                ) AS severity_counts
+            FROM latest l
             "#,
         )
         .fetch_all(pool.as_ref())
         .await
-        .unwrap_or_default();
+        .unwrap_or_else(|e| {
+            // Degrading to the pre-enrichment shape is the right call for a
+            // momentarily unreachable jobs DB. Doing it silently is not: the
+            // panel would simply stop showing findings, which looks exactly
+            // like having none. A malformed query here would hide every
+            // finding on every row, forever, with nothing to notice.
+            tracing::warn!(
+                target: "oxicloud::admin",
+                error = %e,
+                "job list enrichment failed — rows render without run status or finding counts",
+            );
+            Vec::new()
+        });
 
-        type LatestRun = (String, chrono::DateTime<chrono::Utc>, PausedRunBrief);
+        type LatestRun = (
+            String,
+            chrono::DateTime<chrono::Utc>,
+            PausedRunBrief,
+            std::collections::BTreeMap<String, u64>,
+        );
         let by_name: std::collections::HashMap<String, LatestRun> = latest_rows
             .into_iter()
-            .map(|(name, status, id, started_at, scanned, total)| {
+            .map(|(name, status, id, started_at, scanned, total, severities)| {
                 (
                     name,
                     (
@@ -2829,6 +2872,7 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
                             scanned: scanned.unwrap_or(0).max(0) as u64,
                             total: total.filter(|t| *t > 0).map(|t| t as u64),
                         },
+                        severities.0,
                     ),
                 )
             })
@@ -2838,13 +2882,18 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
             if !job.recoverable {
                 continue;
             }
-            let Some((status, started_at, brief)) = by_name.get(&job.name) else {
+            let Some((status, started_at, brief, severities)) = by_name.get(&job.name) else {
                 continue;
             };
             // Always reported, so the panel can prefer the row's truth
             // over the in-memory outcome rather than guessing which is
             // fresher.
             job.last_run_status = Some(status.clone());
+            // Always, including empty: `Some({})` says the run found
+            // nothing, which the panel renders as a clean green "ok".
+            // Omitting it there would be indistinguishable from "no run
+            // row", and a job that has never run must not read as clean.
+            job.last_run_severity_counts = Some(severities.clone());
             // Fill the timestamp too when memory has none.
             //
             // `last_outcome` and `last_run_at` are both in-memory, so a

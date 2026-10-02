@@ -521,14 +521,25 @@
 	}
 
 	/**
-	 * Per-severity finding counts from `last_outcome.extra.severity_counts`
-	 * (a JSON object populated by `run_or_resume`). Missing / older
-	 * runs return an empty record — callers should tolerate absent keys.
-	 * Severity values emitted today: `data_loss`, `inconsistent`,
-	 * `anomaly`. The set is open (the column is TEXT), so unknown keys
-	 * must degrade rather than throw.
+	 * Per-severity finding counts for the last run. Severity values
+	 * emitted today: `data_loss`, `inconsistent`, `anomaly`. The set is
+	 * open (the column is TEXT), so unknown keys must degrade rather
+	 * than throw.
+	 *
+	 * Two sources, in this order:
+	 *  1. `last_run_severity_counts` — counted from `jobs.run_findings`
+	 *     by the list handler. Durable.
+	 *  2. `last_outcome.extra.severity_counts` — the same numbers from
+	 *     the dispatch that produced them, in memory.
+	 *
+	 * (1) first because (2) does not survive a restart, and the amber
+	 * pill below is the only place a finding is visible without opening
+	 * a drawer on purpose. A completed run that recorded data loss read
+	 * as a neutral "—" afterwards — worst on a *scheduled* detector,
+	 * where no human saw the dispatch at all.
 	 */
 	function lastSeverityCounts(job: JobSummary): Record<string, number> {
+		if (job.last_run_severity_counts) return job.last_run_severity_counts;
 		if (!job.last_outcome || job.last_outcome.outcome !== 'ok') return {};
 		const extra = job.last_outcome.extra as
 			| { severity_counts?: Record<string, number> }
@@ -619,6 +630,21 @@
 	/// and saying so is the honest answer.
 	function outcomeLabel(job: JobSummary): string {
 		if (!job.last_outcome) {
+			// No dispatch in memory — but findings are rows, so they still
+			// decide the pill. Showing "—" for a run that recorded data
+			// loss is the defect this whole path exists to prevent, and it
+			// is precisely the restarted-instance case: nobody watched the
+			// dispatch, which is normal for a scheduled detector.
+			if (actionableFindingCount(job) > 0) {
+				return t('admin.jobs.outcome_issues', 'issues');
+			}
+			if (anomalyFindingCount(job) > 0) {
+				return t('admin.jobs.outcome_notices', 'notices');
+			}
+			// Deliberately NOT "ok" on an empty findings list: that says
+			// the sweep found nothing, not that it finished. Whether it
+			// finished is the State column's answer.
+			//
 			// "never" means never ran. A job with a run row DID run — the
 			// outcome simply is not in memory, because `last_outcome` is
 			// populated per dispatch and a restart empties it. Saying
@@ -649,7 +675,18 @@
 	}
 
 	function outcomeClass(job: JobSummary): string {
-		if (!job.last_outcome) return 'jobs-panel__pill jobs-panel__pill--neutral';
+		// Colour follows `outcomeLabel` exactly — including the
+		// no-outcome-but-findings case, where a grey pill next to the word
+		// "issues" would read as nothing to do.
+		if (!job.last_outcome) {
+			if (actionableFindingCount(job) > 0) {
+				return 'jobs-panel__pill jobs-panel__pill--paused';
+			}
+			if (anomalyFindingCount(job) > 0) {
+				return 'jobs-panel__pill jobs-panel__pill--notice';
+			}
+			return 'jobs-panel__pill jobs-panel__pill--neutral';
+		}
 		if (job.last_outcome.outcome !== 'ok') {
 			return 'jobs-panel__pill jobs-panel__pill--err';
 		}

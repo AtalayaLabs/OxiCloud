@@ -812,6 +812,18 @@ export interface JobSummary {
 	 *  handler leaves it stale — cancelling a Paused run is a direct SQL
 	 *  flip, and the panel went on rendering the pause it replaced. */
 	last_run_status?: RunStatus;
+	/** Findings of the most recent run, counted per severity, read from
+	 *  `jobs.run_findings` (recoverable jobs only).
+	 *
+	 *  **Prefer this over `last_outcome.extra.severity_counts`**, for the
+	 *  same reason as `last_run_status`: the outcome is in-memory, so a
+	 *  restart erased the counts and a completed run that found data loss
+	 *  rendered as a neutral "—". Findings are rows, so this survives.
+	 *
+	 *  Absent = no run row. `{}` = a run that found nothing — the good
+	 *  news, and a different fact. Severity keys are open (the column is
+	 *  TEXT), so unknown keys must degrade rather than throw. */
+	last_run_severity_counts?: Record<string, number>;
 	/** Present iff `OXICLOUD_STARTUP_JOBS` names this job — the flags it
 	 *  is dispatched with at every boot. Worth showing: a job configured
 	 *  with `repair: true` deletes on every restart, and the row would
