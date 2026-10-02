@@ -13,8 +13,8 @@ Editing a few bytes of a 500 MB file re-uploads ~1 MiB instead of
 ## Who can use it
 
 Any authenticated API client. The OxiCloud web frontend uses it
-automatically for files ≥ 8 MiB (`features/files/deltaUpload.js` +
-`workers/deltaWorker.js`, chunking with the vendored WASM build of the
+automatically for files ≥ 8 MiB (`frontend/src/lib/api/endpoints/deltaUpload.ts` +
+`frontend/static/workers/deltaWorker.js`, chunking with the vendored WASM build of the
 server's own FastCDC+BLAKE3 crates, falling back to a plain byte upload
 on any failure). Generic WebDAV/NextCloud clients cannot (their
 protocols have no delta concept) — they keep uploading full bytes, and
@@ -70,6 +70,20 @@ unreferenced orphans (`ref_count = 0`). Response:
 Compare against your own hashes to catch corruption before committing.
 Abandoned uploads need no cleanup call: the periodic GC sweeps
 zero-reference chunks.
+
+The browser groups frames into requests of at most 8 MiB by default,
+including each frame's four-byte length prefix. The per-tab
+`window.oxi.UPLOAD_BATCH_BYTES` override accepts a finite positive byte
+budget. A frame larger than that budget is sent alone: content-addressed
+chunks cannot be split into smaller frames without changing their hashes.
+Set the budget below the proxy's request limit, and allow at least the
+maximum chunk size plus four bytes at the proxy.
+
+The same batching applies when a commit returns `409 still_missing`.
+Recovery validates the requested hashes against the file's manifest,
+uploads each distinct missing chunk once in bounded requests, and only
+then retries the commit. The browser permits two recovery rounds; a
+failed recovery PUT stops the round and uses the existing upload fallback.
 
 ### 3. `POST /api/files/delta/commit`
 
