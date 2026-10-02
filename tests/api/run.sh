@@ -338,6 +338,7 @@ HURL_FILES=( \
   "$API_DIR/carddav_vcard_properties.hurl" \
   "$API_DIR/contacts.hurl" \
   "$API_DIR/calendar.hurl" \
+  "$API_DIR/caldav_shared_roles.hurl" \
   "$API_DIR/caldav_recurring.hurl" \
   "$API_DIR/caldav_calendar_query.hurl" \
   "$API_DIR/playlists.hurl" \

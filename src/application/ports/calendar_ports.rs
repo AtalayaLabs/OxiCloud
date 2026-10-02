@@ -3,8 +3,67 @@ use crate::application::dtos::calendar_dto::{
     CreateEventICalDto, UpdateCalendarDto, UpdateEventDto,
 };
 use crate::common::errors::DomainError;
+use crate::domain::services::authorization::{Permission, Role};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
+
+/// The caller's effective access level on one calendar — what a CalDAV
+/// client is told it may do (`current-user-privilege-set`). Derived from
+/// the ReBAC permissions the caller holds, never from `owner_id`, so a
+/// shared calendar advertises the role it was shared with (#776).
+///
+/// This is an advertisement, not an enforcement point: every write is
+/// still gated by `authz.require` in `CalendarService`. A stale level
+/// (grant changed since the PROPFIND) costs the client a refused write,
+/// never an unauthorized one.
+///
+/// Variants are ordered weakest → strongest so the union of several
+/// grants (direct + group) is their `max`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CalendarAccess {
+    /// `Read` only (Viewer, Commenter, or a public calendar).
+    Read,
+    /// May add new objects but not touch existing ones (Contributor).
+    Contribute,
+    /// May add, modify and delete objects, but not the calendar's own
+    /// properties (Editor).
+    Edit,
+    /// Everything, including renaming, recolouring and deleting the
+    /// calendar (Owner).
+    Own,
+}
+
+impl CalendarAccess {
+    /// The permission that unlocks each level above `Read`, strongest
+    /// first. The single definition both derivations below walk — the
+    /// service checks them against the engine in this order.
+    pub const GATES: [(Permission, CalendarAccess); 3] = [
+        (Permission::Manage, CalendarAccess::Own),
+        (Permission::Update, CalendarAccess::Edit),
+        (Permission::Create, CalendarAccess::Contribute),
+    ];
+
+    /// Level implied by a permission predicate: the strongest gate it
+    /// passes, else `Read`.
+    pub fn from_permissions(has: impl Fn(Permission) -> bool) -> Self {
+        Self::GATES
+            .iter()
+            .find(|(permission, _)| has(*permission))
+            .map_or(CalendarAccess::Read, |(_, access)| *access)
+    }
+
+    /// Level implied by one role grant.
+    pub fn from_role(role: Role) -> Self {
+        Self::from_permissions(|p| role.expand().contains(&p))
+    }
+}
+
+/// A calendar together with the caller's access level on it.
+#[derive(Debug, Clone)]
+pub struct AccessibleCalendar {
+    pub calendar: CalendarDto,
+    pub access: CalendarAccess,
+}
 
 /// Result of a multi-component PUT (`upsert_ical_objects`). See #528
 /// for the master/exception event routing and #754 for the VTODO
@@ -93,9 +152,17 @@ pub trait CalendarStoragePort: Send + Sync + 'static {
     ///
     /// Returns `InvalidInput` when the body carries neither VEVENTs
     /// nor VTODOs — the handler maps that to 400.
+    ///
+    /// With `allow_replace = false` (a caller holding `Create` but not
+    /// `Update`), the body may only introduce new UIDs: if any of its
+    /// UIDs already has a row of either kind in the calendar, nothing
+    /// is written and `AlreadyExists` is returned. That mode never
+    /// deletes, so a concurrent insert of the same UID can only collide
+    /// on the unique indexes, never be overwritten.
     async fn upsert_ical_objects(
         &self,
         event: CreateEventICalDto,
+        allow_replace: bool,
     ) -> Result<UpsertObjectsResult, DomainError>;
     async fn update_event(
         &self,
@@ -206,7 +273,20 @@ pub trait CalendarUseCase: Send + Sync + 'static {
         calendar_id: &str,
         user_id: Uuid,
     ) -> Result<CalendarDto, DomainError>;
-    async fn list_my_calendars(&self, user_id: Uuid) -> Result<Vec<CalendarDto>, DomainError>;
+    /// Resolve a calendar (same Read gate as [`Self::get_calendar`]) with
+    /// the caller's access level on it — the CalDAV collection PROPFIND
+    /// needs both to advertise `current-user-privilege-set`.
+    async fn get_calendar_with_access(
+        &self,
+        calendar_id: &str,
+        user_id: Uuid,
+    ) -> Result<AccessibleCalendar, DomainError>;
+    /// Every calendar the caller holds a live grant on (owned + shared),
+    /// each with the caller's access level on it.
+    async fn list_my_calendars(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<AccessibleCalendar>, DomainError>;
     async fn list_public_calendars(
         &self,
         limit: Option<i64>,
@@ -227,8 +307,9 @@ pub trait CalendarUseCase: Send + Sync + 'static {
     /// Route a PUT'd iCalendar body containing one or more calendar
     /// components (VEVENT and/or VTODO — #754) to their per-instance
     /// rows. See `CalendarStoragePort::upsert_ical_objects` for the
-    /// routing rules; this method just adds the `Permission::Create`
-    /// gate for the caller.
+    /// routing rules. Gate: `Permission::Create` to add objects;
+    /// replacing an object whose UID already exists additionally needs
+    /// `Permission::Update` (a Contributor may add, not overwrite).
     async fn upsert_ical_objects(
         &self,
         event: CreateEventICalDto,
@@ -380,5 +461,34 @@ impl CalendarObject {
             CalendarObject::Event(e) => &e.id,
             CalendarObject::Todo(t) => &t.id,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CalendarAccess;
+    use crate::domain::services::authorization::Role;
+
+    /// #776 role table: each ReBAC role maps to the CalDAV level its
+    /// permission bundle earns.
+    #[test]
+    fn each_role_maps_to_its_calendar_access() {
+        for (role, expected) in [
+            (Role::Viewer, CalendarAccess::Read),
+            (Role::Commenter, CalendarAccess::Read),
+            (Role::Contributor, CalendarAccess::Contribute),
+            (Role::Editor, CalendarAccess::Edit),
+            (Role::Owner, CalendarAccess::Own),
+        ] {
+            assert_eq!(CalendarAccess::from_role(role), expected, "{role:?}");
+        }
+    }
+
+    /// Several grants on one calendar (direct + group) union to the
+    /// strongest, which `list_my_calendars` computes with `max`.
+    #[test]
+    fn strongest_grant_wins() {
+        let levels = [Role::Viewer, Role::Editor, Role::Contributor].map(CalendarAccess::from_role);
+        assert_eq!(levels.into_iter().max(), Some(CalendarAccess::Edit));
     }
 }

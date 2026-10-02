@@ -59,6 +59,23 @@ Typical resource shapes:
 - `DELETE`
 - `PROPPATCH`
 
+### Shared Calendars
+
+A calendar shared through `POST /api/grants` (`resource.type = "calendar"`)
+appears in the recipient's calendar home. What their CalDAV client may do
+follows the role it was shared with, and is advertised through
+`current-user-privilege-set` so clients mount it read-only or read-write
+accordingly:
+
+| Role | Advertised privileges | Allowed over CalDAV |
+|------|-----------------------|---------------------|
+| Viewer, Commenter | `read` | Read events and tasks |
+| Contributor | `read`, `bind` | …and add new ones (a `PUT` over an existing UID is refused) |
+| Editor | `read`, `write-content`, `bind`, `unbind` | …and modify or delete any event or task |
+| Owner | `all` | …and rename / recolour the calendar (`PROPPATCH`) or delete it |
+
+A refused write returns `403 Forbidden`.
+
 ### Client Setup
 
 | Client | URL |

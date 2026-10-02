@@ -289,6 +289,7 @@ impl CalendarStoragePort for CalendarStorageAdapter {
     async fn upsert_ical_objects(
         &self,
         dto: CreateEventICalDto,
+        allow_replace: bool,
     ) -> Result<UpsertObjectsResult, DomainError> {
         let calendar_id = Uuid::parse_str(&dto.calendar_id).map_err(|_| {
             DomainError::new(
@@ -328,6 +329,39 @@ impl CalendarStoragePort for CalendarStorageAdapter {
             CalendarTodo::parse_from_components(calendar_id, &components)?
         };
 
+        // Insert-only mode: refuse the whole body up front if any of
+        // its UIDs is already taken, before a single row is touched —
+        // a partial write (first component in, second refused) would
+        // leave the object half-updated. Any row counts, master or
+        // exception, event or task: adding an override to someone
+        // else's series is modifying it.
+        if !allow_replace {
+            let mut uids: Vec<String> = parsed_events
+                .iter()
+                .map(|e| e.ical_uid().to_string())
+                .chain(parsed_todos.iter().map(|t| t.ical_uid().to_string()))
+                .collect();
+            uids.sort_unstable();
+            uids.dedup();
+            let taken = !self
+                .event_repository
+                .find_events_by_ical_uids(&calendar_id, &uids)
+                .await?
+                .is_empty()
+                || !self
+                    .todo_repository
+                    .find_todos_by_ical_uids(&calendar_id, &uids)
+                    .await?
+                    .is_empty();
+            if taken {
+                return Err(DomainError::new(
+                    ErrorKind::AlreadyExists,
+                    "CalendarObject",
+                    "A calendar object with this UID already exists",
+                ));
+            }
+        }
+
         let mut events = Vec::with_capacity(parsed_events.len());
         let mut todos = Vec::with_capacity(parsed_todos.len());
         let mut any_inserted = false;
@@ -338,7 +372,11 @@ impl CalendarStoragePort for CalendarStorageAdapter {
             // Existing row lookup routes on the master/exception split.
             // Master: (calendar_id, ical_uid) WHERE recurrence_id IS NULL
             // Exception: (calendar_id, ical_uid, recurrence_id)
+            // Insert-only mode never replaces: a row that appeared since
+            // the up-front check (concurrent PUT) must collide on the
+            // unique index, not be deleted and overwritten.
             let existing = match event.recurrence_id().copied() {
+                _ if !allow_replace => None,
                 Some(rid) => {
                     self.event_repository
                         .find_event_by_ical_uid_and_recurrence_id(&calendar_id, &ical_uid, &rid)
@@ -373,6 +411,7 @@ impl CalendarStoragePort for CalendarStorageAdapter {
             // Same master/exception routing as events — recurring
             // tasks override single occurrences via RECURRENCE-ID.
             let existing = match todo.recurrence_id().copied() {
+                _ if !allow_replace => None,
                 Some(rid) => {
                     self.todo_repository
                         .find_todo_by_ical_uid_and_recurrence_id(&calendar_id, &ical_uid, &rid)

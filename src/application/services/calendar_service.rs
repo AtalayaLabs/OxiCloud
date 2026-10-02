@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -9,7 +9,8 @@ use crate::application::dtos::calendar_dto::{
 };
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::calendar_ports::{
-    CalendarObject, CalendarStoragePort, CalendarUseCase, UpsertObjectsResult,
+    AccessibleCalendar, CalendarAccess, CalendarObject, CalendarStoragePort, CalendarUseCase,
+    UpsertObjectsResult,
 };
 use crate::common::errors::{DomainError, ErrorKind};
 use crate::domain::services::authorization::{Permission, Resource, Role, Subject};
@@ -84,6 +85,31 @@ impl CalendarService {
             )
             .await
     }
+
+    /// The caller's access level on a calendar they are already known
+    /// to see. Walks [`CalendarAccess::GATES`] strongest first against
+    /// the engine, so an Owner costs one (cached) check and the
+    /// engine's global gates — migration read-only — are reflected.
+    async fn calendar_access(
+        &self,
+        calendar_id: Uuid,
+        caller_id: Uuid,
+    ) -> Result<CalendarAccess, DomainError> {
+        for (permission, access) in CalendarAccess::GATES {
+            if self
+                .authz
+                .check(
+                    Subject::User(caller_id),
+                    permission,
+                    Resource::Calendar(calendar_id),
+                )
+                .await?
+            {
+                return Ok(access);
+            }
+        }
+        Ok(CalendarAccess::Read)
+    }
 }
 
 impl CalendarUseCase for CalendarService {
@@ -124,7 +150,11 @@ impl CalendarUseCase for CalendarService {
         update: UpdateCalendarDto,
         user_id: Uuid,
     ) -> Result<CalendarDto, DomainError> {
-        self.require_calendar_perm(calendar_id, user_id, Permission::Update)
+        // `Manage`, not `Update`: the name, colour and description are
+        // the calendar's own properties, shown to every member. An
+        // Editor edits the calendar's content, not how it presents to
+        // everyone else (#776).
+        self.require_calendar_perm(calendar_id, user_id, Permission::Manage)
             .await?;
         self.calendar_storage
             .update_calendar(calendar_id, update)
@@ -167,7 +197,22 @@ impl CalendarUseCase for CalendarService {
         Ok(calendar)
     }
 
-    async fn list_my_calendars(&self, user_id: Uuid) -> Result<Vec<CalendarDto>, DomainError> {
+    async fn get_calendar_with_access(
+        &self,
+        calendar_id: &str,
+        user_id: Uuid,
+    ) -> Result<AccessibleCalendar, DomainError> {
+        let calendar = self.get_calendar(calendar_id, user_id).await?;
+        let uuid = Uuid::parse_str(calendar_id)
+            .map_err(|_| DomainError::new(ErrorKind::InvalidInput, "Calendar", "Invalid ID"))?;
+        let access = self.calendar_access(uuid, user_id).await?;
+        Ok(AccessibleCalendar { calendar, access })
+    }
+
+    async fn list_my_calendars(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<AccessibleCalendar>, DomainError> {
         // Post-Round-3 semantics: every calendar the caller has any
         // grant on — owned + shared, one union. The pre-Round-3
         // `list_calendars_by_owner` returned owner-only; shared
@@ -179,23 +224,42 @@ impl CalendarUseCase for CalendarService {
             .await?;
 
         // Deduplicate — a user can hold multiple grants on the same
-        // calendar (direct + group-inherited). We only need one DTO
-        // per resource.
-        let calendar_ids: HashSet<Uuid> = grants
-            .into_iter()
-            .filter_map(|g| match g.resource {
-                Resource::Calendar(id) => Some(id),
-                _ => None,
-            })
-            .collect();
+        // calendar (direct + group-inherited). One DTO per resource,
+        // at the strongest level any of the grants confers. The access
+        // level is read off the grants already in hand rather than
+        // re-asked of the engine: this runs on every CalDAV discovery
+        // poll, and K calendars × 3 checks would be a per-row query on
+        // a hot path. Expired grants are skipped — the engine no
+        // longer honours them, so neither may the listing.
+        let mut access_by_id: HashMap<Uuid, CalendarAccess> = HashMap::new();
+        for grant in grants {
+            if grant.is_expired() {
+                continue;
+            }
+            if let Resource::Calendar(id) = grant.resource {
+                let access = CalendarAccess::from_role(grant.role);
+                access_by_id
+                    .entry(id)
+                    .and_modify(|a| *a = (*a).max(access))
+                    .or_insert(access);
+            }
+        }
 
         // Hydrate DTOs in ONE `= ANY` round-trip (was one point SELECT
         // per accessible calendar — K serial round-trips on every
         // CalDAV discovery poll). Missing rows (deleted/trashed race)
         // drop out of the result set instead of erroring, so a
         // lifecycle-race still doesn't turn a PROPFIND into a 5xx.
-        let ids: Vec<Uuid> = calendar_ids.into_iter().collect();
-        self.calendar_storage.get_calendars_by_ids(&ids).await
+        let ids: Vec<Uuid> = access_by_id.keys().copied().collect();
+        let calendars = self.calendar_storage.get_calendars_by_ids(&ids).await?;
+        Ok(calendars
+            .into_iter()
+            .filter_map(|calendar| {
+                let id = Uuid::parse_str(&calendar.id).ok()?;
+                let access = *access_by_id.get(&id)?;
+                Some(AccessibleCalendar { calendar, access })
+            })
+            .collect())
     }
 
     async fn list_public_calendars(
@@ -237,14 +301,41 @@ impl CalendarUseCase for CalendarService {
         event: CreateEventICalDto,
         user_id: Uuid,
     ) -> Result<UpsertObjectsResult, DomainError> {
-        // Same gate as create_event_from_ical — a PUT to the collection
-        // is a write. `Permission::Create` matches the single-event
-        // path; per-instance exception updates and VTODO fan-out (#754)
-        // ride on the same permission because from the ACL's
-        // perspective it's still a write to the calendar.
-        self.require_calendar_perm(&event.calendar_id, user_id, Permission::Create)
+        // `Create` admits the PUT at all (Contributor and up). Whether
+        // it may REPLACE an existing object is a separate question:
+        // that is modifying someone else's entry, which needs `Update`
+        // (Editor and up). A caller without it gets the insert-only
+        // mode, where storage refuses any already-taken UID before
+        // writing anything (#776).
+        let uuid = self
+            .require_calendar_perm(&event.calendar_id, user_id, Permission::Create)
             .await?;
-        self.calendar_storage.upsert_ical_objects(event).await
+        let may_replace = self
+            .has_calendar_perm(&event.calendar_id, user_id, Permission::Update)
+            .await?;
+        match self
+            .calendar_storage
+            .upsert_ical_objects(event, may_replace)
+            .await
+        {
+            Err(e) if !may_replace && e.kind == ErrorKind::AlreadyExists => {
+                // Surface the refusal through the engine so it carries
+                // the canonical `authz.denied` audit line and the
+                // graduated shape (the caller can read the calendar →
+                // 403). Should a grant have landed in between, the
+                // require passes and the conflict is reported as-is;
+                // the client's retry then takes the replace path.
+                self.authz
+                    .require(
+                        Subject::User(user_id),
+                        Permission::Update,
+                        Resource::Calendar(uuid),
+                    )
+                    .await?;
+                Err(e)
+            }
+            result => result,
+        }
     }
 
     async fn update_event(
@@ -269,7 +360,10 @@ impl CalendarUseCase for CalendarService {
             .calendar_storage
             .calendar_id_for_event(event_id)
             .await?;
-        self.require_calendar_perm(&calendar_id, user_id, Permission::Delete)
+        // `Update`, not `Delete`: removing an event is editing the
+        // calendar's content (Editor). `Delete` on a calendar means
+        // deleting the calendar itself, which only its Owner may (#776).
+        self.require_calendar_perm(&calendar_id, user_id, Permission::Update)
             .await?;
         self.calendar_storage.delete_event(event_id).await
     }
@@ -408,7 +502,7 @@ impl CalendarUseCase for CalendarService {
 
     // ─── Todo (VTODO) operations — #754 ──────────────────────────
     // Same authz patterns as the event methods: public-calendar bypass
-    // or `Permission::Read` on reads, `Permission::Delete` on deletes.
+    // or `Permission::Read` on reads, `Permission::Update` on deletes.
 
     async fn get_todo_by_ical_uid(
         &self,
@@ -495,7 +589,8 @@ impl CalendarUseCase for CalendarService {
 
     async fn delete_todo(&self, todo_id: &str, user_id: Uuid) -> Result<(), DomainError> {
         let calendar_id = self.calendar_storage.calendar_id_for_todo(todo_id).await?;
-        self.require_calendar_perm(&calendar_id, user_id, Permission::Delete)
+        // Same as `delete_event`: deleting an object is a content edit.
+        self.require_calendar_perm(&calendar_id, user_id, Permission::Update)
             .await?;
         self.calendar_storage.delete_todo(todo_id).await
     }
@@ -545,9 +640,9 @@ impl CalendarUseCase for CalendarService {
         user_id: Uuid,
     ) -> Result<(), DomainError> {
         // Delegates rather than inlining: each arm re-derives the owning
-        // calendar from the row id and re-checks Delete. That second gate
+        // calendar from the row id and re-checks Update. That second gate
         // is deliberate defence in depth — the resolve above proved Read
-        // on the calendar named in the URL, not Delete on the calendar
+        // on the calendar named in the URL, not Update on the calendar
         // the object actually belongs to.
         match object {
             CalendarObject::Event(event) => self.delete_event(&event.id, user_id).await,

@@ -16,6 +16,7 @@ use crate::application::adapters::webdav_adapter::{
     PropFindRequest, PropFindType, QualifiedName, Result, WebDavAdapter, WebDavError,
 };
 use crate::application::dtos::calendar_dto::{CalendarDto, CalendarEventDto, CalendarTodoDto};
+use crate::application::ports::calendar_ports::{AccessibleCalendar, CalendarAccess};
 
 /// Emit a WebDAV `getetag` body as `"…"` with the surrounding quotes written as
 /// borrowed pre-escaped `&quot;` text events around the escaped etag body.
@@ -340,17 +341,42 @@ pub(crate) fn bundle_to_calendar_body<T: CalendarObjectRow>(bundle: &[&T]) -> St
     buf
 }
 
-/// Returns whether `caller_id` owns `calendar`.
+/// RFC 3744 privileges advertised in `current-user-privilege-set` for each
+/// access level (#776). CalDAV clients (DAVx⁵, Apple Calendar, Thunderbird)
+/// decide read-only vs read-write from this set, so it must track the role
+/// the calendar was shared with:
 ///
-/// CalDAV clients (DAVx5, Apple Calendar, Thunderbird) only mount a collection
-/// read-write when its `current-user-privilege-set` advertises `<D:write/>`, so
-/// this gate decides read-only vs read-write for the caller. `caller_id` and
-/// [`CalendarDto::owner_id`] are both the user's UUID rendered via
-/// `Uuid::to_string()`, so a direct comparison is exact. Calendars merely shared
-/// with the caller (non-owner access) stay read-only for now — this never
-/// over-grants write.
-fn caller_owns_calendar(calendar: &CalendarDto, caller_id: &str) -> bool {
-    !caller_id.is_empty() && calendar.owner_id == caller_id
+/// * `bind` — may create new object resources (PUT a new UID).
+/// * `write-content` + `unbind` — may modify and delete existing objects.
+/// * `all` — additionally the calendar's own properties (PROPPATCH) and the
+///   calendar itself; RFC 3744 §3.12 makes it the aggregate of every other.
+///
+/// Editors get no `write-properties`, so clients don't offer rename/recolour
+/// that `CalendarService::update_calendar` would refuse.
+fn dav_privileges(access: CalendarAccess) -> &'static [&'static str] {
+    match access {
+        CalendarAccess::Read => &["D:read"],
+        CalendarAccess::Contribute => &["D:read", "D:bind"],
+        CalendarAccess::Edit => &["D:read", "D:write-content", "D:bind", "D:unbind"],
+        CalendarAccess::Own => &["D:all"],
+    }
+}
+
+/// Write `D:current-user-privilege-set` for `access`.
+fn write_current_user_privilege_set<W: Write>(
+    xml_writer: &mut Writer<W>,
+    access: CalendarAccess,
+) -> Result<()> {
+    xml_writer.write_event(Event::Start(BytesStart::new(
+        "D:current-user-privilege-set",
+    )))?;
+    for privilege in dav_privileges(access) {
+        xml_writer.write_event(Event::Start(BytesStart::new("D:privilege")))?;
+        xml_writer.write_event(Event::Empty(BytesStart::new(*privilege)))?;
+        xml_writer.write_event(Event::End(BytesEnd::new("D:privilege")))?;
+    }
+    xml_writer.write_event(Event::End(BytesEnd::new("D:current-user-privilege-set")))?;
+    Ok(())
 }
 
 /// CalDAV report type
@@ -600,11 +626,10 @@ impl CalDavAdapter {
     /// (current-user-principal, calendar-home-set) plus each calendar.
     pub fn generate_root_propfind_response<W: Write>(
         writer: W,
-        calendars: &[CalendarDto],
+        calendars: &[AccessibleCalendar],
         request: &PropFindRequest,
         base_href: &str,
         username: &str,
-        caller_id: &str,
     ) -> Result<()> {
         let mut xml_writer = Writer::new(writer);
 
@@ -626,8 +651,7 @@ impl CalDavAdapter {
                 &mut xml_writer,
                 calendar,
                 request,
-                &format!("{}{}/", base_href, calendar.id),
-                caller_id,
+                &format!("{}{}/", base_href, calendar.calendar.id),
             )?;
         }
 
@@ -640,10 +664,9 @@ impl CalDavAdapter {
     /// Generate a PROPFIND response for calendars (without root discovery entry)
     pub fn generate_calendars_propfind_response<W: Write>(
         writer: W,
-        calendars: &[CalendarDto],
+        calendars: &[AccessibleCalendar],
         request: &PropFindRequest,
         base_href: &str,
-        caller_id: &str,
     ) -> Result<()> {
         let mut xml_writer = Writer::new(writer);
 
@@ -662,8 +685,7 @@ impl CalDavAdapter {
                 &mut xml_writer,
                 calendar,
                 request,
-                &format!("{}{}/", base_href, calendar.id),
-                caller_id,
+                &format!("{}{}/", base_href, calendar.calendar.id),
             )?;
         }
 
@@ -954,11 +976,11 @@ impl CalDavAdapter {
     /// Write calendar properties as a response
     fn write_calendar_response<W: Write>(
         xml_writer: &mut Writer<W>,
-        calendar: &CalendarDto,
+        entry: &AccessibleCalendar,
         request: &PropFindRequest,
         href: &str,
-        caller_id: &str,
     ) -> Result<()> {
+        let calendar = &entry.calendar;
         // Start response element
         xml_writer.write_event(Event::Start(BytesStart::new("D:response")))?;
 
@@ -977,7 +999,7 @@ impl CalDavAdapter {
         match &request.prop_find_type {
             PropFindType::AllProp => {
                 // Write all standard properties for a calendar
-                Self::write_calendar_standard_props(xml_writer, calendar, caller_id)?;
+                Self::write_calendar_standard_props(xml_writer, calendar, entry.access)?;
             }
             PropFindType::PropName => {
                 // Write only property names (empty elements)
@@ -985,7 +1007,7 @@ impl CalDavAdapter {
             }
             PropFindType::Prop(props) => {
                 // Write requested properties
-                Self::write_calendar_requested_props(xml_writer, calendar, props, caller_id)?;
+                Self::write_calendar_requested_props(xml_writer, calendar, props, entry.access)?;
             }
         }
 
@@ -1010,7 +1032,7 @@ impl CalDavAdapter {
     fn write_calendar_standard_props<W: Write>(
         xml_writer: &mut Writer<W>,
         calendar: &CalendarDto,
-        caller_id: &str,
+        access: CalendarAccess,
     ) -> Result<()> {
         // Common WebDAV properties
 
@@ -1060,24 +1082,8 @@ impl CalDavAdapter {
         // Support calendar-access (RFC4791)
         xml_writer.write_event(Event::Empty(BytesStart::new("C:calendar-access")))?;
 
-        // Current user privilege set
-        xml_writer.write_event(Event::Start(BytesStart::new(
-            "D:current-user-privilege-set",
-        )))?;
-        xml_writer.write_event(Event::Start(BytesStart::new("D:privilege")))?;
-        xml_writer.write_event(Event::Empty(BytesStart::new("D:read")))?;
-        xml_writer.write_event(Event::End(BytesEnd::new("D:privilege")))?;
-
-        // Advertise write only when the caller owns the calendar. Clients
-        // (DAVx5, Apple Calendar, Thunderbird) mount the collection read-only
-        // unless this privilege is present.
-        if caller_owns_calendar(calendar, caller_id) {
-            xml_writer.write_event(Event::Start(BytesStart::new("D:privilege")))?;
-            xml_writer.write_event(Event::Empty(BytesStart::new("D:write")))?;
-            xml_writer.write_event(Event::End(BytesEnd::new("D:privilege")))?;
-        }
-
-        xml_writer.write_event(Event::End(BytesEnd::new("D:current-user-privilege-set")))?;
+        // Current user privilege set — mirrors the caller's role.
+        write_current_user_privilege_set(xml_writer, access)?;
 
         // Calendar description if present
         if let Some(desc) = &calendar.description {
@@ -1149,7 +1155,7 @@ impl CalDavAdapter {
         xml_writer: &mut Writer<W>,
         calendar: &CalendarDto,
         props: &[QualifiedName],
-        caller_id: &str,
+        access: CalendarAccess,
     ) -> Result<()> {
         for prop in props {
             match (prop.namespace.as_str(), prop.name.as_str()) {
@@ -1184,22 +1190,7 @@ impl CalDavAdapter {
                     xml_writer.write_event(Event::End(BytesEnd::new("D:getcontenttype")))?;
                 }
                 ("DAV:", "current-user-privilege-set") => {
-                    xml_writer.write_event(Event::Start(BytesStart::new(
-                        "D:current-user-privilege-set",
-                    )))?;
-                    xml_writer.write_event(Event::Start(BytesStart::new("D:privilege")))?;
-                    xml_writer.write_event(Event::Empty(BytesStart::new("D:read")))?;
-                    xml_writer.write_event(Event::End(BytesEnd::new("D:privilege")))?;
-
-                    // Advertise write only when the caller owns the calendar.
-                    if caller_owns_calendar(calendar, caller_id) {
-                        xml_writer.write_event(Event::Start(BytesStart::new("D:privilege")))?;
-                        xml_writer.write_event(Event::Empty(BytesStart::new("D:write")))?;
-                        xml_writer.write_event(Event::End(BytesEnd::new("D:privilege")))?;
-                    }
-
-                    xml_writer
-                        .write_event(Event::End(BytesEnd::new("D:current-user-privilege-set")))?;
+                    write_current_user_privilege_set(xml_writer, access)?;
                 }
 
                 // CalDAV namespace properties
@@ -1264,12 +1255,11 @@ impl CalDavAdapter {
     /// Generate PROPFIND response for a single calendar collection + its events
     pub fn generate_calendar_collection_propfind<W: Write>(
         writer: W,
-        calendar: &CalendarDto,
+        calendar: &AccessibleCalendar,
         events: &[CalendarEventDto],
         request: &PropFindRequest,
         base_href: &str,
         depth: &str,
-        caller_id: &str,
     ) -> Result<()> {
         let mut xml_writer = Writer::new(writer);
 
@@ -1282,7 +1272,7 @@ impl CalDavAdapter {
         ))?;
 
         // Write the calendar collection itself
-        Self::write_calendar_response(&mut xml_writer, calendar, request, base_href, caller_id)?;
+        Self::write_calendar_response(&mut xml_writer, calendar, request, base_href)?;
 
         // If depth > 0, include event resources — see
         // `write_collection_event_page`, which the streaming emitter
@@ -1302,13 +1292,12 @@ impl CalDavAdapter {
     /// then [`Self::write_caldav_multistatus_end`].
     pub fn write_collection_head<W: Write>(
         xml_writer: &mut Writer<W>,
-        calendar: &CalendarDto,
+        calendar: &AccessibleCalendar,
         request: &PropFindRequest,
         base_href: &str,
-        caller_id: &str,
     ) -> Result<()> {
         Self::write_caldav_multistatus_start(xml_writer)?;
-        Self::write_calendar_response(xml_writer, calendar, request, base_href, caller_id)
+        Self::write_calendar_response(xml_writer, calendar, request, base_href)
     }
 
     /// One depth-1 collection page: event resources folded per UID so a
