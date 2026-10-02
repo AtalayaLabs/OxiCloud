@@ -1,6 +1,7 @@
 # Plan — Failures that say what they are, and satellite lifecycles that cannot be skipped
 
-**Status:** design captured 2026-10-01. Not implemented. Follow-up to
+**Status:** design captured 2026-10-01; **Part A phases 1–3 implemented
+2026-10-02.** Follow-up to
 `storage-consistency.md` (merged as PR #771), which fixed the *recording* half of
 that plan's invariant and left the *discovery* half resting on detectors nothing
 runs.
@@ -590,13 +591,26 @@ is itself worth a counter on the run.
 
 Surfacing changes the order given earlier in this plan:
 
-| # | phase | why here |
+| # | phase | state |
 |---|---|---|
-| 1 | Retry (Part A ph. 1) | no prerequisites; removes most false findings outright |
-| 2 | Classify + pause (Part A ph. 2–3) | stops a degraded backend producing `data_loss` |
-| 3 | **Panel shows findings** | tiny, and makes every later phase legible |
-| 4 | Schedule the detectors (Part A ph. 4) | now safe to automate, and now visible |
-| 5 | `NotificationSink` + transports | out-of-band reach, once what it would send is trustworthy |
+| 1 | Retry (Part A ph. 1) | **DONE** — `verify_bytes` re-reads once |
+| 2 | Classify (Part A ph. 2) | **DONE** — `classify_stream_read_error` + source chain |
+| 3 | Pause (Part A ph. 3) | **DONE** — `backend_consistency`, `backend_rotate`; `backend_rechunk` already had it |
+| 4 | **Panel shows findings** | TODO — tiny, and makes every later phase legible |
+| 5 | Schedule the detectors (Part A ph. 4) | TODO — safe to automate once 4 lands |
+| 6 | `NotificationSink` + transports | TODO — out-of-band reach, once what it sends is trustworthy |
+
+**Implementation note that simplified phase 1.** The plan called for a re-read in
+`verify_bytes`, `backend_rechunk` and `backend_rotate`. Only `verify_bytes` needs
+one: it writes a per-object verdict and must conclude before moving on. The other
+two are **resumable**, so pausing at the cursor *is* the retry — the engine resumes
+and re-reads. So phase 1 collapsed into phase 3 for the migration jobs, and
+`backend_rechunk` needed no change at all: it already paused on transient, and the
+classification fix is what finally makes that branch reachable for a streaming
+failure.
+
+`backend_rotate` did need it — it had no transience check anywhere, and recorded
+`rotation_failed` at `data_loss` for read AND write failures alike.
 
 Phases 1–2 before 3–5 is the load-bearing ordering. Everything else can move.
 

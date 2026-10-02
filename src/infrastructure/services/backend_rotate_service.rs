@@ -375,6 +375,18 @@ impl RecoverableJobHandler for BackendRotateService {
                 // recorded as a finding.
                 let (plaintext, current_format) = match wrapper.read_and_classify(hash).await {
                     Ok(pair) => pair,
+                    // Transient: the backend is degraded, not this blob. Pause at
+                    // the cursor so the engine resumes and re-reads — for a
+                    // resumable job that IS the retry. Without this a bad few
+                    // minutes on the provider records `rotation_failed` at
+                    // `data_loss` for every blob the run touches.
+                    Err(e) if e.is_transient() => {
+                        return RunOutcome::from_domain_error(
+                            cursor.as_ref().map(|c: &String| c.as_bytes()),
+                            "rotate read",
+                            &e,
+                        );
+                    }
                     Err(e) => {
                         failed_count += 1;
                         tracing::warn!(
@@ -423,10 +435,22 @@ impl RecoverableJobHandler for BackendRotateService {
                 // every blob on disk still had the legacy shape.
                 // `put_blob_from_bytes_replace` writes to a tempfile
                 // + atomic `rename(2)`s over the existing object key.
-                if let Err(e) = wrapper
+                let write = wrapper
                     .put_blob_from_bytes_replace(hash, Bytes::from(plaintext.to_vec()))
-                    .await
+                    .await;
+                // Same split as the read arm: a transient write failure means the
+                // backend is unavailable, so pausing beats recording `data_loss`
+                // for this blob and every one after it.
+                if let Err(e) = &write
+                    && e.is_transient()
                 {
+                    return RunOutcome::from_domain_error(
+                        cursor.as_ref().map(|c: &String| c.as_bytes()),
+                        "rotate write",
+                        e,
+                    );
+                }
+                if let Err(e) = write {
                     failed_count += 1;
                     tracing::warn!(
                         target: "oxicloud::rotate",
