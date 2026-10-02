@@ -68,11 +68,30 @@ shell = shell.replace(BASE_TAG, '@@BASE@@');
 
 const beforeLinks = shell;
 shell = shell.replace(/(\s(?:href|src)=")\/(?!\/)/g, '$1');
-// The bootstrap's dynamic imports are module specifiers, not URLs: they need
-// an explicit `./` to count as relative rather than bare.
-shell = shell.replace(/import\("\/(?!\/)/g, 'import("./');
+// The bootstrap's dynamic imports are resolved against `document.baseURI`
+// explicitly. A relative specifier would do in Chromium and Firefox, which
+// anchor `import()` on `<base href>`; WebKit anchors it on the document URL,
+// so `/s/abc` asked for `/s/_app/…` and got the SPA shell back as JavaScript.
+shell = shell.replace(
+	/import\("\/(?!\/)([^"]+)"\)/g,
+	'import(new URL("$1", document.baseURI).href)'
+);
 if (shell === beforeLinks) {
 	console.error('portable-shell: no root-absolute URLs in index.html — did the build change?');
+	process.exit(1);
+}
+
+// Every dynamic import must carry its own base. A string specifier that
+// survives here is one the rewrite above did not recognise, and it would
+// resolve against the document URL in WebKit — the failure is invisible in
+// Chromium and Firefox, so fail the build instead of shipping it.
+const literalImport = shell.match(/import\("[^"]*"\)/);
+if (literalImport) {
+	console.error(`portable-shell: dynamic import not anchored on the base — ${literalImport[0]}`);
+	process.exit(1);
+}
+if (!shell.includes('document.baseURI).href')) {
+	console.error('portable-shell: no base-anchored import in index.html — did the build change?');
 	process.exit(1);
 }
 
