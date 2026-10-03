@@ -1,9 +1,13 @@
 # Plan — Failures that say what they are, and satellite lifecycles that cannot be skipped
 
 **Status:** design captured 2026-10-01; **Part A phases 1–3 implemented
-2026-10-02; phase 4 (surfacing), phase 5 (scheduling) and phase 6
-(webhook alerting) 2026-10-03.** The detect → classify → run → surface →
-act chain is closed for the webhook transport; email and in-app remain.
+2026-10-02; phase 4 (surfacing), phase 5 (scheduling), phase 6 webhook
+and email alerting 2026-10-03.** The detect → classify → run → surface →
+act chain is closed for both out-of-band transports, and extended with a
+second alert class the plan did not anticipate: a run that *stopped*
+(`error_reason` set) alerts too, verified against a live backend outage.
+**In-app is parked** — low priority, see § The shape. Part B's "needs a
+schedule" item is already satisfied by phase 5.
 Parts B (satellites) and C (compensations) are untouched.
 Follow-up to
 `storage-consistency.md` (merged as PR #771), which fixed the *recording* half of
@@ -406,14 +410,25 @@ So it needs the treatment `backend_consistency` got in §2d:
   base-blob paths all do this since PR #771, and a satellite's blob is an ordinary
   blob — this is the same argument as §2d: the drain re-verifies under a row lock,
   so an object that became referenced again is never deleted.
-* **A schedule**, after Part A.
+* **A schedule**, after Part A. **Already satisfied** (2026-10-03): phase 5
+  schedules `consistency_batch` weekly by default and it fans out to every job
+  whose name ends in `_consistency`, so `satellites_consistency` is swept
+  without an entry of its own.
 
 A `derived_dangling_blob` (the blob is gone, the mapping remains) wants the
 opposite remedy and should be stated separately: the artifact is recomputable, so
 the correct repair is to delete the mapping and let it be regenerated on next
-request — *not* to report `data_loss`, which is what it does today. That severity is
+request — *not* to report `data_loss`, which is what it does today
+(`satellites_consistency_service.rs:324`). That severity is
 right for `attached_dangling_blob`, where the bytes were user-supplied and are
 genuinely unrecoverable.
+
+Note the severity correction now has a second consequence it did not have when
+this was written: out-of-band alerting is gated on severity, and the shipped
+default floor is `data_loss`. So today a regenerable thumbnail whose blob went
+missing pages an operator exactly as loudly as missing user bytes — which is the
+false-alarm end of the same mislabelling, and the fastest way to get a channel
+muted.
 
 ## One open bug to fold in
 
@@ -635,6 +650,35 @@ That keeps the licence constraint clean too (`AGENTS.md`): a webhook plus a payl
 template needs no vendor SDK, where a Slack client library would add a dependency
 and a vendor coupling to a project that must stay self-hostable.
 
+### In-app: parked 2026-10-03, and the blocker turns out to be dissolvable
+
+Low priority — both out-of-band transports ship, so an operator is already
+reachable. Recorded because the investigation reached a conclusion worth not
+redoing.
+
+**The right AuthZ class already exists.** `Topic::Job(name)` (`job:<name>`) is
+`AuthzCheck::RoleAdmin` — non-admins get `topic_forbidden`, indistinguishable
+from an unknown topic — and already carries `JobRunStarted` / `JobRunProgress` /
+`JobRunEnded`, published from `engine.rs`. The gap is **granularity, not
+permission**: it is one topic per job name, with no wildcard in `Topic::parse`,
+so an ops feed would need a subscription per job and would still miss one the
+panel is not watching.
+
+**The per-user mismatch above dissolves if in-app is a bus event rather than a
+row.** The objection to `notif.notifications` is its `user_id UUID NOT NULL`,
+which forces a recipient a finding does not have. A transient admin-only bus
+event has no recipient column, so the question never arises — and it preserves
+this plan's own principle exactly: the row in `jobs.run_findings` is the truth,
+the bus is best-effort.
+
+So the shape, when picked up: one new admin-only topic (`Topic::Ops`, same
+`AuthzCheck::RoleAdmin`) plus a third `NotificationSink` that publishes to it.
+Making it a sink rather than a bespoke call is the point — it inherits the
+severity gate, the transition diff and the per-run de-duplication, so in-app
+cannot drift from what email and the webhook say. Keep `job:<name>` for
+progress (high-frequency, per-job) and put alerts on the new topic (rare,
+instance-wide).
+
 The same erring-direction rule from Part C applies to delivery: **the finding row
 is the truth and the sinks are best-effort.** A webhook that 500s must not fail the
 job run or lose the finding — but it also must not be silent, so a failed delivery
@@ -695,7 +739,8 @@ Surfacing changes the order given earlier in this plan:
 | 3 | Pause (Part A ph. 3) | **DONE** — `backend_consistency`, `backend_rotate`; `backend_rechunk` already had it |
 | 4 | **Panel shows findings** | **DONE** — counts read from `jobs.run_findings`, not from memory |
 | 5 | Schedule the detectors (Part A ph. 4) | **DONE** — `consistency_batch=168h` by default, `OXICLOUD_SCHEDULED_JOBS` to change it |
-| 6 | `NotificationSink` + transports | **DONE (webhook)** — transition-diffed, severity-gated; email/in-app still open |
+| 6 | `NotificationSink` + transports | **DONE (webhook + email)** — transition-diffed, severity-gated; in-app parked, see below |
+| 7 | Alert when a run *stopped* | **DONE** — not in the original plan. Keyed off `error_reason` on the run row; an operator pause sets neither error column and stays silent |
 
 **Implementation note that simplified phase 1.** The plan called for a re-read in
 `verify_bytes`, `backend_rechunk` and `backend_rotate`. Only `verify_bytes` needs
