@@ -2718,6 +2718,77 @@
         "x-oxicloud-scope": "role:admin"
       }
     },
+    "/api/admin/webhook/info": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "GET /api/admin/webhook/info — read-only view of the running webhook\nconfig, beside SMTP on the admin Notifications page.",
+        "description": "Reports the host but **never the full URL**: a Telegram endpoint carries\nthe bot token in its path, and a Slack or Discord webhook URL *is* the\ncredential. The host answers \"does this point where I think it does\"\nwithout putting a secret in a browser's network log.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "operationId": "get_webhook_info",
+        "responses": {
+          "200": {
+            "description": "Current webhook settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookInfoDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Admin required"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-oxicloud-scope": "role:admin"
+      }
+    },
+    "/api/admin/webhook/test": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "`POST /api/admin/webhook/test` — POST a synthetic alert to the\nconfigured webhook.",
+        "description": "Under `/webhook` rather than `/jobs`: the webhook is a transport, and\njob findings are its first consumer rather than its definition. What\nthis verifies is the URL, the format and the credentials — not anything\nabout jobs.\n\nSame shape as `POST /api/admin/smtp/test`, and for the same reason: 200\nregardless of the transport's verdict, with the detail in the body. A\nwebhook returning 404 is diagnostic data an operator needs to read, not\nan HTTP error for the panel to swallow.\n\nThe synthetic alert deliberately bypasses the severity threshold that\ngates real findings — testing with the default `data_loss` threshold\nwould otherwise deliver nothing and read as a broken webhook.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "operationId": "send_webhook_test",
+        "responses": {
+          "200": {
+            "description": "Delivery attempted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookTestResultDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Admin required"
+          },
+          "503": {
+            "description": "No webhook configured"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-oxicloud-scope": "role:admin"
+      }
+    },
     "/api/auth/change-password": {
       "put": {
         "tags": [
@@ -15113,6 +15184,67 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "WebhookInfoDto": {
+        "type": "object",
+        "description": "Read-only webhook info, shown beside SMTP on the admin Notifications\npage. Like SMTP, configured only through environment variables.",
+        "required": [
+          "enabled",
+          "format",
+          "host",
+          "target"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether `OXICLOUD_WEBHOOK_URL` is set and the sink was built."
+          },
+          "format": {
+            "type": "string",
+            "description": "`generic`, `slack`, `discord`, `teams`, `telegram` or `ntfy`."
+          },
+          "host": {
+            "type": "string",
+            "description": "Scheme and host of the endpoint — **never the full URL**.\n\nA Telegram endpoint embeds the bot token in its path\n(`/bot<TOKEN>/sendMessage`), and a Slack or Discord webhook URL is\nitself the credential: echoing either into an API response would\nput a secret in a browser's network log and anywhere that response\ngets pasted. The host is enough to confirm \"it points where I\nthink\"."
+          },
+          "target": {
+            "type": "string",
+            "description": "Recipient for the formats that carry one — a Telegram chat id, an\nntfy topic. Empty when unset or not applicable. Not a credential,\nand an operator checking their configuration needs to see it."
+          }
+        }
+      },
+      "WebhookTestResultDto": {
+        "type": "object",
+        "description": "Outcome of `POST /api/admin/webhook/test`.\n\n`code` + `message` mirror `SmtpTestResultDto` so the admin panel can\nrender both transports' diagnostics the same way.",
+        "required": [
+          "success",
+          "sink"
+        ],
+        "properties": {
+          "code": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "HTTP status the receiver returned. Absent when nothing answered —\nDNS failure, refused connection, timeout — which is itself the\ndiagnosis.",
+            "minimum": 0
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The receiver's own response body, truncated — or the transport\nerror when there was no response. Usually the useful part: a bare\n403 does not distinguish a revoked token from a disabled channel,\nand the body says which."
+          },
+          "sink": {
+            "type": "string",
+            "description": "Transport name, so a future second sink is distinguishable."
+          },
+          "success": {
+            "type": "boolean"
           }
         }
       }

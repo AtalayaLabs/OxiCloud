@@ -202,6 +202,19 @@ mod tests {
         ) -> Result<Vec<(String, u64)>, DomainError> {
             unreachable!()
         }
+        async fn finding_kind_counts(
+            &self,
+            _run_id: Uuid,
+        ) -> Result<Vec<(String, String, u64)>, DomainError> {
+            unreachable!()
+        }
+        async fn previous_completed_finding_kinds(
+            &self,
+            _job_name: &str,
+            _before_run_id: Uuid,
+        ) -> Result<Vec<(String, String, u64)>, DomainError> {
+            unreachable!()
+        }
     }
 
     async fn run_with(args: JobRunArgs) -> (JobOutcome, Option<i32>) {

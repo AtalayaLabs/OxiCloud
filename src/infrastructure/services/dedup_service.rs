@@ -3894,7 +3894,7 @@ impl DedupService {
     ///
     /// **Superseded by the `backend_rechunk` job, and no longer called.** The
     /// composition root used to spawn this at boot; the job is now in the default
-    /// `OXICLOUD_STARTUP_JOBS` instead, so the sweep still runs on every start
+    /// `OXICLOUD_JOBS_STARTUP` instead, so the sweep still runs on every start
     /// but with an admin trigger, run history, findings and a resumable cursor —
     /// "has this converged on my instance?" stopped being a question you answer
     /// by reading boot logs.

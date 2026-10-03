@@ -31,6 +31,10 @@
 		saveOidc,
 		savePluginRetention,
 		sendSmtpTest,
+		sendWebhookTest,
+		getWebhookInfo,
+		type WebhookInfo,
+		type WebhookTestResult,
 		setPluginEnabled,
 		setRegistrationEnabled,
 		setUserActive,
@@ -195,7 +199,9 @@
 		| 'plugins'
 		| 'oidc'
 		| 'storage'
-		| 'smtp'
+		// Was 'smtp'. Renamed when the webhook joined it: the page is about
+		// every way the instance reaches someone, not one transport.
+		| 'notification'
 		| 'jobs';
 
 	const VALID_TABS: readonly Tab[] = [
@@ -208,7 +214,7 @@
 		'plugins',
 		'oidc',
 		'storage',
-		'smtp',
+		'notification',
 		'jobs'
 	];
 
@@ -288,8 +294,8 @@
 				return t('admin.oidc', 'OIDC / SSO');
 			case 'storage':
 				return t('admin.storage_tab', 'Storage');
-			case 'smtp':
-				return t('admin.smtp', 'Email (SMTP)');
+			case 'notification':
+				return t('admin.notifications', 'Notifications');
 			case 'jobs':
 				return t('admin.jobs.tab', 'Background tasks');
 		}
@@ -455,6 +461,31 @@
 			smtpResult = { success: false, message: errorMessage(e) };
 		} finally {
 			smtpSending = false;
+		}
+	}
+
+	// Webhook — the other outbound transport, same tab.
+	let webhook = $state<WebhookInfo | null>(null);
+	let webhookSending = $state(false);
+	let webhookResult = $state<WebhookTestResult | null>(null);
+
+	async function loadWebhook() {
+		try {
+			webhook = await getWebhookInfo();
+		} catch (e) {
+			reportError(e);
+		}
+	}
+
+	async function runWebhookTest() {
+		webhookSending = true;
+		webhookResult = null;
+		try {
+			webhookResult = await sendWebhookTest();
+		} catch (e) {
+			webhookResult = { success: false, message: errorMessage(e) };
+		} finally {
+			webhookSending = false;
 		}
 	}
 
@@ -1913,7 +1944,7 @@
 		plugins: false,
 		oidc: false,
 		storage: false,
-		smtp: false,
+		notification: false,
 		jobs: false
 	});
 
@@ -1930,7 +1961,10 @@
 		else if (tab === 'storage') {
 			void loadStorage();
 			void loadMigration();
-		} else if (tab === 'smtp') void loadSmtp();
+		} else if (tab === 'notification') {
+			void loadSmtp();
+			void loadWebhook();
+		}
 	});
 
 	// Stop polling when leaving the storage tab / unmounting.
@@ -2956,7 +2990,8 @@
 				</p>
 			{/if}
 		</div>
-	{:else if tab === 'smtp'}
+	{:else if tab === 'notification'}
+		<h2 class="section-heading">{t('admin.notify_smtp_section', 'SMTP')}</h2>
 		<div class="card">
 			<h2>{t('admin.smtp_status', 'SMTP status')}</h2>
 			{#if !smtp}
@@ -2980,7 +3015,7 @@
 		</div>
 		<div class="card">
 			<h2>{t('admin.smtp_test', 'Send test email')}</h2>
-			<div class="smtp-test">
+			<div class="transport-test">
 				<input
 					type="email"
 					data-testid="admin-smtp-to-input"
@@ -3009,6 +3044,78 @@
 						<strong>{t('admin.smtp_fail', 'Send failed.')}</strong><br />
 						<code
 							>{smtpResult.error || smtpResult.message || t('common.error', 'unknown error')}</code
+						>
+					</p>
+				{/if}
+			{/if}
+		</div>
+		<!-- The other outbound transport. Same tab because an operator
+		     asking "can this instance reach me?" means both, and the result
+		     shape is deliberately identical so the two read the same way. -->
+		<h2 class="section-heading">{t('admin.notify_webhook_section', 'Webhook')}</h2>
+		<p class="section-hint">
+			{t(
+				'admin.webhook_usage_hint',
+				'Consistency jobs send their findings through this channel: a message when a problem is first reported, and another when it clears. Configured with OXICLOUD_WEBHOOK_* in the server environment.'
+			)}
+		</p>
+		<div class="card">
+			<h2>{t('admin.webhook_status', 'Webhook status')}</h2>
+			{#if !webhook}
+				<p class="status">{t('common.loading', 'Loading…')}</p>
+			{:else}
+				<dl class="kv">
+					<dt>{t('admin.webhook_enabled', 'Enabled')}</dt>
+					<dd>{webhook.enabled ? t('common.yes', 'Yes') : t('common.no', 'No')}</dd>
+					<dt>{t('admin.webhook_format', 'Format')}</dt>
+					<dd>{webhook.format || '—'}</dd>
+					<!-- Host only. A Telegram endpoint carries the bot token in
+					     its path and a Slack URL is itself the credential, so the
+					     API never returns the full URL. -->
+					<dt>{t('admin.webhook_host', 'Endpoint')}</dt>
+					<dd>{webhook.host || '—'}</dd>
+					<dt>{t('admin.webhook_target', 'Target')}</dt>
+					<dd>{webhook.target || '—'}</dd>
+				</dl>
+			{/if}
+		</div>
+		<div class="card">
+			<h2>{t('admin.webhook_test', 'Test webhook')}</h2>
+			<p class="muted">
+				{t(
+					'admin.webhook_test_hint',
+					'Sends a synthetic alert to the configured webhook. One attempt, no retry — real alerts back off and retry.'
+				)}
+			</p>
+			<!-- Same flex row as the SMTP card so the button lands in the same
+			     place; `--actions-only` right-aligns it in the absence of the
+			     input that pushes SMTP's button over. -->
+			<div class="transport-test transport-test--actions-only">
+				<button
+					class="btn btn-primary"
+					data-testid="admin-webhook-send-btn"
+					disabled={webhookSending}
+					onclick={runWebhookTest}
+				>
+					<Icon name="paper-plane" />
+					{webhookSending
+						? t('admin.webhook_sending', 'Sending…')
+						: t('admin.webhook_send', 'Send')}
+				</button>
+			</div>
+			{#if webhookResult}
+				{#if webhookResult.success}
+					<p class="status--ok">
+						<strong>{t('admin.webhook_sent', 'Webhook accepted the message.')}</strong><br />
+						{t('admin.webhook_server_code', 'Receiver replied')}:
+						<code>{webhookResult.code ?? ''} {webhookResult.message ?? ''}</code>
+					</p>
+				{:else}
+					<p class="status--error">
+						<strong>{t('admin.webhook_fail', 'Delivery failed.')}</strong><br />
+						<code
+							>{webhookResult.code ?? ''}
+							{webhookResult.message || t('common.error', 'unknown error')}</code
 						>
 					</p>
 				{/if}
@@ -5567,12 +5674,39 @@
 		margin-left: var(--space-2);
 	}
 
-	.smtp-test {
+	/* Groups the cards of one transport on the Notifications tab. Sits
+	   outside the cards so SMTP and Webhook read as two sections rather
+	   than four unrelated panels. */
+	/* Spacing only — no `font-size`. These sit outside `.card`, so they do
+	   not pick up `.card h2`'s 1.125rem and keep the page's own heading
+	   size; overriding it changed how the titles read. */
+	.section-heading {
+		margin: var(--space-4) 0 var(--space-2);
+	}
+
+	.section-heading:first-child {
+		margin-top: 0;
+	}
+
+	.section-hint {
+		margin: 0 0 var(--space-3);
+		color: var(--color-text-muted);
+		font-size: var(--font-size-sm);
+	}
+
+	/* Shared by both transport cards on the Notifications tab, so the SMTP
+	   and webhook test buttons sit in the same place. Was `.smtp-test`. */
+	.transport-test {
 		display: flex;
 		gap: var(--space-2);
 	}
 
-	.smtp-test input {
+	/* No input to push the button right, so do it explicitly. */
+	.transport-test--actions-only {
+		justify-content: flex-end;
+	}
+
+	.transport-test input {
 		flex: 1;
 		padding: var(--space-2) var(--space-3);
 		border: 1px solid var(--color-border);

@@ -1,8 +1,10 @@
 # Plan — Failures that say what they are, and satellite lifecycles that cannot be skipped
 
 **Status:** design captured 2026-10-01; **Part A phases 1–3 implemented
-2026-10-02, phase 4 (surfacing) and phase 5 (scheduling) 2026-10-03.**
-Part A is complete; phase 6 (`NotificationSink`) is the remaining piece.
+2026-10-02; phase 4 (surfacing), phase 5 (scheduling) and phase 6
+(webhook alerting) 2026-10-03.** The detect → classify → run → surface →
+act chain is closed for the webhook transport; email and in-app remain.
+Parts B (satellites) and C (compensations) are untouched.
 Follow-up to
 `storage-consistency.md` (merged as PR #771), which fixed the *recording* half of
 that plan's invariant and left the *discovery* half resting on detectors nothing
@@ -638,6 +640,34 @@ is the truth and the sinks are best-effort.** A webhook that 500s must not fail 
 job run or lose the finding — but it also must not be silent, so a failed delivery
 is itself worth a counter on the run.
 
+**What shipped, and the four things review changed.**
+
+* **The webhook is a transport, not a jobs feature.** `OXICLOUD_WEBHOOK_URL` /
+  `_FORMAT` / `_TARGET` define a destination the way `OXICLOUD_SMTP_*` does, and
+  `OXICLOUD_JOBS_NOTIFY_MIN_SEVERITY` is the jobs-side policy about what reaches it.
+  One `Arc<dyn NotificationSink>` on `AppState`, shared by the job notifier and the
+  admin test endpoint, so the thing an operator tests is the thing that delivers.
+* **Six formats, two of which carry their recipient in the body.** Slack, Discord
+  and Teams are the same POST with the text under a different key. Telegram
+  (`chat_id`) and ntfy (`topic`) need a `target`, refused at construction rather
+  than at the first alert — a channel discovered to be misconfigured when something
+  breaks is silent exactly when it matters. ntfy also gets a 1–5 priority so a
+  resolution does not buzz a phone at 3am.
+* **Retry, but only what can recover.** Five attempts, 1s doubling, on a transport
+  failure / `429` / `5xx`. A `4xx` returns immediately: a wrong URL or revoked token
+  will not fix itself, and the job's terminal path is waiting. The admin test takes
+  the opposite trade — one attempt, no retry — and reports the receiver's status
+  **and body**, because a bare 403 does not distinguish a revoked token from a
+  disabled channel while the body says `invalid_token`.
+* **No alert-state table.** The transition baseline is the previous *completed* run's
+  findings, which the history already records. Completed-only matters: a paused run
+  holds partial findings, so diffing one would announce everything it had not reached
+  yet as resolved — an all-clear for work that never ran.
+
+Still open from this phase: email (needs an operator template and an instance-locale
+fallback, since an operator alert may have no user behind it) and in-app, which waits
+on the per-user/`user_id NOT NULL` mismatch rather than working around it.
+
 ## The three rules that decide whether this is useful or hated
 
 1. **Severity gates delivery.** `data_loss` notifies; `inconsistent` is
@@ -665,7 +695,7 @@ Surfacing changes the order given earlier in this plan:
 | 3 | Pause (Part A ph. 3) | **DONE** — `backend_consistency`, `backend_rotate`; `backend_rechunk` already had it |
 | 4 | **Panel shows findings** | **DONE** — counts read from `jobs.run_findings`, not from memory |
 | 5 | Schedule the detectors (Part A ph. 4) | **DONE** — `consistency_batch=168h` by default, `OXICLOUD_SCHEDULED_JOBS` to change it |
-| 6 | `NotificationSink` + transports | TODO — out-of-band reach, once what it sends is trustworthy |
+| 6 | `NotificationSink` + transports | **DONE (webhook)** — transition-diffed, severity-gated; email/in-app still open |
 
 **Implementation note that simplified phase 1.** The plan called for a re-read in
 `verify_bytes`, `backend_rechunk` and `backend_rotate`. Only `verify_bytes` needs

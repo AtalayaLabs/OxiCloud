@@ -23,6 +23,7 @@
 //! as a sibling module without changing anything here.
 
 mod engine;
+mod finding_notifier;
 mod handler;
 mod pg_job_store;
 mod recoverable;
@@ -30,6 +31,7 @@ mod registry;
 mod types;
 
 pub use engine::SchedulerEngine;
+pub use finding_notifier::FindingNotifier;
 pub use handler::JobHandler;
 pub use pg_job_store::{PgJobStore, PgJobStoreProvider};
 pub use recoverable::{

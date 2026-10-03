@@ -20,7 +20,7 @@ use crate::application::dtos::settings_dto::{
     ListSessionsQueryDto, ListUsersQueryDto, MigrationStateDto, SaveOidcSettingsDto,
     SaveStorageSettingsDto, SendSmtpTestDto, SmtpInfoDto, SmtpTestResultDto, StartMigrationDto,
     TestOidcConnectionDto, TestStorageConnectionDto, TransferOwnershipDto, UpdateUserActiveDto,
-    UpdateUserQuotaDto, UpdateUserRoleDto,
+    UpdateUserQuotaDto, UpdateUserRoleDto, WebhookInfoDto,
 };
 use crate::application::dtos::user_dto::{FullUserDto, PublicUserDto};
 use crate::application::ports::authorization_ports::AuthorizationEngine;
@@ -190,7 +190,11 @@ pub fn admin_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/transcode/stats", get(get_transcode_stats))
         // SMTP diagnostics
         .route("/smtp/info", get(get_smtp_info))
+        .route("/webhook/info", get(get_webhook_info))
         .route("/smtp/test", post(send_smtp_test))
+        // Beside /smtp/test deliberately: both verify an outbound
+        // transport, and the panel presents them together.
+        .route("/webhook/test", post(send_webhook_test))
         // Test-only capture endpoint. The handler short-circuits to 404
         // when `OXICLOUD_SMTP_MOCK` is off, so production deployments
         // can route the path freely without leaking inboxes.
@@ -1822,6 +1826,53 @@ async fn reextract_image_metadata(
 //     recipient supplied by the admin, returning the SMTP server's
 //     response so the operator can correlate it with their relay logs.
 
+/// GET /api/admin/webhook/info — read-only view of the running webhook
+/// config, beside SMTP on the admin Notifications page.
+///
+/// Reports the host but **never the full URL**: a Telegram endpoint carries
+/// the bot token in its path, and a Slack or Discord webhook URL *is* the
+/// credential. The host answers "does this point where I think it does"
+/// without putting a secret in a browser's network log.
+#[utoipa::path(
+    get,
+    path = "/api/admin/webhook/info",
+    responses(
+        (status = 200, description = "Current webhook settings", body = WebhookInfoDto),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn get_webhook_info(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, AppError> {
+    let webhook = &state.core.config.webhook;
+    // Scheme + host only. Parsing can fail on a hand-written URL, in which
+    // case showing nothing beats showing the path by accident.
+    let host = webhook
+        .url
+        .as_deref()
+        .and_then(|u| url::Url::parse(u).ok())
+        .map(|u| match u.host_str() {
+            Some(h) => format!("{}://{}", u.scheme(), h),
+            None => u.scheme().to_string(),
+        })
+        .unwrap_or_default();
+    Ok((
+        StatusCode::OK,
+        Json(WebhookInfoDto {
+            // `webhook_sink` rather than the config alone: a URL that is set
+            // but unusable never becomes a sink, and the page should say
+            // "not enabled" rather than implying delivery works.
+            enabled: state.webhook_sink.is_some(),
+            format: format!("{:?}", webhook.format).to_lowercase(),
+            host,
+            target: webhook.target.clone().unwrap_or_default(),
+        }),
+    ))
+}
+
 /// GET /api/admin/smtp/info — read-only view of the running SMTP config.
 #[utoipa::path(
     get,
@@ -2946,7 +2997,7 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         }
     }
 
-    // Mark the jobs `OXICLOUD_STARTUP_JOBS` dispatches at boot. Without
+    // Mark the jobs `OXICLOUD_JOBS_STARTUP` dispatches at boot. Without
     // this the panel is silently wrong about the most consequential thing
     // on the row: a job configured with `repair=true` deletes files on
     // every restart, and the row would suggest that only ever happens
@@ -3520,6 +3571,107 @@ pub async fn list_job_run_findings(
 // so the bespoke route was a second way to invoke one operation — and
 // the one without run history, without the mutating-job confirmation,
 // and without the declared-parameter validation every other job gets.
+
+/// Outcome of `POST /api/admin/webhook/test`.
+///
+/// `code` + `message` mirror `SmtpTestResultDto` so the admin panel can
+/// render both transports' diagnostics the same way.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct WebhookTestResultDto {
+    pub success: bool,
+    /// Transport name, so a future second sink is distinguishable.
+    pub sink: String,
+    /// HTTP status the receiver returned. Absent when nothing answered —
+    /// DNS failure, refused connection, timeout — which is itself the
+    /// diagnosis.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<u16>,
+    /// The receiver's own response body, truncated — or the transport
+    /// error when there was no response. Usually the useful part: a bare
+    /// 403 does not distinguish a revoked token from a disabled channel,
+    /// and the body says which.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// `POST /api/admin/webhook/test` — POST a synthetic alert to the
+/// configured webhook.
+///
+/// Under `/webhook` rather than `/jobs`: the webhook is a transport, and
+/// job findings are its first consumer rather than its definition. What
+/// this verifies is the URL, the format and the credentials — not anything
+/// about jobs.
+///
+/// Same shape as `POST /api/admin/smtp/test`, and for the same reason: 200
+/// regardless of the transport's verdict, with the detail in the body. A
+/// webhook returning 404 is diagnostic data an operator needs to read, not
+/// an HTTP error for the panel to swallow.
+///
+/// The synthetic alert deliberately bypasses the severity threshold that
+/// gates real findings — testing with the default `data_loss` threshold
+/// would otherwise deliver nothing and read as a broken webhook.
+#[utoipa::path(
+    post,
+    path = "/api/admin/webhook/test",
+    responses(
+        (status = 200, description = "Delivery attempted", body = WebhookTestResultDto),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+        (status = 503, description = "No webhook configured"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn send_webhook_test(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+) -> Result<impl IntoResponse, AppError> {
+    let sink = state.webhook_sink.clone().ok_or_else(|| {
+        AppError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "No webhook is configured (set OXICLOUD_WEBHOOK_URL in .env to enable)",
+            "ServiceUnavailable",
+        )
+    })?;
+
+    tracing::info!(
+        target: "audit",
+        event = "webhook.test",
+        admin_id = %auth_user.id,
+        sink = sink.name(),
+    );
+
+    let alert = crate::infrastructure::scheduler::FindingNotifier::test_alert();
+    let report = sink.deliver_reporting(&alert).await;
+    if report.success {
+        tracing::info!(
+            target: "audit",
+            event = "webhook.test_ok",
+            admin_id = %auth_user.id,
+            sink = sink.name(),
+            code = ?report.code,
+        );
+    } else {
+        tracing::warn!(
+            target: "audit",
+            event = "webhook.test_failed",
+            admin_id = %auth_user.id,
+            sink = sink.name(),
+            code = ?report.code,
+            response = ?report.message,
+        );
+    }
+
+    Ok((
+        StatusCode::OK,
+        Json(WebhookTestResultDto {
+            success: report.success,
+            sink: sink.name().to_string(),
+            code: report.code,
+            message: report.message,
+        }),
+    ))
+}
 
 #[cfg(test)]
 mod tests {

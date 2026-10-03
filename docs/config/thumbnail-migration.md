@@ -27,16 +27,16 @@ the migration proceeds behind it. A run interrupted by a restart resumes
 from where it stopped, so a large installation finishes over several
 restarts rather than starting again each time.
 
-This is controlled by `OXICLOUD_STARTUP_JOBS`, which defaults to:
+This is controlled by `OXICLOUD_JOBS_STARTUP`, which defaults to:
 
 ```
-OXICLOUD_STARTUP_JOBS=thumb_derived_import?repair=true,thumb_attached_import?repair=true
+OXICLOUD_JOBS_STARTUP=thumb_derived_import?repair=true,thumb_attached_import?repair=true
 ```
 
 To **import without deleting** — migrate now, inspect, delete later:
 
 ```
-OXICLOUD_STARTUP_JOBS=thumb_derived_import,thumb_attached_import
+OXICLOUD_JOBS_STARTUP=thumb_derived_import,thumb_attached_import
 ```
 
 The sidecars then stay on disk. Trigger the deletion when you are ready

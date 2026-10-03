@@ -60,8 +60,17 @@ pub const KNOWN: &[(&str, &str)] = &[
     ("server", "OXICLOUD_REUSE_PORT"),
     ("server", "OXICLOUD_SERVER_HOST"),
     ("server", "OXICLOUD_SERVER_PORT"),
+    ("server", "OXICLOUD_JOBS_STARTUP"),
+    ("server", "OXICLOUD_JOBS_SCHEDULED"),
+    ("server", "OXICLOUD_JOBS_NOTIFY_MIN_SEVERITY"),
+    ("server", "OXICLOUD_WEBHOOK_URL"),
+    ("server", "OXICLOUD_WEBHOOK_FORMAT"),
+    ("server", "OXICLOUD_WEBHOOK_TARGET"),
+    // Deprecated spelling of OXICLOUD_JOBS_STARTUP, still read so an
+    // existing deployment keeps working; listed here because this table
+    // must cover every variable the code reads, not only the current
+    // names.
     ("server", "OXICLOUD_STARTUP_JOBS"),
-    ("server", "OXICLOUD_SCHEDULED_JOBS"),
     ("server", "OXICLOUD_STATIC_PATH"),
     ("server", "OXICLOUD_TEMP_DIR"),
     ("server", "OXICLOUD_TREE_ETAG_FLUSH_MS"),

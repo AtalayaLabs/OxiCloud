@@ -99,7 +99,7 @@ async fn run(registry: Arc<JobRegistry>) {
         // (same reasoning as the manual-trigger path).
         let bus = registry.message_bus_snapshot();
         // Parameters an operator attached to this job's cadence in
-        // `OXICLOUD_SCHEDULED_JOBS` (`deep=true` and the like). Empty for
+        // `OXICLOUD_JOBS_SCHEDULED` (`deep=true` and the like). Empty for
         // the common case; `repair` can never appear, the config parser
         // refuses it.
         let scheduled_args = {

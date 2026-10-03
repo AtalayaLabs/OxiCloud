@@ -420,7 +420,7 @@ impl JobParamValue {
 /// The four parameters `force` / `deep` / `repair` / `storage` used to
 /// be a fixed struct, and six places hardcoded that same list: the
 /// engine's persist/restore, the trigger endpoint's query type, the
-/// `OXICLOUD_STARTUP_JOBS` parser, the frontend API wrapper, and the
+/// `OXICLOUD_JOBS_STARTUP` parser, the frontend API wrapper, and the
 /// admin panel's checkboxes. Adding a parameter meant editing all of
 /// them, and forgetting one meant the parameter was silently dropped —
 /// most damagingly by the persist/restore path, where a resumed run
@@ -490,7 +490,7 @@ impl JobParam {
         }
     }
 
-    /// Parse a wire value (query string / `OXICLOUD_STARTUP_JOBS` /
+    /// Parse a wire value (query string / `OXICLOUD_JOBS_STARTUP` /
     /// restored `params` row) according to this parameter's type.
     ///
     /// Returns `Err` with an operator-facing reason rather than
@@ -567,7 +567,7 @@ mod tests {
     }
 
     /// Same strictness as the HTTP layer's bool parsing, so a value that
-    /// works in `OXICLOUD_STARTUP_JOBS` works in the trigger URL.
+    /// works in `OXICLOUD_JOBS_STARTUP` works in the trigger URL.
     #[test]
     fn booleans_take_only_true_or_false() {
         let err = JobRunArgs::from_declared(DECLARED, [("repair", "yes")]).unwrap_err();

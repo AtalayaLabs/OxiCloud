@@ -515,6 +515,29 @@ pub struct SmtpInfoDto {
     pub user_state: &'static str,
 }
 
+/// Read-only webhook info, shown beside SMTP on the admin Notifications
+/// page. Like SMTP, configured only through environment variables.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct WebhookInfoDto {
+    /// Whether `OXICLOUD_WEBHOOK_URL` is set and the sink was built.
+    pub enabled: bool,
+    /// `generic`, `slack`, `discord`, `teams`, `telegram` or `ntfy`.
+    pub format: String,
+    /// Scheme and host of the endpoint — **never the full URL**.
+    ///
+    /// A Telegram endpoint embeds the bot token in its path
+    /// (`/bot<TOKEN>/sendMessage`), and a Slack or Discord webhook URL is
+    /// itself the credential: echoing either into an API response would
+    /// put a secret in a browser's network log and anywhere that response
+    /// gets pasted. The host is enough to confirm "it points where I
+    /// think".
+    pub host: String,
+    /// Recipient for the formats that carry one — a Telegram chat id, an
+    /// ntfy topic. Empty when unset or not applicable. Not a credential,
+    /// and an operator checking their configuration needs to see it.
+    pub target: String,
+}
+
 /// Request body for `POST /api/admin/smtp/test`: send a hardcoded
 /// diagnostic email to the given recipient.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

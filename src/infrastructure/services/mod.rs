@@ -80,5 +80,6 @@ pub mod trash_cleanup_service;
 pub mod tree_etag_flush_service;
 pub mod webdav_dead_property_store;
 pub mod webdav_lock_service;
+pub mod webhook_notification_sink;
 pub mod wopi_discovery_service;
 pub mod zip_service;

@@ -852,6 +852,36 @@ pub trait JobStoreProvider: Send + Sync {
         run_id: Uuid,
     ) -> Result<Vec<(String, u64)>, DomainError>;
 
+    /// Which finding KINDS a run recorded, with each kind's severity
+    /// and count: `(kind, severity, count)`.
+    ///
+    /// Distinct from [`Self::finding_severity_counts`], which aggregates
+    /// the other way. Notification works per kind because that is what an
+    /// operator acts on — "orphan_blob appeared" is a thing to do
+    /// something about, "3 inconsistent findings" is not.
+    async fn finding_kind_counts(
+        &self,
+        run_id: Uuid,
+    ) -> Result<Vec<(String, String, u64)>, DomainError>;
+
+    /// The same shape, for the most recent **completed** run of
+    /// `job_name` that started before `before_run_id` did. Empty when
+    /// there is no such run.
+    ///
+    /// This is the transition baseline, and it is deliberately derived
+    /// from history rather than from a separate alert-state table: the
+    /// findings already record what was true last time, and a second
+    /// store would be a second thing to keep in step.
+    ///
+    /// **Completed only.** A paused or failed run holds partial findings,
+    /// so diffing against one would report every kind it had not reached
+    /// yet as "cleared" — an all-clear for work that never ran.
+    async fn previous_completed_finding_kinds(
+        &self,
+        job_name: &str,
+        before_run_id: Uuid,
+    ) -> Result<Vec<(String, String, u64)>, DomainError>;
+
     /// Operator-triggered retention cleanup. DELETEs every
     /// TERMINAL run (`Completed`, `Failed`) whose `completed_at`
     /// is older than `retention_days` days ago. Findings drop
@@ -1052,6 +1082,18 @@ pub async fn run_or_resume(
     provider: Arc<dyn JobStoreProvider>,
     args: &JobRunArgs,
 ) -> JobOutcome {
+    run_or_resume_with_notifier(job, provider, args, None).await
+}
+
+/// [`run_or_resume`] plus out-of-band alerting on what a completed run
+/// changed. Separate entry point so the ~15 existing callers (tests, and
+/// anything driving a run directly) keep the three-argument shape.
+pub async fn run_or_resume_with_notifier(
+    job: Arc<dyn RecoverableJobHandler>,
+    provider: Arc<dyn JobStoreProvider>,
+    args: &JobRunArgs,
+    notifier: Option<Arc<super::finding_notifier::FindingNotifier>>,
+) -> JobOutcome {
     let opened = match provider
         .open_or_start(job.name(), args.is_unattended())
         .await
@@ -1214,17 +1256,35 @@ pub async fn run_or_resume(
             }
             log_terminal_write_err("mark_completed", run_id, store.mark_completed().await);
             let stats = fetch_outcome_stats(&*provider, run_id).await;
-            JobOutcome::ok_with(
-                stats.finding_count,
-                serde_json::json!({
-                    "completed":         true,
-                    "run_id":            run_id.to_string(),
-                    "finding_count":     stats.finding_count,
-                    "scanned_count":     stats.scanned_count,
-                    "severity_counts":   stats.by_severity,
-                    "extra_stats":       serde_json::Value::Object(extra_stats),
-                }),
-            )
+            // Alert only from here — a COMPLETED run. A paused or failed
+            // run holds partial findings, so diffing one against a
+            // complete baseline would announce every kind it had not
+            // reached yet as resolved: an all-clear for work that never
+            // ran. `mark_completed` is already written, so the run is
+            // visible as finished whatever delivery does next.
+            let notify_failures = match notifier {
+                Some(n) => {
+                    n.notify_completed_run(&*provider, job.name(), run_id, stats.scanned_count)
+                        .await
+                }
+                None => 0,
+            };
+            let mut extra = serde_json::json!({
+                "completed":         true,
+                "run_id":            run_id.to_string(),
+                "finding_count":     stats.finding_count,
+                "scanned_count":     stats.scanned_count,
+                "severity_counts":   stats.by_severity,
+                "extra_stats":       serde_json::Value::Object(extra_stats),
+            });
+            // Only when non-zero, so a healthy run's outcome stays as it
+            // was. A broken channel has to be visible somewhere other
+            // than the logs, or "we are being alerted" goes untested
+            // until the day it matters.
+            if notify_failures > 0 {
+                extra["notify_failures"] = serde_json::json!(notify_failures);
+            }
+            JobOutcome::ok_with(stats.finding_count, extra)
         }
         RunOutcome::Paused { cursor } => {
             // Read the intent stamped by `/api/admin/jobs/{name}/cancel`
@@ -1440,15 +1500,30 @@ pub struct RecoverableAdapter {
     inner: Arc<dyn RecoverableJobHandler>,
     provider: Arc<dyn JobStoreProvider>,
     name: String,
+    /// Shared with the registry, read at RUN time rather than captured at
+    /// construction — so DI can wire notifications before or after the
+    /// jobs register and get the same result either way. Order-dependence
+    /// here would mean a deployment whose alerts silently never fire
+    /// because two lines in `di.rs` are the wrong way round.
+    notifier: Arc<std::sync::OnceLock<Arc<super::finding_notifier::FindingNotifier>>>,
 }
 
 impl RecoverableAdapter {
     pub fn new(inner: Arc<dyn RecoverableJobHandler>, provider: Arc<dyn JobStoreProvider>) -> Self {
+        Self::with_notifier(inner, provider, Arc::new(std::sync::OnceLock::new()))
+    }
+
+    pub fn with_notifier(
+        inner: Arc<dyn RecoverableJobHandler>,
+        provider: Arc<dyn JobStoreProvider>,
+        notifier: Arc<std::sync::OnceLock<Arc<super::finding_notifier::FindingNotifier>>>,
+    ) -> Self {
         let name = inner.name().to_string();
         Self {
             inner,
             provider,
             name,
+            notifier,
         }
     }
 }
@@ -1459,7 +1534,13 @@ impl JobHandler for RecoverableAdapter {
         &self.name
     }
     async fn run(&self, args: &JobRunArgs) -> JobOutcome {
-        run_or_resume(self.inner.clone(), self.provider.clone(), args).await
+        run_or_resume_with_notifier(
+            self.inner.clone(),
+            self.provider.clone(),
+            args,
+            self.notifier.get().cloned(),
+        )
+        .await
     }
     fn is_recoverable(&self) -> bool {
         // Every tenant registered through `register_recoverable_job` is
@@ -1482,7 +1563,7 @@ impl JobHandler for RecoverableAdapter {
     // then simply lost. `parameters` shipped that way for exactly one
     // boot: the default `&[]` made the trigger endpoint reject
     // `?repair=true` on the very jobs that declare it, and
-    // `OXICLOUD_STARTUP_JOBS` panicked at startup with "this job accepts
+    // `OXICLOUD_JOBS_STARTUP` panicked at startup with "this job accepts
     // none". Pinned by `adapter_forwards_tenant_metadata`.
     fn description(&self) -> &'static str {
         self.inner.description()
@@ -1522,7 +1603,11 @@ impl super::registry::JobRegistry {
         provider: Arc<dyn JobStoreProvider>,
         interval: Option<Duration>,
     ) {
-        let adapter = Arc::new(RecoverableAdapter::new(handler, provider));
+        let adapter = Arc::new(RecoverableAdapter::with_notifier(
+            handler,
+            provider,
+            self.finding_notifier_handle(),
+        ));
         self.register(adapter, interval, None).await;
     }
 }
@@ -1930,6 +2015,53 @@ mod tests {
             Ok(counts.into_iter().collect())
         }
 
+        async fn finding_kind_counts(
+            &self,
+            run_id: Uuid,
+        ) -> Result<Vec<(String, String, u64)>, DomainError> {
+            let stores = self.stores.lock().unwrap();
+            let Some(store) = stores.iter().find(|s| s.run_id == run_id) else {
+                return Ok(Vec::new());
+            };
+            let state = store.state.lock().unwrap();
+            let mut counts: std::collections::BTreeMap<(String, String), u64> =
+                std::collections::BTreeMap::new();
+            for f in state.findings.iter() {
+                *counts
+                    .entry((f.kind.clone(), f.severity.clone()))
+                    .or_default() += 1;
+            }
+            Ok(counts
+                .into_iter()
+                .map(|((kind, sev), n)| (kind, sev, n))
+                .collect())
+        }
+
+        async fn previous_completed_finding_kinds(
+            &self,
+            _job_name: &str,
+            before_run_id: Uuid,
+        ) -> Result<Vec<(String, String, u64)>, DomainError> {
+            // Mirrors the PG semantics on the two things that matter: the
+            // nearest EARLIER run, and Completed only. `stores` is
+            // append-ordered, so "earlier" is "before it in the vec".
+            let (prev_run_id, _) = {
+                let stores = self.stores.lock().unwrap();
+                let Some(idx) = stores.iter().position(|s| s.run_id == before_run_id) else {
+                    return Ok(Vec::new());
+                };
+                let found = stores[..idx]
+                    .iter()
+                    .rev()
+                    .find(|s| s.state.lock().unwrap().status == RunStatus::Completed);
+                match found {
+                    Some(s) => (s.run_id, ()),
+                    None => return Ok(Vec::new()),
+                }
+            };
+            self.finding_kind_counts(prev_run_id).await
+        }
+
         async fn purge_terminal_runs(&self, retention_days: i32) -> Result<u64, DomainError> {
             // Test-double: no `completed_at` to compare against, so
             // just drop every terminal-state store when
@@ -2190,7 +2322,7 @@ mod tests {
         // added, and both traits having defaults meant it compiled
         // silently. The registry then saw `&[]`, so the trigger endpoint
         // rejected `?repair=true` on the jobs that declare it and
-        // `OXICLOUD_STARTUP_JOBS=thumb_derived_import?repair=true`
+        // `OXICLOUD_JOBS_STARTUP=thumb_derived_import?repair=true`
         // panicked at boot with "this job accepts none".
         assert_eq!(
             as_handler.parameters().len(),

@@ -603,6 +603,70 @@ impl JobStoreProvider for PgJobStoreProvider {
             .collect())
     }
 
+    async fn finding_kind_counts(
+        &self,
+        run_id: Uuid,
+    ) -> Result<Vec<(String, String, u64)>, DomainError> {
+        let rows: Vec<(String, String, i64)> = sqlx::query_as(
+            r#"
+            SELECT kind, severity, COUNT(*)::bigint
+              FROM jobs.run_findings
+             WHERE run_id = $1
+             GROUP BY kind, severity
+             ORDER BY kind
+            "#,
+        )
+        .bind(run_id)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| map_sqlx_err("finding_kind_counts", e))?;
+        Ok(rows
+            .into_iter()
+            .map(|(kind, sev, count)| (kind, sev, count.max(0) as u64))
+            .collect())
+    }
+
+    async fn previous_completed_finding_kinds(
+        &self,
+        job_name: &str,
+        before_run_id: Uuid,
+    ) -> Result<Vec<(String, String, u64)>, DomainError> {
+        // One statement: locate the previous completed run by start time,
+        // then group its findings. `started_at` rather than `completed_at`
+        // orders by when the work began, which is what "the run before
+        // this one" means to an operator — a long run that finishes after
+        // a later short one is still the earlier run.
+        let rows: Vec<(String, String, i64)> = sqlx::query_as(
+            r#"
+            WITH prev AS (
+                SELECT r.id
+                  FROM jobs.recoverable_runs r
+                 WHERE r.job_name = $1
+                   AND r.status = 'Completed'
+                   AND r.started_at < (
+                         SELECT started_at FROM jobs.recoverable_runs WHERE id = $2
+                       )
+                 ORDER BY r.started_at DESC
+                 LIMIT 1
+            )
+            SELECT f.kind, f.severity, COUNT(*)::bigint
+              FROM jobs.run_findings f
+              JOIN prev ON f.run_id = prev.id
+             GROUP BY f.kind, f.severity
+             ORDER BY f.kind
+            "#,
+        )
+        .bind(job_name)
+        .bind(before_run_id)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| map_sqlx_err("previous_completed_finding_kinds", e))?;
+        Ok(rows
+            .into_iter()
+            .map(|(kind, sev, count)| (kind, sev, count.max(0) as u64))
+            .collect())
+    }
+
     async fn purge_terminal_runs(&self, retention_days: i32) -> Result<u64, DomainError> {
         // Defensive floor — zero would eat just-completed runs;
         // negative would eat the whole terminal history.

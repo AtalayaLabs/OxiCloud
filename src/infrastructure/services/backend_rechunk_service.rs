@@ -75,7 +75,7 @@ impl BackendRechunk {
         // queue cannot grow again and a periodic tick would be a COUNT
         // returning zero, forever.
         //
-        // Boot behaviour belongs to `OXICLOUD_STARTUP_JOBS`, which is the point
+        // Boot behaviour belongs to `OXICLOUD_JOBS_STARTUP`, which is the point
         // of retiring `OXICLOUD_LEGACY_RECHUNK`: an operator who wants the
         // sweep at boot lists it there, and one who wants to defer the egress
         // leaves it out and triggers it by hand. One knob, not two.

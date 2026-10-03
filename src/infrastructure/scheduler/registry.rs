@@ -45,13 +45,13 @@ pub(super) struct JobState {
     /// `Some(dur)` = periodic; supervisor dispatches every `dur`.
     ///
     /// Lives here rather than on the immutable part of the entry so
-    /// `OXICLOUD_SCHEDULED_JOBS` can override it after every registration
+    /// `OXICLOUD_JOBS_SCHEDULED` can override it after every registration
     /// has run — the alternative was threading config through all 17
     /// call sites. Changed only by [`JobRegistry::set_schedule`], at
     /// boot, before the supervisor starts.
     pub interval: Option<Duration>,
     /// Parameters each scheduled tick dispatches with, from
-    /// `OXICLOUD_SCHEDULED_JOBS`. Empty for the common case.
+    /// `OXICLOUD_JOBS_SCHEDULED`. Empty for the common case.
     ///
     /// Cannot carry `repair` — the config parser refuses it, because a
     /// tick that repairs deletes on a cadence with nobody consenting
@@ -84,6 +84,15 @@ pub struct JobRegistry {
     message_bus: std::sync::OnceLock<
         std::sync::Arc<dyn crate::application::ports::message_bus_ports::MessageBus>,
     >,
+    /// Out-of-band alerting for recoverable runs, handed to every
+    /// `RecoverableAdapter` as a shared handle.
+    ///
+    /// `Arc<OnceLock<_>>` rather than a plain `OnceLock` so the adapters
+    /// observe a later `set_finding_notifier` — DI can wire notifications
+    /// before or after the jobs register and get the same behaviour. The
+    /// alternative, capturing at construction, makes two lines in `di.rs`
+    /// silently decide whether a deployment is ever alerted.
+    finding_notifier: Arc<std::sync::OnceLock<Arc<super::finding_notifier::FindingNotifier>>>,
 }
 
 impl JobRegistry {
@@ -91,7 +100,31 @@ impl JobRegistry {
         Self {
             entries: RwLock::new(HashMap::new()),
             message_bus: std::sync::OnceLock::new(),
+            finding_notifier: Arc::new(std::sync::OnceLock::new()),
         }
+    }
+
+    /// Install the out-of-band notifier for recoverable runs. Idempotent;
+    /// a second call is ignored, like the message bus.
+    pub fn set_finding_notifier(
+        &self,
+        notifier: Arc<super::finding_notifier::FindingNotifier>,
+    ) -> bool {
+        self.finding_notifier.set(notifier).is_ok()
+    }
+
+    /// The installed notifier, if any. Used by the admin panel's
+    /// "test notifications" action.
+    pub fn finding_notifier(&self) -> Option<Arc<super::finding_notifier::FindingNotifier>> {
+        self.finding_notifier.get().cloned()
+    }
+
+    /// Shared handle for the adapters. See the field doc for why this is
+    /// shared rather than read once.
+    pub(super) fn finding_notifier_handle(
+        &self,
+    ) -> Arc<std::sync::OnceLock<Arc<super::finding_notifier::FindingNotifier>>> {
+        self.finding_notifier.clone()
     }
 
     /// Register a job — production wiring path.
@@ -493,7 +526,7 @@ pub struct JobSummary {
     /// picks Resume when the latest row is Paused).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paused_run: Option<PausedRunBrief>,
-    /// Populated iff `OXICLOUD_STARTUP_JOBS` names this job — the flags
+    /// Populated iff `OXICLOUD_JOBS_STARTUP` names this job — the flags
     /// it will be dispatched with at every boot.
     ///
     /// Surfaced because the panel would otherwise be silently wrong
@@ -506,7 +539,7 @@ pub struct JobSummary {
     pub startup: Option<StartupTrigger>,
 }
 
-/// The parameters a job configured in `OXICLOUD_STARTUP_JOBS` runs with.
+/// The parameters a job configured in `OXICLOUD_JOBS_STARTUP` runs with.
 ///
 /// A map keyed by parameter name, for the same reason `JobRunArgs` is:
 /// the four named fields it used to carry meant a job growing a

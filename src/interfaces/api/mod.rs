@@ -294,7 +294,9 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         // helpers before this branch); see the handler for the
         // read-only vs test-send semantics.
         handlers::admin_handler::get_smtp_info,
+        handlers::admin_handler::get_webhook_info,
         handlers::admin_handler::send_smtp_test,
+        handlers::admin_handler::send_webhook_test,
         handlers::admin_handler::trigger_backend_rotate,
         handlers::admin_handler::admin_promote_external_to_internal,
         handlers::admin_handler::transfer_ownership,
