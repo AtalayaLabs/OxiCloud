@@ -824,6 +824,11 @@ export interface JobSummary {
 	 *  news, and a different fact. Severity keys are open (the column is
 	 *  TEXT), so unknown keys must degrade rather than throw. */
 	last_run_severity_counts?: Record<string, number>;
+	/** Present when this job has no cadence of its own but a scheduled
+	 *  job runs it — a `*_consistency` detector swept by
+	 *  `consistency_batch`. Without it the row renders "on-demand",
+	 *  which is false in the default configuration. */
+	scheduled_via?: { job: string; interval_ms: number };
 	/** Present iff `OXICLOUD_STARTUP_JOBS` names this job — the flags it
 	 *  is dispatched with at every boot. Worth showing: a job configured
 	 *  with `repair: true` deletes on every restart, and the row would

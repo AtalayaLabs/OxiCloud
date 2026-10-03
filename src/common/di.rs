@@ -3324,6 +3324,66 @@ impl AppServiceFactory {
         // `deep` are persisted to the run's `params` on the fresh open and
         // read back on resume — so editing the config mid-migration does
         // not retroactively change a run already in flight.
+        // Apply `OXICLOUD_SCHEDULED_JOBS` over what the registration sites
+        // hardcoded. Here, rather than threaded into all 17 of them,
+        // because this is the first point at which every job is
+        // registered and the declarations are reachable — the same reason
+        // the startup-job validation below lives here.
+        //
+        // Runs before the supervisor starts, so no tick can observe a
+        // half-applied schedule.
+        for scheduled in &self.config.scheduled_jobs {
+            // Unknown name is fatal, matching OXICLOUD_STARTUP_JOBS. A
+            // typo'd job that silently never runs is exactly the state
+            // this configuration exists to escape, and it would look
+            // identical to a correctly disabled one.
+            let Some(declared) = app_state
+                .core
+                .job_registry
+                .parameters_of(&scheduled.name)
+                .await
+            else {
+                panic!(
+                    "OXICLOUD_SCHEDULED_JOBS names `{}`, which is not a registered job. \
+                     Check the spelling against GET /api/admin/jobs.",
+                    scheduled.name
+                );
+            };
+            // Typing happens here for the same reason as the startup
+            // list: config parsing kept the pairs untyped because the
+            // declaration did not exist yet. A `?deap=true` that parsed
+            // as nothing would schedule a shallow scan forever while the
+            // operator believed they had asked for a deep one.
+            let args = crate::infrastructure::scheduler::JobRunArgs::from_declared(
+                declared,
+                scheduled
+                    .raw_params
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str())),
+            )
+            .unwrap_or_else(|e| {
+                panic!("OXICLOUD_SCHEDULED_JOBS entry `{}`: {e}", scheduled.name);
+            });
+            app_state
+                .core
+                .job_registry
+                .set_schedule(&scheduled.name, scheduled.interval, args)
+                .await;
+            let cadence = match scheduled.interval {
+                Some(d) => format!("every {} s", d.as_secs()),
+                None => "on-demand".to_string(),
+            };
+            tracing::info!(
+                target: "oxicloud::scheduler",
+                event = "job.schedule_overridden",
+                job = %scheduled.name,
+                cadence = %cadence,
+                "job {} scheduled {} by configuration",
+                scheduled.name,
+                cadence,
+            );
+        }
+
         if !self.config.startup_jobs.is_empty() {
             let mut planned = Vec::with_capacity(self.config.startup_jobs.len());
             for job in &self.config.startup_jobs {

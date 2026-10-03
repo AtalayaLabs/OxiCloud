@@ -27,11 +27,6 @@ use super::types::{JobOutcome, JobParam, JobParamValue, JobRunArgs, Mutates};
 /// `await` without pinning the registry's outer lock.
 pub struct JobEntry {
     pub(super) handler: Arc<dyn JobHandler>,
-    /// `None` = on-demand only; the supervisor never fires this job
-    /// (`pick_next` skips it). Admin/programmatic callers reach it
-    /// via [`JobRegistry::trigger`].
-    /// `Some(dur)` = periodic; supervisor dispatches every `dur`.
-    pub(super) interval: Option<Duration>,
     pub(super) timeout: Option<Duration>,
     /// Single-permit gate enforcing the "one in-flight run per
     /// `job_name`" invariant. A tick that finds the permit taken
@@ -44,6 +39,24 @@ pub struct JobEntry {
 }
 
 pub(super) struct JobState {
+    /// `None` = on-demand only; the supervisor never fires this job
+    /// (`pick_next` skips it). Admin/programmatic callers reach it
+    /// via [`JobRegistry::trigger`].
+    /// `Some(dur)` = periodic; supervisor dispatches every `dur`.
+    ///
+    /// Lives here rather than on the immutable part of the entry so
+    /// `OXICLOUD_SCHEDULED_JOBS` can override it after every registration
+    /// has run — the alternative was threading config through all 17
+    /// call sites. Changed only by [`JobRegistry::set_schedule`], at
+    /// boot, before the supervisor starts.
+    pub interval: Option<Duration>,
+    /// Parameters each scheduled tick dispatches with, from
+    /// `OXICLOUD_SCHEDULED_JOBS`. Empty for the common case.
+    ///
+    /// Cannot carry `repair` — the config parser refuses it, because a
+    /// tick that repairs deletes on a cadence with nobody consenting
+    /// after the first time.
+    pub scheduled_args: JobRunArgs,
     /// Set when a run starts, cleared when it ends. Used to include
     /// `running_for_ms` in the `job.tick_skipped` warning.
     pub current_run_start: Option<Instant>,
@@ -164,10 +177,11 @@ impl JobRegistry {
         });
         let entry = Arc::new(JobEntry {
             handler,
-            interval,
             timeout,
             in_flight: Semaphore::new(1),
             state: Mutex::new(JobState {
+                interval,
+                scheduled_args: JobRunArgs::default(),
                 current_run_start: None,
                 last_outcome: None,
                 next_run_at,
@@ -255,7 +269,7 @@ impl JobRegistry {
                     mutates: entry.handler.mutates(),
                     repair_description: entry.handler.repair_description(),
                     parameters: entry.handler.parameters(),
-                    interval_ms: entry.interval.map(|d| d.as_millis() as u64),
+                    interval_ms: state.interval.map(|d| d.as_millis() as u64),
                     next_run_at: state.next_run_at,
                     last_run_at,
                     last_outcome,
@@ -268,10 +282,44 @@ impl JobRegistry {
                     paused_run: None,
                     last_run_status: None,
                     last_run_severity_counts: None,
+                    scheduled_via: None,
                     startup: None,
                 }
             })
             .collect()
+    }
+
+    /// Override a registered job's cadence and the parameters its
+    /// scheduled ticks run with. Returns `false` if no job by that name
+    /// is registered, so the caller can fail the boot with a message
+    /// naming the typo rather than ignoring it.
+    ///
+    /// Applied once at boot, after every registration and before the
+    /// supervisor starts. `interval = None` makes the job on-demand —
+    /// manual triggering is untouched, which is what separates "not
+    /// scheduled" from "disabled".
+    ///
+    /// `next_run_at` is recomputed from now, so an override takes effect
+    /// one interval from boot rather than inheriting the schedule the
+    /// registration site set.
+    pub async fn set_schedule(
+        &self,
+        name: &str,
+        interval: Option<Duration>,
+        scheduled_args: JobRunArgs,
+    ) -> bool {
+        let guard = self.entries.read().await;
+        let Some(entry) = guard.get(name) else {
+            return false;
+        };
+        let mut state = entry.state.lock().expect("JobState mutex poisoned");
+        state.interval = interval;
+        state.scheduled_args = scheduled_args;
+        state.next_run_at = interval.map(|dur| {
+            Utc::now()
+                + chrono::Duration::from_std(dur).unwrap_or_else(|_| chrono::Duration::seconds(0))
+        });
+        true
     }
 
     /// Count of registered jobs — used for the startup log line.
@@ -420,6 +468,17 @@ pub struct JobSummary {
     pub last_run_severity_counts: Option<BTreeMap<String, u64>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interval_ms: Option<u64>,
+    /// Set when this job has no cadence of its own but IS run by one
+    /// that does — today, a `*_consistency` detector swept by a
+    /// scheduled `consistency_batch`.
+    ///
+    /// Without it the panel reads `interval_ms: null` and renders the
+    /// row as manual-only, which is false in exactly the configuration
+    /// that ships by default. Filled by the `list_jobs` handler, which
+    /// can see the other jobs; the registry snapshot describes one job
+    /// at a time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheduled_via: Option<ScheduledVia>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_run_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -471,6 +530,16 @@ pub struct StartupTrigger {
 /// `total` is `None` when the tenant doesn't seed a countable subject
 /// (`RecoverableJobHandler::count_total`); the UI then shows just
 /// "Resume" without progress.
+/// "This job has no cadence of its own, but `job` runs it every
+/// `interval_ms`." See [`JobSummary::scheduled_via`].
+#[derive(Debug, Clone, Serialize)]
+pub struct ScheduledVia {
+    /// The scheduled job that dispatches this one.
+    pub job: String,
+    /// That job's cadence — what this one effectively runs at.
+    pub interval_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PausedRunBrief {
     pub id: uuid::Uuid,

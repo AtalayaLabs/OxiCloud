@@ -124,6 +124,21 @@ impl RunStatus {
 pub const CANCEL_INTENT_PARAM: &str = "cancel_intent";
 pub const CANCEL_INTENT_TERMINATE: &str = "terminate";
 
+/// Written to `params.unattended_resume` when a run is opened fresh:
+/// may this run be continued by something with no human behind it?
+///
+/// **The name is a permission, and must stay one.** Absent reads as
+/// `false`, so a paused run written by a release that predates this key
+/// waits for an operator instead of being picked up by the next tick.
+/// Inverting the name to a prohibition (`no_auto_resume`) would make
+/// absent mean "resuming is fine" and silently auto-resume every
+/// pre-existing paused repair run on upgrade — the exact failure, caused
+/// by a rename.
+///
+/// Stored, not declared — see [`JobRunArgs::is_unattended`] for why a
+/// `JobParam` would let a caller grant itself the consent.
+pub const UNATTENDED_RESUME_PARAM: &str = "unattended_resume";
+
 // ─── Run outcome (handler → engine) ─────────────────────────────────────────
 
 /// What a [`RecoverableJobHandler`] returns from `run_resumable`.
@@ -449,6 +464,31 @@ pub trait RecoverableJobHandler: Send + Sync {
         &[]
     }
 
+    /// May a run started with `args` later be continued by something with
+    /// no human behind it — a periodic tick, a cron, a webhook?
+    ///
+    /// Evaluated ONCE, at fresh-run start, and persisted to
+    /// [`UNATTENDED_RESUME_PARAM`]. Recording it at the moment of consent
+    /// rather than recomputing it at resume time means a policy change
+    /// between releases cannot retroactively re-govern a run already in
+    /// flight, and an operator can see in the run detail why a paused job
+    /// is waiting for them.
+    ///
+    /// **The default keys on the `repair` consent, not on [`Mutates`].**
+    /// Mutation is the wrong signal: `backend_reclaim` is
+    /// `Mutates::Always` ("unlinking IS the job") and `backend_rechunk` is
+    /// `Mutates::Always` and ungated ("converting IS the job"). Both are
+    /// migrations or drains that must continue unattended — stopping
+    /// halfway to wait for a click is how the drain accumulated 29
+    /// unreclaimed blobs. Neither declares `repair`, so both get `true`
+    /// here with no code of their own, while every `OnRepairOnly` job
+    /// gets the safe answer automatically.
+    ///
+    /// Override only for a job that knows better than the `repair` rule.
+    fn unattended_resume_allowed(&self, args: &JobRunArgs) -> bool {
+        !args.get_bool("repair")
+    }
+
     /// Long-running scan. See trait-level doc for the contract.
     ///
     /// `store` — bound to THIS run (a single row in
@@ -717,11 +757,23 @@ pub trait JobStoreProvider: Send + Sync {
     /// - Latest non-terminal row is `Running` or `CancelRequested`:
     ///   return [`OpenedRun::AlreadyActive`] — caller MUST NOT
     ///   dispatch a parallel run.
+    /// - Latest non-terminal row is `Paused`, `unattended` is true, and
+    ///   the row's [`UNATTENDED_RESUME_PARAM`] is not `true`: change
+    ///   NOTHING and return [`OpenedRun::DeclinedUnattended`].
+    ///
+    /// `unattended` — true when no human is behind this dispatch
+    /// ([`JobRunArgs::is_unattended`]). It only ever *withholds* a resume;
+    /// a fresh start is unaffected, so a scheduled job with no paused run
+    /// behaves exactly as before.
     ///
     /// A concurrent INSERT race is handled internally via the DB's
     /// partial unique index — the losing INSERT falls back to reading
     /// the winning row.
-    async fn open_or_start(&self, job_name: &str) -> Result<OpenedRun, DomainError>;
+    async fn open_or_start(
+        &self,
+        job_name: &str,
+        unattended: bool,
+    ) -> Result<OpenedRun, DomainError>;
 
     /// Boot-time crash recovery. Any row abandoned in `Running` or
     /// `CancelRequested` when the previous process died gets flipped
@@ -970,6 +1022,16 @@ pub enum OpenedRun {
     /// spawn a parallel dispatch. Returned to admin/trigger callers
     /// as `Ok { count: 0, extra: {"skipped": "already_running", …} }`.
     AlreadyActive { run_id: Uuid, status: RunStatus },
+    /// A `Paused` run exists, the caller is unattended, and the run was
+    /// opened under a consent that does not extend to being continued
+    /// without a human ([`UNATTENDED_RESUME_PARAM`] is not `true`).
+    ///
+    /// **The row is left exactly as it was** — still `Paused`, cursor and
+    /// `error_message` intact. That is why the decision belongs inside
+    /// `open_or_start` rather than after it: the resume path flips the row
+    /// to `Running` and clears `error_message`, so declining afterwards
+    /// would destroy the record of why it paused in the first place.
+    DeclinedUnattended { run_id: Uuid },
 }
 
 // ─── Engine glue ────────────────────────────────────────────────────────────
@@ -986,7 +1048,10 @@ pub async fn run_or_resume(
     provider: Arc<dyn JobStoreProvider>,
     args: &JobRunArgs,
 ) -> JobOutcome {
-    let opened = match provider.open_or_start(job.name()).await {
+    let opened = match provider
+        .open_or_start(job.name(), args.is_unattended())
+        .await
+    {
         Ok(o) => o,
         Err(e) => return JobOutcome::err(format!("open_or_start failed: {e}")),
     };
@@ -998,6 +1063,29 @@ pub async fn run_or_resume(
                     "skipped": "already_running",
                     "run_id": run_id.to_string(),
                     "status": status.as_str(),
+                }),
+            );
+        }
+        OpenedRun::DeclinedUnattended { run_id } => {
+            // Audited, not merely logged. A paused run that nothing picks
+            // up looks identical to a job that simply is not due, so
+            // without this line the stall is invisible — and the whole
+            // point of declining is that a human has to act.
+            tracing::info!(
+                target: "audit",
+                event = "job.unattended_resume_declined",
+                reason = "repair_consent_not_transferable",
+                job = %job.name(),
+                run_id = %run_id,
+                "👮🏻‍♂️ `{}` has a paused run that mutates; a scheduled tick will \
+                 not continue it — resume it from the admin panel",
+                job.name(),
+            );
+            return JobOutcome::ok_with(
+                0,
+                serde_json::json!({
+                    "skipped": "unattended_resume_declined",
+                    "run_id": run_id.to_string(),
                 }),
             );
         }
@@ -1058,6 +1146,38 @@ pub async fn run_or_resume(
             return JobOutcome::err(e);
         }
     };
+
+    // Stamp whether this run may later be continued with nobody watching.
+    //
+    // Fresh only, and AFTER the args are bound, because the policy reads
+    // the effective flags — `repair` resolved from the declaration, not
+    // whatever the caller happened to type. A resumed run keeps the answer
+    // recorded at its own start, which is the point: the consent is the one
+    // that was actually given.
+    //
+    // A write failure leaves the key absent, which reads as `false` — the
+    // run still completes, it just will not be auto-resumed. Erring toward
+    // "ask a human" is the safe direction, so this warns rather than fails.
+    if is_fresh {
+        let allowed = job.unattended_resume_allowed(&args);
+        if let Err(e) = store
+            .set_string_param(
+                UNATTENDED_RESUME_PARAM,
+                if allowed { "true" } else { "false" },
+            )
+            .await
+        {
+            tracing::warn!(
+                target: "oxicloud::scheduler",
+                event = "recoverable.unattended_resume_stamp_failed",
+                job = job.name(),
+                run_id = %run_id,
+                error = %e,
+                "could not record the unattended-resume policy; a pause will \
+                 wait for an operator"
+            );
+        }
+    }
 
     // Dispatch. Terminal writes to `jobs.recoverable_runs` happen
     // here (NOT in the handler) so the row always ends in a state
@@ -1601,6 +1721,15 @@ mod tests {
             stores.last().map(|s| s.state.lock().unwrap().status)
         }
 
+        /// Test-only mutation — drop a stored param from the last run, to
+        /// stand in for a row written before that key existed.
+        fn forget_string_param(&self, key: &str) {
+            let stores = self.stores.lock().unwrap();
+            if let Some(s) = stores.last() {
+                s.state.lock().unwrap().string_params.remove(key);
+            }
+        }
+
         /// Test-only read — last-created run's cursor.
         fn last_cursor(&self) -> Option<Vec<u8>> {
             let stores = self.stores.lock().unwrap();
@@ -1622,13 +1751,31 @@ mod tests {
 
     #[async_trait]
     impl JobStoreProvider for MemProvider {
-        async fn open_or_start(&self, _job_name: &str) -> Result<OpenedRun, DomainError> {
+        async fn open_or_start(
+            &self,
+            _job_name: &str,
+            unattended: bool,
+        ) -> Result<OpenedRun, DomainError> {
             let mut stores = self.stores.lock().unwrap();
             if let Some(store) = stores.last() {
                 let state = store.state.lock().unwrap();
                 if state.status.is_non_terminal() {
                     return match state.status {
                         RunStatus::Paused => {
+                            // Mirrors the PG gate, including its position:
+                            // decided before the row flips to Running, so a
+                            // test can assert the row was left alone.
+                            if unattended
+                                && state
+                                    .string_params
+                                    .get(UNATTENDED_RESUME_PARAM)
+                                    .map(String::as_str)
+                                    != Some("true")
+                            {
+                                return Ok(OpenedRun::DeclinedUnattended {
+                                    run_id: store.run_id(),
+                                });
+                            }
                             let cursor = state.cursor.clone().unwrap_or_default();
                             drop(state);
                             store.state.lock().unwrap().status = RunStatus::Running;
@@ -1922,6 +2069,36 @@ mod tests {
         }
     }
 
+    /// Pauses like `PausingHandler`, but declares `repair` — so the
+    /// default unattended-resume policy has something to key on.
+    /// `Mutates::Always` deliberately: it stands in for the
+    /// `backend_reclaim` / `backend_rechunk` shape, where mutation is
+    /// unconditional and must NOT by itself block an unattended resume.
+    struct RepairablePausingHandler;
+    #[async_trait]
+    impl RecoverableJobHandler for RepairablePausingHandler {
+        fn name(&self) -> &str {
+            "repairable_pauser"
+        }
+        fn mutates(&self) -> Mutates {
+            Mutates::Always
+        }
+        fn parameters(&self) -> &'static [JobParam] {
+            const PARAMS: &[JobParam] = &[JobParam::boolean("repair", false, "test flag")];
+            PARAMS
+        }
+        async fn run_resumable(
+            &self,
+            _store: &dyn JobStore,
+            _args: &JobRunArgs,
+            _resume_cursor: Option<Vec<u8>>,
+        ) -> RunOutcome {
+            RunOutcome::Paused {
+                cursor: b"halfway".to_vec(),
+            }
+        }
+    }
+
     struct FailingHandler;
     #[async_trait]
     impl RecoverableJobHandler for FailingHandler {
@@ -2123,6 +2300,169 @@ mod tests {
         assert_eq!(provider.last_cursor(), Some(b"halfway".to_vec()));
     }
 
+    /// Build the args an operator's `?repair=true` trigger produces.
+    fn repair_args() -> JobRunArgs {
+        JobRunArgs::from_declared(RepairablePausingHandler.parameters(), [("repair", "true")])
+            .expect("declared param")
+    }
+
+    /// The scenario this guard exists for: an operator triggers a repair
+    /// run, the environment fails, the run lands Paused — and a week
+    /// later the periodic tick would have continued deleting with nobody
+    /// watching, on the strength of a consent given once.
+    #[tokio::test]
+    async fn a_scheduled_tick_will_not_continue_a_repair_run() {
+        let provider = Arc::new(MemProvider::new());
+        let provider_trait: Arc<dyn JobStoreProvider> = provider.clone();
+
+        // Operator-initiated repair run pauses.
+        run_or_resume(
+            Arc::new(RepairablePausingHandler),
+            provider_trait.clone(),
+            &repair_args(),
+        )
+        .await;
+        assert_eq!(provider.last_status(), Some(RunStatus::Paused));
+
+        // The tick declines, and says so rather than reporting a no-op.
+        let outcome = run_or_resume(
+            Arc::new(RepairablePausingHandler),
+            provider_trait,
+            &JobRunArgs::default().unattended(),
+        )
+        .await;
+        assert!(outcome.is_ok(), "declining is not a failure");
+        if let JobOutcome::Ok { extra, .. } = outcome {
+            assert_eq!(extra["skipped"], "unattended_resume_declined");
+        } else {
+            panic!("expected Ok");
+        }
+
+        // And the row is untouched — still Paused, cursor intact. A
+        // decline that flipped it to Running would strip `error_message`
+        // and lose why it paused.
+        assert_eq!(provider.last_status(), Some(RunStatus::Paused));
+        assert_eq!(provider.last_cursor(), Some(b"halfway".to_vec()));
+    }
+
+    /// The other half: declining must not strand the work. A human
+    /// clicking Resume IS the consent, so the same paused run continues.
+    #[tokio::test]
+    async fn an_operator_can_still_resume_what_the_tick_declined() {
+        let provider = Arc::new(MemProvider::new());
+        let provider_trait: Arc<dyn JobStoreProvider> = provider.clone();
+
+        run_or_resume(
+            Arc::new(RepairablePausingHandler),
+            provider_trait.clone(),
+            &repair_args(),
+        )
+        .await;
+        run_or_resume(
+            Arc::new(RepairablePausingHandler),
+            provider_trait.clone(),
+            &JobRunArgs::default().unattended(),
+        )
+        .await;
+
+        let seen = Arc::new(Mutex::new(None));
+        run_or_resume(
+            Arc::new(ResumeInspectHandler {
+                saw_cursor: seen.clone(),
+            }),
+            provider_trait,
+            // Attended — no `.unattended()`.
+            &JobRunArgs::default(),
+        )
+        .await;
+        assert_eq!(
+            seen.lock().unwrap().clone(),
+            Some(b"halfway".to_vec()),
+            "an operator resume must hand the cursor back"
+        );
+    }
+
+    /// Mutation is NOT the signal. `backend_reclaim` is `Mutates::Always`
+    /// and scheduled; blocking its resume would recreate the bug where
+    /// the drain accumulated 29 unreclaimed blobs. This handler is
+    /// `Mutates::Always` too, and without `repair` it must resume.
+    #[tokio::test]
+    async fn a_scheduled_tick_continues_a_mutating_run_that_was_not_a_repair() {
+        let provider = Arc::new(MemProvider::new());
+        let provider_trait: Arc<dyn JobStoreProvider> = provider.clone();
+
+        run_or_resume(
+            Arc::new(RepairablePausingHandler),
+            provider_trait.clone(),
+            // Default args — `repair` resolves to its declared `false`.
+            &JobRunArgs::default(),
+        )
+        .await;
+        assert_eq!(provider.last_status(), Some(RunStatus::Paused));
+
+        let seen = Arc::new(Mutex::new(None));
+        run_or_resume(
+            Arc::new(ResumeInspectHandler {
+                saw_cursor: seen.clone(),
+            }),
+            provider_trait,
+            &JobRunArgs::default().unattended(),
+        )
+        .await;
+        assert_eq!(
+            seen.lock().unwrap().clone(),
+            Some(b"halfway".to_vec()),
+            "an ordinary paused run must still auto-resume"
+        );
+    }
+
+    /// Absent reads as "not permitted". A run paused by a release that
+    /// predates the key has no stamp, and must wait for an operator
+    /// rather than being adopted by the first tick after an upgrade.
+    #[tokio::test]
+    async fn a_run_paused_before_the_key_existed_waits_for_a_human() {
+        let provider = Arc::new(MemProvider::new());
+        let provider_trait: Arc<dyn JobStoreProvider> = provider.clone();
+
+        run_or_resume(
+            Arc::new(PausingHandler),
+            provider_trait.clone(),
+            &JobRunArgs::default(),
+        )
+        .await;
+
+        // Simulate the pre-upgrade row: drop the stamp entirely.
+        provider.forget_string_param(UNATTENDED_RESUME_PARAM);
+
+        let outcome = run_or_resume(
+            Arc::new(PausingHandler),
+            provider_trait,
+            &JobRunArgs::default().unattended(),
+        )
+        .await;
+        if let JobOutcome::Ok { extra, .. } = outcome {
+            assert_eq!(extra["skipped"], "unattended_resume_declined");
+        } else {
+            panic!("expected Ok");
+        }
+    }
+
+    /// The policy itself, independent of any run: keyed on the `repair`
+    /// consent, not on `Mutates`.
+    #[test]
+    fn the_default_policy_keys_on_the_repair_consent() {
+        let h = RepairablePausingHandler;
+        assert_eq!(h.mutates(), Mutates::Always);
+        assert!(
+            h.unattended_resume_allowed(&JobRunArgs::default()),
+            "a mutating job with no repair flag must auto-resume"
+        );
+        assert!(
+            !h.unattended_resume_allowed(&repair_args()),
+            "a repair run must not auto-resume"
+        );
+    }
+
     #[tokio::test]
     async fn failed_run_marks_status_failed_and_returns_err() {
         let provider = Arc::new(MemProvider::new());
@@ -2178,10 +2518,12 @@ mod tests {
     #[tokio::test]
     async fn checkpoint_counters_round_trip_through_stats() {
         let provider = Arc::new(MemProvider::new());
-        let store = provider.open_or_start("counter_job").await.unwrap();
+        let store = provider.open_or_start("counter_job", false).await.unwrap();
         let store: Arc<dyn JobStore> = match store {
             OpenedRun::Fresh { store: s } | OpenedRun::Resumed { store: s, .. } => s,
-            OpenedRun::AlreadyActive { .. } => panic!("fresh provider cannot be active"),
+            OpenedRun::AlreadyActive { .. } | OpenedRun::DeclinedUnattended { .. } => {
+                panic!("fresh provider cannot be active or declined")
+            }
         };
 
         // Absent keys read as 0, so a fresh run needs no special case.

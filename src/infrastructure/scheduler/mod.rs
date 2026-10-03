@@ -38,7 +38,7 @@ pub use recoverable::{
     RunSummary, derive_progress, record_or_log, run_or_resume,
 };
 pub use registry::{
-    JobEntry, JobRegistry, JobSummary, PausedRunBrief, RegisterError, StartupTrigger,
+    JobEntry, JobRegistry, JobSummary, PausedRunBrief, RegisterError, ScheduledVia, StartupTrigger,
 };
 pub use types::{
     ErrCause, JobOutcome, JobParam, JobParamDefault, JobParamType, JobParamValue, JobRunArgs,

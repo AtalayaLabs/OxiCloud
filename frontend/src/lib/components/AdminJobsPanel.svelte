@@ -512,12 +512,30 @@
 
 	// ─── Formatters (pure, no I/O) ─────────────────────────────────────
 
-	function cadenceLabel(job: JobSummary): string {
-		if (job.interval_ms === undefined) return t('admin.jobs.on_demand', 'on-demand');
-		const secs = Math.round(job.interval_ms / 1000);
+	/** "every 7 d" / "every 30 min" for a raw millisecond cadence. */
+	function intervalLabel(intervalMs: number): string {
+		const secs = Math.round(intervalMs / 1000);
+		if (secs % 86400 === 0) return t('admin.jobs.every_d', { n: secs / 86400 }, 'every {{n}} d');
 		if (secs % 3600 === 0) return t('admin.jobs.every_h', { n: secs / 3600 }, 'every {{n}} h');
 		if (secs % 60 === 0) return t('admin.jobs.every_min', { n: secs / 60 }, 'every {{n}} min');
 		return t('admin.jobs.every_sec', { n: secs }, 'every {{n}} s');
+	}
+
+	function cadenceLabel(job: JobSummary): string {
+		if (job.interval_ms !== undefined) return intervalLabel(job.interval_ms);
+		// No cadence of its own, but something scheduled runs it. Saying
+		// "on-demand" here would be false in the configuration that ships
+		// by default: `consistency_batch` is scheduled weekly and sweeps
+		// every `*_consistency` detector, none of which carries an
+		// interval.
+		if (job.scheduled_via) {
+			return t(
+				'admin.jobs.via_job',
+				{ job: job.scheduled_via.job, cadence: intervalLabel(job.scheduled_via.interval_ms) },
+				'via {{job}} — {{cadence}}'
+			);
+		}
+		return t('admin.jobs.on_demand', 'on-demand');
 	}
 
 	/**

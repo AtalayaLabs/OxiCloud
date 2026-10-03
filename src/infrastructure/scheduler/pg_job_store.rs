@@ -456,7 +456,11 @@ impl PgJobStoreProvider {
 
 #[async_trait]
 impl JobStoreProvider for PgJobStoreProvider {
-    async fn open_or_start(&self, job_name: &str) -> Result<OpenedRun, DomainError> {
+    async fn open_or_start(
+        &self,
+        job_name: &str,
+        unattended: bool,
+    ) -> Result<OpenedRun, DomainError> {
         // Two-shot: look up the latest non-terminal row; if found,
         // dispatch on its status; if not, INSERT a fresh Running row.
         //
@@ -467,7 +471,7 @@ impl JobStoreProvider for PgJobStoreProvider {
         // winning row is guaranteed to exist and no third caller can
         // race in ahead of us (they'd hit the same unique index).
         for attempt in 0..2 {
-            match self.try_open_or_start(job_name).await {
+            match self.try_open_or_start(job_name, unattended).await {
                 Ok(opened) => return Ok(opened),
                 Err(OpenErr::Retry) => {
                     tracing::debug!(
@@ -822,7 +826,7 @@ const _RUN_SUMMARY_COLUMNS_UNUSED: &str = RUN_SUMMARY_COLUMNS;
 
 /// Row shape returned by `open_or_start`'s SELECT — factored out
 /// so clippy's `type_complexity` lint doesn't yell at the query.
-type ExistingRun = (Uuid, String, DateTime<Utc>, Option<Vec<u8>>);
+type ExistingRun = (Uuid, String, DateTime<Utc>, Option<Vec<u8>>, Option<String>);
 
 /// Internal error surface for the two-shot open_or_start retry loop.
 enum OpenErr {
@@ -835,11 +839,20 @@ enum OpenErr {
 impl PgJobStoreProvider {
     /// One attempt of open_or_start. Returns `Err(Retry)` on the
     /// unique-index-conflict path so the outer loop re-queries.
-    async fn try_open_or_start(&self, job_name: &str) -> Result<OpenedRun, OpenErr> {
+    async fn try_open_or_start(
+        &self,
+        job_name: &str,
+        unattended: bool,
+    ) -> Result<OpenedRun, OpenErr> {
         // Latest non-terminal row for this job_name, if any.
+        //
+        // `unattended_resume` rides along on the row we already read, so
+        // the resume gate costs no extra round trip. Absent — a row
+        // written before the key existed — reads as "not permitted", which
+        // is the fail-closed direction.
         let existing: Option<ExistingRun> = sqlx::query_as(
             r#"
-            SELECT id, status, started_at, cursor
+            SELECT id, status, started_at, cursor, params ->> 'unattended_resume'
               FROM jobs.recoverable_runs
              WHERE job_name = $1
                AND status IN ('Running', 'Paused', 'CancelRequested')
@@ -853,7 +866,7 @@ impl PgJobStoreProvider {
         .map_err(|e| OpenErr::Fatal(map_sqlx_err("open_or_start.select", e)))?;
 
         match existing {
-            Some((id, raw_status, _started_at, _cursor)) => {
+            Some((id, raw_status, _started_at, _cursor, unattended_resume)) => {
                 let status = RunStatus::parse(&raw_status).ok_or_else(|| {
                     OpenErr::Fatal(DomainError::internal_error(
                         "JobStore",
@@ -865,6 +878,13 @@ impl PgJobStoreProvider {
                         Ok(OpenedRun::AlreadyActive { run_id: id, status })
                     }
                     RunStatus::Paused => {
+                        // Gate BEFORE the flip. The UPDATE below sets
+                        // Running and clears `error_message` — the record
+                        // of why this run paused — so a decline has to
+                        // happen while the row is still untouched.
+                        if unattended && unattended_resume.as_deref() != Some("true") {
+                            return Ok(OpenedRun::DeclinedUnattended { run_id: id });
+                        }
                         // Flip to Running and hand back the cursor.
                         // Race note: another concurrent caller could
                         // race the same UPDATE. Both would succeed

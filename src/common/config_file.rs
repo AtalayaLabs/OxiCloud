@@ -61,6 +61,7 @@ pub const KNOWN: &[(&str, &str)] = &[
     ("server", "OXICLOUD_SERVER_HOST"),
     ("server", "OXICLOUD_SERVER_PORT"),
     ("server", "OXICLOUD_STARTUP_JOBS"),
+    ("server", "OXICLOUD_SCHEDULED_JOBS"),
     ("server", "OXICLOUD_STATIC_PATH"),
     ("server", "OXICLOUD_TEMP_DIR"),
     ("server", "OXICLOUD_TREE_ETAG_FLUSH_MS"),

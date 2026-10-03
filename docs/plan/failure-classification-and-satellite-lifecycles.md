@@ -1,7 +1,9 @@
 # Plan — Failures that say what they are, and satellite lifecycles that cannot be skipped
 
 **Status:** design captured 2026-10-01; **Part A phases 1–3 implemented
-2026-10-02, phase 4 (surfacing) 2026-10-03.** Follow-up to
+2026-10-02, phase 4 (surfacing) and phase 5 (scheduling) 2026-10-03.**
+Part A is complete; phase 6 (`NotificationSink`) is the remaining piece.
+Follow-up to
 `storage-consistency.md` (merged as PR #771), which fixed the *recording* half of
 that plan's invariant and left the *discovery* half resting on detectors nothing
 runs.
@@ -166,6 +168,61 @@ When it does: `blobs_consistency` and `satellites_consistency` are cheap (DB-onl
 and can run often. `backend_consistency` walks the bucket and costs real money on
 S3 — weekly with `deep=false` is the defensible default, with deep runs left to an
 operator who has decided to pay for them.
+
+**What shipped, and the two things review changed.**
+
+The unit scheduled is **`consistency_batch` weekly**, not each detector. The batch
+dispatches its children sequentially — deliberately, so the sweeps do not multiply
+pressure on the shared maintenance pool — and it discovers them by name, so a
+detector added later joins the sweep the day it is registered. Listing detectors
+individually would leave each new one silently unscheduled, which is the exact
+failure this phase exists to remove. Weekly rather than daily because the batch
+includes the bucket walk; `deep` and `repair` both default to `false`, so a
+scheduled run reads metadata and reports.
+
+Cadence is configuration, not code: `OXICLOUD_SCHEDULED_JOBS`, sibling of
+`OXICLOUD_STARTUP_JOBS` (that one runs a job once at boot, this one gives it a
+cadence). `off` un-schedules without disabling. Issue #774 — which asks for the
+two DB-only detectors on a schedule and explicitly wants the bucket walk kept out
+— is therefore one line:
+`consistency_batch=off,blobs_consistency=24h,satellites_consistency=24h`.
+
+Two refusals are load-bearing rather than tidy:
+
+* **`repair` cannot be scheduled.** A tick that repairs deletes on a cadence with
+  nobody consenting after the first time. `OXICLOUD_STARTUP_JOBS` already is the
+  deliberate-operator-act spelling, and it is a one-shot.
+* **A duplicate job name is fatal.** `backend_consistency=24h,backend_consistency=720h?deep=true`
+  reads as "shallow daily plus deep monthly", but a job has one run row
+  (`one_active_run_per_job`) and one cursor — the deep run's pause cursor would be
+  picked up by the next shallow tick. Two cadences need two registered jobs.
+
+**The resume hole this opened, and the guard.** Scheduling made a latent hazard
+reachable: `open_or_start` resumes a `Paused` run, and `persist_or_restore_args`
+restores the args it started with, *ignoring the resuming caller*. So a tick would
+have continued an operator's `?repair=true` run — deleting, unattended, on the
+strength of a consent given once. The invariant in `config.rs` ("scheduled ticks
+deliberately never pass `repair`") was true about what the tick *passes* and false
+about what the resumed run *does*.
+
+Fixed by stamping `params.unattended_resume` at fresh-run start and declining the
+resume when an unattended caller meets a run that does not permit it. Three
+details decide whether it is correct:
+
+* **The default keys on the `repair` consent, not on `Mutates`.** Mutation is the
+  wrong signal — `backend_reclaim` and `backend_rechunk` are both `Mutates::Always`
+  and both *must* continue unattended; blocking the drain is how 29 orphans
+  accumulated. Neither declares `repair`, so both are allowed with no code of
+  their own.
+* **The flag is a permission, and absent reads as `false`.** A run paused by an
+  older release waits for a human. Naming it as a prohibition would have inverted
+  that and auto-resumed every pre-existing paused repair run on upgrade.
+* **It is stored, not declared**, so `from_declared` rejects it from the wire and
+  a caller cannot grant itself the consent.
+
+A human clicking Resume still works — that click *is* the consent — and a decline
+is audited, because a paused run nothing picks up otherwise looks exactly like a
+job that is not due.
 
 ---
 
@@ -607,7 +664,7 @@ Surfacing changes the order given earlier in this plan:
 | 2 | Classify (Part A ph. 2) | **DONE** — `classify_stream_read_error` + source chain |
 | 3 | Pause (Part A ph. 3) | **DONE** — `backend_consistency`, `backend_rotate`; `backend_rechunk` already had it |
 | 4 | **Panel shows findings** | **DONE** — counts read from `jobs.run_findings`, not from memory |
-| 5 | Schedule the detectors (Part A ph. 4) | TODO — safe to automate once 4 lands |
+| 5 | Schedule the detectors (Part A ph. 4) | **DONE** — `consistency_batch=168h` by default, `OXICLOUD_SCHEDULED_JOBS` to change it |
 | 6 | `NotificationSink` + transports | TODO — out-of-band reach, once what it sends is trustworthy |
 
 **Implementation note that simplified phase 1.** The plan called for a re-read in

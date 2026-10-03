@@ -2861,21 +2861,23 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         );
         let by_name: std::collections::HashMap<String, LatestRun> = latest_rows
             .into_iter()
-            .map(|(name, status, id, started_at, scanned, total, severities)| {
-                (
-                    name,
+            .map(
+                |(name, status, id, started_at, scanned, total, severities)| {
                     (
-                        status,
-                        started_at,
-                        PausedRunBrief {
-                            id,
-                            scanned: scanned.unwrap_or(0).max(0) as u64,
-                            total: total.filter(|t| *t > 0).map(|t| t as u64),
-                        },
-                        severities.0,
-                    ),
-                )
-            })
+                        name,
+                        (
+                            status,
+                            started_at,
+                            PausedRunBrief {
+                                id,
+                                scanned: scanned.unwrap_or(0).max(0) as u64,
+                                total: total.filter(|t| *t > 0).map(|t| t as u64),
+                            },
+                            severities.0,
+                        ),
+                    )
+                },
+            )
             .collect();
 
         for job in summary.iter_mut() {
@@ -2911,6 +2913,33 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
             }
             if !job.running && status == "Paused" {
                 job.paused_run = Some(brief.clone());
+            }
+        }
+    }
+
+    // A detector swept by a scheduled `consistency_batch` has no
+    // interval of its own, so the row would read as manual-only while it
+    // actually runs weekly. Report what runs it instead.
+    //
+    // Membership comes from `is_batch_child`, the same predicate the
+    // batch dispatches by, so this cannot describe a grouping that no
+    // longer matches what runs.
+    if let Some(batch_interval) = summary
+        .iter()
+        .find(|j| j.name == crate::infrastructure::services::consistency_batch_service::CONSISTENCY_BATCH_JOB_NAME)
+        .and_then(|j| j.interval_ms)
+    {
+        for job in summary.iter_mut() {
+            if job.interval_ms.is_none()
+                && crate::infrastructure::services::consistency_batch_service::is_batch_child(
+                    &job.name,
+                )
+            {
+                job.scheduled_via = Some(crate::infrastructure::scheduler::ScheduledVia {
+                    job: crate::infrastructure::services::consistency_batch_service::CONSISTENCY_BATCH_JOB_NAME
+                        .to_string(),
+                    interval_ms: batch_interval,
+                });
             }
         }
     }

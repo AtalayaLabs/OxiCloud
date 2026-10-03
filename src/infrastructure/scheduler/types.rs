@@ -33,6 +33,21 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default)]
 pub struct JobRunArgs {
     values: std::collections::BTreeMap<String, JobParamValue>,
+    /// True when nobody is watching this dispatch — the periodic tick,
+    /// and anything else that fires without a human in the loop.
+    ///
+    /// NOT a `JobParam`, deliberately. Declared parameters are settable
+    /// over the wire, and this one decides whether a paused repair-mode
+    /// run may be continued (see `UNATTENDED_RESUME_PARAM`): a caller
+    /// able to set it could hand itself the consent the guard exists to
+    /// require. Keeping it off the declaration means
+    /// [`JobRunArgs::from_declared`] rejects it as an unknown parameter,
+    /// so the wire cannot reach it at all.
+    ///
+    /// Default `false` — "a human asked for this" — because every
+    /// constructor but the tick's is reached from an operator action.
+    /// The tick marks itself with [`JobRunArgs::unattended`].
+    unattended: bool,
 }
 
 impl JobRunArgs {
@@ -40,7 +55,25 @@ impl JobRunArgs {
     /// strings should go through [`JobRunArgs::from_declared`] so the
     /// declaration does the parsing and validation.
     pub fn new(values: std::collections::BTreeMap<String, JobParamValue>) -> Self {
-        Self { values }
+        Self {
+            values,
+            unattended: false,
+        }
+    }
+
+    /// Mark this dispatch as unattended — no human in the loop.
+    ///
+    /// Called by the periodic tick only. Consumed by `run_or_resume` to
+    /// decide whether a paused run may be continued without a fresh
+    /// operator action.
+    pub fn unattended(mut self) -> Self {
+        self.unattended = true;
+        self
+    }
+
+    /// True when no human is behind this dispatch. See [`Self::unattended`].
+    pub fn is_unattended(&self) -> bool {
+        self.unattended
     }
 
     /// Seed from `declared` defaults, then overlay `raw` wire values.
@@ -78,7 +111,10 @@ impl JobRunArgs {
             };
             values.insert(p.name.to_string(), p.parse_value(raw_value)?);
         }
-        Ok(Self { values })
+        Ok(Self {
+            values,
+            unattended: false,
+        })
     }
 
     /// Reshape to exactly `declared`: every declared parameter present,
@@ -112,7 +148,13 @@ impl JobRunArgs {
                 .unwrap_or_else(|| p.default.to_value());
             values.insert(p.name.to_string(), value);
         }
-        Self { values }
+        // Provenance survives normalisation. `dispatch` normalises EVERY
+        // run, so dropping it here would silently un-mark the periodic
+        // tick and hand the guard a run that looks operator-initiated.
+        Self {
+            values,
+            unattended: self.unattended,
+        }
     }
 
     /// One string parameter — the shape the storage-scoped programmatic
@@ -121,7 +163,10 @@ impl JobRunArgs {
     pub fn with_string(name: &str, value: impl Into<String>) -> Self {
         let mut values = std::collections::BTreeMap::new();
         values.insert(name.to_string(), JobParamValue::String(Some(value.into())));
-        Self { values }
+        Self {
+            values,
+            unattended: false,
+        }
     }
 
     /// A declared boolean, or `false` when absent.
@@ -615,5 +660,46 @@ mod tests {
         assert_eq!(ErrCause::Handler.as_str(), "handler");
         assert_eq!(ErrCause::Timeout.as_str(), "timeout");
         assert_eq!(ErrCause::Panicked.as_str(), "panicked");
+    }
+
+    /// `dispatch` normalises EVERY run, so a `normalized_for` that rebuilt
+    /// the struct without carrying the mark would silently un-flag the
+    /// periodic tick — and the resume guard would see every tick as
+    /// operator-initiated. Exactly the kind of hole the normalisation
+    /// funnel was introduced to close, reopened one field later.
+    #[test]
+    fn normalisation_preserves_the_unattended_mark() {
+        const DECLARED: &[JobParam] = &[JobParam::boolean("repair", false, "test flag")];
+
+        assert!(
+            JobRunArgs::default()
+                .unattended()
+                .normalized_for(DECLARED)
+                .is_unattended()
+        );
+        assert!(
+            !JobRunArgs::default()
+                .normalized_for(DECLARED)
+                .is_unattended(),
+            "an operator-initiated run must not acquire the mark"
+        );
+    }
+
+    /// The mark is not reachable from the wire: it is not a declared
+    /// parameter, so the edge rejects it rather than letting a caller
+    /// grant itself the consent the resume guard requires.
+    #[test]
+    fn the_unattended_mark_cannot_be_set_over_the_wire() {
+        const DECLARED: &[JobParam] = &[JobParam::boolean("repair", false, "test flag")];
+
+        let err = JobRunArgs::from_declared(DECLARED, [("unattended", "true")])
+            .expect_err("undeclared parameter must be refused");
+        assert!(err.contains("unattended"), "unexpected message: {err}");
+
+        assert!(
+            !JobRunArgs::from_declared(DECLARED, [("repair", "true")])
+                .expect("declared")
+                .is_unattended()
+        );
     }
 }

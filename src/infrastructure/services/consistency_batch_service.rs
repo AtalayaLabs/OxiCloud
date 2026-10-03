@@ -63,6 +63,18 @@ use crate::infrastructure::scheduler::{JobHandler, JobOutcome, JobRegistry, JobR
 
 pub const CONSISTENCY_BATCH_JOB_NAME: &str = "consistency_batch";
 
+/// Does the batch run this job when it runs?
+///
+/// The membership rule, in one place. The batch dispatches by it, and
+/// `GET /api/admin/jobs` reports by it: when the batch is scheduled, its
+/// children have no interval of their own, so the panel would render
+/// every detector as manual-only while they actually run on the batch's
+/// cadence. A second copy of `ends_with` in the handler would be a rule
+/// that could drift from the dispatch it is supposed to describe.
+pub fn is_batch_child(job_name: &str) -> bool {
+    job_name.ends_with("_consistency") && job_name != CONSISTENCY_BATCH_JOB_NAME
+}
+
 pub struct ConsistencyBatch {
     registry: Weak<JobRegistry>,
 }
@@ -159,7 +171,7 @@ impl JobHandler for ConsistencyBatch {
             .snapshot()
             .await
             .into_iter()
-            .filter(|s| s.name.ends_with("_consistency") && s.name != CONSISTENCY_BATCH_JOB_NAME)
+            .filter(|s| is_batch_child(&s.name))
             .map(|s| s.name)
             .collect();
 
