@@ -1699,10 +1699,13 @@ impl AppServiceFactory {
         // Nothing else can: a row whose SOURCE was reaped still holds a valid
         // reference to a real artifact with a correct refcount, so every
         // other check agrees the system is healthy while the artifact is
-        // pinned forever. Read-only.
+        // pinned forever. Read-only unless `?repair=true`, which releases
+        // the pinned references through `remove_reference` — hence the
+        // dedup service here.
         let _ = Arc::new(
             crate::infrastructure::services::satellites_consistency_service::SatellitesConsistencyCheck::new(
                 maintenance_pool.clone(),
+                core.dedup_service.clone(),
             ),
         )
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)

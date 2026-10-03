@@ -1333,6 +1333,30 @@ impl DedupService {
     /// `feature = "integration_tests"` form for callers that flip the
     /// cargo feature instead. Standard `cfg(test)` keeps unit-test use.
     #[cfg(any(test, integration_tests, feature = "integration_tests"))]
+    /// Like [`Self::new_stub`] but on a **real** pool, for integration
+    /// tests that need `remove_reference` to actually run.
+    ///
+    /// `new_stub`'s pool points at `postgres://invalid`, which is right
+    /// for asserting on generated SQL and useless for anything that
+    /// executes it. Kept beside it so the two cannot drift in what they
+    /// register — a registry difference would change the reap predicate
+    /// and make a test prove the wrong thing.
+    #[cfg(any(test, integration_tests))]
+    pub fn new_for_test(pool: Arc<sqlx::PgPool>) -> Self {
+        use crate::infrastructure::services::local_blob_backend::LocalBlobBackend;
+        let registry = Arc::new(Self::default_reference_registry(pool.clone()));
+        Self {
+            backend: Arc::new(LocalBlobBackend::new(Path::new("/tmp/oxicloud_test_blobs"))),
+            pool: pool.clone(),
+            maintenance_pool: pool.clone(),
+            blob_lifecycle: None,
+            manifest_cache: Self::build_manifest_cache(),
+            reference_registry: registry.clone(),
+            manifest_reap_sql: manifest_reap_sql(&registry),
+            blob_reap_sql: blob_reap_sql(&registry),
+        }
+    }
+
     pub fn new_stub() -> Self {
         use crate::infrastructure::services::local_blob_backend::LocalBlobBackend;
         let stub_pool = Arc::new(

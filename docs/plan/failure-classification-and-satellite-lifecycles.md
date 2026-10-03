@@ -430,7 +430,7 @@ missing pages an operator exactly as loudly as missing user bytes — which is t
 false-alarm end of the same mislabelling, and the fastest way to get a channel
 muted.
 
-## One open bug to fold in
+## One open bug to fold in — **already fixed, verified 2026-10-03**
 
 `bug_attached_blob_same_content_leaks_ref` — storing an attached blob whose content
 is unchanged increments the reference while the guard skips the release, so each
@@ -438,6 +438,19 @@ re-store leaks one. Exactly the shape of §4's `swap_blob_hash` defect in a diff
 table, and worth fixing in the same pass now that the pattern is understood: the
 caller's increment and the release have to be paired at one site, not left for two
 functions to agree about.
+
+**It already is.** Both attached write paths pair them within one function, which is
+exactly the remedy this item asks for:
+
+* `store_attached_blob` reads the superseded hash *before* upserting and then
+  branches — different content releases the old reference, **same** content cancels
+  the phantom increment `store_from_stream` took unconditionally.
+* `store_attached_blob_if_absent` releases on `inserted == 0`, where the row that
+  would justify the reference belongs to a concurrent winner.
+
+Left in place rather than deleted because the reasoning is the same one Part B's FK
+rests on, and because "fold this in" would otherwise read as outstanding work to
+whoever picks the part up next.
 
 ---
 
