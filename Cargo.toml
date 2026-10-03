@@ -276,6 +276,16 @@ tracing-appender = "0.2"
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(integration_tests)'] }
 
+[lints.clippy]
+# Rust 1.99.0 added `clippy::double_must_use`, which fires on every
+# `#[async_trait]` method because the macro adds `#[must_use]` to a
+# function that already returns `Pin<Box<dyn Future>>` (itself
+# `#[must_use]`). The duplication is injected by the macro, so we
+# can't suppress it per-trait without touching all 16 async-trait
+# port/repository files. Upstream `async-trait` 0.1.89 hasn't
+# fixed this; revisit when they do, then remove this allow.
+double_must_use = "allow"
+
 [[bin]]
 name = "generate-openapi"
 path = "src/bin/generate-openapi.rs"

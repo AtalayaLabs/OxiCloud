@@ -515,6 +515,86 @@ export async function sendSmtpTest(to: string): Promise<SmtpTestResult> {
 	return (await res.json().catch(() => ({ success: false }))) as SmtpTestResult;
 }
 
+/**
+ * Read-only webhook config, from `GET /api/admin/webhook/info`.
+ *
+ * Mirrors `SmtpInfo`: configured through environment variables only, shown
+ * for confirmation rather than editing.
+ */
+export interface WebhookInfo {
+	enabled: boolean;
+	/** `generic`, `slack`, `discord`, `teams`, `telegram`, `ntfy`. */
+	format: string;
+	/** Scheme and host only — never the full URL. A Telegram endpoint
+	 *  carries the bot token in its path, and a Slack webhook URL is itself
+	 *  the credential. */
+	host: string;
+	/** Telegram chat id or ntfy topic. Empty when not applicable. */
+	target: string;
+}
+
+export async function getWebhookInfo(): Promise<WebhookInfo> {
+	return apiJson<WebhookInfo>('/api/admin/webhook/info');
+}
+
+/**
+ * Result of `POST /api/admin/webhook/test`.
+ *
+ * `code` + `message` mirror `SmtpTestResult` on purpose — the admin page
+ * presents both transports together, so the same rendering works for each.
+ */
+export interface WebhookTestResult {
+	success: boolean;
+	/** Transport name, e.g. `webhook`. */
+	sink?: string;
+	/** HTTP status the receiver returned. Absent when nothing answered —
+	 *  DNS failure, refused connection, timeout — which is itself the
+	 *  diagnosis. */
+	code?: number;
+	/** The receiver's own response body (truncated), or the transport
+	 *  error. Usually the useful part: a bare 403 does not distinguish a
+	 *  revoked token from a disabled channel, and the body says which. */
+	message?: string;
+}
+
+/**
+ * Send a synthetic alert through the configured webhook.
+ *
+ * One attempt, no retry — real delivery backs off over ~65s, which is the
+ * wrong behaviour for someone waiting on a button.
+ */
+export async function sendWebhookTest(): Promise<WebhookTestResult> {
+	const res = await apiFetch('/api/admin/webhook/test', {
+		method: 'POST',
+		credentials: 'same-origin',
+		headers: { ...JSON_HEADERS, ...getCsrfHeaders() }
+	});
+	if (res.status === 503)
+		return { success: false, message: 'No webhook is configured on this server.' };
+	return (await res.json().catch(() => ({ success: false }))) as WebhookTestResult;
+}
+
+/**
+ * Read-only alerting policy, from `GET /api/admin/notify/info`.
+ *
+ * The *what gets sent* half, where `SmtpInfo` and `WebhookInfo` are the
+ * *how it travels* half.
+ */
+export interface NotifyInfo {
+	/** `data_loss`, `inconsistent`, `anomaly`, or `none`. */
+	min_severity: string;
+	/** Channels actually wired, by name. Empty = findings are recorded
+	 *  but nobody is told. */
+	sinks: string[];
+	/** `OXICLOUD_JOBS_NOTIFY_EMAIL_TO`, as parsed. Empty = mail alerting
+	 *  is off. */
+	email_recipients: string[];
+}
+
+export async function getNotifyInfo(): Promise<NotifyInfo> {
+	return apiJson<NotifyInfo>('/api/admin/notify/info');
+}
+
 // ── OIDC settings ─────────────────────────────────────────────────────────
 
 export interface OidcSettings {

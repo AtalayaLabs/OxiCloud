@@ -278,12 +278,21 @@ impl JobStore for PgJobStore {
     }
 
     async fn mark_completed(&self) -> Result<(), DomainError> {
+        // Clear both error columns on success, belt-and-braces with the
+        // resume path that also clears them. A run that walked its whole
+        // subject space has, by definition, nothing left that stopped it
+        // — and a lingering `error_reason` makes the panel render
+        // "stopped" beside "completed". Making success the thing that
+        // clears them means no future stop-and-recover path has to
+        // remember to.
         sqlx::query(
             r#"
             UPDATE jobs.recoverable_runs
                SET status           = 'Completed',
                    completed_at     = NOW(),
-                   last_progress_at = NOW()
+                   last_progress_at = NOW(),
+                   error_reason     = NULL,
+                   error_message    = NULL
              WHERE id = $1
             "#,
         )
@@ -334,12 +343,14 @@ impl JobStore for PgJobStore {
         &self,
         cursor: Option<Vec<u8>>,
         reason: &str,
+        detail: &str,
     ) -> Result<(), DomainError> {
         // `status = 'Paused'`, so resume is the same operation an
         // operator pause produces — the only difference is that
-        // `error_message` is populated, which is what lets the panel say
-        // WHY it stopped. `completed_at` stays NULL: the run is not
-        // over.
+        // `error_reason` and `error_message` are populated, which is what
+        // lets the panel say WHY it stopped and what lets alerting key off
+        // "stopped with an error" without inspecting outcome variants.
+        // `completed_at` stays NULL: the run is not over.
         //
         // One statement per cursor shape, matching `mark_paused`: a
         // COALESCE would overwrite a real cursor with NULL when the
@@ -350,7 +361,8 @@ impl JobStore for PgJobStore {
                 UPDATE jobs.recoverable_runs
                    SET status           = 'Paused',
                        cursor           = $2,
-                       error_message    = $3,
+                       error_reason     = $3,
+                       error_message    = $4,
                        last_progress_at = NOW()
                  WHERE id = $1
                 "#,
@@ -358,6 +370,7 @@ impl JobStore for PgJobStore {
             .bind(self.run_id)
             .bind(&c[..])
             .bind(reason)
+            .bind(detail)
             .execute(self.pool.as_ref())
             .await
             .map_err(|e| map_sqlx_err("mark_paused_retryable", e))?;
@@ -366,13 +379,15 @@ impl JobStore for PgJobStore {
                 r#"
                 UPDATE jobs.recoverable_runs
                    SET status           = 'Paused',
-                       error_message    = $2,
+                       error_reason     = $2,
+                       error_message    = $3,
                        last_progress_at = NOW()
                  WHERE id = $1
                 "#,
             )
             .bind(self.run_id)
             .bind(reason)
+            .bind(detail)
             .execute(self.pool.as_ref())
             .await
             .map_err(|e| map_sqlx_err("mark_paused_retryable", e))?;
@@ -381,18 +396,25 @@ impl JobStore for PgJobStore {
     }
 
     async fn mark_failed(&self, message: &str) -> Result<(), DomainError> {
+        // `error_reason` too, from the one generic key, so that "stopped
+        // with an error" is answerable from the row for a failure exactly
+        // as it is for a retryable pause. Without it the alerting rule
+        // would need to special-case `status = 'Failed'`, which is the
+        // variant-inspection this column exists to avoid.
         sqlx::query(
             r#"
             UPDATE jobs.recoverable_runs
                SET status           = 'Failed',
                    completed_at     = NOW(),
                    last_progress_at = NOW(),
+                   error_reason     = $3,
                    error_message    = $2
              WHERE id = $1
             "#,
         )
         .bind(self.run_id)
         .bind(message)
+        .bind(crate::infrastructure::scheduler::recoverable::FAILED_REASON)
         .execute(self.pool.as_ref())
         .await
         .map_err(|e| map_sqlx_err("mark_failed", e))?;
@@ -456,7 +478,11 @@ impl PgJobStoreProvider {
 
 #[async_trait]
 impl JobStoreProvider for PgJobStoreProvider {
-    async fn open_or_start(&self, job_name: &str) -> Result<OpenedRun, DomainError> {
+    async fn open_or_start(
+        &self,
+        job_name: &str,
+        unattended: bool,
+    ) -> Result<OpenedRun, DomainError> {
         // Two-shot: look up the latest non-terminal row; if found,
         // dispatch on its status; if not, INSERT a fresh Running row.
         //
@@ -467,7 +493,7 @@ impl JobStoreProvider for PgJobStoreProvider {
         // winning row is guaranteed to exist and no third caller can
         // race in ahead of us (they'd hit the same unique index).
         for attempt in 0..2 {
-            match self.try_open_or_start(job_name).await {
+            match self.try_open_or_start(job_name, unattended).await {
                 Ok(opened) => return Ok(opened),
                 Err(OpenErr::Retry) => {
                     tracing::debug!(
@@ -493,10 +519,17 @@ impl JobStoreProvider for PgJobStoreProvider {
         // previous process flips to Paused with a synthetic
         // error_message. We DO NOT auto-resume — operators trigger
         // the resume explicitly per the trait doc.
+        //
+        // `error_reason` is stamped too, so a restart-interrupted run is
+        // distinguishable from an operator pause by the same rule
+        // everything else uses — "stopped with a reason" — rather than
+        // only by reading the prose. COALESCE on both: a row that already
+        // recorded why it stopped keeps its own account of it.
         let result = sqlx::query(
             r#"
             UPDATE jobs.recoverable_runs
                SET status        = 'Paused',
+                   error_reason  = COALESCE(error_reason, 'server_restart'),
                    error_message = COALESCE(error_message, 'server restart mid-run')
              WHERE status IN ('Running', 'CancelRequested')
             "#,
@@ -596,6 +629,70 @@ impl JobStoreProvider for PgJobStoreProvider {
         Ok(rows
             .into_iter()
             .map(|(sev, count)| (sev, count.max(0) as u64))
+            .collect())
+    }
+
+    async fn finding_kind_counts(
+        &self,
+        run_id: Uuid,
+    ) -> Result<Vec<(String, String, u64)>, DomainError> {
+        let rows: Vec<(String, String, i64)> = sqlx::query_as(
+            r#"
+            SELECT kind, severity, COUNT(*)::bigint
+              FROM jobs.run_findings
+             WHERE run_id = $1
+             GROUP BY kind, severity
+             ORDER BY kind
+            "#,
+        )
+        .bind(run_id)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| map_sqlx_err("finding_kind_counts", e))?;
+        Ok(rows
+            .into_iter()
+            .map(|(kind, sev, count)| (kind, sev, count.max(0) as u64))
+            .collect())
+    }
+
+    async fn previous_completed_finding_kinds(
+        &self,
+        job_name: &str,
+        before_run_id: Uuid,
+    ) -> Result<Vec<(String, String, u64)>, DomainError> {
+        // One statement: locate the previous completed run by start time,
+        // then group its findings. `started_at` rather than `completed_at`
+        // orders by when the work began, which is what "the run before
+        // this one" means to an operator — a long run that finishes after
+        // a later short one is still the earlier run.
+        let rows: Vec<(String, String, i64)> = sqlx::query_as(
+            r#"
+            WITH prev AS (
+                SELECT r.id
+                  FROM jobs.recoverable_runs r
+                 WHERE r.job_name = $1
+                   AND r.status = 'Completed'
+                   AND r.started_at < (
+                         SELECT started_at FROM jobs.recoverable_runs WHERE id = $2
+                       )
+                 ORDER BY r.started_at DESC
+                 LIMIT 1
+            )
+            SELECT f.kind, f.severity, COUNT(*)::bigint
+              FROM jobs.run_findings f
+              JOIN prev ON f.run_id = prev.id
+             GROUP BY f.kind, f.severity
+             ORDER BY f.kind
+            "#,
+        )
+        .bind(job_name)
+        .bind(before_run_id)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| map_sqlx_err("previous_completed_finding_kinds", e))?;
+        Ok(rows
+            .into_iter()
+            .map(|(kind, sev, count)| (kind, sev, count.max(0) as u64))
             .collect())
     }
 
@@ -744,15 +841,16 @@ type RunSummaryRow = (
     serde_json::Value,     // stats
     serde_json::Value,     // params
     Option<String>,        // error_message
+    Option<String>,        // error_reason
 );
 
-const RUN_SUMMARY_COLUMNS: &str = "id, job_name, status, started_at, last_progress_at, completed_at, cursor, stats, params, error_message";
+const RUN_SUMMARY_COLUMNS: &str = "id, job_name, status, started_at, last_progress_at, completed_at, cursor, stats, params, error_message, error_reason";
 
 // `format!` isn't const, but `concat!` gives us a &'static str at compile
 // time — worth it so the SELECT strings show up in tracing / SQL logs
 // as one contiguous line instead of a runtime string build.
 const RUN_SUMMARY_SELECT_LIST: &str = concat!(
-    "SELECT id, job_name, status, started_at, last_progress_at, completed_at, cursor, stats, params, error_message ",
+    "SELECT id, job_name, status, started_at, last_progress_at, completed_at, cursor, stats, params, error_message, error_reason ",
     "FROM jobs.recoverable_runs ",
     "WHERE job_name = $1 ",
     "ORDER BY started_at DESC ",
@@ -760,7 +858,7 @@ const RUN_SUMMARY_SELECT_LIST: &str = concat!(
 );
 
 const RUN_SUMMARY_SELECT_BY_ID: &str = concat!(
-    "SELECT id, job_name, status, started_at, last_progress_at, completed_at, cursor, stats, params, error_message ",
+    "SELECT id, job_name, status, started_at, last_progress_at, completed_at, cursor, stats, params, error_message, error_reason ",
     "FROM jobs.recoverable_runs ",
     "WHERE id = $1"
 );
@@ -777,6 +875,7 @@ fn row_to_summary(row: RunSummaryRow) -> Result<RunSummary, DomainError> {
         stats,
         params,
         error_message,
+        error_reason,
     ) = row;
     let status = RunStatus::parse(&status_str).ok_or_else(|| {
         DomainError::internal_error("JobStore", format!("unknown status: {status_str}"))
@@ -809,6 +908,7 @@ fn row_to_summary(row: RunSummaryRow) -> Result<RunSummary, DomainError> {
         params,
         cursor_hex: cursor.map(hex::encode),
         error_message,
+        error_reason,
         progress,
     })
 }
@@ -822,7 +922,7 @@ const _RUN_SUMMARY_COLUMNS_UNUSED: &str = RUN_SUMMARY_COLUMNS;
 
 /// Row shape returned by `open_or_start`'s SELECT — factored out
 /// so clippy's `type_complexity` lint doesn't yell at the query.
-type ExistingRun = (Uuid, String, DateTime<Utc>, Option<Vec<u8>>);
+type ExistingRun = (Uuid, String, DateTime<Utc>, Option<Vec<u8>>, Option<String>);
 
 /// Internal error surface for the two-shot open_or_start retry loop.
 enum OpenErr {
@@ -835,11 +935,20 @@ enum OpenErr {
 impl PgJobStoreProvider {
     /// One attempt of open_or_start. Returns `Err(Retry)` on the
     /// unique-index-conflict path so the outer loop re-queries.
-    async fn try_open_or_start(&self, job_name: &str) -> Result<OpenedRun, OpenErr> {
+    async fn try_open_or_start(
+        &self,
+        job_name: &str,
+        unattended: bool,
+    ) -> Result<OpenedRun, OpenErr> {
         // Latest non-terminal row for this job_name, if any.
+        //
+        // `unattended_resume` rides along on the row we already read, so
+        // the resume gate costs no extra round trip. Absent — a row
+        // written before the key existed — reads as "not permitted", which
+        // is the fail-closed direction.
         let existing: Option<ExistingRun> = sqlx::query_as(
             r#"
-            SELECT id, status, started_at, cursor
+            SELECT id, status, started_at, cursor, params ->> 'unattended_resume'
               FROM jobs.recoverable_runs
              WHERE job_name = $1
                AND status IN ('Running', 'Paused', 'CancelRequested')
@@ -853,7 +962,7 @@ impl PgJobStoreProvider {
         .map_err(|e| OpenErr::Fatal(map_sqlx_err("open_or_start.select", e)))?;
 
         match existing {
-            Some((id, raw_status, _started_at, _cursor)) => {
+            Some((id, raw_status, _started_at, _cursor, unattended_resume)) => {
                 let status = RunStatus::parse(&raw_status).ok_or_else(|| {
                     OpenErr::Fatal(DomainError::internal_error(
                         "JobStore",
@@ -865,6 +974,13 @@ impl PgJobStoreProvider {
                         Ok(OpenedRun::AlreadyActive { run_id: id, status })
                     }
                     RunStatus::Paused => {
+                        // Gate BEFORE the flip. The UPDATE below sets
+                        // Running and clears `error_message` — the record
+                        // of why this run paused — so a decline has to
+                        // happen while the row is still untouched.
+                        if unattended && unattended_resume.as_deref() != Some("true") {
+                            return Ok(OpenedRun::DeclinedUnattended { run_id: id });
+                        }
                         // Flip to Running and hand back the cursor.
                         // Race note: another concurrent caller could
                         // race the same UPDATE. Both would succeed
@@ -878,16 +994,25 @@ impl PgJobStoreProvider {
                         // ONLY hits if two admin triggers land in
                         // the same microsecond.
                         //
-                        // `error_message` is cleared here: it records why
-                        // the LAST attempt stopped, so carrying it past a
-                        // resume leaves a Completed run still displaying a
-                        // transient error it recovered from — a failure
-                        // that did not happen. Same stale-state shape as
-                        // the read-only banner outliving its migration.
+                        // Both error columns are cleared here: they record
+                        // why the LAST attempt stopped, so carrying them
+                        // past a resume leaves a Completed run still
+                        // displaying a transient error it recovered from —
+                        // a failure that did not happen. Same stale-state
+                        // shape as the read-only banner outliving its
+                        // migration.
+                        //
+                        // `error_reason` has to go with it. Clearing only
+                        // the prose left the key behind, and the panel
+                        // keys its verdict off the key — so a run that
+                        // recovered and completed rendered as "stopped"
+                        // next to "completed", which is the stale-state
+                        // defect wearing a different hat.
                         let row: Option<(DateTime<Utc>, Option<Vec<u8>>)> = sqlx::query_as(
                             r#"
                             UPDATE jobs.recoverable_runs
                                SET status           = 'Running',
+                                   error_reason     = NULL,
                                    error_message    = NULL,
                                    last_progress_at = NOW()
                              WHERE id = $1

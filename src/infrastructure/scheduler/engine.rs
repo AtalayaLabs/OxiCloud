@@ -98,7 +98,19 @@ async fn run(registry: Arc<JobRegistry>) {
         // bus reference so periodic runs also publish job events
         // (same reasoning as the manual-trigger path).
         let bus = registry.message_bus_snapshot();
-        let _ = dispatch(&name, entry, &JobRunArgs::default(), bus).await;
+        // Parameters an operator attached to this job's cadence in
+        // `OXICLOUD_JOBS_SCHEDULED` (`deep=true` and the like). Empty for
+        // the common case; `repair` can never appear, the config parser
+        // refuses it.
+        let scheduled_args = {
+            let state = entry.state.lock().expect("JobState mutex poisoned");
+            state.scheduled_args.clone()
+        };
+        // `.unattended()` — the one place it is set. Nobody is watching a
+        // tick, so a paused run started under `?repair=true` must not be
+        // continued here on the strength of a consent given once, weeks
+        // ago, by someone who has since stopped looking.
+        let _ = dispatch(&name, entry, &scheduled_args.unattended(), bus).await;
     }
 }
 
@@ -146,7 +158,13 @@ pub(super) async fn dispatch(
             // job compare `interval_ms` vs `running_for_ms`; the same
             // line for an on-demand job just tells them a concurrent
             // trigger raced an in-flight run.
-            let interval_ms = entry.interval.map(|d| d.as_millis()).unwrap_or(0);
+            let interval_ms = entry
+                .state
+                .lock()
+                .expect("JobState mutex poisoned")
+                .interval
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
             tracing::warn!(
                 target: "oxicloud::scheduler",
                 event = "job.tick_skipped",
@@ -232,7 +250,7 @@ pub(super) async fn dispatch(
         // at None so `pick_next` never returns them, even after a
         // trigger. Same rule as the skip branch — schedule advances
         // by one interval, no backlog queueing.
-        state.next_run_at = entry.interval.map(|dur| {
+        state.next_run_at = state.interval.map(|dur| {
             Utc::now()
                 + chrono::Duration::from_std(dur).unwrap_or_else(|_| chrono::Duration::seconds(0))
         });
@@ -279,7 +297,7 @@ pub(super) async fn dispatch(
 /// to skip them.
 fn advance_next_run(entry: &JobEntry) {
     let mut state = entry.state.lock().expect("JobState mutex poisoned");
-    state.next_run_at = entry.interval.map(|dur| {
+    state.next_run_at = state.interval.map(|dur| {
         Utc::now()
             + chrono::Duration::from_std(dur).unwrap_or_else(|_| chrono::Duration::seconds(0))
     });

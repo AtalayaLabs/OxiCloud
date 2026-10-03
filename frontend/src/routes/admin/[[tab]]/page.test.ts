@@ -63,6 +63,8 @@ vi.mock('$lib/api/endpoints/admin', () => ({
 	getPluginLogs: vi.fn(),
 	getPluginRetention: vi.fn(),
 	getSmtpInfo: vi.fn(),
+	getWebhookInfo: vi.fn(),
+	sendWebhookTest: vi.fn(),
 	getStorageSettings: vi.fn(),
 	installPlugin: vi.fn(),
 	listPlugins: vi.fn(),
@@ -184,6 +186,14 @@ beforeEach(() => {
 		from: 'a@x.test',
 		user_state: 'unset'
 	});
+	m(admin.getWebhookInfo).mockResolvedValue({
+		enabled: true,
+		format: 'telegram',
+		// Host only — the API never returns the full URL, since a Telegram
+		// endpoint carries the bot token in its path.
+		host: 'https://api.telegram.org',
+		target: '-1001234567890'
+	});
 	m(admin.listExternalMounts).mockResolvedValue([mount]);
 	m(admin.listAllDrives).mockResolvedValue([mountDrive]);
 });
@@ -230,10 +240,13 @@ it('loads storage + migration when the storage tab is opened', async () => {
 	await waitFor(() => expect(admin.getMigration).toHaveBeenCalled());
 });
 
-it('loads SMTP info when the SMTP tab is opened', async () => {
-	setTab('smtp');
+it('loads both transports when the Notifications tab is opened', async () => {
+	setTab('notification');
 	render(AdminPage);
+	// One tab, two transports — loading only one would leave half the page
+	// permanently showing "Loading…".
 	await waitFor(() => expect(admin.getSmtpInfo).toHaveBeenCalled());
+	await waitFor(() => expect(admin.getWebhookInfo).toHaveBeenCalled());
 });
 
 it('loads plugins when the plugins tab is opened', async () => {
@@ -333,7 +346,7 @@ it('saves OIDC settings from the OIDC form', async () => {
 
 it('sends an SMTP test email', async () => {
 	m(admin.sendSmtpTest).mockResolvedValue({ ok: true } as never);
-	setTab('smtp');
+	setTab('notification');
 	render(AdminPage);
 	await fireEvent.input(await screen.findByTestId('admin-smtp-to-input'), {
 		target: { value: 'to@x.test' }

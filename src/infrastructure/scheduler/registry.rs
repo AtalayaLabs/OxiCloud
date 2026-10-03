@@ -11,7 +11,7 @@
 //! registration (plugin manifests, admin UI) can acquire a write
 //! lock without racing readers.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -27,11 +27,6 @@ use super::types::{JobOutcome, JobParam, JobParamValue, JobRunArgs, Mutates};
 /// `await` without pinning the registry's outer lock.
 pub struct JobEntry {
     pub(super) handler: Arc<dyn JobHandler>,
-    /// `None` = on-demand only; the supervisor never fires this job
-    /// (`pick_next` skips it). Admin/programmatic callers reach it
-    /// via [`JobRegistry::trigger`].
-    /// `Some(dur)` = periodic; supervisor dispatches every `dur`.
-    pub(super) interval: Option<Duration>,
     pub(super) timeout: Option<Duration>,
     /// Single-permit gate enforcing the "one in-flight run per
     /// `job_name`" invariant. A tick that finds the permit taken
@@ -44,6 +39,24 @@ pub struct JobEntry {
 }
 
 pub(super) struct JobState {
+    /// `None` = on-demand only; the supervisor never fires this job
+    /// (`pick_next` skips it). Admin/programmatic callers reach it
+    /// via [`JobRegistry::trigger`].
+    /// `Some(dur)` = periodic; supervisor dispatches every `dur`.
+    ///
+    /// Lives here rather than on the immutable part of the entry so
+    /// `OXICLOUD_JOBS_SCHEDULED` can override it after every registration
+    /// has run — the alternative was threading config through all 17
+    /// call sites. Changed only by [`JobRegistry::set_schedule`], at
+    /// boot, before the supervisor starts.
+    pub interval: Option<Duration>,
+    /// Parameters each scheduled tick dispatches with, from
+    /// `OXICLOUD_JOBS_SCHEDULED`. Empty for the common case.
+    ///
+    /// Cannot carry `repair` — the config parser refuses it, because a
+    /// tick that repairs deletes on a cadence with nobody consenting
+    /// after the first time.
+    pub scheduled_args: JobRunArgs,
     /// Set when a run starts, cleared when it ends. Used to include
     /// `running_for_ms` in the `job.tick_skipped` warning.
     pub current_run_start: Option<Instant>,
@@ -71,6 +84,15 @@ pub struct JobRegistry {
     message_bus: std::sync::OnceLock<
         std::sync::Arc<dyn crate::application::ports::message_bus_ports::MessageBus>,
     >,
+    /// Out-of-band alerting for recoverable runs, handed to every
+    /// `RecoverableAdapter` as a shared handle.
+    ///
+    /// `Arc<OnceLock<_>>` rather than a plain `OnceLock` so the adapters
+    /// observe a later `set_finding_notifier` — DI can wire notifications
+    /// before or after the jobs register and get the same behaviour. The
+    /// alternative, capturing at construction, makes two lines in `di.rs`
+    /// silently decide whether a deployment is ever alerted.
+    finding_notifier: Arc<std::sync::OnceLock<Arc<super::finding_notifier::FindingNotifier>>>,
 }
 
 impl JobRegistry {
@@ -78,7 +100,31 @@ impl JobRegistry {
         Self {
             entries: RwLock::new(HashMap::new()),
             message_bus: std::sync::OnceLock::new(),
+            finding_notifier: Arc::new(std::sync::OnceLock::new()),
         }
+    }
+
+    /// Install the out-of-band notifier for recoverable runs. Idempotent;
+    /// a second call is ignored, like the message bus.
+    pub fn set_finding_notifier(
+        &self,
+        notifier: Arc<super::finding_notifier::FindingNotifier>,
+    ) -> bool {
+        self.finding_notifier.set(notifier).is_ok()
+    }
+
+    /// The installed notifier, if any. Used by the admin panel's
+    /// "test notifications" action.
+    pub fn finding_notifier(&self) -> Option<Arc<super::finding_notifier::FindingNotifier>> {
+        self.finding_notifier.get().cloned()
+    }
+
+    /// Shared handle for the adapters. See the field doc for why this is
+    /// shared rather than read once.
+    pub(super) fn finding_notifier_handle(
+        &self,
+    ) -> Arc<std::sync::OnceLock<Arc<super::finding_notifier::FindingNotifier>>> {
+        self.finding_notifier.clone()
     }
 
     /// Register a job — production wiring path.
@@ -164,10 +210,11 @@ impl JobRegistry {
         });
         let entry = Arc::new(JobEntry {
             handler,
-            interval,
             timeout,
             in_flight: Semaphore::new(1),
             state: Mutex::new(JobState {
+                interval,
+                scheduled_args: JobRunArgs::default(),
                 current_run_start: None,
                 last_outcome: None,
                 next_run_at,
@@ -255,7 +302,7 @@ impl JobRegistry {
                     mutates: entry.handler.mutates(),
                     repair_description: entry.handler.repair_description(),
                     parameters: entry.handler.parameters(),
-                    interval_ms: entry.interval.map(|d| d.as_millis() as u64),
+                    interval_ms: state.interval.map(|d| d.as_millis() as u64),
                     next_run_at: state.next_run_at,
                     last_run_at,
                     last_outcome,
@@ -267,10 +314,46 @@ impl JobRegistry {
                     // scheduler state pulls in neither dependency.
                     paused_run: None,
                     last_run_status: None,
+                    last_run_severity_counts: None,
+                    last_run_error_reason: None,
+                    scheduled_via: None,
                     startup: None,
                 }
             })
             .collect()
+    }
+
+    /// Override a registered job's cadence and the parameters its
+    /// scheduled ticks run with. Returns `false` if no job by that name
+    /// is registered, so the caller can fail the boot with a message
+    /// naming the typo rather than ignoring it.
+    ///
+    /// Applied once at boot, after every registration and before the
+    /// supervisor starts. `interval = None` makes the job on-demand —
+    /// manual triggering is untouched, which is what separates "not
+    /// scheduled" from "disabled".
+    ///
+    /// `next_run_at` is recomputed from now, so an override takes effect
+    /// one interval from boot rather than inheriting the schedule the
+    /// registration site set.
+    pub async fn set_schedule(
+        &self,
+        name: &str,
+        interval: Option<Duration>,
+        scheduled_args: JobRunArgs,
+    ) -> bool {
+        let guard = self.entries.read().await;
+        let Some(entry) = guard.get(name) else {
+            return false;
+        };
+        let mut state = entry.state.lock().expect("JobState mutex poisoned");
+        state.interval = interval;
+        state.scheduled_args = scheduled_args;
+        state.next_run_at = interval.map(|dur| {
+            Utc::now()
+                + chrono::Duration::from_std(dur).unwrap_or_else(|_| chrono::Duration::seconds(0))
+        });
+        true
     }
 
     /// Count of registered jobs — used for the startup log line.
@@ -400,8 +483,51 @@ pub struct JobSummary {
     /// Prefer this over `last_outcome` wherever the two could disagree.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_run_status: Option<String>,
+    /// Findings of the most recent run, counted per severity, read from
+    /// `jobs.run_findings` — the same numbers [`JobOutcome`] carries in
+    /// `extra.severity_counts`, but sourced from the rows rather than
+    /// from memory.
+    ///
+    /// It exists because the panel turns its outcome pill amber on a
+    /// non-empty count, and `last_outcome` is in-memory: a restart
+    /// empties it, so a completed run that recorded data loss read as a
+    /// neutral "—" with nothing to act on. Findings are durable, so the
+    /// signal drawn from them must be too — and that matters most for a
+    /// *scheduled* detector, which runs with nobody watching the
+    /// dispatch.
+    ///
+    /// `None` — no run row for this job. `Some({})` — a run that found
+    /// nothing, which is the good news and a different fact.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_run_severity_counts: Option<BTreeMap<String, u64>>,
+    /// Why the most recent run stopped, read from the run row —
+    /// `backend_unavailable`, `backend_timeout`, `job_failed`,
+    /// `server_restart`.
+    ///
+    /// Same reasoning as `last_run_severity_counts`, and the same defect
+    /// behind it: a retryable pause reports `ok` on the wire, so the
+    /// panel showed a green "ok" for a job that gave up because its
+    /// backend was unreachable. The row knows better and survives a
+    /// restart.
+    ///
+    /// `None` is two good cases at once — a clean run, or a pause an
+    /// operator asked for. Neither should render as a problem, which is
+    /// why the alerting path keys off this field's presence too.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_run_error_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interval_ms: Option<u64>,
+    /// Set when this job has no cadence of its own but IS run by one
+    /// that does — today, a `*_consistency` detector swept by a
+    /// scheduled `consistency_batch`.
+    ///
+    /// Without it the panel reads `interval_ms: null` and renders the
+    /// row as manual-only, which is false in exactly the configuration
+    /// that ships by default. Filled by the `list_jobs` handler, which
+    /// can see the other jobs; the registry snapshot describes one job
+    /// at a time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheduled_via: Option<ScheduledVia>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_run_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -416,7 +542,7 @@ pub struct JobSummary {
     /// picks Resume when the latest row is Paused).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paused_run: Option<PausedRunBrief>,
-    /// Populated iff `OXICLOUD_STARTUP_JOBS` names this job — the flags
+    /// Populated iff `OXICLOUD_JOBS_STARTUP` names this job — the flags
     /// it will be dispatched with at every boot.
     ///
     /// Surfaced because the panel would otherwise be silently wrong
@@ -429,7 +555,7 @@ pub struct JobSummary {
     pub startup: Option<StartupTrigger>,
 }
 
-/// The parameters a job configured in `OXICLOUD_STARTUP_JOBS` runs with.
+/// The parameters a job configured in `OXICLOUD_JOBS_STARTUP` runs with.
 ///
 /// A map keyed by parameter name, for the same reason `JobRunArgs` is:
 /// the four named fields it used to carry meant a job growing a
@@ -453,6 +579,16 @@ pub struct StartupTrigger {
 /// `total` is `None` when the tenant doesn't seed a countable subject
 /// (`RecoverableJobHandler::count_total`); the UI then shows just
 /// "Resume" without progress.
+/// "This job has no cadence of its own, but `job` runs it every
+/// `interval_ms`." See [`JobSummary::scheduled_via`].
+#[derive(Debug, Clone, Serialize)]
+pub struct ScheduledVia {
+    /// The scheduled job that dispatches this one.
+    pub job: String,
+    /// That job's cadence — what this one effectively runs at.
+    pub interval_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PausedRunBrief {
     pub id: uuid::Uuid,

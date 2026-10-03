@@ -17,10 +17,10 @@ use crate::application::dtos::plugin_dto::{
 };
 use crate::application::dtos::settings_dto::{
     AdminCreateUserDto, AdminResetPasswordDto, DashboardStatsDto, DriveKindUsageDto,
-    ListSessionsQueryDto, ListUsersQueryDto, MigrationStateDto, SaveOidcSettingsDto,
+    ListSessionsQueryDto, ListUsersQueryDto, MigrationStateDto, NotifyInfoDto, SaveOidcSettingsDto,
     SaveStorageSettingsDto, SendSmtpTestDto, SmtpInfoDto, SmtpTestResultDto, StartMigrationDto,
     TestOidcConnectionDto, TestStorageConnectionDto, TransferOwnershipDto, UpdateUserActiveDto,
-    UpdateUserQuotaDto, UpdateUserRoleDto,
+    UpdateUserQuotaDto, UpdateUserRoleDto, WebhookInfoDto,
 };
 use crate::application::dtos::user_dto::{FullUserDto, PublicUserDto};
 use crate::application::ports::authorization_ports::AuthorizationEngine;
@@ -190,7 +190,15 @@ pub fn admin_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/transcode/stats", get(get_transcode_stats))
         // SMTP diagnostics
         .route("/smtp/info", get(get_smtp_info))
+        .route("/webhook/info", get(get_webhook_info))
         .route("/smtp/test", post(send_smtp_test))
+        // Beside /smtp/test deliberately: both verify an outbound
+        // transport, and the panel presents them together.
+        .route("/webhook/test", post(send_webhook_test))
+        // Alerting, as opposed to the transports above: the severity
+        // floor and which channels are wired. Read-only — testing a
+        // channel is the transports' own job.
+        .route("/notify/info", get(get_notify_info))
         // Test-only capture endpoint. The handler short-circuits to 404
         // when `OXICLOUD_SMTP_MOCK` is off, so production deployments
         // can route the path freely without leaking inboxes.
@@ -217,9 +225,11 @@ pub fn admin_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
             "/jobs/{name}/runs/{id}/findings",
             get(list_job_run_findings),
         )
-        // Retention cleanup — operator-triggered, not periodic.
-        // See `purge_job_runs` docstring for the semantics.
-        .route("/jobs/runs/purge", post(purge_job_runs))
+        // Retention cleanup is the `job_runs_cleanup` job — nightly, and
+        // reachable on demand through the ordinary trigger route above.
+        // Its bespoke `/jobs/runs/purge` route was removed rather than
+        // kept as an alias: two ways to run one purge is how the two
+        // drift.
         // Per-drive-kind default policies. Deliberately under `/api/admin`
         // rather than beside the per-drive `PATCH /api/drives/{id}/policies`:
         // this nest carries the `require_admin` router layer, so the guard is
@@ -1820,6 +1830,53 @@ async fn reextract_image_metadata(
 //     recipient supplied by the admin, returning the SMTP server's
 //     response so the operator can correlate it with their relay logs.
 
+/// GET /api/admin/webhook/info — read-only view of the running webhook
+/// config, beside SMTP on the admin Notifications page.
+///
+/// Reports the host but **never the full URL**: a Telegram endpoint carries
+/// the bot token in its path, and a Slack or Discord webhook URL *is* the
+/// credential. The host answers "does this point where I think it does"
+/// without putting a secret in a browser's network log.
+#[utoipa::path(
+    get,
+    path = "/api/admin/webhook/info",
+    responses(
+        (status = 200, description = "Current webhook settings", body = WebhookInfoDto),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn get_webhook_info(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, AppError> {
+    let webhook = &state.core.config.webhook;
+    // Scheme + host only. Parsing can fail on a hand-written URL, in which
+    // case showing nothing beats showing the path by accident.
+    let host = webhook
+        .url
+        .as_deref()
+        .and_then(|u| url::Url::parse(u).ok())
+        .map(|u| match u.host_str() {
+            Some(h) => format!("{}://{}", u.scheme(), h),
+            None => u.scheme().to_string(),
+        })
+        .unwrap_or_default();
+    Ok((
+        StatusCode::OK,
+        Json(WebhookInfoDto {
+            // `webhook_sink` rather than the config alone: a URL that is set
+            // but unusable never becomes a sink, and the page should say
+            // "not enabled" rather than implying delivery works.
+            enabled: state.webhook_sink.is_some(),
+            format: format!("{:?}", webhook.format).to_lowercase(),
+            host,
+            target: webhook.target.clone().unwrap_or_default(),
+        }),
+    ))
+}
+
 /// GET /api/admin/smtp/info — read-only view of the running SMTP config.
 #[utoipa::path(
     get,
@@ -2788,8 +2845,9 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         // `one_active_run_per_job` partial unique index allows only one
         // non-terminal row per job, and a resume reuses it rather than
         // starting a new one, so a non-terminal row is always the newest.
-        /// `(job_name, status, run_id, started_at, scanned, total)` — the
-        /// enrichment row shape, named so the query's type stays legible.
+        /// `(job_name, status, run_id, started_at, scanned, total,
+        /// severity_counts, error_reason)` — the enrichment row shape,
+        /// named so the query's type stays legible.
         type LatestRunRow = (
             String,
             String,
@@ -2797,54 +2855,119 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
             chrono::DateTime<chrono::Utc>,
             Option<i64>,
             Option<i64>,
+            sqlx::types::Json<std::collections::BTreeMap<String, u64>>,
+            Option<String>,
         );
+        // The per-severity counts come from the findings themselves
+        // rather than from the run's `stats`, for the same reason
+        // `status` does: a run's outcome lives in memory and a restart
+        // empties it, while findings are rows. One correlated aggregate
+        // over `jobs.run_findings`, keyed by the run id the CTE already
+        // selected — not a round-trip per job.
         let latest_rows: Vec<LatestRunRow> = sqlx::query_as(
             r#"
-            SELECT DISTINCT ON (job_name)
-                job_name,
-                status::TEXT,
-                id,
-                started_at,
-                (stats  ->> 'scanned_count')::BIGINT AS scanned,
-                (params ->> 'total_rows')::BIGINT   AS total
-            FROM jobs.recoverable_runs
-            ORDER BY job_name, started_at DESC
+            WITH latest AS (
+                SELECT DISTINCT ON (job_name)
+                    job_name,
+                    status::TEXT AS status,
+                    id,
+                    started_at,
+                    (stats  ->> 'scanned_count')::BIGINT AS scanned,
+                    (params ->> 'total_rows')::BIGINT   AS total,
+                    error_reason
+                FROM jobs.recoverable_runs
+                ORDER BY job_name, started_at DESC
+            )
+            SELECT
+                l.job_name,
+                l.status,
+                l.id,
+                l.started_at,
+                l.scanned,
+                l.total,
+                COALESCE(
+                    (SELECT jsonb_object_agg(s.severity, s.n)
+                       FROM (SELECT severity, COUNT(*) AS n
+                               FROM jobs.run_findings
+                              WHERE run_id = l.id
+                              GROUP BY severity) s),
+                    '{}'::jsonb
+                ) AS severity_counts,
+                l.error_reason
+            FROM latest l
             "#,
         )
         .fetch_all(pool.as_ref())
         .await
-        .unwrap_or_default();
+        .unwrap_or_else(|e| {
+            // Degrading to the pre-enrichment shape is the right call for a
+            // momentarily unreachable jobs DB. Doing it silently is not: the
+            // panel would simply stop showing findings, which looks exactly
+            // like having none. A malformed query here would hide every
+            // finding on every row, forever, with nothing to notice.
+            tracing::warn!(
+                target: "oxicloud::admin",
+                error = %e,
+                "job list enrichment failed — rows render without run status or finding counts",
+            );
+            Vec::new()
+        });
 
-        type LatestRun = (String, chrono::DateTime<chrono::Utc>, PausedRunBrief);
+        type LatestRun = (
+            String,
+            chrono::DateTime<chrono::Utc>,
+            PausedRunBrief,
+            std::collections::BTreeMap<String, u64>,
+            Option<String>,
+        );
         let by_name: std::collections::HashMap<String, LatestRun> = latest_rows
             .into_iter()
-            .map(|(name, status, id, started_at, scanned, total)| {
-                (
-                    name,
+            .map(
+                |(name, status, id, started_at, scanned, total, severities, error_reason)| {
                     (
-                        status,
-                        started_at,
-                        PausedRunBrief {
-                            id,
-                            scanned: scanned.unwrap_or(0).max(0) as u64,
-                            total: total.filter(|t| *t > 0).map(|t| t as u64),
-                        },
-                    ),
-                )
-            })
+                        name,
+                        (
+                            status,
+                            started_at,
+                            PausedRunBrief {
+                                id,
+                                scanned: scanned.unwrap_or(0).max(0) as u64,
+                                total: total.filter(|t| *t > 0).map(|t| t as u64),
+                            },
+                            severities.0,
+                            error_reason,
+                        ),
+                    )
+                },
+            )
             .collect();
 
         for job in summary.iter_mut() {
             if !job.recoverable {
                 continue;
             }
-            let Some((status, started_at, brief)) = by_name.get(&job.name) else {
+            let Some((status, started_at, brief, severities, error_reason)) =
+                by_name.get(&job.name)
+            else {
                 continue;
             };
             // Always reported, so the panel can prefer the row's truth
             // over the in-memory outcome rather than guessing which is
             // fresher.
             job.last_run_status = Some(status.clone());
+            // Always, including empty: `Some({})` says the run found
+            // nothing, which the panel renders as a clean green "ok".
+            // Omitting it there would be indistinguishable from "no run
+            // row", and a job that has never run must not read as clean.
+            job.last_run_severity_counts = Some(severities.clone());
+            // Why the run stopped, from the row rather than from the
+            // in-memory outcome. A retryable pause reports `ok` on the
+            // wire — correctly, since it did not fail and a Resume
+            // continues it — so without this the panel renders a green
+            // "ok" for a job that gave up because the backend vanished.
+            // `None` here means either a clean run or a pause an operator
+            // asked for, and neither should look alarming.
+            job.last_run_error_reason = error_reason.clone();
             // Fill the timestamp too when memory has none.
             //
             // `last_outcome` and `last_run_at` are both in-memory, so a
@@ -2866,7 +2989,34 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         }
     }
 
-    // Mark the jobs `OXICLOUD_STARTUP_JOBS` dispatches at boot. Without
+    // A detector swept by a scheduled `consistency_batch` has no
+    // interval of its own, so the row would read as manual-only while it
+    // actually runs weekly. Report what runs it instead.
+    //
+    // Membership comes from `is_batch_child`, the same predicate the
+    // batch dispatches by, so this cannot describe a grouping that no
+    // longer matches what runs.
+    if let Some(batch_interval) = summary
+        .iter()
+        .find(|j| j.name == crate::infrastructure::services::consistency_batch_service::CONSISTENCY_BATCH_JOB_NAME)
+        .and_then(|j| j.interval_ms)
+    {
+        for job in summary.iter_mut() {
+            if job.interval_ms.is_none()
+                && crate::infrastructure::services::consistency_batch_service::is_batch_child(
+                    &job.name,
+                )
+            {
+                job.scheduled_via = Some(crate::infrastructure::scheduler::ScheduledVia {
+                    job: crate::infrastructure::services::consistency_batch_service::CONSISTENCY_BATCH_JOB_NAME
+                        .to_string(),
+                    interval_ms: batch_interval,
+                });
+            }
+        }
+    }
+
+    // Mark the jobs `OXICLOUD_JOBS_STARTUP` dispatches at boot. Without
     // this the panel is silently wrong about the most consequential thing
     // on the row: a job configured with `repair=true` deletes files on
     // every restart, and the row would suggest that only ever happens
@@ -3432,76 +3582,180 @@ pub async fn list_job_run_findings(
     }
 }
 
-/// Query parameters for `POST /api/admin/jobs/runs/purge`.
+// `POST /api/admin/jobs/runs/purge` lived here, with its own query
+// struct and handler, both calling `purge_terminal_runs`. Removed when
+// `job_runs_cleanup` landed: the job runs the same purge on a nightly
+// schedule and through the ordinary trigger endpoint
+// (`POST /api/admin/jobs/job_runs_cleanup/trigger?retention_days=N`),
+// so the bespoke route was a second way to invoke one operation — and
+// the one without run history, without the mutating-job confirmation,
+// and without the declared-parameter validation every other job gets.
+
+/// Outcome of `POST /api/admin/webhook/test`.
 ///
-/// `days` — retention window. Terminal runs (`Completed`, `Failed`)
-/// with `completed_at` older than this many days ago are deleted
-/// (with their findings via CASCADE). Default 30. Minimum enforced
-/// at 1 by the provider — zero would eat runs completed seconds
-/// ago. Non-terminal runs are ALWAYS preserved regardless of age.
-#[derive(serde::Deserialize)]
-pub struct PurgeJobRunsQuery {
-    #[serde(default = "default_purge_days")]
-    pub days: i32,
+/// `code` + `message` mirror `SmtpTestResultDto` so the admin panel can
+/// render both transports' diagnostics the same way.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct WebhookTestResultDto {
+    pub success: bool,
+    /// Transport name, so a future second sink is distinguishable.
+    pub sink: String,
+    /// HTTP status the receiver returned. Absent when nothing answered —
+    /// DNS failure, refused connection, timeout — which is itself the
+    /// diagnosis.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<u16>,
+    /// The receiver's own response body, truncated — or the transport
+    /// error when there was no response. Usually the useful part: a bare
+    /// 403 does not distinguish a revoked token from a disabled channel,
+    /// and the body says which.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
-fn default_purge_days() -> i32 {
-    30
-}
-
-/// `POST /api/admin/jobs/runs/purge?days=N` — operator-triggered
-/// cleanup of old terminal runs + their findings. Not periodic;
-/// admins fire this when they want to reclaim `jobs.*` history
-/// space. Delegates entirely to
-/// `JobStoreProvider::purge_terminal_runs` — no SQL in the handler
-/// (see `AGENTS.md` § handler thinness).
+/// `POST /api/admin/webhook/test` — POST a synthetic alert to the
+/// configured webhook.
+///
+/// Under `/webhook` rather than `/jobs`: the webhook is a transport, and
+/// job findings are its first consumer rather than its definition. What
+/// this verifies is the URL, the format and the credentials — not anything
+/// about jobs.
+///
+/// Same shape as `POST /api/admin/smtp/test`, and for the same reason: 200
+/// regardless of the transport's verdict, with the detail in the body. A
+/// webhook returning 404 is diagnostic data an operator needs to read, not
+/// an HTTP error for the panel to swallow.
+///
+/// The synthetic alert deliberately bypasses the severity threshold that
+/// gates real findings — testing with the default `data_loss` threshold
+/// would otherwise deliver nothing and read as a broken webhook.
 #[utoipa::path(
     post,
-    path = "/api/admin/jobs/runs/purge",
-    params(
-        ("days" = Option<i32>, Query, description = "Retention window in days (default 30, minimum 1). Terminal runs older than this are deleted with their findings; non-terminal runs are always preserved."),
-    ),
+    path = "/api/admin/webhook/test",
     responses(
-        (status = 200, description = "Purge complete"),
+        (status = 200, description = "Delivery attempted", body = WebhookTestResultDto),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required"),
-        (status = 500, description = "DB error"),
+        (status = 503, description = "No webhook configured"),
     ),
     security(("bearerAuth" = [])),
     tag = "admin"
 )]
-pub async fn purge_job_runs(
+pub async fn send_webhook_test(
     State(state): State<Arc<AppState>>,
-    axum::extract::Query(query): axum::extract::Query<PurgeJobRunsQuery>,
-) -> impl IntoResponse {
-    use crate::infrastructure::scheduler::JobStoreProvider as _;
-    let retention_days = query.days.max(1);
-    match state
-        .core
-        .job_store_provider
-        .purge_terminal_runs(retention_days)
-        .await
-    {
-        Ok(purged) => {
-            tracing::info!(
-                target: "audit",
-                event = "jobs.runs_purged",
-                purged = purged,
-                retention_days = retention_days,
-                "👮🏻‍♂️ admin purged {purged} terminal recoverable-run row(s) past {retention_days} day retention (findings cascaded)",
-            );
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "purged":         purged,
-                    "retention_days": retention_days,
-                })),
-            )
-                .into_response()
-        }
-        Err(e) => AppError::internal_error(format!("purge failed: {e}")).into_response(),
+    auth_user: AuthUser,
+) -> Result<impl IntoResponse, AppError> {
+    let sink = state.webhook_sink.clone().ok_or_else(|| {
+        AppError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "No webhook is configured (set OXICLOUD_WEBHOOK_URL in .env to enable)",
+            "ServiceUnavailable",
+        )
+    })?;
+
+    tracing::info!(
+        target: "audit",
+        event = "webhook.test",
+        admin_id = %auth_user.id,
+        sink = sink.name(),
+    );
+
+    let alert = crate::infrastructure::scheduler::FindingNotifier::test_alert();
+    let report = sink.deliver_reporting(&alert).await;
+    if report.success {
+        tracing::info!(
+            target: "audit",
+            event = "webhook.test_ok",
+            admin_id = %auth_user.id,
+            sink = sink.name(),
+            code = ?report.code,
+        );
+    } else {
+        tracing::warn!(
+            target: "audit",
+            event = "webhook.test_failed",
+            admin_id = %auth_user.id,
+            sink = sink.name(),
+            code = ?report.code,
+            response = ?report.message,
+        );
     }
+
+    Ok((
+        StatusCode::OK,
+        Json(WebhookTestResultDto {
+            success: report.success,
+            sink: sink.name().to_string(),
+            code: report.code,
+            message: report.message,
+        }),
+    ))
 }
+
+/// `GET /api/admin/notify/info` — the alerting policy, as the running
+/// process sees it.
+///
+/// Separate from `/smtp/info` and `/webhook/info`, which describe
+/// *transports*. This describes what gets sent: the severity floor, and
+/// which channels are actually wired. Worth its own endpoint because the
+/// floor was invisible in the panel until now — an operator could see a
+/// configured webhook, a healthy SMTP server, and still be told nothing,
+/// because the default threshold only admits `data_loss`.
+#[utoipa::path(
+    get,
+    path = "/api/admin/notify/info",
+    responses(
+        (status = 200, description = "Current alerting policy", body = NotifyInfoDto),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn get_notify_info(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::application::ports::notification_sink_ports::NotifyThreshold;
+
+    let notify = &state.core.config.jobs_notify;
+    // The built sinks rather than the config, deliberately — the same
+    // reason `/webhook/info` reports `webhook_sink.is_some()`: a setting
+    // that was present but unusable must not read as a working channel.
+    let mut sinks: Vec<String> = Vec::new();
+    if let Some(s) = state.webhook_sink.as_ref() {
+        sinks.push(s.name().to_string());
+    }
+    if let Some(s) = state.email_alert_sink.as_ref() {
+        sinks.push(s.name().to_string());
+    }
+
+    Ok((
+        StatusCode::OK,
+        Json(NotifyInfoDto {
+            min_severity: match notify.min_severity {
+                NotifyThreshold::None => "none".to_string(),
+                NotifyThreshold::AtLeast(s) => s.as_str().to_string(),
+            },
+            sinks,
+            // Operator addresses, on an admin-only endpoint, and the one
+            // thing an operator checking mail alerting needs to see — the
+            // same call `/webhook/info` makes for its target.
+            email_recipients: notify.email_to.clone(),
+        }),
+    ))
+}
+
+// No `POST /api/admin/notify/email/test` to go with this.
+//
+// It was written and then removed: the question it answers — "can my
+// configured recipients actually receive an alert?" — is already
+// answerable with what is here. `/notify/info` shows the addresses, and
+// `POST /api/admin/smtp/test` sends to one over the same transport with
+// the same From:, so the pair covers the diagnostic without a third
+// endpoint to keep consistent. The code path from a finding to a
+// delivered message is covered end-to-end by `tests/api/jobs_notify.hurl`
+// against the SMTP mock, which is a better test than a button an operator
+// has to think to press.
 
 #[cfg(test)]
 mod tests {

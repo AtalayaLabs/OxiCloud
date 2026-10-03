@@ -812,6 +812,37 @@ export interface JobSummary {
 	 *  handler leaves it stale — cancelling a Paused run is a direct SQL
 	 *  flip, and the panel went on rendering the pause it replaced. */
 	last_run_status?: RunStatus;
+	/** Findings of the most recent run, counted per severity, read from
+	 *  `jobs.run_findings` (recoverable jobs only).
+	 *
+	 *  **Prefer this over `last_outcome.extra.severity_counts`**, for the
+	 *  same reason as `last_run_status`: the outcome is in-memory, so a
+	 *  restart erased the counts and a completed run that found data loss
+	 *  rendered as a neutral "—". Findings are rows, so this survives.
+	 *
+	 *  Absent = no run row. `{}` = a run that found nothing — the good
+	 *  news, and a different fact. Severity keys are open (the column is
+	 *  TEXT), so unknown keys must degrade rather than throw. */
+	last_run_severity_counts?: Record<string, number>;
+	/** Why the most recent run stopped, read from the run row —
+	 *  `backend_unavailable`, `backend_timeout`, `job_failed`,
+	 *  `server_restart`.
+	 *
+	 *  **The outcome pill must not read "ok" while this is set.** A
+	 *  retryable pause reports `outcome: "ok"` on the wire — correctly,
+	 *  since the run did not fail and a Resume continues it — so taking
+	 *  that at face value rendered a green "ok" for a job that gave up
+	 *  because its backend was unreachable.
+	 *
+	 *  Absent means a clean run *or* a pause an operator asked for;
+	 *  neither should look alarming, which is why presence is the
+	 *  signal rather than `status === "Paused"`. */
+	last_run_error_reason?: string;
+	/** Present when this job has no cadence of its own but a scheduled
+	 *  job runs it — a `*_consistency` detector swept by
+	 *  `consistency_batch`. Without it the row renders "on-demand",
+	 *  which is false in the default configuration. */
+	scheduled_via?: { job: string; interval_ms: number };
 	/** Present iff `OXICLOUD_STARTUP_JOBS` names this job — the flags it
 	 *  is dispatched with at every boot. Worth showing: a job configured
 	 *  with `repair: true` deletes on every restart, and the row would
@@ -863,6 +894,14 @@ export interface RunSummary {
 	params: Record<string, unknown>;
 	cursor_hex?: string;
 	error_message?: string;
+	/** Stable key for why the run stopped — `backend_unavailable`,
+	 *  `backend_timeout`, `job_failed`, `server_restart`.
+	 *
+	 *  Switch on this, never on `error_message`, which is prose and free
+	 *  to be reworded. Absent on an operator pause, which is how a
+	 *  human-stopped run is told apart from one the environment stopped:
+	 *  both are `Paused` in `status`. */
+	error_reason?: string;
 	/** Populated when the tenant reported a countable subject at run
 	 *  start (`RecoverableJobHandler::count_total`). Absent when the
 	 *  tenant can't count — the UI hides the progress bar and falls

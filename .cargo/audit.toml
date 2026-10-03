@@ -170,6 +170,58 @@ ignore = [
     # rather than being ignored.
     "RUSTSEC-2026-0269",
 
+    # wasmtime 43.0.2 — "Component async-lifted callback result count is
+    # unvalidated, causing a native stack buffer overflow"
+    # (RUSTSEC-2026-0327, 9.3 critical). Same crate, same chain, same
+    # absent upgrade path as the two wasmtime entries above: extism
+    # 1.30.0 is the latest published and pins `wasmtime ^43`, while the
+    # advisory's fixed releases are >=48.0.4 <49 or >=49.0.2 — three
+    # major bumps away. No version satisfying extism's requirement
+    # carries the fix.
+    #
+    # NOT REACHABLE through our usage: the advisory is specific to the
+    # WebAssembly **Component Model** (async-lifted exports with
+    # callback-style result signatures). Extism's PDK targets **core**
+    # WebAssembly with a host-defined calling convention — our plugin
+    # runtime never instantiates a Component via wasmtime's
+    # `wasmtime::component::*` API. `plugins/runtime.rs::compile` loads
+    # the plugin through `extism::Plugin::new`, which internally uses
+    # `wasmtime::Module` / `Instance`, not `Component`. The
+    # vulnerable code path has no caller in this build.
+    #
+    # The build-level gating from the entries above still applies on
+    # top: `plugins` is opt-in and absent from `default`, so the CI
+    # release binary does not link wasmtime; runtime activation
+    # additionally needs OXICLOUD_ENABLE_PLUGINS=true; plugin binaries
+    # are admin-supplied, not attacker input.
+    #
+    # Un-ignore trigger: EITHER extism releases a version on wasmtime
+    # >=48.0.4 / >=49.0.2 (check with `cargo tree -i wasmtime
+    # --features plugins`), OR OxiCloud starts loading WASM Components
+    # directly via `wasmtime::component::*` — at which point the
+    # unreachability argument no longer holds.
+    "RUSTSEC-2026-0327",
+
+    # wasmtime 43.0.2 — "Dynamic record lifting can allocate beyond the
+    # hostcall fuel limit" (RUSTSEC-2026-0316, 1.0 low). Same crate,
+    # same chain, same absent upgrade path: fixed releases are
+    # >=36.0.16 <37, >=48.0.3 <49, >=49.0.1 — none in 43.x, so no
+    # version satisfies extism's `^43` requirement with the fix.
+    #
+    # NOT REACHABLE for the same reason as RUSTSEC-2026-0327: "record
+    # lifting" is a WASM Component Model concept (lifting Rust-side
+    # structs across the component ABI boundary). Extism uses core
+    # WebAssembly only — no `wasmtime::component::*` API usage in
+    # `plugins/runtime.rs`.
+    #
+    # Severity 1.0 (low) — fuel-limit bypass → memory overshoot by a
+    # bounded factor; no RCE, no sandbox escape, no data integrity
+    # impact. Combined with the Component-Model unreachability and the
+    # standard build-feature gating, the real-world exposure is nil.
+    #
+    # Un-ignore trigger: same as RUSTSEC-2026-0327 above.
+    "RUSTSEC-2026-0316",
+
     # astral-tokio-tar 0.5.6 — tar extraction advisories, transitive via
     # testcontainers → testcontainers-modules, a DEV-dependency used only by
     # the `--cfg integration_tests` harness to spin up throwaway Postgres

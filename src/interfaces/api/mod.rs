@@ -276,7 +276,6 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::admin_handler::get_job_run,
         handlers::admin_handler::pause_job,
         handlers::admin_handler::list_job_run_findings,
-        handlers::admin_handler::purge_job_runs,
         // Admin drive management — full CRUD on drives + membership,
         // distinct from the user-facing /api/drives surface (admin can
         // touch any drive; user can touch only those they're an owner
@@ -295,7 +294,12 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         // helpers before this branch); see the handler for the
         // read-only vs test-send semantics.
         handlers::admin_handler::get_smtp_info,
+        handlers::admin_handler::get_webhook_info,
         handlers::admin_handler::send_smtp_test,
+        handlers::admin_handler::send_webhook_test,
+        // Alerting policy — what gets sent, as opposed to the transport
+        // endpoints above.
+        handlers::admin_handler::get_notify_info,
         handlers::admin_handler::trigger_backend_rotate,
         handlers::admin_handler::admin_promote_external_to_internal,
         handlers::admin_handler::transfer_ownership,
