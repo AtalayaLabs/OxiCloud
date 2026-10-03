@@ -314,11 +314,44 @@ impl IngestGuard {
         // reshape for `sync_blobs(&[String])` + the UNNEST bind.
         // (benches/ROUND23.md §U1)
         let (hashes, sizes): (Vec<String>, Vec<i64>) = written.into_iter().unzip();
+        // The registration below is gated on this succeeding, and that gate
+        // is the whole point: it is the one compensation in this path whose
+        // failure errs toward LOSS rather than leak.
+        //
+        // Ungated, the chain is:
+        //   1. the rows claim these chunks exist; durability was never
+        //      confirmed,
+        //   2. a later identical upload's `pin_claimable_chunks` finds them,
+        //      treats them as present, and skips the write — "chunks the
+        //      store already has are dropped from RAM without any disk I/O",
+        //   3. so that file references bytes nobody confirmed hit disk, and a
+        //      crash loses them.
+        //
+        // Harmless where `sync_blobs` is a no-op (S3, Azure — a PUT is
+        // durable on return). On Local it is a real fsync, so it needs
+        // Local + a failed fsync + an identical re-upload + a crash. Narrow,
+        // and still the wrong direction to err in.
+        //
+        // What skipping the INSERT costs: these objects become row-less, so
+        // the cheap DB-driven GC cannot see them and `backend_consistency`
+        // — a bucket walk — is what finds them, with `backend_reclaim`
+        // reclaiming. Slower reclamation of bytes nothing references, in
+        // exchange for never claiming durability we do not have.
         if let Err(e) = backend.sync_blobs(&hashes).await {
             tracing::warn!(
-                "Ingest rollback: sync of {} chunks failed: {e}",
-                hashes.len()
+                target: "audit",
+                event = "ingest_rollback.sync_failed",
+                reason = "unsynced_chunks_left_unregistered",
+                chunk_count = hashes.len(),
+                error = %e,
+                "👮🏻‍♂️ Ingest rollback: sync of {} chunks failed, so they are \
+                 deliberately NOT registered — a row claiming unsynced bytes \
+                 could be adopted by a later identical upload. They are now \
+                 row-less objects; `backend_consistency` finds them and \
+                 `backend_reclaim` reclaims them: {e}",
+                hashes.len(),
             );
+            return;
         }
         if let Err(e) = sqlx::query(
             "INSERT INTO storage.blobs (hash, size, ref_count, orphaned_at)
