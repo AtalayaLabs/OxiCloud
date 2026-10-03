@@ -1285,6 +1285,7 @@
       "outcome_err": "błąd",
       "outcome_issues": "kwestie",
       "outcome_notices": "uwagi",
+      "outcome_stopped": "zatrzymane",
       "n_findings": "{{n}} ustalenia",
       "n_notices": "{{n}} uwagi",
       "notices_present_tooltip": "Ustalenia informacyjne — nie są wymagane żadne działania. Rozwiń, aby poznać szczegóły.",

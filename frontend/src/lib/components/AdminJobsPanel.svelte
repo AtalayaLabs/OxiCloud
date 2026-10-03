@@ -24,6 +24,12 @@
 	import { confirmDialog } from '$lib/stores/dialogs.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 	import { errorMessage } from '$lib/utils/errors';
+	import {
+		jobVerdict,
+		stoppedReason,
+		actionableFindingCount,
+		anomalyFindingCount
+	} from '$lib/utils/jobVerdict';
 	import { ui } from '$lib/stores/ui.svelte';
 	import {
 		listJobs,
@@ -539,55 +545,6 @@
 	}
 
 	/**
-	 * Per-severity finding counts for the last run. Severity values
-	 * emitted today: `data_loss`, `inconsistent`, `anomaly`. The set is
-	 * open (the column is TEXT), so unknown keys must degrade rather
-	 * than throw.
-	 *
-	 * Two sources, in this order:
-	 *  1. `last_run_severity_counts` — counted from `jobs.run_findings`
-	 *     by the list handler. Durable.
-	 *  2. `last_outcome.extra.severity_counts` — the same numbers from
-	 *     the dispatch that produced them, in memory.
-	 *
-	 * (1) first because (2) does not survive a restart, and the amber
-	 * pill below is the only place a finding is visible without opening
-	 * a drawer on purpose. A completed run that recorded data loss read
-	 * as a neutral "—" afterwards — worst on a *scheduled* detector,
-	 * where no human saw the dispatch at all.
-	 */
-	function lastSeverityCounts(job: JobSummary): Record<string, number> {
-		if (job.last_run_severity_counts) return job.last_run_severity_counts;
-		if (!job.last_outcome || job.last_outcome.outcome !== 'ok') return {};
-		const extra = job.last_outcome.extra as
-			| { severity_counts?: Record<string, number> }
-			| undefined;
-		return extra?.severity_counts ?? {};
-	}
-
-	/**
-	 * Actionable findings = `data_loss + inconsistent`. Those are what
-	 * turn the outer outcome pill amber ("issues") and get the red
-	 * badge on the outer job row. `anomaly` findings are informational
-	 * and render as a blue notice instead — they don't count here.
-	 */
-	function actionableFindingCount(job: JobSummary): number {
-		const s = lastSeverityCounts(job);
-		return (s.data_loss ?? 0) + (s.inconsistent ?? 0);
-	}
-
-	/**
-	 * Informational findings. `anomaly` is the wire value; "notice" is
-	 * what the panel calls it — there is no separate `notice` severity.
-	 * A job that acted on what it found (a repair run deleting an
-	 * orphaned sidecar) records the same severity and says so in the
-	 * finding's `detail`.
-	 */
-	function anomalyFindingCount(job: JobSummary): number {
-		return lastSeverityCounts(job).anomaly ?? 0;
-	}
-
-	/**
 	 * Pill CSS modifier for a finding's severity — extracted so the
 	 * findings-table cell and any future summary render share one
 	 * source of truth.
@@ -636,85 +593,53 @@
 		}
 	}
 
-	function backendFailureReason(job: JobSummary): string | undefined {
-		if (job.last_outcome?.outcome !== 'ok') return undefined;
-		const reason = job.last_outcome.extra?.reason;
-		return typeof reason === 'string' ? reason : undefined;
-	}
-
 	/// How the last dispatch turned out. NOT where the run is in its
 	/// lifecycle — that is the State column, driven by
-	/// `last_run_status`. A paused run legitimately has no outcome yet,
-	/// and saying so is the honest answer.
+	/// `last_run_status`.
+	///
+	/// The rules live in `lib/utils/jobVerdict` so they can be unit
+	/// tested; each one is there because of a specific wrong answer this
+	/// panel once gave. Here we only map the verdict to words and
+	/// colour.
 	function outcomeLabel(job: JobSummary): string {
-		if (!job.last_outcome) {
-			// No dispatch in memory — but findings are rows, so they still
-			// decide the pill. Showing "—" for a run that recorded data
-			// loss is the defect this whole path exists to prevent, and it
-			// is precisely the restarted-instance case: nobody watched the
-			// dispatch, which is normal for a scheduled detector.
-			if (actionableFindingCount(job) > 0) {
+		switch (jobVerdict(job)) {
+			case 'stopped':
+				return t('admin.jobs.outcome_stopped', 'stopped');
+			case 'issues':
 				return t('admin.jobs.outcome_issues', 'issues');
-			}
-			if (anomalyFindingCount(job) > 0) {
+			case 'notices':
 				return t('admin.jobs.outcome_notices', 'notices');
-			}
-			// Deliberately NOT "ok" on an empty findings list: that says
-			// the sweep found nothing, not that it finished. Whether it
-			// finished is the State column's answer.
-			//
-			// "never" means never ran. A job with a run row DID run — the
-			// outcome simply is not in memory, because `last_outcome` is
-			// populated per dispatch and a restart empties it. Saying
-			// "never" there is a lie the run history immediately
-			// contradicts: Ed saw it on a job whose last run was 8h ago.
-			//
-			// "—" is the honest answer: no outcome recorded. The State
-			// column still shows what the run did, and the drawer has
-			// the history.
-			return job.last_run_status
-				? t('admin.jobs.outcome_unknown', '—')
-				: t('admin.jobs.never', 'never');
+			case 'ok':
+				return t('admin.jobs.outcome_ok', 'ok');
+			case 'err':
+				return t('admin.jobs.outcome_err', 'err');
+			// No outcome recorded — the State column still shows what the
+			// run did, and the drawer has the history.
+			case 'unknown':
+				return t('admin.jobs.outcome_unknown', '—');
+			case 'never':
+				return t('admin.jobs.never', 'never');
 		}
-		if (job.last_outcome.outcome === 'ok') {
-			// `ok` on the wire = dispatch completed. If any actionable
-			// findings surfaced, we flip to "issues" (amber). If only
-			// anomalies (informational), we flip to "notices" (blue).
-			// Clean run stays green.
-			if (actionableFindingCount(job) > 0) {
-				return t('admin.jobs.outcome_issues', 'issues');
-			}
-			if (anomalyFindingCount(job) > 0) {
-				return t('admin.jobs.outcome_notices', 'notices');
-			}
-			return t('admin.jobs.outcome_ok', 'ok');
-		}
-		return t('admin.jobs.outcome_err', 'err');
 	}
 
 	function outcomeClass(job: JobSummary): string {
 		// Colour follows `outcomeLabel` exactly — including the
 		// no-outcome-but-findings case, where a grey pill next to the word
 		// "issues" would read as nothing to do.
-		if (!job.last_outcome) {
-			if (actionableFindingCount(job) > 0) {
-				return 'jobs-panel__pill jobs-panel__pill--paused';
-			}
-			if (anomalyFindingCount(job) > 0) {
-				return 'jobs-panel__pill jobs-panel__pill--notice';
-			}
-			return 'jobs-panel__pill jobs-panel__pill--neutral';
+		const pill = (m: string) => `jobs-panel__pill jobs-panel__pill--${m}`;
+		switch (jobVerdict(job)) {
+			case 'stopped':
+			case 'err':
+				return pill('err');
+			case 'issues':
+				return pill('paused');
+			case 'notices':
+				return pill('notice');
+			case 'ok':
+				return pill('ok');
+			default:
+				return pill('neutral');
 		}
-		if (job.last_outcome.outcome !== 'ok') {
-			return 'jobs-panel__pill jobs-panel__pill--err';
-		}
-		if (actionableFindingCount(job) > 0) {
-			return 'jobs-panel__pill jobs-panel__pill--paused';
-		}
-		if (anomalyFindingCount(job) > 0) {
-			return 'jobs-panel__pill jobs-panel__pill--notice';
-		}
-		return 'jobs-panel__pill jobs-panel__pill--ok';
 	}
 
 	function statusClass(status: RunStatus): string {
@@ -1125,7 +1050,7 @@
 								     stale after a cancel, both of which the row
 								     gets right. Reason on hover when the run
 								     stopped on a backend failure. -->
-								<span class={statusClass(job.last_run_status)} title={backendFailureReason(job)}>
+								<span class={statusClass(job.last_run_status)} title={stoppedReason(job)}>
 									{runStatusLabel(job.last_run_status)}
 								</span>
 							{:else}
@@ -1475,8 +1400,16 @@
 															{/if}
 														</td>
 														<td class="jobs-panel__err-cell">
-															{#if run.error_message}
-																<code>{run.error_message}</code>
+															{#if run.error_message || run.error_reason}
+																<!-- Reason first: it is the short stable key, so the
+																     cause is legible before the error chain, which can
+																     run to several lines of SDK text. -->
+																{#if run.error_reason}
+																	<span class="jobs-panel__err-reason">{run.error_reason}</span>
+																{/if}
+																{#if run.error_message}
+																	<code>{run.error_message}</code>
+																{/if}
 															{:else}
 																<span class="jobs-panel__muted">—</span>
 															{/if}
@@ -1503,6 +1436,7 @@
 																					stats: run.stats,
 																					params: run.params,
 																					cursor_hex: run.cursor_hex,
+																					error_reason: run.error_reason,
 																					error_message: run.error_message
 																				},
 																				null,
@@ -2021,6 +1955,15 @@
 	.jobs-panel__err-cell code {
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;
+	}
+
+	/* The stable key, on its own line above the error chain. Styled as a
+	   label rather than as code because it is a fixed vocabulary, not
+	   server output. */
+	.jobs-panel__err-reason {
+		display: block;
+		font-weight: 600;
+		color: var(--color-text);
 	}
 
 	.jobs-panel__run-detail {

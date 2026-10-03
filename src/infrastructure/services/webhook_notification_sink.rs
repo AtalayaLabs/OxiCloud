@@ -85,6 +85,14 @@ impl WebhookFormat {
             Transition::Appeared => format!("🚨 {}", alert.summary()),
             Transition::Cleared => format!("✅ {}", alert.summary()),
         };
+        // On a second line, for the chat formats: `kind` says
+        // `backend_unavailable`, and this says whether it was DNS or
+        // credentials. Separate line so the first one still reads as a
+        // headline in a notification preview.
+        let text = match alert.detail_trimmed() {
+            Some(d) => format!("{text}\n{d}"),
+            None => text,
+        };
         match self {
             Self::Generic => json!({
                 "job":        alert.job,
@@ -95,6 +103,7 @@ impl WebhookFormat {
                 "count":      alert.count,
                 "scanned":    alert.scanned,
                 "summary":    alert.summary(),
+                "detail":     alert.detail_trimmed(),
             }),
             Self::Slack => json!({ "text": text }),
             Self::Discord => json!({ "content": text }),
@@ -331,6 +340,9 @@ impl NotificationSink for WebhookNotificationSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the fixtures need the class — the formats render
+    // `alert.summary()`, which branches on it for them.
+    use crate::application::ports::notification_sink_ports::AlertClass;
 
     fn alert(transition: Transition) -> FindingAlert {
         FindingAlert {
@@ -341,7 +353,8 @@ mod tests {
             transition,
             count: 3,
             scanned: 2026,
-            test: false,
+            detail: None,
+            class: AlertClass::Finding,
         }
     }
 

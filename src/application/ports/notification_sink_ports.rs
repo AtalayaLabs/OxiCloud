@@ -107,6 +107,37 @@ impl NotifyThreshold {
     }
 }
 
+/// What kind of event an alert describes.
+///
+/// Replaced a `test: bool`, and the reason is a defect that shipped
+/// twice. Every transport builds its text from one shared
+/// [`FindingAlert::summary`], which was written for detector findings —
+/// so a run that *stopped* was announced as "1 anomaly finding(s) of kind
+/// backend_unavailable", sending an operator to look for a finding that
+/// does not exist. The first time this happened, the admin test message
+/// read "1 anomaly finding(s) of kind test_alert (scanned 0)" and got its
+/// own sentence; a boolean per special case does not scale past the
+/// second one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlertClass {
+    /// A detector reported (or stopped reporting) a finding kind. The
+    /// count and the scanned total both mean what they say.
+    Finding,
+    /// A run stopped before finishing, or finished after having stopped.
+    /// Nothing was *found*; `count` is 1 because it is one event, and
+    /// `kind` is the run's `error_reason`.
+    RunHealth {
+        /// Does this run continue by itself (or by a Resume) from where
+        /// it stopped? `PausedRetryable` yes, a terminal `Failed` no —
+        /// and the message must not promise a resume that will never
+        /// come.
+        resumable: bool,
+    },
+    /// The admin "test this channel" message. Carries structured fields
+    /// for a machine receiver but says outright that it is a test.
+    Test,
+}
+
 /// Which way a finding kind crossed the line between two runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transition {
@@ -147,16 +178,47 @@ pub struct FindingAlert {
     /// How many subjects the run walked, for context — "3 of 2026" reads
     /// very differently from "3 of 3".
     pub scanned: u64,
-    /// This is the admin "test webhook" message, not a real finding.
+    /// Free text explaining this specific alert, when the `kind` alone
+    /// does not say enough to act on.
     ///
-    /// Exists because the first live test read as `1 anomaly finding(s) of
-    /// kind test_alert (scanned 0)` — technically accurate and useless. A
-    /// human checking their configuration needs a sentence that says so,
-    /// while a machine receiver still gets the structured fields.
-    pub test: bool,
+    /// Carries the error chain for a run-health alert: `kind` is
+    /// `backend_unavailable`, and this is the `dns error … nodename nor
+    /// servname provided` that tells the operator whether to look at
+    /// their network or their credentials. Detectors leave it `None` —
+    /// their per-resource detail belongs in the findings drawer, not in
+    /// every message.
+    ///
+    /// Truncated by [`FindingAlert::DETAIL_LIMIT`] when rendered, because
+    /// a nested SDK error chain can run to kilobytes and a chat channel
+    /// will either reject or badly wrap it.
+    pub detail: Option<String>,
+    /// What this alert actually describes — see [`AlertClass`]. Decides
+    /// the wording, because "1 finding of kind X" is only true for one
+    /// of the three.
+    pub class: AlertClass,
 }
 
 impl FindingAlert {
+    /// Cap on the rendered [`Self::detail`]. Generous enough for a full
+    /// AWS SDK connector error (the DNS case runs ~300 chars), short of
+    /// Telegram's 4096-byte message limit even with the summary in front
+    /// of it.
+    pub const DETAIL_LIMIT: usize = 600;
+
+    /// [`Self::detail`], trimmed to [`Self::DETAIL_LIMIT`] on a char
+    /// boundary.
+    pub fn detail_trimmed(&self) -> Option<String> {
+        self.detail.as_ref().map(|d| {
+            let d = d.trim();
+            if d.chars().count() <= Self::DETAIL_LIMIT {
+                return d.to_string();
+            }
+            let mut out: String = d.chars().take(Self::DETAIL_LIMIT).collect();
+            out.push('…');
+            out
+        })
+    }
+
     /// One-line human summary, shared by every transport so they cannot
     /// describe the same event differently.
     ///
@@ -168,17 +230,35 @@ impl FindingAlert {
     /// entirely, which is the worst outcome this feature has — so the text
     /// stays renderable everywhere instead of prettier in one place.
     pub fn summary(&self) -> String {
-        if self.test {
-            return "This is a test message from OxiCloud. Your webhook is \
-                    configured correctly — real alerts will arrive here."
-                .to_string();
-        }
-        match self.transition {
-            Transition::Appeared => format!(
+        match (self.class, self.transition) {
+            (AlertClass::Test, _) => "This is a test message from OxiCloud. Your webhook is \
+                 configured correctly — real alerts will arrive here."
+                .to_string(),
+
+            // Nothing was found, so this must not say "finding". What an
+            // operator needs is which job stopped, why, how far it got,
+            // and whether it will pick itself up.
+            (AlertClass::RunHealth { resumable }, Transition::Appeared) => format!(
+                "{} stopped early: {}, after scanning {}. {}",
+                self.job,
+                self.kind,
+                self.scanned,
+                if resumable {
+                    "It resumes from where it stopped once the cause clears."
+                } else {
+                    "This run will not resume on its own."
+                }
+            ),
+            (AlertClass::RunHealth { .. }, Transition::Cleared) => format!(
+                "{} is running again ({} no longer reported).",
+                self.job, self.kind
+            ),
+
+            (AlertClass::Finding, Transition::Appeared) => format!(
                 "{}: {} {} finding(s) of kind {} (scanned {})",
                 self.job, self.count, self.severity, self.kind, self.scanned
             ),
-            Transition::Cleared => format!(
+            (AlertClass::Finding, Transition::Cleared) => format!(
                 "{}: {} no longer reported (was {}; scanned {})",
                 self.job, self.kind, self.severity, self.scanned
             ),
@@ -324,7 +404,8 @@ mod tests {
             transition: Transition::Appeared,
             count: 1,
             scanned: 0,
-            test: true,
+            detail: None,
+            class: AlertClass::Test,
         };
         let s = alert.summary();
         assert!(s.contains("test message from OxiCloud"), "{s}");
@@ -348,7 +429,8 @@ mod tests {
             transition: Transition::Appeared,
             count: 2,
             scanned: 10,
-            test: false,
+            detail: None,
+            class: AlertClass::Finding,
         };
         let s = alert.summary();
         assert!(
@@ -366,9 +448,10 @@ mod tests {
             kind: "orphan_blob".into(),
             severity: "inconsistent".into(),
             transition: Transition::Cleared,
-            test: false,
+            class: AlertClass::Finding,
             count: 0,
             scanned: 2026,
+            detail: None,
         };
         let s = alert.summary();
         assert!(s.contains("no longer reported"), "{s}");

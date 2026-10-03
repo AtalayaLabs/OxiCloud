@@ -2846,8 +2846,8 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         // non-terminal row per job, and a resume reuses it rather than
         // starting a new one, so a non-terminal row is always the newest.
         /// `(job_name, status, run_id, started_at, scanned, total,
-        /// severity_counts)` — the enrichment row shape, named so the
-        /// query's type stays legible.
+        /// severity_counts, error_reason)` — the enrichment row shape,
+        /// named so the query's type stays legible.
         type LatestRunRow = (
             String,
             String,
@@ -2856,6 +2856,7 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
             Option<i64>,
             Option<i64>,
             sqlx::types::Json<std::collections::BTreeMap<String, u64>>,
+            Option<String>,
         );
         // The per-severity counts come from the findings themselves
         // rather than from the run's `stats`, for the same reason
@@ -2872,7 +2873,8 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
                     id,
                     started_at,
                     (stats  ->> 'scanned_count')::BIGINT AS scanned,
-                    (params ->> 'total_rows')::BIGINT   AS total
+                    (params ->> 'total_rows')::BIGINT   AS total,
+                    error_reason
                 FROM jobs.recoverable_runs
                 ORDER BY job_name, started_at DESC
             )
@@ -2890,7 +2892,8 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
                               WHERE run_id = l.id
                               GROUP BY severity) s),
                     '{}'::jsonb
-                ) AS severity_counts
+                ) AS severity_counts,
+                l.error_reason
             FROM latest l
             "#,
         )
@@ -2915,11 +2918,12 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
             chrono::DateTime<chrono::Utc>,
             PausedRunBrief,
             std::collections::BTreeMap<String, u64>,
+            Option<String>,
         );
         let by_name: std::collections::HashMap<String, LatestRun> = latest_rows
             .into_iter()
             .map(
-                |(name, status, id, started_at, scanned, total, severities)| {
+                |(name, status, id, started_at, scanned, total, severities, error_reason)| {
                     (
                         name,
                         (
@@ -2931,6 +2935,7 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
                                 total: total.filter(|t| *t > 0).map(|t| t as u64),
                             },
                             severities.0,
+                            error_reason,
                         ),
                     )
                 },
@@ -2941,7 +2946,9 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
             if !job.recoverable {
                 continue;
             }
-            let Some((status, started_at, brief, severities)) = by_name.get(&job.name) else {
+            let Some((status, started_at, brief, severities, error_reason)) =
+                by_name.get(&job.name)
+            else {
                 continue;
             };
             // Always reported, so the panel can prefer the row's truth
@@ -2953,6 +2960,14 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
             // Omitting it there would be indistinguishable from "no run
             // row", and a job that has never run must not read as clean.
             job.last_run_severity_counts = Some(severities.clone());
+            // Why the run stopped, from the row rather than from the
+            // in-memory outcome. A retryable pause reports `ok` on the
+            // wire — correctly, since it did not fail and a Resume
+            // continues it — so without this the panel renders a green
+            // "ok" for a job that gave up because the backend vanished.
+            // `None` here means either a clean run or a pause an operator
+            // asked for, and neither should look alarming.
+            job.last_run_error_reason = error_reason.clone();
             // Fill the timestamp too when memory has none.
             //
             // `last_outcome` and `last_run_at` are both in-memory, so a

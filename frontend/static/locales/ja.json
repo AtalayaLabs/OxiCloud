@@ -1285,6 +1285,7 @@
       "outcome_err": "エラー",
       "outcome_issues": "問題",
       "outcome_notices": "通知",
+      "outcome_stopped": "中断",
       "n_findings": "{{n}} 調査結果",
       "n_notices": "{{n}} 通知",
       "notices_present_tooltip": "情報的な調査結果 — アクションは必要ありません。詳細については展開してください。",

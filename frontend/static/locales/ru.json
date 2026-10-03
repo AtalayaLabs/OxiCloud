@@ -1285,6 +1285,7 @@
       "outcome_err": "ош",
       "outcome_issues": "проблемы",
       "outcome_notices": "уведомления",
+      "outcome_stopped": "остановлено",
       "n_findings": "{{n}} результатов",
       "n_notices": "{{n}} уведомления",
       "notices_present_tooltip": "Информационные выводы — никаких действий не требуется. Разверните для подробностей.",

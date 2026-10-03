@@ -42,7 +42,7 @@ const DEFAULT_SEVERITY: &str = "data_loss";
 /// Default finding kind. Named so it cannot be mistaken for a detector's.
 const DEFAULT_KIND: &str = "selftest_finding";
 
-static PARAMETERS: [JobParam; 3] = [
+static PARAMETERS: [JobParam; 4] = [
     JobParam::string(
         "severity",
         "Severity to record: data_loss (default), inconsistent or anomaly. \
@@ -62,7 +62,26 @@ static PARAMETERS: [JobParam; 3] = [
          run's diff report the previous kind as cleared — the way to \
          exercise the resolution alert.",
     ),
+    JobParam::number(
+        "stall",
+        0,
+        "Stop with a retryable error on this many attempts before \
+         completing, as a backend outage would. Each subsequent trigger \
+         resumes the same run: with stall=2 the first attempt alerts, the \
+         second is silent (same reason, already reported) and the third \
+         completes and sends the all-clear.",
+    ),
 ];
+
+/// Per-run attempt counter, so `stall` can mean "the first N attempts"
+/// rather than "forever".
+///
+/// It has to be a counter rather than a flag because a resumed run reads
+/// back the args it *started* with — passing `stall=0` on the resuming
+/// trigger is ignored by design, which would otherwise make a stalled
+/// self-test unresumable and leave the job with a permanently
+/// non-terminal run.
+const ATTEMPTS_PARAM: &str = "selftest_attempts";
 
 pub struct NotifySelftestJob;
 
@@ -106,7 +125,11 @@ impl RecoverableJobHandler for NotifySelftestJob {
          buttons exercise. Read-only: it touches no files, blobs or \
          folders, and writes nothing but its own run and finding rows. \
          Alerts fire on a CHANGE, so a second identical run is silent by \
-         design; trigger it with findings=0 to produce the cleared alert."
+         design; trigger it with findings=0 to produce the cleared alert. \
+         `stall=N` additionally makes the run stop with a retryable error \
+         for its first N attempts, which is how the 'a job stopped and \
+         nobody was told' path gets exercised without taking a backend \
+         away."
     }
 
     fn mutates(&self) -> Mutates {
@@ -149,6 +172,44 @@ impl RecoverableJobHandler for NotifySelftestJob {
         }
         let kind = args.get_str("kind").unwrap_or(DEFAULT_KIND);
         let findings = args.get_number("findings", 1).max(0);
+
+        // Stall before recording anything, so a stalled attempt leaves no
+        // findings behind — the state a real detector is in when the
+        // backend disappears mid-walk.
+        let stall_for = args.get_number("stall", 0).max(0);
+        if stall_for > 0 {
+            let attempt = store
+                .get_string_param(ATTEMPTS_PARAM)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(0)
+                + 1;
+            if let Err(e) = store
+                .set_string_param(ATTEMPTS_PARAM, &attempt.to_string())
+                .await
+            {
+                return RunOutcome::Failed {
+                    message: format!("could not record the attempt count: {e}"),
+                };
+            }
+            if attempt <= stall_for {
+                return RunOutcome::PausedRetryable {
+                    cursor: Vec::new(),
+                    // A key of its own rather than borrowing
+                    // `backend_unavailable`: an operator reading their
+                    // inbox must be able to tell a self-test from the
+                    // real thing, and so must a mailbox rule.
+                    reason: "selftest_stall".to_string(),
+                    detail: format!(
+                        "Synthetic stall {attempt} of {stall_for} from the \
+                         notify_selftest job. No backend was contacted and \
+                         nothing is wrong with this instance."
+                    ),
+                };
+            }
+        }
 
         for i in 0..findings {
             if let Err(e) = store

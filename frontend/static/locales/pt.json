@@ -1285,6 +1285,7 @@
       "outcome_err": "err",
       "outcome_issues": "problemas",
       "outcome_notices": "avisos",
+      "outcome_stopped": "parado",
       "n_findings": "{{n}} descobertas",
       "n_notices": "{{n}} avisos",
       "notices_present_tooltip": "Resultados informativos — nenhuma ação é necessária. Expanda para obter detalhes.",

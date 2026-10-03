@@ -315,6 +315,7 @@ impl JobRegistry {
                     paused_run: None,
                     last_run_status: None,
                     last_run_severity_counts: None,
+                    last_run_error_reason: None,
                     scheduled_via: None,
                     startup: None,
                 }
@@ -499,6 +500,21 @@ pub struct JobSummary {
     /// nothing, which is the good news and a different fact.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_run_severity_counts: Option<BTreeMap<String, u64>>,
+    /// Why the most recent run stopped, read from the run row —
+    /// `backend_unavailable`, `backend_timeout`, `job_failed`,
+    /// `server_restart`.
+    ///
+    /// Same reasoning as `last_run_severity_counts`, and the same defect
+    /// behind it: a retryable pause reports `ok` on the wire, so the
+    /// panel showed a green "ok" for a job that gave up because its
+    /// backend was unreachable. The row knows better and survives a
+    /// restart.
+    ///
+    /// `None` is two good cases at once — a clean run, or a pause an
+    /// operator asked for. Neither should render as a problem, which is
+    /// why the alerting path keys off this field's presence too.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_run_error_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interval_ms: Option<u64>,
     /// Set when this job has no cadence of its own but IS run by one

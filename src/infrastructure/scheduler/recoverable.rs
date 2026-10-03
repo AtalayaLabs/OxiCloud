@@ -139,6 +139,26 @@ pub const CANCEL_INTENT_TERMINATE: &str = "terminate";
 /// `JobParam` would let a caller grant itself the consent.
 pub const UNATTENDED_RESUME_PARAM: &str = "unattended_resume";
 
+/// `error_reason` for a terminal [`RunOutcome::Failed`].
+///
+/// The variant carries only prose, so there is no handler-supplied key to
+/// use. A single generic one still satisfies the rule the alerting path
+/// depends on — *every* run that stopped on an error has `error_reason`
+/// set — and a handler that wants something more specific can gain it
+/// additively without touching the other sixteen.
+pub const FAILED_REASON: &str = "job_failed";
+
+/// Per-run marker recording which `error_reason` was already alerted on.
+///
+/// Lives in the run's `params` (set once per reason, read on the next
+/// terminal write) so the de-duplication needs no second table and no
+/// cross-run query. A resumed run keeps the same row, so a backend that
+/// is down all week produces one message per *run*, not one per
+/// auto-resume — the same discipline the finding diff applies to a
+/// standing finding, for the same reason: the fastest way to get a
+/// channel muted is to repeat yourself.
+pub const NOTIFIED_ERROR_PARAM: &str = "notified_error_reason";
+
 // ─── Run outcome (handler → engine) ─────────────────────────────────────────
 
 /// What a [`RecoverableJobHandler`] returns from `run_resumable`.
@@ -176,9 +196,15 @@ pub enum RunOutcome {
     /// this is worth trying again later.
     ///
     /// Lands as `Paused` in the row, so resume works unchanged. What
-    /// differs is `error_message`: an operator has to be able to tell "I
-    /// paused this" from "the provider went down", and a paused run with
-    /// no explanation is an unexplained one.
+    /// differs is that `error_reason` and `error_message` are populated:
+    /// an operator has to be able to tell "I paused this" from "the
+    /// provider went down", and a paused run with no explanation is an
+    /// unexplained one.
+    ///
+    /// **An operator pause sets neither**, which is what makes
+    /// "`error_*` present" the discriminator the alerting path keys off
+    /// — no special-casing of outcome variants, and a human stopping a
+    /// job never pages anyone.
     ///
     /// Distinct from both neighbours, and the distinction is the point:
     ///
@@ -196,7 +222,15 @@ pub enum RunOutcome {
     /// "retry as if transient, then hand the decision to a human".
     PausedRetryable {
         cursor: Vec<u8>,
+        /// Stable machine-readable key — `backend_unavailable`,
+        /// `backend_timeout`. Lands in `error_reason`, becomes the alert's
+        /// `kind`, and is what a log filter or a mailbox rule matches on,
+        /// so it must not be reworded across releases. Same contract as
+        /// the `reason` field in an audit line.
         reason: String,
+        /// The full text, for a human: context plus the whole error
+        /// chain. Lands in `error_message`.
+        detail: String,
     },
     Failed {
         message: String,
@@ -280,7 +314,19 @@ impl RunOutcome {
         if err.is_transient() {
             RunOutcome::PausedRetryable {
                 cursor: cursor.map(<[u8]>::to_vec).unwrap_or_default(),
-                reason: format!("{context}: {err}"),
+                // The two transient kinds are not the same operational
+                // problem — one says the backend could not be reached at
+                // all, the other that it answered too slowly — and an
+                // operator checks different things for each. Keeping them
+                // distinct costs nothing and is the difference between
+                // "check DNS and credentials" and "check the backend's
+                // load".
+                reason: match err.kind {
+                    crate::domain::errors::ErrorKind::Timeout => "backend_timeout",
+                    _ => "backend_unavailable",
+                }
+                .to_string(),
+                detail: format!("{context}: {err}"),
             }
         } else {
             RunOutcome::Failed {
@@ -474,7 +520,8 @@ pub trait RecoverableJobHandler: Send + Sync {
     /// flight, and an operator can see in the run detail why a paused job
     /// is waiting for them.
     ///
-    /// **The default keys on the `repair` consent, not on [`Mutates`].**
+    /// **The default keys on the `repair` and `deep` consents, not on
+    /// [`Mutates`].**
     /// Mutation is the wrong signal: `backend_reclaim` is
     /// `Mutates::Always` ("unlinking IS the job") and `backend_rechunk` is
     /// `Mutates::Always` and ungated ("converting IS the job"). Both are
@@ -484,9 +531,25 @@ pub trait RecoverableJobHandler: Send + Sync {
     /// here with no code of their own, while every `OnRepairOnly` job
     /// gets the safe answer automatically.
     ///
-    /// Override only for a job that knows better than the `repair` rule.
+    /// **`deep` gates it for cost, not for consequence.** `repair` asks
+    /// for consent because the run deletes; `deep` asks because it
+    /// re-reads and re-hashes every object, which on a metered backend
+    /// costs real money — the reason `OXICLOUD_JOBS_SCHEDULED`'s own
+    /// documentation calls `backend_consistency` the judgement call. The
+    /// case that settles it is a flapping backend: the run pauses on a
+    /// transient failure, a tick resumes it, it re-reads, fails, and
+    /// pauses again — spending metered requests on a loop with nobody
+    /// watching. Finishing work an operator already asked for is fine;
+    /// re-attempting it indefinitely a week later is not the same thing.
+    ///
+    /// Override only for a job that knows better than these two rules.
     fn unattended_resume_allowed(&self, args: &JobRunArgs) -> bool {
-        !args.get_bool("repair")
+        // `get_bool` on an undeclared parameter is `false`, so a job that
+        // declares neither is unaffected — only `backend_consistency` and
+        // `consistency_batch` declare `deep` today, and a future job that
+        // adds one gets the safe answer without anyone remembering to
+        // override this.
+        !args.get_bool("repair") && !args.get_bool("deep")
     }
 
     /// Long-running scan. See trait-level doc for the contract.
@@ -711,14 +774,22 @@ pub trait JobStore: Send + Sync {
     /// [`RunOutcome::PausedRetryable`]. Handler code MUST NOT call this.
     ///
     /// Writes `status = Paused` — so resume is the same operation — plus
-    /// `error_message = reason`. The reason is the whole point: without
-    /// it the panel cannot distinguish an operator pause from a provider
-    /// outage, and a paused migration holding `migration_readonly` looks
-    /// like someone forgot about it.
+    /// `error_reason` (the stable key) and `error_message` (the full
+    /// text). Those are the whole point: without them the panel cannot
+    /// distinguish an operator pause from a provider outage, and a paused
+    /// migration holding `migration_readonly` looks like someone forgot
+    /// about it.
+    ///
+    /// Two columns rather than one because they have different readers.
+    /// `error_message` is prose for a human and may be reworded freely;
+    /// `error_reason` is matched by log filters, mailbox rules and the
+    /// alert de-duplication, so it is a fixed vocabulary. Before this
+    /// split the key existed only as a literal inside a `tracing` call,
+    /// which meant nothing could key off it.
     ///
     /// Separate method rather than an extra argument on
     /// [`Self::mark_paused`] because the two carry different meaning and
-    /// only one of them writes `error_message`. A `reason: Option<&str>`
+    /// only one of them writes the error columns. A `reason: Option<&str>`
     /// parameter would let a caller write a Paused row with an
     /// error message and no error, which is the state this exists to
     /// distinguish from.
@@ -726,6 +797,7 @@ pub trait JobStore: Send + Sync {
         &self,
         cursor: Option<Vec<u8>>,
         reason: &str,
+        detail: &str,
     ) -> Result<(), DomainError>;
 
     /// Engine-only. Called by [`run_or_resume`] on
@@ -1034,6 +1106,15 @@ pub struct RunSummary {
     pub cursor_hex: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
+    /// Stable key for why the run stopped — `backend_unavailable`,
+    /// `backend_timeout`, `job_failed`, `server_restart`.
+    ///
+    /// Distinct from `error_message`, which is prose for a human. This is
+    /// the half a client may switch on: the panel can render a chip per
+    /// cause, and "paused by an operator" is `None` here even though it
+    /// is also `Paused` in `status`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_reason: Option<String>,
     /// Present when the tenant reported a countable subject at run
     /// start (see [`RecoverableJobHandler::count_total`]). `None`
     /// tells the UI "hide the progress bar, show scanned_count as a
@@ -1262,13 +1343,24 @@ pub async fn run_or_resume_with_notifier(
             // reached yet as resolved: an all-clear for work that never
             // ran. `mark_completed` is already written, so the run is
             // visible as finished whatever delivery does next.
-            let notify_failures = match notifier {
+            let mut notify_failures = match notifier.as_ref() {
                 Some(n) => {
                     n.notify_completed_run(&*provider, job.name(), run_id, stats.scanned_count)
                         .await
                 }
                 None => 0,
             };
+            // The other half of the error alert: this run stopped on an
+            // error at least once and has now finished, so whoever was
+            // told about it is owed the news that it ended. Driven by the
+            // marker the error alert left on this row, which is why it
+            // needs no cross-run query — and why a run that never failed
+            // says nothing here.
+            if let Some(n) = notifier.as_ref() {
+                notify_failures += n
+                    .notify_run_recovered(&*store, job.name(), run_id, stats.scanned_count)
+                    .await;
+            }
             let mut extra = serde_json::json!({
                 "completed":         true,
                 "run_id":            run_id.to_string(),
@@ -1336,29 +1428,60 @@ pub async fn run_or_resume_with_notifier(
                 )
             }
         }
-        RunOutcome::PausedRetryable { cursor, reason } => {
+        RunOutcome::PausedRetryable {
+            cursor,
+            reason,
+            detail,
+        } => {
             let cursor_hex = hex::encode(&cursor);
             log_terminal_write_err(
                 "mark_paused_retryable",
                 run_id,
-                store.mark_paused_retryable(Some(cursor), &reason).await,
+                store
+                    .mark_paused_retryable(Some(cursor), &reason, &detail)
+                    .await,
             );
             // Audited, not merely logged. Writes are refused app-wide
             // while `backend_migration` holds `migration_readonly`, so a
             // run that stopped on a provider outage is an operational
             // event someone has to act on — and "why is the app
             // read-only" must be answerable afterwards.
+            //
+            // `reason` is the handler's key now, not a literal. It used to
+            // be hardcoded `"backend_unavailable"` here, which meant a
+            // timeout and a DNS failure logged identically and nothing
+            // downstream could tell them apart.
             tracing::info!(
                 target: "audit",
                 event = "job.paused_retryable",
-                reason = "backend_unavailable",
+                reason = %reason,
                 job = %job.name(),
                 run_id = %run_id,
                 cursor_hex = %cursor_hex,
-                detail = %reason,
-                "👮🏻‍♂️ `{}` paused after exhausting retries: {reason}",
+                detail = %detail,
+                "👮🏻‍♂️ `{}` paused after exhausting retries: {detail}",
                 job.name(),
             );
+            // Out-of-band alert. The row is already written, so delivery
+            // cannot cost the pause — and the row is also the only place
+            // this is recorded, because a resume clears `error_message`.
+            let notify_failures = match notifier {
+                Some(n) => {
+                    n.notify_run_error(
+                        &*store,
+                        job.name(),
+                        run_id,
+                        &reason,
+                        &detail,
+                        stats.scanned_count,
+                        // Resumable: that is what makes this variant
+                        // different from `Failed`, and the message says so.
+                        true,
+                    )
+                    .await
+                }
+                None => 0,
+            };
             // `ok`, not `err`: the run did not fail, it stopped and can
             // be resumed. Reporting it as an error would put a red job
             // in the panel that a Resume click fixes, which reads as a
@@ -1369,16 +1492,39 @@ pub async fn run_or_resume_with_notifier(
                     "paused":            true,
                     "retryable":         true,
                     "reason":            reason,
+                    "detail":            detail,
                     "run_id":            run_id.to_string(),
                     "cursor_hex":        cursor_hex,
                     "finding_count":     stats.finding_count,
                     "scanned_count":     stats.scanned_count,
                     "severity_counts":   stats.by_severity,
+                    "notify_failures":   notify_failures,
                 }),
             )
         }
         RunOutcome::Failed { message } => {
             log_terminal_write_err("mark_failed", run_id, store.mark_failed(&message).await);
+            // A terminal failure alerts for the same reason a retryable
+            // pause does — more so, in fact: nothing will retry it, so if
+            // nobody is told, nobody finds out until they next open the
+            // panel. `job_failed` is the key because the variant carries
+            // only prose; a handler wanting a specific one can gain it
+            // additively later.
+            if let Some(n) = notifier.as_ref() {
+                n.notify_run_error(
+                    &*store,
+                    job.name(),
+                    run_id,
+                    FAILED_REASON,
+                    &message,
+                    stats.scanned_count,
+                    // Terminal: nothing will retry it, and promising a
+                    // resume would be the most misleading thing the
+                    // message could say.
+                    false,
+                )
+                .await;
+            }
             JobOutcome::err(format!("{message} (run_id={run_id})"))
         }
     }
@@ -1632,6 +1778,7 @@ mod tests {
         cursor: Option<Vec<u8>>,
         scanned_count: u64,
         error_message: Option<String>,
+        error_reason: Option<String>,
         findings: Vec<Finding>,
         progress_total: Option<u64>,
         progress_kind: Option<ProgressKind>,
@@ -1719,7 +1866,13 @@ mod tests {
             Ok(())
         }
         async fn mark_completed(&self) -> Result<(), DomainError> {
-            self.state.lock().unwrap().status = RunStatus::Completed;
+            let mut s = self.state.lock().unwrap();
+            s.status = RunStatus::Completed;
+            // Mirrors the PG store: success clears both error columns, or
+            // a run that stopped and then recovered keeps rendering as
+            // stopped. Carried into the double so a test can assert it.
+            s.error_reason = None;
+            s.error_message = None;
             Ok(())
         }
         async fn mark_paused(&self, cursor: Option<Vec<u8>>) -> Result<(), DomainError> {
@@ -1734,14 +1887,16 @@ mod tests {
             &self,
             cursor: Option<Vec<u8>>,
             reason: &str,
+            detail: &str,
         ) -> Result<(), DomainError> {
             let mut s = self.state.lock().unwrap();
             s.status = RunStatus::Paused;
-            // Both, deliberately: Paused so resume works, `error_message`
-            // so a test can assert the two pause shapes are
+            // All three, deliberately: Paused so resume works, plus both
+            // error columns so a test can assert the two pause shapes are
             // distinguishable — which is the whole reason the variant
             // exists.
-            s.error_message = Some(reason.to_string());
+            s.error_reason = Some(reason.to_string());
+            s.error_message = Some(detail.to_string());
             if let Some(c) = cursor {
                 s.cursor = Some(c);
             }
@@ -1791,6 +1946,7 @@ mod tests {
                     cursor: None,
                     scanned_count: 0,
                     error_message: None,
+                    error_reason: None,
                     findings: Vec::new(),
                     progress_total: None,
                     progress_kind: None,
@@ -1835,6 +1991,16 @@ mod tests {
             stores
                 .last()
                 .and_then(|s| s.state.lock().unwrap().error_message.clone())
+        }
+
+        /// Test-only read — last-created run's `error_reason`. The
+        /// matchable half: `error_message` is prose, this is the fixed
+        /// vocabulary that alerting and log filters key off.
+        fn last_error_reason(&self) -> Option<String> {
+            let stores = self.stores.lock().unwrap();
+            stores
+                .last()
+                .and_then(|s| s.state.lock().unwrap().error_reason.clone())
         }
     }
 
@@ -1888,6 +2054,7 @@ mod tests {
                     cursor: None,
                     scanned_count: 0,
                     error_message: None,
+                    error_reason: None,
                     findings: Vec::new(),
                     progress_total: None,
                     progress_kind: None,
@@ -1945,6 +2112,7 @@ mod tests {
                         params: serde_json::json!({}),
                         cursor_hex: state.cursor.as_ref().map(hex::encode),
                         error_message: state.error_message.clone(),
+                        error_reason: state.error_reason.clone(),
                         progress,
                     }
                 })
@@ -1973,6 +2141,7 @@ mod tests {
                     params: serde_json::json!({}),
                     cursor_hex: state.cursor.as_ref().map(hex::encode),
                     error_message: state.error_message.clone(),
+                    error_reason: state.error_reason.clone(),
                     progress,
                 }
             }))
@@ -2380,9 +2549,18 @@ mod tests {
         if let JobOutcome::Ok { extra, .. } = outcome {
             assert_eq!(extra["paused"], true);
             assert_eq!(extra["retryable"], true);
+            // Two fields, not one. `reason` is the stable key that
+            // filters, de-duplicates and becomes an alert's kind;
+            // `detail` is the prose a human reads. They used to be the
+            // same string — the full error text under the name `reason`
+            // — which is why nothing downstream could match on a cause.
+            assert_eq!(
+                extra["reason"], "backend_unavailable",
+                "the key must be the stable vocabulary, not the error text: {extra:?}"
+            );
             assert!(
-                extra["reason"].as_str().unwrap().contains("503"),
-                "the reason must reach the panel: {extra:?}"
+                extra["detail"].as_str().unwrap().contains("503"),
+                "the cause must still reach the panel: {extra:?}"
             );
         }
 
@@ -2394,6 +2572,15 @@ mod tests {
         );
         let msg = provider.last_error_message().expect("reason recorded");
         assert!(msg.contains("503"), "error_message names the cause: {msg}");
+        // The row carries the key too, which is what lets alerting fire
+        // on "stopped with an error" without inspecting outcome
+        // variants — and what tells this apart from an operator pause,
+        // since both are `Paused` in `status`.
+        assert_eq!(
+            provider.last_error_reason().as_deref(),
+            Some("backend_unavailable"),
+            "the row must record the stable key, not only the prose"
+        );
     }
 
     /// The control: a permanent fault still fails terminally. Without

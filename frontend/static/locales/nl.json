@@ -1285,6 +1285,7 @@
       "outcome_err": "fout",
       "outcome_issues": "problemen",
       "outcome_notices": "mededelingen",
+      "outcome_stopped": "gestopt",
       "n_findings": "{{n}} bevindingen",
       "n_notices": "{{n}} mededelingen",
       "notices_present_tooltip": "Informatieve bevindingen — geen actie vereist. Vouw uit voor details.",

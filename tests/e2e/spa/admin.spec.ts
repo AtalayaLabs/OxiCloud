@@ -37,8 +37,18 @@ test('walk every admin tab', async ({ page }) => {
   // Test / Blob-consistency / Migrate actions per card.
   await expect(page.getByTestId('admin-storage-entries-list')).toBeVisible();
 
-  await page.goto('/admin/smtp');
+  // `/admin/notification`, not `/admin/smtp` — the tab was renamed when
+  // the webhook joined it (the page is about every way the instance
+  // reaches someone, not one transport). Worth knowing why this bit:
+  // `parseTab` falls back to 'dashboard' for an unknown tab, so the old
+  // URL rendered the Dashboard and the only symptom was this assertion
+  // timing out.
+  await page.goto('/admin/notification');
   await expect(page.getByTestId('admin-smtp-send-btn')).toBeVisible();
+  // The alerting policy card, which governs both transports below it: a
+  // configured channel still delivers nothing when the severity floor
+  // excludes what a job found, and this is the only place that says so.
+  await expect(page.getByTestId('admin-notify-policy')).toBeVisible();
 
   await page.goto('/admin/plugins');
   // Plugins panel content is conditional; assert the URL landed
@@ -259,8 +269,8 @@ test('toggle the dashboard registration setting', async ({ page }) => {
   await page.getByTestId('admin-dashboard-registration-checkbox').click();
 });
 
-test('send a test email from the smtp tab', async ({ page }) => {
-  await page.goto('/admin/smtp');
+test('send a test email from the notification tab', async ({ page }) => {
+  await page.goto('/admin/notification');
   await expect(page.getByTestId('admin-smtp-to-input')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('admin-smtp-to-input').fill('test@example.test');
   await page.getByTestId('admin-smtp-send-btn').click();

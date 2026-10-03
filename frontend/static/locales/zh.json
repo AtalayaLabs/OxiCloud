@@ -1267,6 +1267,7 @@
       "outcome_err": "错误",
       "outcome_issues": "问题",
       "outcome_notices": "通知",
+      "outcome_stopped": "已中止",
       "n_findings": "{{n}} 研究结果",
       "n_notices": "{{n}} 通知",
       "notices_present_tooltip": "信息性调查结果 — 无需采取任何行动。展开查看详情。",

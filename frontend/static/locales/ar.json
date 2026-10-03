@@ -1285,6 +1285,7 @@
       "outcome_err": "خطأ",
       "outcome_issues": "مشاكل",
       "outcome_notices": "إشعارات",
+      "outcome_stopped": "متوقف",
       "n_findings": "‹النتائج",
       "n_notices": "{{n}} إشعارات",
       "notices_present_tooltip": "نتائج إعلامية - لا يلزم اتخاذ أي إجراء. قم بالتوسيع للحصول على التفاصيل.",

@@ -3019,7 +3019,7 @@
 				'Which job findings are sent out of band, and where. Alerts are sent when a finding first appears and again when it clears — not on every run. Configured with OXICLOUD_JOBS_NOTIFY_* in the server environment.'
 			)}
 		</p>
-		<div class="card">
+		<div class="card" data-testid="admin-notify-policy">
 			<h2>{t('admin.notify_policy', 'Alerting')}</h2>
 			{#if !notify}
 				<p class="status">{t('common.loading', 'Loading…')}</p>

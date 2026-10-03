@@ -1313,6 +1313,7 @@
       "outcome_err": "err",
       "outcome_issues": "problèmes",
       "outcome_notices": "avis",
+      "outcome_stopped": "arrêté",
       "n_findings": "{{n}} résultats",
       "n_notices": "{{n}} remarques",
       "notices_present_tooltip": "Résultats informatifs – aucune action requise. Développez pour plus de détails.",

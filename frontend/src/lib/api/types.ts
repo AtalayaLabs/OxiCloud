@@ -824,6 +824,20 @@ export interface JobSummary {
 	 *  news, and a different fact. Severity keys are open (the column is
 	 *  TEXT), so unknown keys must degrade rather than throw. */
 	last_run_severity_counts?: Record<string, number>;
+	/** Why the most recent run stopped, read from the run row —
+	 *  `backend_unavailable`, `backend_timeout`, `job_failed`,
+	 *  `server_restart`.
+	 *
+	 *  **The outcome pill must not read "ok" while this is set.** A
+	 *  retryable pause reports `outcome: "ok"` on the wire — correctly,
+	 *  since the run did not fail and a Resume continues it — so taking
+	 *  that at face value rendered a green "ok" for a job that gave up
+	 *  because its backend was unreachable.
+	 *
+	 *  Absent means a clean run *or* a pause an operator asked for;
+	 *  neither should look alarming, which is why presence is the
+	 *  signal rather than `status === "Paused"`. */
+	last_run_error_reason?: string;
 	/** Present when this job has no cadence of its own but a scheduled
 	 *  job runs it — a `*_consistency` detector swept by
 	 *  `consistency_batch`. Without it the row renders "on-demand",
@@ -880,6 +894,14 @@ export interface RunSummary {
 	params: Record<string, unknown>;
 	cursor_hex?: string;
 	error_message?: string;
+	/** Stable key for why the run stopped — `backend_unavailable`,
+	 *  `backend_timeout`, `job_failed`, `server_restart`.
+	 *
+	 *  Switch on this, never on `error_message`, which is prose and free
+	 *  to be reworded. Absent on an operator pause, which is how a
+	 *  human-stopped run is told apart from one the environment stopped:
+	 *  both are `Paused` in `status`. */
+	error_reason?: string;
 	/** Populated when the tenant reported a countable subject at run
 	 *  start (`RecoverableJobHandler::count_total`). Absent when the
 	 *  tenant can't count — the UI hides the progress bar and falls

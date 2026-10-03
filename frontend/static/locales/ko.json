@@ -1319,6 +1319,7 @@
       "outcome_err": "오류",
       "outcome_issues": "문제",
       "outcome_notices": "공지사항",
+      "outcome_stopped": "중단됨",
       "n_findings": "{{n}} 조사 결과",
       "n_notices": "{{n}} 주의사항",
       "notices_present_tooltip": "정보 발견 항목 - 조치가 필요하지 않습니다. 자세한 내용을 보려면 확장하세요.",

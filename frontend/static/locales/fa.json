@@ -1266,6 +1266,7 @@
       "outcome_err": "خطا",
       "outcome_issues": "مسائل",
       "outcome_notices": "اطلاعیه ها",
+      "outcome_stopped": "متوقف شد",
       "n_findings": "{{n}} یافته ها",
       "n_notices": "{{n}} اطلاعیه ها",
       "notices_present_tooltip": "یافته های اطلاعاتی - هیچ اقدامی لازم نیست. برای جزئیات بزرگ کنید.",

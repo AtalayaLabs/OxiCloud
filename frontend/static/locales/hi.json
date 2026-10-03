@@ -1285,6 +1285,7 @@
       "outcome_err": "त्रुटि",
       "outcome_issues": "समस्याएँ",
       "outcome_notices": "नोटिस",
+      "outcome_stopped": "रुका",
       "n_findings": "{{n}} निष्कर्ष",
       "n_notices": "{{n}}नोटिस",
       "notices_present_tooltip": "सूचनात्मक निष्कर्ष - किसी कार्रवाई की आवश्यकता नहीं। विवरण के लिए विस्तार करें.",

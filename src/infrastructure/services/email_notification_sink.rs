@@ -27,7 +27,7 @@ use async_trait::async_trait;
 
 use crate::application::ports::email_sender::{EmailMessage, EmailSender};
 use crate::application::ports::notification_sink_ports::{
-    DeliveryReport, FindingAlert, NotificationSink, Transition,
+    AlertClass, DeliveryReport, FindingAlert, NotificationSink, Transition,
 };
 use crate::common::errors::{DomainError, ErrorKind};
 
@@ -94,15 +94,23 @@ impl EmailNotificationSink {
     /// Subject line. Severity and kind lead, so a mailbox rule can sort on
     /// them and a phone notification is legible without opening anything.
     fn subject(alert: &FindingAlert) -> String {
-        if alert.test {
-            return "[OxiCloud] notification test".to_string();
-        }
-        match alert.transition {
-            Transition::Appeared => format!(
+        match (alert.class, alert.transition) {
+            (AlertClass::Test, _) => "[OxiCloud] notification test".to_string(),
+            // No severity and no count in the lead: a stopped run has no
+            // severity of its own (it is graded `anomaly` so the existing
+            // threshold can gate it, which is a mechanism, not a
+            // description), and "(1)" would read as one finding.
+            (AlertClass::RunHealth { .. }, Transition::Appeared) => {
+                format!("[OxiCloud] stopped: {} in {}", alert.kind, alert.job)
+            }
+            (AlertClass::RunHealth { .. }, Transition::Cleared) => {
+                format!("[OxiCloud] recovered: {} in {}", alert.kind, alert.job)
+            }
+            (AlertClass::Finding, Transition::Appeared) => format!(
                 "[OxiCloud] {}: {} ({}) in {}",
                 alert.severity, alert.kind, alert.count, alert.job
             ),
-            Transition::Cleared => {
+            (AlertClass::Finding, Transition::Cleared) => {
                 format!("[OxiCloud] resolved: {} in {}", alert.kind, alert.job)
             }
         }
@@ -120,7 +128,7 @@ impl EmailNotificationSink {
         let mut body = String::with_capacity(512);
         body.push_str(&alert.summary());
         body.push_str("\n\n");
-        if !alert.test {
+        if alert.class != AlertClass::Test {
             body.push_str(&format!("Job:        {}\n", alert.job));
             body.push_str(&format!("Finding:    {}\n", alert.kind));
             body.push_str(&format!("Severity:   {}\n", alert.severity));
@@ -130,6 +138,12 @@ impl EmailNotificationSink {
             }
             body.push_str(&format!("Scanned:    {}\n", alert.scanned));
             body.push_str(&format!("Run:        {}\n", alert.run_id));
+            // The whole error chain, for a run that stopped. `Finding:`
+            // above says `backend_unavailable`; this is the part that
+            // says whether to look at DNS, credentials or the bucket.
+            if let Some(d) = alert.detail_trimmed() {
+                body.push_str(&format!("\nDetail:\n{d}\n"));
+            }
             body.push_str(
                 "\nThe affected items are listed under Admin → Jobs in the \
                  OxiCloud web panel. This message is a notification only — \
@@ -360,7 +374,8 @@ mod tests {
             transition: Transition::Appeared,
             count: 3,
             scanned: 2026,
-            test: false,
+            detail: None,
+            class: AlertClass::Finding,
         }
     }
 

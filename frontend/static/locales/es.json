@@ -1286,6 +1286,7 @@
       "outcome_err": "err",
       "outcome_issues": "asuntos",
       "outcome_notices": "avisos",
+      "outcome_stopped": "detenido",
       "n_findings": "{{n}} hallazgos",
       "n_notices": "{{n}} avisos",
       "notices_present_tooltip": "Hallazgos informativos: no se requiere ninguna acción. Ampliar para más detalles.",
