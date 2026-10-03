@@ -2181,6 +2181,31 @@
 					</div>
 				</div>
 			{/if}
+			<!--
+			  Backend-cache recommendation. Server computes
+			  `storage_cache_recommended` as (remote-backend) AND
+			  (OXICLOUD_STORAGE_CACHE_ENABLED=false). The default is
+			  the latter, so remote-backed deployments light up on
+			  first boot until the operator opts in. Rendered in
+			  warn-card--warn (soft advisory), not --danger — this is
+			  a performance hint, not a correctness problem.
+			-->
+			{#if dashboard.storage_cache_recommended}
+				<div class="card warn-card warn-card--warn">
+					<Icon name="bolt" />
+					<div>
+						<strong
+							>{t('admin.storage_cache_recommended_title', 'Enable the local blob cache')}</strong
+						>
+						<p>
+							{t(
+								'admin.storage_cache_recommended_body',
+								'This deployment uses a remote storage backend but has no local disk cache in front of it. Every blob read pays a network round-trip. Set OXICLOUD_STORAGE_CACHE_ENABLED=true to serve hot content from local SSD and bring cold-read latency down from hundreds of milliseconds to microseconds.'
+							)}
+						</p>
+					</div>
+				</div>
+			{/if}
 			{#if dashboard.users_over_80_percent > 0}
 				<div class="card warn-card warn-card--warn">
 					<Icon name="exclamation-triangle" />

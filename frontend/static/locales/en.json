@@ -882,6 +882,8 @@
   "admin": {
     "page_title": "Admin Panel",
     "oxicloud_version": "OxiCloud version",
+    "storage_cache_recommended_title": "Enable the local blob cache",
+    "storage_cache_recommended_body": "This deployment uses a remote storage backend but has no local disk cache in front of it. Every blob read pays a network round-trip. Set OXICLOUD_STORAGE_CACHE_ENABLED=true to serve hot content from local SSD and bring cold-read latency down from hundreds of milliseconds to microseconds.",
     "back_to_app": "Back to OxiCloud",
     "loading": "Loading…",
     "access_denied": "Access Denied",

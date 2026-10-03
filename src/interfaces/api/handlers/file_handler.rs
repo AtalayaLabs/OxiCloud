@@ -13,11 +13,12 @@ use utoipa::ToSchema;
 
 use crate::application::ports::external_mount_ports::MountStat;
 use crate::application::ports::file_ports::{
-    FileManagementUseCase, FileRetrievalUseCase, FileUploadUseCase, RangeContent,
+    CacheOutcome, FileManagementUseCase, FileRetrievalUseCase, FileUploadUseCase,
+    OptimizedFileContent, RangeContent,
 };
+use crate::application::ports::folder_ports::FolderUseCase;
 use crate::application::ports::storage_ports::{FileReadPort, StorageUsagePort};
 use crate::application::ports::thumbnail_ports::ThumbnailPort;
-use crate::application::ports::{file_ports::OptimizedFileContent, folder_ports::FolderUseCase};
 use crate::application::services::external_mount_router::ResolvedId;
 use crate::application::services::mount_registry::MountConfig;
 use crate::common::di::AppState;
@@ -1080,8 +1081,11 @@ impl FileHandler {
         {
             Ok((_file, content)) => match content {
                 OptimizedFileContent::Bytes {
-                    data, mime_type, ..
-                } => Self::build_cached_response(data, &mime_type, &disposition, &etag)
+                    data,
+                    mime_type,
+                    cache,
+                    ..
+                } => Self::build_cached_response(data, &mime_type, &disposition, &etag, cache)
                     .into_response(),
                 OptimizedFileContent::Stream(pinned_stream) => Response::builder()
                     .status(StatusCode::OK)
@@ -1527,6 +1531,7 @@ impl FileHandler {
         mime_type: &str,
         disposition: &str,
         etag: &str,
+        cache: CacheOutcome,
     ) -> Response<Body> {
         Response::builder()
             .status(StatusCode::OK)
@@ -1539,6 +1544,14 @@ impl FileHandler {
             )
             .header(header::VARY, "Accept-Encoding")
             .header(header::CONTENT_LENGTH, content.len())
+            // X-Oxicloud-Cache advertises which tier served this
+            // response. Lets operators see hot vs cold at a glance in
+            // DevTools without touching server logs. See `CacheOutcome`
+            // in `application/ports/file_ports.rs` for the matrix.
+            // Only attached on the in-memory-bytes path; streaming
+            // responses omit it (TIER 2 bypasses the content cache,
+            // so there is no honest value to report).
+            .header("X-Oxicloud-Cache", cache.as_header())
             .body(Body::from(content))
             .unwrap()
     }

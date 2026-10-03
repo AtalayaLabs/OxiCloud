@@ -447,6 +447,13 @@ export interface AdminDashboard {
 	// is unavailable. Renders as "—" in that case.
 	total_bytes_stored?: number;
 	dedup_ratio?: number;
+	/** `true` when the active storage backend is remote (S3 / Azure)
+	 *  and the local-disk blob cache is NOT enabled — every blob read
+	 *  pays a round-trip to the remote. The dashboard renders a banner
+	 *  with the mitigation (set OXICLOUD_STORAGE_CACHE_ENABLED=true).
+	 *  `false` on local-filesystem deployments (nothing to cache) and
+	 *  when the cache is already on. */
+	storage_cache_recommended: boolean;
 }
 
 export function getDashboard(): Promise<AdminDashboard> {

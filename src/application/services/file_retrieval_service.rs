@@ -8,7 +8,7 @@ use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::blob_storage_ports::BlobStream;
 use crate::application::ports::external_mount_ports::MountStat;
 use crate::application::ports::file_ports::{
-    FileRetrievalUseCase, OptimizedFileContent, RangeContent,
+    CacheOutcome, FileRetrievalUseCase, OptimizedFileContent, RangeContent,
 };
 use crate::application::ports::resource_access_hook::ResourceAccessHook;
 use crate::application::ports::storage_ports::FileReadPort;
@@ -360,30 +360,41 @@ impl FileRetrievalService {
             // `load_and_cache` still coalesces concurrent requests for the same
             // blob hash into a SINGLE disk read (single-flight) — no thundering
             // herd. Hash-less stub DTOs are uncacheable and stream from disk.
-            let content_bytes = if cacheable && let Some(cache) = &self.content_cache {
-                if let Some((bytes, ..)) = cache.get(&dto.content_hash).await {
-                    bytes
+            // `(bytes, cache_outcome)` — the outcome goes to the HTTP
+            // header downstream. On moka hit → `Hit`; on load_and_cache
+            // → whatever that call reports (today always `Miss`;
+            // `HitBackend` becomes reachable once the backend-cache
+            // layer below is instrumented, phase 2). Hash-less stub
+            // DTOs can't be content-keyed and skip caching entirely →
+            // `Miss` (streamed straight from disk / mount).
+            let (content_bytes, cache_outcome) =
+                if cacheable && let Some(cache) = &self.content_cache {
+                    if let Some((bytes, ..)) = cache.get(&dto.content_hash).await {
+                        (bytes, CacheOutcome::Hit)
+                    } else {
+                        let etag: Arc<str> = format!("\"{}\"", dto.content_hash).into();
+                        let ct: Arc<str> = mime_type.clone();
+                        let file_read = Arc::clone(&self.file_read);
+                        let id_owned = id.to_string();
+                        let cap = file_size as usize;
+                        let (bytes, _etag, _ct, outcome) = cache
+                            .load_and_cache(dto.content_hash.to_string(), etag, ct, async move {
+                                debug!("💾 TIER 1 Cache MISS: {} – loading from disk", id_owned);
+                                Self::read_full(&file_read, &id_owned, cap).await
+                            })
+                            .await?;
+                        (bytes, outcome)
+                    }
                 } else {
-                    let etag: Arc<str> = format!("\"{}\"", dto.content_hash).into();
-                    let ct: Arc<str> = mime_type.clone();
-                    let file_read = Arc::clone(&self.file_read);
-                    let id_owned = id.to_string();
-                    let cap = file_size as usize;
-                    let (bytes, ..) = cache
-                        .load_and_cache(dto.content_hash.to_string(), etag, ct, async move {
-                            debug!("💾 TIER 1 Cache MISS: {} – loading from disk", id_owned);
-                            Self::read_full(&file_read, &id_owned, cap).await
-                        })
-                        .await?;
-                    bytes
-                }
-            } else {
-                debug!(
-                    "💾 TIER 1 (uncacheable): {} – streaming from disk",
-                    dto.name
-                );
-                Self::read_full(&self.file_read, id, file_size as usize).await?
-            };
+                    debug!(
+                        "💾 TIER 1 (uncacheable): {} – streaming from disk",
+                        dto.name
+                    );
+                    (
+                        Self::read_full(&self.file_read, id, file_size as usize).await?,
+                        CacheOutcome::Miss,
+                    )
+                };
 
             if do_transcode
                 && let Some((t, m)) = self
@@ -405,6 +416,12 @@ impl FileRetrievalService {
                         data: t,
                         mime_type: m,
                         was_transcoded: true,
+                        // Transcoding produces different bytes than what
+                        // the cache stored, but the SOURCE bytes came
+                        // from the tier `cache_outcome` names — so that
+                        // tier is still the right latency label for
+                        // this response.
+                        cache: cache_outcome,
                     },
                 ));
             }
@@ -414,6 +431,7 @@ impl FileRetrievalService {
                     data: content_bytes,
                     mime_type: mime_type.clone(),
                     was_transcoded: false,
+                    cache: cache_outcome,
                 },
             ));
         }

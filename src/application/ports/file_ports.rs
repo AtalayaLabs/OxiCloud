@@ -136,9 +136,68 @@ pub enum OptimizedFileContent {
         data: Bytes,
         mime_type: Arc<str>,
         was_transcoded: bool,
+        /// Which cache tier served this response. Mapped to the
+        /// `X-Oxicloud-Cache` HTTP response header on the download
+        /// path so operators can see hot vs cold at a glance without
+        /// touching server logs. See [`CacheOutcome`] for semantics.
+        cache: CacheOutcome,
     },
     /// Streaming download for everything above the in-RAM cache threshold.
     Stream(Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>),
+}
+
+/// Which cache tier served a file-download response. Reflects the
+/// pipeline's actual layering:
+///
+/// ```text
+/// moka in-memory → CachedBlobBackend (local .blob-cache) → remote
+/// ```
+///
+/// Not every deployment has the `.blob-cache` layer: local-only
+/// backends skip it entirely. On those, `HitBackend` is never
+/// produced and the matrix is just `Hit` / `Miss`. See
+/// `docs/plan/storage-consistency.md` for the full backend layering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheOutcome {
+    /// Moka served the assembled bytes from memory. No I/O.
+    Hit,
+    /// Moka missed; the local-disk `.blob-cache` tier served every
+    /// chunk the response needed. No remote round-trip. Only reachable
+    /// on deployments where a remote backend sits behind the
+    /// `CachedBlobBackend` wrapper.
+    HitBackend,
+    /// Moka missed and at least one chunk required the authoritative
+    /// backend (local filesystem on local-only; S3 / Azure on remote).
+    /// For chunked files this is the worst-tier across all chunks —
+    /// one straggler on S3 dominates the client-observed latency, so
+    /// labelling the whole response by its slowest step matches what
+    /// the user felt.
+    Miss,
+}
+
+impl CacheOutcome {
+    /// The slower of two outcomes. Idempotent and commutative. Used
+    /// when one response is assembled from several chunks that may
+    /// have hit different tiers — the overall outcome reports the
+    /// weakest link.
+    pub fn worst(self, other: Self) -> Self {
+        use CacheOutcome::*;
+        match (self, other) {
+            (Miss, _) | (_, Miss) => Miss,
+            (HitBackend, _) | (_, HitBackend) => HitBackend,
+            _ => Hit,
+        }
+    }
+
+    /// Header value for `X-Oxicloud-Cache`. Stable string; the SPA
+    /// and operator tooling can key off this verbatim.
+    pub fn as_header(self) -> &'static str {
+        match self {
+            CacheOutcome::Hit => "HIT",
+            CacheOutcome::HitBackend => "HIT-BACKEND",
+            CacheOutcome::Miss => "MISS",
+        }
+    }
 }
 
 /// Result of a cache-aware HTTP-Range read

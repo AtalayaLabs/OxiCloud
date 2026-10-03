@@ -238,6 +238,13 @@ pub struct DashboardStatsDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dedup_ratio: Option<f64>,
     pub registration_enabled: bool,
+    /// `true` when the active storage backend is remote (S3 / Azure)
+    /// and the local-disk blob cache is NOT enabled — i.e., every
+    /// blob read pays a round-trip to the remote. Signals the admin
+    /// UI to show the "enable the backend cache" banner. `false` on
+    /// local-filesystem deployments (nothing to cache) and when the
+    /// cache is already on.
+    pub storage_cache_recommended: bool,
 }
 
 // ============================================================================

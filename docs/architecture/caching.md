@@ -93,4 +93,50 @@ Environment-tunable — off by default; enable per deployment when the backend i
 | `OXICLOUD_STORAGE_CACHE_MAX_SIZE` | `53687091200` (50 GB) | Disk-budget in bytes. LRU eviction fires when the cache exceeds this size. |
 | `OXICLOUD_STORAGE_CACHE_PATH` | `{root}/.blob-cache` | Where the cache files live. Point at a fast SSD; can be a separate volume from the primary storage root. |
 
+## Observing cache behaviour: the `X-Oxicloud-Cache` response header
+
+File-download responses (`GET /api/files/{id}` on the content-bytes path) advertise which tier served them via the `X-Oxicloud-Cache` HTTP response header. The intent is operational, not functional — clients should never branch on it; it exists so an operator can open DevTools' Network tab, click a slow image, and see at a glance whether the backend was reached, with no need to tail server logs.
+
+Three values, mirroring the layering above:
+
+| Value | What happened |
+|---|---|
+| `HIT` | Moka served the assembled bytes from memory. No I/O. The fastest path. |
+| `HIT-BACKEND` | Moka missed, but every chunk the response needed was served from the local `.blob-cache` disk tier. No remote round-trip. Only reachable on deployments that have Layer 2 wrapping a remote backend. |
+| `MISS` | Moka missed and at least one chunk required the authoritative backend. On a local-only deployment this is a disk read (microseconds); on a remote-backed deployment this is a network round-trip (hundreds of ms, usually dominant). |
+
+For chunked files the header reports the **worst (slowest) tier any individual chunk required** — one straggler on S3 dominates the latency the client observes, so labelling the whole response by its weakest link matches what the user felt.
+
+### Paths that omit the header
+
+Not every download response goes through Layer 1. The following paths deliberately leave the header off; "no header" is the quiet signal that this request bypassed the content cache entirely:
+
+- **TIER 2 streaming** — files above the content-cache size threshold (currently 10 MB) stream straight from the backend. Caching assembled large blobs in memory would evict too much; the TIER 2 path trades memory warmth for backend-friendly streaming.
+- **Range requests** — the Range path has its own slice-from-cached-bytes fast path for small files already in memory, but larger ranges stream directly.
+- **304 Not Modified** — nothing to serve, nothing to tier.
+- **External mount files** — mount content is served as-is from the provider, bypassing both the content cache and dedup.
+
+### Interpreting the header in a mixed deployment
+
+On a **local-backend-only** deployment, `HIT-BACKEND` never appears — there is no `CachedBlobBackend` wrapper to produce it. The matrix is just `HIT` / `MISS`, where `MISS` is a cheap local disk read.
+
+On a **remote-backend deployment with Layer 2 enabled**, all three values are reachable:
+- `HIT` — moka hot
+- `HIT-BACKEND` — moka evicted, `.blob-cache` still had it
+- `MISS` — both tiers cold, remote fetch required
+
+Verifying the pipeline in two curl commands:
+
+```bash
+# First read of a file: expect MISS (cold)
+curl -sD- -o /dev/null -H "Authorization: Bearer $TOKEN" \
+  "$BASE/api/files/$FILE_ID?inline=true" | grep -i x-oxicloud-cache
+
+# Immediate re-read: expect HIT (moka warm)
+curl -sD- -o /dev/null -H "Authorization: Bearer $TOKEN" \
+  "$BASE/api/files/$FILE_ID?inline=true" | grep -i x-oxicloud-cache
+```
+
+The committed Hurl scenario `tests/api/cache_header.hurl` pins the `MISS → HIT` transition in CI so changes to the handler, cache, or retrieval service that would silently drop the header fail the test suite.
+
 Restart the server after changing any of these — the cache is instantiated once at boot around the configured blob backend.

@@ -1,3 +1,4 @@
+use crate::application::ports::file_ports::CacheOutcome;
 use crate::common::errors::DomainError;
 use bytes::Bytes;
 use moka::future::Cache;
@@ -174,13 +175,13 @@ impl FileContentCache {
         etag: Arc<str>,
         content_type: Arc<str>,
         load: F,
-    ) -> Result<(Bytes, Arc<str>, Arc<str>), DomainError>
+    ) -> Result<(Bytes, Arc<str>, Arc<str>, CacheOutcome), DomainError>
     where
         F: Future<Output = Result<Bytes, DomainError>>,
     {
         // Fast path: lock-free hit (also keeps hit/miss stats meaningful).
-        if let Some(hit) = self.get(&cache_key).await {
-            return Ok(hit);
+        if let Some((bytes, etag_hit, mime_hit)) = self.get(&cache_key).await {
+            return Ok((bytes, etag_hit, mime_hit, CacheOutcome::Hit));
         }
         self.load_and_cache(cache_key, etag, content_type, load)
             .await
@@ -202,7 +203,7 @@ impl FileContentCache {
         etag: Arc<str>,
         content_type: Arc<str>,
         load: F,
-    ) -> Result<(Bytes, Arc<str>, Arc<str>), DomainError>
+    ) -> Result<(Bytes, Arc<str>, Arc<str>, CacheOutcome), DomainError>
     where
         F: Future<Output = Result<Bytes, DomainError>>,
     {
@@ -251,7 +252,24 @@ impl FileContentCache {
             "content served on cache miss"
         );
 
-        Ok((entry.content, entry.etag, entry.content_type))
+        // CacheOutcome mapping: either we LOADED the entry (loader ran,
+        // bytes came from the backend) → MISS, or we WAITED on a
+        // concurrent caller's in-flight load (single-flight follower) →
+        // still MISS, because the follower paid the backend's latency
+        // by proxy. Labelling a follower as HIT would mislead operators
+        // into believing moka was warm when the response time will show
+        // backend-fetch cost.
+        //
+        // `did_load` is kept for the structured log line above but is
+        // not currently used to split the outcome. Future refinement
+        // (phase 2): a task-local recorder written by
+        // `CachedBlobBackend` on each chunk read lets us downgrade this
+        // to `HitBackend` when every chunk came off the local
+        // `.blob-cache` disk tier instead of the remote. Deferred.
+        let _ = did_load;
+        let outcome = CacheOutcome::Miss;
+
+        Ok((entry.content, entry.etag, entry.content_type, outcome))
     }
 
     /// Remove a file from cache (e.g., when file is deleted or modified)
@@ -436,7 +454,7 @@ mod tests {
         }
 
         for h in handles {
-            let (bytes, _etag, _ct) = h.await.unwrap().unwrap();
+            let (bytes, _etag, _ct, _outcome) = h.await.unwrap().unwrap();
             assert_eq!(&bytes[..], b"the-blob-bytes");
         }
 

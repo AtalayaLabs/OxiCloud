@@ -1125,6 +1125,22 @@ pub async fn get_dashboard_stats(
                 true // default: enabled
             }
         },
+        // Backend cache recommendation. Fires only when BOTH:
+        //   - the active backend is non-local (every blob read
+        //     costs a remote RTT), AND
+        //   - the local-disk cache wrapper is NOT currently enabled
+        //     (`OXICLOUD_STORAGE_CACHE_ENABLED`).
+        // Local-filesystem deployments and already-cached remotes
+        // show `false` — nothing to recommend. See
+        // `docs/architecture/caching.md` → "On-disk blob cache".
+        storage_cache_recommended: {
+            use crate::common::config::StorageBackendType;
+            let remote = !matches!(
+                state.core.config.storage.backend,
+                StorageBackendType::Local
+            );
+            remote && !state.core.config.storage.cache.enabled
+        },
     };
 
     Ok(Json(stats))
