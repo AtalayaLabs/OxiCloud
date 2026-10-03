@@ -63,6 +63,7 @@ pub const KNOWN: &[(&str, &str)] = &[
     ("server", "OXICLOUD_JOBS_STARTUP"),
     ("server", "OXICLOUD_JOBS_SCHEDULED"),
     ("server", "OXICLOUD_JOBS_NOTIFY_MIN_SEVERITY"),
+    ("server", "OXICLOUD_JOBS_NOTIFY_EMAIL_TO"),
     ("server", "OXICLOUD_WEBHOOK_URL"),
     ("server", "OXICLOUD_WEBHOOK_FORMAT"),
     ("server", "OXICLOUD_WEBHOOK_TARGET"),

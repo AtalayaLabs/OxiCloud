@@ -538,6 +538,29 @@ pub struct WebhookInfoDto {
     pub target: String,
 }
 
+/// Read-only alerting policy, from `GET /api/admin/notify/info`.
+///
+/// The *what gets sent* half, where `SmtpInfoDto` and [`WebhookInfoDto`]
+/// are the *how it travels* half. Configured through environment
+/// variables only, shown for confirmation rather than editing.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct NotifyInfoDto {
+    /// Severity floor: `data_loss`, `inconsistent`, `anomaly`, or `none`.
+    ///
+    /// The field the panel was missing. An operator with a configured
+    /// webhook and a healthy relay can still be told nothing, because the
+    /// default floor admits only `data_loss` — and until this was
+    /// surfaced, the only way to discover that was to read the server's
+    /// environment.
+    pub min_severity: String,
+    /// Channels actually built and wired, by name — `webhook`, `email`.
+    /// Empty means findings are recorded but nobody is told.
+    pub sinks: Vec<String>,
+    /// `OXICLOUD_JOBS_NOTIFY_EMAIL_TO`, as parsed. Empty when mail
+    /// alerting is off.
+    pub email_recipients: Vec<String>,
+}
+
 /// Request body for `POST /api/admin/smtp/test`: send a hardcoded
 /// diagnostic email to the given recipient.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

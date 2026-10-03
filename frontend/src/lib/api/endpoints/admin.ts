@@ -574,6 +574,27 @@ export async function sendWebhookTest(): Promise<WebhookTestResult> {
 	return (await res.json().catch(() => ({ success: false }))) as WebhookTestResult;
 }
 
+/**
+ * Read-only alerting policy, from `GET /api/admin/notify/info`.
+ *
+ * The *what gets sent* half, where `SmtpInfo` and `WebhookInfo` are the
+ * *how it travels* half.
+ */
+export interface NotifyInfo {
+	/** `data_loss`, `inconsistent`, `anomaly`, or `none`. */
+	min_severity: string;
+	/** Channels actually wired, by name. Empty = findings are recorded
+	 *  but nobody is told. */
+	sinks: string[];
+	/** `OXICLOUD_JOBS_NOTIFY_EMAIL_TO`, as parsed. Empty = mail alerting
+	 *  is off. */
+	email_recipients: string[];
+}
+
+export async function getNotifyInfo(): Promise<NotifyInfo> {
+	return apiJson<NotifyInfo>('/api/admin/notify/info');
+}
+
 // ── OIDC settings ─────────────────────────────────────────────────────────
 
 export interface OidcSettings {

@@ -2754,6 +2754,19 @@ pub struct JobsNotifyConfig {
     /// something the operator judges routine. Widen with
     /// `OXICLOUD_JOBS_NOTIFY_MIN_SEVERITY=inconsistent`.
     pub min_severity: crate::application::ports::notification_sink_ports::NotifyThreshold,
+
+    /// Who gets findings by mail — `OXICLOUD_JOBS_NOTIFY_EMAIL_TO`,
+    /// comma-separated. Empty disables the channel.
+    ///
+    /// **An explicit recipient, deliberately, rather than reusing
+    /// `OXICLOUD_SMTP_*` as the switch.** SMTP is already configured on
+    /// nearly every instance for magic links and password resets, so
+    /// treating "SMTP works" as "and you now get data-loss mail" would
+    /// turn an unrelated setting into a subscription nobody asked for.
+    /// There is also no good implicit recipient: fanning out to every
+    /// admin account mails people who never opted in, and the operator
+    /// this feature exists for may have no account at all.
+    pub email_to: Vec<String>,
 }
 
 impl Default for JobsNotifyConfig {
@@ -2761,8 +2774,50 @@ impl Default for JobsNotifyConfig {
         use crate::application::ports::notification_sink_ports::{NotifyThreshold, Severity};
         Self {
             min_severity: NotifyThreshold::AtLeast(Severity::DataLoss),
+            email_to: Vec::new(),
         }
     }
+}
+
+/// Split and validate `OXICLOUD_JOBS_NOTIFY_EMAIL_TO`.
+///
+/// Rejects rather than drops a malformed entry: a typo'd address in a
+/// comma-separated list would otherwise leave a channel an operator
+/// believes in delivering to one of two people, and the one case it
+/// matters is the one nobody is watching.
+///
+/// The check is deliberately shallow — an `@` with something either side
+/// and no whitespace. Full RFC 5322 validation belongs to the SMTP server,
+/// which will reject what it dislikes; this only catches the typo class a
+/// human can see at a glance.
+///
+/// A dotless domain is accepted on purpose: `root@localhost` and
+/// `ops@mailhost` are ordinary addresses on a self-hosted box relaying
+/// locally, and rejecting them would fail exactly the deployment this
+/// product targets.
+fn parse_notify_emails(raw: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for entry in raw.split(',') {
+        let addr = entry.trim();
+        if addr.is_empty() {
+            continue;
+        }
+        let shaped_like_an_address = match addr.split_once('@') {
+            Some((local, domain)) => {
+                !local.is_empty()
+                    && !domain.is_empty()
+                    && !domain.starts_with('.')
+                    && !domain.ends_with('.')
+                    && !domain.contains('@')
+            }
+            None => false,
+        };
+        if !shaped_like_an_address || addr.chars().any(char::is_whitespace) {
+            return Err(format!("`{addr}` is not an email address"));
+        }
+        out.push(addr.to_string());
+    }
+    Ok(out)
 }
 
 /// Cadences applied when `OXICLOUD_JOBS_SCHEDULED` is unset.
@@ -3474,6 +3529,10 @@ impl AppConfig {
             config.jobs_notify.min_severity =
                 crate::application::ports::notification_sink_ports::NotifyThreshold::parse(&raw)
                     .unwrap_or_else(|e| panic!("OXICLOUD_JOBS_NOTIFY_MIN_SEVERITY: {e}"));
+        }
+        if let Ok(raw) = env::var("OXICLOUD_JOBS_NOTIFY_EMAIL_TO") {
+            config.jobs_notify.email_to = parse_notify_emails(&raw)
+                .unwrap_or_else(|e| panic!("OXICLOUD_JOBS_NOTIFY_EMAIL_TO: {e}"));
         }
         // The webhook transport is not jobs-scoped — see `WebhookConfig`.
         config.webhook.url = non_empty_url(env::var("OXICLOUD_WEBHOOK_URL"));
@@ -4777,6 +4836,56 @@ mod tests {
             non_empty_url(Ok("http://oxicloud:8086/".to_string())),
             Some("http://oxicloud:8086".to_string())
         );
+    }
+
+    #[test]
+    fn notify_emails_split_on_commas_and_tolerate_spacing() {
+        assert_eq!(
+            parse_notify_emails(" ops@example.com , backup@example.org ,"),
+            Ok(vec![
+                "ops@example.com".to_string(),
+                "backup@example.org".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn an_unset_or_empty_recipient_list_disables_the_channel() {
+        assert_eq!(parse_notify_emails(""), Ok(vec![]));
+        assert_eq!(parse_notify_emails("  , "), Ok(vec![]));
+    }
+
+    /// A typo'd entry must not silently reduce the list to the addresses
+    /// that happened to parse — a channel delivering to one of two people
+    /// is one an operator believes in more than it deserves.
+    #[test]
+    fn a_malformed_address_is_rejected_and_named() {
+        for bad in ["ops", "ops@.com", "@example.com", "a b@c.d", "a@b@c"] {
+            let Err(err) = parse_notify_emails(bad) else {
+                panic!("accepted `{bad}` as an email address");
+            };
+            assert!(err.contains(bad), "unhelpful message: {err}");
+        }
+        // And one bad entry rejects the whole list, rather than the good
+        // ones going through.
+        assert!(parse_notify_emails("ops@example.com,nope").is_err());
+    }
+
+    /// A self-hosted box relaying locally has no dot in its domain, and
+    /// `root@localhost` is the operator's real address there.
+    #[test]
+    fn a_dotless_domain_is_a_valid_local_recipient() {
+        assert_eq!(
+            parse_notify_emails("root@localhost"),
+            Ok(vec!["root@localhost".to_string()])
+        );
+    }
+
+    /// The default must be silent: mail alerting is opt-in through an
+    /// explicit recipient, never implied by SMTP being configured.
+    #[test]
+    fn mail_alerting_is_off_by_default() {
+        assert!(JobsNotifyConfig::default().email_to.is_empty());
     }
 
     /// A thread count is an operator override: it must parse and be

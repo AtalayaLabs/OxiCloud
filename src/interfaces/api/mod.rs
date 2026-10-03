@@ -297,6 +297,9 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::admin_handler::get_webhook_info,
         handlers::admin_handler::send_smtp_test,
         handlers::admin_handler::send_webhook_test,
+        // Alerting policy — what gets sent, as opposed to the transport
+        // endpoints above.
+        handlers::admin_handler::get_notify_info,
         handlers::admin_handler::trigger_backend_rotate,
         handlers::admin_handler::admin_promote_external_to_internal,
         handlers::admin_handler::transfer_ownership,

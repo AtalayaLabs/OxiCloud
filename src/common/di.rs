@@ -1683,6 +1683,18 @@ impl AppServiceFactory {
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
         .await;
 
+        // The alerting chain's own end-to-end check: records one synthetic
+        // finding so the transition diff, the severity threshold and every
+        // configured channel are all exercised by a real run. Read-only,
+        // on-demand only, and registered unconditionally — a CI-only path
+        // would not be the path production runs, which is the thing being
+        // verified.
+        let _ = Arc::new(
+            crate::infrastructure::services::notify_selftest_service::NotifySelftestJob::new(),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
         // Both satellite tables, checked for mappings whose Blob is gone.
         // Nothing else can: a row whose SOURCE was reaped still holds a valid
         // reference to a real artifact with a correct refcount, so every
@@ -2545,6 +2557,7 @@ impl AppServiceFactory {
             email_sender: None,                   // populated below
             mock_email_sender: None,              // populated below
             webhook_sink: None,                   // populated below
+            email_alert_sink: None,               // populated below
             magic_link_invite_service: None,      // populated below
             recipient_notification_service: None, // populated below alongside magic_link_invite_service
             notification_service: None,           // populated below (Slice E)
@@ -2636,6 +2649,28 @@ impl AppServiceFactory {
             ) {
                 Ok(sink) => app_state.webhook_sink = Some(Arc::new(sink)),
                 Err(e) => panic!("OXICLOUD_WEBHOOK_URL is set but unusable: {e}"),
+            }
+        }
+
+        // Findings by mail. Fatal for the same reason the webhook is: a
+        // recipient was configured, so somebody is relying on being told.
+        // Mail alerting needs the SMTP transport, and asking for one
+        // without the other is a misconfiguration we can name at boot
+        // instead of at the first data-loss finding.
+        if !self.config.jobs_notify.email_to.is_empty() {
+            let Some(sender) = app_state.email_sender.clone() else {
+                panic!(
+                    "OXICLOUD_JOBS_NOTIFY_EMAIL_TO is set but SMTP is not \
+                     configured — set OXICLOUD_SMTP_HOST, or unset the \
+                     recipient list to disable mail alerting"
+                );
+            };
+            match crate::infrastructure::services::email_notification_sink::EmailNotificationSink::new(
+                sender,
+                self.config.jobs_notify.email_to.clone(),
+            ) {
+                Ok(sink) => app_state.email_alert_sink = Some(Arc::new(sink)),
+                Err(e) => panic!("OXICLOUD_JOBS_NOTIFY_EMAIL_TO is set but unusable: {e}"),
             }
         }
 
@@ -3364,12 +3399,22 @@ impl AppServiceFactory {
         // hold a shared handle and read it at run time, so this is
         // order-independent with respect to the registrations above.
         {
-            // The same `Arc` the webhook-test endpoint uses — one
-            // configured transport, not two that could disagree about
+            // The same `Arc`s the test endpoints use — one configured
+            // transport per channel, not two that could disagree about
             // whether it works.
+            //
+            // Both, when both are configured: a push channel to be told
+            // now and mail for the record is the pairing operators
+            // actually ask for, and nothing here needs a routing setting
+            // to express it — the channel set *is* what is configured.
             let sinks: Vec<
                 Arc<dyn crate::application::ports::notification_sink_ports::NotificationSink>,
-            > = app_state.webhook_sink.iter().cloned().collect();
+            > = app_state
+                .webhook_sink
+                .iter()
+                .chain(app_state.email_alert_sink.iter())
+                .cloned()
+                .collect();
             if !sinks.is_empty() {
                 let names: Vec<&str> = sinks.iter().map(|s| s.name()).collect();
                 tracing::info!(
@@ -3884,6 +3929,16 @@ pub struct AppState {
     /// wants to post somewhere should reuse this rather than configure a
     /// second URL.
     pub webhook_sink:
+        Option<Arc<dyn crate::application::ports::notification_sink_ports::NotificationSink>>,
+    /// Job findings by mail, when `OXICLOUD_JOBS_NOTIFY_EMAIL_TO` names at
+    /// least one recipient. `None` means mail alerting is off.
+    ///
+    /// Distinct from `email_sender`, which is the transport: this is the
+    /// configured *alerting* channel. Held here rather than only inside
+    /// the notifier so `GET /api/admin/notify/info` can report the
+    /// channel that was actually built, not the setting that asked for
+    /// one — the same call `/webhook/info` makes.
+    pub email_alert_sink:
         Option<Arc<dyn crate::application::ports::notification_sink_ports::NotificationSink>>,
     /// Set alongside `email_sender` when the test harness flag
     /// `OXICLOUD_SMTP_MOCK=true` is on. Used by the

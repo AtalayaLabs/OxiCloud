@@ -35,6 +35,8 @@
 		getWebhookInfo,
 		type WebhookInfo,
 		type WebhookTestResult,
+		getNotifyInfo,
+		type NotifyInfo,
 		setPluginEnabled,
 		setRegistrationEnabled,
 		setUserActive,
@@ -486,6 +488,21 @@
 			webhookResult = { success: false, message: errorMessage(e) };
 		} finally {
 			webhookSending = false;
+		}
+	}
+
+	// What gets sent, as opposed to how it travels. Read-only: the
+	// severity floor and the wired channels are environment config, and
+	// the floor is the reason this block exists — a configured webhook
+	// and a healthy relay still deliver nothing on the default
+	// `data_loss` setting, which reads as a broken channel.
+	let notify = $state<NotifyInfo | null>(null);
+
+	async function loadNotify() {
+		try {
+			notify = await getNotifyInfo();
+		} catch (e) {
+			reportError(e);
 		}
 	}
 
@@ -1964,6 +1981,7 @@
 		} else if (tab === 'notification') {
 			void loadSmtp();
 			void loadWebhook();
+			void loadNotify();
 		}
 	});
 
@@ -2991,6 +3009,45 @@
 			{/if}
 		</div>
 	{:else if tab === 'notification'}
+		<!-- First, because it governs both transports below: a configured
+		     webhook and a healthy relay still deliver nothing when the
+		     severity floor excludes what the job found. -->
+		<h2 class="section-heading">{t('admin.notify_alerts_section', 'Job alerts')}</h2>
+		<p class="section-hint">
+			{t(
+				'admin.notify_alerts_hint',
+				'Which job findings are sent out of band, and where. Alerts are sent when a finding first appears and again when it clears — not on every run. Configured with OXICLOUD_JOBS_NOTIFY_* in the server environment.'
+			)}
+		</p>
+		<div class="card">
+			<h2>{t('admin.notify_policy', 'Alerting')}</h2>
+			{#if !notify}
+				<p class="status">{t('common.loading', 'Loading…')}</p>
+			{:else}
+				<dl class="kv">
+					<dt>{t('admin.notify_min_severity', 'Minimum severity')}</dt>
+					<dd>
+						{notify.min_severity}
+						{#if notify.min_severity === 'none'}
+							— {t('admin.notify_severity_none', 'nothing is sent')}
+						{/if}
+					</dd>
+					<dt>{t('admin.notify_channels', 'Channels')}</dt>
+					<dd>
+						{#if notify.sinks.length}
+							{notify.sinks.join(', ')}
+						{:else}
+							<!-- The failure worth naming: findings are still
+							     recorded, so this is not data loss — but nobody
+							     is told, and that is not visible anywhere else. -->
+							{t('admin.notify_no_channels', 'none — findings are recorded but nobody is notified')}
+						{/if}
+					</dd>
+					<dt>{t('admin.notify_recipients', 'Mail recipients')}</dt>
+					<dd>{notify.email_recipients.length ? notify.email_recipients.join(', ') : '—'}</dd>
+				</dl>
+			{/if}
+		</div>
 		<h2 class="section-heading">{t('admin.notify_smtp_section', 'SMTP')}</h2>
 		<div class="card">
 			<h2>{t('admin.smtp_status', 'SMTP status')}</h2>

@@ -20,6 +20,7 @@ pub mod dpop_replay_cache;
 pub mod dpop_verifier;
 pub mod drive_policies_consistency_service;
 pub mod drives_consistency_service;
+pub mod email_notification_sink;
 pub mod encrypted_blob_backend;
 pub mod entry_backend;
 pub mod exif_service;
@@ -46,6 +47,7 @@ pub mod mount_provider_factory;
 pub mod nextcloud_chunked_upload_service;
 pub mod noop_face_analyzer;
 pub mod notifications_cleanup_service;
+pub mod notify_selftest_service;
 pub mod oidc_service;
 #[cfg(feature = "faces-onnx")]
 pub mod onnx_face_analyzer;

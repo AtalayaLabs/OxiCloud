@@ -17,7 +17,7 @@ use crate::application::dtos::plugin_dto::{
 };
 use crate::application::dtos::settings_dto::{
     AdminCreateUserDto, AdminResetPasswordDto, DashboardStatsDto, DriveKindUsageDto,
-    ListSessionsQueryDto, ListUsersQueryDto, MigrationStateDto, SaveOidcSettingsDto,
+    ListSessionsQueryDto, ListUsersQueryDto, MigrationStateDto, NotifyInfoDto, SaveOidcSettingsDto,
     SaveStorageSettingsDto, SendSmtpTestDto, SmtpInfoDto, SmtpTestResultDto, StartMigrationDto,
     TestOidcConnectionDto, TestStorageConnectionDto, TransferOwnershipDto, UpdateUserActiveDto,
     UpdateUserQuotaDto, UpdateUserRoleDto, WebhookInfoDto,
@@ -195,6 +195,10 @@ pub fn admin_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         // Beside /smtp/test deliberately: both verify an outbound
         // transport, and the panel presents them together.
         .route("/webhook/test", post(send_webhook_test))
+        // Alerting, as opposed to the transports above: the severity
+        // floor and which channels are wired. Read-only — testing a
+        // channel is the transports' own job.
+        .route("/notify/info", get(get_notify_info))
         // Test-only capture endpoint. The handler short-circuits to 404
         // when `OXICLOUD_SMTP_MOCK` is off, so production deployments
         // can route the path freely without leaking inboxes.
@@ -3672,6 +3676,71 @@ pub async fn send_webhook_test(
         }),
     ))
 }
+
+/// `GET /api/admin/notify/info` — the alerting policy, as the running
+/// process sees it.
+///
+/// Separate from `/smtp/info` and `/webhook/info`, which describe
+/// *transports*. This describes what gets sent: the severity floor, and
+/// which channels are actually wired. Worth its own endpoint because the
+/// floor was invisible in the panel until now — an operator could see a
+/// configured webhook, a healthy SMTP server, and still be told nothing,
+/// because the default threshold only admits `data_loss`.
+#[utoipa::path(
+    get,
+    path = "/api/admin/notify/info",
+    responses(
+        (status = 200, description = "Current alerting policy", body = NotifyInfoDto),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn get_notify_info(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::application::ports::notification_sink_ports::NotifyThreshold;
+
+    let notify = &state.core.config.jobs_notify;
+    // The built sinks rather than the config, deliberately — the same
+    // reason `/webhook/info` reports `webhook_sink.is_some()`: a setting
+    // that was present but unusable must not read as a working channel.
+    let mut sinks: Vec<String> = Vec::new();
+    if let Some(s) = state.webhook_sink.as_ref() {
+        sinks.push(s.name().to_string());
+    }
+    if let Some(s) = state.email_alert_sink.as_ref() {
+        sinks.push(s.name().to_string());
+    }
+
+    Ok((
+        StatusCode::OK,
+        Json(NotifyInfoDto {
+            min_severity: match notify.min_severity {
+                NotifyThreshold::None => "none".to_string(),
+                NotifyThreshold::AtLeast(s) => s.as_str().to_string(),
+            },
+            sinks,
+            // Operator addresses, on an admin-only endpoint, and the one
+            // thing an operator checking mail alerting needs to see — the
+            // same call `/webhook/info` makes for its target.
+            email_recipients: notify.email_to.clone(),
+        }),
+    ))
+}
+
+// No `POST /api/admin/notify/email/test` to go with this.
+//
+// It was written and then removed: the question it answers — "can my
+// configured recipients actually receive an alert?" — is already
+// answerable with what is here. `/notify/info` shows the addresses, and
+// `POST /api/admin/smtp/test` sends to one over the same transport with
+// the same From:, so the pair covers the diagnostic without a third
+// endpoint to keep consistent. The code path from a finding to a
+// delivered message is covered end-to-end by `tests/api/jobs_notify.hurl`
+// against the SMTP mock, which is a better test than a button an operator
+// has to think to press.
 
 #[cfg(test)]
 mod tests {

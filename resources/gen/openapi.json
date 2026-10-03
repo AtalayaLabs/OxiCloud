@@ -1684,6 +1684,40 @@
         "x-oxicloud-scope": "role:admin"
       }
     },
+    "/api/admin/notify/info": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "`GET /api/admin/notify/info` — the alerting policy, as the running\nprocess sees it.",
+        "description": "Separate from `/smtp/info` and `/webhook/info`, which describe\n*transports*. This describes what gets sent: the severity floor, and\nwhich channels are actually wired. Worth its own endpoint because the\nfloor was invisible in the panel until now — an operator could see a\nconfigured webhook, a healthy SMTP server, and still be told nothing,\nbecause the default threshold only admits `data_loss`.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "operationId": "get_notify_info",
+        "responses": {
+          "200": {
+            "description": "Current alerting policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotifyInfoDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Admin required"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-oxicloud-scope": "role:admin"
+      }
+    },
     "/api/admin/search/cache": {
       "delete": {
         "tags": [
@@ -12211,6 +12245,35 @@
             ],
             "format": "date-time",
             "description": "`null` = unread."
+          }
+        }
+      },
+      "NotifyInfoDto": {
+        "type": "object",
+        "description": "Read-only alerting policy, from `GET /api/admin/notify/info`.\n\nThe *what gets sent* half, where `SmtpInfoDto` and [`WebhookInfoDto`]\nare the *how it travels* half. Configured through environment\nvariables only, shown for confirmation rather than editing.",
+        "required": [
+          "min_severity",
+          "sinks",
+          "email_recipients"
+        ],
+        "properties": {
+          "email_recipients": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`OXICLOUD_JOBS_NOTIFY_EMAIL_TO`, as parsed. Empty when mail\nalerting is off."
+          },
+          "min_severity": {
+            "type": "string",
+            "description": "Severity floor: `data_loss`, `inconsistent`, `anomaly`, or `none`.\n\nThe field the panel was missing. An operator with a configured\nwebhook and a healthy relay can still be told nothing, because the\ndefault floor admits only `data_loss` — and until this was\nsurfaced, the only way to discover that was to read the server's\nenvironment."
+          },
+          "sinks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Channels actually built and wired, by name — `webhook`, `email`.\nEmpty means findings are recorded but nobody is told."
           }
         }
       },
