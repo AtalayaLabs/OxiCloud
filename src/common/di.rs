@@ -1768,6 +1768,22 @@ impl AppServiceFactory {
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
         .await;
 
+        // Retention sweep over the scheduler's OWN tables. Registered
+        // here, after the tenants, because it is about their output
+        // rather than about storage.
+        //
+        // Scheduled by default — a weekly `consistency_batch` writes a run
+        // row per detector and a finding row per persisting problem, and
+        // until now nothing applied the 30-day window the admin purge
+        // button has always offered.
+        let _ = Arc::new(
+            crate::infrastructure::services::job_runs_cleanup_service::JobRunsCleanupService::new(
+                job_store_provider_dyn.clone(),
+            ),
+        )
+        .register(&core.job_registry)
+        .await;
+
         // "Run all consistency checks" coordinator. Plain JobHandler
         // (not RecoverableJobHandler) — it dispatches, doesn't scan.
         // MUST register AFTER every `*_consistency` tenant so the

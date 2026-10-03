@@ -190,32 +190,39 @@ export interface PurgeResponse {
 }
 
 /**
- * `POST /api/admin/jobs/runs/purge?days=N` — operator-triggered
- * retention cleanup. Deletes terminal runs (`Completed`, `Failed`)
- * with `completed_at` older than `days` days ago; associated
+ * Retention cleanup of job-run history. Deletes terminal runs
+ * (`Completed`, `Failed`, `Cancelled`) older than `days`; their
  * `jobs.run_findings` rows drop with them via CASCADE. Non-terminal
- * runs (`Running`, `Paused`, `CancelRequested`) are ALWAYS
- * preserved regardless of age.
+ * runs (`Running`, `Paused`, `CancelRequested`) are ALWAYS preserved
+ * regardless of age. The backend clamps to a minimum of 1 day.
  *
- * Backend enforces a minimum of 1 day defensively.
+ * Triggers the `job_runs_cleanup` job rather than a dedicated endpoint.
+ * The bespoke `POST /api/admin/jobs/runs/purge` it used to call was
+ * removed once the job existed: both ran the same purge, and the job
+ * additionally gets run history, an audit line, and the mutating-job
+ * confirmation every other destructive job goes through.
+ *
+ * The same job also runs nightly on its own schedule — this is the
+ * "do it now, with this window" path.
  */
 export async function purgeJobRuns(days = 30): Promise<PurgeResponse> {
-	const res = await apiFetch(`/api/admin/jobs/runs/purge?days=${days}`, {
-		method: 'POST',
-		credentials: 'same-origin',
-		headers: { ...JSON_HEADERS, ...getCsrfHeaders() }
-	});
-	if (!res.ok) {
-		let msg = `purge failed: ${res.status}`;
-		try {
-			const body = (await res.json()) as { error?: string; message?: string };
-			msg = body.error ?? body.message ?? msg;
-		} catch {
-			/* no JSON body */
-		}
-		throw new Error(msg);
+	const res = await triggerJob('job_runs_cleanup', { retention_days: days });
+	// The trigger envelope wraps the job's own `extra`, and the outcome is
+	// a discriminated union — a failed purge carries a message and no
+	// counts. Both non-ok shapes throw rather than returning 0: "deleted
+	// nothing" and "did not run" look identical on the row otherwise, and
+	// the second is the one worth seeing.
+	if (!res.outcome) {
+		throw new Error('purge dispatched but reported no outcome');
 	}
-	return (await res.json()) as PurgeResponse;
+	if (res.outcome.outcome !== 'ok') {
+		throw new Error(res.outcome.message);
+	}
+	const extra = res.outcome.extra as { purged?: number; retention_days?: number } | undefined;
+	return {
+		purged: extra?.purged ?? 0,
+		retention_days: extra?.retention_days ?? days
+	};
 }
 
 /**

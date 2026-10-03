@@ -276,7 +276,6 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::admin_handler::get_job_run,
         handlers::admin_handler::pause_job,
         handlers::admin_handler::list_job_run_findings,
-        handlers::admin_handler::purge_job_runs,
         // Admin drive management — full CRUD on drives + membership,
         // distinct from the user-facing /api/drives surface (admin can
         // touch any drive; user can touch only those they're an owner

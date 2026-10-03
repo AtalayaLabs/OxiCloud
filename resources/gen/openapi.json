@@ -1381,48 +1381,6 @@
         "x-oxicloud-scope": "role:admin"
       }
     },
-    "/api/admin/jobs/runs/purge": {
-      "post": {
-        "tags": [
-          "admin"
-        ],
-        "summary": "`POST /api/admin/jobs/runs/purge?days=N` — operator-triggered\ncleanup of old terminal runs + their findings. Not periodic;\nadmins fire this when they want to reclaim `jobs.*` history\nspace. Delegates entirely to\n`JobStoreProvider::purge_terminal_runs` — no SQL in the handler\n(see `AGENTS.md` § handler thinness).",
-        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
-        "operationId": "purge_job_runs",
-        "parameters": [
-          {
-            "name": "days",
-            "in": "query",
-            "description": "Retention window in days (default 30, minimum 1). Terminal runs older than this are deleted with their findings; non-terminal runs are always preserved.",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int32"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Purge complete"
-          },
-          "401": {
-            "description": "Unauthorized"
-          },
-          "403": {
-            "description": "Admin required"
-          },
-          "500": {
-            "description": "DB error"
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "x-oxicloud-scope": "role:admin"
-      }
-    },
     "/api/admin/jobs/{name}/cancel": {
       "post": {
         "tags": [

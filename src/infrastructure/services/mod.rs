@@ -33,6 +33,7 @@ pub mod folders_consistency_service;
 pub mod grant_cleanup_service;
 pub mod image_transcode_service;
 pub mod in_process_message_bus;
+pub mod job_runs_cleanup_service;
 pub mod jwt_service;
 pub mod last_seen_tracker;
 pub mod local_blob_backend;

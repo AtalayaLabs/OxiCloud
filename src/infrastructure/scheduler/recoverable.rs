@@ -871,8 +871,12 @@ pub trait JobStoreProvider: Send + Sync {
     /// CASCADE; callers wanting the finding count separately
     /// should query it BEFORE calling this).
     ///
-    /// Powers `POST /api/admin/jobs/runs/purge`. Not periodic — the
-    /// operator decides when to reclaim space.
+    /// Powers the `job_runs_cleanup` job — nightly by default, and
+    /// triggerable on demand with an explicit window. It used to power a
+    /// bespoke `POST /api/admin/jobs/runs/purge` instead, which meant
+    /// nothing applied the retention window unless an operator
+    /// remembered to click: the same shape as the on-demand `dedup_gc`
+    /// that let 29 orphaned blobs accumulate.
     async fn purge_terminal_runs(&self, retention_days: i32) -> Result<u64, DomainError>;
 }
 
