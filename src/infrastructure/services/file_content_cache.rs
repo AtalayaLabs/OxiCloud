@@ -207,9 +207,25 @@ impl FileContentCache {
         F: Future<Output = Result<Bytes, DomainError>>,
     {
         // Slow path: coalesce concurrent misses into a single `load`.
+        //
+        // Timing instrumentation. The loader duration is the single most
+        // actionable number for "why is my image slow?" questions —
+        // it isolates the backend fetch (local disk / S3 round-trip)
+        // from the surrounding handler and streaming overhead. Only
+        // the thundering-herd WINNER sees `loaded = true`; followers
+        // wait on the same future and record `loaded = false` with
+        // the wait duration. Keep this at `info!` so it surfaces by
+        // default without a RUST_LOG tweak; the key is on its own
+        // target so it can be silenced per-deployment if it ever
+        // becomes noisy.
+        let key_for_log = cache_key.clone();
+        let started = std::time::Instant::now();
+        let loaded_in_this_call = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let loaded_flag = loaded_in_this_call.clone();
         let entry = self
             .cache
             .try_get_with(cache_key, async move {
+                loaded_flag.store(true, std::sync::atomic::Ordering::Relaxed);
                 let content = load.await?;
                 Ok::<CacheEntry, DomainError>(CacheEntry {
                     content,
@@ -224,6 +240,16 @@ impl FileContentCache {
             .map_err(|shared: Arc<DomainError>| {
                 DomainError::new(shared.kind, shared.entity_type, shared.message.clone())
             })?;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        let did_load = loaded_in_this_call.load(std::sync::atomic::Ordering::Relaxed);
+        info!(
+            target: "oxicloud::content_cache",
+            cache_key = %key_for_log,
+            loaded = did_load,
+            size_bytes = entry.content.len() as u64,
+            duration_ms = elapsed_ms,
+            "content served on cache miss"
+        );
 
         Ok((entry.content, entry.etag, entry.content_type))
     }

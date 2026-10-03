@@ -39,6 +39,38 @@ use std::sync::Arc;
 /// Global application state for dependency injection
 type GlobalState = Arc<AppState>;
 
+/// RAII request-timer for the file-download hot path. Logs a single
+/// structured line on drop so every return path (hot bytes, cold
+/// stream, Range, 304, error, early-auth-fail) produces exactly one
+/// `oxicloud::download` entry per request. Threaded alongside the
+/// finer-grained `oxicloud::content_cache` and `oxicloud::s3_backend`
+/// lines, the three together isolate the dominant cost on any slow
+/// request. See `download_file_impl`.
+struct DownloadTimer {
+    file_id: String,
+    started: std::time::Instant,
+}
+
+impl DownloadTimer {
+    fn new(file_id: String) -> Self {
+        Self {
+            file_id,
+            started: std::time::Instant::now(),
+        }
+    }
+}
+
+impl Drop for DownloadTimer {
+    fn drop(&mut self) {
+        tracing::info!(
+            target: "oxicloud::download",
+            file_id = %self.file_id,
+            duration_ms = self.started.elapsed().as_millis() as u64,
+            "download request complete"
+        );
+    }
+}
+
 /**
  * API handler for file-related operations.
  *
@@ -855,6 +887,14 @@ impl FileHandler {
         Query(params): Query<HashMap<String, String>>,
         headers: &HeaderMap,
     ) -> impl IntoResponse + use<> {
+        // Request-level timing. The RAII guard logs ONCE on drop (any
+        // return path — hot bytes, cold stream, mount, Range, 304,
+        // error) so the browser-perceived total always surfaces as a
+        // single structured line matched by file id. Combined with
+        // the finer-grained `oxicloud::content_cache` and
+        // `oxicloud::s3_backend` lines, the three together say where
+        // N ms went.
+        let _dl_timer = DownloadTimer::new(id.clone());
         // Authorize against every credential the caller holds, and keep the
         // one that granted: the reads below are single-subject and must be
         // made with the credential that actually opened this file, not a

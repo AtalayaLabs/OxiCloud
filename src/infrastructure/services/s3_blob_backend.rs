@@ -335,6 +335,14 @@ impl BlobStorageBackend for S3BlobBackend {
         Box::pin(async move {
             let key = Self::object_key(&hash);
 
+            // Request-level timing. The S3 SDK's `send().await` returns
+            // once the response headers arrive — ByteStream body is
+            // consumed lazily by the caller. So this measures the
+            // round-trip to first-byte (which is almost always the
+            // dominant cost on cold reads), not the full download.
+            // Caller-side streaming of `output.body` adds LAN-ish
+            // throughput time on top.
+            let started = std::time::Instant::now();
             let output = self
                 .client
                 .get_object()
@@ -357,6 +365,13 @@ impl BlobStorageBackend for S3BlobBackend {
                     // Everything else goes through the normal classifier,
                     // so a 403 stays permanent rather than being retried
                     // forever.
+                    tracing::info!(
+                        target: "oxicloud::s3_backend",
+                        hash = %hash,
+                        duration_ms = started.elapsed().as_millis() as u64,
+                        outcome = "error",
+                        "s3 get_object failed"
+                    );
                     if let aws_sdk_s3::error::SdkError::ServiceError(svc) = &e
                         && svc.err().is_no_such_key()
                     {
@@ -369,6 +384,14 @@ impl BlobStorageBackend for S3BlobBackend {
                     s3_domain_error("S3", format!("Failed to get blob {hash}"), &e)
                 })?;
 
+            tracing::info!(
+                target: "oxicloud::s3_backend",
+                hash = %hash,
+                duration_ms = started.elapsed().as_millis() as u64,
+                content_length = output.content_length().unwrap_or(-1),
+                outcome = "ok",
+                "s3 get_object ok (headers)"
+            );
             // Convert S3 ByteStream into a Stream<Item = Result<Bytes, io::Error>>
             // via AsyncRead adapter
             let reader = output.body.into_async_read();
