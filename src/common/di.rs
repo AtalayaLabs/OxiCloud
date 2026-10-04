@@ -1704,10 +1704,13 @@ impl AppServiceFactory {
         // Nothing else can: a row whose SOURCE was reaped still holds a valid
         // reference to a real artifact with a correct refcount, so every
         // other check agrees the system is healthy while the artifact is
-        // pinned forever. Read-only.
+        // pinned forever. Read-only unless `?repair=true`, which releases
+        // the pinned references through `remove_reference` — hence the
+        // dedup service here.
         let _ = Arc::new(
             crate::infrastructure::services::satellites_consistency_service::SatellitesConsistencyCheck::new(
                 maintenance_pool.clone(),
+                core.dedup_service.clone(),
             ),
         )
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
@@ -1800,6 +1803,25 @@ impl AppServiceFactory {
         )
         .register(&core.job_registry)
         .await;
+
+        // Expired chunked-upload sessions. Was an hourly `tokio::spawn`
+        // inside `ChunkedUploadService::new`, which left an operator
+        // watching the upload directory fill with no way to ask how many
+        // sessions were reaped, how many unlinks failed, or whether the
+        // loop was running — the same gap `backend_rechunk` was promoted
+        // out of. The session map is shared, not copied, so the job sees
+        // sessions created after this point.
+        {
+            let (sessions, temp_base_dir) = core.chunked_upload_service.cleanup_handles();
+            let _ = Arc::new(
+                crate::infrastructure::services::uploads_cleanup_service::UploadsCleanup::new(
+                    sessions,
+                    temp_base_dir,
+                ),
+            )
+            .register(&core.job_registry)
+            .await;
+        }
 
         // "Run all consistency checks" coordinator. Plain JobHandler
         // (not RecoverableJobHandler) — it dispatches, doesn't scan.

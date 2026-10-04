@@ -46,6 +46,33 @@ Read-only, on demand only, never scheduled. Parameters:
 An unrecognised `severity` fails the run rather than recording a finding
 that would sit below every threshold.
 
+### Reclaiming orphaned storage now
+
+Nothing unlinks backend objects directly. Both discovery paths **enqueue**
+into `storage.pending_actions`, and one job drains it — so "delete this
+orphan" is always two steps, and the jobs cover different orphan classes:
+
+| job | what it reclaims |
+|---|---|
+| `backend_consistency?repair=true` | Backend objects with **no DB row**. Invisible to the DB-driven GC, which is why they can only be queued. |
+| `dedup_gc?force=true` | The complementary class: rows at `ref_count = 0` still inside their **orphan grace window**. `force` skips the wait and queues their bytes now. |
+| `backend_reclaim` | The only thing that unlinks. Drains the queue, re-verifying each object under a row lock first — so content that became referenced again is never deleted. |
+
+To reclaim everything immediately, run all three in that order: enqueue
+both sources, then drain once. For backend objects alone, the first and
+last suffice — `dedup_gc` cannot see an object with no row.
+
+`backend_reclaim` is scheduled every 300 s, so **doing nothing also
+works**; the sequence above only removes the wait.
+
+Re-running `backend_consistency` before the drain catches up is safe and
+will not re-report the same orphans: it reads the queue and counts them
+as `already_queued` in the run's outcome rather than raising a finding.
+The exception is deliberate — an entry the drain has **parked** (attempts
+exhausted) still surfaces as `orphan_blob_reclaim_parked`, because
+nothing retries it without a human. Check that entry's `last_error`,
+fix the cause, then un-park it.
+
 ### Why a run that stopped is worth an alert of its own
 
 A run that gives up records two columns on `jobs.recoverable_runs`:

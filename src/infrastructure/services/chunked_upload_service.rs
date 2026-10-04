@@ -219,6 +219,25 @@ pub struct ChunkedUploadService {
     temp_base_dir: PathBuf,
 }
 
+/// What one cleanup pass did, so the job can report numbers instead of
+/// leaving them in log lines nobody aggregates.
+///
+/// `failures` is the one that matters operationally: the failure this
+/// cleanup guards is "the disk fills up over the weekend", and an
+/// operator watching that happen had no way to ask how many sessions
+/// were reaped or how many unlinks failed.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CleanupReport {
+    /// Sessions past their expiry window whose directory is now gone.
+    pub sessions_expired: u64,
+    /// Directories removed by the mtime walk — no live session, older
+    /// than the window.
+    pub orphan_dirs_removed: u64,
+    /// Expired sessions whose directory could not be removed. Their map
+    /// entry is retained on purpose, so the next pass retries.
+    pub failures: u64,
+}
+
 impl ChunkedUploadService {
     /// Create the service, recover any persisted sessions, and start the
     /// background cleanup task.
@@ -248,14 +267,22 @@ impl ChunkedUploadService {
             tracing::info!("♻️  Recovered {recovered_count} chunked-upload session(s) from disk");
         }
 
-        // Start cleanup task
-        let sessions_clone = service.sessions.clone();
-        let temp_dir_clone = service.temp_base_dir.clone();
-        tokio::spawn(async move {
-            Self::cleanup_loop(sessions_clone, temp_dir_clone).await;
-        });
-
+        // No cleanup task is spawned here any more. It is the
+        // `uploads_cleanup` job — see [`UploadsCleanup`]. An hourly
+        // `tokio::spawn` had no admin trigger, no run history, no
+        // findings and no way to answer "is it even running", which is
+        // the same gap `backend_rechunk` was promoted out of.
         service
+    }
+
+    /// Hand the cleanup job what it needs to sweep: the live session map
+    /// and the directory root.
+    ///
+    /// Shared `Arc`, not a copy — the job must see sessions created after
+    /// it was registered, which is the entire point of the map being
+    /// owned here.
+    pub fn cleanup_handles(&self) -> (Arc<DashMap<String, UploadSession>>, PathBuf) {
+        (self.sessions.clone(), self.temp_base_dir.clone())
     }
 
     /// Lightweight constructor that skips recovery and cleanup.
@@ -443,30 +470,87 @@ impl ChunkedUploadService {
 
     // ── Cleanup ──────────────────────────────────────────────────────────
 
-    /// Background task to clean expired sessions
-    async fn cleanup_loop(sessions: Arc<DashMap<String, UploadSession>>, temp_base_dir: PathBuf) {
-        let mut interval = tokio::time::interval(Duration::from_secs(3600)); // Every hour
+    /// One cleanup pass: expire sessions past their window, then sweep
+    /// orphaned directories. Returns what it did, so a caller can report
+    /// it instead of leaving the numbers in log lines nobody aggregates.
+    ///
+    /// Extracted from the old `cleanup_loop` — see
+    /// [`UploadsCleanup`] for why a job replaced the detached task.
+    pub(crate) async fn cleanup_once(
+        sessions: &Arc<DashMap<String, UploadSession>>,
+        temp_base_dir: &PathBuf,
+    ) -> CleanupReport {
+        let mut report = CleanupReport::default();
 
-        loop {
-            interval.tick().await;
+        // Collect expired session ids + temp dirs (lock-free iteration)
+        let expired: Vec<(String, PathBuf)> = sessions
+            .iter()
+            .filter(|entry| entry.value().is_expired())
+            .map(|entry| (entry.key().clone(), entry.value().temp_dir.clone()))
+            .collect();
 
-            // Collect expired session ids + temp dirs (lock-free iteration)
-            let expired: Vec<(String, PathBuf)> = sessions
-                .iter()
-                .filter(|entry| entry.value().is_expired())
-                .map(|entry| (entry.key().clone(), entry.value().temp_dir.clone()))
-                .collect();
-
-            // Remove from map (microseconds per entry) then clean disk OUTSIDE lock
-            for (id, temp_dir) in expired {
-                sessions.remove(&id);
-                if let Err(e) = fs::remove_dir_all(&temp_dir).await {
-                    tracing::warn!("Failed to cleanup expired upload {}: {}", id, e);
-                } else {
+        // Backend first, record second — the inverse of what this used to
+        // do, and the same rule `backend_reclaim` states.
+        //
+        // Dropping the map entry first meant a failed `remove_dir_all` was
+        // unrecoverable by this pass: once the entry is gone, the
+        // map-driven loop can never see that directory again. It was saved
+        // only by the mtime walk below, which is a second mechanism and not
+        // the one the code appeared to rely on.
+        //
+        // **Absent counts as done**: `NotFound` is success, not an error to
+        // retain the entry for. Anything else keeps the entry so the next
+        // pass retries it.
+        //
+        // Inverting is enough here *because the record is private*. The map
+        // is internal, so nothing outside observes the entry surviving one
+        // extra hour. `storage.blobs` could not be inverted — there, the
+        // row's removal is what makes the deletion visible to the GC — so
+        // the intent had to live in `storage.pending_actions` instead.
+        for (id, temp_dir) in expired {
+            match fs::remove_dir_all(&temp_dir).await {
+                Ok(()) => {
+                    sessions.remove(&id);
+                    report.sessions_expired += 1;
                     tracing::info!("🧹 Cleaned expired upload session: {}", id);
                 }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    sessions.remove(&id);
+                    report.sessions_expired += 1;
+                }
+                Err(e) => {
+                    report.failures += 1;
+                    tracing::warn!(
+                        target: "audit",
+                        event = "uploads_cleanup.unlink_failed",
+                        reason = "temp_dir_unlink_failed",
+                        upload_id = %id,
+                        path = %temp_dir.display(),
+                        error = %e,
+                        "👮🏻‍♂️ could not remove an expired upload's temp dir; the \
+                         session entry is retained so the next pass retries it: {e}"
+                    );
+                }
             }
+        }
 
+        report.orphan_dirs_removed = Self::sweep_orphan_dirs(sessions, temp_base_dir).await;
+        report
+    }
+
+    /// The mtime-driven half: directories with no live session that are
+    /// older than the expiry window.
+    ///
+    /// This is what saved the ordering bug above from being an active
+    /// leak — it walks the filesystem rather than the map, so it can see
+    /// a directory whose record is already gone. Kept as the backstop it
+    /// is, now that the primary path no longer depends on it.
+    async fn sweep_orphan_dirs(
+        sessions: &Arc<DashMap<String, UploadSession>>,
+        temp_base_dir: &PathBuf,
+    ) -> u64 {
+        let mut removed = 0u64;
+        {
             // Also clean orphaned temp directories (no session.json or very old).
             // Filter strictly on the `oxi-chunk-` prefix so we never touch
             // sibling directories sharing `OXICLOUD_CHUNK_DIR` (NC subtree
@@ -492,11 +576,13 @@ impl ChunkedUploadService {
                         && modified.elapsed().unwrap_or_default() > SESSION_EXPIRATION
                     {
                         let _ = fs::remove_dir_all(&path).await;
+                        removed += 1;
                         tracing::info!("🧹 Cleaned orphaned upload dir: {:?}", path);
                     }
                 }
             }
         }
+        removed
     }
 
     // ── Core operations ──────────────────────────────────────────────────
@@ -1147,6 +1233,102 @@ impl ChunkedUploadPort for ChunkedUploadService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A session whose `last_activity` is far enough in the past to be
+    /// expired, pointing at `temp_dir`.
+    fn expired_session(id: &str, temp_dir: PathBuf) -> UploadSession {
+        UploadSession {
+            id: id.to_string(),
+            user_id: "u".into(),
+            filename: "f.bin".into(),
+            folder_id: None,
+            content_type: "application/octet-stream".into(),
+            total_size: 1,
+            chunk_size: 1,
+            chunks: Vec::new(),
+            created_at: Utc::now(),
+            last_activity: Utc::now()
+                - chrono::Duration::seconds(SESSION_EXPIRATION.as_secs() as i64 + 60),
+            temp_dir,
+            bytes_received: 0,
+        }
+    }
+
+    /// The happy path, and the baseline for the two below: an expired
+    /// session's directory goes, and so does its map entry.
+    #[tokio::test]
+    async fn an_expired_session_is_removed_from_disk_and_from_the_map() {
+        let base = std::env::temp_dir().join(format!("oxi-cleanup-ok-{}", Uuid::new_v4()));
+        let dir = base.join("oxi-chunk-s1");
+        fs::create_dir_all(&dir).await.unwrap();
+        let sessions = Arc::new(DashMap::new());
+        sessions.insert("s1".to_string(), expired_session("s1", dir.clone()));
+
+        let report = ChunkedUploadService::cleanup_once(&sessions, &base).await;
+
+        assert_eq!(report.sessions_expired, 1);
+        assert_eq!(report.failures, 0);
+        assert!(!dir.exists(), "temp dir survived");
+        assert!(sessions.is_empty(), "map entry survived");
+        let _ = fs::remove_dir_all(&base).await;
+    }
+
+    /// **Absent counts as done.** A directory that is already gone is
+    /// success, not a failure to retry — the same rule
+    /// `backend_reclaim` states for an object the backend no longer has.
+    #[tokio::test]
+    async fn a_missing_temp_dir_settles_the_session() {
+        let base = std::env::temp_dir().join(format!("oxi-cleanup-gone-{}", Uuid::new_v4()));
+        fs::create_dir_all(&base).await.unwrap();
+        let sessions = Arc::new(DashMap::new());
+        sessions.insert(
+            "s2".to_string(),
+            expired_session("s2", base.join("never-existed")),
+        );
+
+        let report = ChunkedUploadService::cleanup_once(&sessions, &base).await;
+
+        assert_eq!(report.failures, 0, "NotFound must not count as a failure");
+        assert_eq!(report.sessions_expired, 1);
+        assert!(sessions.is_empty(), "a settled session must leave the map");
+        let _ = fs::remove_dir_all(&base).await;
+    }
+
+    /// The fix this test exists for: a failed unlink must **keep** the
+    /// map entry so the next pass retries it.
+    ///
+    /// Before, the entry was removed first and the unlink was
+    /// best-effort — so a failure meant the map-driven pass could never
+    /// see that directory again, and only the mtime walk could still
+    /// find it. That walk is a backstop, not the mechanism this path
+    /// should depend on.
+    ///
+    /// The failure is injected by pointing `temp_dir` at a regular
+    /// **file**: `remove_dir_all` fails with `NotADirectory`, which is
+    /// neither success nor `NotFound`. A permissions trick would have
+    /// been the obvious alternative and is useless here — CI often runs
+    /// as root, where `chmod` does not stop a removal.
+    #[tokio::test]
+    async fn a_failed_unlink_retains_the_session_for_the_next_pass() {
+        let base = std::env::temp_dir().join(format!("oxi-cleanup-fail-{}", Uuid::new_v4()));
+        fs::create_dir_all(&base).await.unwrap();
+        let not_a_dir = base.join("oxi-chunk-s3");
+        fs::write(&not_a_dir, b"this is a file").await.unwrap();
+
+        let sessions = Arc::new(DashMap::new());
+        sessions.insert("s3".to_string(), expired_session("s3", not_a_dir.clone()));
+
+        let report = ChunkedUploadService::cleanup_once(&sessions, &base).await;
+
+        assert_eq!(report.failures, 1, "the failure must be reported");
+        assert_eq!(report.sessions_expired, 0);
+        assert!(
+            sessions.contains_key("s3"),
+            "a failed unlink dropped the record anyway — the next pass can \
+             never retry it"
+        );
+        let _ = fs::remove_dir_all(&base).await;
+    }
 
     #[test]
     fn test_chunk_count_calculation() {

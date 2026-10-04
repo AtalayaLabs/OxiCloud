@@ -492,6 +492,51 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
 
         let mut finding_count = 0u64;
 
+        // What the deletion queue already holds, hash → is it parked.
+        //
+        // Without this the severity of an orphan depended on whether THIS
+        // run enqueued it, not on whether it was already queued — so a
+        // discovery-only re-run before the drain caught up reported
+        // in-flight work as an unhandled `orphan_blob` at `inconsistent`.
+        // That is what sends an operator looking for more jobs to run, and
+        // it is the same "re-announce a standing problem" shape the
+        // alerting diff exists to prevent.
+        //
+        // Loaded once rather than probed per orphan: the queue is drained
+        // every 300 s so its depth is normally zero, and one query beats a
+        // round trip per orphan on a bucket walk. The race is benign in
+        // both directions — an entry drained mid-walk means we stay quiet
+        // about an object that no longer exists, and one enqueued mid-walk
+        // by someone else is merely reported as fresh.
+        let queued_for_reclaim: std::collections::HashMap<String, bool> =
+            match sqlx::query_as::<_, (String, bool)>(
+                "SELECT hash, parked_at IS NOT NULL
+               FROM storage.pending_actions
+              WHERE action = 'deletion'",
+            )
+            .fetch_all(self.pool.as_ref())
+            .await
+            {
+                Ok(rows) => rows.into_iter().collect(),
+                Err(e) => {
+                    // Degrade to the old behaviour rather than failing the run:
+                    // over-reporting an orphan is noise, and refusing to walk
+                    // the backend because one bookkeeping query failed would
+                    // lose the whole sweep.
+                    tracing::warn!(
+                        target: "oxicloud::consistency",
+                        event = "backend_consistency.queue_snapshot_failed",
+                        run_id = %store.run_id(),
+                        error = %e,
+                        "could not read the deletion queue; orphans already queued \
+                         will be reported as if fresh"
+                    );
+                    std::collections::HashMap::new()
+                }
+            };
+        let mut already_queued_count = 0u64;
+        let mut parked_count = 0u64;
+
         loop {
             // Cancel poll between batches.
             match store.status().await {
@@ -605,6 +650,16 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                     "backend":       backend.backend_type(),
                     "storage_entry": audited_entry,
                     "scoped":        probed_storage.is_some(),
+                    // Orphans the deletion queue already held. Reported even
+                    // when zero: "none were already queued" and "the queue
+                    // could not be read" are different facts, and the warn
+                    // on the snapshot failure is the only other trace of the
+                    // latter.
+                    "already_queued": already_queued_count,
+                    // Queued but PARKED — the drain gave up on these. Each is
+                    // also a finding, because nothing retries them until a
+                    // human intervenes.
+                    "reclaim_parked": parked_count,
                 }));
             }
 
@@ -775,7 +830,6 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                         // briefly before their row does. Without this every
                         // in-flight upload reads as an orphan.
                         if !matches!(b.mtime, Some(m) if m > grace_cutoff) {
-                            finding_count += 1;
                             // Under `?repair=true`, hand the orphan to the
                             // deletion queue instead of only naming it.
                             //
@@ -793,6 +847,57 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                             // and parking the queue already provides, rather than
                             // being one more best-effort delete of the kind this
                             // whole plan exists to remove.
+                            // Already in the queue? Then this is work in
+                            // flight, not an undiscovered orphan, and the
+                            // answer does not depend on whether this run is
+                            // repairing.
+                            //
+                            // `Some(true)` is the case worth keeping loud: the
+                            // drain exhausted its attempts and parked the
+                            // entry, so nothing will retry it automatically.
+                            // Folding that in with the healthy in-flight ones
+                            // would silence the only orphan that actually
+                            // needs a human.
+                            match queued_for_reclaim.get(&b.hash) {
+                                Some(true) => {
+                                    parked_count += 1;
+                                    finding_count += 1;
+                                    record_or_log(
+                                        store,
+                                        BACKEND_CONSISTENCY_JOB_NAME,
+                                        "orphan_blob_reclaim_parked",
+                                        "inconsistent",
+                                        None,
+                                        serde_json::json!({
+                                            "hash":    b.hash,
+                                            "backend": backend.backend_type(),
+                                            "note": "queued for reclaim but PARKED — the drain \
+                                                     exhausted its attempts and will not retry \
+                                                     automatically. See storage.pending_actions \
+                                                     .last_error, then un-park once the cause \
+                                                     is fixed.",
+                                        }),
+                                    )
+                                    .await;
+                                    settled = Some(b.hash.clone());
+                                    bi.next();
+                                    continue;
+                                }
+                                Some(false) => {
+                                    // Queued and still being retried. Not a
+                                    // finding: `backend_reclaim` drains every
+                                    // 300 s and re-verifies under a row lock
+                                    // before unlinking. Counted so the run
+                                    // still accounts for it.
+                                    already_queued_count += 1;
+                                    settled = Some(b.hash.clone());
+                                    bi.next();
+                                    continue;
+                                }
+                                None => {}
+                            }
+
+                            finding_count += 1;
                             let queued = if repair {
                                 match sqlx::query(
                                     "INSERT INTO storage.pending_actions
@@ -945,6 +1050,16 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                     "backend":       backend.backend_type(),
                     "storage_entry": audited_entry,
                     "scoped":        probed_storage.is_some(),
+                    // Orphans the deletion queue already held. Reported even
+                    // when zero: "none were already queued" and "the queue
+                    // could not be read" are different facts, and the warn
+                    // on the snapshot failure is the only other trace of the
+                    // latter.
+                    "already_queued": already_queued_count,
+                    // Queued but PARKED — the drain gave up on these. Each is
+                    // also a finding, because nothing retries them until a
+                    // human intervenes.
+                    "reclaim_parked": parked_count,
                 }));
             }
         }

@@ -7,7 +7,71 @@ semantics, a consistency coverage matrix with **three** hard
 prerequisites (one of them a `dedup_gc` predicate that would delete
 the entire derived tier), migration of the existing sidecar content,
 and a schema trim down to the columns that carry information nothing
-else owns. Not implemented.
+else owns.
+
+**Implemented, bar two next-major removals and two cosmetic items —
+audited against the code 2026-10-04.** This line
+said "Not implemented" for weeks after the substance of it shipped, which
+made the plan unusable as a work list: anyone picking it up would have
+re-derived decisions that are already in the tree. Individual steps in
+§ Delivery order carry their own accurate annotations; it was the summary
+that rotted.
+
+**All three hard prerequisites are satisfied:**
+
+| prereq | state |
+|---|---|
+| 0 — `dedup_gc` manifest predicate must stop deleting derived blobs | **DONE** — `manifest_reap_sql(&registry)` builds the predicate from the registered sources; the union includes `content_derived_blobs` and `file_attached_blobs`, pinned by `manifest_reap_statement_is_stable` |
+| 1 — registry before the tables | **DONE** — `BlobReferenceSource` + `blob_reference_sources.rs`, with `default_reference_registry` wired in `DedupService` |
+| 2 — `chunk_manifests.ref_count` must become verified | **DONE** — `manifests_consistency_service` reconciles exactly the counter this plan said was "reconciled by **nothing**", reporting `manifest_refcount_mismatch` |
+
+**Delivered beyond those:** the tables (migration `20261018`), the write
+path (`store_derived_blob` has **five** call sites — `thumbnail_service`,
+`image_transcode_service`, `transcode_import_service`, and two in
+`thumb_derived_import_service`), `file_attached_blobs` with its
+`copy_file_satellites` consolidation (`20261019`), negative rows
+(`20261023`), the derived-first read order with sidecar fallback, and
+**format in `variant`** — `ThumbnailSize::derived_variant(format)` emits
+`{size}.{ext}`, which was the migration this plan called the keystone
+blocking both JPEG thumbnails and the transcode import.
+
+**What actually remains:**
+
+1. **Nothing in the delivery order.** `transcode_import` ships — the
+   job exists, re-keys `{file_id}.webp` through `storage.files` to
+   content, imports `.webp.skip` markers as negative rows, and is in the
+   default `OXICLOUD_JOBS_STARTUP` so it drains at every boot. An earlier
+   revision of this very summary listed it as the biggest outstanding
+   item, on the strength of step 10b's "not next, and deliberately so" —
+   which was true when written and had been overtaken. Both of 10b's
+   stated prerequisites (format-in-`variant`, step 7) landed before it
+   did.
+
+   Its "entries whose file is gone" case is **left as it is** (decided
+   2026-10-04): they are unimportable by definition, and the directory
+   holding them goes away wholesale at the next major rather than being
+   drained entry by entry.
+
+2. **Sidecar retirement — DEFERRED TO THE NEXT MAJOR** (decided
+   2026-10-04), on the same gate as the legacy whole-file blob path in
+   `storage-consistency.md` §1c: the migration must have terminated, and
+   the release must be a major. `.thumbnails/` and `.transcoded/` come
+   out together with the legacy read paths, in one coherent removal where
+   an operator is already reading upgrade notes.
+
+   Two render paths still pass `None` and stay sidecar-only until then,
+   which 10a records as safe because both are reachable solely through
+   the `ThumbnailPort` impl.
+3. **Step 6 is obsolete, not outstanding.** It asked for a bulk-LIST diff
+   in `blobs_consistency` because "per-row HEADs do not survive a 4× row
+   count". That job is now **database only** — it opens no backend and
+   makes no network call — so there are no HEADs to batch. The
+   backend-versus-registry comparison lives in `backend_consistency`,
+   which enumerates in bulk by construction.
+4. **The naming clarifications** (§ Naming clarifications) — `DedupService`
+   renaming and the overloaded `blob` scale. Cosmetic, unscheduled.
+5. **Schema trim** — not yet revisited since the negative-row and
+   satellite work changed which columns carry information.
 
 Follow-up to `fix/services-use-blob-abstraction` — that
 PR normalised the **read-side** (services consume blobs through
@@ -1353,7 +1417,18 @@ The root removal now reports its outcome instead of discarding it —
 it is the one result an operator is waiting for, and `.DS_Store` is a
 failure worth naming rather than a silent no-op.
 
-### Prerequisite: one persist function (found 2026-08-26)
+### Prerequisite: one persist function (found 2026-08-26) — **CLOSED**
+
+Closed by step 10a the same day it was found, and the problem statement
+below is kept as history rather than as outstanding work:
+`store_derived_blob` now has **five** call sites across
+`thumbnail_service`, `image_transcode_service`,
+`transcode_import_service` and `thumb_derived_import_service`, and every
+live render dual-writes. Two paths still pass `None` and remain
+sidecar-only, which 10a records as safe because both are reachable
+solely through the `ThumbnailPort` impl.
+
+*As found:*
 
 **Four render paths write a sidecar; only one also writes the derived
 row.** `store_derived_blob` has a single call site — in
