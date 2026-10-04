@@ -12,7 +12,8 @@ heading:
 |---|---|
 | §1a `backend_rechunk` job | **DONE** — unit tests + API check green |
 | §1b retire `OXICLOUD_LEGACY_RECHUNK` | **DONE** — deprecation warning; removal next major |
-| §1c convergence visible + `LEGACY-WHOLE-FILE-BLOB` markers | **DONE** — finding + 6 tagged sites |
+| §1c convergence visible + `LEGACY-WHOLE-FILE-BLOB` markers | **DONE** — finding + 7 tagged sites |
+| §1 **delete the legacy path** | **THE ONLY ITEM LEFT** — gated on fleet-wide convergence, a release judgement. See below. |
 | §1d share the walk with `backend_rotate` | **CLOSED** — premise was wrong; rechunk is DB-filtered to legacy blobs |
 | §2a schema + atomic enqueue | **DONE** — `storage.pending_actions`, reap-and-enqueue in one statement |
 | §2b `backend_reclaim` drain | **DONE** — scheduled every 300s, per-object `FOR UPDATE SKIP LOCKED` |
@@ -1655,15 +1656,38 @@ That is what the `test_utils` mocks exist for, and it is not this plan's problem
 
 ## Follow-up scope — NOT in this PR
 
+> **State as of 2026-10-04.** Both items below have since landed — item 1
+> in full, item 2's precondition with it. Kept because each records *why*
+> the shape is what it is, which the next detector will need. The only
+> thing still outstanding in this whole plan is §1's deletion of the
+> legacy whole-file blob path, and that waits on fleet-wide convergence
+> rather than on anyone writing code.
+
 From an audit for the defect class this plan exists to remove: a backend request
 whose failure is logged and forgotten, leaving an inconsistency nothing can
 rediscover. The finding is that **the deletion path was the outlier, not the
 norm** — the migration and satellite code is written with real discipline here.
 But its enabling condition is systemic.
 
-### 1. The detectors are never scheduled — the biggest item
+### 1. The detectors are never scheduled — the biggest item — **DONE 2026-10-03**
 
-Every consistency job is registered on-demand:
+**Funded.** `OXICLOUD_JOBS_SCHEDULED` defaults to
+`consistency_batch=168h`, and the batch fans out to **every** job whose
+name ends in `_consistency` — so new detectors are picked up without an
+entry of their own, on a database-friendly serial walk rather than seven
+jobs ticking at once. Weekly rather than daily because the batch includes
+`backend_consistency`, whose bucket walk costs real money on S3.
+
+A scheduled run is discovery-only: `deep` and `repair` both default to
+`false`, and `repair` is **refused at boot** if named in the schedule —
+a tick that repairs deletes on a cadence with nobody consenting after the
+first time.
+
+So the guarantee below now holds in both halves rather than one. The
+analysis is kept because it is the argument for why the schedule exists,
+and because the same reasoning applies to the next detector anyone adds.
+
+*As found — every consistency job registered on-demand:*
 
 | job | interval |
 |---|---|
@@ -1693,9 +1717,17 @@ should pause the run at its cursor and resume, exactly as
 `docs/plan/jobs-handling-recoverable-error.md` describes — not be routed through
 `pending_actions`, which exists for intents that must outlive a process.
 
+**Also DONE** (2026-10-02/03), as Part A of
+`failure-classification-and-satellite-lifecycles.md`: the transience
+classification, a bounded retry, and a pause at the cursor with
+`error_reason` recorded on the run. A run that gives up now also *tells
+someone* — the alerting that plan added keys off that column.
+
 ### 2. Log-and-forget sites, classified
 
-*Acceptable — discoverable or recomputable* (subject to item 1):
+*Acceptable — discoverable or recomputable* — and the subjection to item 1
+is **now satisfied**, so these are genuinely discoverable rather than
+aspirationally so:
 `remove_reference` failures at `dedup_service.rs:901`, `:989`, `:1105`, `:1311`
 leave an over-count so the blob never reaches 0, which `blobs_consistency`
 recomputes and repairs. `IngestGuard`'s rollback still registers chunks at
