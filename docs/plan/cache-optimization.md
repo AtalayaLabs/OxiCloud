@@ -20,6 +20,7 @@ Each item carries its own state marker at its heading, same convention as
 | §7 Instrumentation parity on streaming paths | **TODO** |
 | §8 Frontend prefetch for gallery navigation | **TODO** |
 | §9 Optional disk-cache TTL for privacy-sensitive deployments | **PROPOSAL** |
+| §10 Promote thumbnail moka to satellite / content-keyed indexing | **PROPOSAL** |
 
 The three shipped items were taken first because they're the diagnostic
 foundation: without §1 you can't tell which tier is slow; without §2 the
@@ -330,6 +331,69 @@ Mobile users on cellular don't want to prefetch 20 full-res thumbnails.
 Mitigation: respect `navigator.connection.saveData` and
 `navigator.connection.effectiveType`, drop prefetch to 0-3 on `3g` or
 below.
+
+---
+
+## §10 Promote thumbnail moka to satellite / content-keyed indexing — PROPOSAL
+
+### Why
+
+The ThumbnailService's moka cache is keyed by `(file_id, size)`, so
+two users who uploaded the same photo generate two cache entries for
+identical thumbnail bytes. The dedup pipeline below the memory tier
+already collapses those to one `storage.blobs` row and one
+`.blob-cache` entry — only the in-RAM encoded-bytes layer carries the
+duplication, bounded at the 100 MB budget.
+
+Re-keying by `content_derived_blobs.blob_hash` (or
+`(source_hash, kind, variant)`) would extend content-addressability
+all the way up: one memory entry per distinct derived blob, shared
+across every file_id that resolves to it. The 100 MB budget would
+then cover more unique content on deployments with repeated source
+material (team-wide boilerplate images, same photo attached to
+multiple files, shared documents).
+
+### What
+
+Two options for the lookup path:
+
+**A. Single content-keyed moka, with per-request DB resolution.**
+Hot-path HIT becomes two steps instead of one: query
+`content_derived_blobs` for the `blob_hash`, then moka-lookup by
+`blob_hash` → bytes. The DB query is ~sub-ms with the right index
+but it is a round-trip the current `(file_id, size)` lookup skips
+entirely. On the hot "gallery tile" path this matters.
+
+**B. Two-level cache: `(file_id, size) → blob_hash` resolver +
+content-keyed bytes cache.** First map is cheap (24 bytes per entry,
+populated on first access), second holds the actual bytes
+content-keyed. HIT path stays one lookup each; MISS path still
+queries DB. More moving parts, better characteristics.
+
+Option B is probably the right shape if we commit.
+
+### Gate on observed need
+
+Not worth doing speculatively. The CachedBlobBackend observability
+wired in §4 reports `HIT-BACKEND` whenever a thumbnail fell through
+the thumbnail moka and was served from the disk tier. If
+`oxicloud_content_cache_misses_total` grows significantly on the
+thumbnail service (strong signal: cold reads for content we've
+already fetched for someone else), the memory-tier dedup opportunity
+is real. If misses stay low — thumbnail hits dominate — the current
+design is fine and this refactor earns nothing but complexity.
+
+Trigger for picking this up: a week of production hit-rate data from
+the Prometheus counters showing one of:
+
+- Thumbnail moka miss rate > 20% sustained, AND
+- `HIT-BACKEND` rate on the thumbnail path > thumbnail-moka hit rate
+  (i.e., we're routinely re-fetching bytes from disk that we HAD in
+  memory under a different file_id).
+
+Without that signal, the current file_id-keyed design is the simpler
+default. Captured here so the question is already answered when the
+data comes in.
 
 ---
 

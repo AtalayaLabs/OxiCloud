@@ -1776,7 +1776,32 @@ pub async fn get_thumbnail(
     // Borrow the headers (`req.headers()`) instead of the `HeaderMap` extractor's
     // full clone — thumbnails are the highest-frequency GET (one per grid tile),
     // and this handler reads only Accept + If-None-Match (benches/ROUND22.md §H1).
-    FileHandler::get_thumbnail_impl(state, callers, req.headers(), path).await
+    //
+    // Wrap the inner work in a cache-outcome scope so every cache
+    // layer the handler touches (thumbnail moka, derived-blob
+    // satellite lookup, backend .blob-cache) can `observe` its
+    // tier. We read the final value after the body is built and
+    // stamp `X-Oxicloud-Cache` on the response. Mirror of the
+    // X-Oxicloud-Cache contract on the full-file download path —
+    // thumbnails are generated via a different pipeline but should
+    // report their tier under the same header name for operator
+    // uniformity. See docs/architecture/caching.md.
+    let (response, outcome) = crate::application::ports::file_ports::cache_outcome::scope(
+        FileHandler::get_thumbnail_impl(state, callers, req.headers(), path),
+    )
+    .await;
+    // Materialise the opaque `impl IntoResponse` into a concrete
+    // `Response` so we can mutate headers. Only attach the cache
+    // header on successful bytes-bearing responses — 204 (no
+    // thumbnail) and 304 (not modified) deliberately omit it:
+    // nothing was served from a cache tier, so there's no honest
+    // value to report.
+    let mut response = response.into_response();
+    if response.status().is_success() && response.status() != axum::http::StatusCode::NO_CONTENT {
+        let v = axum::http::HeaderValue::from_static(outcome.as_header());
+        response.headers_mut().insert("X-Oxicloud-Cache", v);
+    }
+    response
 }
 
 #[utoipa::path(

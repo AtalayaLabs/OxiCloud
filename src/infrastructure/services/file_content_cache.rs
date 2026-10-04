@@ -109,6 +109,14 @@ impl FileContentCache {
     pub async fn get(&self, file_id: &str) -> Option<(Bytes, Arc<str>, Arc<str>)> {
         if let Some(entry) = self.cache.get(file_id).await {
             self.hits.fetch_add(1, Ordering::Relaxed);
+            // Mirror the in-process atomic into the Prometheus
+            // counter. The `metrics` crate is a no-op when the
+            // recorder isn't installed (OXICLOUD_METRICS_LISTEN
+            // unset), so this is free on deployments that don't
+            // scrape. Counter name follows the convention
+            // documented in `interfaces/metrics.rs`:
+            // `oxicloud_<subsystem>_<verb>_total`.
+            metrics::counter!("oxicloud_content_cache_hits_total").increment(1);
             debug!("Cache HIT for file: {}", file_id);
             Some((
                 entry.content.clone(),
@@ -117,6 +125,7 @@ impl FileContentCache {
             ))
         } else {
             self.misses.fetch_add(1, Ordering::Relaxed);
+            metrics::counter!("oxicloud_content_cache_misses_total").increment(1);
             debug!("Cache MISS for file: {}", file_id);
             None
         }
@@ -298,10 +307,79 @@ impl FileContentCache {
         CacheStats {
             current_size_bytes: self.cache.weighted_size() as usize,
             max_size_bytes: self.config.max_total_size,
+            entries: self.cache.entry_count(),
             hits,
             misses,
             hit_rate_percent: hit_rate,
         }
+    }
+
+    /// Spawn a background sampler that publishes two Prometheus
+    /// gauges on a 30-second cadence:
+    ///
+    /// - `oxicloud_content_cache_size_bytes` — moka's weighted-size
+    ///   total (sum of entry sizes). The denominator for "how full
+    ///   is my cache?".
+    /// - `oxicloud_content_cache_entries` — moka's entry count. Useful
+    ///   on top of size when watching for pathologies (lots of tiny
+    ///   entries vs few huge ones).
+    ///
+    /// Also mirrors a current-value gauge for the max budget so a
+    /// scrape can show capacity-fill ratio without a config lookup:
+    ///
+    /// - `oxicloud_content_cache_max_size_bytes`
+    ///
+    /// Gauges follow the convention from `interfaces/metrics.rs`;
+    /// the `metrics` crate is a no-op when the recorder isn't
+    /// installed, so this task is still cheap on deployments without
+    /// `OXICLOUD_METRICS_LISTEN`. Detached — tracks the runtime.
+    pub fn spawn_metrics_sampler(self: &Arc<Self>) {
+        let this = Arc::clone(self);
+        metrics::describe_gauge!(
+            "oxicloud_content_cache_size_bytes",
+            "Current total weighted size (bytes) of entries in the moka file-content cache."
+        );
+        metrics::describe_gauge!(
+            "oxicloud_content_cache_entries",
+            "Current entry count in the moka file-content cache."
+        );
+        metrics::describe_gauge!(
+            "oxicloud_content_cache_max_size_bytes",
+            "Configured maximum weighted size (bytes) of the moka file-content cache. \
+             Ratio to `oxicloud_content_cache_size_bytes` gives capacity fill."
+        );
+        metrics::describe_counter!(
+            "oxicloud_content_cache_hits_total",
+            "File-content cache hits — bytes served from the moka in-memory tier."
+        );
+        metrics::describe_counter!(
+            "oxicloud_content_cache_misses_total",
+            "File-content cache misses — the loader ran. Includes single-flight followers."
+        );
+        tokio::spawn(async move {
+            // Immediate first sample so the first scrape after boot
+            // doesn't publish zero-initialised placeholders. Matches
+            // the pattern in `session_liveness_gauges::spawn`.
+            this.publish_gauges();
+            let mut ticker = tokio::time::interval(Duration::from_secs(30));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            ticker.tick().await; // consume the immediate-first tick
+            loop {
+                ticker.tick().await;
+                this.publish_gauges();
+            }
+        });
+        info!("📊 FileContentCache metrics sampler spawned (30s cadence)");
+    }
+
+    /// Push the three gauge values for one scrape cycle. Separated
+    /// from the task body for testability and so a caller can force
+    /// a snapshot ahead of a known-timing test.
+    fn publish_gauges(&self) {
+        metrics::gauge!("oxicloud_content_cache_size_bytes").set(self.cache.weighted_size() as f64);
+        metrics::gauge!("oxicloud_content_cache_entries").set(self.cache.entry_count() as f64);
+        metrics::gauge!("oxicloud_content_cache_max_size_bytes")
+            .set(self.config.max_total_size as f64);
     }
 }
 
@@ -310,6 +388,14 @@ impl FileContentCache {
 pub struct CacheStats {
     pub current_size_bytes: usize,
     pub max_size_bytes: usize,
+    /// Number of cached entries. Each moka entry is ONE small file
+    /// (<10 MB threshold) stored as its assembled bytes keyed by the
+    /// file's content hash — not individual chunks. For a 5 MB file
+    /// physically split into ~5 chunks on-backend, moka still holds
+    /// a single assembled entry here. So the right word on the UI
+    /// is "files cached", not "chunks" — mirror of the on-disk
+    /// `.blob-cache` tier, which IS per-chunk.
+    pub entries: u64,
     pub hits: usize,
     pub misses: usize,
     pub hit_rate_percent: f64,

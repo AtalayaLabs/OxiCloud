@@ -139,4 +139,35 @@ curl -sD- -o /dev/null -H "Authorization: Bearer $TOKEN" \
 
 The committed Hurl scenario `tests/api/cache_header.hurl` pins the `MISS → HIT` transition in CI so changes to the handler, cache, or retrieval service that would silently drop the header fail the test suite.
 
+## Prometheus metrics
+
+When `OXICLOUD_METRICS_LISTEN` is set, the `/metrics` scrape additionally exposes a cache-tier surface. Counters are incremented inline on every cache access; gauges are refreshed by a 30-second background sampler so a scrape always sees a value no older than the cadence.
+
+| Metric | Kind | Meaning |
+|---|---|---|
+| `oxicloud_content_cache_hits_total` | counter | Bytes served from moka in-memory. Pairs with the `X-Oxicloud-Cache: HIT` responses. |
+| `oxicloud_content_cache_misses_total` | counter | Moka miss. Loader ran (or awaited as a single-flight follower). Pairs with `X-Oxicloud-Cache: MISS`. |
+| `oxicloud_content_cache_size_bytes` | gauge | Current weighted size of moka entries. |
+| `oxicloud_content_cache_entries` | gauge | Current moka entry count. |
+| `oxicloud_content_cache_max_size_bytes` | gauge | Configured budget. Ratio to `_size_bytes` is the capacity fill. |
+
+### Useful queries
+
+Hit rate over the last 5 minutes:
+
+```promql
+rate(oxicloud_content_cache_hits_total[5m])
+/ (rate(oxicloud_content_cache_hits_total[5m]) + rate(oxicloud_content_cache_misses_total[5m]))
+```
+
+Capacity fill:
+
+```promql
+oxicloud_content_cache_size_bytes / oxicloud_content_cache_max_size_bytes
+```
+
+Alert idea: if hit-rate drops below 50% for 15 minutes on a steady-state deployment, something is thrashing (eviction too aggressive, or a crawler walking cold content). The counters capture that directly without needing to parse logs.
+
+Only the moka tier is instrumented today. The on-disk `.blob-cache` tier (Layer 2) exposes stats internally but is NOT yet surfaced via Prometheus — tracked in `docs/plan/cache-optimization.md` §4 as a sibling of the `HIT-BACKEND` phase-2 header plumbing.
+
 Restart the server after changing any of these — the cache is instantiated once at boot around the configured blob backend.

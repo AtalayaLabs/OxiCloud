@@ -1966,10 +1966,22 @@
 	});
 
 	$effect(() => {
+		// Load the dashboard DTO on EVERY admin tab, not just the
+		// dashboard tab. It carries the global "Storage cache
+		// recommended" advisory banner rendered at the top of the
+		// admin page below, so operators on any tab (users,
+		// sessions, mounts, …) see the warning. Guarded by its own
+		// `loaded.dashboard` flag so we only fetch once per session;
+		// the per-tab branch below handles everything else.
+		if (!loaded.dashboard) {
+			loaded.dashboard = true;
+			void loadDashboard();
+		}
 		if (loaded[tab]) return;
 		loaded[tab] = true;
-		if (tab === 'dashboard') void loadDashboard();
-		else if (tab === 'users') void loadUsers();
+		if (tab === 'dashboard') {
+			/* dashboard DTO already loaded above */
+		} else if (tab === 'users') void loadUsers();
 		else if (tab === 'sessions') void loadSessions();
 		else if (tab === 'drives') void loadDrivesTab();
 		else if (tab === 'mounts') void loadMounts();
@@ -1978,6 +1990,12 @@
 		else if (tab === 'storage') {
 			void loadStorage();
 			void loadMigration();
+			// The "Storage cache" card on this tab reads live
+			// occupancy off the admin dashboard DTO (content_cache +
+			// backend_cache), which the dashboard tab also populates.
+			// Load it here too so hitting /admin/storage directly
+			// shows the card without a prior dashboard visit.
+			void loadDashboard();
 		} else if (tab === 'notification') {
 			void loadSmtp();
 			void loadWebhook();
@@ -2037,6 +2055,40 @@
 			</p>
 		{/if}
 	</div>
+
+	<!--
+	  Global advisory banner — rendered OUTSIDE the per-tab blocks
+	  so an operator on any admin page (users, storage, sessions,
+	  mounts, …) sees it. Server computes
+	  `storage_cache_recommended` as (remote-backend) AND
+	  (OXICLOUD_STORAGE_CACHE_ENABLED=false); default-off on a
+	  remote backend lights this up until the operator opts in.
+	  Soft advisory (warn-card--warn), not --danger — this is a
+	  performance hint, not a correctness problem. Guarded on
+	  `dashboard` being loaded; the tab-switch effect fires
+	  `loadDashboard()` on EVERY admin tab so this is reliably
+	  populated even for operators who never visited /admin itself.
+	-->
+	{#if dashboard?.storage_cache_recommended}
+		<div class="card warn-card warn-card--warn">
+			<Icon name="bolt" />
+			<div>
+				<strong>{t('admin.storage_cache_recommended_title', 'Enable the local blob cache')}</strong>
+				<p>
+					{t(
+						'admin.storage_cache_recommended_body',
+						'It is highly recommended to enable the local cache (SSD/NVMe location preferred).'
+					)}
+				</p>
+				<p>
+					{t(
+						'admin.storage_cache_recommended_howto',
+						'Set OXICLOUD_STORAGE_CACHE_ENABLED=true to enable it.'
+					)}
+				</p>
+			</div>
+		</div>
+	{/if}
 
 	{#if tab === 'dashboard'}
 		{#if dashboardError}
@@ -2178,31 +2230,6 @@
 					<div>
 						<strong class="ds-num">{dashboard.users_over_quota}</strong>
 						{t('admin.over_quota', { n: dashboard.users_over_quota }, '{{n}} users over quota')}
-					</div>
-				</div>
-			{/if}
-			<!--
-			  Backend-cache recommendation. Server computes
-			  `storage_cache_recommended` as (remote-backend) AND
-			  (OXICLOUD_STORAGE_CACHE_ENABLED=false). The default is
-			  the latter, so remote-backed deployments light up on
-			  first boot until the operator opts in. Rendered in
-			  warn-card--warn (soft advisory), not --danger — this is
-			  a performance hint, not a correctness problem.
-			-->
-			{#if dashboard.storage_cache_recommended}
-				<div class="card warn-card warn-card--warn">
-					<Icon name="bolt" />
-					<div>
-						<strong
-							>{t('admin.storage_cache_recommended_title', 'Enable the local blob cache')}</strong
-						>
-						<p>
-							{t(
-								'admin.storage_cache_recommended_body',
-								'This deployment uses a remote storage backend but has no local disk cache in front of it. Every blob read pays a network round-trip. Set OXICLOUD_STORAGE_CACHE_ENABLED=true to serve hot content from local SSD and bring cold-read latency down from hundreds of milliseconds to microseconds.'
-							)}
-						</p>
 					</div>
 				</div>
 			{/if}
@@ -2608,12 +2635,12 @@
 				<p class="muted storage-content-stats__hint">
 					{t(
 						'admin.storage_content_stats_hint',
-						'Aggregate over the DB blob store — independent of which backend entry holds the bytes.'
+						'Aggregate over the chunk store — independent of which backend entry holds the bytes.'
 					)}
 				</p>
 				<dl class="storage-content-stats__grid">
 					<div>
-						<dt>{t('admin.storage_blobs', 'Blobs')}</dt>
+						<dt>{t('admin.storage_blobs', 'Chunks')}</dt>
 						<dd>{storage.total_blobs ?? '—'}</dd>
 					</div>
 					<div>
@@ -2629,6 +2656,189 @@
 						</dd>
 					</div>
 				</dl>
+			</section>
+		{/if}
+
+		<!--
+		  Storage cache — three cache tiers in a two-column layout
+		  matching the real pipeline topology:
+
+		    LEFT  (two stacked memory cards): the per-service moka
+		          instances. File cache is the hot path for small
+		          file bytes; Thumbnail cache is the gallery / grid
+		          hot path for encoded WebP/AVIF payloads. Distinct
+		          moka instances with separate budgets and separate
+		          hit/miss cadences.
+
+		    RIGHT (one tall disk card, spans both left rows):
+		          the on-disk .blob-cache tier. ONE unified cache
+		          serves every blob read — both source-file chunks
+		          AND satellite derived blobs (thumbnails,
+		          transcodes), hence the "File + Satellites" label.
+		          Optional (OXICLOUD_STORAGE_CACHE_ENABLED); on
+		          local-only deployments it renders Disabled.
+
+		  Sits between the Content Store section and the Storage
+		  Backend section. Reading top-to-bottom: stored → cached
+		  → backend. Values come off the admin dashboard DTO
+		  (loaded by this tab's loader too); see
+		  docs/architecture/caching.md § tier topology.
+		-->
+		{#if dashboard}
+			<section class="card admin-storage__section">
+				<h2>{t('admin.section_cache', 'Storage cache')}</h2>
+				<div class="cache-layout">
+					<!--
+					  Guard each memory card against a stale DTO
+					  response that doesn't carry its field — can
+					  happen briefly when the server was built before
+					  the field was added, or during a rolling
+					  upgrade where the client loaded against an
+					  older binary. Without this, a single missing
+					  field crashes the whole page's hydration (saw
+					  the TypeError once mid-session). "Field
+					  missing" → skip the card; everything else
+					  below still renders.
+					-->
+					<div class="cache-layout__memory">
+						{#if dashboard.content_cache}
+							<div class="ds-card cache-card">
+								<div class="cache-card__header">
+									<Icon name="bullseye" />
+									<span>{t('admin.cache_memory_files', 'Memory (moka) · File cache')}</span>
+								</div>
+								<div class="storage-bar cache-card__bar">
+									<div
+										class="storage-fill"
+										style:width="{dashboard.content_cache.max_bytes > 0
+											? Math.min(
+													100,
+													(dashboard.content_cache.size_bytes * 100) /
+														dashboard.content_cache.max_bytes
+												)
+											: 0}%"
+									></div>
+								</div>
+								<div class="cache-card__info">
+									{formatBytes(dashboard.content_cache.size_bytes)} /
+									{formatBytes(dashboard.content_cache.max_bytes)}
+									· {dashboard.content_cache.files}
+									{t('admin.cache_files', 'files')}
+								</div>
+							</div>
+						{/if}
+						{#if dashboard.thumbnail_cache}
+							<div class="ds-card cache-card">
+								<div class="cache-card__header">
+									<Icon name="bullseye" />
+									<span
+										>{t('admin.cache_memory_thumbnails', 'Memory (moka) · Thumbnail cache')}</span
+									>
+								</div>
+								<div class="storage-bar cache-card__bar">
+									<div
+										class="storage-fill"
+										style:width="{dashboard.thumbnail_cache.max_bytes > 0
+											? Math.min(
+													100,
+													(dashboard.thumbnail_cache.size_bytes * 100) /
+														dashboard.thumbnail_cache.max_bytes
+												)
+											: 0}%"
+									></div>
+								</div>
+								<div class="cache-card__info">
+									{formatBytes(dashboard.thumbnail_cache.size_bytes)} /
+									{formatBytes(dashboard.thumbnail_cache.max_bytes)}
+									· {dashboard.thumbnail_cache.thumbnails}
+									{t('admin.cache_thumbnails', 'thumbnails')}
+								</div>
+							</div>
+						{/if}
+					</div>
+					<div
+						class="ds-card cache-card cache-card--disk"
+						class:cache-card--warn={!dashboard.backend_cache && dashboard.storage_cache_recommended}
+					>
+						<div class="cache-card__header">
+							<Icon name="database" />
+							<span>{t('admin.cache_disk_unified', 'Disk cache (Files + Satellites)')}</span>
+						</div>
+						{#if dashboard.backend_cache}
+							<div class="cache-card__path">
+								<span class="cache-card__path-label"
+									>{t('admin.cache_disk_location', 'Location')}</span
+								>
+								<code>{dashboard.backend_cache.cache_dir}</code>
+							</div>
+							<div class="storage-bar cache-card__bar">
+								<div
+									class="storage-fill"
+									style:width="{dashboard.backend_cache.max_bytes > 0
+										? Math.min(
+												100,
+												(dashboard.backend_cache.size_bytes * 100) /
+													dashboard.backend_cache.max_bytes
+											)
+										: 0}%"
+								></div>
+							</div>
+							<div class="cache-card__info">
+								{formatBytes(dashboard.backend_cache.size_bytes)} /
+								{formatBytes(dashboard.backend_cache.max_bytes)}
+								· {dashboard.backend_cache.chunks}
+								{t('admin.cache_chunks', 'chunks')}
+							</div>
+							<p class="cache-card__hint">
+								{t(
+									'admin.cache_disk_hint',
+									'Single on-disk tier shared by source-file chunks and all derived blobs (thumbnails, transcodes). One miss turnaround per cold blob regardless of what triggered it.'
+								)}
+							</p>
+						{:else if dashboard.storage_cache_recommended}
+							<!--
+							  Backend is REMOTE (S3 / Azure) AND the local
+							  disk cache is NOT enabled. Every blob read
+							  pays a round-trip to the remote. This is the
+							  "warning" state — operators should enable
+							  OXICLOUD_STORAGE_CACHE_ENABLED to recover
+							  warm-read latency.
+							-->
+							<div class="cache-card__info cache-card__info--warn">
+								<Icon name="exclamation-triangle" />
+								{t('admin.cache_disabled', 'Disabled')}
+							</div>
+							<p class="cache-card__hint">
+								{t(
+									'admin.cache_disk_disabled_hint',
+									'It is highly recommended to enable the local cache (SSD/NVMe location preferred).'
+								)}
+							</p>
+							<p class="cache-card__hint">
+								{t(
+									'admin.cache_disk_disabled_howto',
+									'Set OXICLOUD_STORAGE_CACHE_ENABLED=true to enable it.'
+								)}
+							</p>
+						{:else}
+							<!--
+							  Backend is LOCAL filesystem. The disk cache
+							  wrapper would just duplicate bytes between
+							  two directories on the same disk; neutral
+							  informational state, not a warning.
+							-->
+							<div class="cache-card__info cache-card__info--disabled">
+								{t('admin.cache_not_applicable', 'Not applicable')}
+							</div>
+							<p class="cache-card__hint">
+								{t(
+									'admin.cache_disk_local_hint',
+									'Backend storage is on local filesystem — a disk cache in front of it would only duplicate bytes on the same disk. Nothing to enable.'
+								)}
+							</p>
+						{/if}
+					</div>
+				</div>
 			</section>
 		{/if}
 
@@ -5865,6 +6075,117 @@
 	.admin-header__version-value {
 		font-family: var(--font-mono);
 		overflow-wrap: anywhere;
+	}
+
+	/* Storage-cache layout: two columns. Left stacks the two
+	   memory moka cards (File cache, Thumbnail cache); right is a
+	   single tall card for the unified on-disk tier that serves
+	   both source-file chunks AND satellite derived blobs. The
+	   right card spans the full height of the left column via
+	   grid-template-rows: 1fr so the three cards stay visually
+	   balanced regardless of individual content height. Collapses
+	   to a single column below the ds-grid breakpoint. */
+	.cache-layout {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: var(--space-3, 0.75rem);
+	}
+
+	.cache-layout__memory {
+		display: grid;
+		grid-template-rows: 1fr 1fr;
+		gap: var(--space-3, 0.75rem);
+	}
+
+	@media (width <= 48rem) {
+		.cache-layout {
+			grid-template-columns: 1fr;
+		}
+	}
+
+	/* Storage-cache card — one per tier (memory, disk). Reuses the
+	   .storage-bar / .storage-fill tokens from the sidebar storage
+	   widget so the bar visuals are uniform across the admin page
+	   and sidebar footer. */
+	.cache-card {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2, 0.5rem);
+	}
+
+	/* Disk card is tall (spans both memory rows); let its content
+	   breathe with slightly more vertical spacing + show the on-disk
+	   path in a mono chip the operator can copy out. */
+	.cache-card--disk {
+		justify-content: flex-start;
+	}
+
+	.cache-card__path {
+		display: inline-flex;
+		align-items: baseline;
+		gap: var(--space-1-5, 0.375rem);
+		font-size: 0.8125rem;
+		color: var(--color-text-muted);
+	}
+
+	.cache-card__path-label {
+		font-weight: var(--weight-semibold);
+	}
+
+	.cache-card__path code {
+		font-family: var(--font-mono);
+		overflow-wrap: anywhere;
+	}
+
+	.cache-card__hint {
+		margin: var(--space-1, 0.25rem) 0 0;
+		font-size: 0.8125rem;
+		color: var(--color-text-muted);
+	}
+
+	.cache-card__header {
+		display: flex;
+		align-items: center;
+		gap: var(--space-1-5, 0.375rem);
+		font-weight: var(--weight-semibold);
+	}
+
+	.cache-card__bar {
+		margin: 0;
+	}
+
+	.cache-card__info {
+		font-size: 0.8125rem;
+		color: var(--color-text-muted);
+	}
+
+	.cache-card__info--disabled {
+		font-style: italic;
+	}
+
+	/* "Disabled on a remote backend" is a warning (user action
+	   recommended), as opposed to "Not applicable on a local
+	   backend" which is purely informational. Different colour
+	   signals which decision the operator needs to make. */
+	.cache-card__info--warn {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1-5, 0.375rem);
+		color: var(--color-warning-text);
+		font-weight: var(--weight-semibold);
+	}
+
+	/* Whole-card warning paint for the "remote backend + cache
+	   disabled" state. Reuses the same `--color-warning-text` token
+	   the dashboard's warn-card--warn uses so the two advisories
+	   look like siblings. Border + inner hint tint; the title /
+	   icon stay their regular colour so the card doesn't scream. */
+	.cache-card--warn {
+		border-color: var(--color-warning-text);
+	}
+
+	.cache-card--warn .cache-card__hint {
+		color: var(--color-warning-text);
 	}
 
 	.bar {

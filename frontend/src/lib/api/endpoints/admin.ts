@@ -454,6 +454,52 @@ export interface AdminDashboard {
 	 *  `false` on local-filesystem deployments (nothing to cache) and
 	 *  when the cache is already on. */
 	storage_cache_recommended: boolean;
+	/** Live occupancy of the moka in-memory file-content cache.
+	 *  Always present (the content cache runs unconditionally).
+	 *  Entries here are ASSEMBLED files (<10 MB each), NOT chunks —
+	 *  a file physically split into N chunks on-backend still shows
+	 *  as a single moka entry. See `ContentCacheInfo.files`. */
+	content_cache: ContentCacheInfo;
+	/** Live occupancy of the moka in-memory thumbnail cache. Distinct
+	 *  moka instance from `content_cache`: different keys, different
+	 *  budget, different eviction. Always present. */
+	thumbnail_cache: ThumbnailCacheInfo;
+	/** Live occupancy of the on-disk `.blob-cache` tier. Absent when
+	 *  the backend cache wrapper is NOT enabled
+	 *  (OXICLOUD_STORAGE_CACHE_ENABLED=false or a local-only
+	 *  deployment); the admin UI hides the row entirely in that
+	 *  case rather than rendering a disabled bar. Entries here ARE
+	 *  chunks — one per content-addressable blob. The disk tier
+	 *  serves both source-file chunks AND satellite derived blobs
+	 *  (thumbnails, transcodes) via the same unified wrapper. */
+	backend_cache?: BackendCacheInfo;
+}
+
+/** Memory-tier occupancy (moka). `files` because each entry holds
+ *  the assembled bytes of one small file, not a chunk. */
+export interface ContentCacheInfo {
+	size_bytes: number;
+	max_bytes: number;
+	files: number;
+}
+
+/** Memory-tier occupancy for the thumbnail moka cache. Each entry
+ *  is one encoded WebP/AVIF payload keyed by (file_id, size). */
+export interface ThumbnailCacheInfo {
+	size_bytes: number;
+	max_bytes: number;
+	thumbnails: number;
+}
+
+/** Disk-tier occupancy (`.blob-cache`). `chunks` because each entry
+ *  is one content-addressable blob from the dedup registry. Carries
+ *  the on-disk `cache_dir` so operators can point `du`, backups, or
+ *  an SSD mount at it. */
+export interface BackendCacheInfo {
+	size_bytes: number;
+	max_bytes: number;
+	chunks: number;
+	cache_dir: string;
 }
 
 export function getDashboard(): Promise<AdminDashboard> {

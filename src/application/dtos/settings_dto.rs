@@ -245,6 +245,77 @@ pub struct DashboardStatsDto {
     /// local-filesystem deployments (nothing to cache) and when the
     /// cache is already on.
     pub storage_cache_recommended: bool,
+    /// Current occupancy of the in-memory file-content cache (moka).
+    /// Admin dashboard renders `size_bytes / max_bytes` as a capacity
+    /// bar; combined with `oxicloud_content_cache_hits_total /
+    /// _misses_total` on `/metrics` the operator can see both
+    /// "how full" and "how useful". Always present — the content
+    /// cache runs unconditionally.
+    pub content_cache: ContentCacheInfoDto,
+    /// Current occupancy of the in-memory thumbnail cache (moka
+    /// instance distinct from the file-content cache above —
+    /// different key space, different budget, different eviction).
+    /// Always present. See `docs/architecture/caching.md` for the
+    /// two-tier memory topology and why they aren't merged.
+    pub thumbnail_cache: ThumbnailCacheInfoDto,
+    /// Current occupancy of the on-disk `.blob-cache` tier when
+    /// enabled, `None` otherwise. `None` is the "local-only
+    /// deployment or operator hasn't opted in" case, in which the
+    /// admin UI hides the row entirely rather than drawing a disabled
+    /// bar.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend_cache: Option<BackendCacheInfoDto>,
+}
+
+/// Moka content-cache occupancy snapshot (see [`DashboardStatsDto::content_cache`]).
+///
+/// Each moka entry holds the ASSEMBLED bytes of one small file
+/// (<10 MB) keyed by the file's content hash — not individual
+/// chunks. So `files` is the honest name for the entry count here;
+/// use it against the sibling `BackendCacheInfoDto`'s `chunks` to
+/// avoid conflating the two tiers' granularities in dashboards or
+/// alerts.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ContentCacheInfoDto {
+    pub size_bytes: u64,
+    pub max_bytes: u64,
+    /// Number of cached files. For a file physically split into N
+    /// chunks on-backend, moka still holds exactly ONE assembled
+    /// entry here.
+    pub files: u64,
+}
+
+/// `.blob-cache` tier occupancy snapshot (see [`DashboardStatsDto::backend_cache`]).
+/// Separate struct from the moka one so adding tier-specific fields
+/// later (eviction count, LRU age) doesn't force a shared schema.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BackendCacheInfoDto {
+    pub size_bytes: u64,
+    pub max_bytes: u64,
+    /// Number of cached chunks (one entry per content-addressable
+    /// blob). Unlike moka's assembled-file entries, these are the
+    /// chunk-granular units of the dedup registry. The disk tier
+    /// covers both source-file chunks AND satellite derived blobs
+    /// (thumbnails, transcodes) — one unified disk cache serving
+    /// every blob read.
+    pub chunks: u64,
+    /// On-disk location where the cache files live. Shown on the
+    /// admin UI so operators know where to point `du`, backups, or
+    /// an SSD mount.
+    pub cache_dir: String,
+}
+
+/// Thumbnail-moka occupancy snapshot. Separate struct from the
+/// file-content moka one because the granularity differs: each
+/// thumbnail entry is one encoded WebP/AVIF payload keyed by
+/// `(file_id, size)`, not an assembled file.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ThumbnailCacheInfoDto {
+    pub size_bytes: u64,
+    pub max_bytes: u64,
+    /// Number of cached thumbnail payloads. Each entry = one
+    /// `(file_id, size, format)` tuple of encoded bytes.
+    pub thumbnails: u64,
 }
 
 // ============================================================================

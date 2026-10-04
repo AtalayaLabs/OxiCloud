@@ -24,8 +24,7 @@ use crate::application::dtos::search_dto::{
 };
 use crate::application::ports::file_ports::{
     CacheOutcome, FileManagementUseCase, FileRetrievalUseCase, FileUploadUseCase,
-    OptimizedFileContent,
-    StoredBlob,
+    OptimizedFileContent, StoredBlob,
 };
 use crate::application::ports::folder_ports::FolderUseCase;
 
