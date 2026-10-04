@@ -333,6 +333,7 @@ HURL_FILES=( \
   "$API_DIR/attached_thumbnail_copy.hurl" \
   "$API_DIR/transcode_cache.hurl" \
   "$API_DIR/cache_header.hurl" \
+  "$API_DIR/broken_pdf_resilience.hurl" \
   "$API_DIR/transcode_import.hurl" \
   "$API_DIR/dedup_admin_gate.hurl" \
   "$API_DIR/admin_jobs.hurl" \
