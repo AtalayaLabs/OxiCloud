@@ -1,0 +1,16 @@
+OxiCloud cache_header.hurl fixture — content unique to this scenario.
+
+This file exists so the X-Oxicloud-Cache MISS → HIT transition pinned by
+tests/api/cache_header.hurl is honest. The moka file-content cache is
+content-addressed (keyed by BLAKE3 of the body), so a scenario reusing
+fixtures that other scenarios touch (hello.txt, dedup-test.jpg,
+red-image.png, …) would see HIT on its very first read because an
+earlier scenario in the same run already warmed the hash.
+
+Keeping these bytes exclusive to cache_header.hurl means the first GET
+after upload is guaranteed to be a MISS. Do NOT reuse this file in
+other scenarios. If a diff ever brings in another consumer of this
+fixture, split the content so the hashes diverge.
+
+Random tag so a casual grep catches accidental reuse:
+    cache-header-fixture-id: 9d1e7a3f-2b48-4b70-9b45-a3cc19a4f9e4
