@@ -481,7 +481,7 @@ pub async fn get_stats(state: State<GlobalState>, auth_user: AuthUser) -> impl I
         ("hash" = String, Path, description = "BLAKE3 hash of the blob (64 hex characters)"),
     ),
     responses(
-        (status = 200, description = "Raw blob content (user-scoped)"),
+        (status = 200, content_type = "application/octet-stream", description = "Raw blob content (user-scoped)"),
         (status = 400, description = "Invalid hash format"),
         (status = 404, description = "Blob not found or not owned by this user"),
     ),

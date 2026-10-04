@@ -544,7 +544,7 @@ pub async fn delete_folder_with_trash(
     path = "/api/folders/{id}/download",
     params(("id" = String, Path, description = "Folder ID")),
     responses(
-        (status = 200, description = "ZIP archive stream (application/zip)"),
+        (status = 200, content_type = "application/zip", description = "ZIP archive stream (application/zip)"),
         (status = 404, description = "Folder not found"),
         (status = 501, description = "ZIP service not available"),
     ),

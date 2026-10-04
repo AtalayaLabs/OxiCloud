@@ -86,7 +86,7 @@ pub async fn get_trash_resources(
     path = "/api/trash/files/{id}",
     params(("id" = String, Path, description = "File ID")),
     responses(
-        (status = 200, description = "File moved to trash"),
+        (status = 200, body = Object, description = "File moved to trash"),
         (status = 501, description = "Trash feature not enabled")
     ),
     security(("bearerAuth" = [])),
@@ -145,7 +145,7 @@ pub async fn move_file_to_trash(
     path = "/api/trash/folders/{id}",
     params(("id" = String, Path, description = "Folder ID")),
     responses(
-        (status = 200, description = "Folder moved to trash"),
+        (status = 200, body = Object, description = "Folder moved to trash"),
         (status = 501, description = "Trash feature not enabled")
     ),
     security(("bearerAuth" = [])),
@@ -206,7 +206,7 @@ pub async fn move_folder_to_trash(
     path = "/api/trash/{id}/restore",
     params(("id" = String, Path, description = "Trash item ID")),
     responses(
-        (status = 200, description = "Item restored from trash"),
+        (status = 200, body = Object, description = "Item restored from trash"),
         (status = 501, description = "Trash feature not enabled")
     ),
     security(("bearerAuth" = [])),
@@ -259,7 +259,7 @@ pub async fn restore_from_trash(
     path = "/api/trash/{id}",
     params(("id" = String, Path, description = "Trash item ID")),
     responses(
-        (status = 200, description = "Item permanently deleted"),
+        (status = 200, body = Object, description = "Item permanently deleted"),
         (status = 501, description = "Trash feature not enabled")
     ),
     security(("bearerAuth" = [])),
@@ -313,7 +313,7 @@ pub async fn delete_permanently(
     delete,
     path = "/api/trash/empty",
     responses(
-        (status = 200, description = "Trash emptied successfully"),
+        (status = 200, body = Object, description = "Trash emptied successfully"),
         (status = 501, description = "Trash feature not enabled")
     ),
     security(("bearerAuth" = [])),
@@ -378,7 +378,7 @@ pub async fn empty_trash(
     path = "/api/trash/drive/{drive_id}",
     params(("drive_id" = Uuid, Path, description = "Drive UUID")),
     responses(
-        (status = 200, description = "Drive trash emptied successfully"),
+        (status = 200, body = Object, description = "Drive trash emptied successfully"),
         (status = 404, description = "Caller lacks Delete on this drive"),
         (status = 501, description = "Trash feature not enabled"),
     ),

@@ -257,7 +257,7 @@ pub async fn delete_shared_link(
     path = "/api/s/{token}",
     params(("token" = String, Path, description = "Share token")),
     responses(
-        (status = 200, description = "Shared item details"),
+        (status = 200, body = crate::application::dtos::share_dto::ShareDto, description = "Shared item details"),
         (status = 401, description = "Password required"),
         (status = 410, description = "Share expired")
     ),
@@ -320,7 +320,7 @@ pub async fn access_shared_item(
     path = "/api/s/{token}/verify",
     params(("token" = String, Path, description = "Share token")),
     responses(
-        (status = 200, description = "Password verified, item details returned"),
+        (status = 200, body = crate::application::dtos::share_dto::ShareDto, description = "Password verified, item details returned"),
         (status = 401, description = "Invalid password"),
         (status = 410, description = "Share expired")
     ),

@@ -176,7 +176,7 @@ pub async fn translate(
     path = "/api/i18n/locales/{locale_code}",
     params(("locale_code" = String, Path, description = "Locale code, e.g. en, fr, de")),
     responses(
-        (status = 200, description = "All translations for this locale"),
+        (status = 200, body = Object, description = "All translations for this locale"),
         (status = 400, description = "Unsupported locale"),
     ),
     tag = "i18n"

@@ -18,7 +18,17 @@
         "operationId": "list_address_books",
         "responses": {
           "200": {
-            "description": "List of address books"
+            "description": "List of address books",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AddressBookResponse"
+                  }
+                }
+              }
+            }
           },
           "500": {
             "description": "Internal server error"
@@ -195,7 +205,17 @@
         ],
         "responses": {
           "200": {
-            "description": "List of contacts"
+            "description": "List of contacts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ContactDto"
+                  }
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -239,7 +259,14 @@
         },
         "responses": {
           "201": {
-            "description": "Contact created"
+            "description": "Contact created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactDto"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid input"
@@ -287,7 +314,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Contact details"
+            "description": "Contact details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactDto"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -340,7 +374,14 @@
         },
         "responses": {
           "200": {
-            "description": "Contact updated"
+            "description": "Contact updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactDto"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid input"
@@ -428,7 +469,17 @@
         ],
         "responses": {
           "200": {
-            "description": "List of contact groups"
+            "description": "List of contact groups",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ContactGroupDto"
+                  }
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -472,7 +523,14 @@
         },
         "responses": {
           "201": {
-            "description": "Group created"
+            "description": "Group created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactGroupDto"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied or read-only book"
@@ -517,7 +575,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Group details"
+            "description": "Group details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactGroupDto"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -570,7 +635,14 @@
         },
         "responses": {
           "200": {
-            "description": "Group updated"
+            "description": "Group updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactGroupDto"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied or read-only book"
@@ -658,7 +730,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Contacts in the group"
+            "description": "Contacts in the group",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ContactDto"
+                  }
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -794,7 +876,14 @@
         "operationId": "get_dashboard_stats",
         "responses": {
           "200": {
-            "description": "Dashboard statistics"
+            "description": "Dashboard statistics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardStatsDto"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -964,7 +1053,14 @@
         },
         "responses": {
           "200": {
-            "description": "Stored defaults, or the impact preview when dry_run=true"
+            "description": "Stored defaults, or the impact preview when dry_run=true",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Unknown kind, unknown knob, or a knob that cannot be defaulted"
@@ -1364,7 +1460,14 @@
         "operationId": "list_jobs",
         "responses": {
           "200": {
-            "description": "Jobs listed"
+            "description": "Jobs listed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -1402,7 +1505,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Cancel signalled (or no-op if nothing was running)"
+            "description": "Cancel signalled (or no-op if nothing was running)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -1443,7 +1553,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Pause signalled (or no-op if nothing was running)"
+            "description": "Pause signalled (or no-op if nothing was running)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -1495,7 +1612,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Runs listed (may be empty)"
+            "description": "Runs listed (may be empty)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -1545,7 +1669,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Run detail"
+            "description": "Run detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -1620,7 +1751,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Findings listed (may be empty)"
+            "description": "Findings listed (may be empty)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -1664,7 +1802,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Dispatched; outcome inline"
+            "description": "Dispatched; outcome inline",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -1727,7 +1872,14 @@
         "operationId": "clear_search_cache",
         "responses": {
           "200": {
-            "description": "Cache cleared"
+            "description": "Cache cleared",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid token"
@@ -1797,7 +1949,14 @@
         ],
         "responses": {
           "200": {
-            "description": "List of sessions"
+            "description": "List of sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -1835,7 +1994,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Session revoked"
+            "description": "Session revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid UUID"
@@ -1868,7 +2034,14 @@
         "operationId": "get_oidc_settings",
         "responses": {
           "200": {
-            "description": "OIDC settings"
+            "description": "OIDC settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OidcSettingsDto"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -1903,7 +2076,14 @@
         },
         "responses": {
           "200": {
-            "description": "OIDC settings saved"
+            "description": "OIDC settings saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -1938,7 +2118,14 @@
         },
         "responses": {
           "200": {
-            "description": "Registration setting updated"
+            "description": "Registration setting updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Missing field"
@@ -1968,7 +2155,14 @@
         "operationId": "get_storage_settings",
         "responses": {
           "200": {
-            "description": "Storage settings"
+            "description": "Storage settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StorageSettingsDto"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -2003,7 +2197,14 @@
         },
         "responses": {
           "200": {
-            "description": "Storage settings saved"
+            "description": "Storage settings saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -2030,7 +2231,14 @@
         "operationId": "generate_encryption_key",
         "responses": {
           "200": {
-            "description": "Generated AES-256 key"
+            "description": "Generated AES-256 key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -2179,7 +2387,14 @@
         "operationId": "get_migration_status",
         "responses": {
           "200": {
-            "description": "Current migration status"
+            "description": "Current migration status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MigrationStateDto"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -2206,7 +2421,14 @@
         "operationId": "pause_migration",
         "responses": {
           "200": {
-            "description": "Pause signalled (or no-op)"
+            "description": "Pause signalled (or no-op)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -2233,7 +2455,14 @@
         "operationId": "resume_migration",
         "responses": {
           "200": {
-            "description": "Migration resumed (or already running)"
+            "description": "Migration resumed (or already running)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -2270,7 +2499,14 @@
         },
         "responses": {
           "200": {
-            "description": "Migration started"
+            "description": "Migration started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -2307,7 +2543,14 @@
         },
         "responses": {
           "200": {
-            "description": "Ownership transferred"
+            "description": "Ownership transferred",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Target cannot hold ownership, or is already the owner"
@@ -2362,7 +2605,14 @@
         ],
         "responses": {
           "200": {
-            "description": "List of users"
+            "description": "List of users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUsersPageResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -2397,7 +2647,14 @@
         },
         "responses": {
           "201": {
-            "description": "User created"
+            "description": "User created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FullUserDto"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid user data"
@@ -2438,7 +2695,14 @@
         ],
         "responses": {
           "200": {
-            "description": "User details"
+            "description": "User details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FullUserDto"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -2477,7 +2741,14 @@
         ],
         "responses": {
           "200": {
-            "description": "User deleted"
+            "description": "User deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Cannot delete own account"
@@ -2528,7 +2799,14 @@
         },
         "responses": {
           "200": {
-            "description": "User active status updated"
+            "description": "User active status updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Cannot deactivate own account"
@@ -2579,7 +2857,14 @@
         },
         "responses": {
           "200": {
-            "description": "Password reset"
+            "description": "Password reset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid password"
@@ -2684,7 +2969,14 @@
         },
         "responses": {
           "200": {
-            "description": "Quota updated"
+            "description": "Quota updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -2732,7 +3024,14 @@
         },
         "responses": {
           "200": {
-            "description": "Role updated"
+            "description": "Role updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Cannot change own role, or the target is the server owner"
@@ -2842,7 +3141,14 @@
         },
         "responses": {
           "200": {
-            "description": "Password changed successfully"
+            "description": "Password changed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "New password does not meet requirements"
@@ -2878,7 +3184,14 @@
         },
         "responses": {
           "200": {
-            "description": "Thumbprint bound"
+            "description": "Thumbprint bound",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Malformed thumbprint"
@@ -2967,7 +3280,14 @@
         },
         "responses": {
           "200": {
-            "description": "Logged out, auth cookies cleared"
+            "description": "Logged out, auth cookies cleared",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "401": {
             "description": "Not authenticated or refresh token missing"
@@ -3000,7 +3320,14 @@
         },
         "responses": {
           "200": {
-            "description": "Uniform 'if an account exists, a link will be sent' response"
+            "description": "Uniform 'if an account exists, a link will be sent' response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "503": {
             "description": "Magic-link / SMTP is not configured on this server"
@@ -3123,7 +3450,14 @@
         },
         "responses": {
           "200": {
-            "description": "Logout notification accepted (0 or more sessions revoked)"
+            "description": "Logout notification accepted (0 or more sessions revoked)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "logout_token missing, malformed, or failed validation"
@@ -3277,7 +3611,14 @@
         "operationId": "oidc_unlink",
         "responses": {
           "200": {
-            "description": "OIDC identity unlinked (or was already unlinked)"
+            "description": "OIDC identity unlinked (or was already unlinked)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "401": {
             "description": "Not authenticated"
@@ -3580,7 +3921,14 @@
         },
         "responses": {
           "200": {
-            "description": "Uniform registration response (SMTP configured, anti-enumeration mode)"
+            "description": "Uniform registration response (SMTP configured, anti-enumeration mode)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "201": {
             "description": "User registered successfully (SMTP not configured)",
@@ -3708,7 +4056,10 @@
         ],
         "responses": {
           "200": {
-            "description": "ZIP archive stream"
+            "description": "ZIP archive stream",
+            "content": {
+              "application/zip": {}
+            }
           },
           "400": {
             "description": "Malformed request, or every item failed for DIFFERENT reasons"
@@ -3754,7 +4105,10 @@
         },
         "responses": {
           "200": {
-            "description": "ZIP archive stream"
+            "description": "ZIP archive stream",
+            "content": {
+              "application/zip": {}
+            }
           },
           "400": {
             "description": "Malformed request, or every item failed for DIFFERENT reasons"
@@ -3801,10 +4155,24 @@
         },
         "responses": {
           "200": {
-            "description": "All files copied"
+            "description": "All files copied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "206": {
-            "description": "Partial success"
+            "description": "Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Malformed request, or every item failed for DIFFERENT reasons"
@@ -3848,10 +4216,24 @@
         },
         "responses": {
           "200": {
-            "description": "All files deleted"
+            "description": "All files deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "206": {
-            "description": "Partial success"
+            "description": "Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Malformed request, or every item failed for DIFFERENT reasons"
@@ -3895,10 +4277,24 @@
         },
         "responses": {
           "200": {
-            "description": "Batch file details"
+            "description": "Batch file details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "206": {
-            "description": "Partial success"
+            "description": "Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Malformed request, or every item failed for DIFFERENT reasons"
@@ -3942,10 +4338,24 @@
         },
         "responses": {
           "200": {
-            "description": "All files moved"
+            "description": "All files moved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "206": {
-            "description": "Partial success"
+            "description": "Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Malformed request, or every item failed for DIFFERENT reasons"
@@ -3989,10 +4399,24 @@
         },
         "responses": {
           "200": {
-            "description": "All folders copied"
+            "description": "All folders copied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "206": {
-            "description": "Partial success"
+            "description": "Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Malformed request, or every item failed for DIFFERENT reasons"
@@ -4036,10 +4460,24 @@
         },
         "responses": {
           "201": {
-            "description": "All folders created"
+            "description": "All folders created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "206": {
-            "description": "Partial success"
+            "description": "Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Malformed request, or every item failed for DIFFERENT reasons"
@@ -4083,10 +4521,24 @@
         },
         "responses": {
           "200": {
-            "description": "All folders deleted"
+            "description": "All folders deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "206": {
-            "description": "Partial success"
+            "description": "Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Malformed request, or every item failed for DIFFERENT reasons"
@@ -4130,10 +4582,24 @@
         },
         "responses": {
           "200": {
-            "description": "Batch folder details"
+            "description": "Batch folder details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "206": {
-            "description": "Partial success"
+            "description": "Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Malformed request, or every item failed for DIFFERENT reasons"
@@ -4177,10 +4643,24 @@
         },
         "responses": {
           "200": {
-            "description": "All folders moved"
+            "description": "All folders moved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "206": {
-            "description": "Partial success"
+            "description": "Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Malformed request, or every item failed for DIFFERENT reasons"
@@ -4224,10 +4704,24 @@
         },
         "responses": {
           "200": {
-            "description": "All items trashed"
+            "description": "All items trashed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "206": {
-            "description": "Partial success"
+            "description": "Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Malformed request, or every item failed for DIFFERENT reasons"
@@ -4292,7 +4786,10 @@
         ],
         "responses": {
           "200": {
-            "description": "Raw blob content (user-scoped)"
+            "description": "Raw blob content (user-scoped)",
+            "content": {
+              "application/octet-stream": {}
+            }
           },
           "400": {
             "description": "Invalid hash format"
@@ -4717,7 +5214,14 @@
         },
         "responses": {
           "200": {
-            "description": "Policies merged"
+            "description": "Policies merged",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "404": {
             "description": "Drive not found OR caller is not OxiCloud admin"
@@ -4762,7 +5266,14 @@
         },
         "responses": {
           "200": {
-            "description": "Quota updated"
+            "description": "Quota updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Personal drive — quota is envelope-managed via the owner user"
@@ -4934,7 +5445,14 @@
         ],
         "responses": {
           "201": {
-            "description": "Item added to favorites"
+            "description": "Item added to favorites",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid item type"
@@ -4974,7 +5492,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Item removed from favorites"
+            "description": "Item removed from favorites",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "404": {
             "description": "Item not in favorites"
@@ -5352,10 +5877,16 @@
         ],
         "responses": {
           "200": {
-            "description": "File content"
+            "description": "File content (Content-Type on the actual response reflects the file's own mime type)",
+            "content": {
+              "application/octet-stream": {}
+            }
           },
           "206": {
-            "description": "Partial content (Range request)"
+            "description": "Partial content (Range request) — same byte stream as the 200, scoped to the requested byte range. `Content-Type` on the actual response reflects the file's own mime type.",
+            "content": {
+              "application/octet-stream": {}
+            }
           },
           "304": {
             "description": "Not modified"
@@ -5467,7 +5998,14 @@
         ],
         "responses": {
           "200": {
-            "description": "File metadata (EXIF, dimensions, duration, etc.)"
+            "description": "File metadata (EXIF, dimensions, duration, etc.)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "404": {
             "description": "File not found"
@@ -5605,7 +6143,10 @@
         ],
         "responses": {
           "200": {
-            "description": "Thumbnail image (image/jpeg or image/webp)"
+            "description": "Thumbnail image (image/jpeg or image/webp)",
+            "content": {
+              "image/webp": {}
+            }
           },
           "204": {
             "description": "No thumbnail available for this file type"
@@ -5657,7 +6198,14 @@
         },
         "responses": {
           "201": {
-            "description": "Thumbnail stored"
+            "description": "Thumbnail stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid image or size too large"
@@ -5882,7 +6430,10 @@
         ],
         "responses": {
           "200": {
-            "description": "ZIP archive stream (application/zip)"
+            "description": "ZIP archive stream (application/zip)",
+            "content": {
+              "application/zip": {}
+            }
           },
           "404": {
             "description": "Folder not found"
@@ -6981,7 +7532,14 @@
         },
         "responses": {
           "201": {
-            "description": "Member added"
+            "description": "Member added",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid request, cycle would be created, or depth limit exceeded"
@@ -7148,7 +7706,14 @@
         ],
         "responses": {
           "200": {
-            "description": "All translations for this locale"
+            "description": "All translations for this locale",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Unsupported locale"
@@ -7644,7 +8209,17 @@
         ],
         "responses": {
           "200": {
-            "description": "List of media files sorted by capture date"
+            "description": "List of media files sorted by capture date",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PhotoDto"
+                  }
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -7691,7 +8266,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Geotagged photos aggregated into map clusters"
+            "description": "Geotagged photos aggregated into map clusters. Flat array; each entry is one aggregation cell carrying its centroid (lng/lat), the number of photos in the cell, and one representative sample_file_id usable as the cluster thumbnail.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/GeoCluster"
+                  }
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid bounding box"
@@ -7715,7 +8300,17 @@
         "operationId": "list_playlists",
         "responses": {
           "200": {
-            "description": "List of playlists"
+            "description": "List of playlists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PlaylistDto"
+                  }
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -7744,7 +8339,14 @@
         },
         "responses": {
           "201": {
-            "description": "Playlist created"
+            "description": "Playlist created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaylistDto"
+                }
+              }
+            }
           },
           "400": {
             "description": "Bad request"
@@ -7779,7 +8381,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Audio metadata"
+            "description": "Audio metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AudioMetadataDto"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -7814,7 +8423,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Playlist details"
+            "description": "Playlist details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaylistDto"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -7857,7 +8473,14 @@
         },
         "responses": {
           "200": {
-            "description": "Playlist updated"
+            "description": "Playlist updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaylistDto"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -8059,7 +8682,17 @@
         ],
         "responses": {
           "200": {
-            "description": "List of playlist shares"
+            "description": "List of playlist shares",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PlaylistShareInfoDto"
+                  }
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -8094,7 +8727,17 @@
         ],
         "responses": {
           "200": {
-            "description": "List of playlist tracks"
+            "description": "List of playlist tracks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PlaylistItemDto"
+                  }
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -8137,7 +8780,17 @@
         },
         "responses": {
           "201": {
-            "description": "Tracks added"
+            "description": "Tracks added",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PlaylistItemDto"
+                  }
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -8206,7 +8859,14 @@
         "operationId": "clear_recent_items",
         "responses": {
           "200": {
-            "description": "Recent items cleared"
+            "description": "Recent items cleared",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -8333,7 +8993,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Access recorded"
+            "description": "Access recorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid item type"
@@ -8373,7 +9040,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Item removed from recents"
+            "description": "Item removed from recents",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "404": {
             "description": "Item not in recents"
@@ -8406,7 +9080,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Shared item details"
+            "description": "Shared item details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareDto"
+                }
+              }
+            }
           },
           "401": {
             "description": "Password required"
@@ -8447,7 +9128,14 @@
         },
         "responses": {
           "200": {
-            "description": "Password verified, item details returned"
+            "description": "Password verified, item details returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareDto"
+                }
+              }
+            }
           },
           "401": {
             "description": "Invalid password"
@@ -8941,7 +9629,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Drive trash emptied successfully"
+            "description": "Drive trash emptied successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "404": {
             "description": "Caller lacks Delete on this drive"
@@ -8966,7 +9661,14 @@
         "operationId": "empty_trash",
         "responses": {
           "200": {
-            "description": "Trash emptied successfully"
+            "description": "Trash emptied successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "501": {
             "description": "Trash feature not enabled"
@@ -8999,7 +9701,14 @@
         ],
         "responses": {
           "200": {
-            "description": "File moved to trash"
+            "description": "File moved to trash",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "501": {
             "description": "Trash feature not enabled"
@@ -9032,7 +9741,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Folder moved to trash"
+            "description": "Folder moved to trash",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "501": {
             "description": "Trash feature not enabled"
@@ -9156,7 +9872,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Item permanently deleted"
+            "description": "Item permanently deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "501": {
             "description": "Trash feature not enabled"
@@ -9189,7 +9912,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Item restored from trash"
+            "description": "Item restored from trash",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "501": {
             "description": "Trash feature not enabled"
@@ -9480,7 +10210,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Profile of a user the caller can see"
+            "description": "Profile of a user the caller can see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicUserDto"
+                }
+              }
+            }
           },
           "404": {
             "description": "User does not exist OR caller has no visibility (anti-enumeration: indistinguishable)"
@@ -9877,6 +10614,140 @@
           }
         }
       },
+      "AdminUsersPageResponse": {
+        "type": "object",
+        "description": "Response envelope for `GET /api/admin/users`. `users` is always\n`Vec<FullUserDto>` — same shape one row of `/me`'s embedded\n`full` block carries; the FE seeds `resolveUser` cache from\n`row.user` (kills the per-row `/api/users/{id}` fetch). See\n`docs/plan/userdto-refactor.md`.",
+        "required": [
+          "users",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "users": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FullUserDto"
+            }
+          }
+        }
+      },
+      "AudioMetadataDto": {
+        "type": "object",
+        "required": [
+          "file_id",
+          "duration_secs",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "album": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "album_artist": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "artist": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "bitrate": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "channels": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "disc_number": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "duration_secs": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "file_id": {
+            "type": "string"
+          },
+          "format": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "genre": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sample_rate": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "track_number": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "year": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          }
+        }
+      },
       "AuthDto": {
         "type": "object",
         "description": "Auth block within [`ServerConfigDto`]. Non-privacy-implicating\ntunables the SPA needs at boot so form validation matches server\nenforcement.",
@@ -9927,6 +10798,38 @@
           "user": {
             "$ref": "#/components/schemas/SelfUserDto",
             "description": "Full self view — identical shape to `/api/auth/me`. Every\nlogin / refresh / OIDC-callback / magic-link redemption ships\nthis so the SPA's post-auth state matches its post-`/me` state\n(no UI race between `AuthResponseDto` and the first `/me`\nfetch). See `docs/plan/userdto-refactor.md` § Endpoint mapping."
+          }
+        }
+      },
+      "BackendCacheInfoDto": {
+        "type": "object",
+        "description": "`.blob-cache` tier occupancy snapshot (see [`DashboardStatsDto::backend_cache`]).\nSeparate struct from the moka one so adding tier-specific fields\nlater (eviction count, LRU age) doesn't force a shared schema.",
+        "required": [
+          "size_bytes",
+          "max_bytes",
+          "chunks",
+          "cache_dir"
+        ],
+        "properties": {
+          "cache_dir": {
+            "type": "string",
+            "description": "On-disk location where the cache files live. Shown on the\nadmin UI so operators know where to point `du`, backups, or\nan SSD mount."
+          },
+          "chunks": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of cached chunks (one entry per content-addressable\nblob). Unlike moka's assembled-file entries, these are the\nchunk-granular units of the dedup registry. The disk tier\ncovers both source-file chunks AND satellite derived blobs\n(thumbnails, transcodes) — one unified disk cache serving\nevery blob read.",
+            "minimum": 0
+          },
+          "max_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
@@ -10376,6 +11279,33 @@
           }
         }
       },
+      "ContentCacheInfoDto": {
+        "type": "object",
+        "description": "Moka content-cache occupancy snapshot (see [`DashboardStatsDto::content_cache`]).\n\nEach moka entry holds the ASSEMBLED bytes of one small file\n(<10 MB) keyed by the file's content hash — not individual\nchunks. So `files` is the honest name for the entry count here;\nuse it against the sibling `BackendCacheInfoDto`'s `chunks` to\navoid conflating the two tiers' granularities in dashboards or\nalerts.",
+        "required": [
+          "size_bytes",
+          "max_bytes",
+          "files"
+        ],
+        "properties": {
+          "files": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of cached files. For a file physically split into N\nchunks on-backend, moka still holds exactly ONE assembled\nentry here.",
+            "minimum": 0
+          },
+          "max_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "CreateAddressBookRequest": {
         "type": "object",
         "description": "Request body for creating an address book.",
@@ -10765,6 +11695,123 @@
           }
         }
       },
+      "DashboardStatsDto": {
+        "type": "object",
+        "description": "Dashboard statistics",
+        "required": [
+          "server_version",
+          "oidc_configured",
+          "active_ws_sessions",
+          "total_users",
+          "active_users",
+          "admin_users",
+          "external_users",
+          "online_users",
+          "online_sessions",
+          "drive_usage",
+          "users_over_80_percent",
+          "users_over_quota",
+          "registration_enabled",
+          "storage_cache_recommended",
+          "content_cache",
+          "thumbnail_cache"
+        ],
+        "properties": {
+          "active_users": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "active_ws_sessions": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Currently-connected message-bus WebSocket sessions. One per\nbrowser tab that reached a folder view and hasn't closed the\ntab yet. Zero when `OXICLOUD_MESSAGEBUS_ENABLE=false`.\nSnapshot value — a subsequent request can see a different\nnumber if a connection opened/closed in between. Renders on\nthe admin dashboard's \"Live activity\" section next to\n`online_sessions` (HTTP-driven distinct-user count).",
+            "minimum": 0
+          },
+          "admin_users": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "backend_cache": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BackendCacheInfoDto",
+                "description": "Current occupancy of the on-disk `.blob-cache` tier when\nenabled, `None` otherwise. `None` is the \"local-only\ndeployment or operator hasn't opted in\" case, in which the\nadmin UI hides the row entirely rather than drawing a disabled\nbar."
+              }
+            ]
+          },
+          "content_cache": {
+            "$ref": "#/components/schemas/ContentCacheInfoDto",
+            "description": "Current occupancy of the in-memory file-content cache (moka).\nAdmin dashboard renders `size_bytes / max_bytes` as a capacity\nbar; combined with `oxicloud_content_cache_hits_total /\n_misses_total` on `/metrics` the operator can see both\n\"how full\" and \"how useful\". Always present — the content\ncache runs unconditionally."
+          },
+          "dedup_ratio": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "drive_usage": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DriveKindUsageDto"
+            }
+          },
+          "external_users": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Grant-only accounts (magic-link / OIDC-only / OCM recipients).\nFiltered out of `total_users` / `active_users` since those\ncolumns count operational seats (see the SELECT comment). Here\nas its own metric because operators of external-heavy\ndeployments (public shares, invited-collab shops) need to see\nthe invited population at a glance."
+          },
+          "oidc_configured": {
+            "type": "boolean"
+          },
+          "online_sessions": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Non-revoked sessions active in the last 5 min. Answers \"how\nmany concurrent connections must I serve?\". Ratio\n`online_sessions / online_users` is the multi-device factor."
+          },
+          "online_users": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Distinct users behind non-revoked sessions active in the last\n5 min. Answers \"how many humans are here right now?\"."
+          },
+          "registration_enabled": {
+            "type": "boolean"
+          },
+          "server_version": {
+            "type": "string"
+          },
+          "storage_cache_recommended": {
+            "type": "boolean",
+            "description": "`true` when the active storage backend is remote (S3 / Azure)\nand the local-disk blob cache is NOT enabled — i.e., every\nblob read pays a round-trip to the remote. Signals the admin\nUI to show the \"enable the backend cache\" banner. `false` on\nlocal-filesystem deployments (nothing to cache) and when the\ncache is already on."
+          },
+          "thumbnail_cache": {
+            "$ref": "#/components/schemas/ThumbnailCacheInfoDto",
+            "description": "Current occupancy of the in-memory thumbnail cache (moka\ninstance distinct from the file-content cache above —\ndifferent key space, different budget, different eviction).\nAlways present. See `docs/architecture/caching.md` for the\ntwo-tier memory topology and why they aren't merged."
+          },
+          "total_bytes_stored": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "total_users": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "users_over_80_percent": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "users_over_quota": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "DeletePermanentlyRequest": {
         "type": "object",
         "description": "Request to permanently delete an item from trash",
@@ -11032,6 +12079,45 @@
           "personal",
           "shared"
         ]
+      },
+      "DriveKindUsageDto": {
+        "type": "object",
+        "description": "One row of the dashboard's quota panel — usage aggregate for a\nsingle drive kind. Unlimited caps are excluded from `capped_quota_bytes`\nand counted in `unlimited_count` so the panel can render the ratio\nhonestly (\"X / Y over N capped drives · M unlimited\").",
+        "required": [
+          "kind",
+          "used_bytes",
+          "unlimited_count",
+          "capped_count"
+        ],
+        "properties": {
+          "capped_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Count of drives with a numeric cap. Used to hide rows with\nzero drives and denominate the ratio."
+          },
+          "capped_quota_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Sum of caps over capped drives only. `None` when there are no\ncapped drives of this kind (would otherwise report `0 / 0`\nmeaninglessly)."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`\"personal\"` or `\"shared\"`."
+          },
+          "unlimited_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Count of drives (personal: users) with no cap. Personal-kind\nunlimited = `auth.users.storage_quota_bytes = 0`; shared-kind\nunlimited = `storage.drives.quota_bytes IS NULL`."
+          },
+          "used_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total bytes stored across drives of this kind. Excludes trashed\nfiles (see `bug_trash_excluded_from_quota` for the known gap)."
+          }
+        }
       },
       "DrivePolicies": {
         "type": "object",
@@ -11815,6 +12901,37 @@
           }
         }
       },
+      "GeoCluster": {
+        "type": "object",
+        "description": "A clustered group of geotagged photos within one aggregation cell.",
+        "required": [
+          "lng",
+          "lat",
+          "count",
+          "sample_file_id"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of photos in the cluster."
+          },
+          "lat": {
+            "type": "number",
+            "format": "double",
+            "description": "Cluster centroid latitude."
+          },
+          "lng": {
+            "type": "number",
+            "format": "double",
+            "description": "Cluster centroid longitude."
+          },
+          "sample_file_id": {
+            "type": "string",
+            "description": "A representative photo id, for the cluster thumbnail."
+          }
+        }
+      },
       "GrantDto": {
         "type": "object",
         "required": [
@@ -12172,6 +13289,63 @@
           }
         }
       },
+      "MigrationStateDto": {
+        "type": "object",
+        "description": "Migration progress returned by `GET /api/admin/storage/migration`.\nRe-exports the `MigrationState` shape for the admin UI.",
+        "required": [
+          "status",
+          "total_blobs",
+          "migrated_blobs",
+          "migrated_bytes",
+          "failed_blobs"
+        ],
+        "properties": {
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "failed_blobs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "migrated_blobs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "migrated_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "throughput_bytes_per_sec": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Estimated throughput in bytes/sec (for UI ETA calculation)."
+          },
+          "total_blobs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "MoveFilePayload": {
         "type": "object",
         "description": "Payload for moving a file",
@@ -12430,6 +13604,64 @@
           "require_verified_email": {
             "type": "boolean",
             "description": "True iff `OXICLOUD_REQUIRE_VERIFIED_EMAIL` is set. Frontend uses\nthis hint to explain the `EmailNotVerified` login response and\nto nudge new users toward the magic-link verification path\nstraight after signup."
+          }
+        }
+      },
+      "OidcSettingsDto": {
+        "type": "object",
+        "description": "Current OIDC settings returned to admin UI (secrets masked)",
+        "required": [
+          "enabled",
+          "issuer_url",
+          "client_id",
+          "client_secret_set",
+          "scopes",
+          "auto_provision",
+          "admin_groups",
+          "disable_password_login",
+          "provider_name",
+          "callback_url",
+          "env_overrides"
+        ],
+        "properties": {
+          "admin_groups": {
+            "type": "string"
+          },
+          "auto_provision": {
+            "type": "boolean"
+          },
+          "callback_url": {
+            "type": "string",
+            "description": "Auto-generated callback URL the admin must register in their IdP"
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "client_secret_set": {
+            "type": "boolean",
+            "description": "True if a client secret is configured (never reveals the actual value)"
+          },
+          "disable_password_login": {
+            "type": "boolean"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "env_overrides": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Field names overridden by environment variables (read-only in UI)"
+          },
+          "issuer_url": {
+            "type": "string"
+          },
+          "provider_name": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "string"
           }
         }
       },
@@ -12847,6 +14079,182 @@
             "type": "string"
           },
           "type": {
+            "type": "string"
+          }
+        }
+      },
+      "PhotoDto": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/FileDto"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "height": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "minimum": 0
+              },
+              "width": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "minimum": 0
+              }
+            }
+          }
+        ],
+        "description": "Photos-timeline item: a `FileDto` plus the image's original pixel\ndimensions (from EXIF/metadata), flattened into the same JSON shape so\nthe gallery can lay tiles out at their true aspect ratio without a\nsecond per-file metadata round-trip."
+      },
+      "PlaylistDto": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "owner_id",
+          "is_public",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "cover_file_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "is_public": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "total_duration_secs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "track_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "PlaylistItemDto": {
+        "type": "object",
+        "required": [
+          "id",
+          "playlist_id",
+          "file_id",
+          "position",
+          "added_at"
+        ],
+        "properties": {
+          "added_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "album": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "artist": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "duration_secs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "file_id": {
+            "type": "string"
+          },
+          "file_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "file_size": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "id": {
+            "type": "string"
+          },
+          "mime_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "playlist_id": {
+            "type": "string"
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "PlaylistShareInfoDto": {
+        "type": "object",
+        "required": [
+          "user_id",
+          "can_write"
+        ],
+        "properties": {
+          "can_write": {
+            "type": "boolean"
+          },
+          "user_id": {
             "type": "string"
           }
         }
@@ -14428,6 +15836,120 @@
           }
         }
       },
+      "StorageEncryptionPairDto": {
+        "type": "object",
+        "description": "One `<cipher>:<key>` pair rendered for the admin UI. Never\ncarries key material — only cipher name + a truncated fingerprint\nsafe to show operators.",
+        "required": [
+          "cipher",
+          "is_head"
+        ],
+        "properties": {
+          "cipher": {
+            "type": "string",
+            "description": "`\"aes-256-gcm\"` for a real-cipher pair, `\"none\"` for a\n`none:` sentinel (writes as plaintext-v1)."
+          },
+          "fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "SSH-style colon-hex 8-byte truncation of `sha256(key)`.\nMatches the v1 header's `<key_fp>` field and the CLI's\n`oxicloud --fingerprint <key>` output. `None` for `none:`\npairs (no key material to fingerprint)."
+          },
+          "is_head": {
+            "type": "boolean",
+            "description": "True for the LAST pair in the list — the write pair. UI\nbadges it distinctly (\"← head\" or an arrow). Exactly one\npair has `is_head = true` when the list is non-empty."
+          }
+        }
+      },
+      "StorageEntrySummaryDto": {
+        "type": "object",
+        "description": "Per-entry summary emitted in `StorageSettingsDto.entries`. Never\ncarries credentials — those live in env vars only. `is_active`\nmarks which entry the LIVE backend uses right now (matches\n`active_entry_name` on the parent DTO).",
+        "required": [
+          "name",
+          "backend",
+          "is_active",
+          "encryption_enabled"
+        ],
+        "properties": {
+          "backend": {
+            "type": "string",
+            "description": "Backend type — \"local\" / \"s3\" / \"azure\"."
+          },
+          "encryption_enabled": {
+            "type": "boolean",
+            "description": "True when the entry has a per-entry encryption key. UI shows\na lock icon. Presence-only — the key bytes never leave the\nserver."
+          },
+          "encryption_pairs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StorageEncryptionPairDto"
+            },
+            "description": "Ordered pair-list summary — one entry per configured pair in\n`OXICLOUD_STORAGE_<NAME>_ENCRYPTION_KEY`, oldest first, head\nlast. Empty vec means the entry has no `_ENCRYPTION_KEY`\ndeclared at all (pure plaintext-v1 writes today, no crypto).\n\nFrontend renders this on the entry card so operators can:\n  - See which pairs are configured + their SSH-style\n    fingerprints without inspecting `.env`.\n  - Cross-reference the head pair against the `head_key_fp`\n    from the last `backend_rotate` completion — if they\n    match AND `failed = 0`, every on-disk blob is under the\n    head, and non-head pairs are safe to remove."
+          },
+          "is_active": {
+            "type": "boolean",
+            "description": "True for exactly one entry (the entry the LIVE backend is on).\nFrontend uses this to badge the active row and to exclude it\nfrom the migration-target dropdown."
+          },
+          "location_hint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Human-readable physical location hint, if the backend surfaces\none (`root_dir` for Local, `bucket` for S3, `container` for\nAzure). Cosmetic — helps the admin distinguish two Local\nentries pointing at different disks."
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "StorageSettingsDto": {
+        "type": "object",
+        "description": "Current storage settings returned to admin UI.\n\nPost-multi-entry (`docs/plan/storage-multi-entry.md`) this exposes:\n- the entries declared in `.env` (safe: `location_hint` shows\n  provider+bucket, credential-related fields never appear),\n- the name of the active entry (backend selection is admin-observable),\n- the read-only flag (drives the UI banner during migration),\n- the currently-live backend type + dedup stats (informational).\n\nThe pre-multi-entry `s3_*` / `backend` / `env_overrides` fields\nused to also appear here — they duplicated `entries[]` and leaked\nstale legacy admin_settings rows, so slice-6 dropped them. Consumers\nwanting per-provider details read them off `entries[i].backend` and\n`entries[i].location_hint` instead.",
+        "required": [
+          "current_backend",
+          "total_blobs",
+          "total_bytes_stored",
+          "dedup_ratio",
+          "entries",
+          "active_entry_name",
+          "migration_readonly"
+        ],
+        "properties": {
+          "active_entry_name": {
+            "type": "string",
+            "description": "Name of the entry the LIVE backend is currently bound to.\nPopulated as the boot-selected name (per\n`CoreServices.active_backend_name`). Empty string for the\nzero-entries legacy path (`\"legacy\"` sentinel)."
+          },
+          "current_backend": {
+            "type": "string",
+            "description": "Backend type currently in use (`\"local\"` / `\"s3\"` / `\"azure\"`) —\nwhat the LIVE `blob_backend` is bound to, from\n`blob_handler.backend().backend_type()`. Redundant with\n`entries[i where is_active].backend` in multi-entry mode; kept\nbecause pre-boot / mid-migration inspection may still find it\nuseful."
+          },
+          "dedup_ratio": {
+            "type": "number",
+            "format": "double"
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StorageEntrySummaryDto"
+            },
+            "description": "All named storage entries declared in env. Empty when running\nin legacy single-backend mode (`OXICLOUD_STORAGE_ENTRIES`\nunset AND no legacy synthesis happened). Order matches\n`_ENTRIES`."
+          },
+          "migration_readonly": {
+            "type": "boolean",
+            "description": "Global read-only flag — when true, all write-adjacent\nAuthZ checks refuse. Set by the migration handler at run\nstart; cleared by the boot-clear rule after operator\nrestart. Frontend renders a banner on the storage tab when\ntrue."
+          },
+          "total_blobs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "total_bytes_stored": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "SubjectDto": {
         "type": "object",
         "required": [
@@ -14554,6 +16076,33 @@
           "registration_allowed": {
             "type": "boolean",
             "description": "Whether self-registration is allowed."
+          }
+        }
+      },
+      "ThumbnailCacheInfoDto": {
+        "type": "object",
+        "description": "Thumbnail-moka occupancy snapshot. Separate struct from the\nfile-content moka one because the granularity differs: each\nthumbnail entry is one encoded WebP/AVIF payload keyed by\n`(file_id, size)`, not an assembled file.",
+        "required": [
+          "size_bytes",
+          "max_bytes",
+          "thumbnails"
+        ],
+        "properties": {
+          "max_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "thumbnails": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of cached thumbnail payloads. Each entry = one\n`(file_id, size, format)` tuple of encoded bytes.",
+            "minimum": 0
           }
         }
       },

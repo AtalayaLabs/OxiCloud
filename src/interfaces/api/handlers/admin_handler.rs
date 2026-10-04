@@ -44,7 +44,7 @@ use uuid::Uuid;
 /// `full` block carries; the FE seeds `resolveUser` cache from
 /// `row.user` (kills the per-row `/api/users/{id}` fetch). See
 /// `docs/plan/userdto-refactor.md`.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, utoipa::ToSchema)]
 struct AdminUsersPageResponse {
     users: Vec<FullUserDto>,
     total: i64,
@@ -269,7 +269,7 @@ pub fn admin_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     get,
     path = "/api/admin/settings/oidc",
     responses(
-        (status = 200, description = "OIDC settings"),
+        (status = 200, body = crate::application::dtos::settings_dto::OidcSettingsDto, description = "OIDC settings"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required")
     ),
@@ -297,7 +297,7 @@ pub async fn get_oidc_settings(
     put,
     path = "/api/admin/settings/oidc",
     responses(
-        (status = 200, description = "OIDC settings saved"),
+        (status = 200, body = Object, description = "OIDC settings saved"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required")
     ),
@@ -355,7 +355,7 @@ async fn test_oidc_connection(
     get,
     path = "/api/admin/settings/storage",
     responses(
-        (status = 200, description = "Storage settings"),
+        (status = 200, body = crate::application::dtos::settings_dto::StorageSettingsDto, description = "Storage settings"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required")
     ),
@@ -383,7 +383,7 @@ pub async fn get_storage_settings(
     put,
     path = "/api/admin/settings/storage",
     responses(
-        (status = 200, description = "Storage settings saved"),
+        (status = 200, body = Object, description = "Storage settings saved"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required")
     ),
@@ -449,7 +449,7 @@ async fn test_storage_connection(
     get,
     path = "/api/admin/storage/migration",
     responses(
-        (status = 200, description = "Current migration status"),
+        (status = 200, body = crate::application::dtos::settings_dto::MigrationStateDto, description = "Current migration status"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required")
     ),
@@ -511,7 +511,7 @@ pub async fn get_migration_status(
     post,
     path = "/api/admin/storage/migration/start",
     responses(
-        (status = 200, description = "Migration started"),
+        (status = 200, body = Object, description = "Migration started"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required")
     ),
@@ -570,7 +570,7 @@ pub async fn start_migration(
     post,
     path = "/api/admin/storage/migration/pause",
     responses(
-        (status = 200, description = "Pause signalled (or no-op)"),
+        (status = 200, body = Object, description = "Pause signalled (or no-op)"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required")
     ),
@@ -618,7 +618,7 @@ pub async fn pause_migration(
     post,
     path = "/api/admin/storage/migration/resume",
     responses(
-        (status = 200, description = "Migration resumed (or already running)"),
+        (status = 200, body = Object, description = "Migration resumed (or already running)"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required")
     ),
@@ -887,7 +887,7 @@ fn run_to_migration_dto(
     post,
     path = "/api/admin/settings/storage/generate-key",
     responses(
-        (status = 200, description = "Generated AES-256 key"),
+        (status = 200, body = Object, description = "Generated AES-256 key"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required")
     ),
@@ -928,7 +928,7 @@ pub async fn generate_encryption_key() -> Result<impl IntoResponse, AppError> {
     get,
     path = "/api/admin/dashboard",
     responses(
-        (status = 200, description = "Dashboard statistics"),
+        (status = 200, body = crate::application::dtos::settings_dto::DashboardStatsDto, description = "Dashboard statistics"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required")
     ),
@@ -1217,7 +1217,7 @@ pub async fn get_dashboard_stats(
         ("offset" = Option<i64>, Query, description = "Pagination offset")
     ),
     responses(
-        (status = 200, description = "List of users"),
+        (status = 200, body = AdminUsersPageResponse, description = "List of users"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required")
     ),
@@ -1273,7 +1273,7 @@ pub async fn list_users(
     path = "/api/admin/users/{id}",
     params(("id" = String, Path, description = "User UUID")),
     responses(
-        (status = 200, description = "User details"),
+        (status = 200, body = FullUserDto, description = "User details"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required"),
         (status = 404, description = "User not found")
@@ -1307,7 +1307,7 @@ pub async fn get_user(
     path = "/api/admin/users/{id}",
     params(("id" = String, Path, description = "User UUID")),
     responses(
-        (status = 200, description = "User deleted"),
+        (status = 200, body = Object, description = "User deleted"),
         (status = 400, description = "Cannot delete own account"),
         (status = 403, description = "Caller does not outrank the target"),
         (status = 401, description = "Unauthorized"),
@@ -1365,7 +1365,7 @@ pub async fn delete_user(
         ("offset" = Option<i64>, Query, description = "Pagination offset")
     ),
     responses(
-        (status = 200, description = "List of sessions"),
+        (status = 200, body = Object, description = "List of sessions"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required")
     ),
@@ -1436,7 +1436,7 @@ pub async fn list_sessions(
     path = "/api/admin/sessions/{id}",
     params(("id" = String, Path, description = "Session UUID")),
     responses(
-        (status = 200, description = "Session revoked"),
+        (status = 200, body = Object, description = "Session revoked"),
         (status = 400, description = "Invalid UUID"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required"),
@@ -1477,7 +1477,7 @@ pub async fn revoke_session(
     path = "/api/admin/users/{id}/role",
     params(("id" = String, Path, description = "User UUID")),
     responses(
-        (status = 200, description = "Role updated"),
+        (status = 200, body = Object, description = "Role updated"),
         (status = 400, description = "Cannot change own role, or the target is the server owner"),
         (status = 403, description = "Caller does not outrank the target"),
         (status = 401, description = "Unauthorized"),
@@ -1523,7 +1523,7 @@ pub async fn update_user_role(
     path = "/api/admin/users/{id}/active",
     params(("id" = String, Path, description = "User UUID")),
     responses(
-        (status = 200, description = "User active status updated"),
+        (status = 200, body = Object, description = "User active status updated"),
         (status = 400, description = "Cannot deactivate own account"),
         (status = 403, description = "Caller does not outrank the target"),
         (status = 401, description = "Unauthorized"),
@@ -1575,7 +1575,7 @@ pub async fn update_user_active(
     path = "/api/admin/users/{id}/quota",
     params(("id" = String, Path, description = "User UUID")),
     responses(
-        (status = 200, description = "Quota updated"),
+        (status = 200, body = Object, description = "Quota updated"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required, and must outrank the target")
     ),
@@ -1622,7 +1622,7 @@ pub async fn update_user_quota(
     post,
     path = "/api/admin/users",
     responses(
-        (status = 201, description = "User created"),
+        (status = 201, body = FullUserDto, description = "User created"),
         (status = 400, description = "Invalid user data"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required, and cannot create a role the caller does not outrank")
@@ -1657,7 +1657,7 @@ pub async fn create_user(
     path = "/api/admin/users/{id}/password",
     params(("id" = String, Path, description = "User UUID")),
     responses(
-        (status = 200, description = "Password reset"),
+        (status = 200, body = Object, description = "Password reset"),
         (status = 400, description = "Invalid password"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required, and must outrank the target")
@@ -1705,7 +1705,7 @@ pub async fn reset_user_password(
     path = "/api/admin/transfer-ownership",
     request_body = TransferOwnershipDto,
     responses(
-        (status = 200, description = "Ownership transferred"),
+        (status = 200, body = Object, description = "Ownership transferred"),
         (status = 400, description = "Target cannot hold ownership, or is already the owner"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Only the current owner may transfer ownership"),
@@ -1792,7 +1792,7 @@ pub async fn admin_promote_external_to_internal(
     put,
     path = "/api/admin/settings/registration",
     responses(
-        (status = 200, description = "Registration setting updated"),
+        (status = 200, body = Object, description = "Registration setting updated"),
         (status = 400, description = "Missing field"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required")
@@ -2522,7 +2522,7 @@ pub struct SetPolicyDefaultsQuery {
     params(("kind" = String, Path, description = "personal | shared"), SetPolicyDefaultsQuery),
     request_body = serde_json::Value,
     responses(
-        (status = 200, description = "Stored defaults, or the impact preview when dry_run=true"),
+        (status = 200, body = Object, description = "Stored defaults, or the impact preview when dry_run=true"),
         (status = 400, description = "Unknown kind, unknown knob, or a knob that cannot be defaulted"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required"),
@@ -2880,7 +2880,7 @@ pub async fn get_transcode_stats(State(state): State<Arc<AppState>>) -> impl Int
     get,
     path = "/api/admin/jobs",
     responses(
-        (status = 200, description = "Jobs listed"),
+        (status = 200, body = Object, description = "Jobs listed"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required"),
     ),
@@ -3165,7 +3165,7 @@ pub type TriggerJobQuery = std::collections::HashMap<String, String>;
     path = "/api/admin/jobs/{name}/trigger",
     params(("name" = String, Path, description = "Registered job name")),
     responses(
-        (status = 200, description = "Dispatched; outcome inline"),
+        (status = 200, body = Object, description = "Dispatched; outcome inline"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required"),
         (status = 404, description = "Job not registered"),
@@ -3320,7 +3320,7 @@ fn is_detached_job(name: &str) -> bool {
     path = "/api/admin/jobs/{name}/cancel",
     params(("name" = String, Path, description = "Registered job name")),
     responses(
-        (status = 200, description = "Cancel signalled (or no-op if nothing was running)"),
+        (status = 200, body = Object, description = "Cancel signalled (or no-op if nothing was running)"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required"),
         (status = 500, description = "DB error"),
@@ -3446,7 +3446,7 @@ pub async fn cancel_job(
     path = "/api/admin/jobs/{name}/pause",
     params(("name" = String, Path, description = "Registered job name")),
     responses(
-        (status = 200, description = "Pause signalled (or no-op if nothing was running)"),
+        (status = 200, body = Object, description = "Pause signalled (or no-op if nothing was running)"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required"),
         (status = 500, description = "DB error"),
@@ -3513,7 +3513,7 @@ fn default_runs_limit() -> u32 {
         ("limit" = Option<u32>, Query, description = "Max rows to return (default 20, capped at 100)"),
     ),
     responses(
-        (status = 200, description = "Runs listed (may be empty)"),
+        (status = 200, body = Object, description = "Runs listed (may be empty)"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required"),
         (status = 500, description = "DB error"),
@@ -3548,7 +3548,7 @@ pub async fn list_job_runs(
         ("id" = String, Path, description = "Run UUID"),
     ),
     responses(
-        (status = 200, description = "Run detail"),
+        (status = 200, body = Object, description = "Run detail"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required"),
         (status = 404, description = "Run not found"),
@@ -3607,7 +3607,7 @@ fn default_findings_limit() -> u32 {
         ("offset" = Option<u32>, Query, description = "Rows to skip (default 0)"),
     ),
     responses(
-        (status = 200, description = "Findings listed (may be empty)"),
+        (status = 200, body = Object, description = "Findings listed (may be empty)"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required"),
         (status = 404, description = "Run not found"),

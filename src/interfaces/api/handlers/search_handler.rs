@@ -312,7 +312,7 @@ pub async fn suggest_files(
     delete,
     path = "/api/admin/search/cache",
     responses(
-        (status = 200, description = "Cache cleared"),
+        (status = 200, body = Object, description = "Cache cleared"),
         (status = 401, description = "Missing or invalid token"),
         (status = 403, description = "Caller is not an admin"),
         (status = 503, description = "Search service unavailable"),

@@ -39,7 +39,7 @@ pub fn user_routes() -> Router<Arc<AppState>> {
     path = "/api/users/{id}",
     params(("id" = String, Path, description = "User UUID")),
     responses(
-        (status = 200, description = "Profile of a user the caller can see"),
+        (status = 200, body = crate::application::dtos::user_dto::PublicUserDto, description = "Profile of a user the caller can see"),
         (status = 404, description = "User does not exist OR caller has no visibility (anti-enumeration: indistinguishable)"),
         (status = 429, description = "Per-caller rate limit exceeded"),
     ),

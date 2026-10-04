@@ -6,7 +6,7 @@ use utoipa::ToSchema;
 // ============================================================================
 
 /// Current OIDC settings returned to admin UI (secrets masked)
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct OidcSettingsDto {
     pub enabled: bool,
     pub issuer_url: String,
@@ -149,7 +149,7 @@ pub struct ListSessionsQueryDto {
 /// single drive kind. Unlimited caps are excluded from `capped_quota_bytes`
 /// and counted in `unlimited_count` so the panel can render the ratio
 /// honestly ("X / Y over N capped drives · M unlimited").
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct DriveKindUsageDto {
     /// `"personal"` or `"shared"`.
     pub kind: String,
@@ -170,7 +170,7 @@ pub struct DriveKindUsageDto {
 }
 
 /// Dashboard statistics
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct DashboardStatsDto {
     // System info
     pub server_version: String,
@@ -275,7 +275,7 @@ pub struct DashboardStatsDto {
 /// use it against the sibling `BackendCacheInfoDto`'s `chunks` to
 /// avoid conflating the two tiers' granularities in dashboards or
 /// alerts.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ContentCacheInfoDto {
     pub size_bytes: u64,
     pub max_bytes: u64,
@@ -288,7 +288,7 @@ pub struct ContentCacheInfoDto {
 /// `.blob-cache` tier occupancy snapshot (see [`DashboardStatsDto::backend_cache`]).
 /// Separate struct from the moka one so adding tier-specific fields
 /// later (eviction count, LRU age) doesn't force a shared schema.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct BackendCacheInfoDto {
     pub size_bytes: u64,
     pub max_bytes: u64,
@@ -309,7 +309,7 @@ pub struct BackendCacheInfoDto {
 /// file-content moka one because the granularity differs: each
 /// thumbnail entry is one encoded WebP/AVIF payload keyed by
 /// `(file_id, size)`, not an assembled file.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ThumbnailCacheInfoDto {
     pub size_bytes: u64,
     pub max_bytes: u64,
@@ -336,7 +336,7 @@ pub struct ThumbnailCacheInfoDto {
 /// stale legacy admin_settings rows, so slice-6 dropped them. Consumers
 /// wanting per-provider details read them off `entries[i].backend` and
 /// `entries[i].location_hint` instead.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct StorageSettingsDto {
     // ── Current stats — pertain to the running process ──
     /// Backend type currently in use (`"local"` / `"s3"` / `"azure"`) —
@@ -372,7 +372,7 @@ pub struct StorageSettingsDto {
 /// carries credentials — those live in env vars only. `is_active`
 /// marks which entry the LIVE backend uses right now (matches
 /// `active_entry_name` on the parent DTO).
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct StorageEntrySummaryDto {
     pub name: String,
     /// Backend type — "local" / "s3" / "azure".
@@ -409,7 +409,7 @@ pub struct StorageEntrySummaryDto {
 /// One `<cipher>:<key>` pair rendered for the admin UI. Never
 /// carries key material — only cipher name + a truncated fingerprint
 /// safe to show operators.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct StorageEncryptionPairDto {
     /// `"aes-256-gcm"` for a real-cipher pair, `"none"` for a
     /// `none:` sentinel (writes as plaintext-v1).
@@ -524,7 +524,7 @@ pub struct StorageTestResultDto {
 
 /// Migration progress returned by `GET /api/admin/storage/migration`.
 /// Re-exports the `MigrationState` shape for the admin UI.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct MigrationStateDto {
     pub status: String,
     pub total_blobs: u64,

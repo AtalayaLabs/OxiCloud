@@ -9,8 +9,8 @@ use axum::{
 use serde::Deserialize;
 
 use crate::application::dtos::playlist_dto::{
-    AddTracksDto, CreatePlaylistDto, PlaylistQueryDto, ReorderTracksDto, SharePlaylistDto,
-    UpdatePlaylistDto,
+    AddTracksDto, AudioMetadataDto, CreatePlaylistDto, PlaylistDto, PlaylistItemDto,
+    PlaylistQueryDto, PlaylistShareInfoDto, ReorderTracksDto, SharePlaylistDto, UpdatePlaylistDto,
 };
 use crate::application::ports::music_ports::MusicUseCase;
 use crate::application::services::music_service::MusicService;
@@ -27,7 +27,7 @@ pub struct PaginationQuery {
     post,
     path = "/api/playlists",
     responses(
-        (status = 201, description = "Playlist created"),
+        (status = 201, body = PlaylistDto, description = "Playlist created"),
         (status = 400, description = "Bad request"),
         (status = 401, description = "Unauthorized")
     ),
@@ -50,7 +50,7 @@ pub async fn create_playlist(
     path = "/api/playlists/{playlist_id}",
     params(("playlist_id" = String, Path, description = "Playlist ID")),
     responses(
-        (status = 200, description = "Playlist details"),
+        (status = 200, body = PlaylistDto, description = "Playlist details"),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Playlist not found")
     ),
@@ -72,7 +72,7 @@ pub async fn get_playlist(
     get,
     path = "/api/playlists",
     responses(
-        (status = 200, description = "List of playlists"),
+        (status = 200, body = Vec<PlaylistDto>, description = "List of playlists"),
         (status = 401, description = "Unauthorized")
     ),
     security(("bearerAuth" = [])),
@@ -100,7 +100,7 @@ pub struct IncludeSharedQuery {
     path = "/api/playlists/{playlist_id}",
     params(("playlist_id" = String, Path, description = "Playlist ID")),
     responses(
-        (status = 200, description = "Playlist updated"),
+        (status = 200, body = PlaylistDto, description = "Playlist updated"),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Playlist not found")
     ),
@@ -153,7 +153,7 @@ pub async fn delete_playlist(
     path = "/api/playlists/{playlist_id}/tracks",
     params(("playlist_id" = String, Path, description = "Playlist ID")),
     responses(
-        (status = 201, description = "Tracks added"),
+        (status = 201, body = Vec<PlaylistItemDto>, description = "Tracks added"),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Playlist not found")
     ),
@@ -236,7 +236,7 @@ pub async fn reorder_tracks(
     path = "/api/playlists/{playlist_id}/tracks",
     params(("playlist_id" = String, Path, description = "Playlist ID")),
     responses(
-        (status = 200, description = "List of playlist tracks"),
+        (status = 200, body = Vec<PlaylistItemDto>, description = "List of playlist tracks"),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Playlist not found")
     ),
@@ -318,7 +318,7 @@ pub async fn remove_share(
     path = "/api/playlists/{playlist_id}/shares",
     params(("playlist_id" = String, Path, description = "Playlist ID")),
     responses(
-        (status = 200, description = "List of playlist shares"),
+        (status = 200, body = Vec<PlaylistShareInfoDto>, description = "List of playlist shares"),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Playlist not found")
     ),
@@ -344,7 +344,7 @@ pub async fn get_playlist_shares(
     path = "/api/playlists/audio-metadata/{file_id}",
     params(("file_id" = String, Path, description = "Audio file ID")),
     responses(
-        (status = 200, description = "Audio metadata"),
+        (status = 200, body = AudioMetadataDto, description = "Audio metadata"),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "File not found")
     ),

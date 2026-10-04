@@ -46,7 +46,7 @@ pub struct BatchFavoritesRequest {
         ("item_id" = String, Path, description = "Item ID")
     ),
     responses(
-        (status = 201, description = "Item added to favorites"),
+        (status = 201, body = Object, description = "Item added to favorites"),
         (status = 400, description = "Invalid item type")
     ),
     security(("bearerAuth" = [])),
@@ -102,7 +102,7 @@ pub async fn add_favorite(
         ("item_id" = String, Path, description = "Item ID")
     ),
     responses(
-        (status = 200, description = "Item removed from favorites"),
+        (status = 200, body = Object, description = "Item removed from favorites"),
         (status = 404, description = "Item not in favorites")
     ),
     security(("bearerAuth" = [])),
