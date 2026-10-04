@@ -1807,6 +1807,26 @@ standalone commit so reviewers see "rename" independently from the
 substantive changes — it is the noisiest diff in this plan and the
 least interesting.
 
+**Re-measured 2026-10-04: 44 files, 288 occurrences.** The figure above
+is from 2026-08-16 and the code has grown ~38% past it; re-count before
+planning the work rather than trusting either number.
+
+**And the "mechanical" claim only covers half of it.** The type and the
+module path are unambiguous identifiers, so those are a safe sweep. The
+local variable is not: there are **443** bare `dedup` identifiers under
+`src/`, and `dedup` is also the name of the *concept* — which the
+paragraph below deliberately wants kept, since the doc-comments are
+supposed to go on describing deduplication as a strategy. A blind
+variable sweep would rewrite prose about dedup into prose about a
+handler. So the variable rename needs per-occurrence judgement and
+should be a second pass, not part of the same replace.
+
+**Sequencing, learned the hard way from the sentence above about
+rebasing:** "land it last" means *last relative to work in flight*, not
+last in this list. With an open PR on another branch, a 288-occurrence
+rename guarantees a conflict with every review fix that lands there.
+Wait for the queue to drain.
+
 **`src/AGENTS.md` must change in the same commit.** Lines 20-21 name
 `Arc<DedupService>` as *the* canonical read abstraction and list its
 methods; leaving them would point the rule at a type that no longer
