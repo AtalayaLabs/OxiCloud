@@ -17,13 +17,44 @@ use crate::application::ports::blob_storage_ports::{
 use crate::common::config::S3StorageConfig;
 use crate::domain::errors::{DomainError, ErrorKind};
 
+/// How often the keepalive heartbeat sends `head_bucket()` to pin a
+/// pooled connection open. 45 s sits comfortably under the typical S3
+/// server-side idle timeout (~60-120 s on real AWS; often shorter on
+/// Azurite / MinIO) so the pool never discovers a half-dead socket
+/// mid-request. One sub-100-byte round-trip per interval; negligible
+/// billing, invisible against normal traffic.
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(45);
+
 /// S3-compatible blob storage backend.
 ///
 /// Blobs are stored as objects with key `{2-char-prefix}/{hash}.blob`,
 /// mirroring the local filesystem layout for consistency.
+///
+/// On construction, spawns a background keepalive task that pings
+/// `head_bucket()` every [`KEEPALIVE_INTERVAL`]. Keeps one pooled
+/// connection warm across quiet periods so sporadic file reads don't
+/// pay the TCP + TLS handshake every time — see
+/// `docs/architecture/caching.md` and the 2026-10-03 session notes
+/// for the diagnostic that motivated this.
 pub struct S3BlobBackend {
     client: aws_sdk_s3::Client,
     bucket: String,
+    /// Abort handle for the keepalive heartbeat. Dropped on backend
+    /// drop; the heartbeat exits at its next tick when the client
+    /// clone it holds observes the abort. The server runs one
+    /// backend for the lifetime of the process, so this matters more
+    /// for tests (which spin backends up and down) than production.
+    _keepalive: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for S3BlobBackend {
+    fn drop(&mut self) {
+        // Abort the heartbeat loop so a dropped backend doesn't
+        // keep pinging S3 forever. Harmless no-op in normal server
+        // shutdown (tokio aborts all tasks anyway); important in
+        // tests that construct backends per-case.
+        self._keepalive.abort();
+    }
 }
 
 impl S3BlobBackend {
@@ -111,9 +142,51 @@ impl S3BlobBackend {
 
         let client = aws_sdk_s3::Client::from_conf(builder.build());
 
+        // Keepalive heartbeat. Rationale in the [`KEEPALIVE_INTERVAL`]
+        // doc. Captures a `Client` clone (cheap — SDK's `Client` is an
+        // Arc internally) and the bucket by value; the task owns both,
+        // so no backend-liveness dance is required. Failures are
+        // single-line `warn!` so an operator notices S3 unreachability
+        // outside normal request flow, but success is `debug!` to
+        // avoid turning the audit log into a cardiogram.
+        let keepalive_client = client.clone();
+        let keepalive_bucket = config.bucket.clone();
+        let keepalive = tokio::spawn(async move {
+            // First tick fires immediately in tokio; skip it so we
+            // don't double-up with the explicit `head_bucket` in
+            // `initialize()` that bucket-availability-checks at boot.
+            let mut tick = tokio::time::interval(KEEPALIVE_INTERVAL);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                let started = std::time::Instant::now();
+                match keepalive_client
+                    .head_bucket()
+                    .bucket(&keepalive_bucket)
+                    .send()
+                    .await
+                {
+                    Ok(_) => tracing::debug!(
+                        target: "oxicloud::s3_backend",
+                        bucket = %keepalive_bucket,
+                        duration_ms = started.elapsed().as_millis() as u64,
+                        "keepalive heartbeat ok"
+                    ),
+                    Err(err) => tracing::warn!(
+                        target: "oxicloud::s3_backend",
+                        bucket = %keepalive_bucket,
+                        duration_ms = started.elapsed().as_millis() as u64,
+                        error = %err,
+                        "keepalive heartbeat failed — next request will reconnect"
+                    ),
+                }
+            }
+        });
+
         Self {
             client,
             bucket: config.bucket.clone(),
+            _keepalive: keepalive,
         }
     }
 
@@ -335,6 +408,14 @@ impl BlobStorageBackend for S3BlobBackend {
         Box::pin(async move {
             let key = Self::object_key(&hash);
 
+            // Request-level timing. The S3 SDK's `send().await` returns
+            // once the response headers arrive — ByteStream body is
+            // consumed lazily by the caller. So this measures the
+            // round-trip to first-byte (which is almost always the
+            // dominant cost on cold reads), not the full download.
+            // Caller-side streaming of `output.body` adds LAN-ish
+            // throughput time on top.
+            let started = std::time::Instant::now();
             let output = self
                 .client
                 .get_object()
@@ -357,6 +438,13 @@ impl BlobStorageBackend for S3BlobBackend {
                     // Everything else goes through the normal classifier,
                     // so a 403 stays permanent rather than being retried
                     // forever.
+                    tracing::info!(
+                        target: "oxicloud::s3_backend",
+                        hash = %hash,
+                        duration_ms = started.elapsed().as_millis() as u64,
+                        outcome = "error",
+                        "s3 get_object failed"
+                    );
                     if let aws_sdk_s3::error::SdkError::ServiceError(svc) = &e
                         && svc.err().is_no_such_key()
                     {
@@ -369,6 +457,14 @@ impl BlobStorageBackend for S3BlobBackend {
                     s3_domain_error("S3", format!("Failed to get blob {hash}"), &e)
                 })?;
 
+            tracing::info!(
+                target: "oxicloud::s3_backend",
+                hash = %hash,
+                duration_ms = started.elapsed().as_millis() as u64,
+                content_length = output.content_length().unwrap_or(-1),
+                outcome = "ok",
+                "s3 get_object ok (headers)"
+            );
             // Convert S3 ByteStream into a Stream<Item = Result<Bytes, io::Error>>
             // via AsyncRead adapter
             let reader = output.body.into_async_read();

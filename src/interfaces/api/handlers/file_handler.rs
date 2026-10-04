@@ -13,11 +13,12 @@ use utoipa::ToSchema;
 
 use crate::application::ports::external_mount_ports::MountStat;
 use crate::application::ports::file_ports::{
-    FileManagementUseCase, FileRetrievalUseCase, FileUploadUseCase, RangeContent,
+    CacheOutcome, FileManagementUseCase, FileRetrievalUseCase, FileUploadUseCase,
+    OptimizedFileContent, RangeContent,
 };
+use crate::application::ports::folder_ports::FolderUseCase;
 use crate::application::ports::storage_ports::{FileReadPort, StorageUsagePort};
 use crate::application::ports::thumbnail_ports::ThumbnailPort;
-use crate::application::ports::{file_ports::OptimizedFileContent, folder_ports::FolderUseCase};
 use crate::application::services::external_mount_router::ResolvedId;
 use crate::application::services::mount_registry::MountConfig;
 use crate::common::di::AppState;
@@ -38,6 +39,38 @@ use std::sync::Arc;
  */
 /// Global application state for dependency injection
 type GlobalState = Arc<AppState>;
+
+/// RAII request-timer for the file-download hot path. Logs a single
+/// structured line on drop so every return path (hot bytes, cold
+/// stream, Range, 304, error, early-auth-fail) produces exactly one
+/// `oxicloud::download` entry per request. Threaded alongside the
+/// finer-grained `oxicloud::content_cache` and `oxicloud::s3_backend`
+/// lines, the three together isolate the dominant cost on any slow
+/// request. See `download_file_impl`.
+struct DownloadTimer {
+    file_id: String,
+    started: std::time::Instant,
+}
+
+impl DownloadTimer {
+    fn new(file_id: String) -> Self {
+        Self {
+            file_id,
+            started: std::time::Instant::now(),
+        }
+    }
+}
+
+impl Drop for DownloadTimer {
+    fn drop(&mut self) {
+        tracing::info!(
+            target: "oxicloud::download",
+            file_id = %self.file_id,
+            duration_ms = self.started.elapsed().as_millis() as u64,
+            "download request complete"
+        );
+    }
+}
 
 /**
  * API handler for file-related operations.
@@ -855,6 +888,14 @@ impl FileHandler {
         Query(params): Query<HashMap<String, String>>,
         headers: &HeaderMap,
     ) -> impl IntoResponse + use<> {
+        // Request-level timing. The RAII guard logs ONCE on drop (any
+        // return path — hot bytes, cold stream, mount, Range, 304,
+        // error) so the browser-perceived total always surfaces as a
+        // single structured line matched by file id. Combined with
+        // the finer-grained `oxicloud::content_cache` and
+        // `oxicloud::s3_backend` lines, the three together say where
+        // N ms went.
+        let _dl_timer = DownloadTimer::new(id.clone());
         // Authorize against every credential the caller holds, and keep the
         // one that granted: the reads below are single-subject and must be
         // made with the credential that actually opened this file, not a
@@ -1040,8 +1081,11 @@ impl FileHandler {
         {
             Ok((_file, content)) => match content {
                 OptimizedFileContent::Bytes {
-                    data, mime_type, ..
-                } => Self::build_cached_response(data, &mime_type, &disposition, &etag)
+                    data,
+                    mime_type,
+                    cache,
+                    ..
+                } => Self::build_cached_response(data, &mime_type, &disposition, &etag, cache)
                     .into_response(),
                 OptimizedFileContent::Stream(pinned_stream) => Response::builder()
                     .status(StatusCode::OK)
@@ -1487,6 +1531,7 @@ impl FileHandler {
         mime_type: &str,
         disposition: &str,
         etag: &str,
+        cache: CacheOutcome,
     ) -> Response<Body> {
         Response::builder()
             .status(StatusCode::OK)
@@ -1499,6 +1544,14 @@ impl FileHandler {
             )
             .header(header::VARY, "Accept-Encoding")
             .header(header::CONTENT_LENGTH, content.len())
+            // X-Oxicloud-Cache advertises which tier served this
+            // response. Lets operators see hot vs cold at a glance in
+            // DevTools without touching server logs. See `CacheOutcome`
+            // in `application/ports/file_ports.rs` for the matrix.
+            // Only attached on the in-memory-bytes path; streaming
+            // responses omit it (TIER 2 bypasses the content cache,
+            // so there is no honest value to report).
+            .header("X-Oxicloud-Cache", cache.as_header())
             .body(Body::from(content))
             .unwrap()
     }
@@ -1723,7 +1776,32 @@ pub async fn get_thumbnail(
     // Borrow the headers (`req.headers()`) instead of the `HeaderMap` extractor's
     // full clone — thumbnails are the highest-frequency GET (one per grid tile),
     // and this handler reads only Accept + If-None-Match (benches/ROUND22.md §H1).
-    FileHandler::get_thumbnail_impl(state, callers, req.headers(), path).await
+    //
+    // Wrap the inner work in a cache-outcome scope so every cache
+    // layer the handler touches (thumbnail moka, derived-blob
+    // satellite lookup, backend .blob-cache) can `observe` its
+    // tier. We read the final value after the body is built and
+    // stamp `X-Oxicloud-Cache` on the response. Mirror of the
+    // X-Oxicloud-Cache contract on the full-file download path —
+    // thumbnails are generated via a different pipeline but should
+    // report their tier under the same header name for operator
+    // uniformity. See docs/architecture/caching.md.
+    let (response, outcome) = crate::application::ports::file_ports::cache_outcome::scope(
+        FileHandler::get_thumbnail_impl(state, callers, req.headers(), path),
+    )
+    .await;
+    // Materialise the opaque `impl IntoResponse` into a concrete
+    // `Response` so we can mutate headers. Only attach the cache
+    // header on successful bytes-bearing responses — 204 (no
+    // thumbnail) and 304 (not modified) deliberately omit it:
+    // nothing was served from a cache tier, so there's no honest
+    // value to report.
+    let mut response = response.into_response();
+    if response.status().is_success() && response.status() != axum::http::StatusCode::NO_CONTENT {
+        let v = axum::http::HeaderValue::from_static(outcome.as_header());
+        response.headers_mut().insert("X-Oxicloud-Cache", v);
+    }
+    response
 }
 
 #[utoipa::path(

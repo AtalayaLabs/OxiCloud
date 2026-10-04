@@ -1,0 +1,737 @@
+# Plan — Cache optimisation across the file-download hot path
+
+**Status:** draft 2026-10-03, from a live sandbox investigation. Three items
+below are **DONE** (same session); the rest are design-captured, awaiting
+prioritisation. Driven by an observed 1.7-second cold-read on a 232 KB S3
+blob and a general "every image is slow" symptom in a sandbox with a 240 MB
+`.blob-cache` and S3 backend.
+
+Each item carries its own state marker at its heading, same convention as
+`storage-consistency.md`.
+
+| item | state |
+|---|---|
+| §1 Timing instrumentation at tier boundaries | **DONE** — three `tracing::info!` channels, 1 LoC each at the loader / S3 call / handler-drop |
+| §2 `X-Oxicloud-Cache` response header | **DONE** — phase 1 (`HIT`/`MISS`); phase 2 (`HIT-BACKEND`) deferred, see §4 |
+| §3 S3 keepalive heartbeat | **DONE** — `head_bucket()` every 45s to pin the hyper pool warm |
+| §4 Phase 2 of `X-Oxicloud-Cache`: `HIT-BACKEND` plumbing | **TODO** |
+| §5 Admin banner "enable the local disk cache" | **DONE** — `storage_cache_recommended` flag on `/api/admin/dashboard` |
+| §6 Pre-warm the content cache on first access | **TODO** |
+| §7 Instrumentation parity on streaming paths | **TODO** |
+| §8 Frontend prefetch for gallery navigation | **TODO** |
+| §9 Optional disk-cache TTL for privacy-sensitive deployments | **PROPOSAL** |
+| §10 Promote thumbnail moka to satellite / content-keyed indexing | **PROPOSAL** |
+| §11 Prometheus hit/miss counters at every cache tier | **TODO** |
+| §12 Extend `X-Oxicloud-Cache` header to WebDAV / NC / preview / avatar / WOPI / delta download | **TODO** |
+| §13 Opportunistic write-through on upload (file content + thumbnails) | **TODO** |
+
+The three shipped items were taken first because they're the diagnostic
+foundation: without §1 you can't tell which tier is slow; without §2 the
+operator can't see it from a client; without §3 the slowest cold-read case
+observed (idle pool past hyper's 90 s timeout → full TCP + TLS handshake)
+never improves no matter what else lands.
+
+---
+
+## §1 Timing instrumentation at tier boundaries — DONE
+
+### Why
+
+The baseline question "my image took 2.7 s to open, where did that go?" had
+no answer in the logs: `oxicloud::http` showed only request end-to-end;
+nothing attributed the time to moka vs. local-disk cache vs. S3 round-trip.
+Any optimisation lands blind without this.
+
+### What
+
+Three `tracing::info!` channels, independently filterable, each one line per
+event:
+
+- `oxicloud::content_cache` — on moka miss, logs `cache_key`, `loaded`,
+  `size_bytes`, `duration_ms` for the loader future. Shows the
+  through-cache cost, including the single-flight follower case.
+- `oxicloud::s3_backend` — on every `get_object` call, logs `hash`,
+  `content_length`, `duration_ms`, `outcome`. Shows the raw S3 RTT.
+- `oxicloud::download` — on every file-download response, RAII-dropped at
+  handler return. Logs `file_id`, `duration_ms`. For streaming responses
+  this is time-to-headers (body streams after); for `Bytes` responses it
+  bounds the whole thing.
+
+Code: `src/infrastructure/services/file_content_cache.rs`,
+`src/infrastructure/services/s3_blob_backend.rs`,
+`src/interfaces/api/handlers/file_handler.rs::DownloadTimer`.
+
+Enable with:
+
+```bash
+RUST_LOG=info,oxicloud::download=info,oxicloud::content_cache=info,oxicloud::s3_backend=info
+```
+
+### Follow-ups
+
+See §7 — the streaming path and `get_blob_range_stream` are NOT yet
+instrumented. Range + TIER-2 downloads currently emit a `download`
+line but no backend-tier line, so they attribute to "unknown" when
+slow.
+
+---
+
+## §2 `X-Oxicloud-Cache` response header (phase 1) — DONE
+
+### Why
+
+Operators / users seeing a slow image need a one-glance signal from the
+browser DevTools pane without touching server logs. Also useful to CI
+tests: can assert `MISS` on first view, `HIT` on second, which pins the
+cache behaviour across refactors.
+
+### What
+
+Three-value header on `OptimizedFileContent::Bytes` responses:
+
+- `HIT` — moka served the assembled bytes from memory. No I/O.
+- `HIT-BACKEND` — moka missed; every chunk the response needed came from
+  the local `.blob-cache` tier. No remote round-trip. **Phase 2 only
+  — see §4; phase 1 does not emit this value yet.**
+- `MISS` — moka missed; at least one chunk required the authoritative
+  backend (local filesystem on local-only; S3 / Azure on remote).
+
+Chunked files report the worst (slowest) tier any individual chunk
+required.
+
+Omitted on paths that bypass the content cache (TIER 2 streaming, Range
+requests over the cacheable threshold, 304, mount files). "No header"
+is the quiet signal that this request didn't go through the cache.
+
+Code: `src/application/ports/file_ports.rs::CacheOutcome`,
+`src/infrastructure/services/file_content_cache.rs`,
+`src/application/services/file_retrieval_service.rs`,
+`src/interfaces/api/handlers/file_handler.rs::build_cached_response`.
+Test: `tests/api/cache_header.hurl` pins the MISS → HIT transition.
+Doc: `docs/architecture/caching.md` § "Observing cache behaviour".
+
+---
+
+## §3 S3 keepalive heartbeat — DONE
+
+### Why
+
+Diagnostic data showed a bimodal S3 latency distribution: a warm pool gives
+~35-85 ms per `get_object`; a cold connection (hyper's 90 s idle timeout
+elapsed) gives 350-1700 ms for the same byte count. The variance is pure
+TCP + TLS handshake cost. Users read "every image is slow" because quiet
+periods between opens routinely cross the 90 s cliff.
+
+### What
+
+Background `tokio::spawn` task owned by each `S3BlobBackend`:
+
+- Ticks every `KEEPALIVE_INTERVAL = 45 s` (under typical S3 server-side
+  idle timeout, so our side and theirs stay in agreement).
+- Fires `head_bucket()`, logs success at `debug!`, failure at `warn!`.
+- Aborted on `S3BlobBackend::drop` so test harnesses that spin backends
+  per-case don't leak heartbeats.
+
+Code: `src/infrastructure/services/s3_blob_backend.rs::new` +
+`KEEPALIVE_INTERVAL` constant + `Drop` impl.
+
+### Known limits
+
+- Only one pooled connection is kept warm. Multi-connection parallel reads
+  on a cold heartbeat gap still pay their own handshake. Mitigation would
+  be `pool_max_idle_per_host` + N parallel heartbeats; deferred as
+  premature.
+- The heartbeat is at the SDK layer only. If `OXICLOUD_STORAGE_CACHE_ENABLED`
+  is on and the hot path is served from local disk, S3's connection
+  can still drop under NAT without the heartbeat ever running against
+  a cold peer. Not a correctness issue; just means the first-cold-day
+  read after enabling the cache may still spike.
+
+---
+
+## §4 Phase 2 of `X-Oxicloud-Cache`: `HIT-BACKEND` plumbing — TODO
+
+### Why
+
+Phase 1 collapses "moka served something from local disk" and "moka served
+something from S3" to the same `MISS` value. On a deployment with a 240 MB
+`.blob-cache` and remote S3, these two cases have 100× different latencies
+and the operator wants to tell them apart.
+
+### What
+
+Three plumbing options, in increasing order of code-reuse:
+
+1. **Trait extension.** Add `BlobStorageBackend::get_blob_stream_with_outcome`
+   defaulting to `Miss`. `CachedBlobBackend` overrides and reports
+   `HitBackend` when the local disk served. Threads the outcome up
+   through `DedupService` so the content-cache loader can combine
+   per-chunk outcomes with `CacheOutcome::worst`.
+2. **`tokio::task_local!` recorder.** The content-cache loader runs under
+   a scope that owns an `AtomicU8` cell initialised to `HitBackend`.
+   `CachedBlobBackend` demotes to `Miss` whenever the inner backend was
+   reached. The loader reads the cell after the inner future resolves.
+   No trait change; one new import per site.
+3. **Dedup-service return extension.** `DedupService::read_blob_bytes`
+   returns `(Bytes, CacheOutcome)`. Smaller scope than option 1 — only
+   the one method, not the whole trait.
+
+Preference: option 2. Threads nothing through type signatures, works for
+any depth of nested cache layers, and plays well with the existing
+single-flight follower case (the follower reads the recorder's final
+state after awaiting, so it sees the winner's outcome).
+
+### Deferred because
+
+Phase 1 answers the hot operational question ("is this cached at all?")
+with one bit. Three-tier adds one more bit of information at the cost of
+plumbing across four crates. Not worth it until operators actually want
+to distinguish `HIT-BACKEND` from `MISS` in production.
+
+---
+
+## §5 Admin banner "enable the local disk cache" — DONE
+
+### Why
+
+`OXICLOUD_STORAGE_CACHE_ENABLED` defaults to `false` by deliberate choice:
+on local-filesystem backends there is no cache tier to add; on
+remote-backed deployments the operator should opt in once they've
+decided the SSD budget. But a fresh install that configures S3 and
+forgets the cache runs with every read going cold — a correctness-of-UX
+hole that defaults can't fix without regressing local-only installs.
+
+### What
+
+Server-computed boolean `storage_cache_recommended: bool` on
+`DashboardStatsDto` (`GET /api/admin/dashboard`), true iff
+`backend != Local && !cache.enabled`.
+
+Frontend renders a `warn-card--warn` advisory on the dashboard tab —
+soft, not blocking — with the mitigation (`OXICLOUD_STORAGE_CACHE_ENABLED=true`)
+spelled out in the body. Hidden on local-only deployments and once the
+cache is enabled.
+
+Code: `src/application/dtos/settings_dto.rs::DashboardStatsDto`,
+`src/interfaces/api/handlers/admin_handler.rs::get_dashboard_stats`,
+`frontend/src/lib/api/endpoints/admin.ts::AdminDashboard`,
+`frontend/src/routes/admin/[[tab]]/+page.svelte`,
+`frontend/static/locales/en.json`.
+
+---
+
+## §6 Pre-warm the content cache on first access — TODO
+
+### Why
+
+The `backend_cache_cleanup_service` sweep run on a healthy sandbox
+reports 876 `live` entries after days of use — i.e., only 876 blobs
+have ever been read on this instance despite thousands existing. Every
+first-ever view of a blob pays full S3 RTT. For gallery-heavy
+deployments this means every scroll into fresh territory feels slow.
+
+### What
+
+New recoverable job `content_cache_warm` modelled after `blobs_consistency`:
+- Walks `storage.file_blobs` (or `storage.blobs` — whichever is the
+  dedup registry on current code).
+- For each unseen hash, calls `DedupService::read_blob_bytes(hash)` and
+  discards the result; the side effect is a hot local-disk cache entry
+  and a moka slot.
+- Budget-aware: honours a configurable `warm_rate_bps` so a 50 GB
+  cache doesn't drain S3 in one burst on job start.
+- Paginated via the standard recoverable-job cursor pattern; pauses on
+  S3 transient failure instead of thrashing.
+
+Trigger shape:
+
+```json
+POST /api/admin/jobs/content_cache_warm/trigger
+{"warm_rate_bps": 10_485_760}   // 10 MB/s
+```
+
+Interaction with §5's banner: once the operator enables
+`OXICLOUD_STORAGE_CACHE_ENABLED`, offer a one-click "warm it now" in the
+same admin panel.
+
+### Open questions
+
+- Should warm-on-upload fire automatically (write-through to the content
+  cache at upload time)? Simpler than a separate job, but double-caches
+  upload bytes that may never be read again. Needs a size cap to avoid
+  blowing out moka on a bulk import.
+- Does warming compete with real user reads for S3 bandwidth? Needs the
+  budget knob; also probably needs a backoff when the real-request rate
+  spikes.
+
+---
+
+## §7 Instrumentation parity on streaming paths — TODO
+
+### Why
+
+The §1 probes miss the streaming path. A 16 MB PDF opened via TIER 2
+streaming emits exactly one line (`oxicloud::download duration_ms=13`),
+which is handler-end-to-headers; the actual S3 fetch underneath isn't
+logged because it's a `get_blob_range_stream` call, not
+`get_blob_stream`. So the operator sees "download complete, 13 ms" and
+has no visibility into the body-streaming cost.
+
+### What
+
+Add the same `tracing::info!(target: "oxicloud::s3_backend", ...)` probe to
+`S3BlobBackend::get_blob_range_stream` (and `get_blob_stream_at_offset`
+if that exists). Mirror the existing `get_blob_stream` shape so the
+log search terms stay stable: `s3 get_object_range ok (headers)` with
+`range`, `content_length`, `duration_ms`, `outcome`.
+
+Also consider: the `DownloadTimer` RAII fires on handler return, which
+for streams is before the body is sent. A second timing probe
+somewhere in the stream close path would bound actual time-to-last-byte,
+useful for S3 throughput diagnosis. Deferred — needs an Axum
+tower-layer, not a handler change.
+
+---
+
+## §8 Frontend prefetch for gallery navigation — TODO
+
+### Why
+
+Even with every server-side cache tuned, the user-perceived latency on
+"next photo" is dominated by the cold read of a never-before-opened
+blob. The server has 100 ms of warm-pool S3 RTT to pay; the browser
+can hide that by prefetching the next likely file while the user is
+still looking at the current one.
+
+### What
+
+Two prefetch triggers, both pure frontend:
+
+1. **Gallery grid open.** On folder-open in Photos / People / Places,
+   prefetch the first N thumbnails via `<link rel="prefetch">` or a
+   quiet `fetch(...)` with `priority: 'low'`. N starts at ~20
+   (visible viewport + 1 scroll row).
+2. **Photo lightbox.** On opening image X, prefetch neighbours X-1
+   and X+1. On arrow-key navigation, continue extending the prefetch
+   horizon by one.
+
+Prefetched requests warm:
+- The browser cache (no re-network for the actual click)
+- The server-side moka content cache (next request short-circuits the backend)
+- The server's `.blob-cache` (second miss still disk-fast)
+- The S3 connection pool (free side effect of running a request)
+
+### Interaction with the message bus
+
+If a prefetched URL has already been invalidated by a server-side
+collab edit, the prefetch wastes bytes. Mitigation: respect the
+`If-None-Match` header the server already honours, so an invalidated
+prefetch returns 304 and costs only the round-trip, not the body.
+
+### Risk: metering / bandwidth
+
+Mobile users on cellular don't want to prefetch 20 full-res thumbnails.
+Mitigation: respect `navigator.connection.saveData` and
+`navigator.connection.effectiveType`, drop prefetch to 0-3 on `3g` or
+below.
+
+---
+
+## §10 Promote thumbnail moka to satellite / content-keyed indexing — PROPOSAL
+
+### Why
+
+The ThumbnailService's moka cache is keyed by `(file_id, size)`, so
+two users who uploaded the same photo generate two cache entries for
+identical thumbnail bytes. The dedup pipeline below the memory tier
+already collapses those to one `storage.blobs` row and one
+`.blob-cache` entry — only the in-RAM encoded-bytes layer carries the
+duplication, bounded at the 100 MB budget.
+
+Re-keying by `content_derived_blobs.blob_hash` (or
+`(source_hash, kind, variant)`) would extend content-addressability
+all the way up: one memory entry per distinct derived blob, shared
+across every file_id that resolves to it. The 100 MB budget would
+then cover more unique content on deployments with repeated source
+material (team-wide boilerplate images, same photo attached to
+multiple files, shared documents).
+
+### What
+
+Two options for the lookup path:
+
+**A. Single content-keyed moka, with per-request DB resolution.**
+Hot-path HIT becomes two steps instead of one: query
+`content_derived_blobs` for the `blob_hash`, then moka-lookup by
+`blob_hash` → bytes. The DB query is ~sub-ms with the right index
+but it is a round-trip the current `(file_id, size)` lookup skips
+entirely. On the hot "gallery tile" path this matters.
+
+**B. Two-level cache: `(file_id, size) → blob_hash` resolver +
+content-keyed bytes cache.** First map is cheap (24 bytes per entry,
+populated on first access), second holds the actual bytes
+content-keyed. HIT path stays one lookup each; MISS path still
+queries DB. More moving parts, better characteristics.
+
+Option B is probably the right shape if we commit.
+
+### Gate on observed need
+
+Not worth doing speculatively. The CachedBlobBackend observability
+wired in §4 reports `HIT-BACKEND` whenever a thumbnail fell through
+the thumbnail moka and was served from the disk tier. If
+`oxicloud_content_cache_misses_total` grows significantly on the
+thumbnail service (strong signal: cold reads for content we've
+already fetched for someone else), the memory-tier dedup opportunity
+is real. If misses stay low — thumbnail hits dominate — the current
+design is fine and this refactor earns nothing but complexity.
+
+Trigger for picking this up: a week of production hit-rate data from
+the Prometheus counters showing one of:
+
+- Thumbnail moka miss rate > 20% sustained, AND
+- `HIT-BACKEND` rate on the thumbnail path > thumbnail-moka hit rate
+  (i.e., we're routinely re-fetching bytes from disk that we HAD in
+  memory under a different file_id).
+
+Without that signal, the current file_id-keyed design is the simpler
+default. Captured here so the question is already answered when the
+data comes in.
+
+---
+
+## §9 Optional disk-cache TTL for privacy-sensitive deployments — PROPOSAL
+
+### Why
+
+`backend_cache_cleanup` (`docs/plan/storage-consistency.md` §6) removes
+`.blob-cache` entries whose content has been deleted upstream (DB
+ref-count = 0), but entries whose content is **still referenced** stay
+on disk forever, in plaintext (the cache sits outside the encryption
+wrapper). For deployments with regulatory requirements like "plaintext
+of PII must not persist past access + N hours", there is no mechanism
+to bound the plaintext horizon today.
+
+### What
+
+New knob `OXICLOUD_STORAGE_CACHE_TTL_SECS` (unset by default — matches
+current indefinite-retention behaviour). When set, adds a `time_to_idle`
+to the moka index of `CachedBlobBackend`; the eviction listener already
+unlinks the file on evict.
+
+### Trade-offs
+
+- Shorter TTL → fewer plaintext bytes on disk at any given time → more
+  S3 RTT per read on long-tail content → worse latency for the "revisit
+  last week's photo" case.
+- Rough sizing: TTL = 24 h matches "operator reviews the day's
+  activity" use case without burning cache for stale content. TTL = 1 h
+  is a plaintext-horizon knob for regulatory users.
+
+### Open
+
+Needs a stakeholder — the current OxiCloud deployment target
+(household / small team self-host) doesn't need this. Would wait for a
+real request from a regulated-tenant deployment before implementing.
+Shape of the knob is captured here so if the request lands, the design
+is already in flight.
+
+---
+
+## §11 Prometheus hit/miss counters at every cache tier — TODO
+
+### Why
+
+Today the Prometheus surface covers only ONE of the three cache
+tiers:
+
+| Tier | Counter today | Fires on |
+|---|---|---|
+| File-content moka (`FileContentCache`) | `oxicloud_content_cache_hits_total` / `_misses_total` | Hits only on `FileContentCache::get` — the small-file inline download path. TIER 2 streaming skips it. |
+| Thumbnail moka (`ThumbnailService`) | **NONE** | Every gallery scroll / avatar / preview — invisible in aggregate. |
+| Backend disk cache (`.blob-cache`, `CachedBlobBackend`) | **NONE** | The `HIT-BACKEND` tier is observable only via the per-request `X-Oxicloud-Cache` header; aggregate rate is blind. |
+
+So the dashboard-level "is my cache earning its keep?" question
+can only be answered for the file-content tier. For deployments
+where the thumbnail hot path or the disk-cache tier dominate (any
+gallery-heavy workload on a remote backend), the metrics tell
+nothing.
+
+### What
+
+Three counter pairs, one per tier, mirroring the three-tier
+architecture already documented in `docs/architecture/caching.md`
+and `CacheOutcome`:
+
+```
+oxicloud_content_cache_hits_total        (exists)
+oxicloud_content_cache_misses_total      (exists)
+
+oxicloud_thumbnail_cache_hits_total      (new — ThumbnailService::get hot path)
+oxicloud_thumbnail_cache_misses_total    (new — same)
+
+oxicloud_backend_cache_hits_total        (new — CachedBlobBackend::get_blob_stream, next to the existing observe(HitBackend))
+oxicloud_backend_cache_misses_total      (new — next to the existing observe(Miss))
+```
+
+Code shape: four `metrics::counter!(…).increment(1)` lines next
+to the existing observations. Zero new state. The `metrics` crate
+is a no-op when the recorder isn't installed, so this is free on
+deployments without `OXICLOUD_METRICS_LISTEN`.
+
+Each counter fires at its OWN tier regardless of what endpoint
+triggered the read. A thumbnail request lights up
+`thumbnail_cache_hits_total` AND possibly `backend_cache_hits_total`
+for the derived blob's underlying content; a WebDAV GET on a 2 MB
+file lights up `content_cache_hits_total` AND possibly
+`backend_cache_hits_total`. The counters compose with the handler
+without any per-endpoint wiring.
+
+### Useful queries after this ships
+
+```promql
+# File-content moka hit rate
+rate(oxicloud_content_cache_hits_total[5m])
+/ (rate(oxicloud_content_cache_hits_total[5m]) + rate(oxicloud_content_cache_misses_total[5m]))
+
+# Thumbnail moka hit rate — gallery hot-path signal
+rate(oxicloud_thumbnail_cache_hits_total[5m])
+/ (rate(oxicloud_thumbnail_cache_hits_total[5m]) + rate(oxicloud_thumbnail_cache_misses_total[5m]))
+
+# Backend disk-cache hit rate — "is the SSD cache earning its keep?"
+rate(oxicloud_backend_cache_hits_total[5m])
+/ (rate(oxicloud_backend_cache_hits_total[5m]) + rate(oxicloud_backend_cache_misses_total[5m]))
+```
+
+### Order of operations
+
+Ship this BEFORE §12. The reasoning: §12 adds `X-Oxicloud-Cache`
+to five more endpoints via the task-local recorder — all of those
+flow through the same lower-tier caches that §11 instruments. If
+§12 ships first, the dashboard would show per-request headers to
+end users but still have no aggregate hit-rate for the new
+endpoints. §11 first means every new endpoint added by §12
+automatically contributes to the shared tier counters.
+
+---
+
+## §12 Extend `X-Oxicloud-Cache` header to additional blob-serving endpoints — TODO
+
+### Why
+
+The header currently stamps only two of OxiCloud's blob-serving
+endpoints: `GET /api/files/{id}` and
+`GET /api/files/{id}/thumbnail/{size}`. Native WebDAV, NextCloud
+WebDAV, NC preview, NC avatar, WOPI contents, and delta-download
+chunks all return bytes from the same cache stack but silently.
+Operators / users on those routes have no DevTools signal for
+hot vs cold.
+
+### What
+
+Add `cache_outcome::scope(...)` around the inner handler
+invocation and stamp `X-Oxicloud-Cache` on the response — the
+mechanical ~15-LoC pattern already proven on the thumbnail
+handler.
+
+Scope:
+
+| Handler | Route | Note |
+|---|---|---|
+| `webdav_handler::handle_get` | `GET /webdav/*` | Third-party WebDAV clients (davfs, Cyberduck, macOS Finder mount). |
+| `nextcloud::webdav_handler::handle_get` | `GET /remote.php/webdav/*` and friends | Every NC-compat client. |
+| `nextcloud::preview_handler::handle_preview` | `GET /ocs/.../preview` | Gallery renders. Shares the thumbnail cache stack. |
+| `nextcloud::avatar_handler::handle_avatar` | `GET /ocs/.../avatar/{user}/{size}` | High-frequency (one per row in file lists). Has its own moka plus flows through the blob store. |
+| `wopi_handler` → `/wopi/files/{id}/contents` | WOPI GetFile | Collaborative-editing fetch. |
+| `delta_upload_handler::delta_download_chunks` | `POST /api/files/delta/download` | Upload-resumption binary chunks. Latency matters for sync-client UX. |
+
+### Skip
+
+- **CalDAV / CardDAV GET** — serves iCal / vCard text from the DB,
+  no blob store involved.
+- **ZIP folder downloads** — streaming by design, bypass the
+  content cache (TIER 2). Already in the "no header" convention
+  from phase 1.
+- **`dedup_handler` admin blob fetch** — admin-only diagnostic
+  surface, low value, cache tier observable via `/metrics` anyway.
+
+### Dependency
+
+§11 should ship FIRST (per-tier counters). Otherwise this change
+emits headers for new endpoints but the aggregate hit-rate
+dashboard still has no visibility into the thumbnail / backend
+tiers.
+
+### Interaction with §4
+
+§4 (phase-2 unification of the download path onto the task-local
+recorder) is a prerequisite for the download path to report
+`HIT-BACKEND` honestly. Right now the download path uses the
+explicit `CacheOutcome` field threaded through
+`OptimizedFileContent::Bytes`, which only reports `HIT` / `MISS`
+(the task-local observations in `CachedBlobBackend` happen but
+aren't read by the download handler). §12 for the WebDAV path can
+proceed independently; its handler would scope the task-local
+directly, same as the thumbnail path does today, and get all
+three tier values. The download-path inconsistency becomes
+noticeable only once operators notice the discrepancy — then §4
+collapses it.
+
+---
+
+## §13 Opportunistic write-through on upload — TODO
+
+### Why
+
+The disk-tier `.blob-cache` is already write-through on upload
+(`CachedBlobBackend::cache_bytes_write_through`, called on every
+blob PUT), so a cold read moments after upload is a disk hit, not
+a remote round-trip. Good.
+
+**Moka tiers are NOT write-through.** File-content moka and
+thumbnail moka are populated lazily on first read. For an
+upload-then-view flow (share-link just created, drag-drop
+preview, mobile camera upload with instant display,
+screenshot-then-paste), the first view takes:
+
+```
+moka MISS → disk-cache HIT → populate moka → serve
+```
+
+Not slow, but one extra tier-walk per guaranteed-interactive
+case. The bytes are already in RAM at upload time (hash
+computation held them anyway) — populating moka is a `Bytes`
+clone (refcount bump). Zero I/O, zero CPU.
+
+### What — with the pressure guardrails
+
+Two write-through additions, tightly scoped:
+
+**(a) File-content moka — single-chunk uploads only.**
+The CDC upload path streams bytes through chunking and never
+holds a single `Bytes` of the whole file for multi-chunk uploads.
+To avoid an expensive re-assembly step, write-through fires ONLY
+when the file fits in a single CDC chunk (i.e., size <= chunk
+limit, which also means it fits in moka's 10 MB per-file budget
+by construction). The "upload-then-view" sweet spot is exactly
+this size class — screenshots, small documents, mobile photos
+post-compression. Larger multi-chunk uploads fall back to
+normal lazy population on first read.
+
+**(b) Thumbnail moka — in the lifecycle hook.**
+Thumbnails are generated via `ThumbnailRefreshHook` after upload
+(background). The hook already has the encoded WebP/AVIF bytes
+in hand at the end of generation; add a single
+`thumbnail_cache.put(...)` call there. Natural fit, zero extra
+cost. Covers the "upload a photo → gallery renders a thumbnail
+seconds later" path.
+
+### Preventing cache pressure (opt-out)
+
+Unconditional write-through regresses bulk-upload workloads: a
+nightly rsync uploading 500 MB of photos onto a 512 MB moka
+budget would evict the entire warm set to make room for content
+nobody is about to view. For a user actively browsing older
+photos while the sync runs, that's a hit-rate regression at
+exactly the worst moment.
+
+**Opt-out via a request header:**
+
+```
+X-Oxicloud-Hint: batch
+```
+
+Set by clients that upload in bulk and do NOT expect an
+immediate re-view: desktop sync clients, nightly backup
+processes, Rclone, `rsync`-style WebDAV mounts. When present,
+the upload path skips the moka write-through for both the file
+content and the thumbnail. The disk-cache tier still populates
+(same as today — unaffected).
+
+**Default (header absent)** → write-through fires. The SPA,
+mobile apps, and anyone POSTing one or a few files interactively
+get the pre-populate behaviour.
+
+Server-side: read the header once in the upload handler, thread
+a `cache_write_through: bool` flag through to the service layer,
+and gate the two `moka.put(...)` calls on it.
+
+### Gate the shipping decision on §11 counters
+
+Hit-rate deltas are what justify or defeat this. §11
+(per-tier counters) must ship first so a before/after comparison
+is possible: install §13 behind a feature flag or env toggle,
+measure one week of `oxicloud_content_cache_hits_total /
+_misses_total` and `oxicloud_thumbnail_cache_hits_total /
+_misses_total`, confirm the hit-rate bump on interactive
+workloads and the lack of regression on batch workloads
+(the `X-Oxicloud-Hint: batch` plumbing is what guards the
+latter).
+
+Projected impact without measurement: 5-15% hit-rate bump at
+the upload-then-view seam on interactive workloads; zero (or
+mild) effect on batch workloads with the hint set.
+
+### Doesn't apply to
+
+- **Multi-chunk file uploads** — moka pre-populate skipped by
+  design (re-assembly cost not worth it; large files are
+  typically not the "upload-then-view" case anyway).
+- **TIER 2 streaming downloads** — files above 10 MB skip the
+  content cache entirely on both the read AND the upload sides.
+
+---
+
+## Non-goals in this plan
+
+Explicitly out of scope — recorded here so they don't get picked up by
+mistake:
+
+- **Client-side mouse-move → warm request.** Considered 2026-10-03;
+  rejected because the client → server pool is already warm from page
+  load, and warming the server → S3 pool from the client requires a
+  dedicated "warm" endpoint whose only purpose is to trigger a backend
+  side-effect — architecturally ugly for marginal gain. §3's
+  server-side heartbeat does the same job without any client knowledge.
+- **Streaming responses carrying `X-Oxicloud-Cache`.** The streaming
+  path bypasses the content cache entirely (by design — the whole
+  reason TIER 2 exists); the header's values would need a parallel
+  interpretation for that path. "No header on streams" stays the
+  quiet signal.
+- **Replacing moka with a persistent in-memory tier (Redis / memcached).**
+  The 10k-user target doesn't justify a second infra component. moka
+  under the configured max-capacity handles the workload; the problem
+  is cold reads, not cache size.
+
+---
+
+## Rough priority
+
+If the above work lands incrementally, the order with the best
+cold-read-latency ROI is:
+
+1. §5 banner (shipped) — tells operators the knob exists.
+2. §3 heartbeat (shipped) — kills the 1.7 s pool-timeout cliff.
+3. **§11 per-tier counters** — unblocks aggregate hit-rate
+   diagnosis for the thumbnail + backend-disk tiers that are
+   invisible on the dashboard today. Prerequisite for §12 being
+   useful. Tiny code change, biggest observability payoff left.
+4. §6 pre-warm job — kills the "every first view is cold" cost for
+   deployments willing to pay the one-time S3 fetch.
+5. §8 frontend prefetch — hides remaining cold reads behind the
+   user's own interaction latency.
+6. **§12 extend `X-Oxicloud-Cache` header to WebDAV / NC / preview
+   / avatar / WOPI / delta** — mechanical, high-reach once §11 is
+   in. Mobile and desktop sync-client traffic becomes diagnosable.
+7. §7 streaming instrumentation — unblocks diagnosing the next
+   round of slow-case reports.
+8. **§13 opportunistic write-through on upload** — depends on
+   §11 for the before/after measurement. Small code change,
+   bounded impact, pre-populates moka for the interactive
+   upload-then-view path. `X-Oxicloud-Hint: batch` opt-out
+   prevents bulk-sync workloads from flushing the warm set.
+9. §4 phase 2 of the header — makes diagnosis sharper on the
+   download path, doesn't reduce latency directly.
+10. §9 TTL — only if a stakeholder requests it.
+11. §10 thumbnail moka → satellite-level — gated on dedup-overlap
+    data from §11's counters, not a speculative refactor.

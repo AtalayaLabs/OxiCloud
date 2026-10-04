@@ -38,6 +38,26 @@ pub struct BlobCacheConfig {
     pub max_cache_bytes: u64,
 }
 
+/// Point-in-time stats for [`CachedBlobBackend`]. Returned by
+/// [`CachedBlobBackend::stats`] and shown on the admin dashboard /
+/// Prometheus `/metrics`.
+#[derive(Debug, Clone)]
+pub struct BackendCacheStats {
+    /// Current weighted size (sum of entry sizes) of the on-disk
+    /// cache. Flushed via `run_pending_tasks` so the value is
+    /// current, not up-to-maintenance-tick stale.
+    pub size_bytes: u64,
+    /// Configured byte budget. Capacity fill = size_bytes / max_bytes.
+    pub max_bytes: u64,
+    /// Current entry count. Pathology signal: millions of tiny
+    /// entries vs. a few huge ones have the same `size_bytes` but
+    /// very different lookup latency.
+    pub entries: u64,
+    /// On-disk location of the cache files. For `du`, backups,
+    /// moving the cache to a dedicated SSD, etc.
+    pub cache_dir: String,
+}
+
 // ── Cache entry ────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -311,6 +331,13 @@ impl BlobStorageBackend for CachedBlobBackend {
             if self.index.get(&hash).is_some() {
                 let cached = self.cached_path(&hash);
                 if let Ok(file) = fs::File::open(&cached).await {
+                    // Local disk tier served this chunk — report HIT-BACKEND
+                    // to the request-scope recorder (if one is open). The
+                    // handler reading snapshot() at response time demotes
+                    // if any CO-chunk fell further through to Miss.
+                    crate::application::ports::file_ports::cache_outcome::observe(
+                        crate::application::ports::file_ports::CacheOutcome::HitBackend,
+                    );
                     let stream: BlobStream =
                         Box::pin(ReaderStream::with_capacity(file, STREAM_CHUNK_SIZE));
                     return Ok(stream);
@@ -320,6 +347,9 @@ impl BlobStorageBackend for CachedBlobBackend {
             }
 
             // Cache miss — fetch from inner (single-flight), spool to cache
+            crate::application::ports::file_ports::cache_outcome::observe(
+                crate::application::ports::file_ports::CacheOutcome::Miss,
+            );
             let cached = self.cached_path(&hash);
             let dest = self.fetch_and_cache_singleflight(&hash, &cached).await?;
             let file = fs::File::open(&dest).await.map_err(|e| {
@@ -514,6 +544,25 @@ impl BlobStorageBackend for CachedBlobBackend {
 // ── Cache internals (miss path + population) ───────────────────────
 
 impl CachedBlobBackend {
+    /// Current cache occupancy — bytes present and configured budget.
+    /// `size_bytes` is moka's weighted-size (sum of entry sizes); runs
+    /// `run_pending_tasks` first so the admin dashboard doesn't see a
+    /// stale value right after a burst of inserts. Rare admin-path
+    /// cost; cheap. `max_bytes` mirrors the configured budget so a
+    /// consumer can compute capacity fill without plumbing a separate
+    /// config lookup. `cache_dir` surfaces the on-disk location for
+    /// the admin UI so operators can run `du`, point backups at it,
+    /// or mount a dedicated SSD under it without re-reading the env.
+    pub fn stats(&self) -> BackendCacheStats {
+        self.index.run_pending_tasks();
+        BackendCacheStats {
+            size_bytes: self.index.weighted_size(),
+            max_bytes: self.max_cache_bytes,
+            entries: self.index.entry_count(),
+            cache_dir: self.cache_dir.display().to_string(),
+        }
+    }
+
     /// Best-effort write-through cache population shared by both blob-bytes
     /// PUT paths. moka enforces the byte budget on every insert (the old
     /// index deliberately skipped the eviction sweep on this path, letting

@@ -23,8 +23,8 @@ use crate::application::dtos::search_dto::{
     SearchCriteriaDto, SearchResultsDto, SearchSuggestionsDto,
 };
 use crate::application::ports::file_ports::{
-    FileManagementUseCase, FileRetrievalUseCase, FileUploadUseCase, OptimizedFileContent,
-    StoredBlob,
+    CacheOutcome, FileManagementUseCase, FileRetrievalUseCase, FileUploadUseCase,
+    OptimizedFileContent, StoredBlob,
 };
 use crate::application::ports::folder_ports::FolderUseCase;
 
@@ -578,6 +578,7 @@ impl FileRetrievalUseCase for StubFileRetrievalUseCase {
                 data: Bytes::new(),
                 mime_type: Arc::from(""),
                 was_transcoded: false,
+                cache: CacheOutcome::Miss,
             },
         ))
     }
@@ -624,6 +625,7 @@ impl FileRetrievalUseCase for StubFileRetrievalUseCase {
                 data: Bytes::new(),
                 mime_type: Arc::from(""),
                 was_transcoded: false,
+                cache: CacheOutcome::Miss,
             },
         ))
     }

@@ -1,3 +1,4 @@
+use crate::application::ports::file_ports::CacheOutcome;
 use crate::common::errors::DomainError;
 use bytes::Bytes;
 use moka::future::Cache;
@@ -108,6 +109,14 @@ impl FileContentCache {
     pub async fn get(&self, file_id: &str) -> Option<(Bytes, Arc<str>, Arc<str>)> {
         if let Some(entry) = self.cache.get(file_id).await {
             self.hits.fetch_add(1, Ordering::Relaxed);
+            // Mirror the in-process atomic into the Prometheus
+            // counter. The `metrics` crate is a no-op when the
+            // recorder isn't installed (OXICLOUD_METRICS_LISTEN
+            // unset), so this is free on deployments that don't
+            // scrape. Counter name follows the convention
+            // documented in `interfaces/metrics.rs`:
+            // `oxicloud_<subsystem>_<verb>_total`.
+            metrics::counter!("oxicloud_content_cache_hits_total").increment(1);
             debug!("Cache HIT for file: {}", file_id);
             Some((
                 entry.content.clone(),
@@ -116,6 +125,7 @@ impl FileContentCache {
             ))
         } else {
             self.misses.fetch_add(1, Ordering::Relaxed);
+            metrics::counter!("oxicloud_content_cache_misses_total").increment(1);
             debug!("Cache MISS for file: {}", file_id);
             None
         }
@@ -174,13 +184,13 @@ impl FileContentCache {
         etag: Arc<str>,
         content_type: Arc<str>,
         load: F,
-    ) -> Result<(Bytes, Arc<str>, Arc<str>), DomainError>
+    ) -> Result<(Bytes, Arc<str>, Arc<str>, CacheOutcome), DomainError>
     where
         F: Future<Output = Result<Bytes, DomainError>>,
     {
         // Fast path: lock-free hit (also keeps hit/miss stats meaningful).
-        if let Some(hit) = self.get(&cache_key).await {
-            return Ok(hit);
+        if let Some((bytes, etag_hit, mime_hit)) = self.get(&cache_key).await {
+            return Ok((bytes, etag_hit, mime_hit, CacheOutcome::Hit));
         }
         self.load_and_cache(cache_key, etag, content_type, load)
             .await
@@ -202,14 +212,30 @@ impl FileContentCache {
         etag: Arc<str>,
         content_type: Arc<str>,
         load: F,
-    ) -> Result<(Bytes, Arc<str>, Arc<str>), DomainError>
+    ) -> Result<(Bytes, Arc<str>, Arc<str>, CacheOutcome), DomainError>
     where
         F: Future<Output = Result<Bytes, DomainError>>,
     {
         // Slow path: coalesce concurrent misses into a single `load`.
+        //
+        // Timing instrumentation. The loader duration is the single most
+        // actionable number for "why is my image slow?" questions —
+        // it isolates the backend fetch (local disk / S3 round-trip)
+        // from the surrounding handler and streaming overhead. Only
+        // the thundering-herd WINNER sees `loaded = true`; followers
+        // wait on the same future and record `loaded = false` with
+        // the wait duration. Keep this at `info!` so it surfaces by
+        // default without a RUST_LOG tweak; the key is on its own
+        // target so it can be silenced per-deployment if it ever
+        // becomes noisy.
+        let key_for_log = cache_key.clone();
+        let started = std::time::Instant::now();
+        let loaded_in_this_call = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let loaded_flag = loaded_in_this_call.clone();
         let entry = self
             .cache
             .try_get_with(cache_key, async move {
+                loaded_flag.store(true, std::sync::atomic::Ordering::Relaxed);
                 let content = load.await?;
                 Ok::<CacheEntry, DomainError>(CacheEntry {
                     content,
@@ -224,8 +250,35 @@ impl FileContentCache {
             .map_err(|shared: Arc<DomainError>| {
                 DomainError::new(shared.kind, shared.entity_type, shared.message.clone())
             })?;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        let did_load = loaded_in_this_call.load(std::sync::atomic::Ordering::Relaxed);
+        info!(
+            target: "oxicloud::content_cache",
+            cache_key = %key_for_log,
+            loaded = did_load,
+            size_bytes = entry.content.len() as u64,
+            duration_ms = elapsed_ms,
+            "content served on cache miss"
+        );
 
-        Ok((entry.content, entry.etag, entry.content_type))
+        // CacheOutcome mapping: either we LOADED the entry (loader ran,
+        // bytes came from the backend) → MISS, or we WAITED on a
+        // concurrent caller's in-flight load (single-flight follower) →
+        // still MISS, because the follower paid the backend's latency
+        // by proxy. Labelling a follower as HIT would mislead operators
+        // into believing moka was warm when the response time will show
+        // backend-fetch cost.
+        //
+        // `did_load` is kept for the structured log line above but is
+        // not currently used to split the outcome. Future refinement
+        // (phase 2): a task-local recorder written by
+        // `CachedBlobBackend` on each chunk read lets us downgrade this
+        // to `HitBackend` when every chunk came off the local
+        // `.blob-cache` disk tier instead of the remote. Deferred.
+        let _ = did_load;
+        let outcome = CacheOutcome::Miss;
+
+        Ok((entry.content, entry.etag, entry.content_type, outcome))
     }
 
     /// Remove a file from cache (e.g., when file is deleted or modified)
@@ -254,10 +307,79 @@ impl FileContentCache {
         CacheStats {
             current_size_bytes: self.cache.weighted_size() as usize,
             max_size_bytes: self.config.max_total_size,
+            entries: self.cache.entry_count(),
             hits,
             misses,
             hit_rate_percent: hit_rate,
         }
+    }
+
+    /// Spawn a background sampler that publishes two Prometheus
+    /// gauges on a 30-second cadence:
+    ///
+    /// - `oxicloud_content_cache_size_bytes` — moka's weighted-size
+    ///   total (sum of entry sizes). The denominator for "how full
+    ///   is my cache?".
+    /// - `oxicloud_content_cache_entries` — moka's entry count. Useful
+    ///   on top of size when watching for pathologies (lots of tiny
+    ///   entries vs few huge ones).
+    ///
+    /// Also mirrors a current-value gauge for the max budget so a
+    /// scrape can show capacity-fill ratio without a config lookup:
+    ///
+    /// - `oxicloud_content_cache_max_size_bytes`
+    ///
+    /// Gauges follow the convention from `interfaces/metrics.rs`;
+    /// the `metrics` crate is a no-op when the recorder isn't
+    /// installed, so this task is still cheap on deployments without
+    /// `OXICLOUD_METRICS_LISTEN`. Detached — tracks the runtime.
+    pub fn spawn_metrics_sampler(self: &Arc<Self>) {
+        let this = Arc::clone(self);
+        metrics::describe_gauge!(
+            "oxicloud_content_cache_size_bytes",
+            "Current total weighted size (bytes) of entries in the moka file-content cache."
+        );
+        metrics::describe_gauge!(
+            "oxicloud_content_cache_entries",
+            "Current entry count in the moka file-content cache."
+        );
+        metrics::describe_gauge!(
+            "oxicloud_content_cache_max_size_bytes",
+            "Configured maximum weighted size (bytes) of the moka file-content cache. \
+             Ratio to `oxicloud_content_cache_size_bytes` gives capacity fill."
+        );
+        metrics::describe_counter!(
+            "oxicloud_content_cache_hits_total",
+            "File-content cache hits — bytes served from the moka in-memory tier."
+        );
+        metrics::describe_counter!(
+            "oxicloud_content_cache_misses_total",
+            "File-content cache misses — the loader ran. Includes single-flight followers."
+        );
+        tokio::spawn(async move {
+            // Immediate first sample so the first scrape after boot
+            // doesn't publish zero-initialised placeholders. Matches
+            // the pattern in `session_liveness_gauges::spawn`.
+            this.publish_gauges();
+            let mut ticker = tokio::time::interval(Duration::from_secs(30));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            ticker.tick().await; // consume the immediate-first tick
+            loop {
+                ticker.tick().await;
+                this.publish_gauges();
+            }
+        });
+        info!("📊 FileContentCache metrics sampler spawned (30s cadence)");
+    }
+
+    /// Push the three gauge values for one scrape cycle. Separated
+    /// from the task body for testability and so a caller can force
+    /// a snapshot ahead of a known-timing test.
+    fn publish_gauges(&self) {
+        metrics::gauge!("oxicloud_content_cache_size_bytes").set(self.cache.weighted_size() as f64);
+        metrics::gauge!("oxicloud_content_cache_entries").set(self.cache.entry_count() as f64);
+        metrics::gauge!("oxicloud_content_cache_max_size_bytes")
+            .set(self.config.max_total_size as f64);
     }
 }
 
@@ -266,6 +388,14 @@ impl FileContentCache {
 pub struct CacheStats {
     pub current_size_bytes: usize,
     pub max_size_bytes: usize,
+    /// Number of cached entries. Each moka entry is ONE small file
+    /// (<10 MB threshold) stored as its assembled bytes keyed by the
+    /// file's content hash — not individual chunks. For a 5 MB file
+    /// physically split into ~5 chunks on-backend, moka still holds
+    /// a single assembled entry here. So the right word on the UI
+    /// is "files cached", not "chunks" — mirror of the on-disk
+    /// `.blob-cache` tier, which IS per-chunk.
+    pub entries: u64,
     pub hits: usize,
     pub misses: usize,
     pub hit_rate_percent: f64,
@@ -410,7 +540,7 @@ mod tests {
         }
 
         for h in handles {
-            let (bytes, _etag, _ct) = h.await.unwrap().unwrap();
+            let (bytes, _etag, _ct, _outcome) = h.await.unwrap().unwrap();
             assert_eq!(&bytes[..], b"the-blob-bytes");
         }
 

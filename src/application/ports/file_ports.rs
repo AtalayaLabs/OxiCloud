@@ -136,9 +136,174 @@ pub enum OptimizedFileContent {
         data: Bytes,
         mime_type: Arc<str>,
         was_transcoded: bool,
+        /// Which cache tier served this response. Mapped to the
+        /// `X-Oxicloud-Cache` HTTP response header on the download
+        /// path so operators can see hot vs cold at a glance without
+        /// touching server logs. See [`CacheOutcome`] for semantics.
+        cache: CacheOutcome,
     },
     /// Streaming download for everything above the in-RAM cache threshold.
     Stream(Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>),
+}
+
+/// Which cache tier served a file-download response. Reflects the
+/// pipeline's actual layering:
+///
+/// ```text
+/// moka in-memory → CachedBlobBackend (local .blob-cache) → remote
+/// ```
+///
+/// Not every deployment has the `.blob-cache` layer: local-only
+/// backends skip it entirely. On those, `HitBackend` is never
+/// produced and the matrix is just `Hit` / `Miss`. See
+/// `docs/plan/storage-consistency.md` for the full backend layering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheOutcome {
+    /// Moka served the assembled bytes from memory. No I/O.
+    Hit,
+    /// Moka missed; the local-disk `.blob-cache` tier served every
+    /// chunk the response needed. No remote round-trip. Only reachable
+    /// on deployments where a remote backend sits behind the
+    /// `CachedBlobBackend` wrapper.
+    HitBackend,
+    /// Moka missed and at least one chunk required the authoritative
+    /// backend (local filesystem on local-only; S3 / Azure on remote).
+    /// For chunked files this is the worst-tier across all chunks —
+    /// one straggler on S3 dominates the client-observed latency, so
+    /// labelling the whole response by its slowest step matches what
+    /// the user felt.
+    Miss,
+}
+
+impl CacheOutcome {
+    /// The slower of two outcomes. Idempotent and commutative. Used
+    /// when one response is assembled from several chunks that may
+    /// have hit different tiers — the overall outcome reports the
+    /// weakest link.
+    pub fn worst(self, other: Self) -> Self {
+        use CacheOutcome::*;
+        match (self, other) {
+            (Miss, _) | (_, Miss) => Miss,
+            (HitBackend, _) | (_, HitBackend) => HitBackend,
+            _ => Hit,
+        }
+    }
+
+    /// Header value for `X-Oxicloud-Cache`. Stable string; the SPA
+    /// and operator tooling can key off this verbatim.
+    pub fn as_header(self) -> &'static str {
+        match self {
+            CacheOutcome::Hit => "HIT",
+            CacheOutcome::HitBackend => "HIT-BACKEND",
+            CacheOutcome::Miss => "MISS",
+        }
+    }
+
+    fn as_u8(self) -> u8 {
+        match self {
+            CacheOutcome::Hit => 0,
+            CacheOutcome::HitBackend => 1,
+            CacheOutcome::Miss => 2,
+        }
+    }
+
+    fn from_u8(v: u8) -> Self {
+        match v {
+            0 => CacheOutcome::Hit,
+            1 => CacheOutcome::HitBackend,
+            _ => CacheOutcome::Miss,
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────
+// Request-scope cache outcome recorder (task-local)
+// ─────────────────────────────────────────────────────
+//
+// Observability wire that captures which cache tier served each
+// cross-layer read on a per-request basis. Writers (FileContentCache,
+// CachedBlobBackend, ThumbnailService) call `cache_outcome::observe`
+// as the request descends through them; readers (download /
+// thumbnail / future derived-content handlers) call
+// `cache_outcome::snapshot` at response time and set
+// `X-Oxicloud-Cache` from it.
+//
+// Why task-local, not threaded through signatures: half of the
+// relevant services sit deep in the dedup / blob-backend stack and
+// would need N method-signature changes to carry a CacheOutcome
+// alongside the Bytes return. A tokio task_local attaches the
+// observation ambiently to the current handler scope — no
+// signature changes, works for any present and future endpoint.
+//
+// Why we store the *worst* tier observed, not the first: for a
+// chunked file the loader reads several chunks, each potentially
+// hitting a different tier. The user-perceived latency is bounded
+// below by the slowest chunk's path, so the header should name
+// that one. `CacheOutcome::worst` does the demotion monotonically.
+//
+// Baseline is Hit (`as_u8 = 0`): if a handler scope opens the
+// recorder but nothing writes, we assume everything was served
+// from the hottest tier possible (and nothing lower was reached).
+// Paths that bypass the content cache entirely (TIER 2 streaming)
+// do not open a scope, so the handler sees `snapshot()` return
+// None and omits the header — "no header" means "didn't go
+// through a tiered read, consult logs" (same quiet signal as
+// phase 1).
+pub mod cache_outcome {
+    use super::CacheOutcome;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU8, Ordering};
+
+    tokio::task_local! {
+        /// Set by the handler's [`scope`] call for the duration of
+        /// one request. Writers access it via [`observe`]; the
+        /// final snapshot is read by [`snapshot`] at response time.
+        static RECORDER: Arc<AtomicU8>;
+    }
+
+    /// Wrap a handler future so its descendants can [`observe`]
+    /// cache tiers against a request-scoped recorder. Returns the
+    /// future's output and the final observed outcome; the baseline
+    /// is `Hit` so a scoped handler that observes nothing reports a
+    /// clean hit (e.g. a 304 response that reused an ETag).
+    pub async fn scope<F, T>(fut: F) -> (T, CacheOutcome)
+    where
+        F: std::future::Future<Output = T>,
+    {
+        let cell = Arc::new(AtomicU8::new(CacheOutcome::Hit.as_u8()));
+        let cell_for_scope = cell.clone();
+        let out = RECORDER.scope(cell_for_scope, fut).await;
+        (out, CacheOutcome::from_u8(cell.load(Ordering::Relaxed)))
+    }
+
+    /// Observe that a cache tier served part of the current
+    /// request. The recorder demotes to the slowest tier seen so
+    /// far; successive calls with faster tiers are no-ops. Outside
+    /// a [`scope`] (background jobs, test harnesses with no HTTP
+    /// request on the stack) this is a silent no-op.
+    pub fn observe(tier: CacheOutcome) {
+        let _ = RECORDER.try_with(|cell| {
+            let incoming = tier.as_u8();
+            // Compare-and-swap loop: `fetch_max` would give us the
+            // right thing if u8 ordering matched our enum ordering,
+            // which it does by construction (Hit=0 < HitBackend=1 <
+            // Miss=2), but spelling the demotion explicitly keeps
+            // the semantic clear if a future variant lands.
+            let mut current = cell.load(Ordering::Relaxed);
+            loop {
+                let next = CacheOutcome::from_u8(current)
+                    .worst(CacheOutcome::from_u8(incoming))
+                    .as_u8();
+                if next == current {
+                    return;
+                }
+                match cell.compare_exchange(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+                    Ok(_) => return,
+                    Err(obs) => current = obs,
+                }
+            }
+        });
+    }
 }
 
 /// Result of a cache-aware HTTP-Range read

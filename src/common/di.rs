@@ -169,6 +169,11 @@ impl AppServiceFactory {
             max_total_size: 512 * 1024 * 1024, // 512MB total cache
             max_entries: 10000,                // Up to 10k files
         }));
+        // Publish Prometheus gauges + counters for cache hit-rate and
+        // capacity. `metrics` crate is a no-op when the recorder
+        // isn't installed, so this spawn is free on deployments
+        // without `OXICLOUD_METRICS_LISTEN`.
+        file_content_cache.spawn_metrics_sampler();
         tracing::info!("FileContentCache initialized: max 10MB/file, 512MB total, 10k entries");
 
         // Thumbnail service for thumbnail generation with timeout protection

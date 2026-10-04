@@ -1125,6 +1125,72 @@ pub async fn get_dashboard_stats(
                 true // default: enabled
             }
         },
+        // Backend cache recommendation. Fires only when BOTH:
+        //   - the ACTIVE backend entry is non-local (every blob
+        //     read costs a remote RTT), AND
+        //   - the local-disk cache wrapper is NOT currently enabled
+        //     (`OXICLOUD_STORAGE_CACHE_ENABLED`).
+        //
+        // Looking up the active entry explicitly instead of reading
+        // `config.storage.backend`: in a multi-entry deployment (the
+        // common shape for OxiCloud post-storage-multi-entry) the
+        // top-level legacy `backend` field stays at its
+        // `StorageBackendType::Local` default while the real backend
+        // is one of the `storage_entries` selected via
+        // `active_backend_name` in `admin_settings`. The old check
+        // therefore reported "local" on every multi-entry S3
+        // deployment and the admin UI silently claimed "no cache
+        // needed" — exactly backwards. See
+        // `docs/architecture/caching.md` → "On-disk blob cache".
+        storage_cache_recommended: {
+            use crate::common::config::StorageBackendType;
+            let active = state.core.active_backend_name.read().unwrap().clone();
+            // Find the live entry; fall back to the legacy field
+            // ONLY if no entries were parsed (truly legacy
+            // single-backend deployments, no `OXICLOUD_STORAGE_ENTRIES`).
+            let remote = state
+                .core
+                .config
+                .storage_entries
+                .iter()
+                .find(|e| e.name == active)
+                .map(|e| !matches!(e.backend, StorageBackendType::Local))
+                .unwrap_or_else(|| {
+                    !matches!(state.core.config.storage.backend, StorageBackendType::Local)
+                });
+            remote && !state.core.config.storage.cache.enabled
+        },
+        // Live cache occupancy for the admin "Storage cache" card.
+        // Both snapshots are point-in-time; moka runs maintenance
+        // lazily, so the backend-cache side flushes pending tasks
+        // first in `CachedBlobBackend::stats()` while the content
+        // cache's weighted_size is close enough that a bare read
+        // suffices here.
+        content_cache: {
+            let s = state.core.file_content_cache.stats();
+            crate::application::dtos::settings_dto::ContentCacheInfoDto {
+                size_bytes: s.current_size_bytes as u64,
+                max_bytes: s.max_size_bytes as u64,
+                files: s.entries,
+            }
+        },
+        thumbnail_cache: {
+            let s = state.core.thumbnail_service.get_stats().await;
+            crate::application::dtos::settings_dto::ThumbnailCacheInfoDto {
+                size_bytes: s.cache_size_bytes as u64,
+                max_bytes: s.max_cache_bytes as u64,
+                thumbnails: s.cached_thumbnails as u64,
+            }
+        },
+        backend_cache: state.core.blob_cache.as_ref().map(|c| {
+            let s = c.stats();
+            crate::application::dtos::settings_dto::BackendCacheInfoDto {
+                size_bytes: s.size_bytes,
+                max_bytes: s.max_bytes,
+                chunks: s.entries,
+                cache_dir: s.cache_dir,
+            }
+        }),
     };
 
     Ok(Json(stats))
