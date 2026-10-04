@@ -9,7 +9,8 @@ the entire derived tier), migration of the existing sidecar content,
 and a schema trim down to the columns that carry information nothing
 else owns.
 
-**Largely implemented — audited against the code 2026-10-04.** This line
+**Implemented, bar two next-major removals and two cosmetic items —
+audited against the code 2026-10-04.** This line
 said "Not implemented" for weeks after the substance of it shipped, which
 made the plan unusable as a work list: anyone picking it up would have
 re-derived decisions that are already in the tree. Individual steps in
@@ -36,14 +37,31 @@ blocking both JPEG thumbnails and the transcode import.
 
 **What actually remains:**
 
-1. **`transcode_import` (step 10b)** — the file-keyed `.transcoded/`
-   cache still needs re-keying to content. Its two stated prerequisites
-   are now both met (format-in-`variant`, and step 7), so this is
-   unblocked rather than deferred.
-2. **Sidecar retirement** — `.thumbnails/` and `.transcoded/` can only go
-   once the imports converge, and two render paths still pass `None` and
-   stay sidecar-only (safe, per 10a, because both are reachable solely
-   through the `ThumbnailPort` impl).
+1. **Nothing in the delivery order.** `transcode_import` ships — the
+   job exists, re-keys `{file_id}.webp` through `storage.files` to
+   content, imports `.webp.skip` markers as negative rows, and is in the
+   default `OXICLOUD_JOBS_STARTUP` so it drains at every boot. An earlier
+   revision of this very summary listed it as the biggest outstanding
+   item, on the strength of step 10b's "not next, and deliberately so" —
+   which was true when written and had been overtaken. Both of 10b's
+   stated prerequisites (format-in-`variant`, step 7) landed before it
+   did.
+
+   Its "entries whose file is gone" case is **left as it is** (decided
+   2026-10-04): they are unimportable by definition, and the directory
+   holding them goes away wholesale at the next major rather than being
+   drained entry by entry.
+
+2. **Sidecar retirement — DEFERRED TO THE NEXT MAJOR** (decided
+   2026-10-04), on the same gate as the legacy whole-file blob path in
+   `storage-consistency.md` §1c: the migration must have terminated, and
+   the release must be a major. `.thumbnails/` and `.transcoded/` come
+   out together with the legacy read paths, in one coherent removal where
+   an operator is already reading upgrade notes.
+
+   Two render paths still pass `None` and stay sidecar-only until then,
+   which 10a records as safe because both are reachable solely through
+   the `ThumbnailPort` impl.
 3. **Step 6 is obsolete, not outstanding.** It asked for a bulk-LIST diff
    in `blobs_consistency` because "per-row HEADs do not survive a 4× row
    count". That job is now **database only** — it opens no backend and

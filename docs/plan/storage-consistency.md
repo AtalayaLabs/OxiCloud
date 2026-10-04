@@ -13,7 +13,7 @@ heading:
 | §1a `backend_rechunk` job | **DONE** — unit tests + API check green |
 | §1b retire `OXICLOUD_LEGACY_RECHUNK` | **DONE** — deprecation warning; removal next major |
 | §1c convergence visible + `LEGACY-WHOLE-FILE-BLOB` markers | **DONE** — finding + 7 tagged sites |
-| §1 **delete the legacy path** | **THE ONLY ITEM LEFT** — gated on fleet-wide convergence, a release judgement. See below. |
+| §1 **delete the legacy path** | **DEFERRED TO THE NEXT MAJOR** (decided 2026-10-04) — two gates, both outside this plan: the migration must have terminated fleet-wide, *and* the release must be a major. See §1c. |
 | §1d share the walk with `backend_rotate` | **CLOSED** — premise was wrong; rechunk is DB-filtered to legacy blobs |
 | §2a schema + atomic enqueue | **DONE** — `storage.pending_actions`, reap-and-enqueue in one statement |
 | §2b `backend_reclaim` drain | **DONE** — scheduled every 300s, per-object `FOR UPDATE SKIP LOCKED` |
@@ -299,6 +299,28 @@ Known sites from a first pass: the `remove_reference` legacy branch
 where the unbounded-read case exists *only* for legacy blobs — that last
 group is the one that actually costs something, since it is why the decrypt
 path carries an unbounded buffer at all.
+
+**Decided 2026-10-04: removal is a NEXT-MAJOR change.** Two gates, and both
+have to be open:
+
+1. **The migration has terminated fleet-wide.** `backend_rechunk` reporting
+   zero on one instance (verified 2026-09-28 on the reference deployment) is
+   one data point, not a fleet.
+2. **The release is a major.** Not a per-deployment judgement — removing the
+   legacy *read* path makes any surviving legacy blob unreadable, and "your
+   files are unreadable unless you finished a migration" is only an
+   acceptable precondition at a major boundary, where an operator expects to
+   read upgrade notes.
+
+So this is **not** a boot gate that refuses to start, and **not** "one more
+release". It is the same deprecation path §1b already puts
+`OXICLOUD_LEGACY_RECHUNK` on — which means the variable and the code it
+guards come out together, in one coherent removal, rather than across two
+releases that each half-explain themselves. Current version is 0.9.x, so the
+target is 1.0.
+
+Until then the tags are the whole deliverable: when the gates open, removal
+is a grep rather than an excavation.
 
 **As implemented (1a–1c)** — three things the plan had not specified, each from a
 review question worth recording:
@@ -1660,8 +1682,9 @@ That is what the `test_utils` mocks exist for, and it is not this plan's problem
 > in full, item 2's precondition with it. Kept because each records *why*
 > the shape is what it is, which the next detector will need. The only
 > thing still outstanding in this whole plan is §1's deletion of the
-> legacy whole-file blob path, and that waits on fleet-wide convergence
-> rather than on anyone writing code.
+> legacy whole-file blob path, **deferred to the next major** — it needs
+> the migration terminated fleet-wide and a major-version boundary, not
+> code.
 
 From an audit for the defect class this plan exists to remove: a backend request
 whose failure is logged and forgotten, leaving an inconsistency nothing can
